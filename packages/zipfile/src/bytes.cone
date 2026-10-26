@@ -1,0 +1,203 @@
+// ======== Little-endian fields, names, and the DOS clock ========
+
+// -------- reading and writing fields (the caller has checked the bounds) --------
+
+fn le16(d: &Array[u8], at: usize) u16 {
+  u16.from(d[at]) | (u16.from(d[at + 1usize]) << 8u16)
+}
+
+fn le32(d: &Array[u8], at: usize) u32 {
+  u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) | (u32.from(d[at + 2usize]) << 16u32)
+    | (u32.from(d[at + 3usize]) << 24u32)
+}
+
+fn le64(d: &Array[u8], at: usize) u64 {
+  u64.from(le32(d, at)) | (u64.from(le32(d, at + 4usize)) << 32u64)
+}
+
+fn put16(out: &mut List[u8], v: u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+}
+
+fn put32(out: &mut List[u8], v: u32) {
+  put16(out, v & 0xFFFFu32);
+  put16(out, v >> 16u32);
+}
+
+fn put64(out: &mut List[u8], v: u64) {
+  put32(out, u32.from(v & 0xFFFFFFFFu64));
+  put32(out, u32.from(v >> 32u64));
+}
+
+fn putBytes(out: &mut List[u8], b: &Array[u8]) {
+  out.reserve(b.len);
+  var i = 0usize;
+  while i < b.len { out.push(b[i]); i += 1usize; }
+}
+
+// Whether 'n' bytes starting at 'at' lie inside 'len' bytes, without the sum overflowing
+fn fits(at: u64, n: u64, len: u64) bool {
+  at <= len && n <= len - at
+}
+
+// -------- names --------
+
+// The code points of code page 437 for the bytes 0x80 to 0xFF
+let cp437: Array[u16, 128] = [
+  0x00C7u16, 0x00FCu16, 0x00E9u16, 0x00E2u16, 0x00E4u16, 0x00E0u16, 0x00E5u16, 0x00E7u16,
+  0x00EAu16, 0x00EBu16, 0x00E8u16, 0x00EFu16, 0x00EEu16, 0x00ECu16, 0x00C4u16, 0x00C5u16,
+  0x00C9u16, 0x00E6u16, 0x00C6u16, 0x00F4u16, 0x00F6u16, 0x00F2u16, 0x00FBu16, 0x00F9u16,
+  0x00FFu16, 0x00D6u16, 0x00DCu16, 0x00A2u16, 0x00A3u16, 0x00A5u16, 0x20A7u16, 0x0192u16,
+  0x00E1u16, 0x00EDu16, 0x00F3u16, 0x00FAu16, 0x00F1u16, 0x00D1u16, 0x00AAu16, 0x00BAu16,
+  0x00BFu16, 0x2310u16, 0x00ACu16, 0x00BDu16, 0x00BCu16, 0x00A1u16, 0x00ABu16, 0x00BBu16,
+  0x2591u16, 0x2592u16, 0x2593u16, 0x2502u16, 0x2524u16, 0x2561u16, 0x2562u16, 0x2556u16,
+  0x2555u16, 0x2563u16, 0x2551u16, 0x2557u16, 0x255Du16, 0x255Cu16, 0x255Bu16, 0x2510u16,
+  0x2514u16, 0x2534u16, 0x252Cu16, 0x251Cu16, 0x2500u16, 0x253Cu16, 0x255Eu16, 0x255Fu16,
+  0x255Au16, 0x2554u16, 0x2569u16, 0x2566u16, 0x2560u16, 0x2550u16, 0x256Cu16, 0x2567u16,
+  0x2568u16, 0x2564u16, 0x2565u16, 0x2559u16, 0x2558u16, 0x2552u16, 0x2553u16, 0x256Bu16,
+  0x256Au16, 0x2518u16, 0x250Cu16, 0x2588u16, 0x2584u16, 0x258Cu16, 0x2590u16, 0x2580u16,
+  0x03B1u16, 0x00DFu16, 0x0393u16, 0x03C0u16, 0x03A3u16, 0x03C3u16, 0x00B5u16, 0x03C4u16,
+  0x03A6u16, 0x0398u16, 0x03A9u16, 0x03B4u16, 0x221Eu16, 0x03C6u16, 0x03B5u16, 0x2229u16,
+  0x2261u16, 0x00B1u16, 0x2265u16, 0x2264u16, 0x2320u16, 0x2321u16, 0x00F7u16, 0x2248u16,
+  0x00B0u16, 0x2219u16, 0x00B7u16, 0x221Au16, 0x207Fu16, 0x00B2u16, 0x25A0u16, 0x00A0u16];
+
+fn isCont(b: &Array[u8], i: usize) bool {
+  i < b.len && (b[i] & 0xC0u8) == 0x80u8
+}
+
+// Whether the bytes are well-formed UTF-8 (RFC 3629: no overlong forms, no surrogates, nothing past
+// U+10FFFF)
+fn validUtf8(b: &Array[u8]) bool {
+  var i = 0usize;
+  while i < b.len {
+    let c = u32.from(b[i]);
+    if c < 0x80u32 {
+      i += 1usize;
+    } else if c >= 0xC2u32 && c <= 0xDFu32 {
+      if !isCont(b, i + 1usize) { return false; }
+      i += 2usize;
+    } else if c >= 0xE0u32 && c <= 0xEFu32 {
+      if !isCont(b, i + 1usize) || !isCont(b, i + 2usize) { return false; }
+      let c1 = u32.from(b[i + 1usize]);
+      if c == 0xE0u32 && c1 < 0xA0u32 { return false; }
+      if c == 0xEDu32 && c1 > 0x9Fu32 { return false; }
+      i += 3usize;
+    } else if c >= 0xF0u32 && c <= 0xF4u32 {
+      if !isCont(b, i + 1usize) || !isCont(b, i + 2usize) || !isCont(b, i + 3usize) { return false; }
+      let c1 = u32.from(b[i + 1usize]);
+      if c == 0xF0u32 && c1 < 0x90u32 { return false; }
+      if c == 0xF4u32 && c1 > 0x8Fu32 { return false; }
+      i += 4usize;
+    } else {
+      return false;
+    }
+  }
+  true
+}
+
+// Appends the UTF-8 form of a code point below 0x10000
+fn appendCodePoint(s: &mut String, cp: u32) {
+  if cp < 0x80u32 {
+    s.appendByte(u8.from(cp));
+  } else if cp < 0x800u32 {
+    s.appendByte(u8.from(0xC0u32 | (cp >> 6u32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  } else {
+    s.appendByte(u8.from(0xE0u32 | (cp >> 12u32)));
+    s.appendByte(u8.from(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  }
+}
+
+// The text of a stored name or comment: UTF-8 as it is when the bytes are UTF-8 (ASCII included),
+// else the bytes read as code page 437
+fn decodeText(raw: &Array[u8]) String {
+  if validUtf8(raw) { return String.fromBytes(raw); }
+  var s = String.withCapacity(raw.len * 2usize);
+  var i = 0usize;
+  while i < raw.len {
+    let b = raw[i];
+    if b < 0x80u8 { s.appendByte(b); }
+    else { appendCodePoint(&mut s, u32.from(cp437[usize.from(b) - 128usize])); }
+    i += 1usize;
+  }
+  s
+}
+
+fn isAscii(b: &Array[u8]) bool {
+  var i = 0usize;
+  while i < b.len {
+    if b[i] >= 0x80u8 { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// -------- the DOS clock --------
+
+// Days since 1970-01-01 of a date in the proleptic Gregorian calendar (Howard Hinnant's algorithm)
+fn daysFromCivil(y: i64, m: i64, d: i64) i64 {
+  let yy = if m <= 2i64 { y - 1i64 } else { y };
+  let era = (if yy >= 0i64 { yy } else { yy - 399i64 }) / 400i64;
+  let yoe = yy - era * 400i64;
+  let mp = if m > 2i64 { m - 3i64 } else { m + 9i64 };
+  let doy = (153i64 * mp + 2i64) / 5i64 + d - 1i64;
+  let doe = yoe * 365i64 + yoe / 4i64 - yoe / 100i64 + doy;
+  era * 146097i64 + doe - 719468i64
+}
+
+// A date: year, month 1 to 12, day 1 to 31
+struct Civil {
+  y: i64;
+  m: i64;
+  d: i64;
+}
+
+fn civilFromDays(days: i64) Civil {
+  let z = days + 719468i64;
+  let era = (if z >= 0i64 { z } else { z - 146096i64 }) / 146097i64;
+  let doe = z - era * 146097i64;
+  let yoe = (doe - doe / 1460i64 + doe / 36524i64 - doe / 146096i64) / 365i64;
+  let doy = doe - (365i64 * yoe + yoe / 4i64 - yoe / 100i64);
+  let mp = (5i64 * doy + 2i64) / 153i64;
+  let d = doy - (153i64 * mp + 2i64) / 5i64 + 1i64;
+  let m = if mp < 10i64 { mp + 3i64 } else { mp - 9i64 };
+  let y = yoe + era * 400i64 + (if m <= 2i64 { 1i64 } else { 0i64 });
+  Civil(y, m, d)
+}
+
+// Seconds since 1970 of a DOS date and time read as UTC. A zero or impossible field is the nearest
+// real one (some tools write a date of 0).
+fn dosToUnix(date: u16, time: u16) i64 {
+  var year = 1980i64 + i64.from(date >> 9u16);
+  var month = i64.from((date >> 5u16) & 15u16);
+  var day = i64.from(date & 31u16);
+  if month < 1i64 { month = 1i64; }
+  if month > 12i64 { month = 12i64; }
+  if day < 1i64 { day = 1i64; }
+  if day > 31i64 { day = 31i64; }
+  let hour = i64.from(time >> 11u16);
+  let minute = i64.from((time >> 5u16) & 63u16);
+  let second = i64.from(time & 31u16) * 2i64;
+  daysFromCivil(year, month, day) * 86400i64 + hour * 3600i64 + minute * 60i64 + second
+}
+
+// A DOS date and time
+struct Dos {
+  date: u16;
+  time: u16;
+}
+
+// The DOS fields for seconds since 1970 (UTC), the year clamped to 1980 through 2107
+fn unixToDos(t: i64) Dos {
+  let lo = daysFromCivil(1980i64, 1i64, 1i64) * 86400i64;
+  let hi = daysFromCivil(2108i64, 1i64, 1i64) * 86400i64 - 2i64;
+  var s = if t < lo { lo } else if t > hi { hi } else { t };
+  var days = s / 86400i64;
+  let rest = s - days * 86400i64;
+  let c = civilFromDays(days);
+  let date = ((c.y - 1980i64) << 9i64) | (c.m << 5i64) | c.d;
+  let time = ((rest / 3600i64) << 11i64) | (((rest % 3600i64) / 60i64) << 5i64) | ((rest % 60i64) / 2i64);
+  Dos(u16.from(date), u16.from(time))
+}

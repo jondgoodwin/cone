@@ -1,0 +1,107 @@
+// How fast. Give it .zst files; for each it decompresses the whole file in one
+// call and streamed (64 KiB pieces in, 64 KiB out), and times XXH64 over the
+// output, printing the best of 5 runs as megabytes a second of the
+// decompressed bytes. Run it in release mode:
+//
+//   congo run --release packages/zstd/examples/bench.cone file1.zst file2.zst ...
+//
+// The numbers in the package header (zstd.cone) are from this program, beside
+// the reference library's decompression of the same files.
+
+mod bench;
+
+import collections use *;
+import zstd use *;
+import time use *;
+import fs;
+import path use Path;
+import process;
+import stdio use *;
+
+fn mbps(bytes: usize, ns: i64) i64 {
+  if ns <= 0i64 { return 0i64; }
+  i64.from(bytes) * 1000i64 / ns
+}
+
+fn main() i32 {
+  let args = process.args();
+  var i = 1usize;
+  while i < args.len() {
+    match fs.readFile(&Path.from(args[i].view())) {
+      case let Ok(file) { benchOne(args[i].view(), file.view().bytes()); }
+      case let Error(e) { printStr("cannot read "); printStr(args[i].view()); printStr("\n"); }
+    }
+    i += 1usize;
+  }
+  0i32
+}
+
+fn benchOne(name: &str, data: &Array[u8]) {
+  printStr(name);
+  printStr(" (");
+  printInt(i64.from(data.len));
+  printStr(" bytes): ");
+  var size = 0usize;
+  var best = 0x7FFFFFFFFFFFFFFFi64;
+  var run = 0;
+  while run < 5 {
+    let t0 = Instant.now();
+    match decompress(data, 0usize) {
+      case let Ok(out) { size = out.len(); }
+      case let Error(e) { printStr(e.reason.view()); printStr("\n"); return; }
+    }
+    let ns = t0.elapsed().nanos();
+    if ns < best { best = ns; }
+    run += 1;
+  }
+  printInt(i64.from(size));
+  printStr(" out; one call ");
+  printInt(mbps(size, best));
+  printStr(" MB/s");
+
+  best = 0x7FFFFFFFFFFFFFFFi64;
+  run = 0;
+  var piece = List[u8].withCapacity(65536usize);
+  while run < 5 {
+    let t0 = Instant.now();
+    var d = Decompressor.make();
+    var pos = 0usize;
+    var st: Status = Status.NeedInput;
+    while st != Status.Done && st != Status.Failed {
+      if st == Status.NeedInput {
+        let n = if data.len - pos < 65536usize {data.len - pos} else {65536usize};
+        d.feed(&data[pos..<pos + n]);
+        pos += n;
+        if pos == data.len { d.finish(); }
+      }
+      piece.clear();
+      st = d.pull(&mut piece, 65536usize);
+    }
+    let ns = t0.elapsed().nanos();
+    if ns < best { best = ns; }
+    run += 1;
+  }
+  printStr("; streamed ");
+  printInt(mbps(size, best));
+  printStr(" MB/s");
+
+  match decompress(data, 0usize) {
+    case let Ok(out) {
+      best = 0x7FFFFFFFFFFFFFFFi64;
+      run = 0;
+      var h = 0u64;
+      while run < 5 {
+        let t0 = Instant.now();
+        h = h ^ xxh64(out.view(), 0u64);
+        let ns = t0.elapsed().nanos();
+        if ns < best { best = ns; }
+        run += 1;
+      }
+      printStr("; xxh64 ");
+      printInt(mbps(size, best));
+      printStr(" MB/s");
+    }
+    case let Error(e) {}
+  }
+  printStr("\n");
+}

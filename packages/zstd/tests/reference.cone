@@ -1,0 +1,176 @@
+// Frames made by the reference zstd (libzstd 1.5.7; tests/data/make_corpus.py
+// made tests/data/corpus.bin and says how): levels 1, 3, 9, 19 and 22,
+// long-distance mode, streamed frames with no content size and many blocks,
+// tiny and empty inputs, RLE and raw blocks, raw and Huffman literals in every
+// size format, direct and FSE-coded Huffman weights, every sequence table
+// mode, many frames with skippable frames among them, a 32 KiB window under
+// 600 KB of output, and frames that need a raw-content dictionary. Each is
+// decompressed
+//   - in one call;
+//   - fed whole, then in pieces of 4096, 997 and 1 bytes (the last only for
+//     the small ones), with the output taken in pieces of 65536, 1000 and 1
+//     bytes (the last likewise);
+// and every way must give exactly what the reference says: the length, the
+// XXH64 the reference worked out, and the bytes themselves when there are
+// 4096 or fewer. A frame that needs the dictionary must fail without it.
+
+mod reference;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+
+fn le32(s: &String, at: usize) usize {
+  usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
+}
+
+fn le64(s: &String, at: usize) u64 {
+  u64.from(le32(s, at)) | (u64.from(le32(s, at + 4usize)) << 32u64)
+}
+
+// Decompresses 's' in pieces of 'chunk' input bytes, taking 'maxPull' output
+// bytes at a time. 0 when it ends Done, else which way it went wrong.
+fn run(d: &mut Decompressor, s: &Array[u8], chunk: usize, maxPull: usize, out: &mut List[u8]) i32 {
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  if s.len == 0usize { d.finish(); }
+  while true {
+    if pos < s.len {
+      let n = if s.len - pos < chunk {s.len - pos} else {chunk};
+      d.feed(&s[pos..<pos + n]);
+      pos += n;
+      if pos == s.len { d.finish(); }
+    }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = d.pull(&mut piece, maxPull);
+      var k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+      if piece.len() > maxPull { return 8; }
+    }
+    if st == Status.Done { return 0; }
+    if st == Status.Failed { return 1; }
+    // NeedInput with everything fed and finished: stuck
+    if pos >= s.len { return 2; }
+  }
+  3
+}
+
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
+  true
+}
+
+fn main() i32 {
+  match fs.readFile(&Path.from("../../../../tests/data/corpus.bin")) {
+    case let Ok(file) { checkAll(&file); }
+    case let Error(e) { expect(false, "the data file is there"); }
+  }
+  done()
+}
+
+fn checkAll(file: &String) {
+  let count = le32(file, 0usize);
+  expectInt(i64.from(count), 51i64, "cases in the file");
+  // The dictionary is after the cases: find it first
+  var at = 4usize;
+  var r = 0usize;
+  while r < count {
+    at += 1usize + usize.from(file[at]) + 1usize;
+    at += 4usize + le32(file, at);
+    at += 16usize + le32(file, at + 12usize);
+    r += 1usize;
+  }
+  let dlen = le32(file, at);
+  let dict = &file.view().bytes()[at + 4usize..<at + 4usize + dlen];
+
+  at = 4usize;
+  r = 0usize;
+  var oneShotWrong = 0usize;
+  var streamWrong = 0usize;
+  var streamed = 0usize;
+  var needDict = 0usize;
+  var names = String.empty();
+  while r < count {
+    let nameLen = usize.from(file[at]);
+    let name = file.sub(at + 1usize, at + 1usize + nameLen);
+    at += 1usize + nameLen;
+    let flags = file[at];
+    at += 1usize;
+    let flen = le32(file, at);
+    let frames = &file.view().bytes()[at + 4usize..<at + 4usize + flen];
+    at += 4usize + flen;
+    let clen = le32(file, at);
+    let chash = le64(file, at + 4usize);
+    let slen = le32(file, at + 12usize);
+    let stored = &file.view().bytes()[at + 16usize..<at + 16usize + slen];
+    at += 16usize + slen;
+    let useDict = (flags & 1u8) != 0u8;
+
+    // One call
+    let res = if useDict {decompressWithDictionary(frames, dict, clen)} else {decompress(frames, clen)};
+    match res {
+      case let Ok(got) {
+        if got.len() != clen || xxh64(got.view(), 0u64) != chash || (slen > 0usize && !sameBytes(got.view(), stored)) {
+          oneShotWrong += 1usize;
+          names <- name.view();
+          names <- " (one call) ";
+        }
+      }
+      case let Error(e) {
+        oneShotWrong += 1usize;
+        names <- name.view();
+        names <- ": ";
+        names <- e.reason.view();
+        names <- "; ";
+      }
+    }
+
+    // Streamed, every way
+    let chunks: Array[usize, 4] = [1073741824usize, 4096usize, 997usize, 1usize];
+    let pulls: Array[usize, 3] = [65536usize, 1000usize, 1usize];
+    var ci = 0usize;
+    while ci < 4usize {
+      var pi = 0usize;
+      while pi < 3usize {
+        // a byte at a time only where that is quick
+        let small = flen <= 20000usize && clen <= 200000usize;
+        if (chunks[ci] > 1usize && pulls[pi] > 1usize) || small {
+          var d = Decompressor.make();
+          if useDict { d.setDictionary(dict); }
+          var out = List[u8].withCapacity(clen);
+          let rc = run(&mut d, frames, chunks[ci], pulls[pi], &mut out);
+          streamed += 1usize;
+          if rc != 0 || out.len() != clen || xxh64(out.view(), 0u64) != chash || d.totalOut() != u64.from(clen)
+              || d.totalIn() != u64.from(flen) || !d.isDone() {
+            streamWrong += 1usize;
+            names <- name.view();
+            names <- " (streamed) ";
+          }
+        }
+        pi += 1usize;
+      }
+      ci += 1usize;
+    }
+
+    // Without its dictionary, a frame that needs one fails (cleanly)
+    if useDict {
+      match decompress(frames, clen) {
+        case let Ok(got) {}
+        case let Error(e) { needDict += 1usize; }
+      }
+    }
+    r += 1usize;
+  }
+  expectStr(names.view(), "", "cases decoded wrongly");
+  expectInt(i64.from(oneShotWrong), 0i64, "one-call decodes wrong");
+  expectInt(i64.from(streamWrong), 0i64, "streamed decodes wrong");
+  // 51 cases, 12 ways each, but for the 5 large ones a byte at a time (6 ways)
+  expectInt(i64.from(streamed), 582i64, "streamed decodes run");
+  expectInt(i64.from(needDict), 3i64, "dictionary frames refused without the dictionary");
+}
