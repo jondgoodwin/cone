@@ -1,5 +1,6 @@
-// The httpconn package: HTTP/1.1 connections over the completion loop. It
-// joins http1's sans-IO core to real sockets on an iocore Loop, in both
+// The httpconn package: HTTP/1.1 and HTTP/2 connections over the completion
+// loop. It joins http1's and http2's sans-IO cores to real sockets on an
+// iocore Loop, in both
 // roles: a CLIENT connection resolves its host on the pool's DNS lane,
 // connects with ConnectEx by a deadline, sends requests and streams their
 // responses back; a SERVER listens, accepts with AcceptEx, and runs one
@@ -45,6 +46,7 @@
 //   d.listen(lp, addr, sink)  d.listenWith(lp, addr, make, sink)  d.stopListening(lp, l)
 //   d.localAddr(lp, l)  d.close(lp, conn)  d.abort(lp, conn)
 //   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)  d.layerInfo(conn)  d.keepAliveOf(lp, conn)
+//   d.protocol(conn)                                                   (HTTP/2)
 //   d.request(lp, conn, head, body, sink)                              (REQUESTS)
 //   d.requestBy(..., deadline)  d.requestIn(..., group, deadline)
 //   d.respond(req, head, body)  d.sendInterim(req, head)  d.sendContinue(req)  (SERVING)
@@ -55,7 +57,7 @@
 //   d.owns(token)  d.upperToken(lp, kind, n)  d.isUpperToken(token)
 //   d.stats()  d.live()  d.held()  d.abortAll(lp)
 //   Sink.Here(token)  Sink.Chan(token, tx)                             (SINKS)
-//   Event: e.kind e.token e.conn e.req, and per kind e.peer e.clean e.failure  (EVENTS)
+//   Event: e.kind e.token e.conn e.req e.stream, and per kind e.peer e.clean e.failure  (EVENTS)
 //     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
 //     Writable Done Failed Cancelled TimedOut;  eventName(k)
@@ -112,8 +114,8 @@
 // the peer has not finished reading. A connection whose peer resets it, or
 // whose receive or send fails, closes at once.
 //
-// KEEP-ALIVE. A client connection carries one request at a time (HTTP/1.1
-// without pipelining), and is kept for the next once an exchange ends with
+// KEEP-ALIVE. An HTTP/1.1 client connection carries one request at a time
+// (without pipelining; HTTP/2 carries many, below), and is kept for the next once an exchange ends with
 // both sides willing; 'isIdle(conn)' says it is free. Up to 'maxWaiting'
 // requests may wait on a connection that is busy or still connecting: each
 // is sent when the one before it has ended, with no round trip through the
@@ -138,16 +140,17 @@
 // and End, and the program answers with 'respond(req, head, body)', then
 // 'sendData' and 'finish' for a body. The request's final answer is Done
 // once the response has gone to the kernel whole, or Failed if the
-// connection ended first; a server's 'cancel' resets the connection. A
-// server answers one request at a time per connection; a pipelined one is
-// read when the answer before it is whole.
+// connection ended first; a server's 'cancel' resets the connection (on
+// HTTP/2, the stream). An HTTP/1.1 server answers one request at a time per
+// connection; a pipelined one is read when the answer before it is whole.
 //
 // SINKS. Where events go, and the token they carry back (plain data the
 // driver never reads, as iocore's targets are). Sink.Here(token): to this
 // thread, appended by pump or poll. Sink.Chan(token, tx): sent on a sync
 // channel (a Sender[Event]) to another thread, never waiting: when the
 // channel is full the event is held, the connection's later events wait
-// behind it, its reading stops, and it is tried again at every pump --
+// behind it (on HTTP/2, the request's), its reading stops (on HTTP/2, its
+// stream's credit stays out), and it is tried again at every pump --
 // so the channel's bound bounds what the connection holds. Events keep their
 // order per sink, not across sinks: a request's events held for a channel
 // may still be on their way after its connection's Closed has gone Here, so
@@ -177,14 +180,15 @@
 // req)' asks a request to end: still waiting, it is taken out and answered
 // Cancelled; under way, HTTP/1.1's only way to stop it is to end the
 // connection, so the connection is reset, the request answered Cancelled
-// and any waiting behind it Failed, unsent. 'requestBy' gives a deadline, an
+// and any waiting behind it Failed, unsent (HTTP/2 resets the stream alone). 'requestBy' gives a deadline, an
 // absolute Instant (never a duration, I6): the request is answered TimedOut
 // then, the same way. 'requestIn' puts it in an iocore CancelGroup as well,
 // whose cancel -- from any thread -- cancels it, and whose deadline it
 // inherits as the tighter. The driver watches each such request with one
 // iocore timer in its group, so the group's cancel wakes the loop. A
 // connection's own deadlines are its core's (head, body, idle, expect:
-// http1's Config), connectTimeout, and handshakeTimeout: a layer (TLS) not
+// http1's Config; HTTP/2's SETTINGS acknowledgement, and h2IdleTimeout),
+// connectTimeout, and handshakeTimeout: a layer (TLS) not
 // open that long after the TCP connection is made or accepted fails the
 // connection (Stage.Tls, TimedOut), so a peer that takes the connection
 // and stalls the handshake is let go before the head timeout would.
@@ -226,7 +230,51 @@
 // ends meanwhile cancels it, and its late answer is dropped. A layer that
 // fails ('failed', 'failureCode', 'failureText') closes its connection,
 // every request on it Failed at Stage.Tls; 'layerInfo(conn)' is what the
-// layer says of itself ('describe').
+// layer says of itself ('describe'), and its 'alpn()' the protocol its
+// handshake chose (below).
+//
+// HTTP/2. A connection speaks HTTP/1.1 or HTTP/2, chosen once its layer is
+// open, before any request goes on it: over TLS, by what the handshake's
+// ALPN chose (the layer's 'alpn()': "h2" is HTTP/2; "http/1.1", or none,
+// HTTP/1.1; anything else fails the connection at Stage.Tls). Offering h2 is
+// the TLS configs' (tls.ClientConfig's and ServerConfig's 'alpn' lists).
+// Without TLS -- a layer with no handshake, Plain -- HTTP/2 only by prior
+// knowledge: 'h2PriorKnowledge' makes every such connection of the driver's,
+// client and server, speak it from its first byte (never by 'Upgrade: h2c',
+// which RFC 9113 deprecates). 'protocol(conn)' says which, once chosen; a
+// response's head says so too (Version.Http2), and every event of an HTTP/2
+// request carries its stream's id ('e.stream'; 0 on HTTP/1.1). Each core
+// lives in its connection's record behind one internal interface, an enum
+// of the two (core.cone says why not a trait); the rest of the driver --
+// sockets, layers, gathered sends, timers, sinks -- is the same for both.
+// - Requests: each request on an HTTP/2 connection is a stream of its own,
+//   many at once; the peer's MAX_CONCURRENT_STREAMS bounds those in flight,
+//   and past it up to 'h2MaxWaiting' more wait in the driver's queue for
+//   that connection (one past that is Failed at once, Limit), each going on
+//   as a stream ends. A server's sink gets each stream as a Request, as on
+//   HTTP/1.1, its Done once the send carrying its last frame is done.
+// - Credit: 'release(req, n)' gives the credit back to that request's stream
+//   alone (the connection's comes back as the bytes arrive: http2's
+//   approach), so one slow reader stops only its own stream, at its window
+//   ('h2.initialWindowSize'); a channel's events are held in order by request,
+//   not by connection, so a full channel holds back only its own.
+// - Errors: a stream reset fails its request alone, Stage.Http with the
+//   core's error: Reset, or Refused when the peer did not process it
+//   (isRetrySafe). A peer's GOAWAY refuses the streams above its last stream
+//   (the core) and every request in the driver's queue (Refused, unsent), and
+//   no request goes on the connection after it; those below finish. A
+//   connection error fails every request on it.
+// - Ending: 'cancel' resets the stream alone (RST_STREAM CANCEL), in both
+//   roles; a client whose response is whole while its body is still being
+//   sent resets the stream the same way. 'close' sends GOAWAY once the
+//   driver's queue has gone on as streams; the connection closes when those
+//   in flight have ended. A connection with no stream for 'h2IdleTimeout'
+//   (60 s) is closed that way too. Fields HTTP/2 does not carry
+//   (Connection, Keep-Alive, Proxy-Connection, Transfer-Encoding, Upgrade, a
+//   TE other than trailers) are dropped from a head going on HTTP/2, and an
+//   empty scheme is filled in ("https" over TLS, "http" without).
+// - The core's own bounds are 'h2' (http2.Config): its windows, its stream
+//   limit, its watermark ('h2.writeWatermark' is what Writable waits for).
 //
 // DIAGNOSTICS. 'stats()' counts connections made, accepted, refused and
 // closed, requests by their final answer, events delivered, held and
@@ -255,22 +303,27 @@
 //
 // Not here yet: happy eyeballs
 // (addresses are tried one after another, not raced); a request's cancel
-// that drains a short response instead of resetting; HTTP/2 and HTTP/3 cores
-// under the same driver; a Request handle (cancel by a group instead);
-// priorities (httpclient's scheduler orders requests before they reach a
-// connection); a response's events delivered to an actor as they come (the
-// actorhttp package gives an actor the whole response).
+// that drains a short response instead of resetting (HTTP/1.1); HTTP/3 (its
+// own driver, over QUIC); HTTP/2's per-stream head and body timeouts (a
+// request's deadline bounds a client's), its PINGs to keep a connection
+// alive, a second connection to an origin when one's streams are all in use
+// (httpclient's pool decides connections), and RFC 9218 priorities; a
+// Request handle (cancel by a group instead); priorities (httpclient's
+// scheduler orders requests before they reach a connection); a response's
+// events delivered to an actor as they come (the actorhttp package gives an
+// actor the whole response).
 
 mod httpconn;
 
 import libc;
-import collections use List, Deque, String;
+import collections use List, Deque, Dict, String;
 import time use Instant, Duration;
 import sync use Sender, Mutex;
 import iobuf use IoBuf, Chain;
 import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, KeepAlive, forever, resolveOp, addressesIn;
 import http use *;
 import http1;
+import http2;
 import diag;
 
 fn @initpure init() {
@@ -374,9 +427,14 @@ pub struct ListenerId {
 // ---------------------------------------------------------------------------
 
 // A driver's bounds and timeouts (see the package's header). Every
-// connection's core takes 'protocol', http1's own Config
+// HTTP/1.1 connection's core takes 'protocol', http1's own Config; every
+// HTTP/2 connection's 'h2', http2's (see HTTP/2)
 pub struct Config {
   pub protocol: http1.Config;
+  pub h2: http2.Config;
+  pub h2PriorKnowledge: bool;     // a connection with no handshake (no TLS) speaks HTTP/2, both roles
+  pub h2MaxWaiting: u32;          // an HTTP/2 connection's requests waiting past the peer's stream limit
+  pub h2IdleTimeout: Duration;    // an HTTP/2 connection with no stream that long is shut down (GOAWAY)
   pub connectTimeout: Duration;   // a client connection's lookup and connect, from the call
   pub handshakeTimeout: Duration; // its layer's handshake (TLS), from the TCP connection
   pub keepAlive: KeepAlive;       // TCP keepalive on every socket (KeepAlive.off() for none)
@@ -390,7 +448,9 @@ pub struct Config {
 
   // The defaults
   pub fn make() Config {
-    Config(protocol: http1.Config.make(), connectTimeout: Duration.fromSeconds(10i64),
+    Config(protocol: http1.Config.make(), h2: http2.Config.make(), h2PriorKnowledge: false,
+      h2MaxWaiting: 100u32, h2IdleTimeout: Duration.fromSeconds(60i64),
+      connectTimeout: Duration.fromSeconds(10i64),
       handshakeTimeout: Duration.fromSeconds(10i64),
       keepAlive: KeepAlive(Duration.fromSeconds(15i64), Duration.fromSeconds(15i64), 3u32, Duration.fromSeconds(30i64)),
       recvSize: 16384usize, sendDepth: 4u32, maxConnections: 10000u32, maxWaiting: 1u32,
@@ -548,6 +608,7 @@ pub struct Event {
   pub token: u64;             // its sink's token
   pub conn: ConnId;           // the connection it is about
   pub req: ReqId;             // the request it is about, or ReqId.none()
+  pub stream: u32;            // HTTP/2: the request's stream; 0 on HTTP/1.1, and for a connection's events
   pub listener: ListenerId;   // Accepted: the listener
   pub peer: SocketAddr;       // Connected, Accepted: the other end
   pub clean: bool;            // Closed: it ended as HTTP meant it to
@@ -561,7 +622,7 @@ pub struct Event {
 
   // An event of kind k, about conn and req, every other field empty
   pub fn make(k: EventKind, token: u64, conn: ConnId, req: ReqId) Event {
-    Event(kind: k, token: token, conn: conn, req: req, listener: ListenerId.none(),
+    Event(kind: k, token: token, conn: conn, req: req, stream: 0u32, listener: ListenerId.none(),
       peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
       request: RequestHead.empty(), response: ResponseHead.empty(), body: BodyLength.empty(),
       buf: IoBuf.empty(), trailers: Headers.empty(), timing: Timing.zero())
@@ -647,6 +708,10 @@ pub trait Layer {
   // What it is and negotiated, for diagnostics ('plain'; a TLS session's
   // version, cipher, ALPN and handshake time)
   pub fn describe(self: &) String;
+  // The application protocol its handshake chose by ALPN, once it is open:
+  // "h2" is HTTP/2, anything else HTTP/1.1; empty for a layer with no
+  // handshake (Plain), or when none was agreed
+  pub fn alpn(self: &) String;
 }
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;
@@ -682,6 +747,7 @@ pub struct Plain {
   pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf.empty())}
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
   pub fn describe(self: &) String {String.from("plain")}
+  pub fn alpn(self: &) String {String.empty()}
 
   fn front(q: &mut Chain) IoBuf {
     match q.popFront() {
