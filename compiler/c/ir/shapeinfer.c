@@ -383,9 +383,10 @@ static int siReadsStorage(INode *e, SiCtx *c) {
 }
 
 // Does a write to this place write storage of the parameter's pointee: a place in
-// it, or all of it, that holds storage?
+// it, or all of it, that holds storage? A '_' target is no place: it takes its
+// value and drops it (assignIsAnon), and, naming nothing, has no type to ask
 static int siWriteHits(INode *lval, SiCtx *c) {
-    if (!c->isref)
+    if (!c->isref || assignIsAnon(lval))
         return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
@@ -445,8 +446,11 @@ static int siPlaceInCont(INode *e, INode *cont) {
 }
 
 // A write at this place, in a type mode: a place of the collection's type, that is
-// not a local of the function's own, and, in SiModeOut, one reached from a global
+// not a local of the function's own, and, in SiModeOut, one reached from a global.
+// A '_' target writes no place (siWriteHits)
 static int siTypeWriteHits(INode *lval, SiCtx *c) {
+    if (assignIsAnon(lval))
+        return 0;
     if (lval->tag == VTupleTag) {
         INode **nodesp;
         uint32_t cnt;
