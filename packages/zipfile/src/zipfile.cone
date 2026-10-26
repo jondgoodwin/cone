@@ -1,6 +1,6 @@
 // The zipfile package: ZIP archives (PKWARE APPNOTE 6.3.10) read, written and extracted safely. Written
-// in Cone over the deflate package (method 8, and the CRC-32) and fs (files and folders), with no C
-// library. It is named zipfile, not zip, because a module called zip cannot exist: core has a public
+// in Cone over the deflate package (method 8, and the CRC-32), the zstd package (method 93, reading) and
+// fs (files and folders), with no C library. It is named zipfile, not zip, because a module called zip cannot exist: core has a public
 // function 'zip' (the two-collection walk), and a module may not share a name with what core brings in
 // (Error 1011), while Congo makes a package's module the package's name (Error 1130).
 //
@@ -45,6 +45,7 @@
 //       Status (NeedInput, MoreOutput, Done), bytes() Result[List[u8], ZipError] (finish and take all),
 //       saveTo(path) (finish and write what has not been pulled), count(), isFinished()
 //     EntryOptions: method, level, modified, mode, zip64, comment; plain(), stored(), deflated(level)
+//       (method 93 is not written yet: the writer refuses it, BadArgument; see 'canWrite' in writer.cone)
 //   OPTIONS AND RESULTS
 //     ExtractOptions { overwrite, maxTotal }, safe(); Extracted { files, folders, bytes }
 //   FAILURE          ZipError { kind, offset, reason }, message(), copy(); ErrorKind: NotZip, Truncated,
@@ -74,8 +75,18 @@
 //   used, whatever the stream's expansion). Every length and offset is checked against the archive's
 //   size before it is used, in 64 bits, so a hostile archive can be refused but not run off the end;
 //   tests/refuse.cone cuts an archive at every length and flips bits in two archives.
-//   Encrypted entries (flag bit 0 or 6, or the AES method 99) and methods other than stored and
-//   deflate are listed, and refused on reading with Encrypted or Unsupported and a reason that says so.
+//   Encrypted entries (flag bit 0 or 6, or the AES method 99) and methods other than stored, deflate
+//   and zstd are listed, and refused on reading with Encrypted or Unsupported and a reason that says so.
+//   METHOD 93 (zstd) is read through package zstd's Decompressor, fed the entry's bytes 64 KiB at a time,
+//   and a whole-entry read goes through the same streamed read, so the two cannot disagree. The zstd
+//   package's limits apply to it unchanged: the output may not pass the entry's declared size
+//   (TooLarge, as deflate's), and a frame whose header asks for a window past the zstd package's default
+//   (128 MiB) is refused before any of it is decoded (TooLarge), so an archive cannot make a reader
+//   allocate by declaring a window. A zstd frame's own content checksum, when it has one, fails as
+//   BadChecksum, as does the entry's CRC-32 for any method; a stream that is cut, damaged or followed by
+//   bytes that are not a frame is BadData. Several frames in a row, and skippable frames between them,
+//   are read as 'zstd -d' reads them; an empty entry may be an empty zstd frame (what zstd tools write)
+//   or no bytes at all. A frame that names a dictionary is Unsupported (a zip entry has none to name).
 //
 // NAMES AND TIMES
 //
@@ -136,7 +147,8 @@
 // byte-at-a-time copy into the caller's list (a List has no bulk append) and the CRC-32. Not chased.
 //
 // NOT HERE: encryption (ZipCrypto, AES) and signatures; methods 9 (Deflate64), 12 (bzip2), 14 (LZMA),
-// 93 (zstd), 95 (xz), 98 (PPMd); archives in several disks; zip64 extensible data and the
+// 95 (xz), 98 (PPMd); WRITING method 93 (zstd), which waits for package zstd's compressor (reading it is
+// here); zstd dictionaries; archives in several disks; zip64 extensible data and the
 // central-directory encryption of strong encryption; entries written in pieces; setting permissions or
 // times on extracted files; updating an archive in place (read it, write another).
 //
@@ -156,3 +168,4 @@ import collections use *;
 import deflate;
 import fs;
 import path use Path;
+import zstd;
