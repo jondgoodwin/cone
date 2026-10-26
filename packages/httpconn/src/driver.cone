@@ -103,7 +103,9 @@ struct Conn {
   server: bool;
   listener: ListenerId;
   sock: Handle;
-  core: Core;                // HTTP/1.1's until the protocol is chosen
+  core: http1.Connection;    // HTTP/1.1's: the protocol until one is chosen, and after, unless HTTP/2 is
+  h2: Option[Uni[http2.Connection]];  // HTTP/2's, once chosen (see core.cone)
+  isH2: bool;                // the protocol chosen is HTTP/2
   decided: bool;             // the protocol is chosen: the layer has opened
   cleartext: bool;           // its layer has no handshake (Plain): no ALPN, prior knowledge decides
   layer: Uni[Layer];
@@ -339,7 +341,7 @@ pub struct Driver {
 
   fn blankConn(self: &, next: u32) Conn {
     Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
-      sock: Handle.none(), core: Core.H1(http1.Connection.client(cfg.protocol, Instant())),
+      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, Instant()), h2: None, isH2: false,
       decided: false, cleartext: false,
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
@@ -383,8 +385,10 @@ pub struct Driver {
     c.server = server;
     c.listener = ListenerId.none();
     c.sock = Handle.none();
-    c.core = Core.H1(if server {http1.Connection.server(cfg.protocol, now)}
-      else {http1.Connection.client(cfg.protocol, now)});
+    c.core = if server {http1.Connection.server(cfg.protocol, now)}
+      else {http1.Connection.client(cfg.protocol, now)};
+    c.h2 = None;
+    c.isH2 = false;
     c.decided = false;
     // A layer open from the start has no handshake, so no ALPN: cleartext
     c.cleartext = layer.isOpen();
@@ -428,7 +432,9 @@ pub struct Driver {
     let c = self.connAt(i) as &mut Conn;
     c.state = cFree;
     c.gen = nextGen(c.gen);
-    c.core = Core.H1(http1.Connection.client(cfg.protocol, Instant()));
+    c.core = http1.Connection.client(cfg.protocol, Instant());
+    c.h2 = None;
+    c.isH2 = false;
     c.layer = plainLayer();
     c.sink = Sink.Here(0u64);
     c.addrs.clear();
@@ -505,12 +511,27 @@ pub struct Driver {
   // Hand e to its sink. Its route names whose events keep their order
   // behind a held one, and where credit goes; 'credit' is the body bytes a
   // Data event releases once a channel takes it
-  fn emit(self: &mut, sink: &mut Sink, route: Route, credit: usize, e: Event) {
+  fn emit(self: &mut, sink: &mut Sink, conn: u32, gen: u32, credit: usize, e: Event) {
     st.events = st.events + 1u64;
     if !isChan(sink) {
       ready.push(e);
       return;
     }
+    self.emitRoute(sink, connRoute(conn, gen), credit, e);
+  }
+
+  // An HTTP/2 request's event: its order and credit are the request's
+  fn emitReq(self: &mut, sink: &mut Sink, ri: u32, credit: usize, e: Event) {
+    st.events = st.events + 1u64;
+    if !isChan(sink) {
+      ready.push(e);
+      return;
+    }
+    self.emitRoute(sink, self.routeOf(ri), credit, e);
+  }
+
+  // A channel's event, by its route (st.events counted by the caller)
+  fn emitRoute(self: &mut, sink: &mut Sink, route: Route, credit: usize, e: Event) {
     if self.isHeld(route) {
       self.hold(copySink(sink), route, credit, e);
       return;
@@ -562,7 +583,7 @@ pub struct Driver {
     if n == 0usize || route.conn == noEntry {return;}
     let c = self.connAt(route.conn) as &mut Conn;
     if c.gen != route.gen || c.state == cFree {return;}
-    (&mut c.core).release(route.stream, n);
+    coreRelease(c, route.stream, n);
     self.markDirty(route.conn);
   }
 
@@ -572,8 +593,8 @@ pub struct Driver {
     if heldEvents.len() == 0usize {return;}
     var kept = List[Held].empty();
     var blocked = List[u64].empty();
-    // Credit goes back once the list is drained: the core's release is
-    // reached through the Core enum, whose body the drain cannot see
+    // Credit goes back once the list is drained: a core's release is
+    // another package's, whose body the drain cannot see
     var credits = List[Credit].empty();
     {
       each h in heldEvents.drain() {
@@ -700,7 +721,7 @@ pub struct Driver {
     self.feed(lp, i, now);
     if c.state != cOpen {return;}
     if c.decided {
-      if (&c.core).isH2() {
+      if c.isH2 {
         self.startStreams(lp, i, now);
         self.events2(lp, i, now);
         if c.state != cOpen {return;}
@@ -714,7 +735,7 @@ pub struct Driver {
     }
     self.transmit(lp, i, now);
     self.layerCall(lp, i);
-    if (&c.core).isH2() {
+    if c.isH2 {
       self.flushDone2(lp, i);
       self.writable2(i);
       self.idle2(i, now);
@@ -746,7 +767,9 @@ pub struct Driver {
       return;
     }
     if h2 {
-      c.core = Core.H2(if c.server {http2.Connection.server(cfg.h2, now)} else {http2.Connection.client(cfg.h2, now)});
+      let made = if c.server {http2.Connection.server(cfg.h2, now)} else {http2.Connection.client(cfg.h2, now)};
+      c.h2 = Some[Uni[http2.Connection]](Uni[http2.Connection](made));
+      c.isH2 = true;
       c.lastActive = now;
     }
   }
@@ -757,11 +780,11 @@ pub struct Driver {
     while c.decided {
       let b = c.layer.plainOut();
       if b.len() == 0usize {break;}
-      (&mut c.core).handleInput(b, now);
+      coreInput(c, b, now);
     }
     if c.layer.peerEnded() && !c.eofFed {
       c.eofFed = true;
-      (&mut c.core).handleInput(IoBuf.empty(), now);
+      coreInput(c, IoBuf.empty(), now);
     }
     if c.layer.failed() {
       let text = c.layer.failureText();
@@ -782,20 +805,17 @@ pub struct Driver {
   fn startNext(self: &mut, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     if c.server || c.current != noEntry || c.waiting.len() == 0usize || c.failure is Some {return;}
-    if !(&c.core).canStart() {return;}
+    if !c.core.canSendRequest() {return;}
     let ri, head = match c.waiting.popFront() {
       case var Some(w) {w.(req, head)}
       else {return;}
     };
     let r = self.reqAt(ri) as &mut Req;
-    match &mut c.core {
-      case var &mut H1(h) {h.c.sendRequest(head, r.body);}
-      else {}
-    }
+    c.core.sendRequest(head, r.body);
     r.state = rActive;
     r.timing.started = now;
     c.current = ri;
-    c.inAtStart = (&c.core).bytesReceived();
+    c.inAtStart = c.core.bytesReceived();
     if r.body.isEmpty() {
       r.finished = true;
     } else {
@@ -807,11 +827,7 @@ pub struct Driver {
   fn events(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     while c.held == 0u32 && c.state == cOpen {
-      let ev1 = match &mut c.core {
-        case var &mut H1(h) {h.c.pollEvent()}
-        else {return;}
-      };
-      match ev1 {
+      match c.core.pollEvent() {
         case is NeedData {return;}
         case is Paused {return;}
         case is Closed {return;}
@@ -834,7 +850,7 @@ pub struct Driver {
           var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
           ev.request = head;
           ev.body = body;
-          self.emit(&mut r.sink, connRoute(i, c.gen), 0usize, ev);
+          self.emit(&mut r.sink, i, c.gen, 0usize, ev);
         }
         case let Response(p) {
           if c.current != noEntry {
@@ -845,7 +861,7 @@ pub struct Driver {
             var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response = head;
             ev.body = body;
-            self.emit(&mut r.sink, connRoute(i, c.gen), 0usize, ev);
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
         case let Interim(p) {
@@ -854,7 +870,7 @@ pub struct Driver {
             r.gotResponse = true;
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response = p.(head);
-            self.emit(&mut r.sink, connRoute(i, c.gen), 0usize, ev);
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
           }
         }
         case let Data(d) {
@@ -864,9 +880,9 @@ pub struct Driver {
             let credit = if isChan(&mut r.sink) {n} else {0usize};
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.buf = d.(buf);
-            self.emit(&mut r.sink, connRoute(i, c.gen), credit, ev);
+            self.emit(&mut r.sink, i, c.gen, credit, ev);
           } else {
-            (&mut c.core).release(0u32, n);
+            c.core.release(n);
           }
         }
         case let End(e) {
@@ -876,7 +892,7 @@ pub struct Driver {
             r.readDone = true;
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.trailers = e.(trailers);
-            self.emit(&mut r.sink, connRoute(i, c.gen), 0usize, ev);
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
             if !c.server {
               c.current = noEntry;
               self.finishReq(lp, ri, endDone, None);
@@ -926,7 +942,7 @@ pub struct Driver {
   fn startStreams(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     if c.server {return;}
-    while c.waiting.len() > 0usize && c.failure is None && !c.goAway && !c.shutAsked && (&c.core).canStart() {
+    while c.waiting.len() > 0usize && c.failure is None && !c.goAway && !c.shutAsked && room2(c) > 0usize {
       let ri, var head = match c.waiting.popFront() {
         case var Some(w) {w.(req, head)}
         else {return;}
@@ -935,8 +951,8 @@ pub struct Driver {
       if head.scheme.isEmpty() {head.scheme = String.from(if c.cleartext {"http"} else {"https"});}
       stripForH2(&mut head.headers);
       var stream = 0u32;
-      match &mut c.core {
-        case var &mut H2(h) {stream = h.c.sendRequest(head, r.body);}
+      match &mut c.h2 {
+        case var &mut Some(h) {stream = h.sendRequest(head, r.body);}
         else {}
       }
       r.stream = stream;
@@ -959,8 +975,8 @@ pub struct Driver {
   fn events2(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     while c.state == cOpen {
-      let ev2 = match &mut c.core {
-        case var &mut H2(h) {h.c.pollEvent()}
+      let ev2 = match &mut c.h2 {
+        case var &mut Some(h) {h.pollEvent()}
         else {return;}
       };
       match ev2 {
@@ -988,7 +1004,7 @@ pub struct Driver {
           ev.stream = stream;
           ev.request = head;
           ev.body = body;
-          self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+          self.emitReq(&mut r.sink, ri, 0usize, ev);
         }
         case let Response(p) {
           let stream, head, body = p.(stream, head, body);
@@ -1001,7 +1017,7 @@ pub struct Driver {
             ev.stream = stream;
             ev.response = head;
             ev.body = body;
-            self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+            self.emitReq(&mut r.sink, ri, 0usize, ev);
           }
         }
         case let Interim(p) {
@@ -1013,7 +1029,7 @@ pub struct Driver {
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.response = head;
-            self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+            self.emitReq(&mut r.sink, ri, 0usize, ev);
           }
         }
         case let Data(d) {
@@ -1026,9 +1042,9 @@ pub struct Driver {
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.buf = buf;
-            self.emit(&mut r.sink, self.routeOf(ri), credit, ev);
+            self.emitReq(&mut r.sink, ri, credit, ev);
           } else {
-            (&mut c.core).release(stream, n);
+            coreRelease(c, stream, n);
           }
         }
         case let End(e) {
@@ -1040,16 +1056,13 @@ pub struct Driver {
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.trailers = trailers;
-            self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+            self.emitReq(&mut r.sink, ri, 0usize, ev);
             if !c.server {
               // The response is whole. A body still being sent is not
               // wanted: its stream is reset (CANCEL), as HTTP/1.1 would
               // close the connection
               if !r.finished {
-                match &mut c.core {
-                  case var &mut H2(h) {h.c.cancel(stream);}
-                  else {}
-                }
+                cancel2(c, stream);
               }
               self.finishReq(lp, ri, endDone, None);
             } else if r.finished {
@@ -1116,12 +1129,7 @@ pub struct Driver {
       let ri = *c.flushing[k];
       let r = self.reqAt(ri) as &mut Req;
       if !r.marked && c.allTaken {
-        var ended = true;
-        match &c.core {
-          case let &H2(h) {ended = h.c.sendEnded(r.stream);}
-          else {}
-        }
-        if ended {
+        if sendEnded2(c, r.stream) {
           r.marked = true;
           r.flushAt = c.sendSeq;
         }
@@ -1146,7 +1154,7 @@ pub struct Driver {
         removeAt(&mut c.writers, k);
         continue;
       }
-      if (&c.core).writeRoom(r.stream) < cfg.h2.writeWatermark / 2usize {
+      if writeRoom2(c, r.stream) < cfg.h2.writeWatermark / 2usize {
         k = k + 1usize;
         continue;
       }
@@ -1154,7 +1162,7 @@ pub struct Driver {
       removeAt(&mut c.writers, k);
       var ev = Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
       ev.stream = r.stream;
-      self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+      self.emitReq(&mut r.sink, ri, 0usize, ev);
     }
   }
 
@@ -1176,10 +1184,7 @@ pub struct Driver {
     let c = self.connAt(i) as &mut Conn;
     if c.shutAsked {return;}
     c.shutAsked = true;
-    match &mut c.core {
-      case var &mut H2(h) {h.c.shutdown();}
-      else {}
-    }
+    goAway2(c);
     self.markDirty(i);
   }
 
@@ -1231,7 +1236,7 @@ pub struct Driver {
             c.allTaken = true;
             break;
           }
-          var plain = (&mut c.core).pollTransmit(now);
+          var plain = coreTransmit(c, now);
           if plain.isEmpty() {
             c.allTaken = true;
             break;
@@ -1277,12 +1282,7 @@ pub struct Driver {
   // (HTTP/1.1: HTTP/2's requests are done by their own marks, flushDone2)
   fn flushed(self: &, i: u32) bool {
     let c = self.connAt(i) as &Conn;
-    var queued = 0usize;
-    match &c.core {
-      case let &H1(h) {queued = h.c.queued();}
-      else {}
-    }
-    c.sendsOut == 0u32 && queued == 0usize && c.layer.pending() == 0usize
+    c.sendsOut == 0u32 && c.core.queued() == 0usize && c.layer.pending() == 0usize
   }
 
   // A request waiting to send its body hears when it may
@@ -1291,9 +1291,9 @@ pub struct Driver {
     if c.current == noEntry {return;}
     let r = self.reqAt(c.current) as &mut Req;
     if !r.wantWritable || r.finished {return;}
-    if (&c.core).writeRoom(0u32) < cfg.protocol.writeWatermark / 2usize {return;}
+    if c.core.writeRoom() < cfg.protocol.writeWatermark / 2usize {return;}
     r.wantWritable = false;
-    self.emit(&mut r.sink, connRoute(i, c.gen), 0usize,
+    self.emit(&mut r.sink, i, c.gen, 0usize,
       Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
   }
 
@@ -1303,11 +1303,11 @@ pub struct Driver {
   fn armTimer(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     var t = if c.layer.isOpen() {forever()} else {c.openBy};
-    match (&c.core).pollTimeout() {
+    match coreTimeout(c) {
       case let Some(at) {if at < t {t = at;}}
       case is None[Instant] {}
     }
-    if (&c.core).isH2() && self.isIdle2(i) {
+    if c.isH2 && self.isIdle2(i) {
       let at = c.lastActive + cfg.h2IdleTimeout;
       if at < t {t = at;}
     }
@@ -1326,8 +1326,8 @@ pub struct Driver {
   fn receive(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     if c.recvOut || c.readyOut || c.eof || c.shut {return;}
-    if (&c.core).readCredit() < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
-    let reading = if (&c.core).isH2() {c.streams.len() > 0usize}
+    if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
+    let reading = if c.isH2 {c.streams.len() > 0usize}
       else {c.current != noEntry && !(self.reqAt(c.current) as &Req).readDone};
     if !reading && cfg.idleRecvReady && !c.readyHit {
       lp.submit(Op.RecvReady(c.sock), Target.Here(self.tok(kReady, i, c.gen)));
@@ -1346,16 +1346,16 @@ pub struct Driver {
   fn maybeClose(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     if c.state != cOpen {return;}
-    if (&c.core).isH2() {
+    if c.isH2 {
       // HTTP/2 closes gracefully: GOAWAY once the driver's queue has gone
       // on as streams, then the core ends once the streams in flight have (a
       // server's after its GOAWAY's round trip)
       if c.closeAsked && c.waiting.len() == 0usize {self.shutdown2(i);}
     } else {
       let idle = c.current == noEntry && c.waiting.len() == 0usize && c.flushing.len() == 0usize;
-      if c.closeAsked && idle && !(&c.core).isClosed() {(&mut c.core).abort();}
+      if c.closeAsked && idle && !c.core.isClosed() {c.core.abort();}
     }
-    if !(&c.core).shouldClose() {return;}
+    if !coreShouldClose(c) {return;}
     if c.sendsOut > 0u32 || c.layer.pending() > 0usize {return;}
     if !c.shut {
       c.layer.closeSend();
@@ -1432,7 +1432,8 @@ pub struct Driver {
         c.lastActive = r.timing.ended;
       }
     }
-    self.emit(&mut r.sink, self.routeOf(ri), 0usize, ev);
+    if r.stream != 0u32 {self.emitReq(&mut r.sink, ri, 0usize, ev);}
+    else {self.emit(&mut r.sink, r.conn, r.connGen, 0usize, ev);}
     self.freeReqRec(ri);
   }
 
@@ -1463,7 +1464,7 @@ pub struct Driver {
     let wrote = r.wrote || (r.stream != 0u32 && c.sendSeq > r.txAt);
     f.unsent = waiting || !wrote;
     if f.stage != Stage.Http || waiting {
-      let none = if r.stream != 0u32 {!r.gotResponse} else {!r.gotResponse && (&c.core).bytesReceived() == c.inAtStart};
+      let none = if r.stream != 0u32 {!r.gotResponse} else {!r.gotResponse && c.core.bytesReceived() == c.inAtStart};
       f.error.noResponse = waiting || none;
     }
     f
@@ -1473,7 +1474,7 @@ pub struct Driver {
   // server's answered and sent whole is Done, any other Failed
   fn answerAll(self: &mut, lp: &mut Loop, i: u32, cancelAll: bool) {
     let c = self.connAt(i) as &mut Conn;
-    if (&c.core).isH2() {
+    if c.isH2 {
       self.answerAll2(lp, i, cancelAll);
       return;
     }
@@ -1526,7 +1527,7 @@ pub struct Driver {
       lp.cancel(c.timer);
       c.timer = OpId.none();
     }
-    (&mut c.core).abort();
+    coreAbort(c);
     self.answerAll(lp, i, cancelAll);
     let clean = c.failure is None;
     st.closed = st.closed + 1u64;
@@ -1538,7 +1539,7 @@ pub struct Driver {
       else {}
     }
     ev.peer = c.peer;
-    self.emit(&mut c.sink, connRoute(i, c.gen), 0usize, ev);
+    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
     self.freeConnRec(i);
   }
 
@@ -1654,7 +1655,7 @@ pub struct Driver {
           self.failConn(lp, index, Stage.Tls, 0u32, ErrorKind.TimedOut, "no handshake within handshakeTimeout");
           return true;
         }
-        (&mut c.core).handleTimeout(now);
+        coreHandleTimeout(c, now);
         self.markDirty(index);
       }
     } else if kind == kResolve {
@@ -1683,7 +1684,7 @@ pub struct Driver {
         st.connected = st.connected + 1u64;
         var ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
         ev.peer = c.peer;
-        self.emit(&mut c.sink, connRoute(index, c.gen), 0usize, ev);
+        self.emit(&mut c.sink, index, c.gen, 0usize, ev);
         self.markDirty(index);
       } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Connect, 0u32, ErrorKind.TimedOut, "no connection within connectTimeout");
@@ -1822,10 +1823,10 @@ pub struct Driver {
       self.refuse(lp, ri, Stage.Closed, "the connection is closing");
       return id;
     }
-    let h2 = (&c.core).isH2() || (!c.decided && c.cleartext && cfg.h2PriorKnowledge);
+    let h2 = c.isH2 || (!c.decided && c.cleartext && cfg.h2PriorKnowledge);
     if h2 {
       // HTTP/2: past the streams the peer allows, h2MaxWaiting more wait
-      let room = if c.decided {(&c.core).room()} else {usize.from(cfg.h2.assumedPeerStreams)};
+      let room = if c.decided {room2(c)} else {usize.from(cfg.h2.assumedPeerStreams)};
       if c.waiting.len() >= room + usize.from(cfg.h2MaxWaiting) {
         self.refuse(lp, ri, Stage.Limit, "h2MaxWaiting requests already wait past the peer's stream limit");
         return id;
@@ -1968,7 +1969,7 @@ pub struct Driver {
     var ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.listener = c.listener;
     ev.peer = c.peer;
-    self.emit(&mut c.sink, connRoute(i, c.gen), 0usize, ev);
+    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
     self.markDirty(i);
   }
 
@@ -1984,9 +1985,7 @@ pub struct Driver {
     if r.responded {panic("httpconn: respond twice to one request", file, line);}
     let c = self.connAt(r.conn) as &mut Conn;
     let status = head.status;
-    var h = head;
-    if (&c.core).isH2() {stripForH2(&mut h.headers);}
-    (&mut c.core).sendResponse(r.stream, h, body, file, line);
+    coreRespond(c, r.stream, head, body, file, line);
     r.responded = true;
     if r.isHead || status == 204u16 || status == 304u16 || body.isEmpty() || (body.isSized() && body.length == 0u64) {
       self.finished(ri);
@@ -2002,9 +2001,7 @@ pub struct Driver {
     let r = self.reqAt(ri) as &Req;
     if !r.server {panic("httpconn: sendInterim on a client's request", file, line);}
     let c = self.connAt(r.conn) as &mut Conn;
-    var h = head;
-    if (&c.core).isH2() {stripForH2(&mut h.headers);}
-    (&mut c.core).sendInterim(r.stream, h, file, line);
+    coreInterim(c, r.stream, head, file, line);
     self.markDirty(r.conn);
     true
   }
@@ -2035,7 +2032,7 @@ pub struct Driver {
     let c = self.connAt(r.conn) as &mut Conn;
     var back = IoBuf.empty();
     var refused = false;
-    match (&mut c.core).sendData(r.stream, buf, file, line) {
+    match coreSendData(c, r.stream, buf, file, line) {
       case let Some(s) {
         back = s;
         refused = true;
@@ -2045,7 +2042,7 @@ pub struct Driver {
     self.markDirty(r.conn);
     if refused {
       r.wantWritable = true;
-      if (&c.core).isH2() && !hasU32(&c.writers, ri) {c.writers.push(ri);}
+      if c.isH2 && !hasU32(&c.writers, ri) {c.writers.push(ri);}
       return Some[IoBuf](back);
     }
     None
@@ -2064,7 +2061,7 @@ pub struct Driver {
     if r.state == rWaiting {panic("httpconn: finish before the request has started (wait for Writable)", file, line);}
     if r.finished {return;}
     let c = self.connAt(r.conn) as &mut Conn;
-    (&mut c.core).finishWith(r.stream, trailers, file, line);
+    coreFinish(c, r.stream, trailers, file, line);
     self.finished(ri);
     self.markDirty(r.conn);
   }
@@ -2084,12 +2081,12 @@ pub struct Driver {
     let ci = self.connIndex(req.conn);
     if ci == noEntry || n == 0usize {return;}
     let c = self.connAt(ci) as &mut Conn;
-    if (&c.core).isH2() {
+    if c.isH2 {
       let ri = self.reqIndex(req);
       if ri == noEntry {return;}
-      (&mut c.core).release((self.reqAt(ri) as &Req).stream, n);
+      coreRelease(c, (self.reqAt(ri) as &Req).stream, n);
     } else {
-      (&mut c.core).release(0u32, n);
+      c.core.release(n);
     }
     self.markDirty(ci);
   }
@@ -2133,12 +2130,9 @@ pub struct Driver {
       return;
     }
     // Under way: HTTP/2 resets its stream alone (RST_STREAM CANCEL)
-    if (&c.core).isH2() {
+    if c.isH2 {
       let stream = r.stream;
-      match &mut c.core {
-        case var &mut H2(h) {h.c.cancel(stream);}
-        else {}
-      }
+      cancel2(c, stream);
       self.finishReq(lp, ri, how, None);
       self.markDirty(ci);
       return;
@@ -2198,13 +2192,13 @@ pub struct Driver {
     let ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     let c = self.connAt(ci) as &Conn;
-    if (&c.core).isH2() {
+    if c.isH2 {
       // HTTP/2: the peer allows another stream
       return c.state == cOpen && !c.server && c.failure is None && !c.closeAsked && !c.goAway &&
-        !c.shutAsked && (&c.core).room() > c.waiting.len();
+        !c.shutAsked && room2(c) > c.waiting.len();
     }
     c.state == cOpen && !c.server && c.current == noEntry && c.waiting.len() == 0usize &&
-      c.failure is None && !c.closeAsked && (&c.core).canStart()
+      c.failure is None && !c.closeAsked && c.core.canSendRequest()
   }
 
   // The protocol a connection speaks: Http11 or Http2, once it is chosen
@@ -2215,7 +2209,7 @@ pub struct Driver {
     if ci == noEntry {return None;}
     let c = self.connAt(ci) as &Conn;
     if !c.decided {return None;}
-    Some[Version](if (&c.core).isH2() {Version.Http2} else {Version.Http11})
+    Some[Version](if c.isH2 {Version.Http2} else {Version.Http11})
   }
 
   // What a connection's layer says of itself, for diagnostics: 'plain', or a

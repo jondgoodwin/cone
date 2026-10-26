@@ -1,102 +1,195 @@
-// A connection's protocol core: HTTP/1.1's or HTTP/2's (see the package's
-// header, HTTP/2). An enum whose variants each implement the calls the two
-// share -- bytes, time, credit, a message's body, the end -- rather than a
-// trait both cores comply with: their events and requests differ (HTTP/2
-// names a stream in each), and the driver needs each core's own for those,
-// which a virtual reference to a shared trait could not give back. The core
-// lives in the connection's record, whichever it is. HTTP/1.1 has one
-// exchange at a time, so it ignores the stream the calls name.
+// A connection's protocol core. Every connection has HTTP/1.1's in place
+// ('core', an http1.Connection, called directly); one whose protocol is
+// chosen as HTTP/2 also has HTTP/2's ('h2', boxed: an HTTP/1.1 connection
+// carries one pointer for it) and its 'isH2' set. The choice is made once
+// per connection, and every place the two cores differ branches on 'isH2'
+// once: the HTTP/1.1 path calls http1 directly, with nothing dispatched per
+// call and its events routed by connection as before. A trait over both
+// cores would not do: their events and requests differ (HTTP/2 names a
+// stream in each), and the driver needs each core's own.
 
-enum Core {
-  pub fn isH2(self: &) bool;
-  pub fn handleInput(self: &mut, buf: IoBuf, now: Instant);
-  pub fn pollTransmit(self: &mut, now: Instant) Chain;
-  pub fn pollTimeout(self: &) Option[Instant];
-  pub fn handleTimeout(self: &mut, now: Instant);
-  pub fn readCredit(self: &) usize;
-  pub fn isClosed(self: &) bool;
-  pub fn shouldClose(self: &) bool;
-  pub fn abort(self: &mut);
-  pub fn bytesReceived(self: &) u64;
-  // Body bytes the program is done with: a stream's credit (HTTP/2), the
-  // connection's (HTTP/1.1)
-  pub fn release(self: &mut, stream: u32, n: usize);
-  pub fn sendResponse(self: &mut, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32);
-  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8], line: u32);
-  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf];
-  pub fn finishWith(self: &mut, stream: u32, trailers: Headers, file: &Array[u8], line: u32);
-  pub fn writeRoom(self: &, stream: u32) usize;
-  // Whether a client's request may go on now: HTTP/1.1's one exchange is
-  // free; HTTP/2 has room among the streams the peer allows (the driver,
-  // not the core, holds the requests past it)
-  pub fn canStart(self: &) bool;
-  // How many requests may go on now
-  pub fn room(self: &) usize;
+// The calls both cores take, each choosing its core by 'isH2'. HTTP/1.1 has
+// one exchange at a time, so it ignores the stream a call names
 
-  pub struct H1 {
-    pub c: http1.Connection;
-
-    pub fn isH2(self: &) bool {false}
-    pub fn handleInput(self: &mut, buf: IoBuf, now: Instant) {c.handleInput(buf, now);}
-    pub fn pollTransmit(self: &mut, now: Instant) Chain {c.pollTransmit(now)}
-    pub fn pollTimeout(self: &) Option[Instant] {c.pollTimeout()}
-    pub fn handleTimeout(self: &mut, now: Instant) {c.handleTimeout(now);}
-    pub fn readCredit(self: &) usize {c.readCredit()}
-    pub fn isClosed(self: &) bool {c.isClosed()}
-    pub fn shouldClose(self: &) bool {c.shouldClose()}
-    pub fn abort(self: &mut) {c.abort();}
-    pub fn bytesReceived(self: &) u64 {c.bytesReceived()}
-    pub fn release(self: &mut, stream: u32, n: usize) {c.release(n);}
-    pub fn sendResponse(self: &mut, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
-      c.sendResponse(head, body, file, line);
+fn coreInput(c: &mut Conn, buf: IoBuf, now: Instant) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.handleInput(buf, now);}
+      else {}
     }
-    pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8], line: u32) {
-      c.sendInterim(head, file, line);
-    }
-    pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf] {
-      c.sendData(buf, file, line)
-    }
-    pub fn finishWith(self: &mut, stream: u32, trailers: Headers, file: &Array[u8], line: u32) {
-      c.finishWith(trailers, file, line);
-    }
-    pub fn writeRoom(self: &, stream: u32) usize {c.writeRoom()}
-    pub fn canStart(self: &) bool {c.canSendRequest()}
-    pub fn room(self: &) usize {if c.canSendRequest() {1usize} else {0usize}}
+  } else {
+    c.core.handleInput(buf, now);
   }
+}
 
-  pub struct H2 {
-    pub c: http2.Connection;
+fn coreTransmit(c: &mut Conn, now: Instant) Chain {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {return h.pollTransmit(now);}
+      else {}
+    }
+  }
+  c.core.pollTransmit(now)
+}
 
-    pub fn isH2(self: &) bool {true}
-    pub fn handleInput(self: &mut, buf: IoBuf, now: Instant) {c.handleInput(buf, now);}
-    pub fn pollTransmit(self: &mut, now: Instant) Chain {c.pollTransmit(now)}
-    pub fn pollTimeout(self: &) Option[Instant] {c.pollTimeout()}
-    pub fn handleTimeout(self: &mut, now: Instant) {c.handleTimeout(now);}
-    pub fn readCredit(self: &) usize {c.readCredit()}
-    pub fn isClosed(self: &) bool {c.isClosed()}
-    pub fn shouldClose(self: &) bool {c.shouldClose()}
-    pub fn abort(self: &mut) {c.abort();}
-    pub fn bytesReceived(self: &) u64 {c.bytesReceived()}
-    pub fn release(self: &mut, stream: u32, n: usize) {c.release(stream, n);}
-    pub fn sendResponse(self: &mut, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
-      c.sendResponse(stream, head, body, file, line);
+fn coreTimeout(c: &Conn) Option[Instant] {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.pollTimeout();}
+      else {}
     }
-    pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8], line: u32) {
-      c.sendInterim(stream, head, file, line);
+  }
+  c.core.pollTimeout()
+}
+
+fn coreHandleTimeout(c: &mut Conn, now: Instant) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.handleTimeout(now);}
+      else {}
     }
-    pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf] {
-      c.sendData(stream, buf, file, line)
+  } else {
+    c.core.handleTimeout(now);
+  }
+}
+
+fn coreCredit(c: &Conn) usize {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.readCredit();}
+      else {}
     }
-    pub fn finishWith(self: &mut, stream: u32, trailers: Headers, file: &Array[u8], line: u32) {
-      c.finishWith(stream, trailers, file, line);
+  }
+  c.core.readCredit()
+}
+
+fn coreClosed(c: &Conn) bool {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.isClosed();}
+      else {}
     }
-    pub fn writeRoom(self: &, stream: u32) usize {c.writeRoom(stream)}
-    pub fn canStart(self: &) bool {c.canSendRequest() && c.openLocalStreams() < c.peerMaxConcurrentStreams()}
-    pub fn room(self: &) usize {
-      let open = c.openLocalStreams();
-      let max = c.peerMaxConcurrentStreams();
-      if !c.canSendRequest() || open >= max {0usize} else {usize.from(max - open)}
+  }
+  c.core.isClosed()
+}
+
+fn coreShouldClose(c: &Conn) bool {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.shouldClose();}
+      else {}
     }
+  }
+  c.core.shouldClose()
+}
+
+fn coreAbort(c: &mut Conn) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.abort();}
+      else {}
+    }
+  }
+  c.core.abort();
+}
+
+fn coreRelease(c: &mut Conn, stream: u32, n: usize) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.release(stream, n);}
+      else {}
+    }
+  } else {
+    c.core.release(n);
+  }
+}
+
+fn coreRespond(c: &mut Conn, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    var hd = head;
+    stripForH2(&mut hd.headers);
+    match &mut c.h2 {
+      case var &mut Some(h) {h.sendResponse(stream, hd, body, file, line);}
+      else {}
+    }
+  } else {
+    c.core.sendResponse(head, body, file, line);
+  }
+}
+
+fn coreInterim(c: &mut Conn, stream: u32, head: ResponseHead, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    var hd = head;
+    stripForH2(&mut hd.headers);
+    match &mut c.h2 {
+      case var &mut Some(h) {h.sendInterim(stream, hd, file, line);}
+      else {}
+    }
+  } else {
+    c.core.sendInterim(head, file, line);
+  }
+}
+
+fn coreSendData(c: &mut Conn, stream: u32, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf] {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {return h.sendData(stream, buf, file, line);}
+      else {return None;}
+    }
+  }
+  c.core.sendData(buf, file, line)
+}
+
+fn coreFinish(c: &mut Conn, stream: u32, trailers: Headers, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.finishWith(stream, trailers, file, line);}
+      else {}
+    }
+  } else {
+    c.core.finishWith(trailers, file, line);
+  }
+}
+
+// HTTP/2 alone
+
+// How many more streams the peer allows now
+fn room2(c: &Conn) usize {
+  match &c.h2 {
+    case let &Some(h) {
+      let open = h.openLocalStreams();
+      let max = h.peerMaxConcurrentStreams();
+      if !h.canSendRequest() || open >= max {0usize} else {usize.from(max - open)}
+    }
+    else {0usize}
+  }
+}
+
+fn writeRoom2(c: &Conn, stream: u32) usize {
+  match &c.h2 {
+    case let &Some(h) {h.writeRoom(stream)}
+    else {0usize}
+  }
+}
+
+fn sendEnded2(c: &Conn, stream: u32) bool {
+  match &c.h2 {
+    case let &Some(h) {h.sendEnded(stream)}
+    else {true}
+  }
+}
+
+fn cancel2(c: &mut Conn, stream: u32) {
+  match &mut c.h2 {
+    case var &mut Some(h) {h.cancel(stream);}
+    else {}
+  }
+}
+
+fn goAway2(c: &mut Conn) {
+  match &mut c.h2 {
+    case var &mut Some(h) {h.shutdown();}
+    else {}
   }
 }
 
