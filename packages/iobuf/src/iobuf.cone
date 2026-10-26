@@ -48,6 +48,8 @@
 //   Chain.make(limit)     an empty chain holding at most limit bytes (CHAINS)
 //   c.push(buf)           None once its bytes are in; Some(buf) back,
 //                         refused, past the limit
+//   c.appendLast(bytes)   bytes copied into the last segment's room: how many
+//   c.lastRoom()          that room
 //   c.len()  c.isEmpty()  c.segments()  c.bound()  c.firstLen()
 //   c.find(pat, from)     the offset of pat, across segment boundaries
 //   c.findByte(b, from)   the offset of byte b
@@ -434,6 +436,28 @@ pub struct Chain is Move, Sendable {
     count = count + 1usize;
     total = total + n;
     None
+  }
+
+  // How many more bytes the last segment has room for after its own (and
+  // the chain's bound allows): what 'appendLast' takes; 0 when it is empty
+  pub fn lastRoom(self: &) usize {
+    if count == 0usize {return 0usize;}
+    let room = (self.at(count - 1usize) as &IoBuf).room();
+    let left = limit - total;
+    if room < left {room} else {left}
+  }
+
+  // Copy bytes into the last segment, after its own, as many as its room
+  // (and the chain's bound) takes: how many. A writer gathering small writes
+  // keeps them in the last buffer queued this way, nothing taken out
+  pub fn appendLast(self: &mut, bytes: &Array[u8]) usize {
+    let room = self.lastRoom();
+    if room == 0usize {return 0usize;}
+    let n = if bytes.len < room {bytes.len} else {room};
+    let b = self.at(count - 1usize) as &mut IoBuf;
+    b.append(&bytes[0usize ..< n]);
+    total = total + n;
+    n
   }
 
   // Twice the slots, the segments moved to the front in order
