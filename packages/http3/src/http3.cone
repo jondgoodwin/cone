@@ -2,13 +2,221 @@
 // http2: the protocol's state as plain data, which does no I/O, reads no
 // clock and starts no threads (invariant I13). It does not implement QUIC:
 // it sees QUIC as RFC 9114 does, numbered streams of bytes that end or are
-// reset, which something else provides. It is built in two parts, each its
-// own module: QPACK, the field compression (RFC 9204, here now); and the
-// frames and the connection, client and server, over package http's
-// message types (to come). QPACK knows nothing of frames or streams beyond
-// their numbers. It takes package http2's Huffman code, integer encoder and
-// HeaderField as they are; its static table, its integer decoder (62 bits)
-// and its strings (a prefix of 7, 5 or 3 bits) are its own.
+// reset, and the connection's close, which something else provides (a QUIC
+// transport and the driver over it). Its parts: QPACK, the field
+// compression (RFC 9204, module qpack); the frames (module frames: QUIC's
+// variable-length integers, the frame and stream types, the control
+// stream's payloads, the error codes); and the Connection, client and
+// server, over package http's message types (the package's own files:
+// connection.cone, and semantics.cone for the messages as field sections).
+// QPACK knows nothing of frames or streams beyond their numbers. It takes
+// package http2's Huffman code, integer encoder and HeaderField as they are;
+// its static table, its integer decoder (62 bits) and its strings (a prefix
+// of 7, 5 or 3 bits) are its own.
+//
+//   mod get;
+//   import http use *;
+//   import http3 use *;
+//   import iobuf use IoBuf;
+//   import time use Instant;
+//
+//   mut conn = Connection.client(Config.make(), now);
+//   let id = conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
+//   while true {                                       // the driver's loop:
+//     match conn.pollTransmit(now) {                   // what to do, until Nothing
+//       case let Write(w) { quic.send(w.stream, w.data, w.fin) }  // a new id opens its stream
+//       case let Reset(r) { quic.resetStream(r.stream, r.code) }
+//       case let StopSending(r) { quic.stopSending(r.stream, r.code) }
+//       case let Close(c) { quic.close(c.code, c.graceful) }
+//       case is Nothing { ... }
+//     }
+//     // read a stream only with credit
+//     conn.handleStream(stream, bytes, fin, now);      // or handleReset, handleStopSending, handleClose
+//     match conn.pollEvent() {                         // what that means
+//       case mut r Response { ... r.stream ... r.head.status ... r.body ... }
+//       case mut d Data { ... d.buf ...; conn.release(d.stream, n); }
+//       case mut e End { ... e.trailers ... }          // the response is whole
+//       case mut f Failed { ... f.error.isRetrySafe() ... f.error.scope ... }
+//       case mut g GoAway { ... }                      // no new requests
+//       case mut c Closed { ... c.error ... }          // and every later event
+//       case is NeedData { ... }
+//       ...
+//     }
+//   }
+//
+//   Connection.client(config, now)  Connection.server(config, now)   (THE CONNECTION)
+//   c.handleStream(stream, buf, fin, now)  c.handleReset(stream, code, now)  (INPUT)
+//   c.handleStopSending(stream, code, now)  c.handleClose(code, now)
+//   c.pollTransmit(now)  Transmit: Nothing Write Reset StopSending Close  (TRANSMITS)
+//   c.pollEvent()  Event: NeedData Request Response Interim Data End     (EVENTS)
+//     Failed GoAway Closed
+//   c.pollTimeout()  c.handleTimeout(now)        (none: QUIC keeps the time)
+//   c.readCredit(stream)  c.release(stream, n)                            (CREDIT)
+//   c.sendRequest(head, body)  a client's: the new stream's id            (SENDING)
+//   c.sendResponse(stream, head, body)  c.sendInterim(stream, head)  a server's
+//   c.sendData(stream, buf)  c.finish(stream)  c.finishWith(stream, trailers)
+//   c.writeRoom(stream)  c.canSendRequest()
+//   c.reset(stream, code)  c.goAway()  c.abort(code)                     (ENDING)
+//   c.isClosed()  c.isClient()  c.openRequests()  c.requestStreamRecords()
+//   c.settingsReceived()  c.peerSettings()  c.goAwayReceived()
+//   c.qpackEncoder()  c.qpackDecoder()
+//   Config.make(): the bounds, each a field to change         (CONNECTION BOUNDS)
+//   varintLen(v) encodeVarint(out, v) decodeVarint(src, &pos, &v)        (FRAMES)
+//   peekVarint(chain, at, &v) maxVarint FrameHead peekFrameHead(chain)
+//   encodeFrameHead(out, kind, length) Settings parseSettings(p, &s)
+//   encodeSettings(out, ids, values) parseId(p) encodeIdFrame(out, kind, id)
+//   FrameError isReserved(v) isHttp2FrameType(t) isHttp2Setting(id) greaseValue
+//   frame* stream* setting* h3* errorName(code)
+//
+// THE CONNECTION. One HTTP/3 connection's state: its request streams, its
+// control stream and QPACK's two streams each way, and their rules. Every
+// stream's state, the peer's unidirectional ones too, is one record in one
+// SlotTable, found from its number by a Dict, removed when both its sides
+// are over. A client sends requests on 0, 4, 8, ...; a server answers on
+// the stream each came on. Each end opens its control stream (2 a client's,
+// 3 a server's), then its QPACK encoder and decoder streams (6 and 10; 7
+// and 11), at once, its SETTINGS first on the control stream. The core
+// picks every stream's number, as RFC 9000 numbers them (each kind in
+// order from its first), so a transport that opens streams in the order
+// the core first writes to them gives the same numbers; a driver over a
+// transport that numbers its own maps one to the other.
+//
+// INPUT. 'handleStream' brings bytes that arrived on a stream, and whether
+// they end it ('fin', with or without bytes); a stream the peer opened
+// begins with its first bytes. 'handleReset' says the peer reset its side
+// of a stream (QUIC's RESET_STREAM) and 'handleStopSending' that it asked
+// us to stop ours (STOP_SENDING); 'handleClose' that the QUIC connection
+// closed (the peer's CONNECTION_CLOSE, or the transport's idle timeout).
+// Each takes the time, which the core keeps only for its control-frame
+// count.
+//
+// TRANSMITS. 'pollTransmit' gives one thing to do each call, until
+// Nothing: Write (bytes for a stream, a Chain of buffers for one gather
+// write, and whether the stream ends after them; the first write to a new
+// stream number opens it, a unidirectional stream's first byte being its
+// type), Reset (RESET_STREAM a stream's sending side with a code),
+// StopSending (STOP_SENDING the peer's side with a code), and Close
+// (CONNECTION_CLOSE with a code). A graceful Close (the end of a drain, with
+// H3_NO_ERROR) is to be sent once the transport has delivered what was
+// written before it; any other at once. Resets, stops and the close go
+// first, then the control stream, the encoder stream (ahead of the field
+// sections that name its inserts) and the decoder stream, then the request
+// streams in turn, each one's whole queue at a time. A DATA frame's
+// payload is the program's own buffer, moved in, never copied (a small one
+// is copied in beside its frame's head).
+//
+// EVENTS. 'pollEvent' gives one Event each call, until NeedData (nothing
+// more until bytes arrive or the program acts). Events carry their stream.
+// A server's request comes as Request (its head, and what is known of its
+// body), Data (each an owned IoBuf of the body, in order), then End (with
+// the trailer fields, empty for most); a client's response the same way as
+// Response, Data and End, after any Interim (a 1xx). Failed ends one
+// exchange: a stream error, or, with scope Connection, every exchange open
+// when the connection fails, each told. GoAway is the peer's GOAWAY (a
+// client's requests at or above it have failed Refused, safe to retry).
+// Closed ends the connection: its first carries the failure (none when it
+// ended cleanly), and every later event is Closed. A server hears nothing
+// of a request stream refused before its head was handed on; a client
+// hears of each of its requests. The request streams take turns, one event
+// each. Field sections are decoded as their streams' turn comes; one
+// waiting on QPACK's inserts holds its stream, not the others.
+//
+// MESSAGES (section 4). A request stream carries HEADERS, then DATA, then
+// optional trailing HEADERS; a response may begin with interim HEADERS;
+// frames of unknown and reserved types may come anywhere and are skipped.
+// The head's pseudo-header fields and header fields are checked as
+// semantics.cone's header says; a message's body is checked against its
+// Content-Length, and a response to HEAD, or a 204 or 304, has none.
+// CONNECT, extended CONNECT included, is refused. The Version in a head read
+// is Http3. A body sent is framed by its BodyLength: Sized writes
+// Content-Length (and finish short of it is a program error), Unsized
+// nothing, Empty ends the stream with the head. An empty scheme is sent as
+// 'https'.
+//
+// ERRORS (section 8) and what each ends, a stream (reset and stopped with
+// the code; Failed with ErrorScope.Stream) or the connection (closed with
+// it; ErrorScope.Connection):
+// - the connection: a frame where it may not be, H3_FRAME_UNEXPECTED (DATA
+//   before HEADERS or after the trailers, HEADERS after the trailers, a
+//   control stream's frame on a request stream, DATA, HEADERS or
+//   PUSH_PROMISE on the control stream, PUSH_PROMISE to a server, a second
+//   SETTINGS, MAX_PUSH_ID from a server, HTTP/2's PRIORITY, PING,
+//   WINDOW_UPDATE and CONTINUATION anywhere); a frame cut off or with
+//   bytes over, or a stream ending inside a frame, H3_FRAME_ERROR; the
+//   control stream's first frame not SETTINGS, H3_MISSING_SETTINGS; a
+//   SETTINGS parameter of HTTP/2's, given twice, or a 0-or-1 one given
+//   another value, H3_SETTINGS_ERROR; a second control, encoder or decoder
+//   stream, a push stream from a client, a server's bidirectional stream,
+//   H3_STREAM_CREATION_ERROR; a push stream or PUSH_PROMISE to a client (no
+//   MAX_PUSH_ID is sent), CANCEL_PUSH past MAX_PUSH_ID, a GOAWAY naming a
+//   stream that is not a client's request stream or raising an earlier
+//   one's id, MAX_PUSH_ID falling, H3_ID_ERROR; the control or a QPACK
+//   stream ended or reset, or a STOP_SENDING on one of ours,
+//   H3_CLOSED_CRITICAL_STREAM (QPACK reports its own streams'); QPACK's
+//   connection errors with their codes; a bound crossed, H3_EXCESSIVE_LOAD.
+// - a stream: a malformed message, H3_MESSAGE_ERROR (ErrorKind.Malformed,
+//   a server's status 400); a request stream ending before its HEADERS, a
+//   server's H3_REQUEST_INCOMPLETE; a field section past
+//   maxFieldSectionSize, H3_EXCESSIVE_LOAD (ErrorKind.TooLarge: a server
+//   answers 431 instead when the program has not seen the request); a
+//   peer's reset or STOP_SENDING, with its code (H3_REQUEST_REJECTED is
+//   ErrorKind.Refused, safe to retry whatever the method; any other
+//   ErrorKind.Reset, or what the code names). STOP_SENDING with H3_NO_ERROR
+//   is a server needing no more of a request it has answered: the request's
+//   body stops, its response goes on.
+// - a stream that is not one of HTTP/3's types, reading stopped with
+//   H3_STREAM_CREATION_ERROR; the connection goes on.
+//
+// GOAWAY (section 5.2). 'goAway()' sends it: a server's names the lowest
+// request stream it has not seen, and refuses any at or above it after
+// (H3_REQUEST_REJECTED, kept until the peer's side ends); a client's names
+// push ID 0. No request is sent after a GOAWAY either way. A client that
+// receives one fails its requests at or above it as Refused, safe to retry
+// on another connection, and cancels them (H3_REQUEST_CANCELLED). Each end
+// closes gracefully (H3_NO_ERROR) once it has sent a GOAWAY (a client also
+// once it received one) and its open requests have ended. When the
+// transport closes, an exchange whose bytes had all arrived and been sent is
+// still read to its end; any other fails Closed, with the code.
+//
+// CREDIT. Each stream holds at most 'streamBuffer' bytes not yet read or
+// handed on: 'readCredit(stream)' is how many more handleStream takes now
+// (more is a program error, a panic), and a driver reads a QUIC stream only
+// with credit, so QUIC's own flow control holds the peer. Body bytes handed
+// out in Data events are on loan until 'release'; once 'bodyWindow' are out
+// on a stream, it gives no more Data, its buffer fills and its credit falls
+// to 0, while every other stream goes on. Sending is bounded the same way:
+// 'sendData' hands a buffer back once a stream holds 'writeWatermark' bytes
+// to send ('writeRoom'). QUIC's flow control and stream limits are the
+// transport's; the core only says what to advertise (maxRequestStreams).
+//
+// CONNECTION BOUNDS (each a field of Config, each crossed in tests/connlimits).
+// 'qpack' (QpackConfig, QPACK BOUNDS below): its maxFieldSectionSize (16
+// KiB) is also a HEADERS frame's most, refused from its head before its
+// payload is held, and is advertised as SETTINGS_MAX_FIELD_SECTION_SIZE,
+// with maxTableCapacity (0) and blockedStreams (0).
+// 'maxRequestStreams' (100, the research survey's common figure) is the
+// request streams the peer may have open at once: the driver advertises it
+// as QUIC's initial_max_streams_bidi and raises MAX_STREAMS as streams end;
+// a request stream past it is refused, H3_REQUEST_REJECTED. 'maxControlFrames'
+// (10,000: Go's, Netty's and nginx's bound on control frames) is the
+// control-stream frames after SETTINGS the peer may send in one second of
+// the time the calls bring; one more is H3_EXCESSIVE_LOAD. 'streamBuffer'
+// (32 KiB; at least maxFieldSectionSize and 16) bounds each stream's
+// unread bytes, and so a SETTINGS frame (longer is H3_EXCESSIVE_LOAD).
+// 'bodyWindow' (64 KiB, nginx's HTTP/3 stream window) bounds each stream's
+// body bytes out unreleased; 'writeWatermark' (64 KiB) each stream's bytes
+// waiting to be sent. 'grease' (on) sends a reserved setting and a
+// reserved frame on the control stream, so peers that choke on values they
+// do not know are found.
+//
+// FRAMES (module frames). QUIC's variable-length integers, 1 to 8 bytes,
+// written in the fewest and read in any; a frame's head (its type and its
+// payload's length, each one of them); the frame, stream and SETTINGS
+// types and the error codes as constants; a SETTINGS payload read with its
+// checks (Settings, at the RFC's defaults where it leaves a parameter out)
+// and written; GOAWAY's, MAX_PUSH_ID's and CANCEL_PUSH's one integer. Each
+// error at the frames' level is a FrameError: the code to close the
+// connection with, and why.
 //
 //   mod headers;
 //   import collections use List;
@@ -156,19 +364,34 @@
 // (H3_CLOSED_CRITICAL_STREAM: either instruction stream ended, reported by
 // 'encoderStreamClosed' and 'decoderStreamClosed'). Each ends the
 // connection, and the end that met it refuses everything after. TooLarge
-// has no code: it ends one message, as the HTTP/3 layer chooses. On any
-// error the list handed in is as it was.
+// has no code of QPACK's: it ends one message, which the connection does
+// with H3_EXCESSIVE_LOAD (and a server's 431). On any error the list handed
+// in is as it was.
 //
 // TABLES. The static table is Appendix A's 99 entries, indexed from 0. A
 // QpackTable is the dynamic table as both ends hold it: entries by
 // absolute index (0 the first ever inserted), the oldest evicted first, the
 // sum of their sizes within its capacity.
 //
-// Not here yet: the frames and the connection (the next part); an encoder
-// that leaves an often-changing field out of its table, or duplicates an
-// entry about to age out on its own (it duplicates only when asked); 0-RTT's
-// remembered SETTINGS.
+// Not here yet: server push (a client sends no MAX_PUSH_ID, a server never
+// pushes); CONNECT and extended CONNECT (RFC 9220), and so WebTransport;
+// HTTP datagrams (RFC 9297); RFC 9218's priorities (PRIORITY_UPDATE is an
+// unknown frame, skipped); the peer's SETTINGS_MAX_FIELD_SECTION_SIZE held
+// to when sending (it is kept, in peerSettings); a GOAWAY of 2^62-4 first,
+// before the real one, to warn of a shutdown; greased unidirectional
+// streams; a QPACK encoder that leaves an often-changing field out of its
+// table, or duplicates an entry about to age out on its own (it duplicates
+// only when asked); 0-RTT's remembered SETTINGS. The QUIC transport and the
+// driver over it are later lanes.
 
 mod http3;
 
+import collections use List, Deque, Dict, String;
+import iobuf use IoBuf, Chain;
+import time use Instant, Duration;
+import slots use SlotTable, Slot;
+import http use *;
+import http2 use HeaderField;
+
 pub use qpack;
+pub use frames;

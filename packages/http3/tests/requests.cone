@@ -1,0 +1,540 @@
+// Request streams (RFC 9114, section 4), each case on a fresh connection fed
+// bytes by hand, and what it sends and reports:
+// - the frames' order: HEADERS, DATA, trailing HEADERS, unknown frames
+//   anywhere; DATA before HEADERS or after trailers, HEADERS after
+//   trailers, a control stream's frame, PUSH_PROMISE (to a server:
+//   H3_FRAME_UNEXPECTED; to a client: H3_ID_ERROR), HTTP/2's types:
+//   connection errors; a stream ending inside a frame: H3_FRAME_ERROR;
+//   one ending before its HEADERS: the stream's H3_REQUEST_INCOMPLETE;
+// - malformed messages, the stream's H3_MESSAGE_ERROR, the connection
+//   going on: upper case, pseudo-header fields missing, twice, after a
+//   header field or of the wrong kind, connection-specific fields, TE other
+//   than trailers, Content-Length against the DATA, a 101;
+// - a client's responses: interim ones first, HEAD and 204 with no body
+//   (DATA in a 204 refused), a stream ending before a response;
+// - resets: a peer's reset (H3_REQUEST_CANCELLED: Reset; H3_REQUEST_REJECTED:
+//   Refused, safe to retry), STOP_SENDING with H3_NO_ERROR (the request's
+//   body stops, the response goes on) and with another code;
+// - a section QPACK cannot read: QPACK_DECOMPRESSION_FAILED.
+
+mod requests;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import time use Instant;
+import http use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn t0() Instant {Instant.fromNanos(1000000000i64)}
+
+fn bufOf(b: &Array[u8]) IoBuf {
+  if b.len == 0usize {return IoBuf.empty();}
+  var x = IoBuf(b.len);
+  x.append(b);
+  x
+}
+
+fn feed(c: &mut Connection, stream: u64, b: &Array[u8], fin: bool) {
+  c.handleStream(stream, bufOf(b), fin, t0());
+}
+
+fn frame(out: &mut List[u8], kind: u64, payload: &Array[u8]) {
+  encodeFrameHead(out, kind, u64.from(payload.len));
+  out.appendSlice(payload);
+}
+
+// 'name=value|name=value' as fields (a value may hold '=')
+fn fields(spec: &str) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  var i = 0usize;
+  while i < spec.len() {
+    var j = i;
+    while j < spec.len() && spec[j] != '|' {j = j + 1usize;}
+    var e = i;
+    while spec[e] != '=' {e = e + 1usize;}
+    out.push(HeaderField.make(&spec[i ..< e], &spec[e + 1usize ..< j]));
+    i = j + 1usize;
+  }
+  out
+}
+
+// A HEADERS frame of these fields, QPACK-coded with no table
+fn headers(out: &mut List[u8], spec: &str) {
+  var enc = QpackEncoder.make(&QpackConfig.make());
+  var sec = List[u8].empty();
+  let f = fields(spec);
+  enc.encode(0u64, f.view(), &mut sec);
+  frame(out, frameHeaders, sec.view());
+}
+
+fn data(out: &mut List[u8], text: &str) {frame(out, frameData, text);}
+
+fn errorText(e: &HttpError) String {
+  var s = String.from(kindName(e.kind));
+  match e.code {
+    case let Some(c) {
+      s.append(" ");
+      s.append(errorName(c));
+    }
+    case is None[u64] {}
+  }
+  s.append(if e.scope == ErrorScope.Stream {" (stream)"} else {" (connection)"});
+  if e.isRetrySafe() {s.append(" retry-safe");}
+  if e.noResponse {s.append(" no-response");}
+  s
+}
+
+fn bodyText(b: &BodyLength) String {
+  if b.isEmpty() {return String.from("empty");}
+  if b.isUnsized() {return String.from("unsized");}
+  var s = String.from("sized ");
+  s.appendUInt(b.length);
+  s
+}
+
+// What happened, until NeedData or Closed: 'request 0 GET /x empty; end 0'
+fn evs(c: &mut Connection) String {
+  var s = String.empty();
+  var going = true;
+  while going {
+    var t = String.empty();
+    match c.pollEvent() {
+      case let Request(r) {
+        t.append("request ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(r.head.methodName());
+        t.append(" ");
+        t.append(r.head.target.view());
+        t.append(" ");
+        t.append(bodyText(&r.body).view());
+        var k = 0usize;
+        while k < r.head.headers.len() {
+          t.append(" ");
+          t.append(r.head.headers.nameAt(k));
+          t.append("=");
+          t.appendBytes(r.head.headers.valueAt(k));
+          k = k + 1usize;
+        }
+        if r.head.authority.len() > 0usize {
+          t.append(" @");
+          t.append(r.head.authority.view());
+        }
+      }
+      case let Response(r) {
+        t.append("response ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.appendUInt(u64.from(r.head.status));
+        t.append(" ");
+        t.append(bodyText(&r.body).view());
+      }
+      case let Interim(r) {
+        t.append("interim ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.appendUInt(u64.from(r.head.status));
+      }
+      case let Data(d) {
+        t.append("data ");
+        t.appendUInt(d.stream);
+        t.append(" ");
+        t.appendBytes(d.buf.view());
+        c.release(d.stream, d.buf.len());
+      }
+      case let End(e) {
+        t.append("end ");
+        t.appendUInt(e.stream);
+        var k = 0usize;
+        while k < e.trailers.len() {
+          t.append(" ");
+          t.append(e.trailers.nameAt(k));
+          t.append("=");
+          t.appendBytes(e.trailers.valueAt(k));
+          k = k + 1usize;
+        }
+      }
+      case let Failed(f) {
+        t.append("failed ");
+        t.appendUInt(f.stream);
+        t.append(": ");
+        t.append(errorText(&f.error).view());
+      }
+      case let GoAway(g) {
+        t.append("goaway ");
+        t.appendUInt(g.id);
+      }
+      case let Closed(x) {
+        t.append("closed");
+        match x.error {
+          case let Some(e) {
+            t.append(": ");
+            t.append(errorText(&e).view());
+          }
+          case is None[HttpError] {}
+        }
+        going = false;
+      }
+      case is NeedData {going = false;}
+    }
+    if t.len() > 0usize {
+      if s.len() > 0usize {s.append("; ");}
+      s.append(t.view());
+    }
+  }
+  s
+}
+
+// What the connection would do, writes to its own unidirectional streams
+// left out
+fn sent(c: &mut Connection) String {
+  var s = String.empty();
+  var going = true;
+  while going {
+    var t = String.empty();
+    match c.pollTransmit(t0()) {
+      case let Write(w) {
+        if (w.stream & 2u64) == 0u64 {
+          t.append("w");
+          t.appendUInt(w.stream);
+          if w.fin {t.append(" fin");}
+        }
+      }
+      case let Reset(r) {
+        t.append("reset ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let StopSending(r) {
+        t.append("stop ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let Close(x) {
+        t.append("close ");
+        t.append(errorName(x.code));
+      }
+      case is Nothing {going = false;}
+    }
+    if t.len() > 0usize {
+      if s.len() > 0usize {s.append("; ");}
+      s.append(t.view());
+    }
+  }
+  s
+}
+
+fn server() Connection {
+  var s = Connection.server(Config.make(), t0());
+  sent(&mut s);
+  s
+}
+
+const get = ":method=GET|:scheme=https|:authority=example.com|:path=/x";
+const postHead = ":method=POST|:scheme=https|:authority=example.com|:path=/p";
+
+// A server fed these bytes on stream 0 (and its end, when fin): its
+// events, then what it sends
+fn serve(b: &List[u8], fin: bool) String {
+  var s = server();
+  var own = List[u8].empty();
+  own.appendSlice(b.view());
+  feed(&mut s, 0u64, own.view(), fin);
+  var t = evs(&mut s);
+  t.append(" | ");
+  t.append(sent(&mut s).view());
+  t
+}
+
+// A server fed one request's head and ending
+fn serveHead(spec: &str) String {
+  var b = List[u8].empty();
+  headers(&mut b, spec);
+  serve(&b, true)
+}
+
+fn order() {
+  var a = List[u8].empty();
+  headers(&mut a, get);
+  expectStr(serve(&a, true).view(), "request 0 GET /x empty @example.com; end 0 | ", "a GET");
+  var b = List[u8].empty();
+  frame(&mut b, 0x21u64, "grease");
+  headers(&mut b, postHead);
+  frame(&mut b, 0x5555u64, "unknown");
+  data(&mut b, "hel");
+  frame(&mut b, 0x40u64, "");
+  data(&mut b, "lo");
+  data(&mut b, "");
+  headers(&mut b, "x-sum=5");
+  frame(&mut b, 0x21u64, "after");
+  expectStr(serve(&b, true).view(), "request 0 POST /p unsized @example.com; data 0 hel; data 0 lo; end 0 x-sum=5 | ",
+    "unknown frames anywhere; trailers");
+  // Byte by byte
+  var s = server();
+  var i = 0usize;
+  while i < b.len() {
+    feed(&mut s, 0u64, &b.view()[i ..< i + 1usize], i + 1usize == b.len());
+    i = i + 1usize;
+  }
+  expectStr(evs(&mut s).view(), "request 0 POST /p unsized @example.com; data 0 h; data 0 e; data 0 l; data 0 l; data 0 o; end 0 x-sum=5", "...a byte at a time");
+  var c = List[u8].empty();
+  data(&mut c, "early");
+  expectStr(serve(&c, false).view(), "closed: malformed H3_FRAME_UNEXPECTED (connection) | close H3_FRAME_UNEXPECTED", "DATA before HEADERS");
+  var d = List[u8].empty();
+  headers(&mut d, postHead);
+  headers(&mut d, "x-t=1");
+  data(&mut d, "late");
+  expectStr(serve(&d, false).view(), "request 0 POST /p unsized @example.com; end 0 x-t=1; failed 0: malformed H3_FRAME_UNEXPECTED (connection); closed: malformed H3_FRAME_UNEXPECTED (connection) | close H3_FRAME_UNEXPECTED",
+    "DATA after the trailers");
+  var e = List[u8].empty();
+  headers(&mut e, postHead);
+  headers(&mut e, "x-t=1");
+  headers(&mut e, "x-t=2");
+  expectStr(serve(&e, false).view(), "request 0 POST /p unsized @example.com; end 0 x-t=1; failed 0: malformed H3_FRAME_UNEXPECTED (connection); closed: malformed H3_FRAME_UNEXPECTED (connection) | close H3_FRAME_UNEXPECTED",
+    "HEADERS after the trailers");
+  var kinds: Array[u64, 8] = [frameSettings, frameGoAway, frameMaxPushId, frameCancelPush, framePushPromise, 0x2u64, 0x8u64, 0x9u64];
+  var k = 0usize;
+  while k < 8usize {
+    var f = List[u8].empty();
+    frame(&mut f, kinds[k], "x");
+    var l = String.from("type ");
+    l.appendUInt(kinds[k]);
+    l.append(" on a request stream");
+    expectStr(serve(&f, false).view(), "closed: malformed H3_FRAME_UNEXPECTED (connection) | close H3_FRAME_UNEXPECTED", l.view());
+    k = k + 1usize;
+  }
+  // Ending inside a frame
+  var g = List[u8].empty();
+  headers(&mut g, get);
+  g.truncate(g.len() - 2usize);
+  expectStr(serve(&g, true).view(), "closed: malformed H3_FRAME_ERROR (connection) | close H3_FRAME_ERROR", "the stream ends inside HEADERS");
+  var h = List[u8].empty();
+  headers(&mut h, postHead);
+  data(&mut h, "abcdef");
+  h.truncate(h.len() - 3usize);
+  expectStr(serve(&h, true).view(), "request 0 POST /p unsized @example.com; data 0 abc; failed 0: malformed H3_FRAME_ERROR (connection); closed: malformed H3_FRAME_ERROR (connection) | close H3_FRAME_ERROR",
+    "the stream ends inside DATA");
+  var h2 = List[u8].empty();
+  frame(&mut h2, 0x21u64, "abcdef");
+  h2.truncate(h2.len() - 1usize);
+  expectStr(serve(&h2, true).view(), "closed: malformed H3_FRAME_ERROR (connection) | close H3_FRAME_ERROR", "the stream ends inside an unknown frame");
+  // Ending before HEADERS
+  let none = List[u8].empty();
+  expectStr(serve(&none, true).view(), " | reset 0 H3_REQUEST_INCOMPLETE", "the stream ends before HEADERS: reset, the program not told");
+  var j = List[u8].empty();
+  frame(&mut j, 0x21u64, "x");
+  expectStr(serve(&j, true).view(), " | reset 0 H3_REQUEST_INCOMPLETE", "...with only an unknown frame");
+}
+
+fn malformed() {
+  // A request refused before the program sees it: reading stopped, the
+  // stream reset, the program not told
+  let w = " | stop 0 H3_MESSAGE_ERROR; reset 0 H3_MESSAGE_ERROR";
+  expectStr(serveHead(":method=GET|:scheme=https|:authority=a|:path=/|X-Big=1").view(), " | reset 0 H3_MESSAGE_ERROR", "an upper-case name (the stream had ended: no stop)");
+  var b = List[u8].empty();
+  headers(&mut b, ":method=GET|:scheme=https|:authority=a");
+  expectStr(serve(&b, false).view(), w, "no :path");
+  var c = List[u8].empty();
+  headers(&mut c, ":method=GET|:scheme=https|:path=/|:authority=a|:path=/b");
+  expectStr(serve(&c, false).view(), w, ":path twice");
+  var d = List[u8].empty();
+  headers(&mut d, ":method=GET|x=1|:scheme=https|:authority=a|:path=/");
+  expectStr(serve(&d, false).view(), w, "a pseudo-header field after a header field");
+  var e = List[u8].empty();
+  headers(&mut e, ":method=GET|:scheme=https|:authority=a|:path=/|:status=200");
+  expectStr(serve(&e, false).view(), w, ":status in a request");
+  var f = List[u8].empty();
+  headers(&mut f, ":method=GET|:scheme=https|:authority=a|:path=/|connection=close");
+  expectStr(serve(&f, false).view(), w, "a connection-specific field");
+  var g = List[u8].empty();
+  headers(&mut g, ":method=GET|:scheme=https|:authority=a|:path=/|te=gzip");
+  expectStr(serve(&g, false).view(), w, "TE other than trailers");
+  var h = List[u8].empty();
+  headers(&mut h, ":method=GET|:scheme=https|:path=/");
+  expectStr(serve(&h, false).view(), w, "https with no authority");
+  var i = List[u8].empty();
+  headers(&mut i, ":method=CONNECT|:authority=a:443");
+  expectStr(serve(&i, false).view(), w, "CONNECT, not supported");
+  // Content-Length against the DATA
+  var j = List[u8].empty();
+  headers(&mut j, ":method=POST|:scheme=https|:authority=a|:path=/|content-length=5");
+  data(&mut j, "abc");
+  data(&mut j, "def");
+  expectStr(serve(&j, false).view(), "request 0 POST / sized 5 @a; data 0 abc; failed 0: malformed H3_MESSAGE_ERROR (stream) | stop 0 H3_MESSAGE_ERROR; reset 0 H3_MESSAGE_ERROR",
+    "DATA past Content-Length");
+  var k = List[u8].empty();
+  headers(&mut k, ":method=POST|:scheme=https|:authority=a|:path=/|content-length=5");
+  data(&mut k, "abc");
+  expectStr(serve(&k, true).view(), "request 0 POST / sized 5 @a; data 0 abc; failed 0: malformed H3_MESSAGE_ERROR (stream) | reset 0 H3_MESSAGE_ERROR",
+    "the stream ends short of Content-Length");
+  var l = List[u8].empty();
+  headers(&mut l, ":method=POST|:scheme=https|:authority=a|:path=/|content-length=5|content-length=5");
+  data(&mut l, "abcde");
+  expectStr(serve(&l, true).view(), "request 0 POST / sized 5 @a; data 0 abcde; end 0 | ", "Content-Length twice, the same: fine");
+  // Host for an authority, cookies joined
+  var m = List[u8].empty();
+  headers(&mut m, ":method=GET|:scheme=https|:path=/c|host=h.example|cookie=a=1|cookie=b=2");
+  expectStr(serve(&m, true).view(), "request 0 GET /c empty cookie=a=1; b=2 @h.example; end 0 | ", "Host as the authority; cookies joined");
+  // The connection goes on after a stream's error
+  var s = server();
+  var n = List[u8].empty();
+  headers(&mut n, ":method=GET|:scheme=https|:authority=a|:path=/|Bad=1");
+  feed(&mut s, 0u64, n.view(), true);
+  var o = List[u8].empty();
+  headers(&mut o, get);
+  feed(&mut s, 4u64, o.view(), true);
+  expectStr(evs(&mut s).view(), "request 4 GET /x empty @example.com; end 4", "a malformed request; the next one read");
+  expectStr(sent(&mut s).view(), "reset 0 H3_MESSAGE_ERROR", "the malformed one reset");
+  // A section QPACK cannot read
+  var q = List[u8].empty();
+  let junk: Array[u8, 2] = [0xffu8, 0xffu8];
+  frame(&mut q, frameHeaders, &junk);
+  expectStr(serve(&q, false).view(), "closed: malformed QPACK_DECOMPRESSION_FAILED (connection) | close QPACK_DECOMPRESSION_FAILED", "a section past its end");
+}
+
+// A client that sent one GET on stream 0, its request taken
+fn requested(head: RequestHead) Connection {
+  var c = Connection.client(Config.make(), t0());
+  let id = c.sendRequest(head, BodyLength.empty());
+  sent(&mut c);
+  c
+}
+
+fn respond(c: &mut Connection, b: &List[u8], fin: bool) String {
+  var own = List[u8].empty();
+  own.appendSlice(b.view());
+  feed(c, 0u64, own.view(), fin);
+  var t = evs(c);
+  t.append(" | ");
+  t.append(sent(c).view());
+  t
+}
+
+fn responses() {
+  var a = requested(RequestHead.make("GET", "/", "a"));
+  var ab = List[u8].empty();
+  headers(&mut ab, ":status=103|link=</s.css>");
+  headers(&mut ab, ":status=100");
+  headers(&mut ab, ":status=200|content-length=2");
+  data(&mut ab, "ok");
+  expectStr(respond(&mut a, &ab, true).view(), "interim 0 103; interim 0 100; response 0 200 sized 2; data 0 ok; end 0 | ", "interim responses, then the final one");
+  var b = requested(RequestHead.make("HEAD", "/", "a"));
+  var bb = List[u8].empty();
+  headers(&mut bb, ":status=200|content-length=1000");
+  expectStr(respond(&mut b, &bb, true).view(), "response 0 200 empty; end 0 | ", "a HEAD's response: no body, whatever Content-Length says");
+  var c = requested(RequestHead.make("GET", "/", "a"));
+  var cb = List[u8].empty();
+  headers(&mut cb, ":status=204");
+  data(&mut cb, "x");
+  expectStr(respond(&mut c, &cb, false).view(), "response 0 204 empty; failed 0: malformed H3_MESSAGE_ERROR (stream) | stop 0 H3_MESSAGE_ERROR", "DATA in a 204");
+  var d = requested(RequestHead.make("GET", "/", "a"));
+  var db = List[u8].empty();
+  headers(&mut db, ":status=101");
+  expectStr(respond(&mut d, &db, false).view(), "failed 0: malformed H3_MESSAGE_ERROR (stream) no-response | stop 0 H3_MESSAGE_ERROR", "a 101");
+  var e = requested(RequestHead.make("GET", "/", "a"));
+  let none = List[u8].empty();
+  expectStr(respond(&mut e, &none, true).view(), "failed 0: closed (stream) no-response | ", "the stream ends before a response");
+  var f = requested(RequestHead.make("GET", "/", "a"));
+  var fb = List[u8].empty();
+  let promise: Array[u8, 3] = [0u8, 0u8, 0u8];
+  frame(&mut fb, framePushPromise, &promise);
+  expectStr(respond(&mut f, &fb, false).view(), "failed 0: malformed H3_ID_ERROR (connection); closed: malformed H3_ID_ERROR (connection) | close H3_ID_ERROR", "PUSH_PROMISE to a client that allowed none");
+  var g = requested(RequestHead.make("GET", "/", "a"));
+  var gb = List[u8].empty();
+  headers(&mut gb, ":status=200|:path=/");
+  expectStr(respond(&mut g, &gb, false).view(), "failed 0: malformed H3_MESSAGE_ERROR (stream) no-response | stop 0 H3_MESSAGE_ERROR", "a request's pseudo-header field in a response");
+}
+
+fn resets() {
+  // A server's exchange cancelled by the client mid-body: it fails Reset,
+  // and the response begun is reset too
+  var s = server();
+  var b = List[u8].empty();
+  headers(&mut b, postHead);
+  data(&mut b, "part");
+  feed(&mut s, 0u64, b.view(), false);
+  expectStr(evs(&mut s).view(), "request 0 POST /p unsized @example.com; data 0 part", "a request begun");
+  s.sendResponse(0u64, ResponseHead.make(200u16), BodyLength.unsized());
+  s.handleReset(0u64, h3RequestCancelled, t0());
+  s.handleStopSending(0u64, h3RequestCancelled, t0());
+  expectStr(evs(&mut s).view(), "failed 0: reset H3_REQUEST_CANCELLED (stream)", "the client's reset: Reset");
+  expectStr(sent(&mut s).view(), "reset 0 H3_REQUEST_CANCELLED", "its response reset, once");
+  expectUInt(u64.from(s.requestStreamRecords()), 0u64, "the stream's record gone");
+  let back = s.sendData(0u64, bufOf("late"));
+  s.finish(0u64);
+  expectStr(sent(&mut s).view(), "", "the program's late writes go nowhere");
+  // A client's request rejected by the server: Refused, safe to retry
+  var c = requested(RequestHead.make("GET", "/", "a"));
+  c.handleStopSending(0u64, h3RequestRejected, t0());
+  c.handleReset(0u64, h3RequestRejected, t0());
+  expectStr(evs(&mut c).view(), "failed 0: refused H3_REQUEST_REJECTED (stream) retry-safe no-response", "H3_REQUEST_REJECTED: Refused");
+  expectStr(sent(&mut c).view(), "", "nothing to reset: the request had been sent whole");
+  // STOP_SENDING with H3_NO_ERROR: the server needs no more of the body;
+  // the response goes on
+  var d = Connection.client(Config.make(), t0());
+  let id = d.sendRequest(RequestHead.make("POST", "/up", "a"), BodyLength.unsized());
+  let r1 = d.sendData(id, bufOf("first"));
+  sent(&mut d);
+  var db = List[u8].empty();
+  headers(&mut db, ":status=413");
+  feed(&mut d, id, db.view(), true);
+  d.handleStopSending(id, h3NoError, t0());
+  expectStr(evs(&mut d).view(), "response 0 413 empty; end 0", "the response read whole");
+  expectStr(sent(&mut d).view(), "reset 0 H3_NO_ERROR", "the body's side reset with H3_NO_ERROR");
+  let r2 = d.sendData(id, bufOf("more"));
+  d.finish(id);
+  expectStr(sent(&mut d).view(), "", "the rest of the body goes nowhere");
+  expectUInt(u64.from(d.requestStreamRecords()), 0u64, "the stream's record gone");
+  // STOP_SENDING with another code fails the exchange
+  var e = Connection.client(Config.make(), t0());
+  let id2 = e.sendRequest(RequestHead.make("POST", "/up", "a"), BodyLength.unsized());
+  sent(&mut e);
+  e.handleStopSending(id2, h3InternalError, t0());
+  expectStr(evs(&mut e).view(), "failed 0: malformed H3_INTERNAL_ERROR (stream) no-response", "STOP_SENDING H3_INTERNAL_ERROR");
+  expectStr(sent(&mut e).view(), "reset 0 H3_INTERNAL_ERROR; stop 0 H3_REQUEST_CANCELLED", "its side reset with that code; reading stopped");
+  // The program resets: no event for it
+  var f = Connection.client(Config.make(), t0());
+  let id3 = f.sendRequest(RequestHead.make("GET", "/", "a"), BodyLength.empty());
+  f.reset(id3);
+  expectStr(sent(&mut f).view(), "stop 0 H3_REQUEST_CANCELLED; reset 0 H3_REQUEST_CANCELLED", "a reset asked for");
+  expectStr(evs(&mut f).view(), "", "no event");
+}
+
+fn sending() {
+  // A server answering a HEAD: the head alone, ending the stream
+  var s = server();
+  var b = List[u8].empty();
+  headers(&mut b, ":method=HEAD|:scheme=https|:authority=a|:path=/");
+  feed(&mut s, 0u64, b.view(), true);
+  evs(&mut s);
+  s.sendResponse(0u64, ResponseHead.make(200u16), BodyLength.sized(1000u64));
+  expectStr(sent(&mut s).view(), "w0 fin", "HEAD: the head and the end");
+  // An interim response, then a body with trailers
+  var t = server();
+  feed(&mut t, 0u64, b.view(), true);
+  var c = List[u8].empty();
+  headers(&mut c, get);
+  feed(&mut t, 4u64, c.view(), true);
+  evs(&mut t);
+  t.sendInterim(4u64, ResponseHead.make(103u16));
+  t.sendResponse(4u64, ResponseHead.make(200u16), BodyLength.unsized());
+  let r = t.sendData(4u64, bufOf("body"));
+  var tr = Headers.empty();
+  tr.add("X-Check", "1");
+  t.finishWith(4u64, tr);
+  expectStr(sent(&mut t).view(), "w4 fin", "interim, head, body and trailers in one write, ending the stream");
+  expectStr(sent(&mut t).view(), "", "then nothing");
+}
+
+fn main() i32 {
+  order();
+  malformed();
+  responses();
+  resets();
+  sending();
+  done()
+}
