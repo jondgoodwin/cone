@@ -47,7 +47,8 @@
 //     EntryOptions: method, level, modified, mode, zip64, comment; plain(), stored(), deflated(level)
 //       (method 93 is not written yet: the writer refuses it, BadArgument; see 'canWrite' in writer.cone)
 //   OPTIONS AND RESULTS
-//     ExtractOptions { overwrite, maxTotal }, safe(); Extracted { files, folders, bytes }
+//     ExtractOptions { overwrite, maxTotal, restoreMode, restoreTimes }, safe(); Extracted { files, folders,
+//       bytes, unrestored }
 //   FAILURE          ZipError { kind, offset, reason }, message(), copy(); ErrorKind: NotZip, Truncated,
 //     Corrupt, Unsupported, Encrypted, BadChecksum, BadData, TooLarge, UnsafePath, SymlinkEntry, Exists,
 //     Io, NotFound, BadArgument
@@ -133,24 +134,37 @@
 //   a character it cannot hold (< > : " | ? * or a control), a trailing space or dot, or a device name
 //   (CON, NUL, COM1 and so on) is refused too; other systems take those names. A file already there is
 //   Exists unless 'overwrite'; a folder in a file's way always is; two entries for one file are Exists
-//   unless 'overwrite' (the later wins). A folder on a name's way, or the file itself, that is a link
-//   (a link the archive did not make) is refused, because it could lead anywhere: this is checked by
-//   listing the folder, since fs has no lstat, so a link that leads nowhere is not seen. 'maxTotal'
-//   bounds the sum of the declared sizes. An entry that fails half way (a bad CRC-32, data that does not
-//   inflate) removes its file; the files before it stay. Files are written a megabyte at a time.
-//   Not restored: permissions (the execute bit is lost), times, owners; fs can set none of them.
+//   unless 'overwrite' (the later wins). A name on an entry's way in the destination, the entry's own
+//   included, that is a link (a link the archive did not make) is refused, because it could lead
+//   anywhere: 'fs.isLink' sees a link that leads nowhere too, and every entry's way is looked at before
+//   the first byte is written. 'maxTotal' bounds the sum of the declared sizes. An entry that fails half
+//   way (a bad CRC-32, data that does not inflate) removes its file; the files before it stay. Files are
+//   written a megabyte at a time.
+//   Restored: each file's and folder's modified time ('ExtractOptions.restoreTimes', on by default) and,
+//   when asked ('restoreMode', off by default), the nine permission bits of the entry's Unix mode, so the
+//   execute bit of a script comes back; never setuid, setgid or sticky. A folder's time and mode are set
+//   after its files are written. On Windows 'fs.chmod' keeps only the owner-write bit: a mode without it
+//   makes the file read-only, the execute bit means nothing there, and a folder's mode is not applied.
+//   What a file system will not keep is counted in 'Extracted.unrestored', not failed. Not restored:
+//   owners and groups.
 //
 // SPEED. Informative, on a loaded 13th-gen Core i7-13700HX, release build, examples/bench.cone: 200
 // files of 1 MB (three quarters text that deflates about 8 to 1, a quarter noise that does not):
 // whole-entry reads about 150 MB/s of data, streaming reads in 64 KiB pulls about 120 MB/s,
-// extraction to disk about 90 MB/s. deflate's own inflate runs at 200 to 400 MB/s; what this adds is a
-// byte-at-a-time copy into the caller's list (a List has no bulk append) and the CRC-32. Not chased.
+// extraction to disk about 90 MB/s. deflate's own inflate runs at 200 to 400 MB/s; what this adds is the
+// CRC-32, and a copy into the caller's list that was byte at a time and is now 'List.appendSlice', one
+// block copy, for stored entries (the other entries' output is deflate's and zstd's own). With nothing to
+// compress or inflate (the bench's 200 stored entries of 1 MB, medians of 5): adding and writing 114 to 241
+// MB/s, whole-entry reads 372 to 722, streamed reads 292 to 735; extraction to disk is the disk's, about
+// 135 either way. The mixed archive above moves by under 10 percent (whole-entry reads 154 to 169 MB/s).
+// The writer's 'pull' still goes through a list of its own: the compiler cannot show that the caller's
+// list is not the writer's buffer, so it refuses to lend a view of one to the other's 'appendSlice'.
 //
 // NOT HERE: encryption (ZipCrypto, AES) and signatures; methods 9 (Deflate64), 12 (bzip2), 14 (LZMA),
 // 95 (xz), 98 (PPMd); WRITING method 93 (zstd), which waits for package zstd's compressor (reading it is
 // here); zstd dictionaries; archives in several disks; zip64 extensible data and the
-// central-directory encryption of strong encryption; entries written in pieces; setting permissions or
-// times on extracted files; updating an archive in place (read it, write another).
+// central-directory encryption of strong encryption; entries written in pieces; owners of extracted
+// files; updating an archive in place (read it, write another).
 //
 // Its files are one module, and only this one, the root, imports:
 //
@@ -168,4 +182,5 @@ import collections use *;
 import deflate;
 import fs;
 import path use Path;
+import time;
 import zstd;

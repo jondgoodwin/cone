@@ -1,5 +1,6 @@
 // How fast the package reads and extracts, on made-up data: a few hundred files of text that compresses
-// about 8 to 1 and files of noise that does not. Informative only; it gates nothing.
+// about 8 to 1 and files of noise that does not; then the same four measures on stored entries alone,
+// where no compressing or inflating hides the copying. Informative only; it gates nothing.
 //
 //   congo run --release examples/bench.cone
 
@@ -114,6 +115,75 @@ fn main() i32 {
       t0 = time.Instant.now();
       match ar.extractAll(archive.view(), &Path.from("bench-out"), &zipfile.ExtractOptions.safe()) {
         case let Ok(done) { print <- "extracted ", done.files, " files: ", mbps(done.bytes, t0.elapsed()), " MB/s of data\n"; }
+        case let Error(e) { printStr(e.reason.view()); return 1i32; }
+      }
+      fs.removeAll(&Path.from("bench-out"));
+    }
+  }
+  stored()
+}
+
+// 200 stored entries of 1 MB: the writer, whole-entry reads, streamed reads and extraction, with nothing
+// to compress or inflate
+fn stored() i32 {
+  let files = 200usize;
+  let blob = texty(1000000usize, 3usize);
+  var w = zipfile.ZipWriter.make();
+  var t0 = time.Instant.now();
+  var i = 0usize;
+  while i < files {
+    var name = String.from("stored/file");
+    name.appendUInt(u64.from(i));
+    w.add(name.view(), blob.view(), &zipfile.EntryOptions.stored());
+    i += 1usize;
+  }
+  var archive = List[u8].empty();
+  match w.bytes() {
+    case let Ok(ok) { archive = ok; }
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+  }
+  let total = u64.from(files) * u64.from(blob.len());
+  print <- "stored: wrote ", mbps(total, t0.elapsed()), " MB/s\n";
+  match zipfile.Archive.open(archive.view()) {
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+    case let Ok(ar) {
+      t0 = time.Instant.now();
+      var got = 0u64;
+      i = 0usize;
+      while i < ar.count() {
+        match ar.read(archive.view(), i) {
+          case let Ok(b) { got += u64.from(b.len()); }
+          case let Error(e) { printStr(e.reason.view()); return 1i32; }
+        }
+        i += 1usize;
+      }
+      print <- "stored: read (whole entries) ", mbps(got, t0.elapsed()), " MB/s\n";
+
+      t0 = time.Instant.now();
+      got = 0u64;
+      i = 0usize;
+      var piece = List[u8].empty();
+      while i < ar.count() {
+        match ar.reader(archive.view(), i) {
+          case var Ok(r) {
+            var s = zipfile.Status.MoreOutput;
+            while s == zipfile.Status.MoreOutput {
+              piece.clear();
+              s = r.pull(archive.view(), &mut piece, 65536usize);
+              got += u64.from(piece.len());
+            }
+            if s != zipfile.Status.Done { return 1i32; }
+          }
+          case let Error(e) { printStr(e.reason.view()); return 1i32; }
+        }
+        i += 1usize;
+      }
+      print <- "stored: read (streamed, 64 KiB pulls) ", mbps(got, t0.elapsed()), " MB/s\n";
+
+      fs.removeAll(&Path.from("bench-out"));
+      t0 = time.Instant.now();
+      match ar.extractAll(archive.view(), &Path.from("bench-out"), &zipfile.ExtractOptions.safe()) {
+        case let Ok(done) { print <- "stored: extracted ", done.files, " files ", mbps(done.bytes, t0.elapsed()), " MB/s\n"; }
         case let Error(e) { printStr(e.reason.view()); return 1i32; }
       }
       fs.removeAll(&Path.from("bench-out"));
