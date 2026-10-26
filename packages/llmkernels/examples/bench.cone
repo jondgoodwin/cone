@@ -76,7 +76,7 @@ fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut
   }
   // a parameter slab, as llmrun's jobs have: one upload for all the dispatches' parameters, not a buffer each. It is
   // a buffer of the job's, given after the others so that their slots are 0 to specs.len() - 1 (the slots 'take'
-  // gives back below)
+  // gives back below, 'buffersIn')
   job.slab(device, 256u64 * u64.from(times + 2usize));
   i = 0usize;
   while i < times {
@@ -89,10 +89,18 @@ fn runOnce(device: &mut Device, kernels: &Kernels, works: &mut Works, held: &mut
   works.waitFor(device, ticket, &mut got);
   let took = start.elapsed();
   // the buffers come back: hold them, last slot first, so the next job pops slot 0 first
+  var order = List[u32].withCapacity(specs.len());
   var k = specs.len();
   while k > 0usize {
     k = k - 1usize;
-    held.push(got[0usize].take(u32.from(k)));
+    order.push(u32.from(k));
+  }
+  var back = match got.pop() {
+    case var Some(c) { c.buffersIn(order.view()) }
+    case is None { List[Buffer].empty() }
+  };
+  {
+    each b in back.drain() { held.push(b); }
   }
   f64.from(took.nanos()) / 1000.0
 }

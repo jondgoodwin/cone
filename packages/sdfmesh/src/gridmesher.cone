@@ -227,20 +227,23 @@ fn packedTables() List[u32] {
 // normals (a Vec3 each, 12 bytes, usable as vertex buffers), each vertex's
 // cell's number, and the triangles' indices (three u32 each, usable as an
 // index buffer), in surfaceNet's order; and the samples, handed back. 'ok'
-// is false when it could not be made (gpuwork says why, on stderr)
+// is false when it could not be made (gpuwork says why, on stderr). The four
+// mesh buffers are None in a net that has none (one not ok), and while a job
+// has them: a job owns its buffers while it runs ('readBack' lends them to
+// one, and they come back with its Completion).
 pub struct GridNet {
   pub ok: bool;
   pub grid: SampleGrid;
   pub vertexCount: u32;
   pub triangleCount: u32;
   pub samples: Buffer;
-  pub positions: Buffer;
-  pub normals: Buffer;
-  pub vertexCells: Buffer;
-  pub indices: Buffer;
+  pub positions: Option[Buffer];
+  pub normals: Option[Buffer];
+  pub vertexCells: Option[Buffer];
+  pub indices: Option[Buffer];
 
   fn failed(grid: SampleGrid, samples: Buffer) GridNet {
-    GridNet(false, grid, 0u32, 0u32, samples, Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none())
+    GridNet(false, grid, 0u32, 0u32, samples, None, None, None, None)
   }
 
   // The net read back to the CPU as a SurfaceNet: its quads made again from
@@ -284,15 +287,27 @@ pub struct GridNet {
     if !ok { return false; }
     var works = Works.make();
     var job = Job.make(device);
-    var p = Buffer.none();
-    var n = Buffer.none();
-    var ix = Buffer.none();
-    p <-> positions;
-    n <-> normals;
-    ix <-> indices;
-    let sp = job.give(p);
-    let sn = job.give(n);
-    let si = job.give(ix);
+    // Lent to the job, which owns them while it runs: the net holds None
+    // until its Completion gives them back (None already: a net whose
+    // buffers were lost by a job that never completed)
+    let p = positions := None;
+    let n = normals := None;
+    let ix = indices := None;
+    var sp = 0u32;
+    var sn = 0u32;
+    var si = 0u32;
+    match p {
+      case var Some(b) { sp = job.give(b); }
+      case is None { return false; }
+    }
+    match n {
+      case var Some(b) { sn = job.give(b); }
+      case is None { return false; }
+    }
+    match ix {
+      case var Some(b) { si = job.give(b); }
+      case is None { return false; }
+    }
     let bp = job.readback(device, sp);
     let bn = job.readback(device, sn);
     let bi = job.readback(device, si);
@@ -300,16 +315,16 @@ pub struct GridNet {
     var done = List[Completion].empty();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize { return false; }
-    let c = &mut done[0usize];
-    let read = c.ok;
+    let read = done[0usize].ok;
     if read {
-      *pw = c.words(bp);
-      *nw = c.words(bn);
-      *iw = c.words(bi);
+      *pw = done[0usize].words(bp);
+      *nw = done[0usize].words(bn);
+      *iw = done[0usize].words(bi);
     }
-    positions = c.take(sp);
-    normals = c.take(sn);
-    indices = c.take(si);
+    var back = takeApart(&mut done, &[sp, sn, si]);
+    indices = back.pop();
+    normals = back.pop();
+    positions = back.pop();
     read
   }
 }
@@ -442,19 +457,18 @@ pub struct GridMesher {
     var done = List[Completion].empty();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
-    var buffers = List[Buffer].empty();
-    {
-      let c = &mut done[0usize];
-      s = 0usize;
-      while s < plan.kinds.len() {
-        buffers.push(c.take(u32.from(s)));
-        s = s + 1usize;
-      }
-      if !c.ok {
-        return GridNet.failed(grid, firstBuffer(buffers));
-      }
+    let ran = done[0usize].ok;
+    let totals = if ran { done[0usize].words(answer) } else { List[u32].empty() };
+    var kept = List[u32].withCapacity(plan.kinds.len());
+    s = 0usize;
+    while s < plan.kinds.len() {
+      kept.push(u32.from(s));
+      s = s + 1usize;
     }
-    let totals = done[0usize].words(answer);
+    var buffers = takeApart(&mut done, kept.view());
+    if !ran {
+      return GridNet.failed(grid, firstBuffer(buffers));
+    }
     let vertices = *totals[0usize];
     let quads = *totals[1usize];
 
@@ -479,10 +493,13 @@ pub struct GridMesher {
     var done2 = List[Completion].empty();
     works.waitFor(device, ticket2, &mut done2);
     if done2.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
-    let c2 = &mut done2[0usize];
-    let ok = c2.ok;
-    GridNet(ok, grid, vertices, 2u32 * quads, c2.take(SSamples), c2.take(*outs[0usize]), c2.take(*outs[1usize]),
-      c2.take(*outs[2usize]), c2.take(*outs[3usize]))
+    let ok = done2[0usize].ok;
+    var got = takeApart(&mut done2, &[SSamples, *outs[0usize], *outs[1usize], *outs[2usize], *outs[3usize]]);
+    let indices = got.pop();
+    let cells = got.pop();
+    let normals = got.pop();
+    let positions = got.pop();
+    GridNet(ok, grid, vertices, 2u32 * quads, firstBuffer(got), positions, normals, cells, indices)
   }
 
   // The same of samples on the CPU: uploaded, then meshed on the GPU
@@ -524,21 +541,15 @@ pub struct GridMesher {
     var i = first;
     while i < plan.passes.len() {
       let pass = plan.passes[i];
-      var bufs = List[List[u32]].withCapacity(pass.slots.len());
-      // The slot numbers are copied out: runTwin is handed a Kernel, whose twin is a closure the compiler cannot see into, so no borrow of the plan's passes is held across it
+      // The slot numbers are copied out: runTwinIn is handed a Kernel, whose twin is a closure the compiler cannot see into, so no borrow of the plan's passes is held across it
       var slots = List[u32].withCapacity(pass.slots.len());
       var k = 0usize;
       while k < pass.slots.len() {
         slots.push(*pass.slots[k]);
-        bufs.push(takeWords(store, usize.from(*pass.slots[k])));
         k = k + 1usize;
       }
-      runTwin(self.kernel(pass.kernel), &mut bufs, groupsX(pass.invocations), groupsY(pass.invocations));
-      k = 0usize;
-      while k < slots.len() {
-        store.set(usize.from(*slots[k]), takeWords(&mut bufs, k));
-        k = k + 1usize;
-      }
+      // The pass works on the store's slots in place
+      runTwinIn(self.kernel(pass.kernel), store, slots.view(), groupsX(pass.invocations), groupsY(pass.invocations));
       i = i + 1usize;
     }
   }
@@ -553,11 +564,14 @@ fn firstBuffer(list: List[Buffer]) Buffer {
     case is None { Buffer.none() }
   }
 }
-fn takeWords(list: &mut List[List[u32]], i: usize) List[u32] {
-  var w = List[u32].empty();
-  let r = &mut list[i];
-  w <-> *r;
-  w
+
+// The one Completion in 'done' taken apart: the buffers in 'slots', in that
+// order (none if there is no Completion)
+fn takeApart(done: &mut List[Completion], slots: &Array[u32]) List[Buffer] {
+  match done.pop() {
+    case var Some(c) { c.buffersIn(slots) }
+    case is None { List[Buffer].empty() }
+  }
 }
 
 // Slot s's buffer on the GPU, as the plan starts it

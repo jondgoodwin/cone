@@ -106,16 +106,57 @@ pub struct Completion {
     job
   }
 
-  // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
-  // and given for a slot it does not have)
-  pub fn take(self: &mut, slot: u32) Buffer {
-    var b = Buffer.none();
-    let s = usize.from(slot);
-    if s < buffers.len() {
-      let r = &mut buffers[s];
-      b <-> *r;
+  // Take it apart, once (what it read back is read first, 'words'): the
+  // buffers in the slots 'slots', by value, in that order; the others are
+  // dropped with it. Buffer.none() is given for a slot it does not have, and
+  // for a slot named a second time.
+  pub fn buffersIn(self, slots: &Array[u32]) List[Buffer] {
+    var buffers = self.(buffers);
+    var picked = List[Option[Buffer]].withCapacity(slots.len);
+    var taken = List[bool].withCapacity(slots.len);
+    var j = 0usize;
+    while j < slots.len {
+      picked.push(None);
+      taken.push(false);
+      j = j + 1usize;
     }
-    b
+    var s = 0u32;
+    var next = 0usize;        // where the slot after the last found is looked for first: slots asked for in order
+    {
+      each b in buffers.drain() {
+        j = next;
+        if j >= slots.len || slots[j] != s || *taken[j] {
+          j = 0usize;
+          while j < slots.len && (slots[j] != s || *taken[j]) { j = j + 1usize; }
+        }
+        if j < slots.len {
+          picked.set(j, Some[Buffer](b));
+          taken.set(j, true);
+          next = j + 1usize;
+        }
+        s = s + 1u32;
+      }
+    }
+    var out = List[Buffer].withCapacity(slots.len);
+    {
+      each o in picked.drain() {
+        match o {
+          case var Some(b) { out.push(b); }
+          case is None { out.push(Buffer.none()); }
+        }
+      }
+    }
+    out
+  }
+
+  // The same for one buffer: the one in slot 'slot' (Buffer.none() for a
+  // slot it does not have)
+  pub fn bufferIn(self, slot: u32) Buffer {
+    var one = self.buffersIn(&[slot]);
+    match one.pop() {
+      case var Some(b) { b }
+      case is None { Buffer.none() }
+    }
   }
 
   // The words of the buffer in slot 'slot', one the job read back
@@ -252,21 +293,16 @@ pub struct Works {
   jobs: List[InFlight];
   retired: List[List[BindGroup]];   // of jobs complete, ended once nothing is in flight
   lastId: u64;
-  tx: Sender[Watch];                // to the watcher
-  rx: Receiver[Watch];              // the watcher's, until it is started
+  tx: Option[Sender[Watch]];        // to the watcher, once it is started (the channel is made then)
   state: Arc[imm, WatchState];
   watcher: Option[thread.Thread[u32]];
-  started: bool;
   watcherId: u32;                   // its OS thread id, 0 until it is started
   sent: u64;                        // Loop jobs handed to the watcher
 
   pub fn make() Works {
-    var tx: Sender[Watch];
-    var rx: Receiver[Watch];
-    tx, rx = Channel[Watch].make();
-    Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
+    Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, None,
       Arc[imm, WatchState](WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
-      None, false, 0u32, 0u64)
+      None, 0u32, 0u64)
   }
 
   // How many jobs are submitted whose Completion is still to come
@@ -319,14 +355,13 @@ pub struct Works {
       if !ok { device.queue.signal(&mut fence); }
       seq = sent;
       sent = sent + 1u64;
-      self.startWatcher();
       var errorWords = List[usize].empty();
       var k = 0usize;
       while k < j.checks.len() {
         errorWords.push(errorWordsAt(j.checks[k]));
         k = k + 1usize;
       }
-      tx.send(Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
+      self.toWatcher(Watch(Some[Fence](fence), to, ticket.id, ok, false, errorWords));
     } else if ok {
       ok = device.queue.submit(j.encoder.finish());
     }
@@ -335,18 +370,25 @@ pub struct Works {
     ticket
   }
 
-  // Start the watcher, if it is not
-  fn startWatcher(self: &mut) {
-    if started { return; }
-    started = true;
-    var spareTx: Sender[Watch];
-    var spareRx: Receiver[Watch];
-    spareTx, spareRx = Channel[Watch].make();
-    spareRx <-> rx;
+  // Hand 'w' to the watcher, starting it (and making its channel) with the
+  // first
+  fn toWatcher(self: &mut, w: Watch) {
+    match &tx {
+      case let &Some[Sender[Watch]](s) {
+        (*s).send(w);
+        return;
+      }
+      else {}
+    }
+    var newTx: Sender[Watch];
+    var newRx: Receiver[Watch];
+    newTx, newRx = Channel[Watch].make();
     let t = thread.startWith[WatchArgs, u32](thread.Options(name: "gpuwork watcher"),
-      WatchArgs(spareRx, state), &watch);
+      WatchArgs(newRx, state), &watch);
     watcherId = t.id();
     watcher = Some[thread.Thread[u32]](t);
+    newTx.send(w);
+    tx = Some[Sender[Watch]](newTx);
   }
 
   // Wait until the watcher has seen the Loop job numbered 'seq'
@@ -450,8 +492,12 @@ pub struct Works {
   // its handle dies. A Loop job's Completion still in flight dies here, its
   // buffers with it.
   fn final(self: &uni) {
-    if !started { return; }
-    tx.send(Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
-    while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
+    match &tx {
+      case let &Some[Sender[Watch]](s) {
+        (*s).send(Watch(None, Target.Here(0u64), 0u64, false, true, List[usize].empty()));
+        while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
+      }
+      else {}
+    }
   }
 }

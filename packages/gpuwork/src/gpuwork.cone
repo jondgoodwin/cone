@@ -23,7 +23,8 @@
 //   //   lp.poll(until, &mut io);                    // the answer: Done, c.n the ticket
 //   //   works.poll(&device, &mut done);             // its Completion, the buffers back
 //   imm words = done[0usize].words(back);          // the GPU's results
-//   mut kept = done[0usize].take(out);             // still on the GPU: the next job's input
+//   mut kept = c.bufferIn(out);                    // c = done.pop(), taken apart once: the buffer,
+//                                                  //   still on the GPU, the next job's input
 //   // a Cone kernel's failure: done[0usize].ok false, done[0usize].failures[0usize]
 //
 //   Kernel.make(device, spirv, entryPoint, access)   a kernel, made once  (KERNELS)
@@ -45,13 +46,15 @@
 //   onLoopIn(lp, to, group, deadline, token)  ERROR_JOB_REFUSED  ERROR_JOB_LOST
 //   ERROR_KERNEL_FAILED
 //   Target.Here(token)  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
-//     c.submitted c.completed c.failures, c.take(slot) c.words(slot) c.count()  (ANSWERS)
+//     c.submitted c.completed c.failures, c.words(slot) c.count() c.buffersIn(slots)
+//     c.bufferIn(slot)  (ANSWERS)
 //   KernelFailure: .kernel .dispatch .count .kind .fileId .file .line         (FAILURES ON THE GPU)
 //     .invocation .index, f.kindName() f.message()  kernelFailures()
 //   FAILED_INDEX  FAILED_RANGE  FAILED_PANIC  FAILED_ALLOCATION  ERROR_BUFFER_WORDS
 //   kernel.setTwin1(&f) ... kernel.setTwin7(&f)  kernel.setTwin(f)        (THE TWIN)
 //   Invocation  Words: w.u32s() .f32sMut() .atomicU32s() .atomicI32s() ...
-//   runTwin(kernel, buffers, x, y, z)  kernel.together  MAX_TOGETHER_INVOCATIONS
+//   runTwin(kernel, buffers, x, y, z)  runTwinIn(kernel, store, slots, x, y, z)
+//   kernel.together  MAX_TOGETHER_INVOCATIONS
 //   checkParity(device, kernel, buffers, x, y, z): Parity
 //   refusals()
 //
@@ -169,7 +172,10 @@
 // TARGETS AND ANSWERS. Every job submitted gets exactly one Completion: its
 // ticket, its token, whether it ran and no Cone kernel in it failed ('ok'),
 // its buffers back, when it was submitted and when its completion was seen,
-// and its kernels' failures on the GPU. Where it goes is its Target,
+// and its kernels' failures on the GPU. What it read back is read from it
+// ('c.words(slot)'); then it is taken apart once, the buffers wanted coming
+// out by value ('c.buffersIn(slots)', 'c.bufferIn(slot)'). Where it goes
+// is its Target,
 // as in iocore: 'Target.Here(token)' delivers it to this Works' own 'poll'
 // (or 'waitFor', 'waitAll'). 'poll' never waits: a frame loop calls it once a
 // frame and takes what has finished. 'waitFor' blocks until one job is done,
@@ -271,7 +277,8 @@
 // function written as the kernel is. Either way the
 // kernel's body is one Cone function both sides call: a loop over
 // invocations is how the CPU runs a kernel. 'runTwin' runs it over buffers
-// of words, workgroup by workgroup in a fixed order. A kernel without
+// of words, workgroup by workgroup in a fixed order ('runTwinIn' over the
+// slots of one store of words, in place). A kernel without
 // barriers runs invocation by invocation, in a fixed order, on the calling
 // thread. A kernel with them ('kernel.together': 'Kernel.make' finds an
 // OpControlBarrier, which 'workgroupBarrier()' and 'storageBarrier()' each

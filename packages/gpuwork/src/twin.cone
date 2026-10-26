@@ -51,27 +51,79 @@ pub fn runTwin(kernel: &Kernel, buffers: &mut List[List[u32]], x: u32, y: u32 = 
     fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
     return false;
   }
+  if !fitsTogether(kernel) { return false; }
+  var words = List[Words].empty();
+  var b = 0usize;
+  while b < buffers.len() {
+    if !bindWords(kernel, b, &mut buffers[b], &mut words) { return false; }
+    b = b + 1usize;
+  }
+  runOver(kernel, words.view(), x, y, z)
+}
+
+// The same over the words of 'store' in the slots 'slots' (binding i the
+// words of 'store[slots[i]]'), worked on in place: a plan's passes over one
+// store of words. False, and nothing run, as for runTwin, and also if a slot
+// is not one of the store's or two bindings name the same slot.
+pub fn runTwinIn(kernel: &Kernel, store: &mut List[List[u32]], slots: &Array[u32], x: u32, y: u32 = 1u32,
+    z: u32 = 1u32) bool {
+  if !kernel.hasTwin || slots.len != usize.from(kernel.bindings) {
+    fail("runTwinIn: the kernel has no twin, or the slots are not one for each binding");
+    return false;
+  }
+  var b = 0usize;
+  while b < slots.len {
+    var a = 0usize;
+    while a < b {
+      if slots[a] == slots[b] {
+        fail("runTwinIn: two bindings name the same slot");
+        return false;
+      }
+      a = a + 1usize;
+    }
+    if usize.from(slots[b]) >= store.len() {
+      fail("runTwinIn: a slot is not one of the store's");
+      return false;
+    }
+    b = b + 1usize;
+  }
+  if !fitsTogether(kernel) { return false; }
+  var words = List[Words].empty();
+  b = 0usize;
+  while b < slots.len {
+    if !bindWords(kernel, b, &mut store[usize.from(slots[b])], &mut words) { return false; }
+    b = b + 1usize;
+  }
+  runOver(kernel, words.view(), x, y, z)
+}
+
+// Whether a kernel with barriers has a workgroup its threads can run together
+fn fitsTogether(kernel: &Kernel) bool {
   let size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
   if kernel.together && size > MAX_TOGETHER_INVOCATIONS {
     fail("runTwin: a kernel with barriers has a workgroup of more than 256 invocations, a thread each");
     return false;
   }
-  var words = List[Words].empty();
-  var b = 0usize;
-  while b < buffers.len() {
-    let inner = &mut buffers[b];
-    let v = inner.viewMut();
-    let p = if v.len > 0usize { &mut v[0usize] as *u32 } else { null as *u32 };
-    let slice = kernel.hasDirect && kernel.shapes[b] == SHAPE_SLICE;
-    let elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]) } else { v.len };
-    if kernel.hasDirect && !slice && v.len * 4usize < usize.from(kernel.needs[b]) {
-      fail("runTwin: a buffer is smaller than the struct its direct twin reads from it");
-      return false;
-    }
-    words.push(Words(p, elems, v.len, slice));
-    b = b + 1usize;
+  true
+}
+
+// Binding 'b''s words, those of 'inner', onto 'words'; false if a direct
+// twin's struct is larger than its buffer
+fn bindWords(kernel: &Kernel, b: usize, inner: &mut List[u32], words: &mut List[Words]) bool {
+  let v = inner.viewMut();
+  let p = if v.len > 0usize { &mut v[0usize] as *u32 } else { null as *u32 };
+  let slice = kernel.hasDirect && kernel.shapes[b] == SHAPE_SLICE;
+  let elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]) } else { v.len };
+  if kernel.hasDirect && !slice && v.len * 4usize < usize.from(kernel.needs[b]) {
+    fail("runTwin: a buffer is smaller than the struct its direct twin reads from it");
+    return false;
   }
-  let view = words.view();
+  words.push(Words(p, elems, v.len, slice));
+  true
+}
+
+// The run itself, over the bindings' words
+fn runOver(kernel: &Kernel, view: &Array[Words], x: u32, y: u32, z: u32) bool {
   if kernel.together {
     runTogether(kernel, view, x, y, z);
     return true;
