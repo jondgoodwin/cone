@@ -1,0 +1,117 @@
+// Filtering by target and level, set by the program: a kind is on when its
+// level is no more detailed than its target's (the target's own, else the
+// default), a sink is installed, and the sink wants it. A second install is
+// refused; refresh() asks the sink again.
+
+mod levels;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Kind0;
+
+let appError: Kind0;
+let appWarn: Kind0;
+let appInfo: Kind0;
+let appDebug: Kind0;
+let appTrace: Kind0;
+let netError: Kind0;
+let netInfo: Kind0;
+let netTrace: Kind0;
+
+fn @initpure init() {
+  appError = Kind0.make("app.error", "app", Level.Error);
+  appWarn = Kind0.make("app.warn", "app", Level.Warn);
+  appInfo = Kind0.make("app.info", "app", Level.Info);
+  appDebug = Kind0.make("app.debug", "app", Level.Debug);
+  appTrace = Kind0.make("app.trace", "app", Level.Trace);
+  netError = Kind0.make("net.error", "net", Level.Error);
+  netInfo = Kind0.make("net.info", "net", Level.Info);
+  netTrace = Kind0.make("net.trace", "net", Level.Trace);
+}
+
+var wantDebug = true;
+var asked = 0u64;
+var quiet = false;
+
+// Prints the name of each event; refuses Debug kinds while wantDebug is false
+struct Names is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    asked = asked + 1u64;
+    wantDebug || k.level != Level.Debug
+  }
+  pub fn record(self: &, e: &trace.Event) {
+    if !quiet {
+      print <- " ", e.kind.name;
+    }
+  }
+}
+
+struct Other is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {
+    print <- " (the second sink!)";
+  }
+}
+
+fn emitAll(label: &str) {
+  print <- label, ":";
+  appError.emit();
+  appWarn.emit();
+  appInfo.emit();
+  appDebug.emit();
+  appTrace.emit();
+  netError.emit();
+  netInfo.emit();
+  netTrace.emit();
+  print <- "\n";
+}
+
+fn main() i32 {
+  emitAll("no sink");
+  expect(!appError.info.isOn(), "no sink: an Error kind is off");
+  expect(trace.levelOf("app") == Level.Off, "the default level is Off");
+
+  expect(trace.install(Uni[Names](0u64)), "the sink is installed");
+  trace.setDefaultLevel(Level.Info);
+  expect(!trace.install(Uni[Other](0u64)), "a second sink is refused");
+  emitAll("default info");
+
+  expect(trace.setLevel("net", Level.Trace), "net is named");
+  emitAll("net trace");
+  expect(trace.levelOf("net") == Level.Trace, "net is at Trace");
+  expect(trace.levelOf("app") == Level.Info, "app has the default, Info");
+  expect(trace.levelOf("elsewhere") == Level.Info, "an unnamed target has the default");
+
+  trace.setLevel("app", Level.Off);
+  trace.setDefaultLevel(Level.Error);
+  emitAll("app off, default error");
+
+  trace.setLevel("app", Level.Warn);
+  trace.setLevel("net", Level.Warn);
+  emitAll("both warn");
+
+  trace.setLevel("app", Level.Debug);
+  wantDebug = false;
+  trace.setLevel("app", Level.Debug);
+  emitAll("app debug, the sink refusing Debug");
+  wantDebug = true;
+  emitAll("the sink has changed its mind, not yet refreshed");
+  trace.refresh();
+  emitAll("refreshed");
+
+  let before = asked;
+  quiet = true;
+  var i = 0;
+  while i < 1000 {
+    appInfo.emit();
+    i = i + 1;
+  }
+  expectUInt(asked, before, "enabled is asked when a state is worked out, not per event");
+
+  expect(!trace.setLevel("", Level.Info), "an empty target is refused");
+  expect(!trace.setLevel("a-target-name-longer-than-32-bytes", Level.Info), "a target over 32 bytes is refused");
+  expect(trace.setLevel("exactly-thirty-two-bytes-long-ok", Level.Info), "a target of 32 bytes is taken");
+  done()
+}

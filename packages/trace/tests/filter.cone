@@ -1,0 +1,54 @@
+// CONE_TRACE's grammar, through trace.filter: each spec replaces the whole
+// filter, and what it leaves is printed as the levels of four targets and the
+// default, with how many directives were skipped.
+
+mod filter;
+
+import testing use *;
+import stdio use *;
+import trace use Level;
+
+fn show(spec: &str) {
+  let bad = trace.filter(spec);
+  print <- "'", spec, "' -> default ", trace.levelOf("(none)").name(),
+    ", h3 ", trace.levelOf("h3").name(),
+    ", httpclient ", trace.levelOf("httpclient").name(),
+    ", actors ", trace.levelOf("actors").name(),
+    ", my.app ", trace.levelOf("my.app").name();
+  if bad != 0u32 {
+    print <- " (", bad, " skipped)";
+  }
+  print <- "\n";
+}
+
+fn main() i32 {
+  show("");
+  show("info");
+  show("httpclient=debug,actors=info");
+  show("warn,h3=trace");
+  show("h3");
+  show("  httpclient = DEBUG ,  , Actors=Info,actors=Error ");
+  show("my.app=debug,info,my.app=off");
+  show("off");
+  show("Trace");
+  show("h3=loud,=info,httpclient=,a target name far longer than thirty two bytes=info,actors=warn");
+  show("two words=info,error");
+  show("h3=info=debug");
+  show("warn,error");
+
+  // A later spec replaces what an earlier one and the program set
+  trace.setLevel("httpclient", Level.Trace);
+  show("actors=debug");
+
+  // 32 targets fit, a 33rd is skipped
+  var spec = trace.Message();
+  var i = 0u64;
+  while i < 33u64 {
+    spec <- "t", i, ",";            // a bare target: Trace
+    i = i + 1u64;
+  }
+  expectUInt(u64.from(trace.filter(spec.text())), 1u64, "a 33rd target is skipped");
+  expect(trace.levelOf("t31") == Level.Trace, "the 32nd target is set");
+  expect(trace.levelOf("t32") == Level.Off, "the 33rd is not");
+  done()
+}

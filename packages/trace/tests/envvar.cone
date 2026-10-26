@@ -1,0 +1,48 @@
+// CONE_TRACE, read when the sink is installed: it replaces what the program
+// set before, a malformed directive in it is skipped, and the program may
+// change levels afterwards.
+
+mod envvar;
+
+import testing use *;
+import stdio use *;
+import env;
+import trace use Level, Kind1;
+
+let fetched: Kind1[u64];
+let parsed: Kind1[u64];
+
+fn @initpure init() {
+  fetched = Kind1[u64].make("fetched", "httpclient", Level.Debug, "bytes");
+  parsed = Kind1[u64].make("parsed", "json", Level.Info, "fields");
+}
+
+struct Names is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {
+    print <- " ", e.kind.name;
+  }
+}
+
+fn emitBoth(label: &str) {
+  print <- label, ":";
+  fetched.emit(100);
+  parsed.emit(7);
+  print <- "\n";
+}
+
+fn main() i32 {
+  env.set("CONE_TRACE", " httpclient=debug , json=loud ");
+  trace.setLevel("json", Level.Trace);         // the program's, replaced
+  trace.setDefaultLevel(Level.Info);           // and this
+  expect(trace.levelOf("json") == Level.Trace, "before install, the program's level");
+  expect(trace.install(Uni[Names](0u64)), "the sink is installed");
+  expect(trace.levelOf("httpclient") == Level.Debug, "CONE_TRACE named httpclient at debug");
+  expect(trace.levelOf("json") == Level.Off, "its malformed json directive was skipped, and the program's dropped");
+  expect(trace.levelOf("other") == Level.Off, "the default is Off again");
+  emitBoth("from CONE_TRACE");
+  trace.setLevel("json", Level.Info);
+  emitBoth("the program after");
+  done()
+}
