@@ -199,10 +199,8 @@ fn geometry(kind: &TensorType, dims: &Array[u64]) Geometry {
 // Rounds n up to a multiple of a, a power of two
 fn alignUp(n: u64, a: u64) u64 { (n + a - 1u64) & ~(a - 1u64) }
 
-fn failed(c: &mut Cursor) Result[Model, GgufError] {
-  var e = GgufError.make(ErrorKind.Truncated, 0u64, "");
-  e <-> c.err;
-  Error[Model, GgufError](e)
+fn failed(c: Cursor) Result[Model, GgufError] {
+  Error[Model, GgufError](c.(err))
 }
 
 fn problem(kind: ErrorKind, at: u64, reason: &str) Result[Model, GgufError] {
@@ -225,7 +223,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
   }
   c.pos = 4usize;
   let version = c.rd32(file, "the file ends inside the header");
-  if c.failed { return failed(&mut c); }
+  if c.failed { return failed(c); }
   if version == 0x03000000u32 || version == 0x02000000u32 {
     return problem(ErrorKind.BigEndian, 4u64, "this is a big-endian GGUF file, which is not read");
   }
@@ -234,7 +232,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
   }
   let tensorCount = c.rd64(file, "the file ends inside the header");
   let metaCount = c.rd64(file, "the file ends inside the header");
-  if c.failed { return failed(&mut c); }
+  if c.failed { return failed(c); }
   // A key (8 + 0 bytes), a type (4) and a value (1 or more) take 13 bytes at least;
   // a tensor entry (name 8, dimension count 4, one dimension 8, type 4, offset 8) 32
   let left = u64.from(file.len - c.pos);
@@ -270,7 +268,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
     }
     i = i + 1u64;
   }
-  if c.failed { return failed(&mut c); }
+  if c.failed { return failed(c); }
 
   // The alignment
   var alignment = 32u64;
@@ -327,7 +325,7 @@ pub fn parse(file: &Array[u8]) Result[Model, GgufError] {
     }
     i = i + 1u64;
   }
-  if c.failed { return failed(&mut c); }
+  if c.failed { return failed(c); }
 
   // The data: after the table, at the next multiple of the alignment
   var dataStart = alignUp(u64.from(c.pos), alignment);

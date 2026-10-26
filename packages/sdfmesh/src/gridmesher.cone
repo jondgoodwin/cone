@@ -451,7 +451,7 @@ pub struct GridMesher {
         s = s + 1usize;
       }
       if !c.ok {
-        return GridNet.failed(grid, takeBuffer(&mut buffers, 0usize));
+        return GridNet.failed(grid, firstBuffer(buffers));
       }
     }
     let totals = done[0usize].words(answer);
@@ -463,13 +463,12 @@ pub struct GridMesher {
     var outs = List[u32].empty();
     planMesh(&mut plan, grid, vertices, quads, &mut outs);
     if plan.largest() > MaxBufferWords {
-      return GridNet.failed(grid, takeBuffer(&mut buffers, 0usize));
+      return GridNet.failed(grid, firstBuffer(buffers));
     }
     var job2 = Job.make(device);
-    s = 0usize;
-    while s < buffers.len() {
-      job2.give(takeBuffer(&mut buffers, s));
-      s = s + 1usize;
+    s = buffers.len();
+    {
+      each b in buffers.drain() { job2.give(b); }
     }
     while s < plan.kinds.len() {
       job2.give(makeBuffer(device, &plan, s));
@@ -545,12 +544,14 @@ pub struct GridMesher {
   }
 }
 
-// Element i of a list moved out, an empty one left in its place
-fn takeBuffer(list: &mut List[Buffer], i: usize) Buffer {
-  var b = Buffer.none();
-  let r = &mut list[i];
-  b <-> *r;
-  b
+// The first buffer of a list that ends here, the others dropped with it
+fn firstBuffer(list: List[Buffer]) Buffer {
+  var rest = list;
+  var d = rest.drain();
+  match d.next() {
+    case var Some(b) { b }
+    case is None { Buffer.none() }
+  }
 }
 fn takeWords(list: &mut List[List[u32]], i: usize) List[u32] {
   var w = List[u32].empty();
