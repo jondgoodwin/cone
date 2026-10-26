@@ -949,16 +949,20 @@ the `src/` and `gpu/` of each, more than `conec` reads, never less. A build
 whose order holds no `core` (`libc` built on its own) is never skipped, since
 Congo then cannot say where `conec` loads the prelude from.
 
-Linking (step 6) always runs. `congo clean` deletes the keys with the folder,
+Linking (step 6) always runs (on Windows in the environment `vcvars64.bat`
+sets, which Congo keeps: below, "What Congo needs on the machine").
+`congo clean` deletes the keys with the folder,
 and `--no-cache`, given to `build`, `run` or `test`, compiles everything as if
-no build had been there before, and records the keys of what it compiled. If
-a build seems to use what it should not, `--no-cache` is the check.
+no build had been there before, and records the keys of what it compiled; on
+Windows it captures Visual Studio's environment again too. If a build seems
+to use what it should not, `--no-cache` is the check.
 
-Every cache is in a build folder: a package's `build/`, in whatever copy of
-the repository it is built, or a lone file's in the Congo home (below), which
-every copy of the repository shares for a lone file of one path; a key
-holding `conec`'s content, a compiler of another copy compiles everything
-again there.
+Every compile's cache is in a build folder: a package's `build/`, in whatever
+copy of the repository it is built, or a lone file's in the Congo home
+(below), which every copy of the repository shares for a lone file of one
+path; a key holding `conec`'s content, a compiler of another copy compiles
+everything again there. The one thing kept for every build on the machine is
+Visual Studio's environment, in the Congo home (below).
 
 ## What Congo needs on the machine
 
@@ -980,6 +984,23 @@ again there.
   puts its x64 folders in front of what `LIB` still lists. When no Microsoft
   `link.exe` is found even so, the error names the `vcvars64.bat` run, the end
   of what it printed, and the folders searched. Elsewhere, `cc` or `gcc`.
+
+  **What `vcvars64.bat` sets is captured once and kept**, in
+  `msvc-env.json` in the Congo home, since each run of it takes seconds and
+  every build folder's link needed one. The file holds each variable it sets
+  as it set it, with a mark where the value before it ran goes, so that a
+  link's environment is Congo's own with Visual Studio's folders around what
+  `PATH`, `LIB` and the rest already list, as a run would make it, and no
+  batch file runs. Its key is `vcvars64.bat`'s path and the content of the
+  files that decide what it sets (`vcvars64.bat`, `vcvarsall.bat`,
+  `VsDevCmd.bat`, the default tools version beside them) and the Windows SDK
+  versions installed, so a Visual Studio update captures it again. So does a
+  folder its `LIB` names that is gone, no Microsoft `link.exe` found with it,
+  a link that fails as a stale environment makes one fail (`link.exe` could
+  not run, or could not open a library no package of the build names; the
+  link is then done once more, and its error says so), and `--no-cache`.
+  An inherited x64 environment is used as it is, and an x86 one is converted
+  by a run of `vcvars64.bat` each time, as before.
 
 What these tools print, Congo reads in the encoding each writes: `conec`'s
 messages, and `vswhere`'s answer (asked with `-utf8`), as UTF-8; what
@@ -1047,7 +1068,13 @@ include file or a key gone or changed; debug, release and `-D` defines;
 `conec` and `conestd` changed where they stand; a compile that fails, and
 Congo killed while `conec` runs, leaving no key; `--no-cache`; `congo clean`;
 a test program compiled only when it changes; and a kernel compiled again when
-the source of a package it inlines changes, though its own object is not).
+the source of a package it inlines changes, though its own object is not), and
+the kept Visual Studio environment (Windows: a variable's template keeping
+what the environment lists around Visual Studio's folders; the key following
+an update of the batch files or the tools version; captured once, then used
+with no run of `vcvars64.bat`, and captured again for another key, a `LIB`
+folder gone, no `link.exe`, a link that cannot open the C runtime's libraries,
+and `--no-cache`, but not for a library a package names that is missing).
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo, and does not run
 the packages' tests: `congo test` in `packages/` does.

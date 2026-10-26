@@ -11,6 +11,7 @@ it prints from, not copied from a run.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -3349,6 +3350,188 @@ class BuildCache(unittest.TestCase):
         self.assertEqual(entry_points(spv), ["halve"])
         self.assertEqual(compiled(self.congo("build", "--no-cache", cwd=kern)),
                          ["libc", "core", "scale", "kern", "kern for the GPU"])
+
+
+def clean_environment() -> dict[str, str]:
+    """This process's environment as a plain console's would be: no Visual
+    Studio environment (a test may run in one) and no link.exe on PATH, so
+    that Congo takes the environment from vcvars64.bat, or its cache of it.
+    PATH holds Windows' own folders and Python's."""
+    keep = ("SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP",
+            "USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+            "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+            "CommonProgramFiles", "CommonProgramFiles(x86)", "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE", "OS")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    root = env.get("SystemRoot", r"C:\Windows")
+    env["PATH"] = ";".join([str(Path(sys.executable).parent), rf"{root}\System32", root,
+                            rf"{root}\System32\Wbem",
+                            rf"{root}\System32\WindowsPowerShell\v1.0"])
+    return env
+
+
+@unittest.skipUnless(IS_WINDOWS, "vcvars64.bat is Visual Studio's, on Windows")
+class MsvcEnvironmentCache(unittest.TestCase):
+    """What vcvars64.bat sets, captured once into <Congo home>/msvc-env.json
+    and applied to each link's environment with no batch file run; captured
+    again for a Visual Studio update, a folder gone, no link.exe, a link that
+    fails the way a stale environment does, and --no-cache."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.saved = os.environ.get("CONGO_HOME")
+        os.environ["CONGO_HOME"] = str(self.home)
+        self.runs = 0
+        real = congo.Linker.run_vcvars
+
+        def counted(base, vcvars=None):
+            self.runs += 1
+            return real(base, vcvars)
+
+        self.real = real
+        congo.Linker.run_vcvars = staticmethod(counted)
+
+    def tearDown(self):
+        congo.Linker.run_vcvars = staticmethod(self.real)
+        congo.USE_CACHE[0] = True
+        if self.saved is None:
+            os.environ.pop("CONGO_HOME", None)
+        else:
+            os.environ["CONGO_HOME"] = self.saved
+        self.tmp.cleanup()
+
+    def test_a_template_keeps_the_environment_around_it(self):
+        templates = {"LIB": "A;B;<congo:base>", "PATH": "V;<congo:base>;W", "VSCMD_VER": "17"}
+        env = congo.MsvcEnvironment.apply(templates, {"Lib": r"C:\sdl3", "Path": "P", "X": "1"})
+        # In the base's spelling of each name, which Windows does not tell apart
+        self.assertEqual(env, {"Lib": r"A;B;C:\sdl3", "Path": "V;P;W", "X": "1",
+                               "VSCMD_VER": "17"})
+        self.assertEqual(congo.MsvcEnvironment.apply(templates, {"Path": "P"})["LIB"], "A;B")
+
+    def test_the_key_follows_visual_studio(self):
+        install = self.root / "VS"
+        build = install / "VC" / "Auxiliary" / "Build"
+        write(build / "vcvars64.bat", '@call "%~dp0vcvarsall.bat" x64 %*\n')
+        write(build / "vcvarsall.bat", "@rem vcvarsall\n")
+        write(build / "Microsoft.VCToolsVersion.default.txt", "14.42.34433\n")
+        write(install / "Common7" / "Tools" / "VsDevCmd.bat", "@rem VsDevCmd\n")
+        vcvars = str(build / "vcvars64.bat")
+        key = congo.MsvcEnvironment.key
+        first = key(vcvars)
+        self.assertEqual(key(vcvars), first)
+        # An update of the tools, or of any batch file that sets them
+        for file, text in (("Microsoft.VCToolsVersion.default.txt", "14.44.35207\n"),
+                           ("vcvarsall.bat", "@rem vcvarsall, updated\n"),
+                           ("vcvars64.bat", '@call "%~dp0vcvarsall.bat" x64 %* \n')):
+            before = key(vcvars)
+            write(build / file, text)
+            self.assertNotEqual(key(vcvars), before, file)
+        before = key(vcvars)
+        write(install / "Common7" / "Tools" / "VsDevCmd.bat", "@rem VsDevCmd, updated\n")
+        self.assertNotEqual(key(vcvars), before)
+        # Another installation, the same files
+        other = self.root / "VS2"
+        shutil.copytree(install, other)
+        self.assertNotEqual(key(str(other / "VC" / "Auxiliary" / "Build" / "vcvars64.bat")),
+                            key(vcvars))
+
+    def linker(self, **base) -> congo.Linker:
+        return congo.Linker(congo.conestd_path(congo.REPO_CONEC), {**clean_environment(), **base})
+
+    def made(self) -> tuple[int, bool]:
+        """A Linker made: how many runs of vcvars64.bat there have been since
+        the test began, and whether its environment came from the cache."""
+        linker = self.linker()
+        return self.runs, linker.cached
+
+    def edit(self, change) -> None:
+        file = congo.MsvcEnvironment.path()
+        data = json.loads(file.read_text(encoding="utf-8"))
+        change(data)
+        file.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_the_environment_is_captured_once_and_captured_again_when_stale(self):
+        first = self.linker()
+        self.assertEqual((self.runs, first.cached), (1, False))
+        self.assertTrue(congo.MsvcEnvironment.path().is_file())
+        self.assertTrue(first.tool.lower().endswith("link.exe"))
+        # Kept: no run, and what the environment lists kept behind Visual
+        # Studio's folders, as a run would keep it
+        again = self.linker(LIB=r"C:\mine")
+        self.assertEqual((self.runs, again.cached), (1, True))
+        self.assertEqual(again.tool, first.tool)
+        lib = congo.env_value(again.env, "LIB")
+        self.assertTrue(lib.endswith(r";C:\mine"), lib)
+        self.assertEqual(lib[:-len(r";C:\mine")], congo.env_value(first.env, "LIB"))
+        self.assertEqual(congo.env_value(again.env, "VSCMD_ARG_TGT_ARCH"), "x64")
+        # Another key, as a Visual Studio update makes: captured again
+        self.edit(lambda data: data.update(key="0" * 64))
+        self.assertEqual(self.made(), (2, False))
+        self.assertEqual(self.linker().cached, True)
+        # A folder LIB names is gone: captured again
+        self.edit(lambda data: data["variables"].update(
+            LIB=r"C:\congo-no-such-folder;" + data["variables"]["LIB"]))
+        self.assertEqual(self.made(), (3, False))
+        # No link.exe in it: captured again, once
+        self.edit(lambda data: data["variables"].update(PATH="<congo:base>"))
+        recaught = self.linker()
+        self.assertEqual((self.runs, recaught.cached, recaught.recaptured), (4, True, True))
+        self.assertTrue(recaught.tool.lower().endswith("link.exe"))
+        self.assertEqual(self.linker().cached, True)
+        # --no-cache: captured again
+        congo.USE_CACHE[0] = False
+        self.assertEqual(self.made(), (5, False))
+
+    def test_a_link_that_fails_for_the_environment_captures_it_again(self):
+        env = {**clean_environment(), "CONGO_HOME": str(self.home)}
+
+        def run(pkg: Path, ok: bool = True) -> subprocess.CompletedProcess:
+            done = subprocess.run([*CONGO, "run"], cwd=pkg, env=env, capture_output=True,
+                                  text=True)
+            if ok:
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            return done
+
+        hello = self.root / "hello"
+        write(hello / "congo.toml",
+              '[package]\nname = "hello"\nversion = "0.1.0"\noutput = "executable"\n')
+        write(hello / "src" / "hello.cone", """
+            mod hello;
+
+            import stdio;
+
+            fn main() i32 {
+              stdio.print <- "hello\\n";
+              0i32
+            }
+            """)
+        file = congo.MsvcEnvironment.path()
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertTrue(file.is_file())
+        stamp = file.stat().st_mtime_ns
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertEqual(file.stat().st_mtime_ns, stamp, "captured again with nothing stale")
+        # LIB without Visual Studio's and the SDK's folders: link.exe cannot
+        # open the C runtime's libraries, which no package names, so the
+        # environment is captured again and the link done again
+        self.edit(lambda data: data["variables"].update(LIB="<congo:base>"))
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertIn(r"\lib\x64", json.loads(file.read_text())["variables"]["LIB"])
+        # A library a package names missing is the build's own fault: no
+        # capture, and the link's error
+        stamp = file.stat().st_mtime_ns
+        needy = self.root / "needy"
+        write(needy / "congo.toml",
+              '[package]\nname = "needy"\nversion = "0.1.0"\noutput = "executable"\n\n'
+              '[link]\nlibraries = ["congonosuchlib"]\n')
+        write(needy / "src" / "needy.cone", "mod needy;\n\nfn main() i32 {\n  0i32\n}\n")
+        failed = run(needy, ok=False)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("congonosuchlib.lib", failed.stderr)
+        self.assertNotIn("linked twice", failed.stderr)
+        self.assertEqual(file.stat().st_mtime_ns, stamp)
 
 
 @unittest.skipUnless(shutil.which("git"), "Congo fetches packages with git")

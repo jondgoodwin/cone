@@ -15,7 +15,9 @@
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
 They take --no-cache too: a compile is otherwise skipped where nothing it reads
-has changed since it last succeeded in that build folder ("The build cache").
+has changed since it last succeeded in that build folder ("The build cache"),
+and on Windows the environment vcvars64.bat sets is taken from the Congo home
+(MsvcEnvironment).
 
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
 package's folders and reads each source file's header -- its leading comments,
@@ -1544,6 +1546,157 @@ def without_vs_libs(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+class MsvcEnvironment:
+    """What vcvars64.bat does to an environment, captured once and kept in the
+    Congo home, <Congo home>/msvc-env.json, so that a link needs no run of it:
+    each run takes seconds, and every build folder's link needed one.
+
+    The file holds, for each variable vcvars64.bat sets or changes, its value
+    as a TEMPLATE in which <congo:base> stands for the variable's value before
+    vcvars64.bat ran: so PATH, LIB and the rest keep whatever the environment
+    Congo starts from lists (SDL3's lib folder on LIB, say) behind or around
+    Visual Studio's, as a run of vcvars64.bat would. The list variables are
+    given a marker for their value while it runs, so that where it puts the
+    base is found even where there was none.
+
+    The file is KEYED by vcvars64.bat's path and the content of the files that
+    decide what it sets: vcvars64.bat, vcvarsall.bat, VsDevCmd.bat, the
+    default tools version files beside vcvars64.bat, and the Windows SDK
+    versions installed. A Visual Studio update changes the key, and the
+    environment is captured again. One whose LIB names a folder that is gone,
+    or in which no Microsoft link.exe is found, or with which a link fails
+    the way a broken environment does (Linker.environmental), is captured
+    again once. '--no-cache' captures it again too. Used only where Congo
+    runs vcvars64.bat itself: an inherited x64 environment is used as it is,
+    and an x86 Developer Command Prompt's is converted by a run, as before."""
+
+    FILE = "msvc-env.json"
+    FORMAT = 1
+    BASE = "<congo:base>"
+    # The lists vcvars64.bat adds its folders to; PATH is one too, and is
+    # never empty
+    LISTS = ("LIB", "LIBPATH", "INCLUDE", "EXTERNAL_INCLUDE")
+    MARK = r"C:\congo-msvc-environment-base"
+
+    @staticmethod
+    def path() -> Path:
+        return congo_home() / MsvcEnvironment.FILE
+
+    @staticmethod
+    def key(vcvars: str) -> str:
+        build = Path(vcvars).parent                     # VC\Auxiliary\Build
+        files = [Path(vcvars), build / "vcvarsall.bat",
+                 *sorted(build.glob("Microsoft.VCToolsVersion*.txt")),
+                 build.parents[2] / "Common7" / "Tools" / "VsDevCmd.bat"]
+        lines = [f"format {MsvcEnvironment.FORMAT}", f"vcvars {os.path.normcase(vcvars)}"]
+        lines += [f"{f.name} {content_hash(f) if f.is_file() else 'absent'}" for f in files]
+        kits = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) \
+            / "Windows Kits" / "10" / "Lib"
+        sdks = sorted(p.name for p in kits.iterdir() if p.is_dir()) if kits.is_dir() else []
+        lines.append("sdks " + " ".join(sdks))
+        return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def capture(base: dict[str, str], vcvars: str) -> tuple[dict[str, str], tuple[str, str]]:
+        """Run vcvars64.bat over base: the templates of what it set, and the
+        run (the batch file and what it printed)."""
+        probe = dict(base)
+        spelled = {k.upper(): k for k in probe}
+        for name in MsvcEnvironment.LISTS:
+            probe[spelled.get(name, name)] = MsvcEnvironment.MARK
+        env, ran = Linker.run_vcvars(probe, vcvars)
+        templates: dict[str, str] = {}
+        for name, value in env.items():
+            upper = name.upper()
+            before = env_value(probe, name)
+            # What a run keeps of the environment it started in, to undo it
+            if upper.startswith("__VSCMD_PREINIT") or value == before:
+                continue
+            if upper in MsvcEnvironment.LISTS:
+                value = value.replace(MsvcEnvironment.MARK, MsvcEnvironment.BASE)
+            elif before:
+                value = value.replace(before, MsvcEnvironment.BASE)
+            templates[name] = value
+        return templates, ran
+
+    @staticmethod
+    def apply(templates: dict[str, str], base: dict[str, str]) -> dict[str, str]:
+        """base with what vcvars64.bat set: each template with base's own value
+        in place of <congo:base>, an empty one taken out with its ';'."""
+        env = dict(base)
+        spelled = {k.upper(): k for k in env}
+        mark = MsvcEnvironment.BASE
+        for name, template in templates.items():
+            now = env_value(base, name) or ""
+            value = (template.replace(mark, now) if now else
+                     template.replace(";" + mark, "").replace(mark + ";", "").replace(mark, ""))
+            env[spelled.get(name.upper(), name)] = value
+        return env
+
+    @staticmethod
+    def load(key: str) -> dict[str, str] | None:
+        try:
+            data = json.loads(MsvcEnvironment.path().read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        templates = data.get("variables") if isinstance(data, dict) else None
+        if (data.get("key") != key or not isinstance(templates, dict)
+                or not all(isinstance(k, str) and isinstance(v, str)
+                           for k, v in templates.items())):
+            return None
+        # A folder LIB names that is gone (an SDK removed): captured again
+        lib = next((v for k, v in templates.items() if k.upper() == "LIB"), "")
+        if not all(Path(entry).is_dir() for entry in lib.split(";")
+                   if entry and entry != MsvcEnvironment.BASE):
+            return None
+        return templates
+
+    @staticmethod
+    def save(key: str, vcvars: str, templates: dict[str, str]) -> None:
+        """Written whole or not at all; a home that cannot be written keeps
+        nothing, and the next link runs vcvars64.bat again."""
+        path = MsvcEnvironment.path()
+        partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial.write_text(json.dumps({"format": MsvcEnvironment.FORMAT, "key": key,
+                                           "vcvars": vcvars, "variables": templates},
+                                          indent=1, sort_keys=True), encoding="utf-8")
+            os.replace(partial, path)
+        except OSError:
+            partial.unlink(missing_ok=True)
+
+    @staticmethod
+    def recorded_vcvars() -> str | None:
+        """The vcvars64.bat the file was captured from, where it is still there:
+        so that a link need not ask vswhere where Visual Studio is."""
+        try:
+            vcvars = json.loads(MsvcEnvironment.path().read_text(encoding="utf-8")).get("vcvars")
+        except (OSError, UnicodeDecodeError, ValueError, AttributeError):
+            return None
+        return vcvars if isinstance(vcvars, str) and Path(vcvars).is_file() else None
+
+    @staticmethod
+    def environment(base: dict[str, str], fresh: bool = False
+                    ) -> tuple[dict[str, str], tuple[str, str] | None, bool]:
+        """vcvars64.bat's environment over base: (the environment, the run of
+        vcvars64.bat where there was one, whether it came from the file).
+        'fresh' captures it again whatever the file holds."""
+        if not fresh:
+            vcvars = MsvcEnvironment.recorded_vcvars()
+            if vcvars is not None:
+                key = MsvcEnvironment.key(vcvars)
+                templates = MsvcEnvironment.load(key)
+                if templates is not None:
+                    return MsvcEnvironment.apply(templates, base), None, True
+        vcvars = find_vcvars()
+        if vcvars is None:
+            raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
+        templates, ran = MsvcEnvironment.capture(base, vcvars)
+        MsvcEnvironment.save(MsvcEnvironment.key(vcvars), vcvars, templates)
+        return MsvcEnvironment.apply(templates, base), ran, False
+
+
 class Linker:
     """The system linker, with the environment it needs. On Windows that is
     Microsoft's link.exe in the environment vcvars64.bat sets up, which Congo
@@ -1552,27 +1705,70 @@ class Linker:
     as conec's objects are: Visual Studio's default Developer Command Prompt
     links for x86."""
 
-    def __init__(self, conestd: Path):
+    def __init__(self, conestd: Path, base: dict[str, str] | None = None):
+        """'base' is the environment Congo starts from, its own by default."""
         self.conestd = conestd
-        self.env = dict(os.environ)
+        self.base = dict(os.environ) if base is None else dict(base)
+        self.env = dict(self.base)
+        # Whether the environment came from the cache in the Congo home, and
+        # whether it has been captured again since (MsvcEnvironment)
+        self.cached = self.recaptured = False
         if IS_WINDOWS:
             ran: tuple[str, str] | None = None     # vcvars64.bat, and what it printed
-            inherited = shutil.which("link.exe")
+            inherited = shutil.which("link.exe", path=env_value(self.base, "PATH") or "")
             if not (inherited and is_msvc_linker(inherited)):
-                self.env, ran = self.run_vcvars(self.env)
+                self.env, ran, self.cached = MsvcEnvironment.environment(
+                    self.base, fresh=not USE_CACHE[0])
             elif msvc_target(inherited, self.env) not in (None, "x64"):
                 # Silently, as when there is no linker: nothing is the user's to fix
                 self.env, ran = self.run_vcvars(without_vs_libs(self.env))
-            path = env_value(self.env, "PATH") or ""
-            tool = shutil.which("link.exe", path=path)
-            if tool is None or not is_msvc_linker(tool):
-                raise CongoError(self.no_linker(tool, path, ran))
+            tool = self.find_tool()
+            if tool is None and self.recapture():
+                tool = self.find_tool()
+            if tool is None:
+                path = env_value(self.env, "PATH") or ""
+                found = shutil.which("link.exe", path=path)
+                raise CongoError(self.no_linker(found, path, ran or self.ran))
             self.tool = tool
         else:
             tool = shutil.which("cc") or shutil.which("gcc")
             if tool is None:
                 raise CongoError("no cc or gcc on PATH to link with")
             self.tool = tool
+
+    ran: tuple[str, str] | None = None      # the run of vcvars64.bat a recapture made
+
+    def find_tool(self) -> str | None:
+        """Microsoft's link.exe on the environment's PATH, or None."""
+        tool = shutil.which("link.exe", path=env_value(self.env, "PATH") or "")
+        return tool if tool is not None and is_msvc_linker(tool) else None
+
+    def recapture(self) -> bool:
+        """Where the environment came from the cache and has not been captured
+        again yet, capture it again from vcvars64.bat, replacing the cache, and
+        find link.exe in it; whether that was done. Once a Linker, so that an
+        environment that is not the trouble costs one run of vcvars64.bat."""
+        if not self.cached or self.recaptured:
+            return False
+        self.recaptured = True
+        self.env, self.ran, _ = MsvcEnvironment.environment(self.base, fresh=True)
+        tool = self.find_tool()
+        if tool is not None:
+            self.tool = tool
+        return True
+
+    def environmental(self, said: str, code: int | None, libraries: list[str]) -> bool:
+        """Whether a failed link looks like the environment's fault rather than
+        the build's: link.exe could not run, or ended with a status of
+        Windows' own (a DLL of its own not found), or could not open a library
+        that no package of the build names (the C runtime's, the Windows SDK's)."""
+        if code is None or code & 0xFFFFFFFF >= 0xC0000000:
+            return True
+        named = {f"{lib}.lib".lower() for lib in libraries}
+        for file in re.findall(r"cannot open (?:input )?file '([^']+)'", said):
+            if file.lower().endswith(".lib") and Path(file).name.lower() not in named:
+                return True
+        return False
 
     @staticmethod
     def no_linker(tool: str | None, path: str, ran: tuple[str, str] | None) -> str:
@@ -1599,10 +1795,11 @@ class Linker:
         return Linker.run_vcvars(dict(os.environ) if base is None else base)[0]
 
     @staticmethod
-    def run_vcvars(base: dict[str, str]) -> tuple[dict[str, str], tuple[str, str]]:
+    def run_vcvars(base: dict[str, str], vcvars: str | None = None
+                   ) -> tuple[dict[str, str], tuple[str, str]]:
         """vcvars64.bat's environment, run in base, and the batch file with what
         it printed, which a failure to find link.exe shows."""
-        vcvars = find_vcvars()
+        vcvars = vcvars or find_vcvars()
         if vcvars is None:
             raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
         # A single string, not a list: list2cmdline would escape the quotes
@@ -2287,20 +2484,36 @@ class Session:
                 except OSError:
                     pass
                 raise
-        command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
+        linked = [objs[-1], *reversed(objs[:-1])]
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
-        result = subprocess.run(command, env=linker.env, capture_output=True)
-        if result.returncode != 0:
+
+        def run_link() -> tuple[list[str], int | None, str]:
+            command = linker.command(linked, exe, libraries, paths)
+            try:
+                result = subprocess.run(command, env=linker.env, capture_output=True)
+            except OSError as exc:
+                return command, None, f"{command[0]} could not run: {exc}\n"
+            return (command, result.returncode,
+                    console_text(result.stdout) + console_text(result.stderr))
+
+        command, code, said = run_link()
+        again = ""
+        # A link that failed the way a stale Visual Studio environment makes
+        # one fail is tried once more, in the environment captured afresh
+        if code != 0 and linker.environmental(said, code, libraries) and linker.recapture():
+            command, code, said = run_link()
+            again = ("\n(linked twice: the second time in Visual Studio's environment captured"
+                     " again from vcvars64.bat)")
+        if code != 0:
             named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
                               for u in units if u.pkg.libraries)
             where = ("the folders the LIB environment variable lists" if IS_WINDOWS
                      else "the linker's own search path")
             hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
                     f" folders [link] paths names, then in {where}" if named else "")
-            raise CongoError(f"link failed:\n{' '.join(command)}\n{console_text(result.stdout)}"
-                             f"{console_text(result.stderr)}{hint}")
+            raise CongoError(f"link failed:\n{' '.join(command)}\n{said}{hint}{again}")
         for name, source in runtime.items():
             if copy_runtime(source, exe.parent, name) and announce:
                 say("Copying", shown(source))
@@ -2959,9 +3172,11 @@ def add_define_argument(parser: argparse.ArgumentParser) -> None:
 
 def add_cache_argument(parser: argparse.ArgumentParser) -> None:
     """'--no-cache': compile every package of the build, as if no compile
-    before had left anything (README.md, "What a build does")."""
+    before had left anything (README.md, "What a build does"), and capture
+    Visual Studio's environment afresh (MsvcEnvironment)."""
     parser.add_argument("--no-cache", action="store_true",
-                        help="compile everything, whatever an earlier build left")
+                        help="compile everything, whatever an earlier build left, and"
+                             " capture Visual Studio's environment again")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
