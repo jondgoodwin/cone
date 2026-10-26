@@ -738,6 +738,11 @@ enum ErrorCode {
     ErrorFldListUnknown = 1525, // A field list naming something the value has not: a name that is not a field of the struct (the message lists the fields), a field the struct holds through another, or a tuple element past the end. Pointed at the entry
     ErrorFldListFinal = 1526,   // A field list taking apart a value whose type has a finalizer: the finalizer needs all of the value, so it cannot be taken apart, in or outside the type's module. Its fields are read through a borrow, or the whole value moved. Pointed at the list
     ErrorFldListType = 1527,    // A field list on a value that has no fields to name (a number, an array, a function), which includes a generic's body instantiated with such a type. Pointed at the list
+    ErrorQuesOperand = 1528,    // `x?` where `x` is neither a Result nor an Option (a reference to one included: `?` takes the value). Pointed at the '?'
+    ErrorQuesReturn = 1529,     // `x?` in a function that returns no Result (for a Result) or no Option (for an Option) for the failure to go to, the message naming what it returns; in a closure whose return type is not written; in a generator. `x.unwrap()` or `x.expect("why")` trusts the value instead. Pointed at the '?'
+    ErrorQuesConvert = 1530,    // `x?` on a Result whose error type the function's error type cannot take: they are not the same, the destination declares no `from` taking it, and no variant of the destination holds it. Pointed at the '?'
+    ErrorQuesAmbiguous = 1531,  // `x?` on a Result whose error the function's error enum could wrap in two or more variants that each hold that type, and no `from` takes it: which is meant is the programmer's to say, with an `overload from`. The message names two of them. Pointed at the '?'
+    ErrorMainResult = 1532,     // A `main` returning `Result[T, E]` whose `E` has no `message()` method for the program to print the error with when `main` fails. Pointed at the return type
 
     // Warnings
     WarnCode = 3000,

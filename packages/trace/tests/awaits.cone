@@ -1,0 +1,141 @@
+// An interval across an 'await': an Asker's behaviour begins an interval,
+// awaits a Squarer's answer, and ends it, 12 times on 3 workers. Nothing is
+// held on a stack, so each end finds its begin by the id alone, wherever the
+// continuation runs. The actors runtime's context reaches the events through a
+// provider the test registers, as the actors package will: the worker each
+// event was made on.
+
+mod awaits;
+
+import testing use *;
+import actors;
+import trace use Level, Kind1, Context;
+
+let request: Kind1[u64];
+
+fn @initpure init() {
+  request = Kind1[u64].make("request", "awaits", Level.Info, "i");
+  begins = Atomic[usize].of(RawBlocks.alloc(most * mem.sizeof[Seen](), 16usize) as usize);
+  ends = Atomic[usize].of(RawBlocks.alloc(most * mem.sizeof[Seen](), 16usize) as usize);
+  nbegins = Atomic[u64].of(0u64);
+  nends = Atomic[u64].of(0u64);
+}
+
+actor Squarer {
+  pub async fn square(self, n: u64) u64 {n * n}
+}
+
+actor Asker {
+  sq: Squarer;
+  got: u64 = 0u64;
+
+  pub async fn many(self, n: u64) {
+    var i = 1u64;
+    while i <= n {
+      selfactor.one(i);
+      i = i + 1u64;
+    }
+  }
+
+  pub async fn one(self, i: u64) {
+    let span = request.begin(i);
+    let s = await sq.square(i);
+    got = got + s;
+    request.end(span);
+  }
+}
+
+const most = 64usize;
+
+// What the sink saw, an entry per event: the interval's id, the field (begins
+// only) and the worker; written by many workers at once, each to an entry of
+// its own
+struct Seen {
+  span: u64;
+  value: u64;
+  worker: u32;
+}
+
+let begins: Atomic[usize];       // the entries: Seen, most of each
+let ends: Atomic[usize];
+let nbegins: Atomic[u64];
+let nends: Atomic[u64];
+
+struct Recorder is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {
+    let isBegin = e.phase == trace.Phase.Begin;
+    let n = if isBegin {nbegins.add(1u64)} else {nends.add(1u64)};
+    if usize.from(n) >= most {
+      return;
+    }
+    var v = 0u64;
+    if isBegin {
+      match e.values[0] {
+        case let U64(x) {v = x;}
+        else {}
+      }
+    }
+    let base = if isBegin {begins.load()} else {ends.load()};
+    mem.writeRaw[Seen]((base as *Seen) + usize.from(n), Seen(e.span, v, e.ctx.worker));
+  }
+}
+
+fn provider() Context {
+  Context(actors.workerIndex(), actors.traceCause())
+}
+
+fn seen(base: usize, i: usize) Seen {
+  mem.readRaw[Seen]((base as *Seen) + i)
+}
+
+fn main() i32 {
+  actors.configure(actors.Options(workers: 3u32));
+  trace.setContextProvider(&provider);
+  expect(trace.install(Uni[Recorder](0u64)), "the sink is installed");
+  trace.setLevel("awaits", Level.Info);
+  {
+    let sq = Squarer();
+    let a = Asker(sq);
+    a.many(12u64);
+    actors.waitUntilIdle();
+  }
+  requireUInt(nbegins.load(), 12u64, "12 intervals begun");
+  requireUInt(nends.load(), 12u64, "12 ended");
+  var matched = 0u64;
+  var distinct = true;
+  var valuesSeen = 0u64;           // bit i: the interval of field i was begun
+  var onWorkers = true;
+  var i = 0usize;
+  while i < 12usize {
+    let b = seen(begins.load(), i);
+    valuesSeen = valuesSeen | (1u64 << b.value);
+    if b.span == 0u64 {
+      distinct = false;
+    }
+    if b.worker >= 3u32 {
+      onWorkers = false;
+    }
+    var j = 0usize;
+    while j < 12usize {
+      if j != i && seen(begins.load(), j).span == b.span {
+        distinct = false;
+      }
+      let e = seen(ends.load(), j);
+      if e.span == b.span {
+        matched = matched + 1u64;
+        if e.worker >= 3u32 {
+          onWorkers = false;
+        }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  expect(distinct, "every interval has an id of its own, not 0");
+  expectUInt(matched, 12u64, "every begin has exactly one end with its id");
+  expectUInt(valuesSeen, 0x1FFEu64, "the begins carry the fields 1 to 12");
+  expect(onWorkers, "every event names the worker it was made on, from the provider");
+  done()
+}
