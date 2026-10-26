@@ -1,0 +1,188 @@
+// A 'return' ending a plain block nested in another construct ends the path
+// there: nothing after it runs, not the jump from an 'if''s branch to its end,
+// not a loop's jump back to its start, not the rest of an expression the block
+// is part of. Generation once kept a branch's jump to the 'if''s end after
+// such a 'return', in the same basic block, and LLVM, which takes a block's
+// last instruction as its terminator, dropped the 'return': 'fn x(c: bool)
+// i32 { if c { { return 7; } } 0 }' gave 0 for x(true).
+//
+// Each function returns from inside a plain block in one place a block can
+// be: an 'if''s branch and its 'else', an 'else if', a bound 'if', a block
+// several deep, a function's body, a loop's body and an 'if' in one, a block
+// whose value is bound, a call's argument and a returned value, an inline
+// function's body and a closure's. Beside each, a path that does not take
+// the 'return', so the run shows both. A 'break' or 'continue' cannot end a
+// plain block (ErrorBadStmt), so those leave through a conditional block in
+// one: the controls at the end. The finalizer prints its number, so the run
+// also shows each local released once as the 'return' leaves, and the
+// function's own locals with it.
+//
+// Matches are enum's; a call that does not return, exception's; a
+// generator's 'return', corout's; a let-else's 'else', enum's.
+
+mod core_jump_nested_block;
+
+import stdio use *;
+
+struct Fin {
+  pub id: i32;
+  fn final(self: &uni) {
+    printStr("fin");
+    printInt(i64.from(self.id));
+    printStr(" ");
+  }
+}
+
+fn show(label: &str, n: i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn add(a: i32, b: i32) i32 { a + b }
+
+fn ifBranch(c: bool) i32 {
+  if c { { return 7; } }
+  0
+}
+
+fn elseBranch(c: bool) i32 {
+  if c { printStr(""); } else { { return 8; } }
+  0
+}
+
+fn elseIf(n: i32) i32 {
+  if n == 1 { printStr(""); } else if n == 2 { { return 9; } } else { printStr(""); }
+  0
+}
+
+fn boundIf(c: bool) i32 {
+  let v = if c { { return 10; } } else { 3 };
+  v + 100
+}
+
+fn deep(c: bool) i32 {
+  if c { { { { return 11; } } } }
+  0
+}
+
+fn body() i32 {
+  { return 12; }
+}
+
+fn locals(c: bool) i32 {
+  let a = Fin(1);
+  if c {
+    let b = Fin(2);
+    {
+      let d = Fin(3);
+      return d.id * 100 + b.id * 10 + a.id;
+    }
+  }
+  a.id
+}
+
+fn loopIf() i32 {
+  var i = 0;
+  while i < 10 {
+    i = i + 1;
+    if i == 3 { { return i * 10; } }
+  }
+  0
+}
+
+fn loopBody(n: i32) i32 {
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    { return i * 20; }
+  }
+  i
+}
+
+fn boundBlock(c: bool) i32 {
+  let v = { if c { { return 14; } } 5 };
+  v + 100
+}
+
+fn initializer(c: bool) i32 {
+  if c {
+    let v: i32 = { return 15; };
+    return v + 100;
+  }
+  0
+}
+
+fn argument(c: bool) i32 {
+  if c { return add(1, { return 16; }); }
+  add(1, 2)
+}
+
+fn returned(c: bool) i32 {
+  if c { return { return 17; }; }
+  0
+}
+
+fn half(n: i32) i32 inline {
+  if n < 0 { { return 0; } }
+  n / 2
+}
+
+fn closure(c: bool) i32 {
+  let f = fn(k: bool) i32 { if k { { return 18; } } 6 };
+  f(c)
+}
+
+// Controls: a 'break' and a 'continue' in a conditional block inside another
+fn breakIn() i32 {
+  var i = 0;
+  while i < 10 {
+    i = i + 1;
+    if i == 3 { if i > 0 { break; } }
+  }
+  i
+}
+
+fn continueIn() i32 {
+  var i = 0;
+  var n = 0;
+  while i < 10 {
+    i = i + 1;
+    if i > 2 { if i > 0 { continue; } else { continue; } }
+    n = n + 1;
+  }
+  n
+}
+
+fn main() i32 {
+  show("if-branch", ifBranch(true));
+  show("if-branch-not-taken", ifBranch(false));
+  show("else-branch", elseBranch(false));
+  show("else-branch-not-taken", elseBranch(true));
+  show("else-if", elseIf(2));
+  show("else-if-not-taken", elseIf(1));
+  show("bound-if", boundIf(true));
+  show("bound-if-not-taken", boundIf(false));
+  show("deep", deep(true));
+  show("deep-not-taken", deep(false));
+  show("function-body", body());
+  show("locals", locals(true));
+  show("locals-not-taken", locals(false));
+  show("loop-if", loopIf());
+  show("loop-body", loopBody(5));
+  show("loop-body-not-entered", loopBody(0));
+  show("bound-block", boundBlock(true));
+  show("bound-block-not-taken", boundBlock(false));
+  show("initializer", initializer(true));
+  show("argument", argument(true));
+  show("argument-not-taken", argument(false));
+  show("returned", returned(true));
+  show("inline", half(-4));
+  show("inline-not-taken", half(8));
+  show("closure", closure(true));
+  show("closure-not-taken", closure(false));
+  show("break-control", breakIn());
+  show("continue-control", continueIn());
+  0
+}

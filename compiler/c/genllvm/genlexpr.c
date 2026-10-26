@@ -92,21 +92,22 @@ static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
     return var->llvmvar ? genlFlatAddr(gen, var->llvmvar) : NULL;
 }
 
-// Generate one arm's block, along with the jump to endif if it does not end with
-// a jump away, and remember its value and block for the phi (or merge slot) at endif
+// Generate one arm's block, along with the jump to endif if its path does not end
+// in a jump away, and remember its value and block for the phi (or merge slot) at
+// endif. The block's path ended wherever the jump is, the last statement or one
+// inside it, such as a plain block ending in a 'return' (genlPathEnded).
 static void genlIfArm(GenState *gen, BlockNode *blk, LLVMBasicBlockRef endif, int hasval, LLVMValueRef mergeslot,
                       LLVMValueRef *blkvals, LLVMBasicBlockRef *blks, int *phicnt) {
     LLVMValueRef blkval = genlBlock(gen, blk);
-    uint16_t lastStmttype = nodesLast(blk->stmts)->tag;
-    if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
-        if (mergeslot && blkval)
-            LLVMBuildStore(gen->builder, blkval, mergeslot);
-        LLVMBuildBr(gen->builder, endif);
-        // Remember value and block if needed for phi merge
-        if (hasval) {
-            blkvals[*phicnt] = blkval;
-            blks[(*phicnt)++] = LLVMGetInsertBlock(gen->builder);
-        }
+    if (genlPathEnded(gen))
+        return;
+    if (mergeslot && blkval)
+        LLVMBuildStore(gen->builder, blkval, mergeslot);
+    LLVMBuildBr(gen->builder, endif);
+    // Remember value and block if needed for phi merge
+    if (hasval) {
+        blkvals[*phicnt] = blkval;
+        blks[(*phicnt)++] = LLVMGetInsertBlock(gen->builder);
     }
 }
 
