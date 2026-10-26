@@ -1210,7 +1210,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // method when its first parameter is 'self', and the receiver
                 // stands in for that parameter when it is expanded
                 parseEnumExtensionMember(isenum, strnode, "a macro");
-                MacroDclNode *macro = parseMacro(parse);
+                MacroDclNode *macro = parseMacro(parse, 1);
                 if (macro->namesym != anonName) {
                     Nodes *parms = macro->parms;
                     if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)

@@ -61,6 +61,7 @@ extern Name *finalName; // "final": a type's finalizer method, and a module's ow
 // so it collides with no method a variant declares and no name reaches it.
 extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
+extern Name *lazyName;   // "lazy": before a macro parameter's type, it marks the parameter substituted whole (a contextual word)
 extern Name *yieldsName; // "yields": after a function's parameters, it makes the function a generator (a contextual word)
 extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 

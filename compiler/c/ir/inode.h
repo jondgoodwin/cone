@@ -228,6 +228,10 @@ enum NodeTags {
 #define FlagDestructDcl 0x2000      // VarDcl: a name of 'let a, b = values;', hooked and typed by its assignment
 #define FlagDestructAssign 0x2000   // Assign: the assignment that declares the names before it ('let a, b = values;')
 
+// A macro's value parameter written 'a: lazy T': its argument is substituted
+// whole wherever the parameter appears, rather than evaluated once
+#define FlagLazy      0x0001        // GenVarDcl: a macro parameter marked 'lazy'
+
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
 

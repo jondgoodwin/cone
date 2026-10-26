@@ -38,6 +38,7 @@ Name *enumEqName;
 Name *finalName;
 Name *enumFinalName;
 Name *initName;
+Name *lazyName;
 Name *yieldsName;
 Name *nextName;
 Name *tagName;
