@@ -53,11 +53,11 @@ struct Seen {
   pub serverClosed: u64;
 }
 
-fn step(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &mut List[Event]) {
+fn step(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &uni List[Event]) {
   drv.poll(lp, Instant.now() + Duration.fromMillis(10i64), events);
   var k = 0usize;
   while k < events.len() {
-    let e = &mut events[k];
+    let e = &uni events[k];
     k = k + 1usize;
     if e.token == tokReq && e.isTerminal() {
       seen.finals = seen.finals + 1u64;
@@ -73,7 +73,7 @@ fn step(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &mut List[Even
 }
 
 // Drive until the request's final answer and its connection's Closed
-fn settle(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &mut List[Event], finals: u64, closed: u64) {
+fn settle(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &uni List[Event], finals: u64, closed: u64) {
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while (seen.finals < finals || seen.closed < closed) && Instant.now() < giveUp {step(drv, lp, seen, events);}
   requireUInt(seen.finals, finals, "the request has its final answer");
@@ -81,7 +81,7 @@ fn settle(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &mut List[Ev
 }
 
 // Drive for a while
-fn idle(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &mut List[Event], ms: i64) {
+fn idle(drv: &mut Driver, lp: &mut Loop, seen: &mut Seen, events: &uni List[Event], ms: i64) {
   let until = Instant.now() + Duration.fromMillis(ms);
   while Instant.now() < until {step(drv, lp, seen, events);}
 }
@@ -128,7 +128,7 @@ fn main() i32 {
   var asked = Instant.now();
   drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
     asked + Duration.fromMillis(150i64));
-  settle(&mut drv, &mut lp, &mut seen, &mut events, 1u64, 1u64);
+  settle(&mut drv, &mut lp, &mut seen, &uni events, 1u64, 1u64);
   report("deadline during the handshake", &seen, EventKind.TimedOut, asked);
   expect(Instant.now() - asked >= Duration.fromMillis(140i64), "...not before its deadline");
 
@@ -136,10 +136,10 @@ fn main() i32 {
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](rootsClient.stream("localhost")),
     Sink.Here(tokConn));
   let r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
-  idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
+  idle(&mut drv, &mut lp, &mut seen, &uni events, 50i64);
   asked = Instant.now();
   expect(drv.cancel(&mut lp, r2), "the cancel is taken");
-  settle(&mut drv, &mut lp, &mut seen, &mut events, 2u64, 2u64);
+  settle(&mut drv, &mut lp, &mut seen, &uni events, 2u64, 2u64);
   report("cancel during the handshake", &seen, EventKind.Cancelled, asked);
 
   // A cancel group's cancel during the handshake
@@ -147,10 +147,10 @@ fn main() i32 {
     Sink.Here(tokConn));
   let group = CancelGroup.make();
   drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq), group, forever());
-  idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
+  idle(&mut drv, &mut lp, &mut seen, &uni events, 50i64);
   asked = Instant.now();
   group.cancel();
-  settle(&mut drv, &mut lp, &mut seen, &mut events, 3u64, 3u64);
+  settle(&mut drv, &mut lp, &mut seen, &uni events, 3u64, 3u64);
   report("group cancel during the handshake", &seen, EventKind.Cancelled, asked);
   expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "no handshake finished");
 
@@ -187,10 +187,10 @@ fn main() i32 {
   asked = Instant.now();
   drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
     asked + Duration.fromMillis(150i64));
-  settle(&mut drv, &mut lp, &mut seen, &mut events, 4u64, 4u64);
+  settle(&mut drv, &mut lp, &mut seen, &uni events, 4u64, 4u64);
   report("deadline during the OS's verification", &seen, EventKind.TimedOut, asked);
   expectUInt(tls.stats().verifications - v0, 1u64, "...which had been handed to the pool");
-  idle(&mut drv, &mut lp, &mut seen, &mut events, 400i64);
+  idle(&mut drv, &mut lp, &mut seen, &uni events, 400i64);
   expectUInt(lane.stats().cancelled, 1u64, "the queued verification was taken out of the lane");
 
   // A cancel while the verification waits for the lane
@@ -199,19 +199,19 @@ fn main() i32 {
     Sink.Here(tokConn));
   let r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
   let giveUp = Instant.now() + Duration.fromSeconds(5i64);
-  while tls.stats().verifications - v0 < 2u64 && Instant.now() < giveUp {step(&mut drv, &mut lp, &mut seen, &mut events);}
+  while tls.stats().verifications - v0 < 2u64 && Instant.now() < giveUp {step(&mut drv, &mut lp, &mut seen, &uni events);}
   requireUInt(tls.stats().verifications - v0, 2u64, "the verification is handed to the pool");
   asked = Instant.now();
   drv.cancel(&mut lp, r5);
-  settle(&mut drv, &mut lp, &mut seen, &mut events, 5u64, 5u64);
+  settle(&mut drv, &mut lp, &mut seen, &uni events, 5u64, 5u64);
   report("cancel during the OS's verification", &seen, EventKind.Cancelled, asked);
-  idle(&mut drv, &mut lp, &mut seen, &mut events, 400i64);
+  idle(&mut drv, &mut lp, &mut seen, &uni events, 400i64);
   expectUInt(lane.stats().cancelled, 2u64, "...taken out of the lane too");
 
   expectUInt(seen.clean, 0u64, "each connection was reset, none closed cleanly");
   expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "still no handshake finished");
   let giveUp2 = Instant.now() + Duration.fromSeconds(5i64);
-  while drv.live() > 0u32 && Instant.now() < giveUp2 {step(&mut drv, &mut lp, &mut seen, &mut events);}
+  while drv.live() > 0u32 && Instant.now() < giveUp2 {step(&mut drv, &mut lp, &mut seen, &uni events);}
   expectUInt(u64.from(drv.live()), 0u64, "no connection left");
   drv.abortAll(&mut lp);
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");

@@ -1,0 +1,223 @@
+// The connection defaults a peer can stall against. handshakeTimeout (10 s
+// by default): a layer that never opens -- a TLS server that takes the TCP
+// connection and stalls the handshake -- ends the connection at its
+// deadline, in both roles, Failed at Stage.Tls, TimedOut, rather than
+// waiting out the head timeout; here with 200 ms. keepAlive (15 s idle, a
+// probe every 15 s, 3 unanswered; Linux's TCP_USER_TIMEOUT 30 s): set on
+// every socket once connected or accepted, and read back from the OS.
+
+mod handshake;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Op, Lane, Outcome, Completion, KeepAlive;
+import http use *;
+import httpconn use *;
+
+// A layer whose handshake never ends: it takes what comes and sends nothing
+struct Stall {
+  pub made: u64;
+
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {}
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {IoBuf.empty()}
+  pub fn wireRoom(self: &) usize {1048576usize}
+  pub fn plainIn(self: &mut, buf: IoBuf) {}
+  pub fn plainOut(self: &mut) IoBuf {IoBuf.empty()}
+  pub fn pending(self: &) usize {0usize}
+  pub fn isOpen(self: &) bool {false}
+  pub fn peerEnded(self: &) bool {false}
+  pub fn closeSend(self: &mut) {}
+  pub fn failed(self: &) bool {false}
+  pub fn failureCode(self: &) u32 {0u32}
+  pub fn failureText(self: &) String {String.empty()}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf.empty())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn describe(self: &) String {String.from("stall")}
+}
+
+fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
+
+// The maker of a stalling server's layers
+struct StallMaker {
+  pub made: u64;
+
+  pub fn make(self: &mut) Uni[Layer] {
+    made = made + 1u64;
+    Uni[Stall](Stall(0u64))
+  }
+}
+
+// What one connection's sink saw
+struct Seen {
+  pub opened: bool;
+  pub closed: bool;
+  pub clean: bool;
+  pub stage: Stage;
+  pub kind: ErrorKind;
+  pub detail: String;
+  pub at: Instant;
+}
+
+fn seen() Seen {Seen(false, false, false, Stage.Closed, ErrorKind.Closed, String.empty(), Instant())}
+
+fn note(s: &mut Seen, e: &mut Event) {
+  if e.kind == EventKind.Connected || e.kind == EventKind.Accepted {s.opened = true;}
+  if e.kind == EventKind.Closed {
+    s.closed = true;
+    s.clean = e.clean;
+    s.stage = e.failure.stage;
+    s.kind = e.failure.error.kind;
+    s.detail = e.failure.error.detail.copy();
+    s.at = Instant.now();
+  }
+}
+
+fn port(drv: &Driver, lp: &Loop, l: ListenerId) u16 {
+  match drv.localAddr(lp, l) {
+    case let Ok(a) {a.port()}
+    case let Error(e) {0u16}
+  }
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  let defaults = Config.make();
+  expect(defaults.handshakeTimeout == Duration.fromSeconds(10i64), "handshakeTimeout: 10 s by default");
+  expect(defaults.keepAlive.idle == Duration.fromSeconds(15i64) && defaults.keepAlive.interval == Duration.fromSeconds(15i64),
+    "keepAlive: 15 s idle, a probe every 15 s, by default");
+  expectUInt(u64.from(defaults.keepAlive.probes), 3u64, "...3 probes");
+  expect(defaults.keepAlive.userTimeout == Duration.fromSeconds(30i64), "...and TCP_USER_TIMEOUT 30 s");
+
+  // ---- keepAlive: on both ends of a plain connection, as the OS reads it
+  {
+    var drv = Driver.make(Config.make());
+    var l = ListenerId.none();
+    match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(10u64)) {
+      case let Ok(r) {l = r;}
+      case let Error(e) {}
+    }
+    let conn = drv.connect(&mut lp, "127.0.0.1", port(&drv, &lp, l), Sink.Here(11u64));
+    var client = seen();
+    var server = seen();
+    var serverConn = ConnId.none();
+    var events = List[Event].empty();
+    let giveUp = Instant.now() + Duration.fromSeconds(5i64);
+    while !(client.opened && server.opened) && Instant.now() < giveUp {
+      drv.poll(&mut lp, giveUp, &uni events);
+      var k = 0usize;
+      while k < events.len() {
+        let e = &mut events[k];
+        if e.token == 11u64 {note(&mut client, e);}
+        else {
+          if e.kind == EventKind.Accepted {serverConn = e.conn;}
+          note(&mut server, e);
+        }
+        k = k + 1usize;
+      }
+      events.clear();
+    }
+    require(client.opened && server.opened, "a plain connection made");
+    // Windows has no TCP_USER_TIMEOUT: it reads as 0 there
+    let wantUser = if isWindows() {Duration.zero()} else {Duration.fromSeconds(30i64)};
+    match drv.keepAliveOf(&lp, conn) {
+      case let Ok(ka) {
+        expect(ka.idle == Duration.fromSeconds(15i64) && ka.interval == Duration.fromSeconds(15i64) && ka.probes == 3u32,
+          "the client's socket: 15 s, 15 s, 3");
+        expect(ka.userTimeout == wantUser, "...its user timeout as the OS has it");
+      }
+      case let Error(x) {expect(false, "the client's keepalive read back");}
+    }
+    match drv.keepAliveOf(&lp, serverConn) {
+      case let Ok(ka) {
+        expect(ka.idle == Duration.fromSeconds(15i64) && ka.interval == Duration.fromSeconds(15i64) && ka.probes == 3u32,
+          "the server's socket: 15 s, 15 s, 3");
+      }
+      case let Error(x) {expect(false, "the server's keepalive read back");}
+    }
+    drv.abortAll(&mut lp);
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
+  }
+
+  // ---- handshakeTimeout, a client's: its layer never opens
+  {
+    var cfg = Config.make();
+    cfg.handshakeTimeout = Duration.fromMillis(200i64);
+    var drv = Driver.make(cfg);
+    var l = ListenerId.none();
+    match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(20u64)) {
+      case let Ok(r) {l = r;}
+      case let Error(e) {}
+    }
+    let started = Instant.now();
+    let conn = drv.connectWith(&mut lp, "127.0.0.1", port(&drv, &lp, l), Uni[Stall](Stall(0u64)), Sink.Here(21u64));
+    drv.request(&mut lp, conn, RequestHead.get("/", "127.0.0.1"), BodyLength.empty(), Sink.Here(22u64));
+    var client = seen();
+    var finals = 0u32;
+    var reqStage: Stage = Stage.Closed;
+    var events = List[Event].empty();
+    let giveUp = Instant.now() + Duration.fromSeconds(5i64);
+    while !(client.closed && finals > 0u32) && Instant.now() < giveUp {
+      drv.poll(&mut lp, giveUp, &uni events);
+      var k = 0usize;
+      while k < events.len() {
+        let e = &mut events[k];
+        if e.token == 21u64 {note(&mut client, e);}
+        else if e.token == 22u64 && e.isTerminal() {
+          finals = finals + 1u32;
+          if e.kind == EventKind.Failed {reqStage = e.failure.stage;}
+        }
+        k = k + 1usize;
+      }
+      events.clear();
+    }
+    expect(client.opened, "a client whose handshake stalls: connected");
+    expect(client.closed && !client.clean, "...then closed, not clean");
+    expect(client.stage == Stage.Tls && client.kind == ErrorKind.TimedOut, "...at Stage.Tls, timed out");
+    expectStr(client.detail.view(), "no handshake within handshakeTimeout", "...saying so");
+    let took = client.at - started;
+    expect(took >= Duration.fromMillis(200i64) && took < Duration.fromSeconds(3i64), "...at its deadline, not the head timeout's");
+    expectUInt(u64.from(finals), 1u64, "its request: one final answer");
+    expect(reqStage == Stage.Tls, "...Failed at Stage.Tls");
+    drv.abortAll(&mut lp);
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
+  }
+
+  // ---- handshakeTimeout, a server's: its layer never opens
+  {
+    var cfg = Config.make();
+    cfg.handshakeTimeout = Duration.fromMillis(200i64);
+    var drv = Driver.make(cfg);
+    var l = ListenerId.none();
+    match drv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[StallMaker](StallMaker(0u64)), Sink.Here(30u64)) {
+      case let Ok(r) {l = r;}
+      case let Error(e) {}
+    }
+    let started = Instant.now();
+    drv.connect(&mut lp, "127.0.0.1", port(&drv, &lp, l), Sink.Here(31u64));
+    var server = seen();
+    var events = List[Event].empty();
+    let giveUp = Instant.now() + Duration.fromSeconds(5i64);
+    while !server.closed && Instant.now() < giveUp {
+      drv.poll(&mut lp, giveUp, &uni events);
+      var k = 0usize;
+      while k < events.len() {
+        let e = &mut events[k];
+        if e.token == 30u64 {note(&mut server, e);}
+        k = k + 1usize;
+      }
+      events.clear();
+    }
+    expect(server.opened, "a server whose handshake stalls: accepted");
+    expect(server.closed && !server.clean && server.stage == Stage.Tls && server.kind == ErrorKind.TimedOut,
+      "...then closed at Stage.Tls, timed out");
+    let took = server.at - started;
+    expect(took >= Duration.fromMillis(200i64) && took < Duration.fromSeconds(3i64), "...at its deadline, not the idle timeout's");
+    drv.abortAll(&mut lp);
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
+  }
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
