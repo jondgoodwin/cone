@@ -666,21 +666,21 @@ pub struct Loop {
       // The target is used where it lies, in the record (no other reference
       // reaches it while the answer is sent)
       let a = &mut (*(p as *OpRec[OldAsk])).ask;
-      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf.empty(), made, peer,
+      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf.empty(), None, made, peer,
         submitted, dequeued, at);
       return self.send(c, &mut a.target as *Target as &uni Target, out);
     }
     self.unlinkSide(p);
     let rec = pool.dissolveHere(p as *OpRec[OldAsk]);
     let core, ask = rec.(core, ask);
-    let buf = core.(buf);
+    let buf, bufs = core.(buf, bufs);
     let target, token = ask.(target, token);
     let b = match buf {
       case var Some(x) {x}
       else {IoBuf.empty()}
     };
     var t = target;
-    let c = Completion(loopId, id, token, kind, status, n, code, b, made, peer, submitted, dequeued, at);
+    let c = Completion(loopId, id, token, kind, status, n, code, b, bufs, made, peer, submitted, dequeued, at);
     self.send(c, &uni t, out)
   }
 
@@ -1014,6 +1014,12 @@ pub struct Loop {
         r.bytes = Some[Bytes](o.bytes);
         r.handle = o.sock;
       }
+      case let SendChain(o) {
+        let bufs, sock = o.(bufs, sock);
+        r.kind = diag.kindSend;
+        r.bufs = Some[Uni[Chain]](Uni[Chain](bufs));
+        r.handle = sock;
+      }
       case let ReadAt(o) {
         let buf, file, at = o.(buf, file, at);
         r.kind = diag.kindReadAt;
@@ -1207,6 +1213,7 @@ pub struct Loop {
     if k == diag.kindRecv {return self.startRecv(p, r.handle, false);}
     if k == diag.kindRecvReady {return self.startRecv(p, r.handle, true);}
     if k == diag.kindSend {
+      if r.isGather() {return self.startGather(p, r.handle);}
       match r.bytes {
         case let Some(b) {
           let v = b.view();
@@ -1335,6 +1342,63 @@ pub struct Loop {
     } else {
       lxStartSend(self, p)
     }
+  }
+
+  // A gather: every segment of the record's chain, in one send. Windows: one
+  // WSASend over a WSABUF for each segment. Winsock captures the WSABUF array
+  // when an overlapped WSASend is called (its documentation says an
+  // application may build the array on the stack), so the array lives only
+  // for the call: on the stack for up to 16 segments, else in a block freed
+  // after it. The segments' bytes stay in the record's chain until the answer
+  fn startGather(self: &mut, p: *OpCore, sock: Handle) u32 {
+    let r = p as &mut OpCore;
+    if !isWindows() {return lxStartSend(self, p);}
+    let raw = self.rawOf(sock, hSocket);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    // Done's count comes back in 32 bits
+    if r.gatherLen() > 0xFFFFFFFFusize {return errorInvalidParameter;}
+    r.raw = raw;
+    let segs = r.gatherSegments();
+    if segs == 0usize {
+      r.wsa.len = 0u32;
+      r.wsa.buf = null;
+      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
+        let code = wsaError();
+        if code != errorIoPending {return code;}
+      }
+      return 0u32;
+    }
+    var spansHere = Array[Span, 16]() <- fill Span(null, 0usize);
+    var wsaHere = Array[WsaBuf, 16]() <- fill WsaBuf(0u32, null);
+    var spans = &mut spansHere as *Span;
+    var bufs = &mut wsaHere as *WsaBuf;
+    let big = segs > 16usize;
+    if big {
+      spans = libc.malloc(segs * mem.sizeof[Span]()) as *Span;
+      bufs = libc.malloc(segs * mem.sizeof[WsaBuf]()) as *WsaBuf;
+      if spans as usize == 0usize || bufs as usize == 0usize {
+        libc.free(spans as *u8);
+        libc.free(bufs as *u8);
+        return errorNotEnoughMemory;
+      }
+    }
+    let n = r.gatherSpans(0usize, spans, segs);
+    var k = 0usize;
+    while k < n {
+      (*(bufs + k)).len = u32.from((*(spans + k)).len);
+      (*(bufs + k)).buf = (*(spans + k)).base;
+      k = k + 1usize;
+    }
+    var code = 0u32;
+    if WSASend(raw, bufs, u32.from(n), null, 0u32, p as *u8, null) != 0i32 {
+      code = wsaError();
+      if code == errorIoPending {code = 0u32;}
+    }
+    if big {
+      libc.free(spans as *u8);
+      libc.free(bufs as *u8);
+    }
+    code
   }
 
   // One datagram into the buffer's room, the sender into the record's

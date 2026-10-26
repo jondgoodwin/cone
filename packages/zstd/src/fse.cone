@@ -1,0 +1,239 @@
+// ======== Bitstreams and FSE tables ========
+//
+// zstd has two kinds of bitstream. Table descriptions (FSE normalized
+// counts) are read forward, least significant bit first, as DEFLATE's are.
+// Entropy-coded data (Huffman literals, FSE-coded weights, sequences) is
+// read BACKWARD (RFC 8878 section 4.1): the encoder wrote it forward and
+// closed it with a 1 bit, so the decoder starts at the highest set bit of
+// the last byte and reads toward the first, each field's bits the most
+// recent first. Both readers supply zeros past the end of their bytes and
+// count them, so a stream that is too short is noticed, never read out of
+// bounds.
+
+// -------- forward bits: table descriptions --------
+
+// The 32 bits of *src[start, end) from bit 'bit' on (zeros past the end)
+fn fwdPeek(src: &List[u8], start: usize, end: usize, bit: usize) u32 {
+  var p = start + bit / 8usize;
+  // Five bytes cover 32 bits at any bit offset
+  var wide = 0u64;
+  var k = 0u32;
+  while k < 5u32 {
+    if p < end { wide = wide | (u64.from(*src[p]) << u64.from(k * 8u32)); }
+    p = p + 1usize;
+    k = k + 1u32;
+  }
+  u32.from((wide >> u64.from(bit % 8usize)) & 0xFFFFFFFFu64)
+}
+
+// -------- backward bits: entropy-coded data --------
+
+// A backward bitstream over *src[start, end). 'acc' holds 'n' bits not yet
+// read in its low bits, the next to read the highest of them; 'pos' is the
+// next byte to load (counting down to 'start'); 'over' counts the zero bits
+// read past the start, which a valid stream never needs.
+struct BackBits {
+  start: usize;
+  pos: usize;
+  acc: u64;
+  n: u32;
+  over: u32;
+
+  // A reader of src[start, end), at its end: None when the stream is empty or
+  // its last byte is 0 (no closing 1 bit)
+  fn open(src: &List[u8], start: usize, end: usize) Option[BackBits] {
+    if end <= start { return None[BackBits]; }
+    let last = *src[end - 1usize];
+    if last == 0u8 { return None[BackBits]; }
+    // The bits below the closing 1
+    var b = BackBits(start, end - 1usize, u64.from(last), 7u32 - last.leadingZeros(), 0u32);
+    b.refill(src);
+    Some[BackBits](b)
+  }
+
+  // Load bytes until 57 or more bits are held, or none are left
+  fn refill(self: &mut, src: &List[u8]) {
+    while n <= 56u32 && pos > start {
+      pos = pos - 1usize;
+      acc = (acc << 8u64) | u64.from(*src[pos]);
+      n = n + 8u32;
+    }
+  }
+
+  // Read k bits, 0 to 32
+  fn read(self: &mut, src: &List[u8], k: u32) u32 {
+    if k == 0u32 { return 0u32; }
+    if n < k { self.refill(src); }
+    if n >= k {
+      n = n - k;
+      return u32.from((acc >> u64.from(n)) & ((1u64 << u64.from(k)) - 1u64));
+    }
+    // Past the start: what is left, then zeros
+    let miss = k - n;
+    let v = u32.from(((acc & ((1u64 << u64.from(n)) - 1u64)) << u64.from(miss)) & ((1u64 << u64.from(k)) - 1u64));
+    over = over + miss;
+    n = 0u32;
+    v
+  }
+
+  // The next k bits (1 to 32) without reading them
+  fn peek(self: &mut, src: &List[u8], k: u32) u32 {
+    if n < k { self.refill(src); }
+    if n >= k {
+      return u32.from((acc >> u64.from(n - k)) & ((1u64 << u64.from(k)) - 1u64));
+    }
+    u32.from(((acc & ((1u64 << u64.from(n)) - 1u64)) << u64.from(k - n)) & ((1u64 << u64.from(k)) - 1u64))
+  }
+
+  // Drop k bits already peeked
+  fn skip(self: &mut, k: u32) {
+    if k <= n { n = n - k; }
+    else { over = over + (k - n); n = 0u32; }
+  }
+
+  // Whether more bits were read than the stream holds
+  fn overflowed(self: &) bool { over > 0u32 }
+
+  // Whether every bit was read, and no more
+  fn exact(self: &) bool { over == 0u32 && n == 0u32 && pos == start }
+}
+
+// -------- FSE --------
+
+// The highest set bit of x (x > 0)
+fn highBit(x: u32) u32 { 31u32 - x.leadingZeros() }
+
+// Reads an FSE table description (RFC 8878 section 4.1.1) at *src[start,
+// end) into 'norm' (the normalized count of symbols 0 to norm.len() - 1)
+// and 'log' (the accuracy log). The bytes it took, or -1 when it is not
+// valid: an accuracy log over 'maxLog', a symbol over 'maxSymbol', counts
+// that do not sum to the table's size, or bits past 'end'.
+fn readNCount(src: &List[u8], start: usize, end: usize, maxSymbol: usize, maxLog: u32,
+    norm: &mut List[i16], log: &mut u32) i64 {
+  norm.clear();
+  if end <= start { return -1i64; }
+  var bit = 0usize;
+  let al = (fwdPeek(src, start, end, bit) & 15u32) + 5u32;
+  bit = bit + 4usize;
+  if al > maxLog { return -1i64; }
+  var remaining = (1i32 << i32.from(al)) + 1i32;
+  var threshold = 1i32 << i32.from(al);
+  var nbBits = al + 1u32;
+  var sym = 0usize;
+  var prev0 = false;
+  while remaining > 1i32 && sym <= maxSymbol {
+    if prev0 {
+      // Zeros: 2-bit repeat counts, 3 meaning "3, and another count follows"
+      var n0 = sym;
+      while true {
+        let r = usize.from(fwdPeek(src, start, end, bit) & 3u32);
+        bit = bit + 2usize;
+        n0 = n0 + r;
+        if r != 3usize { break; }
+        if n0 > maxSymbol + 1usize { return -1i64; }
+      }
+      if n0 > maxSymbol { return -1i64; }
+      while sym < n0 { norm.push(0i16); sym = sym + 1usize; }
+    }
+    let max = (2i32 * threshold - 1i32) - remaining;
+    let b = i32.from(fwdPeek(src, start, end, bit) & 0xFFFFu32);
+    var count = 0i32;
+    if (b & (threshold - 1i32)) < max {
+      count = b & (threshold - 1i32);
+      bit = bit + usize.from(nbBits - 1u32);
+    } else {
+      count = b & (2i32 * threshold - 1i32);
+      if count >= threshold { count = count - max; }
+      bit = bit + usize.from(nbBits);
+    }
+    count = count - 1i32;
+    remaining = remaining - (if count < 0i32 {-count} else {count});
+    norm.push(i16.from(count));
+    sym = sym + 1usize;
+    prev0 = count == 0i32;
+    while remaining < threshold {
+      nbBits = nbBits - 1u32;
+      threshold = threshold >> 1i32;
+    }
+  }
+  if remaining != 1i32 { return -1i64; }
+  let used = (bit + 7usize) / 8usize;
+  if used > end - start { return -1i64; }
+  *log = al;
+  i64.from(used)
+}
+
+// An FSE decoding table: for each state, its symbol (bits 0 to 7), how many
+// bits the next state reads (8 to 15) and the base those bits are added to
+// (16 to 31)
+struct FseTable {
+  cells: List[u32];
+  log: u32;
+  // Scratch for building: each state's symbol, each symbol's next count
+  spread: List[u8];
+  next: List[u32];
+
+  fn empty() FseTable {
+    FseTable(List[u32].empty(), 0u32, List[u8].empty(), List[u32].empty())
+  }
+
+  // The table of a distribution, by RFC 8878 section 4.1.1: the symbols of
+  // count -1 at the top, the others spread with the step (size / 2 + size /
+  // 8 + 3). false if the spread does not come out even (counts that do not
+  // sum to the size).
+  fn build(self: &mut, norm: &Array[i16], log: u32) bool {
+    let size = 1usize << usize.from(log);
+    let mask = size - 1usize;
+    cells.clear();
+    spread.clear();
+    next.clear();
+    var i = 0usize;
+    while i < size { spread.push(0u8); i = i + 1usize; }
+    var high = size - 1usize;
+    var s = 0usize;
+    while s < norm.len {
+      let c = norm[s];
+      if c == -1i16 {
+        spread.set(high, u8.from(s));
+        high = high - 1usize;
+        next.push(1u32);
+      } else {
+        next.push(u32.from(if c < 0i16 {0i16} else {c}));
+      }
+      s = s + 1usize;
+    }
+    let step = (size >> 1usize) + (size >> 3usize) + 3usize;
+    var position = 0usize;
+    s = 0usize;
+    while s < norm.len {
+      var k = 0i16;
+      while k < norm[s] {
+        spread.set(position, u8.from(s));
+        position = (position + step) & mask;
+        while position > high { position = (position + step) & mask; }
+        k = k + 1i16;
+      }
+      s = s + 1usize;
+    }
+    if position != 0usize { return false; }
+    i = 0usize;
+    while i < size {
+      let sym = *spread[i];
+      let x = *next[usize.from(sym)];
+      next.set(usize.from(sym), x + 1u32);
+      let nb = log - highBit(x);
+      let baseline = (x << nb) - u32.from(size);
+      cells.push(u32.from(sym) | (nb << 8u32) | (baseline << 16u32));
+      i = i + 1usize;
+    }
+    self.log = log;
+    true
+  }
+
+  // The table of one symbol that always repeats: one state, no bits
+  fn rle(self: &mut, sym: u8) {
+    cells.clear();
+    cells.push(u32.from(sym));
+    log = 0u32;
+  }
+}

@@ -1,0 +1,205 @@
+// The zstd package: Zstandard (RFC 8878) decompression, with its xxHash64,
+// streaming in bounded pieces and in one call. Written in Cone, with no C
+// library and no call of the OS's. Compression is not here yet.
+//
+//   mod unpack;
+//   import stdio use *;
+//   import zstd;
+//
+//   fn main() i32 {
+//     imm packed = ...;                                  // a .zst file's bytes
+//     match zstd.decompress(packed.view(), 0usize) {     // every frame, joined
+//       case imm ok Ok { printInt(i64.from(ok.len())); }
+//       case imm e Error { printStr(e.reason.view()); return 1i32; }
+//     }
+//     0i32;
+//   }
+//
+// It reads as package deflate does: a value that holds a stream's whole
+// state, fed and pulled in bounded pieces, and one-call helpers beside it.
+//
+// WHAT IS HERE
+//
+//   ONE CALL         the data in memory, the answer out
+//     decompress(data, expected) Result[List[u8], ZstdError]
+//     decompressWithDictionary(data, dictionary, expected) Result[List[u8], ZstdError]
+//   'expected' is the output size if known (0 if not): it reserves room and is
+//   also the most output allowed (0 allows 1 GiB), so a stream that claims to be
+//   small and is not is refused as TooLarge. Every frame in 'data' is decoded
+//   and their contents joined, skippable frames skipped, as 'zstd -d' does; no
+//   input at all is no frames, an empty output.
+//
+//   STREAMING        a value that holds the whole state; any chunking
+//     Decompressor.make()
+//       feed(&Array[u8])          input, any size, split anywhere (copied)
+//       finish()                  no more input will come
+//       pull(&mut List[u8], max) Status    appends at most 'max' bytes of output
+//       setLimit(bytes), setMaxWindow(bytes), setDictionary(&content),
+//       setMultiFrame(bool), error(), frameCount(), totalIn(), totalOut(),
+//       isDone(), takeRest()
+//     Status: NeedInput (use up what you have: feed more or finish), MoreOutput
+//     (pull again), Done, Failed ('error()' says why).
+//     'examples/tour.cone' feeds five bytes at a time and takes eight out.
+//
+//   CHECKSUM
+//     xxh64(data, seed) u64, Xxh64 (make(seed), update(data, from, to),
+//     digest()) to go on across pieces. A frame's content checksum is the low
+//     32 bits of xxh64(content, 0).
+//
+//   TYPES
+//     ZstdError {kind, offset, reason}   kind is an ErrorKind: BadHeader,
+//         WindowTooLarge, NeedsDictionary, BadBlock, BadTable, BadSequence,
+//         BadOffset, Truncated, BadChecksum, TooLarge; 'offset' is the input
+//         bytes used before the unit that failed (a frame header, a block, a
+//         checksum)
+//
+// WHAT IS DECODED: all of RFC 8878's frame format. Frames: the magic number,
+// the frame header (window descriptor, dictionary ID, content size in 1, 2, 4
+// or 8 bytes, single segment), the content checksum; skippable frames (all 16
+// magic numbers); any number of frames in a row. Blocks: raw, RLE and
+// compressed. Literals: raw and RLE (header of 1, 2 or 3 bytes), Huffman-coded
+// in 1 or 4 streams (every size format), the tree by direct 4-bit weights or
+// FSE-coded weights, and "treeless" (the frame's last tree again). Sequences:
+// the 1-, 2- and 3-byte counts; for each of literal lengths, offsets and match
+// lengths the predefined, RLE, FSE-coded and repeat modes; the three repeat
+// offsets, as the RFC moves them (a literal length of 0 shifting them by one).
+// The window, and a raw-content dictionary.
+//
+// STREAMING, IN A SENTENCE EACH
+//
+//   A Decompressor decodes one unit at a time: a magic number, a frame
+//   header, a block with its 3-byte header (at most 128 KiB), a checksum. A
+//   unit is decoded only once all of its bytes are in, so input can be cut
+//   anywhere, a byte at a time, and nothing is half-done. A block is decoded
+//   whole, into the history, and handed out in pieces of at most 'max' bytes;
+//   the next block is decoded only when that one has all been handed out. A
+//   frame may be followed by another, so the stream is Done only after
+//   'finish' (or, with 'setMultiFrame(false)', at the first frame's end). The
+//   Decompressor's own memory is the input not yet used, the window (all of
+//   the frame's output while it is no longer than the window), one block, and
+//   as much again as the window before it lets the old output go.
+//
+// METHOD CHOICES. These are defaults a later design may revisit. Each says what
+// was chosen and what was left out.
+//
+// - Decoding is RFC 8878's, as the reference decoder (zstd's
+//   lib/decompress) does it, without its speed tricks: an FSE table of
+//   (symbol, bits, base) per state; a Huffman table indexed by the next
+//   maxBits bits that answers one symbol per look; a backward bit reader that
+//   reads zeros past the start of its bytes and counts them. Every bitstream
+//   must decode to exactly its end, as the reference requires: bits left over,
+//   or more read than there are, fail the block. The Huffman streams are
+//   decoded one after another (the reference decodes the four at once,
+//   interleaved, two symbols a look); the sequences are executed as they are
+//   decoded; every copy is a byte at a time.
+// - Streaming by whole units, not by a state machine that can stop at any
+//   bit. The cost: a block's bytes are kept until all of them have come (at
+//   most 128 KiB), and decoded at once. The gain: one decoder for one-call and
+//   streamed use, and a hot loop with no stops in it.
+// - The window: the largest one a frame may ask for is 128 MiB at first
+//   (setMaxWindow), as the zstd tool's default (ZSTD_WINDOWLOG_LIMIT_DEFAULT,
+//   2^27); a frame asking for more is refused with WindowTooLarge before
+//   anything of it is decoded. The one-call helpers do not apply it: they keep
+//   the whole output anyway, so a window costs them nothing (the reference's
+//   one-call ZSTD_decompress does not apply it either); their bound is the
+//   output limit. A single-segment frame's window is its content size.
+// - A match may reach back as far as the window (RFC 8878 section 3.1.1.1.2),
+//   and no further: an offset past it is BadOffset. (The reference decoder is
+//   more lenient: it takes any offset within the output it holds; the tests
+//   show it accepting one 1 byte past the window.) With a dictionary, matches
+//   may reach into it while the frame's output is no longer than the window,
+//   as the reference compressor uses a dictionary (it stops when a block ends
+//   past the window).
+// - A block decodes to at most the block maximum (the window, at most 128
+//   KiB), compressed or not, as the reference requires.
+// - A Huffman tree's codes are at most 11 bits (RFC 8878 section 4.2.1; the
+//   reference allows 12), and, as the reference requires, it has at least two
+//   codes of the longest length.
+// - A bomb stopper: output is capped at 1 GiB unless 'setLimit' (or the
+//   one-call 'expected') says otherwise, as deflate's is; a frame header that
+//   declares more is refused at once. The room reserved up front is never
+//   more than 64 MiB on a header's word.
+// - Dictionaries: raw content only (zstd's "rawContent" mode: the bytes are
+//   taken as content that comes before each frame, the repeat offsets start at
+//   1, 4 and 8). A frame that names a dictionary by ID is refused with
+//   NeedsDictionary, with or without a dictionary given (a raw-content
+//   dictionary has no ID to match, as the reference refuses it). zstd's own
+//   dictionary format (magic EC30A437, entropy tables and repeat offsets) can
+//   follow.
+// - Empty input is no frames and decodes to nothing (as ZSTD_decompress); a
+//   frame cut anywhere is Truncated; bytes after a frame that are not another
+//   frame are BadHeader.
+// - xxHash64 is here, not in cryptohash: it is not a cryptographic hash, zstd
+//   is its only user, and this lane adds one package and touches no other.
+//   It takes 32 bytes a step in four lanes (Yann Collet's XXH64).
+// - The tables of RFC 8878 (literal and match length codes, the three
+//   predefined distributions) are immutable module-level arrays (tables.cone),
+//   as deflate's RFC 1951 tables are. Everything else is in the values that
+//   use it: nothing is shared between two Decompressors, so one per thread or
+//   actor is safe; one is not safe to share.
+// - The block decoder takes the input as '&List[u8]', not as a slice: the
+//   borrow checker (error 1339) refuses a slice of one field of the
+//   Decompressor alongside '&mut' to the others, which change shape, as it
+//   cannot tell the fields apart; a '&List[u8]' lends no elements across the
+//   call.
+//
+// TESTS. Made by the reference, libzstd 1.5.7 as Git for Windows installs it
+// (C:\Program Files\Git\mingw64\bin\libzstd.dll, SHA-256
+// b95c223a9548a9ecf51377c962e0bc8f0c51eb0c6f67a296dbc885996f0dd40d), called
+// through Python's ctypes only to MAKE test data (tests/data/zstdref.py pins
+// it; nothing runs it at test time): tests/data/make_corpus.py writes
+// corpus.bin (levels 1, 3, 9, 19 and 22, long-distance mode, streamed frames,
+// every block, literal and sequence mode, tiny and empty inputs, many frames,
+// a dictionary), and make_handmade.py writes handmade.bin and malformed.bin
+// with its own small encoder, each frame checked against the reference. The
+// tests decode every frame in one call and streamed every way, refuse every
+// malformed one with the right kind split at every offset, flip every bit of
+// some frames, and check xxHash64 against the reference's own.
+//
+// OTHER COPIES. The repository was searched (Cone sources in packages/,
+// samples/, tools/, compiler/) for another zstd, FSE, Huffman-literal or
+// xxHash decoder: there is none.
+//
+// NOT HERE: compression (the next pull request: levels 1 to 3); zstd's own
+// dictionary format and dictionary training; the legacy formats before
+// RFC 8878 (zstd 0.x); reading from a file or a socket (the caller feeds it);
+// multithreaded decoding.
+//
+// SPEED, best of 5 runs on a loaded 13th-gen Core i7-13700HX, release build,
+// in MB/s of the decompressed bytes, next to the reference library
+// (libzstd 1.5.7, Git for Windows' build, called once per file through
+// Python's ctypes) on the same files, made by the reference at levels 3 and
+// 19 (examples/bench.cone makes the first columns):
+//
+//                                  one call    streamed    reference
+//   Cone's packages' sources L3      257         218          526
+//     (17.7 MB)              L19     308         237          540
+//   conec.exe, first 16 MB   L3      181         160          508
+//                            L19     175         140          303
+//   pbrxrt.spv (385 KB)      L3      212         154          385
+//                            L19     114          87          279
+//
+// So it runs at 35 to 60 per cent of the reference's speed. The likely cause
+// is the copying: every literal and every match byte is moved one at a time
+// through a List (the reference copies 16 or 32 bytes a step, overlapping
+// past the end), and a streamed pull moves each byte once more. Then the
+// Huffman streams decoded one at a time, one symbol a look, and the bit reader
+// refilled a byte at a time. These are measured, not chased: nothing here has
+// been tuned for speed past the shape of the algorithms.
+// XXH64 runs at 6.7 GB/s.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   zstd.cone          this overview
+//   types.cone         Status, ErrorKind, ZstdError
+//   tables.cone        the constants of RFC 8878
+//   xxhash.cone        xxh64, Xxh64
+//   fse.cone           the bit readers, FSE table descriptions and tables
+//   huffman.cone       Huffman tree descriptions, tables and streams
+//   block.cone         a compressed block: literals, sequences, their tables
+//   decompressor.cone  Decompressor: frames, blocks, the window, streaming
+//   decompress.cone    decompress, decompressWithDictionary
+
+mod zstd;
+
+import collections use *;

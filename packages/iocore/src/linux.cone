@@ -61,6 +61,25 @@ struct LingerLx {
   pub secs: i32;
 }
 
+// struct msghdr on x86-64, for sendmsg: no address (a connected socket), the
+// iovec (Spans), no control data
+struct MsgHdrLx {
+  pub name: *u8;
+  pub namelen: u32;
+  pub pad0: u32;
+  pub iov: *Span;
+  pub iovlen: usize;
+  pub control: *u8;
+  pub controllen: usize;
+  pub flags: i32;
+  pub pad1: i32;
+}
+
+// The most segments one sendmsg is given (Linux's own bound, IOV_MAX, is
+// 1,024): a gather of more goes on from where the call left it, as a partial
+// send does
+const gatherBatch = 64usize;
+
 // struct addrinfo, as getaddrinfo's results are linked
 struct AddrInfoLx {
   pub flags: i32;
@@ -91,6 +110,7 @@ extern {
   fn @c("send") sysSend(fd: i32, buf: *u8, n: usize, flags: i32) i64;
   fn @c("recvfrom") sysRecvfrom(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: *u32) i64;
   fn @c("sendto") sysSendto(fd: i32, buf: *u8, n: usize, flags: i32, addr: *u8, len: u32) i64;
+  fn @c("sendmsg") sysSendmsg(fd: i32, msg: *MsgHdrLx, flags: i32) i64;
   fn @c("getsockopt") sysGetsockopt(fd: i32, level: i32, name: i32, val: *u8, len: *u32) i32;
   fn @c("open") sysOpen(path: *u8, flags: i32, mode: u32) i32;
   fn @c("fcntl") sysFcntl(fd: i32, cmd: i32, arg: i32) i32;
@@ -424,6 +444,33 @@ fn lxTry(lp: &mut Loop, p: *OpCore, at: Instant) u32 {
     lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(e));
     return triedDone;
   }
+  if k == diag.kindSend && r.isGather() {
+    // A gather: sendmsg over the segments from the byte 'done' reached, until
+    // the socket has taken them all or would block
+    let len = r.gatherLen();
+    var spans = Array[Span, 64]() <- fill Span(null, 0usize);
+    var failed = 0i32;
+    while r.done < len && failed == 0i32 {
+      let cnt = r.gatherSpans(r.done, &mut spans as *Span, gatherBatch);
+      var msg = MsgHdrLx(null, 0u32, 0u32, &mut spans as *Span, cnt, null, 0usize, 0i32, 0i32);
+      let n = sysSendmsg(fd, &mut msg as *MsgHdrLx, msgNoSignal);
+      if n >= 0i64 {
+        r.done = r.done + usize.from(n);
+      } else {
+        let e = lastErrno();
+        if e != eintr {failed = e;}
+      }
+    }
+    if failed == eagain {return triedWait;}
+    r.dequeued = at;
+    lp.unlinkSide(p);
+    if failed != 0i32 {
+      lp.decide(p, diag.outcomeFailed, 0usize, errnoCode(failed));
+    } else {
+      lp.decide(p, diag.outcomeDone, len, 0u32);
+    }
+    return triedDone;
+  }
   if k == diag.kindSend {
     var data = null as *u8;
     var len = 0usize;
@@ -601,7 +648,7 @@ fn lxStartRecv(lp: &mut Loop, p: *OpCore, ready: bool) u32 {
   lxQueue(lp, p, onReads)
 }
 
-// A Send or a SendBytes
+// A Send, a SendBytes or a SendChain
 fn lxStartSend(lp: &mut Loop, p: *OpCore) u32 {
   if isWindows() {return errorInvalidParameter;}
   let r = p as &mut OpCore;

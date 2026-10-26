@@ -1,0 +1,552 @@
+// Every bound of FrameConfig, crossed, and its value just inside, at the
+// default and at a value set:
+// - maxFrameSize: a frame one byte longer is FRAME_SIZE_ERROR, the
+//   stream's for DATA and frames of unknown type (its payload skipped as it
+//   arrives, never held: the error comes with the header alone, and a
+//   DATA's length still counts against the connection's window), the
+//   connection's for a field block's frames, SETTINGS and anything on
+//   stream 0;
+// - maxHeaderBlockSize (the CONTINUATION flood): a field block's frames'
+//   payloads together, padding included, refused at the header of the
+//   frame that would pass it, before its payload is waited for;
+// - maxContinuations: a block's CONTINUATIONs, zero-byte ones too;
+// - maxEmptyFrames (the empty-frame flood): empty DATA, HEADERS and
+//   CONTINUATION frames that end nothing, in a row;
+// - maxQueuedControlFrames (the SETTINGS and PING floods): the control
+//   frames a writer holds untaken, refused past it, GOAWAY never; DATA and
+//   HEADERS are not counted, and a take starts the count again.
+
+mod framelimits;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// Every byte a chain holds, as hex
+fn chainHex(c: &Chain) String {
+  var b = List[u8].empty();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  hex(b.view())
+}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  _ = x.append(b);
+  x
+}
+
+fn spec(p: &PrioritySpec) String {
+  var s = String.from("dep ");
+  s.appendUInt(u64.from(p.dependency));
+  s.append(" w");
+  s.appendUInt(u64.from(p.weight));
+  if p.exclusive {s.append(" excl");}
+  s
+}
+
+fn errText(e: &FrameError) String {
+  var s = e.message();
+  if e.flowLength > 0usize {
+    s.append(" (flow ");
+    s.appendUInt(u64.from(e.flowLength));
+    s.append(")");
+  }
+  s
+}
+
+// One frame, in a line
+fn describe(f: Frame) String {
+  var s = String.empty();
+  match f {
+    case let Data(d) {
+      s.append("DATA s");
+      s.appendUInt(u64.from(d.stream));
+      if d.endStream {s.append(" end");}
+      s.append(" flow ");
+      s.appendUInt(u64.from(d.flowLength));
+      s.append(" ");
+      s.append(hex(d.data.view()).view());
+    }
+    case let Headers(h) {
+      s.append("HEADERS s");
+      s.appendUInt(u64.from(h.stream));
+      if h.endStream {s.append(" end");}
+      match h.priority {
+        case let Some(p) {
+          s.append(" (");
+          s.append(spec(&p).view());
+          s.append(")");
+        }
+        case is None[PrioritySpec] {}
+      }
+      s.append(" ");
+      s.append(hex(h.block.view()).view());
+      match h.streamError {
+        case let Some(e) {
+          s.append(" then ");
+          s.append(errText(&e).view());
+        }
+        case is None[FrameError] {}
+      }
+    }
+    case let Priority(p) {
+      s.append("PRIORITY s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" ");
+      s.append(spec(&p.spec).view());
+    }
+    case let RstStream(r) {
+      s.append("RST_STREAM s");
+      s.appendUInt(u64.from(r.stream));
+      s.append(" ");
+      s.append(r.code.name());
+      if r.code is Unknown {
+        s.append(" ");
+        s.appendUInt(u64.from(r.code.value()));
+      }
+    }
+    case let Settings(st) {
+      s.append("SETTINGS");
+      if st.ack {s.append(" ack");}
+      var i = 0usize;
+      while i < st.values.len() {
+        s.append(" ");
+        s.appendUInt(u64.from(st.values[i].id));
+        s.append("=");
+        s.appendUInt(u64.from(st.values[i].value));
+        i = i + 1usize;
+      }
+    }
+    case let PushPromise(p) {
+      s.append("PUSH_PROMISE s");
+      s.appendUInt(u64.from(p.stream));
+      s.append(" promised ");
+      s.appendUInt(u64.from(p.promised));
+      s.append(" ");
+      s.append(hex(p.block.view()).view());
+    }
+    case let Ping(p) {
+      s.append("PING");
+      if p.ack {s.append(" ack");}
+      s.append(" ");
+      s.appendHex(p.data, 16usize);
+    }
+    case let GoAway(g) {
+      s.append("GOAWAY last ");
+      s.appendUInt(u64.from(g.lastStream));
+      s.append(" ");
+      s.append(g.code.name());
+      s.append(" '");
+      s.append(String.fromBytes(g.debug.view()).view());
+      s.append("'");
+    }
+    case let WindowUpdate(w) {
+      s.append("WINDOW_UPDATE s");
+      s.appendUInt(u64.from(w.stream));
+      s.append(" +");
+      s.appendUInt(u64.from(w.increment));
+    }
+  }
+  s
+}
+
+// Feed the bytes to the reader 'piece' at a time, each piece its own
+// segment, reading after each until it needs more: what it made, one item
+// a line, ending at a connection error
+fn readIn(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
+  var input = Chain.make(1048576usize);
+  var out = String.empty();
+  var at = 0usize;
+  while at < bytes.len {
+    let n = if bytes.len - at < piece {bytes.len - at} else {piece};
+    _ = input.push(buf(&bytes[at ..< at + n]));
+    at = at + n;
+    while true {
+      match r.next(&mut input) {
+        case is NeedData {break;}
+        case let Got(g) {
+          out.append(describe(g.frame).view());
+          out.append("\n");
+        }
+        case let Failed(f) {
+          out.append(errText(&f.error).view());
+          out.append("\n");
+          if f.error.isConnectionError() {return out;}
+        }
+      }
+    }
+  }
+  out
+}
+
+fn server() FrameReader {FrameReader.server(FrameConfig.make())}
+fn client() FrameReader {FrameReader.client(FrameConfig.make())}
+
+// What a writer queued, as bytes
+fn written(w: &mut FrameWriter) List[u8] {
+  let c = w.take();
+  var b = List[u8].empty();
+  b.resize(c.len(), 0u8);
+  _ = c.copyOut(0usize, b.viewMut());
+  b
+}
+
+fn filled(n: usize) List[u8] {
+  var l = List[u8].empty();
+  l.resize(n, 0x61u8);
+  l
+}
+
+fn dataOf(n: usize) IoBuf {buf(filled(n).view())}
+
+fn join(a: &Array[u8], b: &Array[u8]) List[u8] {
+  var l = List[u8].empty();
+  var i = 0usize;
+  while i < a.len {
+    l.push(a[i]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < b.len {
+    l.push(b[i]);
+    i = i + 1usize;
+  }
+  l
+}
+
+fn cat(a: &str, b: &str) String {
+  var s = String.from(a);
+  s.append(b);
+  s
+}
+
+// One frame, briefly: its type, stream and how many bytes it carried
+fn brief(f: Frame) String {
+  var s = String.empty();
+  match f {
+    case let Data(d) {
+      s.append("DATA s");
+      s.appendUInt(u64.from(d.stream));
+      s.append(" ");
+      s.appendUInt(u64.from(d.data.len()));
+    }
+    case let Headers(h) {
+      s.append("HEADERS s");
+      s.appendUInt(u64.from(h.stream));
+      s.append(" ");
+      s.appendUInt(u64.from(h.block.len()));
+    }
+    case let Ping(p) {s.append("PING");}
+    case let Settings(st) {s.append("SETTINGS");}
+    case let Priority(p) {s.append("PRIORITY");}
+    case let RstStream(r) {s.append("RST_STREAM");}
+    case let PushPromise(p) {s.append("PUSH_PROMISE");}
+    case let GoAway(g) {s.append("GOAWAY");}
+    case let WindowUpdate(w) {s.append("WINDOW_UPDATE");}
+  }
+  s
+}
+
+// As readIn, briefly
+fn readBrief(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
+  var input = Chain.make(1048576usize);
+  var out = String.empty();
+  var at = 0usize;
+  while at < bytes.len {
+    let n = if bytes.len - at < piece {bytes.len - at} else {piece};
+    _ = input.push(buf(&bytes[at ..< at + n]));
+    at = at + n;
+    while true {
+      match r.next(&mut input) {
+        case is NeedData {break;}
+        case let Got(g) {
+          out.append(brief(g.frame).view());
+          out.append("\n");
+        }
+        case let Failed(f) {
+          out.append(errText(&f.error).view());
+          out.append("\n");
+          if f.error.isConnectionError() {return out;}
+        }
+      }
+    }
+  }
+  out
+}
+
+let pingHex = "0000080600000000000000000000000001";
+
+fn withPing(b: &Array[u8]) List[u8] {join(b, unhex(pingHex).view())}
+
+fn cfgFrame(n: usize) FrameConfig {
+  var c = FrameConfig.make();
+  c.maxFrameSize = n;
+  c
+}
+
+// A raw frame header: length, type, flags, stream
+fn header(len: usize, kind: u8, flags: u8, stream: u32) List[u8] {
+  var l = List[u8].empty();
+  l.resize(frameHeaderLen, 0u8);
+  FrameHeader(len, kind, flags, stream).write(l.viewMut());
+  l
+}
+
+fn frameSize() {
+  let big = "FRAME_SIZE_ERROR on stream 1: a frame longer than SETTINGS_MAX_FRAME_SIZE";
+
+  // DATA at 16384 is read; at 16385 the stream's error, the payload skipped
+  // as it arrives, and the PING after it read
+  var w = FrameWriter.make(&FrameConfig.make());
+  w.data(1u32, dataOf(16384usize), false);
+  var r = server();
+  expectStr(readBrief(&mut r, written(&mut w).view(), 1000usize).view(), "DATA s1 16384\n", "DATA of 16384, the default");
+  w.setPeerMaxFrameSize(16385usize);
+  w.data(1u32, dataOf(16385usize), false);
+  let over = withPing(written(&mut w).view());
+  r = server();
+  var want = String.from(big);
+  want.append(" (flow 16385)\nPING\n");
+  expectStr(readBrief(&mut r, over.view(), 1000usize).view(), want.view(), "DATA of 16385: the stream's error");
+  // ...given with the header alone, none of the payload there
+  r = server();
+  var wantHead = String.from(big);
+  wantHead.append(" (flow 16385)\n");
+  expectStr(readBrief(&mut r, &over.view()[0usize ..< frameHeaderLen], 9usize).view(), wantHead.view(),
+    "DATA of 16385: refused at its header");
+
+  // A field block's frame, SETTINGS, and anything on stream 0: the
+  // connection's
+  w.headers(1u32, filled(16385usize).view(), false);
+  r = server();
+  expectStr(readBrief(&mut r, written(&mut w).view(), 1000usize).view(),
+    "FRAME_SIZE_ERROR on the connection: a frame longer than SETTINGS_MAX_FRAME_SIZE\n", "HEADERS of 16385");
+  r = server();
+  expectStr(readBrief(&mut r, header(16386usize, typeSettings, 0u8, 0u32).view(), 9usize).view(),
+    "FRAME_SIZE_ERROR on the connection: a frame longer than SETTINGS_MAX_FRAME_SIZE\n", "SETTINGS of 16386");
+  r = server();
+  expectStr(readBrief(&mut r, header(16385usize, 0xbbu8, 0u8, 0u32).view(), 9usize).view(),
+    "FRAME_SIZE_ERROR on the connection: a frame longer than SETTINGS_MAX_FRAME_SIZE\n", "an unknown type of 16385 on stream 0");
+  // A frame of unknown type on a stream: the stream's, skipped, no flow
+  r = server();
+  let unknown = withPing(join(header(16385usize, 0xbbu8, 0u8, 1u32).view(), filled(16385usize).view()).view());
+  var wantUnknown = String.from(big);
+  wantUnknown.append("\nPING\n");
+  expectStr(readBrief(&mut r, unknown.view(), 4096usize).view(), wantUnknown.view(), "an unknown type of 16385 on a stream");
+  // ...and of 16384, skipped without a word
+  r = server();
+  let fits = withPing(join(header(16384usize, 0xbbu8, 0u8, 1u32).view(), filled(16384usize).view()).view());
+  expectStr(readBrief(&mut r, fits.view(), 4096usize).view(), "PING\n", "an unknown type of 16384, skipped");
+
+  // maxFrameSize set to 20000: 20000 read, 20001 refused
+  w.setPeerMaxFrameSize(20001usize);
+  w.data(1u32, dataOf(20000usize), false);
+  w.data(3u32, dataOf(20001usize), true);
+  r = FrameReader.server(cfgFrame(20000usize));
+  expectStr(readBrief(&mut r, withPing(written(&mut w).view()).view(), 3000usize).view(),
+    "DATA s1 20000\nFRAME_SIZE_ERROR on stream 3: a frame longer than SETTINGS_MAX_FRAME_SIZE (flow 20001)\nPING\n",
+    "maxFrameSize 20000");
+}
+
+fn headerBlock() {
+  let calm = "ENHANCE_YOUR_CALM on the connection: a field block longer than maxHeaderBlockSize\n";
+
+  // The default, 64 KiB: a block of 65536 in four frames is read whole; of
+  // 65537 (five frames), refused at the fifth frame's header
+  var w = FrameWriter.make(&FrameConfig.make());
+  w.headers(1u32, filled(65536usize).view(), true);
+  var r = server();
+  expectStr(readBrief(&mut r, written(&mut w).view(), 5000usize).view(), "HEADERS s1 65536\n", "a block of 65536");
+  w.headers(1u32, filled(65537usize).view(), true);
+  let five = written(&mut w);
+  r = server();
+  expectStr(readBrief(&mut r, &five.view()[0usize ..< 4usize * (frameHeaderLen + 16384usize) + frameHeaderLen], 5000usize).view(),
+    calm, "a block of 65537: refused at the fifth frame's header");
+
+  // Set to 100: one frame of 100; 60 and a CONTINUATION of 40; 101 alone;
+  // 60 and 41
+  var cfg = FrameConfig.make();
+  cfg.maxHeaderBlockSize = 100usize;
+  w.headers(1u32, filled(100usize).view(), false);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), "HEADERS s1 100\n", "100 in one frame, maxHeaderBlockSize 100");
+  w.setPeerMaxFrameSize(60usize);
+  w.headers(1u32, filled(100usize).view(), false);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), "HEADERS s1 100\n", "60 and 40");
+  w.headers(1u32, filled(101usize).view(), false);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), calm, "60 and 41");
+  w.setPeerMaxFrameSize(16384usize);
+  w.headers(1u32, filled(101usize).view(), false);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), calm, "101 in one frame");
+  // Padding counts: 90 and 9 of padding (a payload of 100), then 10 (101)
+  w.headers(1u32, filled(90usize).view(), false, None, 9usize);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), "HEADERS s1 90\n", "90 and 9 of padding");
+  w.headers(1u32, filled(90usize).view(), false, None, 10usize);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 7usize).view(), calm, "90 and 10 of padding");
+}
+
+fn continuations() {
+  let calm = "ENHANCE_YOUR_CALM on the connection: more CONTINUATION frames than maxContinuations\n";
+
+  // The default, 8: a block in nine frames is read; in ten, refused at the
+  // tenth's header
+  var w = FrameWriter.make(&FrameConfig.make());
+  w.setPeerMaxFrameSize(10usize);
+  w.headers(1u32, filled(90usize).view(), true);
+  var r = server();
+  expectStr(readBrief(&mut r, written(&mut w).view(), 13usize).view(), "HEADERS s1 90\n", "HEADERS and 8 CONTINUATIONs");
+  w.headers(1u32, filled(91usize).view(), true);
+  let ten = written(&mut w);
+  r = server();
+  expectStr(readBrief(&mut r, &ten.view()[0usize ..< 9usize * (frameHeaderLen + 10usize) + frameHeaderLen], 13usize).view(),
+    calm, "HEADERS and 9 CONTINUATIONs");
+
+  // Set to 2
+  var cfg = FrameConfig.make();
+  cfg.maxContinuations = 2usize;
+  w.headers(1u32, filled(30usize).view(), true);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 13usize).view(), "HEADERS s1 30\n", "2 CONTINUATIONs, maxContinuations 2");
+  w.headers(1u32, filled(31usize).view(), true);
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, written(&mut w).view(), 13usize).view(), calm, "3 CONTINUATIONs, maxContinuations 2");
+
+  // Zero-byte CONTINUATIONs add nothing to the block, and are still counted
+  // (Netty's CVE-2026-33871 let them past its size check)
+  var empties = header(1usize, typeHeaders, 0u8, 1u32);
+  empties.push(0x82u8);
+  var i = 0;
+  while i < 9 {
+    empties = join(empties.view(), header(0usize, typeContinuation, 0u8, 1u32).view());
+    i = i + 1;
+  }
+  var lax = FrameConfig.make();
+  lax.maxEmptyFrames = 100usize;
+  r = FrameReader.server(lax);
+  expectStr(readBrief(&mut r, empties.view(), 9usize).view(), calm, "nine empty CONTINUATIONs");
+  // ...and at the default maxEmptyFrames, the second is refused as empty
+  r = server();
+  expectStr(readBrief(&mut r, empties.view(), 9usize).view(),
+    "ENHANCE_YOUR_CALM on the connection: more empty frames in a row than maxEmptyFrames\n", "empty CONTINUATIONs, as empty frames");
+}
+
+fn emptyFrames() {
+  let calm = "ENHANCE_YOUR_CALM on the connection: more empty frames in a row than maxEmptyFrames\n";
+  let empty = header(0usize, typeData, 0u8, 1u32);
+  let ends = header(0usize, typeData, flagEndStream, 1u32);
+  var w = FrameWriter.make(&FrameConfig.make());
+  w.data(1u32, dataOf(1usize), false);
+  let one = written(&mut w);
+
+  // The default, 1: one empty DATA is read; two in a row are refused
+  var r = server();
+  expectStr(readBrief(&mut r, withPing(empty.view()).view(), 9usize).view(), "DATA s1 0\nPING\n", "one empty DATA");
+  r = server();
+  expectStr(readBrief(&mut r, join(empty.view(), empty.view()).view(), 9usize).view(), cat("DATA s1 0\n", calm).view(),
+    "two empty DATA in a row");
+  // A DATA with a byte between them starts the count again; one with
+  // END_STREAM ends something, and is not counted; a frame of another kind
+  // between them does not start it again
+  r = server();
+  expectStr(readBrief(&mut r, join(join(empty.view(), one.view()).view(), empty.view()).view(), 9usize).view(),
+    "DATA s1 0\nDATA s1 1\nDATA s1 0\n", "empty, one byte, empty");
+  r = server();
+  expectStr(readBrief(&mut r, join(join(ends.view(), ends.view()).view(), ends.view()).view(), 9usize).view(),
+    "DATA s1 0\nDATA s1 0\nDATA s1 0\n", "three empty DATA with END_STREAM");
+  r = server();
+  expectStr(readBrief(&mut r, join(withPing(empty.view()).view(), empty.view()).view(), 9usize).view(),
+    cat("DATA s1 0\nPING\n", calm).view(), "empty, PING, empty");
+  // An empty HEADERS ending nothing counts as well
+  r = server();
+  expectStr(readBrief(&mut r, join(header(0usize, typeHeaders, flagEndHeaders, 1u32).view(), empty.view()).view(), 9usize).view(),
+    cat("HEADERS s1 0\n", calm).view(), "an empty HEADERS, then an empty DATA");
+
+  // Set to 3
+  var cfg = FrameConfig.make();
+  cfg.maxEmptyFrames = 3usize;
+  let three = join(join(empty.view(), empty.view()).view(), empty.view());
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, withPing(three.view()).view(), 9usize).view(), "DATA s1 0\nDATA s1 0\nDATA s1 0\nPING\n",
+    "three empty DATA, maxEmptyFrames 3");
+  r = FrameReader.server(cfg);
+  expectStr(readBrief(&mut r, join(three.view(), empty.view()).view(), 9usize).view(),
+    cat("DATA s1 0\nDATA s1 0\nDATA s1 0\n", calm).view(), "four empty DATA, maxEmptyFrames 3");
+}
+
+fn controlFrames() {
+  // The default, 10000: 10000 PINGs queue, the next is refused, and so is
+  // every other control frame; GOAWAY is not; DATA and HEADERS are not
+  // counted. A take starts the count again
+  var w = FrameWriter.make(&FrameConfig.make());
+  var ok = 0;
+  var i = 0;
+  while i < 10000 {
+    if w.ping(u64.from(i), true) {ok = ok + 1;}
+    i = i + 1;
+  }
+  expectInt(i64.from(ok), 10000i64, "10000 PING ACKs queued");
+  expect(!w.ping(1u64, true), "the 10001st refused");
+  expect(!w.settingsAck(), "SETTINGS ACK refused");
+  expect(!w.settings(List[Setting].empty().view()), "SETTINGS refused");
+  expect(!w.rstStream(1u32, ErrorCode.Cancel), "RST_STREAM refused");
+  expect(!w.windowUpdate(0u32, 1u32), "WINDOW_UPDATE refused");
+  expect(!w.priority(1u32, PrioritySpec(false, 0u32, 15u8)), "PRIORITY refused");
+  expectInt(i64.from(w.queuedControlFrames()), 10000i64, "10000 counted");
+  let before = w.queuedBytes();
+  w.goAway(0u32, ErrorCode.EnhanceYourCalm, "");
+  expectInt(i64.from(w.queuedBytes() - before), 17i64, "GOAWAY queued all the same");
+  w.data(1u32, dataOf(5usize), false);
+  w.headers(1u32, unhex("82").view(), false);
+  expectInt(i64.from(w.queuedBytes() - before), 17i64 + 14i64 + 10i64, "DATA and HEADERS queued, not counted");
+  let c = w.take();
+  expectInt(i64.from(c.len()), 10000i64 * 17i64 + 17i64 + 14i64 + 10i64, "everything taken");
+  expectInt(i64.from(w.queuedControlFrames()), 0i64, "the count starts again");
+  expect(w.ping(2u64, false), "a PING queues again");
+
+  // Set to 3
+  var cfg = FrameConfig.make();
+  cfg.maxQueuedControlFrames = 3usize;
+  var v = FrameWriter.make(&cfg);
+  expect(v.settingsAck() && v.ping(1u64, true) && v.windowUpdate(0u32, 100u32), "3 queued, maxQueuedControlFrames 3");
+  expect(!v.rstStream(1u32, ErrorCode.Cancel), "the fourth refused");
+  _ = v.take();
+  expect(v.rstStream(1u32, ErrorCode.Cancel), "after a take, queued");
+}
+
+fn main() i32 {
+  frameSize();
+  headerBlock();
+  continuations();
+  emptyFrames();
+  controlFrames();
+  done()
+}

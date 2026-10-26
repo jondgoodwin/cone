@@ -1,0 +1,159 @@
+// Gathered sends: a server and a client on one Loop and one Driver, over
+// 127.0.0.1. The server answers a GET with a 64 KiB sized body handed over
+// in four 16 KiB buffers, then a GET with a chunked body of six small ones.
+// The driver sends what the core has ready in one gather write (SendChain)
+// where it used to send one buffer per send. Checked, by the loop's
+// diagnostics records (a subscriber): each response went to the kernel as
+// ONE send of all its bytes, its head, framing and body buffers together;
+// every body byte arrived, in order; and every buffer is back in the pool.
+
+mod gathered;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+import diag;
+
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+// The loop's sends: how many, and the bytes of the largest
+var @threadlocal sends = 0u64;
+var @threadlocal largest = 0u64;
+
+fn keep(r: &diag.OpRecord) {
+  if r.kind == diag.kindSend {
+    sends = sends + 1u64;
+    if r.bytes > largest {largest = r.bytes;}
+  }
+}
+
+// Body byte i of the sized response
+fn at(i: usize) u8 {97u8 + u8.from(i % 23usize)}
+
+fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8]) {
+  if target == "/big" {
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(65536u64));
+    var k = 0usize;
+    while k < 4usize {
+      var b = IoBuf(16384usize);
+      let room = b.whole();
+      var j = 0usize;
+      while j < 16384usize {
+        room[j] = at(k * 16384usize + j);
+        j = j + 1usize;
+      }
+      b.setLen(16384usize);
+      match drv.sendData(req, b) {
+        case is None[IoBuf] {}
+        else {expect(false, "each body buffer is taken");}
+      }
+      k = k + 1usize;
+    }
+    drv.finish(req);
+  } else {
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.unsized());
+    var k = 0usize;
+    while k < 6usize {
+      var b = IoBuf(64usize);
+      b.append("piece;");
+      drv.sendData(req, b);
+      k = k + 1usize;
+    }
+    drv.finish(req);
+  }
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var port = 0u16;
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Error(e) {}
+  }
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Error(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+
+  var body = String.empty();
+  var step = 0u32;
+  var req = ReqId.none();
+  var events = List[Event].empty();
+  var sendsBefore = 0u64;
+  var largestBig = 0u64;
+  var sendsBig = 0u64;
+  var sendsChunked = 0u64;
+  var bigBody = false;
+  var chunkedBody = String.empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while step < 2u32 && Instant.now() < giveUp {
+    if req.isNone() {
+      body = String.empty();
+      // Counted from here: the request's send, then the response's
+      lp.subscribe(&keep);
+      sendsBefore = sends;
+      largest = 0u64;
+      let path = if step == 0u32 {"/big"} else {"/chunked"};
+      req = drv.request(&mut lp, conn, RequestHead.get(path, "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+    }
+    drv.poll(&mut lp, forever(), &mut events);
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer && e.kind == EventKind.End {
+        // A GET has no body: its End is its whole request
+        answer(&mut drv, e.req, if step == 0u32 {"/big"} else {"/chunked"});
+      } else if e.token == tokServer && e.kind == EventKind.Request {
+      } else if e.token == tokReq && e.kind == EventKind.Data {
+        body.appendBytes(e.buf.view());
+        drv.release(e.req, e.buf.len());
+      } else if e.token == tokReq && e.isTerminal() {
+        expect(e.kind == EventKind.Done, "each request ends Done");
+        if step == 0u32 {
+          sendsBig = sends - sendsBefore;
+          largestBig = largest;
+          var good = body.len() == 65536usize;
+          var i = 0usize;
+          while good && i < 65536usize {
+            if body.view()[i] != at(i) {good = false;}
+            i = i + 1usize;
+          }
+          bigBody = good;
+        } else {
+          sendsChunked = sends - sendsBefore;
+          chunkedBody = String.from(body.view());
+        }
+        req = ReqId.none();
+        step = step + 1u32;
+      }
+    }
+    events.clear();
+  }
+  requireUInt(u64.from(step), 2u64, "both requests done in time");
+  expect(bigBody, "the 64 KiB body arrived whole, in order");
+  expectUInt(sendsBig, 2u64, "two sends for the exchange: the request, and the whole response in one");
+  expect(largestBig > 65536u64, "the response's one send held its head and all 64 KiB");
+  expectStr(chunkedBody.view(), "piece;piece;piece;piece;piece;piece;", "the chunked body arrived");
+  expectUInt(sendsChunked, 2u64, "the chunked response, six buffers and its framing, in one send");
+  drv.close(&mut lp, conn);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while drv.live() > 0u32 && Instant.now() < limit {
+    drv.poll(&mut lp, limit, &mut events);
+    events.clear();
+  }
+  drv.abortAll(&mut lp);
+  events.clear();
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
