@@ -535,7 +535,7 @@ pub struct Tokenizer {
         if specialFirst.view()[usize.from(text[pos])] {
           let id = self.specialAt(text, pos);
           if id != deadSymbol {
-            self.encodeSegment(&text[segment..<pos], &mut work, out);
+            self.encodeSegment(&text[segment..<pos], &uni work, out);
             out.push(id);
             pos = pos + self.lengthOf(usize.from(id));
             segment = pos;
@@ -545,7 +545,7 @@ pub struct Tokenizer {
         pos = pos + 1usize;
       }
     }
-    self.encodeSegment(&text[segment..], &mut work, out);
+    self.encodeSegment(&text[segment..], &uni work, out);
   }
 
   // The id of the longest special token that text has at pos, or deadSymbol
@@ -564,7 +564,7 @@ pub struct Tokenizer {
   }
 
   // Text with no special token in it: cut into words, each merged alone
-  fn encodeSegment(self: &, text: &Array[u8], work: &mut Work, out: &mut List[u32]) {
+  fn encodeSegment(self: &, text: &Array[u8], work: &uni Work, out: &mut List[u32]) {
     work.ends.clear();
     pieceEndsWith(&pre, text, &mut work.ends, &mut work.scan);
     var start = 0usize;
@@ -589,27 +589,25 @@ pub struct Tokenizer {
   }
 
   // One word's bytes merged into tokens, appended to out
-  fn mergeWord(self: &, word: &Array[u8], work: &mut Work, out: &mut List[u32]) {
+  fn mergeWord(self: &, word: &Array[u8], work: &uni Work, out: &mut List[u32]) {
     let n = word.len;
     if n == 1usize {
       out.push(byteIds.view()[usize.from(word[0usize])]);
       return;
     }
-    // the symbols' ids live in a local List for the word, so that pushing to out can't touch them
-    var symbols = List[u32].empty();
-    symbols <-> work.sym;
-    symbols.clear();
+    // 'work' is lent &uni, so that pushing to out can't touch its lists
+    work.sym.clear();
     work.prev.clear();
     work.next.clear();
     work.heap.clear();
     var i = 0usize;
     while i < n {
-      symbols.push(byteIds.view()[usize.from(word[i])]);
+      work.sym.push(byteIds.view()[usize.from(word[i])]);
       work.prev.push(if i == 0usize { noLink } else { i - 1usize });
       work.next.push(if i + 1usize < n { i + 1usize } else { noLink });
       i = i + 1usize;
     }
-    let sym = symbols.viewMut();
+    let sym = work.sym.viewMut();
     let prev = work.prev.viewMut();
     let next = work.next.viewMut();
     i = 0usize;
@@ -645,7 +643,6 @@ pub struct Tokenizer {
       out.push(sym[at]);
       at = next[at];
     }
-    symbols <-> work.sym;
   }
 
   // -------- decoding --------

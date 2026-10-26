@@ -75,8 +75,8 @@ pub struct Completion {
   // How many dispatches of the job used a bind group made for the job before it
   pub fn reusedGroups(self: &) u32 { line.reused }
 
-  // A new job over the first 'keep' buffers of this Completion (moved out of it, into the same slots;
-  // the others stay in it, to be dropped), that keeps its bind groups for the next as the job this
+  // A new job over the first 'keep' buffers of this Completion, which it takes (moved into the same slots;
+  // the others are dropped), that keeps its bind groups for the next as the job this
   // came from did. A dispatch of it with the same kernel and bindings as the one in its place in
   // the job before uses that one's bind group, made already. So a job run again and again over the
   // same resident buffers, a model's layers one token after another, makes its bind groups once. If a
@@ -84,21 +84,24 @@ pub struct Completion {
   // for it and kept in place of the old. The parameter slab ('job.slab') carries over, empty.
   // The jobs run one after another, each this Completion's job's successor: the groups of the job
   // before are not touched while it is in flight (they are in this Completion only once it is done).
-  pub fn again(self: &mut, device: &mut Device, keep: u32) Job {
+  pub fn again(self, device: &mut Device, keep: u32) Job {
     var job = Job.make(device);
+    var buffers, line = self.(buffers, line);
     var i = 0u32;
-    while i < keep && usize.from(i) < buffers.len() {
-      job.give(self.take(i));
-      i = i + 1u32;
+    {
+      each b in buffers.drain() {
+        if i < keep { job.give(b); i = i + 1u32; }
+      }
     }
+    let tape, hasSlab, slabSlot, slabCap, slabWords = line.(tape, hasSlab, slabSlot, slabCap, slabWords);
     job.line.keep = true;
-    job.line.tape <-> line.tape;
-    if line.hasSlab && line.slabSlot < i {
+    job.line.tape = tape;
+    if hasSlab && slabSlot < i {
       job.line.hasSlab = true;
-      job.line.slabSlot = line.slabSlot;
-      job.line.slabCap = line.slabCap;
+      job.line.slabSlot = slabSlot;
+      job.line.slabCap = slabCap;
       job.line.slabUsed = 0u64;
-      job.line.slabWords <-> line.slabWords;
+      job.line.slabWords = slabWords;
     }
     job
   }
@@ -133,11 +136,15 @@ struct InFlight {
   submitted: Instant;
   buffers: List[Buffer];
   groups: List[BindGroup];
-  live: bool;
   watched: bool;      // a Loop job: done once the watcher has seen its fence
   seq: u64;           // ...the watcher's count of jobs then
   checks: List[ErrorCheck];   // its Cone kernels' error buffers
   line: Lineage;              // what it kept for the job after it
+
+  // Whether the GPU has finished it
+  fn isDone(self: &, device: &Device, state: &Arc[imm, WatchState]) bool {
+    if watched { seq < state.watched.load() } else { device.frameDone(frame) }
+  }
 }
 
 // ---- The watcher: the thread that waits on Loop jobs' fences ----
@@ -179,7 +186,7 @@ fn watch(args: WatchArgs) u32 {
         if m.stop {
           more = false;
         } else {
-          settle(&mut m, a.state);
+          settle(m, a.state);
           seen = seen + 1u32;
         }
       }
@@ -198,11 +205,8 @@ fn watch(args: WatchArgs) u32 {
 // Failed for a job that did not run or whose fence could not be waited for,
 // or in which a Cone kernel failed (its error words, read here before the
 // job is counted done, after which 'poll' may drop their buffer)
-fn settle(w: &mut Watch, state: Arc[imm, WatchState]) {
-  var fence: Option[Fence] = None;
-  fence <-> w.fence;
-  var to: Target = Target.Here(0u64);
-  to <-> w.to;
+fn settle(w: Watch, state: Arc[imm, WatchState]) {
+  var fence, to, ticket, ran, errorWords = w.(fence, to, ticket, ran, errorWords);
   var signalled = false;
   match &fence {
     case let &Some[Fence](f) { signalled = (*f).waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
@@ -210,10 +214,10 @@ fn settle(w: &mut Watch, state: Arc[imm, WatchState]) {
   }
   // Read before it is counted done: until then 'poll' keeps the buffers
   var kernelFailed = false;
-  if signalled && w.ran {
+  if signalled && ran {
     var k = 0usize;
-    while k < w.errorWords.len() {
-      if errorsAt(*w.errorWords[k]) { kernelFailed = true; }
+    while k < errorWords.len() {
+      if errorsAt(*errorWords[k]) { kernelFailed = true; }
       k = k + 1usize;
     }
   }
@@ -222,7 +226,7 @@ fn settle(w: &mut Watch, state: Arc[imm, WatchState]) {
   sync.futexWakeAll(&state.tick);
   match &mut to {
     case var &mut Loop(l) {
-      if !w.ran {
+      if !ran {
         l.completer.fail(ERROR_JOB_REFUSED);
       } else if !signalled {
         l.completer.fail(ERROR_JOB_LOST);
@@ -231,7 +235,7 @@ fn settle(w: &mut Watch, state: Arc[imm, WatchState]) {
       } else if l.completer.isCancelRequested() {
         l.completer.cancelled();
       } else {
-        l.completer.done(usize.from(w.ticket));
+        l.completer.done(usize.from(ticket));
       }
     }
     else {}
@@ -327,7 +331,7 @@ pub struct Works {
       ok = device.queue.submit(j.encoder.finish());
     }
     let buffers, groups, checks, frame, line = j.(buffers, groups, checks, frame, line);
-    jobs.push(InFlight(ticket, token, frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks, line));
+    jobs.push(InFlight(ticket, token, frame, ok, Instant.now(), buffers, groups, isLoop, seq, checks, line));
     ticket
   }
 
@@ -343,11 +347,6 @@ pub struct Works {
       WatchArgs(spareRx, state), &watch);
     watcherId = t.id();
     watcher = Some[thread.Thread[u32]](t);
-  }
-
-  // Whether the GPU has finished job 'e'
-  fn isDone(self: &, device: &Device, k: usize) bool {
-    if jobs[k].watched { jobs[k].seq < state.watched.load() } else { device.frameDone(jobs[k].frame) }
   }
 
   // Wait until the watcher has seen the Loop job numbered 'seq'
@@ -380,35 +379,33 @@ pub struct Works {
   pub fn poll(self: &mut, device: &Device, out: &mut List[Completion]) usize {
     let now = Instant.now();
     var n = 0usize;
-    var k = 0usize;
-    while k < jobs.len() {
-      if self.isDone(device, k) {
-        let e = &mut jobs[k];
-        var buffers = List[Buffer].empty();
-        buffers <-> e.buffers;
-        var groups = List[BindGroup].empty();
-        groups <-> e.groups;
-        retired.push(groups);
-        // Its Cone kernels' error buffers, read now that the GPU is done
-        var failures = List[KernelFailure].empty();
-        if e.ok {
-          var c = 0usize;
-          while c < e.checks.len() {
-            readFailure(e.checks[c], &mut failures);
-            c = c + 1usize;
+    // The jobs not finished, in the order submitted, become the jobs in flight
+    var kept = List[InFlight].empty();
+    {
+      each e in jobs.drain() {
+        if e.isDone(device, &state) {
+          let ticket, token, frame, ok, submitted, buffers, groups, var checks, line =
+            e.(ticket, token, frame, ok, submitted, buffers, groups, checks, line);
+          retired.push(groups);
+          // Its Cone kernels' error buffers, read now that the GPU is done
+          var failures = List[KernelFailure].empty();
+          if ok {
+            var c = 0usize;
+            while c < checks.len() {
+              readFailure(checks[c], &mut failures);
+              c = c + 1usize;
+            }
           }
+          checks.clear();
+          out.push(Completion(ticket, token, ok && failures.len() == 0usize, buffers, frame,
+            submitted, now, failures, line));
+          n = n + 1usize;
+        } else {
+          kept.push(e);
         }
-        e.checks.clear();
-        var line = Lineage.none();
-        line <-> e.line;
-        out.push(Completion(e.ticket, e.token, e.ok && failures.len() == 0usize, buffers, e.frame,
-          e.submitted, now, failures, line));
-        e.live = false;
-        n = n + 1usize;
       }
-      k = k + 1usize;
     }
-    if n > 0usize { self.compact(); }
+    jobs = kept;
     // A bind group's end waits for the device to be idle: only when no job
     // of ours is in flight
     if jobs.len() == 0usize { retired.clear(); }
@@ -445,20 +442,6 @@ pub struct Works {
       k = k + 1usize;
     }
     self.poll(device, out)
-  }
-
-  // Drop the jobs delivered, keeping the order of the rest
-  fn compact(self: &mut) {
-    var to = 0usize;
-    var k = 0usize;
-    while k < jobs.len() {
-      if jobs[k].live {
-        if to != k { jobs.swap(to, k); }
-        to = to + 1usize;
-      }
-      k = k + 1usize;
-    }
-    while jobs.len() > to { jobs.pop(); }
   }
 
   // Its end: the watcher, if started, is told to stop once it has seen

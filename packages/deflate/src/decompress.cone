@@ -5,8 +5,8 @@
 
 // Inflates the stream in 'inf' to its end. 'expected' is the output size if
 // known (it reserves room and bounds the output), else 0, which bounds the
-// output by 1 GiB.
-fn inflateAll(inf: &mut Inflater, data: &Array[u8], start: usize, expected: usize) Result[List[u8], DeflateError] {
+// output by 1 GiB. Answers the failure, or None; the output stays in 'inf' for 'takeOutput'.
+fn inflateRun(inf: &mut Inflater, data: &Array[u8], start: usize, expected: usize) Option[DeflateError] {
   inf.limit = if expected > 0usize {u64.from(expected)} else {1073741824u64};
   // Room for the expected size, but never more than 64 MiB up front: a header can claim anything
   inf.hist.reserve(if expected > 0usize {if expected < 67108864usize {expected} else {67108864usize}} else {65536usize});
@@ -16,9 +16,18 @@ fn inflateAll(inf: &mut Inflater, data: &Array[u8], start: usize, expected: usiz
   inf.finished = true;
   let s = inf.runAll();
   if s == Status.Failed {
-    return Error[List[u8], DeflateError](inf.err.copy());
+    return Some[DeflateError](inf.err.copy());
   }
-  Ok[List[u8], DeflateError](inf.takeOutput())
+  None[DeflateError]
+}
+
+// The same, the output answered; the Inflater is given up.
+fn inflateAll(inf: Inflater, data: &Array[u8], start: usize, expected: usize) Result[List[u8], DeflateError] {
+  var run = inf;
+  match inflateRun(&mut run, data, start, expected) {
+    case let Some(e) { Error[List[u8], DeflateError](e.copy()) }
+    case is None[DeflateError] { Ok[List[u8], DeflateError](run.takeOutput()) }
+  }
 }
 
 // Decompress raw DEFLATE data (RFC 1951) starting at 'start'. 'expected' is
@@ -27,13 +36,13 @@ fn inflateAll(inf: &mut Inflater, data: &Array[u8], start: usize, expected: usiz
 // input bytes the stream took.
 pub fn inflate(data: &Array[u8], start: usize, expected: usize, used: &mut usize) Result[List[u8], DeflateError] {
   var inf = Inflater.make(Format.Raw);
-  match inflateAll(&mut inf, data, start, expected) {
-    case let Ok(ok) {
-      *used = usize.from(inf.totalIn());
-      return Ok[List[u8], DeflateError](ok);
-    }
-    case let Error(e) {
+  match inflateRun(&mut inf, data, start, expected) {
+    case let Some(e) {
       return Error[List[u8], DeflateError](e.copy());
+    }
+    case is None[DeflateError] {
+      *used = usize.from(inf.totalIn());
+      return Ok[List[u8], DeflateError](inf.takeOutput());
     }
   }
 }
@@ -46,8 +55,7 @@ pub fn zlibDecompress(data: &Array[u8], expected: usize) Result[List[u8], Deflat
   if data.len < 6usize {
     return Error[List[u8], DeflateError](DeflateError.make(ErrorKind.Truncated, 0u64, "zlib: the stream is too short"));
   }
-  var inf = Inflater.make(Format.Zlib);
-  inflateAll(&mut inf, data, 0usize, expected)
+  inflateAll(Inflater.make(Format.Zlib), data, 0usize, expected)
 }
 
 // Decompress a gzip file (RFC 1952): every member, one after another, their
@@ -55,6 +63,5 @@ pub fn zlibDecompress(data: &Array[u8], expected: usize) Result[List[u8], Deflat
 // members are ignored. 'expected' as for 'inflate' (the total of all members).
 // Each member's CRC-32 and size are verified.
 pub fn gzipDecompress(data: &Array[u8], expected: usize) Result[List[u8], DeflateError] {
-  var inf = Inflater.make(Format.Gzip);
-  inflateAll(&mut inf, data, 0usize, expected)
+  inflateAll(Inflater.make(Format.Gzip), data, 0usize, expected)
 }
