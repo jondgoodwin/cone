@@ -1,0 +1,118 @@
+// The Huffman code alone (RFC 7541, section 5.2 and Appendix B): the
+// strings of the RFC's Appendix C coded to its bytes and back; every byte
+// value through a round trip, alone and all together, with the encoded
+// length predicted exactly; and the decoder's refusals -- padding of 8 bits
+// or more, padding not all ones, the EOS symbol inside a string -- and its
+// limit.
+
+mod huffman;
+
+import testing use *;
+import collections use *;
+import http2 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn statusName(s: HuffmanStatus) &str {
+  if s == HuffmanStatus.Done {"done"}
+  else if s == HuffmanStatus.BadPadding {"bad padding"}
+  else if s == HuffmanStatus.HasEos {"EOS"}
+  else {"too long"}
+}
+
+// text codes to the RFC's bytes, which decode back to it
+fn rfc(text: &str, coded: &str) {
+  var out = List[u8].empty();
+  huffmanEncode(text, &mut out);
+  expectStr(hex(out.view()).view(), coded, text);
+  expectUInt(u64.from(huffmanEncodedLen(text)), u64.from(out.len()), text);
+  var back = List[u8].empty();
+  expectStr(statusName(huffmanDecode(out.view(), &mut back, 1000usize)), "done", text);
+  expectStr(back.view(), text, text);
+}
+
+// The bytes 'coded' decode to 'status', and to 'text' as far as they went
+fn decodes(coded: &str, status: &str, text: &str, label: &str) {
+  let src = unhex(coded);
+  var back = List[u8].empty();
+  expectStr(statusName(huffmanDecode(src.view(), &mut back, 1000usize)), status, label);
+  expectStr(back.view(), text, label);
+}
+
+fn main() i32 {
+  // Appendix C.4 and C.6
+  rfc("www.example.com", "f1e3c2e5f23a6ba0ab90f4ff");
+  rfc("no-cache", "a8eb10649cbf");
+  rfc("custom-key", "25a849e95ba97d7f");
+  rfc("custom-value", "25a849e95bb8e8b4bf");
+  rfc("302", "6402");
+  rfc("307", "640eff");
+  rfc("private", "aec3771a4b");
+  rfc("Mon, 21 Oct 2013 20:13:21 GMT", "d07abe941054d444a8200595040b8166e082a62d1bff");
+  rfc("https://www.example.com", "9d29ad171863c78f0b97c8e9ae82ae43d3");
+  rfc("gzip", "9bd9ab");
+  rfc("", "");
+
+  // Every byte value alone, and all 256 in one string
+  var all = List[u8].empty();
+  var wrong = 0u64;
+  var b = 0usize;
+  while b < 256usize {
+    var one = List[u8].empty();
+    one.push(u8.from(b));
+    all.push(u8.from(b));
+    var out = List[u8].empty();
+    huffmanEncode(one.view(), &mut out);
+    var back = List[u8].empty();
+    let st = huffmanDecode(out.view(), &mut back, 10usize);
+    if st != HuffmanStatus.Done || back.len() != 1usize || *back[0usize] != u8.from(b) ||
+      out.len() != huffmanEncodedLen(one.view()) {wrong = wrong + 1u64;}
+    b = b + 1usize;
+  }
+  expectUInt(wrong, 0u64, "every byte value alone");
+  var out = List[u8].empty();
+  huffmanEncode(all.view(), &mut out);
+  expectUInt(u64.from(out.len()), u64.from(huffmanEncodedLen(all.view())), "all 256: the length predicted");
+  var back = List[u8].empty();
+  expectStr(statusName(huffmanDecode(out.view(), &mut back, 1000usize)), "done", "all 256");
+  expect(bytesEqual(back.view(), all.view()), "all 256 back");
+
+  // The refusals
+  decodes("1f", "done", "a", "'a' (00011) and three bits of ones");
+  decodes("18", "bad padding", "a", "'a' and padding of zeros");
+  decodes("1c", "bad padding", "a", "'a' and padding 100");
+  decodes("ff", "bad padding", "", "eight bits of ones: padding too long");
+  decodes("f1e3c2e5f23a6ba0ab90f4ffff", "bad padding", "www.example.com", "a byte of ones after the padding");
+  decodes("fe", "bad padding", "", "eight bits that begin a longer code");
+  decodes("ffffffff", "EOS", "", "EOS, then two ones");
+  decodes("1fffffffff", "EOS", "a", "'a', then EOS");
+
+  // The limit: decoding stops at it
+  let www = unhex("f1e3c2e5f23a6ba0ab90f4ff");
+  var cut = List[u8].empty();
+  expectStr(statusName(huffmanDecode(www.view(), &mut cut, 5usize)), "too long", "a limit of 5");
+  expectStr(cut.view(), "www.e", "the 5 before the limit");
+  var exact = List[u8].empty();
+  expectStr(statusName(huffmanDecode(www.view(), &mut exact, 15usize)), "done", "a limit of exactly 15");
+  done()
+}
