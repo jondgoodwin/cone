@@ -577,8 +577,10 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     }
     // A loop's body runs on some paths only, and again after itself
     int loop = (blk->flags & FlagLoop) != 0;
-    if (loop)
+    if (loop) {
         ++flowDepth;
+        flowLoopBegin(blk);
+    }
 
     // Ensure last node is return, blockret, break or continue
     // Inject blockret, if not present. Type check already ended a block whose
@@ -629,7 +631,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // A break or continue reaches a non-final position only in an 'each' loop
         // block, whose synthesized step follows the jump the reader wrote last.
         // Nothing after the jump runs, so the scope's de-aliasing has to be captured
-        // here too, exactly as it is for a block's final node below.
+        // here too, exactly as it is for a block's final node below, and the
+        // state it leaves goes to its loop.
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             INode **brkexp = &brknode->exp;
@@ -640,6 +643,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
                 flowLoadValue(fstate, brkexp);
             blockTempEscape(tempmark, *brkexp, 1);
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
+            flowLoopJump(brknode->block, 0);
             break;
         }
         case ContinueTag: {
@@ -647,6 +651,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             brknode->flowresult = NULL;
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL, *nodesp);
+            flowLoopJump(brknode->block, 1);
             break;
         }
         default:
@@ -668,11 +673,12 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     // before the list that would have released 'a' at scope exit is built.
     // The list is built against the result node as it stood before the walk,
     // which is the node whose name the release exemption is about.
-    // Whether every path through the block leaves the function: it ends in a
-    // return, or hands back an 'if' or a block every path through which does
-    // (ifFlow). A 'break' or 'continue' goes on inside it, to a place this walk
-    // reaches with one state (it walks a loop once), so a path ending in one is
-    // still joined, which counts what it moved as moved from there on.
+    // Whether every path through the block jumps away: it ends in a return, a
+    // break or a continue, or hands back an 'if' or a block every path through
+    // which does (ifFlow). A return leaves the function. A break or continue
+    // hands the state it leaves to its loop (flowLoopJump), which joins it with
+    // the others where the loop ends, so its path takes no part in the join
+    // after the 'if' it ends an arm of.
     int jumped = 0;
     uint32_t tempmark = flowTempCount;
     switch ((*nodesp)->tag) {
@@ -740,16 +746,22 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         }
         blockTempEscape(tempmark, *brkexp, 1);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
+        jumped = flowLoopJump(brknode->block, 0);
         break;
     }
     case ContinueTag:
         ((BreakRetNode *)*nodesp)->flowresult = NULL;
         flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL, *nodesp);
+        jumped = flowLoopJump(((BreakRetNode *)*nodesp)->block, 1);
         break;
     }
 
+    // The state after a loop is the join of its breaks, each from the state
+    // the head holds on a later pass where its path wrote nothing: the head
+    // joins the entry, each continue and the body's end (flowLoopEnd)
     if (loop) {
         --flowDepth;
+        flowLoopEnd(!jumped);
         jumped = 0;
     }
     fstate->jumped = jumped;

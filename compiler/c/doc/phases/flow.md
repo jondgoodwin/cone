@@ -146,9 +146,10 @@ Put these first, because every one of them is load-bearing.
    therefore not compared by scope number (`assignIsLocalPlace`).
 4. **The main walk joins an `if`'s arms but does not iterate.** No CFG, no
    fixed point. `ifFlow` walks each arm from the state its conditions leave and
-   joins them after: a variable moved on any arm that did not return counts as
-   moved from there on, so a move in both arms compiles and a use after a move
-   in one is refused. A loop body is walked once. The path walk is the other
+   joins them after: a variable moved on any arm that did not jump away counts
+   as moved from there on, so a move in both arms compiles and a use after a
+   move in one is refused. A loop body is walked once, and the state after it
+   is the join of every path that leaves its body. The path walk is the other
    kind: it keeps its state per path, joins the arms of an `if` and the paths
    into a loop's head and out of a block, and walks a loop body again until its
    head stops growing — but only for a function one of its gates marked, and
@@ -178,7 +179,7 @@ Put these first, because every one of them is load-bearing.
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
 | `gate` | `fnDclTypeCheck`, which runs the loan walk on a function it marks; `flowGateCount` tallies it for `-V 2` (below, "The gate") |
 | `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
-| `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked returned, so it takes no part in the join |
+| `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked jumped away (a `return`, or a `break` or `continue` that handed its state to its loop), so it takes no part in the join; and `blockFlow` of a loop, whose body's end is then not reached |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
 | `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
 
@@ -259,18 +260,47 @@ The live state is on the declarations, in `VarDclNode.flowtempflags`:
 | `VarDropFlag` | the drop-flag client (`dropWalkEnd`), for a variable whose state differs by path at a release | never: generation reads it |
 
 **They are the state along the path being walked, in source order.** Every
-change goes through `flowVarSetFlags`, which logs the old flags while an `if` is
-being walked, for a variable declared outside its innermost conditional part
-(`VarDclNode.flowdepth`, below `flowDepth`); `ifFlow` walks each arm from the
-state its conditions leave, takes what each arm that did not return changed
-(`flowVarPathTake`), rolls it back, and joins them (`flowVarJoin`): each flag
-any of them set is set, an arm that did not change a variable contributing what
-it had at the fork, and a missing `else` is an arm. A flag set means "on some
-path": a variable moved on one arm may not be used after the `if`, and one
-given a value on one arm is taken as given one, for its use. A loop body is
-walked once, so what a later pass sees is not here: the path walk's. And whether
-a variable holds its value at each of its releases is not decided here where
-that may differ by path ("Drop flags").
+change goes through `flowVarSetFlags`, which logs the old flags while an `if` or
+a loop is being walked, for a variable declared outside its innermost
+conditional part (`VarDclNode.flowdepth`, below `flowDepth`); `ifFlow` walks
+each arm from the state its conditions leave, takes what each arm that did not
+jump away changed (`flowVarPathTake`), rolls it back, and joins them
+(`flowVarJoin`): each flag any of them set is set, an arm that did not change a
+variable contributing what it had at the fork, and a missing `else` is an arm.
+A flag set means "on some path": a variable moved on one arm may not be used
+after the `if`, and one given a value on one arm is taken as given one, for its
+use.
+
+**What ends a path.** A `return`, a `break` and a `continue` each end the path
+they finish: an arm ending in one, or in an `if` or a block every path through
+which does (`FlowState.jumped`), takes no part in the join after its `if`, so a
+value moved on it is not moved for the code after the `if`. A `return` leaves
+the function. A `break` or `continue` goes to the loop it names, the innermost
+or a labelled one: `blockFlow` opens a frame for each loop it walks
+(`flowLoopBegin`, the log's position at the loop's start), and each jump to it
+takes what its path wrote since then (`flowLoopJump`, the breaks and the
+continues apart). Inside a loop a store that leaves a variable's flags as they
+were is logged too (`flowVarSetFlags`), so that a path's record says what it
+wrote, not only what it changed. Where the loop's body ends, `flowLoopEnd` rolls
+back to the start and makes the state after the loop. Only a `break` leaves a
+loop, and the walk met each one in the first pass only; in a later pass the path
+to it starts from the head, whose state joins the loop's entry, each `continue`
+and the body's end when it is reached. So the head's state is joined first, and
+then the breaks over it: for each variable, the join of what each break's path
+left it, or the head's where that path wrote nothing. A `while`'s condition, the
+`break` at the top of its body, writes nothing, so what a `continue` moved is
+moved after the loop; a `break` reached only after the pass gave the value a new
+one finds it there. So a value moved before a `break` is moved after the loop,
+also after an inner loop it leaves, and one moved before a `continue` is moved
+after the loop unless every path to every `break` gives it a new value first. A
+loop no `break` leaves keeps the state as it stands: no path reaches the code
+after it. A jump whose loop no frame holds (its target failed to resolve) stays
+on its path and is joined. A loop body is walked once, so what a later pass
+sees inside it — a value declared before the loop, moved on a path that reached
+the head again — is not here: the path walk's, which every such move gates
+(`flowDropNote`: it is deeper than the variable's declaration). And whether a
+variable holds its value at each of its releases is not decided here where that
+may differ by path ("Drop flags").
 
 A file-static variable stack (`gVarFlowStackp`) records which declarations are
 in scope. It is global mutable state, safe only because flow never runs
@@ -2104,7 +2134,19 @@ droppable noted as holding nothing is never finalized.
   no tracked variable changes deeper than its declaration and no block or `if`
   hands a value on from some of its paths. A new way for a variable's state to
   change must note it (`flowDropNote`, or set `dropgate`), or its function's
-  drops are decided on one path's state.
+  drops are decided on one path's state. The same holds for what ends a path:
+  an arm a `break` or `continue` ends is left out of its `if`'s join, which is
+  safe only because whatever it changed of a variable declared outside the arm
+  changed deeper than the declaration, and so gated the function.
+- **The state after a loop reads "wrote nothing" from the first pass.** A
+  `break`'s record holds what its path wrote in the first pass; a variable it
+  holds is taken at that state, though a later pass may reach the `break` by a
+  part of the path that did not write it, still holding the head's state (one
+  arm of an `if` gives it a new value, the other does not). The main walk may so
+  take as held after the loop a value some path moved; the path walk, which that
+  move gated, refuses its use. A new way for a variable's flags to be set must go
+  through `flowVarSetFlags`, or a loop takes a path that wrote it for one that
+  did not.
 - **A move the main walk makes must be marked where the value leaves**
   (`FlagMoveOut`, `FlagHollowOut`), or the path walk and the drop flag do not
   see it. A name use shared by several places in the tree cannot be marked:
@@ -2209,14 +2251,15 @@ droppable noted as holding nothing is never finalized.
 | | `flowLendNote`, `flowLendWritable` | a borrow of a variable's own storage, or a raw pointer made of one, noted on it for generation's lending (`VarFlowLend`); whether a borrow's permission may write |
 | | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
+| | `flowLoopBegin`, `flowLoopJump`, `flowLoopEnd` | a frame for each loop being walked: what each `break` and `continue` to it wrote; where the loop ends, the head's state (entry, continues, body's end) joined, then the breaks over it (§3, "What ends a path") |
 | | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach |
-| `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper; whether every path returned (`jumped`) |
+| `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper, with its frame (`flowLoopBegin`, `flowLoopEnd`); a `break` or `continue` handing its state to its loop (`flowLoopJump`); whether every path jumped away (`jumped`) |
 | | `blockDiscards`, `blockTempEscape` | a block throwing its final expression's value away; each statement that made a temporary walked by `flowTempEscape` |
-| `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not return joined; later conditions and arms one level deeper |
+| `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not jump away joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck`, `assignIsLocalPlace` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime of a store into a global or through a reference (one into a variable's own storage is the loan walk's) |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |

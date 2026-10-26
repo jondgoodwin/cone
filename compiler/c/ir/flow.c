@@ -90,17 +90,20 @@ static int flowRefuseMoveThrough(INode *node, INode *ref) {
 // state as it goes. An 'if' walks each arm from the state its conditions leave
 // and joins them after (ifFlow): a flag any live arm set is set, so a value moved
 // on some arm counts as moved -- it may not be used again -- while an arm that
-// jumped away contributes nothing. So every change goes through
-// flowVarSetFlags, which logs the old flags while an 'if' is being walked and the
-// variable was declared outside the innermost conditional part (a variable
-// declared inside an arm leaves scope with it). Whether a variable holds its
-// value at a scope's end on every path is the path walk's to say, when the flags
-// could differ by path (flowDropNote); this state only says what may be used.
+// jumped away contributes nothing. A 'return' leaves the function; a 'break' or
+// 'continue' goes to its loop, which gathers the state each one leaves and joins
+// them, with its body's end, where the loop ends (flowLoopEnd). So every change
+// goes through flowVarSetFlags, which logs the old flags while an 'if' or a loop
+// is being walked and the variable was declared outside the innermost
+// conditional part (a variable declared inside an arm leaves scope with it).
+// Whether a variable holds its value at a scope's end on every path is the path
+// walk's to say, when the flags could differ by path (flowDropNote); this state
+// only says what may be used.
 // *********************
 
 uint16_t flowDepth = 0;
 FlowState *flowCurrent = NULL;
-static uint32_t flowForks = 0;     // how many 'if's are being walked
+static uint32_t flowForks = 0;     // how many 'if's and loops are being walked
 
 typedef struct {
     VarDclNode *var;
@@ -118,8 +121,25 @@ static FlowVarEnt *flowVarLog = NULL;
 static uint32_t flowVarLogN = 0;
 static uint32_t flowVarLogCap = 0;
 
+// The loops being walked, innermost last: where each began in the log, and the
+// state each 'break' and each 'continue' to it left
+typedef struct {
+    BlockNode *loop;
+    struct FlowVarPath *breaks;     // only the jumps whose path wrote something
+    struct FlowVarPath *conts;
+    uint32_t mark;
+    uint32_t nbreaks;               // every jump
+    uint32_t nconts;
+} FlowLoopFrame;
+
+static FlowLoopFrame *flowLoops = NULL;
+static uint32_t flowLoopN = 0;
+static uint32_t flowLoopCap = 0;
+
 void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed) {
-    if (var->flowtempflags == flags && var->hollowed == hollowed)
+    // Inside a loop a store that changes nothing is logged too: a loop's end
+    // asks which variables each path to a 'break' wrote (flowLoopEnd)
+    if (var->flowtempflags == flags && var->hollowed == hollowed && flowLoopN == 0)
         return;
     if (flowForks > 0 && var->flowdepth < flowDepth) {
         if (flowVarLogN == flowVarLogCap) {
@@ -144,6 +164,7 @@ void flowFnBegin(FlowState *fstate) {
     flowCurrent = fstate;
     flowVarLogN = 0;
     flowForks = 0;
+    flowLoopN = 0;
 }
 
 uint32_t flowVarLogPos() {
@@ -227,6 +248,70 @@ void flowVarJoin(FlowVarPath *paths, uint32_t npaths) {
             flowVarSetFlags(var, flags, hollowed);
         }
     }
+}
+
+void flowLoopBegin(BlockNode *loop) {
+    if (flowLoopN == flowLoopCap) {
+        uint32_t oldcap = flowLoopCap;
+        flowLoopCap = oldcap ? oldcap << 1 : 16;
+        FlowLoopFrame *grown = (FlowLoopFrame *)memAllocBlk(flowLoopCap * sizeof(FlowLoopFrame));
+        if (oldcap)
+            memcpy(grown, flowLoops, oldcap * sizeof(FlowLoopFrame));
+        flowLoops = grown;
+    }
+    FlowLoopFrame *frame = &flowLoops[flowLoopN++];
+    frame->loop = loop;
+    frame->breaks = NULL;
+    frame->conts = NULL;
+    frame->mark = flowVarLogMark();
+    frame->nbreaks = 0;
+    frame->nconts = 0;
+}
+
+int flowLoopJump(BlockNode *target, int iscontinue) {
+    uint32_t f = flowLoopN;
+    while (f > 0 && flowLoops[f - 1].loop != target)
+        --f;
+    if (f == 0 || target == NULL)
+        return 0;
+    FlowLoopFrame *frame = &flowLoops[f - 1];
+    if (iscontinue) {
+        if (flowVarLogPos() > frame->mark)
+            frame->conts = flowVarPathTake(frame->mark, frame->conts);
+        ++frame->nconts;
+    }
+    else {
+        if (flowVarLogPos() > frame->mark)
+            frame->breaks = flowVarPathTake(frame->mark, frame->breaks);
+        ++frame->nbreaks;
+    }
+    return 1;
+}
+
+// The walk is at the end of the loop's body, having walked it once. Only a
+// 'break' leaves the loop, and each was walked in the first pass only: in a
+// later one it starts from the head, whose state joins the loop's entry, each
+// 'continue' and the body's end. So the state after the loop is, for each
+// variable, the join over the breaks of what the path to each left it, or, where
+// the path did not write it, of what it held at the head
+void flowLoopEnd(int bodylive) {
+    FlowLoopFrame *frame = &flowLoops[--flowLoopN];
+    // No break: nothing reaches the code after the loop, and the state stands
+    if (frame->nbreaks == 0) {
+        --flowForks;
+        return;
+    }
+    FlowVarPath *head = frame->conts;
+    uint32_t nhead = frame->nconts + 1;
+    if (bodylive) {
+        if (flowVarLogPos() > frame->mark)
+            head = flowVarPathTake(frame->mark, head);
+        ++nhead;
+    }
+    flowVarRollback(frame->mark);
+    ++flowForks;    // each join closes one
+    flowVarJoin(head, nhead);
+    flowVarJoin(frame->breaks, frame->nbreaks);
 }
 
 // The variable owning a variable's value: a match's binding stands for the
