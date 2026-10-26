@@ -13,23 +13,22 @@ const unixTimeTag = 0x5455u16;
 // WHAT A METHOD NEEDS TO BE WRITTEN. The three functions below are the whole of it: a method the writer
 // can make is listed in 'canWrite', compressed by 'compressWith' and given its APPNOTE 4.4.3 "version
 // needed to extract" by 'versionNeeded'. Nothing else in 'add' looks at the number. Method 93 (zstd) is
-// read but not yet written, because the compressor is not in package zstd yet; writing it is a branch in
-// each function (63 is its version, APPNOTE 6.3), the constructor 'EntryOptions.zstd(level)' in types.cone,
-// and the sentence in 'add''s refusal.
+// written through package zstd's one-call 'compress': one zstd frame holding the content size and the
+// content checksum, at the zstd package's levels 1 to 3 (63 is its version, APPNOTE 6.3).
 
 // Whether entries can be written with this method
 fn canWrite(method: u16) bool {
-  method == methodStored() || method == methodDeflate()
+  method == methodStored() || method == methodDeflate() || method == methodZstd()
 }
 
 // The raw compressed stream of 'data' by a method other than stored, at the method's own level
 fn compressWith(method: u16, level: i32, data: &Array[u8]) List[u8] {
-  deflate.rawDeflate(data, level)
+  if method == methodZstd() { zstd.compress(data, level) } else { deflate.rawDeflate(data, level) }
 }
 
 // The version needed to extract an entry of this method (a stored entry, 10, is the oldest)
 fn versionNeeded(method: u16) u32 {
-  if method == methodDeflate() { 20u32 } else { 10u32 }
+  if method == methodZstd() { 63u32 } else if method == methodDeflate() { 20u32 } else { 10u32 }
 }
 
 pub struct ZipWriter {
@@ -144,7 +143,7 @@ pub struct ZipWriter {
       return refusal[void](ErrorKind.BadArgument, 0u64, about("the name", name, "is already in the archive").view());
     }
     if !canWrite(opts.method) {
-      return refusal[void](ErrorKind.BadArgument, 0u64, about("the method of", name, "must be 0 (stored) or 8 (deflate)").view());
+      return refusal[void](ErrorKind.BadArgument, 0u64, about("the method of", name, "must be 0 (stored), 8 (deflate) or 93 (zstd)").view());
     }
     let n = u64.from(data.len);
     // Folders and empty files are stored; a compressed entry that does not get smaller is stored

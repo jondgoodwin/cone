@@ -1,5 +1,5 @@
 // The zipfile package: ZIP archives (PKWARE APPNOTE 6.3.10) read, written and extracted safely. Written
-// in Cone over the deflate package (method 8, and the CRC-32), the zstd package (method 93, reading) and
+// in Cone over the deflate package (method 8, and the CRC-32), the zstd package (method 93, read and written) and
 // fs (files and folders), with no C library. It is named zipfile, not zip, because a module called zip cannot exist: core has a public
 // function 'zip' (the two-collection walk), and a module may not share a name with what core brings in
 // (Error 1011), while Congo makes a package's module the package's name (Error 1130).
@@ -44,8 +44,8 @@
 //       addTree(root, prefix, &opts), setComment(text), setZip64(always), finish(), pull(&mut out, max)
 //       Status (NeedInput, MoreOutput, Done), bytes() Result[List[u8], ZipError] (finish and take all),
 //       saveTo(path) (finish and write what has not been pulled), count(), isFinished()
-//     EntryOptions: method, level, modified, mode, zip64, comment; plain(), stored(), deflated(level)
-//       (method 93 is not written yet: the writer refuses it, BadArgument; see 'canWrite' in writer.cone)
+//     EntryOptions: method, level, modified, mode, zip64, comment; plain(), stored(), deflated(level),
+//       zstd(level)
 //   OPTIONS AND RESULTS
 //     ExtractOptions { overwrite, maxTotal, restoreMode, restoreTimes }, safe(); Extracted { files, folders,
 //       bytes, unrestored }
@@ -110,11 +110,18 @@
 //   streaming Deflater cannot fall back to storing, and a local header written first cannot say whether
 //   the sizes need zip64).
 //   Method 8 uses deflate's levels 0 to 2; a deflated entry that does not come out smaller is stored
-//   instead, as are folders and empty files. A name that is not ASCII is written as UTF-8 with flag
+//   instead, as are folders and empty files. METHOD 93 (zstd, 'EntryOptions.zstd(level)') is made by
+//   package zstd's one-call 'compress' at its levels 1 to 3: one frame per entry with the content size
+//   and the content checksum in it, "version needed" 63 (APPNOTE 6.3), and the same fall back to storing
+//   when the frame is not smaller than the data. Only a tool that knows method 93 can extract it
+//   (the tests read it back with this package's reader; by hand, bsdtar 3.8.9 with libzstd 1.5.7 extracted
+//   every file byte for byte, though it exits 1 with "Truncated zstd file body" for an entry of exactly
+//   131072 bytes, whose file it still writes right: it does the same for the reference libzstd's own
+//   frame of that data, so it is bsdtar's, not the frame's). A name that is not ASCII is written as UTF-8 with flag
 //   bit 11 (an entry comment too); the Unix mode goes in the high half of the external attributes with
 //   the host system 3, and an extended timestamp field carries a time given in 'modified' exactly (the
 //   DOS fields hold it to 2 seconds, clamped to 1980 through 2107). A name already added is refused
-//   (BadArgument), as is an empty one, one over 65535 bytes, and any method but 0 and 8. A name
+//   (BadArgument), as is an empty one, one over 65535 bytes, and any method but 0, 8 and 93. A name
 //   extraction would refuse is written all the same (the writer is how the tests make hostile archives).
 //   zip64 is written where something needs it: an entry of 4 GiB or more, an offset of 4 GiB or more, 65535
 //   entries or more, a directory of 4 GiB or more, and for an entry whose options say 'zip64' (its local
@@ -161,9 +168,8 @@
 // list is not the writer's buffer, so it refuses to lend a view of one to the other's 'appendSlice'.
 //
 // NOT HERE: encryption (ZipCrypto, AES) and signatures; methods 9 (Deflate64), 12 (bzip2), 14 (LZMA),
-// 95 (xz), 98 (PPMd); WRITING method 93 (zstd), which waits for package zstd's compressor (reading it is
-// here); zstd dictionaries; archives in several disks; zip64 extensible data and the
-// central-directory encryption of strong encryption; entries written in pieces; owners of extracted
+// 95 (xz), 98 (PPMd); zstd dictionaries, and zstd levels past 3; archives in several disks; zip64
+// extensible data and the central-directory encryption of strong encryption; entries written in pieces; owners of extracted
 // files; updating an archive in place (read it, write another).
 //
 // Its files are one module, and only this one, the root, imports:
