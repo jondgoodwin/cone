@@ -137,10 +137,14 @@ fn main() {
 	<ul>
 	<li>A datagram of no bytes is a datagram: <span class="pre">RecvFrom</span> answers Done(0) and names its sender. It is
 		not the end of anything, as a stream's Done(0) is.</li>
-	<li>A datagram longer than the receive's room is cut, as UDP cuts it: the answer is Failed with error 10040
-		(<span class="pre">WSAEMSGSIZE</span>, on Linux too), the room filled with its first bytes and the sender named; the
-		rest of that datagram is lost, and the next receive takes the next datagram whole. A <span class="pre">SendTo</span>
-		of more than UDP carries fails with the same number.</li>
+	<li>A datagram longer than the receive's room is cut, as UDP cuts it: the answer is Failed with the system's number
+		for a datagram too long (<span class="pre">WSAEMSGSIZE</span>, 10040; Linux's <span class="pre">EMSGSIZE</span>, 90),
+		which <span class="pre">c.error()</span> reads as an <span class="pre">IoError</span> of the kind
+		<span class="pre">Truncated</span>, the room filled with its first bytes and the sender named; the rest of that
+		datagram is lost, and the next receive takes the next datagram whole. A <span class="pre">SendTo</span> of more than
+		UDP carries fails with the same number, of the kind <span class="pre">Other</span>. (A Failed answer's
+		<span class="pre">c.code</span> is the system's own number; <span class="pre">c.error()</span> gives its kind, the
+		same on every system: <a href="conc-io.html#await-io-errors">IoError and IoErrorKind</a>.)</li>
 	<li>UDP promises no delivery: Done on a <span class="pre">SendTo</span> says the system took the datagram. Datagrams
 		that arrive while no receive is waiting are held by the socket, up to what the system allows, and lost beyond it.
 		Take them with one receive at a time on a socket; the order in which several outstanding receives on one socket are

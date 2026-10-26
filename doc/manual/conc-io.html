@@ -125,7 +125,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var s = Socket.none();
   match &amp;mut res {
     case var &amp;mut Ok(ok) {s &lt;-&gt; *ok;}
-    case let &amp;mut Error(e) {say("failed", u64.from((*e).code));}
+    case let &amp;mut Error(e) {sayKind("failed", (*e).kind());}
   }
   s
 }
@@ -137,7 +137,7 @@ actor Client {
     buf.append("hello");
     let sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
-      case let Error(e) {say("write failed", u64.from(e.code));}
+      case let Error(e) {sayKind("write failed", e.kind());}
       else {}
     }
   }                                           // conn closes here
@@ -151,12 +151,12 @@ actor Server {
     let addr = await listener.localAddr();     // the port the system chose
     match addr {
       case let Ok(a) {client.send(a.port());}
-      case let Error(e) {say("no address", u64.from(e.code));}
+      case let Error(e) {sayKind("no address", e.kind());}
     }
     let conn = socketOf(await listener.accept());
     let none = await conn.read(IoBuf.empty());           // a buffer with no room
     match none {
-      case let Error(e) {say("no room: error", u64.from(e.code));}
+      case let Error(e) {sayKind("no room", e.kind());}
       else {}
     }
     var total = 0u64;
@@ -174,7 +174,7 @@ actor Server {
           }
         }
         case let Error(e) {
-          say("read failed", u64.from(e.code));
+          sayKind("read failed", e.kind());
           more = false;
         }
       }
@@ -183,12 +183,15 @@ actor Server {
   }
 }
 </pre>
-	<p>(<span class="pre">say</span> prints a word and a number on a line;
-		<span class="pre">IoBuf</span> is <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
-		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and <span class="pre">Socket</span>
-		<span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server prints:</p>
+	<p>(<span class="pre">say</span> prints a word and a number on a line, <span class="pre">sayKind</span> a word and
+		the name of an error's kind (<span class="pre">errorKindName(k)</span>);
+		<span class="pre">IoBuf</span> is <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span>,
+		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, <span class="pre">IoErrorKind</span> and
+		<span class="pre">errorKindName</span> <span class="pre">ioerror</span>'s, and
+		<span class="pre">Socket</span> <span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server
+		prints:</p>
 <pre>
-no room: error 122
+no room: invalid input
 received 5
 end of stream 5
 </pre>
@@ -199,11 +202,8 @@ end of stream 5
 	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is exactly that:
 		<span class="pre">await</span> adds nothing to it. An operation that can fail answers as a synchronous call that can
 		fail does, with a <span class="pre">Result</span>: the success, or the operating system's failure, an
-		<span class="pre">IoError</span>. Its <span class="pre">code</span> is Windows' error number for the failure, on
-		every system: on Linux the <span class="pre">errno</span> is turned into the Windows number that names the same
-		condition (<span class="pre">ERROR_CONNECTION_REFUSED</span> for <span class="pre">ECONNREFUSED</span>), and one with
-		no such number is its <span class="pre">errno</span> above <span class="pre">0x10000000</span>. Its
-		<span class="pre">message()</span> is the system's words for it. A behaviour that returns a
+		<span class="pre">IoError</span>, whose <span class="pre">kind()</span> says what went wrong the same way on every
+		system (<a href="#await-io-errors">below</a>). A behaviour that returns a
 		<span class="pre">Result</span> itself passes such a failure on to whoever awaits it with
 		<a href="guide-functions.html#propagate">?</a>: <span class="pre">await conn.write(buf)?</span> waits, then takes
 		the count out of the answer or returns its failure.</p>
@@ -214,7 +214,8 @@ end of stream 5
 	<li><span class="pre">conn.read(buf)</span>: the buffer, given back with what arrived appended to it. The buffer is
 		moved into the read, which is how the system may write into it while the behaviour waits, and the read's answer is
 		how it comes back. At the end of the stream, when the peer has closed, it comes back as it went, its length
-		unchanged. A buffer with no room fails with 122, as above. A failed read's buffer goes home to its pool.</li>
+		unchanged. A buffer with no room fails (<span class="pre">InvalidInput</span>), as above. A failed read's buffer
+		goes home to its pool.</li>
 	<li><span class="pre">conn.read()</span>: the same, with no buffer given: the I/O side takes one when bytes have come
 		(<a href="#await-io-readany">Reading with no buffer</a>).</li>
 	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer; the buffer goes home.</li>
@@ -224,6 +225,49 @@ end of stream 5
 		<span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> answer as
 		<span class="pre">read</span> and <span class="pre">write</span> do (<a href="#await-io-files">Files</a>).</li>
 	</ul>
+
+	<h3 id="await-io-errors">Why an operation failed: IoError and IoErrorKind</h3>
+	<p>An <span class="pre">IoError</span> says what went wrong in two ways. Its <span class="pre">kind()</span> is an
+		<span class="pre">IoErrorKind</span>, the same on every system, which is what a program matches on. The kinds are
+		the <span class="pre">ioerror</span> package's (<span class="pre">import ioerror use IoErrorKind;</span>), a small
+		package of its own that the synchronous <span class="pre">fs</span> shares (<a href="lib-fs.html#fs-failure">its
+		FsError</a>):
+		<span class="pre">NotFound</span>, <span class="pre">PermissionDenied</span>, <span class="pre">AlreadyExists</span>,
+		<span class="pre">NotADirectory</span>, <span class="pre">IsADirectory</span>, <span class="pre">DirectoryNotEmpty</span>,
+		<span class="pre">ReadOnlyFilesystem</span>, <span class="pre">StorageFull</span>, <span class="pre">FileTooLarge</span>,
+		<span class="pre">InvalidFilename</span>, <span class="pre">CrossesDevices</span>, <span class="pre">ResourceBusy</span>,
+		<span class="pre">ConnectionRefused</span>, <span class="pre">ConnectionReset</span>,
+		<span class="pre">ConnectionAborted</span>, <span class="pre">NotConnected</span>, <span class="pre">AddressInUse</span>,
+		<span class="pre">AddressNotAvailable</span>, <span class="pre">HostUnreachable</span>,
+		<span class="pre">NetworkUnreachable</span>, <span class="pre">NetworkDown</span>, <span class="pre">BrokenPipe</span>,
+		<span class="pre">TimedOut</span>, <span class="pre">Cancelled</span>, <span class="pre">Truncated</span>,
+		<span class="pre">InvalidInput</span>, <span class="pre">OutOfMemory</span>, <span class="pre">Unsupported</span>, and
+		<span class="pre">Other</span> for what none of them names. They are Rust's <span class="pre">io::ErrorKind</span>,
+		trimmed to what Windows and Linux give here; <span class="pre">ioerror</span>'s
+		<span class="pre">errorKindName(k)</span> gives a kind's words, and its <span class="pre">osKind(code)</span> sorts
+		the system's own numbers.</p>
+	<p>Its <span class="pre">code</span> is the system's own number for the failure, kept for diagnostics: Windows' error
+		number on Windows, the <span class="pre">errno</span> on Linux, so the same failure has a different number on each (a
+		refused connection is 1225 on Windows and 111 on Linux, both <span class="pre">ConnectionRefused</span>). Its
+		<span class="pre">message()</span> is the system's words for it. <span class="pre">IoError(code)</span> is the
+		system's error of a number got elsewhere, its kind read from the number.</p>
+<pre>
+let r = await aio.connect(SocketAddr.localhost(port));
+match r {
+  case let Ok(s) {...}
+  case let Error(e) {
+    if e.kind() == IoErrorKind.ConnectionRefused {say("nobody listening", u64.from(port));}
+    else {sayKind("connect failed", e.kind());}
+  }
+}
+</pre>
+	<p>Three kinds are the I/O runtime's own. <span class="pre">Cancelled</span> and <span class="pre">TimedOut</span> are an
+		operation ended by its cancel group or its deadline (<a href="#await-io-limits">next</a>), and carry
+		<span class="pre">code</span> 0; a system's own timeout (a connect the system gave up on) is
+		<span class="pre">TimedOut</span> too, with the system's number, and an operation the system aborted
+		(<span class="pre">ERROR_OPERATION_ABORTED</span>, <span class="pre">ECANCELED</span>) is
+		<span class="pre">Cancelled</span>, with its number. <span class="pre">Truncated</span> is a datagram cut to the room
+		of the buffer that took it (<a href="#await-io-udp">UDP sockets</a>).</p>
 	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a statement of its own drops
 		the failure unread, so it is warned. The program still compiles, and the answer is dropped as any unused value
 		is:</p>
@@ -246,16 +290,12 @@ answers, so a failure here goes unread: bind it, 'let r = await ...', and match 
 	<h3 id="await-io-limits">Cancelling an operation, and limiting it</h3>
 	<p>A read from a peer that never sends would wait for ever. So every operation can be limited, and is answered exactly
 		once, with one of four outcomes: done (the <span class="pre">Ok</span> answer), failed (an
-		<span class="pre">Error</span> whose <span class="pre">code</span> is the system's), cancelled, or timed out. The last
-		two are <span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a <span class="pre">kind()</span>,
-		an <span class="pre">IoErrorKind</span>: <span class="pre">Os</span> for a failure of the system (its
-		<span class="pre">code</span> and <span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span>
-		or <span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or <span class="pre">Truncated</span> (a
-		datagram cut to the room that took it, <a href="#await-io-udp">below</a>; its <span class="pre">code</span> is the
-		system's, 10040). The kind is what <span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span>
-		read, and <span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same
-		questions, so no system error, whatever its number, is taken for either. The buffer an operation was given goes home
-		to its pool.</p>
+		<span class="pre">Error</span> of the system's failure), cancelled, or timed out. The last two are
+		<span class="pre">Error</span>s too, of the kinds <span class="pre">Cancelled</span> and
+		<span class="pre">TimedOut</span>, with <span class="pre">code</span> 0 (<a href="#await-io-errors">above</a>).
+		<span class="pre">e.isCancelled()</span> and <span class="pre">e.isTimedOut()</span> ask for those kinds, and
+		<span class="pre">aio.isCancelled(e)</span> and <span class="pre">aio.isTimedOut(e)</span> are the same questions. The
+		buffer an operation was given goes home to its pool.</p>
 	<p>An operation is limited by the <span class="pre">In</span> form of its call, which takes an
 		<span class="pre">IoLimits</span>: <span class="pre">conn.readIn(buf, lim)</span>,
 		<span class="pre">conn.writeIn(buf, lim)</span>, <span class="pre">listener.acceptIn(lim)</span>,
@@ -282,7 +322,7 @@ actor Reader {
       case let Error(e) {
         if aio.isCancelled(e) {say("cancelled", 0u64);}
         else if aio.isTimedOut(e) {say("too slow", 0u64);}
-        else {say("failed", u64.from(e.code));}
+        else {sayKind("failed", e.kind());}
         0u64
       }
     }
@@ -367,16 +407,17 @@ actor Reader {
 	<li><span class="pre">u.recvFrom(buf)</span>: one datagram, appended to the buffer, which is moved in. The answer is a
 		<span class="pre">Datagram</span>, whose <span class="pre">buf</span> is the buffer given back, its length grown by
 		the datagram's, and whose <span class="pre">from</span> is the sender's <span class="pre">SocketAddr</span>. A
-		datagram of no bytes is a datagram, not an end: the length does not grow. A buffer with no room fails with 122, as a
-		read's does.</li>
+		datagram of no bytes is a datagram, not an end: the length does not grow. A buffer with no room fails
+		(<span class="pre">InvalidInput</span>), as a read's does.</li>
 	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
 		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span> (<span class="pre">aio.isTruncated(e)</span>
-		or <span class="pre">e.isTruncated()</span>; its <span class="pre">code</span> is 10040,
-		<span class="pre">WSAEMSGSIZE</span>, on both systems). The rest of the datagram is lost, the next one is whole, and
+		or <span class="pre">e.isTruncated()</span>; its <span class="pre">code</span> is the system's number for a datagram
+		too long, <span class="pre">WSAEMSGSIZE</span> or <span class="pre">EMSGSIZE</span>). The rest of the datagram is
+		lost, the next one is whole, and
 		the buffer goes home to its pool as a failed read's does, the bytes that fitted with it.</li>
 	<li><span class="pre">u.sendTo(addr, buf)</span>: all of the buffer as one datagram to <span class="pre">addr</span>,
 		the count its length, the buffer going home. UDP promises no delivery: the answer says the system took the datagram.
-		One too large for the network fails with 10040.</li>
+		One too large for the network fails with the same number, of the kind <span class="pre">Other</span>.</li>
 	</ul>
 	<p>Both take <span class="pre">In</span> forms, <span class="pre">u.recvFromIn(buf, lim)</span> and
 		<span class="pre">u.sendToIn(addr, buf, lim)</span>, and answer exactly once. A <span class="pre">UdpSocket</span>
@@ -406,11 +447,12 @@ actor Echo {
 		<span class="pre">iocore</span>'s <span class="pre">Access</span>: <span class="pre">Read</span> an existing file;
 		<span class="pre">Create</span> a new one, or an existing one emptied, to read and write; <span class="pre">Update</span>
 		an existing one or a new one, its bytes kept, to read and write. It answers a <span class="pre">File</span>, or the
-		system's failure (a name that is not there is <span class="pre">ERROR_FILE_NOT_FOUND</span>, 2, on both systems). The
+		system's failure (a name that is not there is <span class="pre">NotFound</span>). The
 		path is copied. <span class="pre">f.readAt(offset, buf)</span> and <span class="pre">f.writeAt(offset, buf)</span> work
 		at a byte offset, with no position kept in the file, so any number may be in flight on one file at once. A read
 		appends what is there to the buffer, up to its room, and from the end of the file or past it comes back with the
-		buffer as it went; a buffer with no room fails with 122, as a socket's does. A write answers the count written, all of
+		buffer as it went; a buffer with no room fails (<span class="pre">InvalidInput</span>), as a socket's does. A write
+		answers the count written, all of
 		its buffer. Both take the <span class="pre">In</span> forms above, and answer exactly once, done, failed, cancelled or
 		timed out. <span class="pre">openFile</span> has no <span class="pre">In</span> form: opening is one call to the
 		system, which cannot be cancelled once begun.</p>
@@ -423,7 +465,7 @@ actor Patcher {
     let w = await f.writeAt(100u64, b);                     // five bytes at offset 100
     match w {
       case let Ok(n) {u64.from(n)}                          // 5
-      case let Error(e) {u64.from(e.code)}
+      case let Error(e) {sayKind("write failed", e.kind()); 0u64}
     }
   }                                                         // f closes here
 }
@@ -468,18 +510,20 @@ actor Patcher {
 	<ul>
 	<li><span class="pre">aio.resolve(host, port)</span> looks a name up (or an address written as text): a
 		<span class="pre">List[SocketAddr]</span>, every address found, each with the port (default 0). A name with no address
-		is the system's failure (<span class="pre">11001</span>, <span class="pre">WSAHOST_NOT_FOUND</span>, for a name that is
-		not there).</li>
+		fails <span class="pre">NotFound</span> (its <span class="pre">code</span> Windows'
+		<span class="pre">WSAHOST_NOT_FOUND</span>, 11001, or getaddrinfo's <span class="pre">EAI_NONAME</span>); another
+		failure of the lookup is <span class="pre">Other</span>.</li>
 	<li><span class="pre">aio.stat(path)</span> asks a file's metadata: <span class="pre">iocore</span>'s
 		<span class="pre">FileStat</span>, with its <span class="pre">size</span>, <span class="pre">attributes</span>,
 		<span class="pre">modified</span> time and <span class="pre">isDir()</span>. A path that is not there is
-		<span class="pre">ERROR_FILE_NOT_FOUND</span>, 2.</li>
+		<span class="pre">NotFound</span>.</li>
 	<li><span class="pre">aio.run(args, opts, dir)</span> and <span class="pre">aio.runLine(line, opts, dir)</span> run a
 		child process and wait for it, as the <span class="pre">process</span> package's synchronous
 		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same <span class="pre">Options</span>
 		and the same <span class="pre">Output</span>: its exit code (an answer, not an error), and what it wrote to its
 		standard output and standard error, apart. The <span class="pre">Error</span> is a program that could not be started,
-		an <span class="pre">IoError</span> whose code is the system's number. The synchronous <span class="pre">process</span>
+		an <span class="pre">IoError</span> of the system's number (<span class="pre">NotFound</span> for no program of that
+		name). The synchronous <span class="pre">process</span>
 		package stays beside it.</li>
 	</ul>
 	<p>Each has an <span class="pre">In</span> form taking <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
@@ -501,7 +545,7 @@ actor Builder {
     let r = await aio.run(args.view(), process.Options(timeout: Duration.fromSeconds(60i64)));
     match r {
       case let Ok(ok) {u64.from(ok.exitCode)}
-      case let Error(e) {u64.from(e.code)}      // 2: no program of that name
+      case let Error(e) {if e.kind() == IoErrorKind.NotFound {say("no conec", 0u64);} 0u64}
     }
   }
 }
