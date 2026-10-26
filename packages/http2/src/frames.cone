@@ -387,7 +387,7 @@ fn blockStart(h: FrameHeader, p: &'p Array[u8]) Result[BlockStart, FrameError] {
   var pad = 0usize;
   if h.has(flagPadded) {
     if p.len < 1usize {
-      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a padded frame too short to hold its pad length"));
+      return Err[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a padded frame too short to hold its pad length"));
     }
     pad = usize.from(p[0usize]);
     at = 1usize;
@@ -396,20 +396,20 @@ fn blockStart(h: FrameHeader, p: &'p Array[u8]) Result[BlockStart, FrameError] {
   var promised = 0u32;
   if h.kind == typePushPromise {
     if p.len < at + 4usize {
-      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a PUSH_PROMISE frame too short to hold its promised stream"));
+      return Err[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a PUSH_PROMISE frame too short to hold its promised stream"));
     }
     promised = readU32(p, at) & maxStreamId;
     at = at + 4usize;
   } else if h.has(flagPriority) {
     if p.len < at + 5usize {
-      return Error[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a HEADERS frame too short to hold its priority"));
+      return Err[BlockStart, FrameError](connectionError(ErrorCode.FrameSizeError, h.stream, "a HEADERS frame too short to hold its priority"));
     }
     let d = readU32(p, at);
     priority = Some[PrioritySpec](PrioritySpec((d & 0x80000000u32) != 0u32, d & maxStreamId, p[at + 4usize]));
     at = at + 5usize;
   }
   if pad > p.len - at {
-    return Error[BlockStart, FrameError](connectionError(ErrorCode.ProtocolError, h.stream, "padding longer than the frame's field block fragment leaves room for"));
+    return Err[BlockStart, FrameError](connectionError(ErrorCode.ProtocolError, h.stream, "padding longer than the frame's field block fragment leaves room for"));
   }
   Ok[BlockStart, FrameError](BlockStart(at, p.len - pad, priority, promised))
 }
@@ -448,7 +448,7 @@ fn parseControl(h: FrameHeader, p: &'p Array[u8], client: bool) Result[Frame, Fr
     let d = readU32(p, 0usize);
     let spec = PrioritySpec((d & 0x80000000u32) != 0u32, d & maxStreamId, p[4usize]);
     if spec.dependency == h.stream {
-      return Error[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a stream depending on itself"));
+      return Err[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a stream depending on itself"));
     }
     return Ok[Frame, FrameError](Frame.Priority(h.stream, spec));
   }
@@ -458,7 +458,7 @@ fn parseControl(h: FrameHeader, p: &'p Array[u8], client: bool) Result[Frame, Fr
   if h.kind == typeSettings {
     var values = List[Setting].empty();
     match parseSettings(p, client, &mut values) {
-      case let Some(e) {return Error[Frame, FrameError](e);}
+      case let Some(e) {return Err[Frame, FrameError](e);}
       case is None[FrameError] {}
     }
     return Ok[Frame, FrameError](Frame.Settings(h.has(flagAck), values));
@@ -476,8 +476,8 @@ fn parseControl(h: FrameHeader, p: &'p Array[u8], client: bool) Result[Frame, Fr
   // window it names
   let inc = readU32(p, 0usize) & maxWindowSize;
   if inc == 0u32 {
-    if h.stream == 0u32 {return Error[Frame, FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "a WINDOW_UPDATE of 0 for the connection"));}
-    return Error[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a WINDOW_UPDATE of 0"));
+    if h.stream == 0u32 {return Err[Frame, FrameError](connectionError(ErrorCode.ProtocolError, 0u32, "a WINDOW_UPDATE of 0 for the connection"));}
+    return Err[Frame, FrameError](streamError(ErrorCode.ProtocolError, h.stream, "a WINDOW_UPDATE of 0"));
   }
   Ok[Frame, FrameError](Frame.WindowUpdate(h.stream, inc))
 }
@@ -700,7 +700,7 @@ pub struct FrameReader {
       if h.kind == typeHeaders || h.kind == typePushPromise {
         let st = blockStart(h, scratch.view());
         match st {
-          case let Error(e) {return self.fail(e);}
+          case let Err(e) {return self.fail(e);}
           case let Ok(s) {
             var fragments = List[u8].empty();
             appendBytes(&mut fragments, &scratch.view()[s.from ..< s.to]);
@@ -721,7 +721,7 @@ pub struct FrameReader {
       }
       match parseControl(h, scratch.view(), isClient) {
         case let Ok(f) {return Parsed.Got(f);}
-        case let Error(e) {
+        case let Err(e) {
           if e.scope == Scope.Stream {return Parsed.Failed(e);}
           return self.fail(e);
         }

@@ -96,10 +96,10 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
     case let Ok(bytes) {
       match fs.writeFile(&file, bytes.view()) {
         case is Ok {}
-        case let Error(e) { require(false, "the synthetic file is written"); }
+        case let Err(e) { require(false, "the synthetic file is written"); }
       }
     }
-    case let Error(e) { require(false, "the synthetic GGUF is made"); }
+    case let Err(e) { require(false, "the synthetic GGUF is made"); }
   }
   let promptIds = ids(promptLen, u32.from(shape.vocab), 99u32);
   var cache = RefCache.make(shape, 32usize);
@@ -139,7 +139,7 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
             expectBool(maxDiff(&got, &lNo) / scale > CONTROL, true, "no q/k norm is over 300 tolerances away");
           }
         }
-        case let Error(e) { printStr(e.view()); require(false, "the prompt ran"); }
+        case let Err(e) { printStr(e.view()); require(false, "the prompt ran"); }
       }
       var t = 0usize;
       while t < 3usize {
@@ -155,7 +155,7 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
             expectBool(d <= TOLERANCE, true, "the decode step's logits are within the tolerance of the CPU reference");
             expectUInt(u64.from(argmaxOf(&got)), u64.from(argmaxOf(&w2)), "the decode step picks the CPU's token");
           }
-          case let Error(e) { printStr(e.view()); require(false, "the decode step ran"); }
+          case let Err(e) { printStr(e.view()); require(false, "the decode step ran"); }
         }
         t = t + 1usize;
       }
@@ -164,19 +164,19 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
       let flood = ids(100usize, u32.from(shape.vocab), 5u32);
       match engine.feed(device, flood.view(), true) {
         case is Ok { expect(false, "tokens past the context are refused"); }
-        case let Error(e) { expectStr(e.view(), "llmrun: the context is full (32 positions)", "tokens past the context are refused"); }
+        case let Err(e) { expectStr(e.view(), "llmrun: the context is full (32 positions)", "tokens past the context are refused"); }
       }
       var outside = List[u32].empty();
       outside.push(u32.from(shape.vocab));
       match engine.feed(device, outside.view(), true) {
         case is Ok { expect(false, "a token outside the vocabulary is refused"); }
-        case let Error(e) { expectStr(e.view(), "llmrun: token 300 is outside the vocabulary", "a token outside the vocabulary is refused"); }
+        case let Err(e) { expectStr(e.view(), "llmrun: token 300 is outside the vocabulary", "a token outside the vocabulary is refused"); }
       }
       expectUInt(u64.from(engine.pos), u64.from(promptLen + 3usize), "...and the position is where it was");
       engine.reset();
       expectUInt(u64.from(engine.pos), 0u64, "reset starts at position 0");
     }
-    case let Error(e) { printStr(e.view()); printStr("\n"); require(false, "the engine opened"); }
+    case let Err(e) { printStr(e.view()); printStr("\n"); require(false, "the engine opened"); }
   }
   fs.removeFile(&file);
   worst

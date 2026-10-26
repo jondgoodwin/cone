@@ -63,7 +63,7 @@ static StructNode *propagateVariant(INode *enumdcl, Name *name) {
     return NULL;
 }
 
-// What a variant declared as a type holds, 'Error(E)' holds E, or NULL
+// What a variant declared as a type holds, 'Err(E)' holds E, or NULL
 static INode *propagateHeld(StructNode *variant) {
     FieldDclNode *field = variant ? structTypeVariantField(variant) : NULL;
     return field ? field->vtype : NULL;
@@ -138,7 +138,7 @@ static void propagateTest(VarDclNode *held, Name *variant, INode *lexnode, CastN
     }
 }
 
-// The variant's construction, 'Error(value)', or 'None' with no value: a call of
+// The variant's construction, 'Err(value)', or 'None' with no value: a call of
 // the declaration, which type check makes the variant's literal (fnCallVariantCall)
 static INode *propagateConstruct(StructNode *variant, INode *value, INode *lexnode) {
     FnCallNode *lit = newFnCallNode(newNameUseFromDclNode((INode*)variant, lexnode), 1);
@@ -510,7 +510,7 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     held->namesym = anonName;
     nodesAdd(&body->stmts, (INode*)held);
 
-    // if -held is Error { let -err = [Error]-held; let -msg = -err.message(); -mainError(-msg.view()); return 1 }
+    // if -held is Err { let -err = [Err]-held; let -msg = -err.message(); -mainError(-msg.view()); return 1 }
     CastNode *failtest, *failbind;
     propagateTest(held, errorVariantName, lexnode, &failtest, &failbind);
     BlockNode *arm = newBlockNode();

@@ -157,7 +157,7 @@ needs no hooked name.)
 `FlagEach` below, `blockTypeCheck` checks the first statement, the hidden
 variable holding `x`, and `propagateLower` appends the match the reader would
 have written: `if -held is Ok { let -ok = [Ok]-held; -ok } else if -held is
-Error { let -err = [Error]-held; return Error(conv(-err)) }` (Some and None for
+Err { let -err = [Err]-held; return Err(conv(-err)) }` (Some and None for
 an Option), with every name bound to its declaration. The arm that returns gives
 the `if` no value, so the block's value is what `Ok` holds; `ifExhaustCheck`
 makes the last test the `else`. Where `?` is refused, the block ends in an error

@@ -48,7 +48,7 @@ fn kindName(k: &bpetokenize.BuildErrorKind) &str {
 fn refuse(tokens: &List[String], merges: &List[String], special: &List[String], kind: &str, index: usize, phrase: &str) {
   match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), bpetokenize.PreTokenizer.Gpt2) {
     case is Ok { expectStr("<built>", kind, phrase); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), kind, phrase);
       expectUInt(u64.from(e.index), u64.from(index), phrase);
       let m = e.message();
@@ -125,7 +125,7 @@ fn main() i32 {
       seq.push(257u32);
       match tok.decode(seq.view()) {
         case let Ok(bytes) { expectStr(bytes.view(), "he", "the repeated token decodes"); }
-        case let Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "repeated token"); }
+        case let Err(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "repeated token"); }
       }
 
       // decoding an id outside the vocabulary
@@ -133,7 +133,7 @@ fn main() i32 {
       outside.push(104u32); outside.push(101u32); outside.push(258u32); outside.push(0xFFFFFFFFu32);
       match tok.decode(outside.view()) {
         case is Ok { expect(false, "an id outside the vocabulary is refused"); }
-        case let Error(e) {
+        case let Err(e) {
           expectUInt(u64.from(e.position), 2u64, "the first bad id is at position 2");
           expectUInt(u64.from(e.id), 258u64, "and it is 258");
           expectUInt(u64.from(e.vocabSize), 258u64, "of a vocabulary of 258");
@@ -147,16 +147,16 @@ fn main() i32 {
       sink.push('x');
       match tok.decodeInto(outside.view(), false, &mut sink) {
         case is Ok { expect(false, "decodeInto refuses it too"); }
-        case is Error { expectStr(sink.view(), "x", "decodeInto leaves its list as it was"); }
+        case is Err { expectStr(sink.view(), "x", "decodeInto leaves its list as it was"); }
       }
       // decoding nothing
       let empty = List[u32].empty();
       match tok.decode(empty.view()) {
         case let Ok(bytes) { expectUInt(u64.from(bytes.len()), 0u64, "no ids decode to no bytes"); }
-        case let Error(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "empty decode"); }
+        case let Err(e) { let m = e.message(); expectStr(m.view(), "<decoded>", "empty decode"); }
       }
     }
-    case let Error(e) { let m = e.message(); expectStr(m.view(), "<built>", "repeated merge and token"); }
+    case let Err(e) { let m = e.message(); expectStr(m.view(), "<built>", "repeated merge and token"); }
   }
   done()
 }

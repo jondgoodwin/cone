@@ -27,7 +27,7 @@ fn load(name: &str) String {
   p.append(name);
   match fs.readFile(&Path.from(p.view())) {
     case let Ok(s) { s }
-    case let Error(e) {
+    case let Err(e) {
       expect(false, "a fixture is missing");
       String.empty()
     }
@@ -46,7 +46,7 @@ fn modeOf(p: &str) u32 {
 fn modifiedOf(p: &str) i64 {
   match fs.stat(&Path.from(p)) {
     case let Ok(s) { s.modified.unixSeconds() }
-    case is Error { 0i64 - 1i64 }
+    case is Err { 0i64 - 1i64 }
   }
 }
 
@@ -81,17 +81,17 @@ fn build() List[u8] {
   w.add("old.txt", "old\n", &EntryOptions.stored());
   match w.bytes() {
     case let Ok(b) { b }
-    case let Error(e) { List[u8].empty() }
+    case let Err(e) { List[u8].empty() }
   }
 }
 
 fn extractTo(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[Extracted] {
   match Archive.open(data) {
-    case let Error(e) { None[Extracted] }
+    case let Err(e) { None[Extracted] }
     case let Ok(ar) {
       match ar.extractAll(data, &Path.from(dest), opts) {
         case let Ok(done) { Some[Extracted](done) }
-        case let Error(e) {
+        case let Err(e) {
           expect(false, e.reason.view());
           None[Extracted]
         }
@@ -110,7 +110,7 @@ fn unrestoredOf(got: Option[Extracted]) usize {
 fn contentIs(p: &str, text: &str) bool {
   match fs.readFile(&Path.from(p)) {
     case let Ok(s) { s.view() == text }
-    case let Error(e) { false }
+    case let Err(e) { false }
   }
 }
 
@@ -184,10 +184,10 @@ fn main() i32 {
   // ---------------- one entry ----------------
   clean("rs-f");
   match Archive.open(archive.view()) {
-    case let Error(e) { expect(false, "the archive opens"); }
+    case let Err(e) { expect(false, "the archive opens"); }
     case let Ok(ar) {
       match ar.extractOne(archive.view(), 1usize, &Path.from("rs-f"), &withModes) {
-        case let Error(e) { expect(false, e.reason.view()); }
+        case let Err(e) { expect(false, e.reason.view()); }
         case let Ok(got) {
           expectUInt(u64.from(got.unrestored), 0u64, "extractOne: nothing unrestored");
           expectUInt(u64.from(kept("rs-f/bin/run.sh")), u64.from(want(493u32, true)), "extractOne: the entry has its mode");
@@ -204,7 +204,7 @@ fn main() i32 {
   let dos = load("zstd-mixed.zip");
   clean("rs-d");
   match Archive.open(dos.view()) {
-    case let Error(e) { expect(false, "zstd-mixed opens"); }
+    case let Err(e) { expect(false, "zstd-mixed opens"); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.entry(0usize).unixMode()), 0u64, "zstd-mixed: its entry records no Unix mode");
       expect(!ar.entry(0usize).modifiedExact, "zstd-mixed: and no extended timestamp");

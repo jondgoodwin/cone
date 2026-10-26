@@ -88,7 +88,7 @@ pub struct ZipWriter {
   // Adds the file at 'path' under 'name'. Its modification time is not read; set 'opts.modified'.
   pub fn addFile(self: &mut, name: &str, path: &Path, opts: &EntryOptions) Result[void, ZipError] {
     match fs.mapFile(path) {
-      case let Error(fe) { Error[void, ZipError](ioFault(&fe)) }
+      case let Err(fe) { Err[void, ZipError](ioFault(&fe)) }
       case let Ok(m) { self.addEntry(name, m.view(), opts, false) }
     }
   }
@@ -99,7 +99,7 @@ pub struct ZipWriter {
   // no entry.
   pub fn addTree(self: &mut, root: &Path, prefix: &str, opts: &EntryOptions) Result[void, ZipError] {
     match fs.readDir(root) {
-      case let Error(fe) { return Error[void, ZipError](ioFault(&fe)); }
+      case let Err(fe) { return Err[void, ZipError](ioFault(&fe)); }
       case let Ok(listed) {
         var k = 0usize;
         while k < listed.len() {
@@ -108,19 +108,19 @@ pub struct ZipWriter {
           name.append(item.name.view());
           if item.isDir {
             let made = self.addDir(name.view(), opts);
-            if made is Error { return made; }
+            if made is Err { return made; }
             name.append("/");
             let below = self.addTree(&item.path, name.view(), opts);
-            if below is Error { return below; }
+            if below is Err { return below; }
           } else if item.isFile {
             var stamp = opts.modified;
             match fs.stat(&item.path) {
               case let Ok(info) { stamp = info.modified.unixSeconds(); }
-              case is Error {}
+              case is Err {}
             }
             let o = EntryOptions(opts.method, opts.level, stamp, opts.mode, opts.zip64, opts.comment.copy());
             let made = self.addFile(name.view(), &item.path, &o);
-            if made is Error { return made; }
+            if made is Err { return made; }
           }
           k += 1usize;
         }
@@ -315,7 +315,7 @@ pub struct ZipWriter {
     if !finished {
       let ended = self.finish();
       match ended {
-        case let Error(e) { return Error[List[u8], ZipError](e); }
+        case let Err(e) { return Err[List[u8], ZipError](e); }
         case is Ok {}
       }
     }
@@ -330,7 +330,7 @@ pub struct ZipWriter {
     if !finished {
       let ended = self.finish();
       match ended {
-        case let Error(e) { return Error[void, ZipError](e); }
+        case let Err(e) { return Err[void, ZipError](e); }
         case is Ok {}
       }
     }
@@ -342,7 +342,7 @@ pub struct ZipWriter {
       s = self.pull(&mut piece, 1048576usize);
       let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
       match wrote {
-        case let Error(fe) { return Error[void, ZipError](ioFault(&fe)); }
+        case let Err(fe) { return Err[void, ZipError](ioFault(&fe)); }
         case is Ok {}
       }
       first = false;

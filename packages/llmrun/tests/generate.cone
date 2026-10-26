@@ -64,7 +64,7 @@ fn engineGreedy(engine: &mut Engine, device: &mut Device, prompt: &Array[u32], n
   var logits = List[f32].empty();
   match engine.feed(device, prompt, true) {
     case var Ok(l) { logits <-> l; }
-    case let Error(e) { require(false, "the prompt runs"); }
+    case let Err(e) { require(false, "the prompt runs"); }
   }
   var i = 0usize;
   while i < n {
@@ -74,7 +74,7 @@ fn engineGreedy(engine: &mut Engine, device: &mut Device, prompt: &Array[u32], n
     one.push(id);
     match engine.feed(device, one.view(), true) {
       case var Ok(l) { logits <-> l; }
-      case let Error(e) { require(false, "a token runs"); }
+      case let Err(e) { require(false, "a token runs"); }
     }
     i = i + 1usize;
   }
@@ -106,10 +106,10 @@ fn main() i32 {
     case let Ok(bytes) {
       match fs.writeFile(&file, bytes.view()) {
         case is Ok {}
-        case is Error { require(false, "the synthetic file is written"); }
+        case is Err { require(false, "the synthetic file is written"); }
       }
     }
-    case let Error(e) { require(false, "the synthetic GGUF is made"); }
+    case let Err(e) { require(false, "the synthetic GGUF is made"); }
   }
   match Engine.open(&mut device, &file, &LoadOptions(256usize, 5usize)) {
     case var Ok(engine) {
@@ -134,17 +134,17 @@ fn main() i32 {
           engine.reset();
           let first = vocab.userTurn("Hello", false);
           var logits1 = List[f32].empty();
-          match engine.feed(&mut device, first.view(), true) { case var Ok(l) { logits1 <-> l; } case is Error { require(false, "turn 1 runs"); } }
+          match engine.feed(&mut device, first.view(), true) { case var Ok(l) { logits1 <-> l; } case is Err { require(false, "turn 1 runs"); } }
           let reply1 = argmax(logits1.view());
           var reply = List[u32].empty();
           reply.push(reply1);
-          match engine.feed(&mut device, reply.view(), false) { case is Ok {} case is Error { require(false, "the reply runs"); } }
+          match engine.feed(&mut device, reply.view(), false) { case is Ok {} case is Err { require(false, "the reply runs"); } }
           var turn2 = vocab.closeTurn();
           let second = vocab.userTurn("And you?", false);
           var k = 0usize;
           while k < second.len() { turn2.push(*second[k]); k = k + 1usize; }
           var logits2 = List[f32].empty();
-          match engine.feed(&mut device, turn2.view(), true) { case var Ok(l) { logits2 <-> l; } case is Error { require(false, "turn 2 runs"); } }
+          match engine.feed(&mut device, turn2.view(), true) { case var Ok(l) { logits2 <-> l; } case is Err { require(false, "turn 2 runs"); } }
           // the whole conversation as one run on a fresh cache
           var whole = List[u32].empty();
           k = 0usize;
@@ -154,7 +154,7 @@ fn main() i32 {
           while k < turn2.len() { whole.push(*turn2[k]); k = k + 1usize; }
           engine.reset();
           var logitsWhole = List[f32].empty();
-          match engine.feed(&mut device, whole.view(), true) { case var Ok(l) { logitsWhole <-> l; } case is Error { require(false, "the whole conversation runs"); } }
+          match engine.feed(&mut device, whole.view(), true) { case var Ok(l) { logitsWhole <-> l; } case is Err { require(false, "the whole conversation runs"); } }
           expectUInt(u64.from(argmax(logits2.view())), u64.from(argmax(logitsWhole.view())), "turn 2 on the kept cache chooses what the whole conversation chooses");
           var worst = 0.0;
           var j = 0usize;
@@ -170,10 +170,10 @@ fn main() i32 {
           expectBool(TokenSampler.greedy().sample(logits2.view(), &mut rng) == argmax(logits2.view()), true, "greedy sampling is the argmax");
           expectBool(vocab.isStop(151645u32), true, "<|im_end|> stops");
         }
-        case let Error(e) { expectStr(e.view(), "", "the tokenizer loads from the synthetic file"); }
+        case let Err(e) { expectStr(e.view(), "", "the tokenizer loads from the synthetic file"); }
       }
     }
-    case let Error(e) { expectStr(e.view(), "", "the engine opens"); }
+    case let Err(e) { expectStr(e.view(), "", "the engine opens"); }
   }
   fs.removeFile(&file);
   expectUInt(u64.from(refusals()), 0u64, "gpuwork refused nothing");

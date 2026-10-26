@@ -73,14 +73,14 @@ fn save(name: &str, b: &Array[u8]) {
 fn fileIs(p: &str, want: &Array[u8]) bool {
   match fs.readFile(&Path.from(p)) {
     case let Ok(s) { s.view() == want }
-    case let Error(e) { false }
+    case let Err(e) { false }
   }
 }
 
 // The whole entry through an EntryReader, 'piece' bytes a pull
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize) Result[List[u8], ZipError] {
   match ar.reader(data, i) {
-    case let Error(e) { return Error[List[u8], ZipError](e); }
+    case let Err(e) { return Err[List[u8], ZipError](e); }
     case var Ok(r) {
       var all = List[u8].empty();
       var chunk = List[u8].empty();
@@ -91,7 +91,7 @@ fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize) Result[List
         while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
         if s == Status.Failed {
           match r.error() {
-            case let Some(e) { return Error[List[u8], ZipError](e); }
+            case let Some(e) { return Err[List[u8], ZipError](e); }
             case is None { expect(false, "a failed reader has an error"); }
           }
         }
@@ -122,11 +122,11 @@ fn check(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) u32 {
     case let Some(i) {
       match ar.read(data, i) {
         case let Ok(got) { expect(got.view() == want, labelled("whole read matches:", name).view()); }
-        case let Error(e) { expect(false, why(labelled("whole read of", name).view(), &e).view()); }
+        case let Err(e) { expect(false, why(labelled("whole read of", name).view(), &e).view()); }
       }
       match streamAll(ar, data, i, 7777usize) {
         case let Ok(got) { expect(got.view() == want, labelled("streamed read matches:", name).view()); }
-        case let Error(e) { expect(false, why(labelled("streamed read of", name).view(), &e).view()); }
+        case let Err(e) { expect(false, why(labelled("streamed read of", name).view(), &e).view()); }
       }
       let e = ar.entry(i);
       expectUInt(e.size, u64.from(want.len), labelled("the declared size is right:", name).view());
@@ -177,11 +177,11 @@ fn main() i32 {
     names.push(String.from("t-300000-Lneg.txt"));
   }
   match w.bytes() {
-    case let Error(e) { expect(false, why("levels: bytes", &e).view()); }
+    case let Err(e) { expect(false, why("levels: bytes", &e).view()); }
     case let Ok(arc) {
       save("zstdw-levels.zip", arc.view());
       match Archive.open(arc.view()) {
-        case let Error(e) { expect(false, why("levels: opens", &e).view()); }
+        case let Err(e) { expect(false, why("levels: opens", &e).view()); }
         case let Ok(ar) {
           expectUInt(u64.from(ar.count()), u64.from(names.len()), "levels: every entry is there");
           var smaller = 0usize;
@@ -232,10 +232,10 @@ fn main() i32 {
       case let Ok(x) {
         match b.bytes() {
           case let Ok(y) { expect(x.view() == y.view(), "the same input and options give the same bytes"); }
-          case is Error { expect(false, "determinism: b bytes"); }
+          case is Err { expect(false, "determinism: b bytes"); }
         }
       }
-      case is Error { expect(false, "determinism: a bytes"); }
+      case is Err { expect(false, "determinism: a bytes"); }
     }
   }
 
@@ -247,10 +247,10 @@ fn main() i32 {
       var z = ZipWriter.make();
       expect(z.add("noise.bin", body.view(), &EntryOptions.zstd(level)) is Ok, "noise: add");
       match z.bytes() {
-        case let Error(e) { expect(false, why("noise: bytes", &e).view()); }
+        case let Err(e) { expect(false, why("noise: bytes", &e).view()); }
         case let Ok(arc) {
           match Archive.open(arc.view()) {
-            case let Error(e) { expect(false, why("noise: opens", &e).view()); }
+            case let Err(e) { expect(false, why("noise: opens", &e).view()); }
             case let Ok(ar) {
               let m = check(&ar, arc.view(), "noise.bin", body.view());
               expectUInt(u64.from(m), 0u64, "noise is stored, not zstd");
@@ -271,10 +271,10 @@ fn main() i32 {
     expect(z.add("empty.txt", "", &EntryOptions.zstd(3i32)) is Ok, "empty: add");
     expect(z.addDir("dir", &EntryOptions.zstd(3i32)) is Ok, "empty: addDir");
     match z.bytes() {
-      case let Error(e) { expect(false, why("empty: bytes", &e).view()); }
+      case let Err(e) { expect(false, why("empty: bytes", &e).view()); }
       case let Ok(arc) {
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("empty: opens", &e).view()); }
+          case let Err(e) { expect(false, why("empty: opens", &e).view()); }
           case let Ok(ar) {
             let none = List[u8].empty();
             let m = check(&ar, arc.view(), "empty.txt", none.view());
@@ -316,11 +316,11 @@ fn main() i32 {
     save("zstdw-src/h-big.txt", big.view());
     save("zstdw-src/i-zstd-again.txt", hello.view());
     match z.bytes() {
-      case let Error(e) { expect(false, why("mixed: bytes", &e).view()); }
+      case let Err(e) { expect(false, why("mixed: bytes", &e).view()); }
       case let Ok(arc) {
         save("zstdw-mixed.zip", arc.view());
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("mixed: opens", &e).view()); }
+          case let Err(e) { expect(false, why("mixed: opens", &e).view()); }
           case let Ok(ar) {
             expectUInt(u64.from(ar.count()), 10u64, "mixed: ten entries");
             expectUInt(u64.from(check(&ar, arc.view(), "a-stored.txt", hello.view())), 0u64, "mixed: a is stored");
@@ -335,7 +335,7 @@ fn main() i32 {
             expectUInt(u64.from(check(&ar, arc.view(), "i-zstd-again.txt", hello.view())), 0u64, "mixed: i (13 bytes) is stored");
             fs.removeAll(&Path.from("x-zstdw-mixed"));
             match ar.extractAll(arc.view(), &Path.from("x-zstdw-mixed"), &ExtractOptions.safe()) {
-              case let Error(e) { expect(false, why("mixed: extractAll", &e).view()); }
+              case let Err(e) { expect(false, why("mixed: extractAll", &e).view()); }
               case let Ok(got) {
                 expectUInt(u64.from(got.files), 9u64, "mixed: nine files extracted");
                 expectUInt(u64.from(got.folders), 1u64, "mixed: one folder extracted");
@@ -369,7 +369,7 @@ fn main() i32 {
     while st == Status.MoreOutput { st = z.pull(&mut all, 1000usize); }
     expect(st == Status.Done, "pull: done");
     match Archive.open(all.view()) {
-      case let Error(e) { expect(false, why("pull: opens", &e).view()); }
+      case let Err(e) { expect(false, why("pull: opens", &e).view()); }
       case let Ok(ar) {
         expectUInt(u64.from(check(&ar, all.view(), "a.txt", big.view())), 93u64, "pull: a is zstd");
         expectUInt(u64.from(check(&ar, all.view(), "b.txt", big.view())), 93u64, "pull: b is zstd");
@@ -384,12 +384,12 @@ fn main() i32 {
     z.setZip64(true);
     expect(z.add("z.txt", text.view(), &EntryOptions.zstd(2i32)) is Ok, "zip64: add");
     match z.bytes() {
-      case let Error(e) { expect(false, why("zip64: bytes", &e).view()); }
+      case let Err(e) { expect(false, why("zip64: bytes", &e).view()); }
       case let Ok(arc) {
         save("zstdw-zip64.zip", arc.view());
         save("zstdw-src/z.txt", text.view());
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("zip64: opens", &e).view()); }
+          case let Err(e) { expect(false, why("zip64: opens", &e).view()); }
           case let Ok(ar) {
             expectUInt(u64.from(check(&ar, arc.view(), "z.txt", text.view())), 93u64, "zip64: zstd");
             expectUInt(u64.from(localVersion(arc.view(), ar.entry(0usize))), 45u64, "zip64: needs version 45");
@@ -401,10 +401,10 @@ fn main() i32 {
     var y = ZipWriter.make();
     expect(y.add("y.txt", text.view(), &one) is Ok, "zip64 entry: add");
     match y.bytes() {
-      case let Error(e) { expect(false, why("zip64 entry: bytes", &e).view()); }
+      case let Err(e) { expect(false, why("zip64 entry: bytes", &e).view()); }
       case let Ok(arc) {
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("zip64 entry: opens", &e).view()); }
+          case let Err(e) { expect(false, why("zip64 entry: opens", &e).view()); }
           case let Ok(ar) {
             expectUInt(u64.from(check(&ar, arc.view(), "y.txt", text.view())), 93u64, "zip64 entry: zstd");
           }
@@ -424,10 +424,10 @@ fn main() i32 {
     expect(z.addTree(&root, "pack/", &EntryOptions.zstd(2i32)) is Ok, "tree: addTree");
     expect(z.addFile("extra.txt", &Path.from("zstdw-tree/top.txt"), &EntryOptions.zstd(1i32)) is Ok, "tree: addFile");
     match z.bytes() {
-      case let Error(e) { expect(false, why("tree: bytes", &e).view()); }
+      case let Err(e) { expect(false, why("tree: bytes", &e).view()); }
       case let Ok(arc) {
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("tree: opens", &e).view()); }
+          case let Err(e) { expect(false, why("tree: opens", &e).view()); }
           case let Ok(ar) {
             expectUInt(u64.from(check(&ar, arc.view(), "pack/top.txt", texty(20000usize).view())), 93u64, "tree: top.txt is zstd");
             expectUInt(u64.from(check(&ar, arc.view(), "pack/sub/low.bin", noise(5000usize, 3u64).view())), 0u64, "tree: low.bin (noise) is stored");
@@ -446,13 +446,13 @@ fn main() i32 {
     bad.method = 94u16;
     match z.add("a.txt", "some text", &bad) {
       case let Ok(x) { expect(false, "method 94 was accepted"); }
-      case let Error(e) {
+      case let Err(e) {
         expect(e.kind == ErrorKind.BadArgument, "method 94 is refused (BadArgument)");
         expect(e.reason.contains("93 (zstd)"), "and the refusal names method 93");
       }
     }
     bad.method = 14u16;
-    expect(z.add("b.txt", "some text", &bad) is Error, "LZMA (14) is refused");
+    expect(z.add("b.txt", "some text", &bad) is Err, "LZMA (14) is refused");
     expectUInt(z.count(), 0u64, "nothing was added");
   }
 
