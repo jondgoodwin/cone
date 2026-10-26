@@ -925,10 +925,15 @@ fn ioMain(arg: IoArg) u32 {
     var out = List[Completion].empty();
     var got = List[*OpCore].empty();
     var hosts = List[*HostHead].empty();     // the services hosted here, oldest first: this thread's alone
+    var until = forever();                   // the earliest wakeAt, taken at the services' last turns
     var more = true;
+    // With no service hosted the pass is aio's alone: every step for the
+    // services is skipped, one test each
     while more {
-      lp.poll(hostsWakeAt(&hosts), &mut out);
-      offerAll(&hosts, &mut lp, &mut out);
+      lp.poll(until, &mut out);
+      if hosts.len() != 0usize {
+        offerAll(&hosts, &mut lp, &mut out);
+      }
       out.clear();
       ioLock.lock();
       let h = (*me).head;
@@ -937,14 +942,20 @@ fn ioMain(arg: IoArg) u32 {
       let r = (*me).rhead;
       (*me).rhead = nullCore();
       (*me).rtail = nullCore();
-      takeFresh(me, &mut hosts);
-      takeHostJobs(&hosts);
+      if (*me).fhead as usize != 0usize {
+        takeFresh(me, &mut hosts);
+      }
+      if hosts.len() != 0usize {
+        takeHostJobs(&hosts);
+      }
       let stop = ended.load();
       ioLock.unlock();
       if stop {
         dropJobs(h);
         dissolveUnstarted(r);
-        endAllHosts(&mut hosts, &mut lp);
+        if hosts.len() != 0usize {
+          endAllHosts(&mut hosts, &mut lp);
+        }
         more = false;
       } else {
         lp.takeDone(&mut got);
@@ -955,9 +966,13 @@ fn ioMain(arg: IoArg) u32 {
         }
         got.clear();
         runJobs(h, &mut lp);
-        serveHosts(&mut hosts, &mut lp);
-        startRecs(r, &mut lp);
-        turnHosts(&hosts, &mut lp);
+        if hosts.len() == 0usize {
+          startRecs(r, &mut lp);
+        } else {
+          serveHosts(&mut hosts, &mut lp);
+          startRecs(r, &mut lp);
+          until = turnHosts(&hosts, &mut lp);
+        }
       }
       pool.flushHere();
     }
@@ -1264,28 +1279,9 @@ fn takeHostJobs(hosts: &List[*HostHead]) {
   }
 }
 
-// The earliest instant a service wants its turn: the limit of the poll
-fn hostsWakeAt(hosts: &List[*HostHead]) Instant {
-  var until = forever();
-  var k = 0usize;
-  while k < hosts.len() {
-    let hh = *hosts[k];
-    if (*hh).made {
-      let f = (*hh).wakeAtFn;
-      let w = f(hh as *u8);
-      if w < until {until = w;}
-    }
-    k = k + 1usize;
-  }
-  until
-}
-
 // Each Completion the poll returned offered to the services in turn, oldest
 // first, until one says it is its own
 fn offerAll(hosts: &List[*HostHead], lp: &mut Loop, out: &mut List[Completion]) {
-  if hosts.len() == 0usize {
-    return;
-  }
   var j = 0usize;
   while j < out.len() {
     let c = &mut out[j];
@@ -1332,17 +1328,23 @@ fn serveHosts(hosts: &mut List[*HostHead], lp: &mut Loop) {
   }
 }
 
-// Each service's turn, oldest first
-fn turnHosts(hosts: &List[*HostHead], lp: &mut Loop) {
+// Each service's turn, oldest first, and the earliest instant one wants its
+// next (its wakeAt, asked right after its turn): the limit of the next poll
+fn turnHosts(hosts: &List[*HostHead], lp: &mut Loop) Instant {
+  var until = forever();
   var k = 0usize;
   while k < hosts.len() {
     let hh = *hosts[k];
     if (*hh).made {
       let f = (*hh).turnFn;
       f(hh as *u8, lp);
+      let wf = (*hh).wakeAtFn;
+      let w = wf(hh as *u8);
+      if w < until {until = w;}
     }
     k = k + 1usize;
   }
+  until
 }
 
 // The program is ending: every service still hosted is ended, newest first
