@@ -1,0 +1,118 @@
+// How fast, and how small. Give it files; for each it compresses the whole
+// file at levels 1, 2 and 3, in one call and streamed (64 KiB pieces in, 64
+// KiB out), and prints the compressed size and, of 5 runs, the best, the
+// median and the worst as megabytes a second of the input. Run it in release
+// mode:
+//
+//   congo run --release packages/zstd/examples/compressbench.cone -- file1 file2 ...
+//
+// The numbers in the package header (zstd.cone) are from this program, beside
+// the reference library's compression of the same files at the same levels.
+
+mod compressbench;
+
+import collections use *;
+import zstd use *;
+import time use *;
+import fs;
+import path use Path;
+import process;
+import stdio use *;
+
+fn mbps(bytes: usize, ns: i64) i64 {
+  if ns <= 0i64 { return 0i64; }
+  i64.from(bytes) * 1000i64 / ns
+}
+
+// "best B, median M MB/s" of the times (nanoseconds) for 'bytes'
+fn report(times: &mut List[i64], bytes: usize) {
+  var i = 1usize;
+  while i < times.len() {
+    var k = i;
+    while k > 0usize && *times[k - 1usize] > *times[k] {
+      let t = *times[k];
+      times.set(k, *times[k - 1usize]);
+      times.set(k - 1usize, t);
+      k -= 1usize;
+    }
+    i += 1usize;
+  }
+  printStr("best ");
+  printInt(mbps(bytes, *times[0usize]));
+  printStr(", median ");
+  printInt(mbps(bytes, *times[times.len() / 2usize]));
+  printStr(", worst ");
+  printInt(mbps(bytes, *times[times.len() - 1usize]));
+  printStr(" MB/s");
+}
+
+fn main() i32 {
+  let args = process.args();
+  var i = 1usize;
+  while i < args.len() {
+    match fs.readFile(&Path.from(args[i].view())) {
+      case let Ok(file) { benchOne(args[i].view(), file.view().bytes()); }
+      case let Error(e) { printStr("cannot read "); printStr(args[i].view()); printStr("\n"); }
+    }
+    i += 1usize;
+  }
+  0i32
+}
+
+fn benchOne(name: &str, data: &Array[u8]) {
+  printStr(name);
+  printStr(" (");
+  printInt(i64.from(data.len));
+  printStr(" bytes)\n");
+  var level = 1;
+  while level <= 3 {
+    var size = 0usize;
+    var times = List[i64].empty();
+    var run = 0;
+    while run < 5 {
+      let t0 = Instant.now();
+      let out = compress(data, level);
+      times.push(t0.elapsed().nanos());
+      size = out.len();
+      run += 1;
+    }
+    printStr("  level ");
+    printInt(i64.from(level));
+    printStr(": ");
+    printInt(i64.from(size));
+    printStr(" bytes; one call ");
+    report(&mut times, data.len);
+
+    times.clear();
+    run = 0;
+    var streamedSize = 0usize;
+    var piece = List[u8].withCapacity(65536usize);
+    while run < 5 {
+      let t0 = Instant.now();
+      var c = Compressor.make(level);
+      var pos = 0usize;
+      var total = 0usize;
+      var st: Status = Status.NeedInput;
+      while st != Status.Done {
+        if st == Status.NeedInput {
+          let n = if data.len - pos < 65536usize {data.len - pos} else {65536usize};
+          c.feed(&data[pos..<pos + n]);
+          pos += n;
+          if pos == data.len { c.finish(); }
+        }
+        piece.clear();
+        st = c.pull(&mut piece, 65536usize);
+        total += piece.len();
+      }
+      times.push(t0.elapsed().nanos());
+      streamedSize = total;
+      run += 1;
+    }
+    printStr("; streamed ");
+    printInt(i64.from(streamedSize));
+    printStr(" bytes, ");
+    report(&mut times, data.len);
+    printStr("\n");
+    level += 1;
+  }
+}

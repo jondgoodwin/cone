@@ -1,0 +1,263 @@
+// The compressor against this package's decoder, over data of many shapes and
+// sizes, at levels 1, 2 and 3. Writer and reader could share a mistake, so the
+// frames are also checked against the reference decoder: tests/data/
+// crosscheck.py has examples/crosscheck.cone compress a seeded corpus every
+// way this test does and hands every frame to libzstd 1.5.7, and it makes two
+// of this test's inputs too ("lcg six letters" and "lcg words"), printing the
+// XXH64 of their one-call frames: the golden values at the end are those, so
+// any change to the bytes written is seen here, and the bytes pinned were
+// read back by the reference.
+//
+// Shapes: random bytes (nothing to find; raw blocks), runs of 100 of one
+// value, a repeat 251 bytes long with noise, six letters (Huffman pays, short
+// matches), words (text), and the same 2 KiB at the window's far edges. Sizes
+// around the places a block's edges are: 0 to 3, 8 and 9 (the matcher's
+// least), 63 to 65 (the least literals coded), 255 to 257 (one Huffman stream
+// or four), 131071 to 131073 (one block or two), 262145.
+//
+// Every frame must decode to its input in one call and streamed. A
+// Compressor fed in pieces of 1, 997 and 65536 bytes, pulled between the
+// pieces 7, 4096 and 65536 bytes at a time, must write the very blocks the
+// one call writes (the header differs only in the content size, which a
+// stream over 128 KiB pulled before it ends cannot know); fed whole and
+// finished before the first pull it must write the very same frame. Data
+// that does not compress grows by no more than the frame's header, 3 bytes a
+// block and the checksum.
+
+mod roundtrip;
+
+import testing use *;
+import collections use *;
+import zstd use *;
+
+fn word(k: u64) &str {
+  let words: Array[&str, 16] = ["the", "frame", "block", "of", "and", "literal", "match", "offset", "a",
+    "sequence", "table", "to", "window", "is", "in", "state"];
+  words[usize.from(k % 16u64)]
+}
+
+// Seeded data of a shape (the generator crosscheck.py repeats for kinds 3 and 5)
+fn data(kind: i32, n: usize) List[u8] {
+  var d = List[u8].withCapacity(n);
+  var s = 12345u64;
+  var i = 0usize;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    if kind == 0 { d.push(u8.from((s >> 40u64) & 255u64)); }
+    else if kind == 1 { d.push(u8.from((i / 100usize) & 255usize)); }
+    else if kind == 2 { d.push(u8.from(((i * 7usize) % 251usize) + (if (s >> 60u64) == 0u64 {1usize} else {0usize}))); }
+    else if kind == 3 { d.push(u8.from(97u64 + (s >> 45u64) % 6u64)); }
+    else if kind == 4 {
+      // Noise, and from 512 KiB on, every 256 KiB, 2 KiB copied from 524288
+      // back (level 1's window) and 128 KiB later 2 KiB from 524289 back
+      // (one past it)
+      let at = i % 262144usize;
+      if i >= 524288usize && at < 2048usize { d.push(*d[i - 524288usize]); }
+      else if i >= 524289usize && at >= 131072usize && at < 133120usize { d.push(*d[i - 524289usize]); }
+      else { d.push(u8.from((s >> 40u64) & 255u64)); }
+    } else {
+      let w = word(s >> 33u64);
+      var k = 0usize;
+      while k < w.len && d.len() < n {
+        d.push(w[k]);
+        k += 1usize;
+      }
+      if d.len() < n { d.push(if (s >> 60u64) == 0u64 {10u8} else {32u8}); }
+    }
+    i += 1usize;
+  }
+  d
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// The frame header's length (magic, descriptor, window, content size)
+fn headerLen(f: &Array[u8]) usize {
+  let fhd = f[4usize];
+  let single = (fhd & 0x20u8) != 0u8;
+  let flag = fhd >> 6u8;
+  let fcs = if flag == 0u8 {if single {1usize} else {0usize}} else {1usize << usize.from(flag)};
+  5usize + (if single {0usize} else {1usize}) + fcs
+}
+
+// Compress with a Compressor fed 'chunk' bytes at a time, pulled 'maxPull'
+// at a time after each piece (or fed whole and finished before the first
+// pull when 'whole'). false if it did not end Done or a pull gave too much.
+fn streamed(d: &Array[u8], level: i32, chunk: usize, maxPull: usize, whole: bool, out: &mut List[u8]) bool {
+  var c = Compressor.make(level);
+  if whole {
+    c.feed(d);
+    c.finish();
+  }
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  var rounds = 0usize;
+  while rounds < 100000000usize {
+    rounds += 1usize;
+    if !whole && pos < d.len {
+      let n = if d.len - pos < chunk {d.len - pos} else {chunk};
+      c.feed(&d[pos..<pos + n]);
+      pos += n;
+    }
+    if !whole && pos >= d.len { c.finish(); }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = c.pull(&mut piece, maxPull);
+      if piece.len() > maxPull { return false; }
+      var k = 0usize;
+      while k < piece.len() {
+        out.push(*piece[k]);
+        k += 1usize;
+      }
+    }
+    if st == Status.Done { return c.isDone() && c.totalOut() == u64.from(out.len()) && c.totalIn() == u64.from(d.len); }
+  }
+  false
+}
+
+// Decompress with a Decompressor fed 997 bytes at a time, pulled 4096
+fn unstream(s: &Array[u8], out: &mut List[u8]) bool {
+  var dec = Decompressor.make();
+  var pos = 0usize;
+  var piece = List[u8].empty();
+  while true {
+    if pos < s.len {
+      let n = if s.len - pos < 997usize {s.len - pos} else {997usize};
+      dec.feed(&s[pos..<pos + n]);
+      pos += n;
+    }
+    if pos >= s.len { dec.finish(); }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = dec.pull(&mut piece, 4096usize);
+      var k = 0usize;
+      while k < piece.len() {
+        out.push(*piece[k]);
+        k += 1usize;
+      }
+    }
+    if st == Status.Done { return true; }
+    if st != Status.NeedInput { return false; }
+  }
+  false
+}
+
+fn decodesTo(f: &Array[u8], d: &Array[u8]) bool {
+  match decompress(f, 0usize) {
+    case let Ok(back) { if !same(back.view(), d) { return false; } }
+    case let Error(e) { return false; }
+  }
+  var back = List[u8].empty();
+  unstream(f, &mut back) && same(back.view(), d)
+}
+
+fn main() i32 {
+  let sizes: Array[usize, 19] = [0usize, 1usize, 2usize, 3usize, 8usize, 9usize, 63usize, 64usize, 65usize,
+    255usize, 256usize, 257usize, 4096usize, 65536usize, 131071usize, 131072usize, 131073usize, 262145usize,
+    300000usize];
+  var runs = 0usize;
+  var badDecode = 0usize;
+  var badStream = 0usize;
+  var badBlocks = 0usize;
+  var badWhole = 0usize;
+  var badBound = 0usize;
+  var kind = 0;
+  while kind < 6 {
+    if kind == 4 { kind += 1; continue; }
+    var si = 0usize;
+    while si < 19usize {
+      let n = sizes[si];
+      let d = data(kind, n);
+      var lv = 1;
+      while lv <= 3 {
+        runs += 1usize;
+        let one = compress(d.view(), lv);
+        if !decodesTo(one.view(), d.view()) { badDecode += 1usize; }
+        let blocks = if n == 0usize {1usize} else {(n + 131071usize) / 131072usize};
+        if one.len() > n + 3usize * blocks + 18usize { badBound += 1usize; }
+        var whole = List[u8].empty();
+        if !streamed(d.view(), lv, 0usize, 1000usize, true, &mut whole) || !same(whole.view(), one.view()) {
+          badWhole += 1usize;
+        }
+        var w = 0;
+        while w < 3 {
+          let chunk = if w == 0 {1usize} else if w == 1 {997usize} else {65536usize};
+          let maxPull = if w == 0 {7usize} else if w == 1 {4096usize} else {65536usize};
+          if w > 0 || n <= 4096usize {
+            var s = List[u8].empty();
+            if !streamed(d.view(), lv, chunk, maxPull, false, &mut s) || !decodesTo(s.view(), d.view()) {
+              badStream += 1usize;
+            } else {
+              let a = headerLen(one.view());
+              let b = headerLen(s.view());
+              if !same(&one.view()[a..<one.len()], &s.view()[b..<s.len()]) { badBlocks += 1usize; }
+              if n <= 131072usize && !same(one.view(), s.view()) { badBlocks += 1usize; }
+            }
+          }
+          w += 1;
+        }
+        lv += 1;
+      }
+      si += 1usize;
+    }
+    kind += 1;
+  }
+  expectInt(i64.from(runs), 285i64, "kind, size and level combinations");
+  expectInt(i64.from(badDecode), 0i64, "one-call frames decode to their input, in one call and streamed");
+  expectInt(i64.from(badBound), 0i64, "no frame grows past its header, 3 bytes a block and the checksum");
+  expectInt(i64.from(badWhole), 0i64, "a Compressor fed whole, then pulled, writes the one-call frame");
+  expectInt(i64.from(badStream), 0i64, "streamed frames end Done and decode to their input");
+  expectInt(i64.from(badBlocks), 0i64, "streamed frames hold the one-call frame's blocks, however the input was cut");
+
+  // Matches at the window's far edge: 524288 back is taken, 524289 back is
+  // not (the decoder refuses an offset past the window, so a frame that
+  // took it would not decode); streamed in 64 KiB pieces, so the input
+  // buffer slides
+  let far = data(4, 1600000usize);
+  var lv = 1;
+  var farBad = 0;
+  while lv <= 3 {
+    var s = List[u8].empty();
+    if !streamed(far.view(), lv, 65536usize, 65536usize, false, &mut s) || !decodesTo(s.view(), far.view()) {
+      farBad += 1;
+    }
+    if !decodesTo(compress(far.view(), lv).view(), far.view()) { farBad += 1; }
+    lv += 1;
+  }
+  expectInt(i64.from(farBad), 0i64, "matches at the window's edge, one call and streamed (the buffer slides)");
+
+  // Levels outside 1 to 3 act as the nearest; bytes fed after finish are ignored
+  let text = data(5, 20000usize);
+  expect(same(compress(text.view(), 0).view(), compress(text.view(), 1).view()), "level 0 acts as level 1");
+  expect(same(compress(text.view(), 22).view(), compress(text.view(), 3).view()), "level 22 acts as level 3");
+  var c = Compressor.make(2);
+  c.feed(text.view());
+  c.finish();
+  c.feed(text.view());
+  var late = List[u8].empty();
+  while c.pull(&mut late, 1000usize) == Status.MoreOutput {}
+  expect(same(late.view(), compress(text.view(), 2).view()), "bytes fed after finish are ignored");
+  expect(c.isDone() && c.totalIn() == 20000u64, "a finished Compressor is done, with what was fed before finish");
+
+  // The golden values: XXH64 of the one-call frames crosscheck.py printed,
+  // which libzstd decoded to their input
+  let six = data(3, 300000usize);
+  let words = data(5, 300000usize);
+  expectInt(i64.from(xxh64(compress(six.view(), 1).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 2830184715820362450i64, "six letters, level 1");
+  expectInt(i64.from(xxh64(compress(six.view(), 2).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 8595752944220714060i64, "six letters, level 2");
+  expectInt(i64.from(xxh64(compress(six.view(), 3).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 208847169812519066i64, "six letters, level 3");
+  expectInt(i64.from(xxh64(compress(words.view(), 1).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 2157519614544107660i64, "words, level 1");
+  expectInt(i64.from(xxh64(compress(words.view(), 2).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 4238822938692158098i64, "words, level 2");
+  expectInt(i64.from(xxh64(compress(words.view(), 3).view(), 0u64) & 0x7FFFFFFFFFFFFFFFu64), 4856258419342525521i64, "words, level 3");
+  done()
+}
