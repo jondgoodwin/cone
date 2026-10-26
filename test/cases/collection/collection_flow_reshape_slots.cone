@@ -1,0 +1,176 @@
+// A borrow of a value in a slots 'SlotTable' (borrow, borrowMut, borrowAt,
+// borrowMutAt) is a borrow of the table, so the table may not be added to,
+// removed from or taken from while the borrow is still to be used: an add may
+// need a new chunk, and a remove or a take finalizes or moves out the value the
+// borrow points at. Through a '&mut' parameter (a path other references share)
+// that is the shape rule, refused at the call (ErrorShapeReshape). A local
+// table lent read-only is frozen (ErrorFrozen); lent mutably, it is an alias
+// loan and the shape rule refuses the add. The compiler finds SlotTable
+// shape-changing from its methods; it declares nothing.
+//
+// The lines without annotations compile. 'twoMut' holds two mutable borrows of
+// one table at once: a '&mut' borrow is an alias loan
+// (mem-borrowing.html, "What a borrow leaves its source free to do"), so a
+// second one, even of the same value, is allowed, as two '&mut l[0usize]' of a
+// List are; only a change of the table's shape waits. 'readWhileMut' reads the
+// table and writes the value in place while a mutable borrow is held, and
+// 'afterLastUse' adds once the borrow's last use is behind it.
+
+mod collection_flow_reshape_slots;
+
+import slots use *;
+import collections use List;
+
+struct Pt { pub x: i64; pub y: i64; }
+
+fn addWhileBorrowed(t: &mut SlotTable[Pt], s: Slot) i64 {
+  match t.borrow(s) {
+    case let Some(e) {
+      t.add(Pt(9i64, 9i64));      //~ ErrorShapeReshape "'add' reshapes the 'SlotTable' it is called on"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn removeWhileMut(t: &mut SlotTable[Pt], s: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      t.remove(s);                //~ ErrorShapeReshape "'remove' reshapes the 'SlotTable' it is called on"
+      e.x = 3i64;
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn takeWhileMut(t: &mut SlotTable[Pt], s: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      t.take(s);                  //~ ErrorShapeReshape "'take' reshapes the 'SlotTable' it is called on"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn removeAtWhileAt(t: &mut SlotTable[Pt], i: u32) i64 {
+  match t.borrowAt(i) {
+    case let Some(e) {
+      t.removeAt(i);              //~ ErrorShapeReshape "'removeAt' reshapes the 'SlotTable' it is called on"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn addWhileMutAt(t: &mut SlotTable[Pt], i: u32) i64 {
+  match t.borrowMutAt(i) {
+    case let Some(e) {
+      t.add(Pt(1i64, 1i64));      //~ ErrorShapeReshape "'add' reshapes the 'SlotTable' it is called on"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn localTake() i64 {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  match t.borrow(a) {
+    case let Some(e) {
+      t.take(a);                  //~ ErrorFrozen "'t' is borrowed (by 'borrow'"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn localAddWhileMut() i64 {
+  var t = SlotTable[Pt].make(4u32);
+  let a = t.add(Pt(1i64, 2i64));
+  match t.borrowMut(a) {
+    case let Some(e) {
+      t.add(Pt(3i64, 4i64));      //~ ErrorShapeReshape "'add' reshapes the 'SlotTable' it is called on"
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn twoMut(t: &mut SlotTable[Pt], s: Slot, u: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      match t.borrowMut(u) {
+        case let Some(f) {f.x = e.x + 1i64;}
+        else {}
+      }
+      e.x
+    }
+    else {0i64}
+  }
+}
+
+fn readWhileMut(t: &mut SlotTable[Pt], s: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      e.y = i64.from(t.len());
+      match t.borrow(s) {
+        case let Some(f) {f.y + e.x}
+        else {0i64}
+      }
+    }
+    else {0i64}
+  }
+}
+
+fn afterLastUse(t: &mut SlotTable[Pt], s: Slot) i64 {
+  let x = match t.borrow(s) {
+    case let Some(e) {e.x}
+    else {0i64}
+  };
+  t.add(Pt(x, x));
+  x
+}
+
+// An element that holds a List, lent twice. A push through one loan while the
+// other is still used is allowed: the push changes the List's shape, not the
+// table's, the element stays in its cell, and the other loan is one more alias
+// of it that reads the List's new length. A push through one loan while a
+// borrow INTO the List, made through the other, is still to be used is refused:
+// the List's own shape rule, a change through another name
+// (mem-shape.html, "When a call could reshape a collection").
+struct Bin { pub items: List[i64]; }
+
+fn pushWhileAliased(t: &mut SlotTable[Bin], s: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      match t.borrowMut(s) {
+        case let Some(f) {
+          f.items.push(7i64);
+          i64.from(e.items.len())
+        }
+        else {0i64}
+      }
+    }
+    else {0i64}
+  }
+}
+
+fn pushWhileItemBorrowed(t: &mut SlotTable[Bin], s: Slot) i64 {
+  match t.borrowMut(s) {
+    case let Some(e) {
+      let first = e.items[0usize];
+      match t.borrowMut(s) {
+        case let Some(f) {
+          f.items.push(7i64);     //~ ErrorShapeReshape "'push' reshapes the 'List' it is called on"
+          *first
+        }
+        else {0i64}
+      }
+    }
+    else {0i64}
+  }
+}
+
+fn main() {}

@@ -1,0 +1,54 @@
+// generic_global_where_member across modules: the generic types with members a
+// 'where' governs are declared in one submodule, the struct whose fields hold
+// their instances in another, and the global 'g: Host[Svc]', bounded by a trait
+// Svc fits structurally, here. Deciding the bound inside the global's held
+// declared type checks Svc's 'turn', whose calls reach the overloads through
+// fields recs declares, on instances made there while Req was not yet laid
+// out. A member whose clause is false ('K is u64' for an i32 key, 'V is Copy'
+// for Req, which moves) is left out, and one whose clause is true ('V is Copy'
+// for Pt) is selected. Before, both left-out bodies were refused at arguments
+// they were never written for. The printed values were checked by hand: the key
+// overload (1), Req's 4 through the borrow, Pt's 9 copied.
+//
+// The folder holds:
+//   store/store.cone   the generic types, Table[K, V] and Cells[V]
+//   recs/recs.cone     Rec, whose fields hold their instances, and Req and Pt
+
+mod generic_global_where_module;
+
+import stdio use *;
+
+trait Hosted {
+  pub fn turn(self: &mut) u64;
+}
+
+struct Host[S: Hosted] {
+  pub at: u64;
+}
+
+fn @initpure init() {
+  g = Host[Svc](7u64);
+}
+
+let g: Host[Svc];
+
+struct Svc {
+  r: recs.Rec;
+  pub fn turn(self: &mut) u64 {
+    printStr("absent type = "); printUInt(r.ti.find(&5i32)); printStr("\n");
+    printStr("absent trait = "); printUInt(r.cr.get("a").n); printStr("\n");
+    printStr("present trait = "); printUInt(r.cp.get(0u64).n); printStr("\n");
+    2u64
+  }
+}
+
+fn main() {
+  initAll();
+  let q = recs.Req(4u64);
+  let p = recs.Pt(9u64);
+  var s = Svc(recs.Rec(store.Table[i32, recs.Req](5i32, &q as *recs.Req),
+    store.Cells[recs.Req](&q as *recs.Req), store.Cells[recs.Pt](&p as *recs.Pt)));
+  let t = s.turn();
+  printStr("turn = "); printUInt(t); printStr("\n");
+  finalAll();
+}

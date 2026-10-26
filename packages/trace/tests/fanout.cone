@@ -1,0 +1,61 @@
+// Two sinks, both receiving: a "file" that wants every kind of target "net" and a
+// "console" that wants every kind at Warn or worse. Each records only the
+// kinds it said it wanted; a kind neither wants is off; flush reaches both.
+
+mod fanout;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Kind1;
+
+let netDebug: Kind1[u64];
+let netWarn: Kind1[u64];
+let dbWarn: Kind1[u64];
+let dbInfo: Kind1[u64];
+
+fn @initpure init() {
+  netDebug = Kind1[u64].make("net.debug", "net", Level.Debug, "n");
+  netWarn = Kind1[u64].make("net.warn", "net", Level.Warn, "n");
+  dbWarn = Kind1[u64].make("db.warn", "db", Level.Warn, "n");
+  dbInfo = Kind1[u64].make("db.info", "db", Level.Info, "n");
+}
+
+var flushes = 0u64;
+var evaluated = 0u64;
+
+fn arg(n: u64) u64 {
+  evaluated = evaluated + 1u64;
+  n
+}
+
+struct File is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {k.target.len == 3usize && k.target[0] == 'n'}
+  pub fn record(self: &, e: &trace.Event) {
+    print <- "file: ", e.kind.name, "\n";
+  }
+  pub fn flush(self: &) {flushes = flushes + 1u64;}
+}
+
+struct Console is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {k.level.rank() <= Level.Warn.rank()}
+  pub fn record(self: &, e: &trace.Event) {
+    print <- "console: ", e.kind.name, "\n";
+  }
+  pub fn flush(self: &) {flushes = flushes + 1u64;}
+}
+
+fn main() i32 {
+  expect(trace.installPair(Uni[File](0u64), Uni[Console](0u64)), "the pair is installed");
+  trace.setDefaultLevel(Level.Trace);
+  netDebug.emit(arg(1u64));
+  netWarn.emit(arg(2u64));
+  dbWarn.emit(arg(3u64));
+  dbInfo.emit(arg(4u64));
+  expect(!dbInfo.info.isOn(), "a kind neither sink wants is off");
+  expectUInt(evaluated, 3u64, "and its argument was not evaluated");
+  trace.flush();
+  expectUInt(flushes, 2u64, "flush reaches both sinks");
+  done()
+}

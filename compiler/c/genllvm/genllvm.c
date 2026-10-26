@@ -1296,11 +1296,19 @@ static void genlStitch(GenState *gen, int which) {
 // in dependency order before the program's code, calls the program's 'main'
 // with the arguments C gave it, runs the stitched final, and returns what
 // 'main' returned as the exit status. A panic, or a call to C's 'exit', ends
-// the process without reaching the final.
+// the process without reaching the final. A 'main' returning a Result is
+// called through the function type check gave it (propagateMainEntry), which
+// prints its error and answers the exit status.
 static void genlEntry(GenState *gen) {
     FnDclNode *mainfn = gen->entrymain;
     if (mainfn == NULL || mainfn->llvmvar == NULL || LLVMGetNamedFunction(gen->module, "main"))
         return;
+    FnDclNode *standin = propagateMainEntry(mainfn);
+    if (standin != NULL) {
+        if (standin->llvmvar == NULL)
+            return;
+        mainfn = standin;
+    }
     LLVMContextRef context = gen->context;
     LLVMTypeRef i32type = LLVMInt32TypeInContext(context);
     LLVMTypeRef cparms[2] = { i32type, LLVMPointerTypeInContext(context, 0) };
