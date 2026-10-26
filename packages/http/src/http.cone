@@ -36,6 +36,9 @@
 //     r.status  r.version  r.headers
 //   BodyLength.empty()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
 //   HttpError: e.kind  e.status  e.noResponse  e.detail  e.message()     (ERRORS)
+//     e.code  e.scope  e.isRetrySafe()  HttpError.coded(kind, code, scope, detail)
+//   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset
+//   ErrorScope: Stream Connection  kindName(k)
 //
 // METHODS. A method is a token, compared case-sensitively ('get' is not
 // GET). The nine RFC 9110 and RFC 5789 define are variants of Method; any
@@ -89,11 +92,20 @@
 // every version can say -- Malformed (the peer broke the protocol), TooLarge
 // (a configured bound was passed), Unsupported (something this
 // implementation does not do), Closed (the connection ended mid-message),
-// TimedOut (a deadline passed); the status a server would answer it with
-// (400, 408, 431, 501, 505; 0 for none); 'noResponse', whether no byte of
-// the response had arrived, which, with an idempotent method, is when a
-// client may retry on a fresh connection (the client layer's decision); and
-// one line saying what was wrong.
+// TimedOut (a deadline passed), Refused (the peer did not process the
+// request: HTTP/2's REFUSED_STREAM or HTTP/3's H3_REQUEST_REJECTED, a
+// request above a GOAWAY's last stream, or one never sent; safe to retry on
+// another connection whatever its method, RFC 9113 section 8.7), Reset (the
+// peer, or this end, reset the one stream: HTTP/2's RST_STREAM, HTTP/3's
+// RESET_STREAM); the status a server would answer it with (400, 408, 431,
+// 501, 505; 0 for none); 'noResponse', whether no byte of the response had
+// arrived, which, with an idempotent method, is when a client may retry on
+// a fresh connection (the client layer's decision); 'code', the protocol's
+// own error code where it named one (HTTP/2's u32, HTTP/3's up to 2^62-1;
+// None for HTTP/1.1, which has none); 'scope', what the failure ended: one
+// Stream of a multiplexed connection, or the whole Connection (every
+// HTTP/1.1 failure is the connection's); and one line saying what was
+// wrong.
 //
 // URLs are the url package's, and the request and response with their
 // bodies the client layer's (httpclient). Not here yet: typed accessors for
@@ -263,7 +275,7 @@ pub struct BodyLength {
 
 // What kind of failure (see the package's header, ERRORS)
 pub enum ErrorKind {
-  Malformed, TooLarge, Unsupported, Closed, TimedOut
+  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset
 }
 
 // The name of an error's kind, in lower case
@@ -272,7 +284,15 @@ pub fn kindName(k: ErrorKind) &str {
   else if k == ErrorKind.TooLarge {"too large"}
   else if k == ErrorKind.Unsupported {"unsupported"}
   else if k == ErrorKind.Closed {"closed"}
-  else {"timed out"}
+  else if k == ErrorKind.TimedOut {"timed out"}
+  else if k == ErrorKind.Refused {"refused"}
+  else {"reset"}
+}
+
+// What a failure ended: one stream of a multiplexed connection (HTTP/2,
+// HTTP/3), or the whole connection
+pub enum ErrorScope {
+  Stream, Connection
 }
 
 // Why an exchange or a connection failed
@@ -281,13 +301,27 @@ pub struct HttpError {
   pub status: u16;          // what a server answers it with, or 0
   pub noResponse: bool;     // no byte of a response had arrived
   pub detail: String;       // what was wrong, one line
+  pub code: Option[u64];    // the protocol's error code, where it named one
+  pub scope: ErrorScope;    // what it ended
 
+  // A failure of the whole connection, with no protocol code
   pub fn make(kind: ErrorKind, status: u16, detail: &str) HttpError {
-    HttpError(kind, status, false, String.from(detail))
+    HttpError(kind, status, false, String.from(detail), None, ErrorScope.Connection)
+  }
+
+  // A failure the protocol named with its own error code, of one stream or
+  // the whole connection
+  pub fn coded(kind: ErrorKind, code: u64, scope: ErrorScope, detail: &str) HttpError {
+    HttpError(kind, 0u16, false, String.from(detail), Some[u64](code), scope)
   }
 
   // Nothing yet: an error to swap another out with
-  pub fn empty() HttpError {HttpError(ErrorKind.Malformed, 0u16, false, String.empty())}
+  pub fn empty() HttpError {HttpError(ErrorKind.Malformed, 0u16, false, String.empty(), None, ErrorScope.Connection)}
+
+  // Whether the peer is known not to have processed the request, so it may
+  // be sent again on another connection whatever its method (RFC 9113,
+  // section 8.7): the kind is Refused
+  pub fn isRetrySafe(self: &) bool {kind == ErrorKind.Refused}
 
   // 'malformed: a header field's name has a space before its colon'
   pub fn message(self: &) String {
