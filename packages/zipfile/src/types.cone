@@ -160,8 +160,7 @@ pub struct Entry {
 
 fn copyBytes(a: &Array[u8]) List[u8] {
   var out = List[u8].withCapacity(a.len);
-  var i = 0usize;
-  while i < a.len { out.push(a[i]); i += 1usize; }
+  out.appendSlice(a);
   out
 }
 
@@ -172,9 +171,22 @@ pub struct ExtractOptions {
   // The most bytes all the entries may declare between them, 0 for no limit. Checked before anything
   // is written.
   pub maxTotal: u64;
+  // Give each extracted file and folder the permission bits its entry records (the nine bits, 0o777:
+  // never setuid, setgid or sticky), when the entry has a Unix mode ('Entry.unixMode' not 0); this is
+  // how the execute bit comes back. OFF by default: an archive is someone else's data, and modes it
+  // names (world-writable, no owner access at all) are theirs, not the extractor's, to impose; whoever
+  // wants them asks. On Windows 'fs.chmod' reads only the owner-write bit: a file whose mode lacks it
+  // becomes read-only, every other bit is lost, and a folder's mode is not applied at all.
+  pub restoreMode: bool;
+  // Give each extracted file and folder the modification time its entry records ('Entry.modified': the
+  // extended timestamp if the entry has one, else its DOS time read as UTC) as both its access and its
+  // modified time. ON by default: it changes no access and no content, and without it every file
+  // looks made now, which defeats the tools that compare times (make, rsync, backups). 'false' leaves
+  // the times as the extraction made them.
+  pub restoreTimes: bool;
 
-  // Refuse to replace, no limit
-  pub fn safe() ExtractOptions { ExtractOptions(false, 0u64) }
+  // Refuse to replace, no limit, times restored, modes not
+  pub fn safe() ExtractOptions { ExtractOptions(false, 0u64, false, true) }
 }
 
 // What an extraction did
@@ -182,6 +194,9 @@ pub struct Extracted {
   pub files: usize;
   pub folders: usize;
   pub bytes: u64;
+  // Files and folders whose mode or time was asked for and could not be set (a file system that does
+  // not keep them, a file someone else owns). They are extracted all the same, never a failure.
+  pub unrestored: usize;
 }
 
 // How an entry is written
