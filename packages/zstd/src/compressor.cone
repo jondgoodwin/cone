@@ -1,0 +1,360 @@
+// ======== Compressing: one frame, streamed ========
+//
+// A 'Compressor' is a value that holds a stream's whole state, as a
+// Decompressor does. Bytes go in with 'feed' in pieces of any size,
+// 'finish' says the input is over, and 'pull' answers the frame's bytes a
+// bounded piece at a time. The stream is one zstd frame.
+//
+// How the bytes are decided. The input is cut into blocks of 128 KiB (RFC
+// 8878's Block_Maximum_Size), the last one shorter; a block is written only
+// once 128 KiB and one byte more are in, or the input is finished, so every
+// block but the last is full and the last is known to be last. A block's
+// bytes depend on its content and the 2 MiB (at most) before it, never on how
+// the input was cut into pieces. The frame header is written with the first
+// block: it carries the content size when 'finish' came before that (so
+// always for 128 KiB or less, and whenever the whole input was fed before the
+// first pull), and is otherwise the same header.
+//
+// Each block is written the smallest of three ways: RLE (one byte value
+// repeated, not as the frame's first block, as the reference does), compressed
+// (cblock.cone) if that saves at least 1/64 of it and 2 bytes, else raw. The
+// frame ends with the content checksum (XXH64's low 32 bits), always.
+
+// The parameters of a level: the window, the logs of the hash tables, and
+// how many bytes the (short) table hashes. They are the reference's, as
+// libzstd 1.5.7's ZSTD_getCParams answers for a size not known (and for any
+// input over 256 KiB): level 1 the fast matcher, 2^19 window, 2^14 table of
+// 7 bytes; level 2 the fast matcher, 2^20 window, 2^16 table of 6 bytes;
+// level 3 the double-fast matcher, 2^21 window, 2^17 table of 8 bytes and
+// 2^16 of 5. A small input whose size is known gets smaller tables
+// ('tables') and a single-segment frame, whose window is its size.
+struct Params {
+  windowLog: u32;
+  longLog: u32;
+  shortLog: u32;
+  minMatch: u32;
+}
+
+fn paramsOf(level: i32) Params {
+  if level == 1 { return Params(19u32, 0u32, 14u32, 7u32); }
+  if level == 2 { return Params(20u32, 0u32, 16u32, 6u32); }
+  Params(21u32, 17u32, 16u32, 5u32)
+}
+
+// Everything about a stream being compressed. Make one with 'make', 'feed'
+// it, 'finish' it when the input is over, 'pull' the output.
+//
+//   mut c = zstd.Compressor.make(3);
+//   mut out = List[u8].empty();
+//   c.feed(chunk);                          // any size, split anywhere
+//   while true {
+//     out.clear();
+//     imm s = c.pull(&mut out, 65536usize);   // at most 64 KiB at a time
+//     ... write out ...
+//     if s != zstd.Status.MoreOutput { break; }
+//   }
+//   // NeedInput: feed the next chunk, or c.finish() and pull until Done
+pub struct Compressor {
+  par: Params;
+  // The input: buf holds the bytes from absolute position 'base' on; 'cur'
+  // (an index into buf) is the start of the next block
+  buf: List[u8];
+  base: u64;
+  cur: usize;
+  // The matcher's tables (positions in buf; the fast matcher uses shortT alone)
+  longT: List[u32];
+  shortT: List[u32];
+  // The repeat offsets as the decoder has them after the last block, and as
+  // the block being written moves them
+  reps: Reps;
+  work: Reps;
+  seqs: Seqs;
+  enc: BlockEnc;
+  // The output: the first 'outPos' bytes of 'out' are delivered
+  out: List[u8];
+  outPos: usize;
+  xxh: Xxh64;
+  inTotal: u64;
+  outTotal: u64;
+  blocks: u64;
+  started: bool;
+  finishing: bool;
+  done: bool;
+
+  // A compressor at 'level': 1 and 2 the fast matcher (512 KiB and 1 MiB
+  // windows), 3 the double-fast one (2 MiB), as 'paramsOf' says. Levels
+  // below 1 act as 1, above 3 as 3.
+  pub fn make(level: i32) Compressor {
+    let lv = if level < 1 {1} else if level > 3 {3} else {level};
+    Compressor(paramsOf(lv), List[u8].empty(), 0u64, 0usize, List[u32].empty(), List[u32].empty(),
+      Reps(1u32, 4u32, 8u32), Reps(1u32, 4u32, 8u32), Seqs.empty(), BlockEnc.make(), List[u8].empty(), 0usize,
+      Xxh64.make(0u64), 0u64, 0u64, 0u64, false, false, false)
+  }
+
+  // Appends input. It is copied, so the caller's bytes are its own again at
+  // once. Feed in pieces of any size; pull until NeedInput before feeding the
+  // next, or the input piles up. Bytes fed after 'finish' are ignored.
+  pub fn feed(self: &mut, chunk: &Array[u8]) {
+    if finishing { return; }
+    xxh.update(chunk, 0usize, chunk.len);
+    inTotal = inTotal + u64.from(chunk.len);
+    buf.reserve(chunk.len);
+    var i = 0usize;
+    while i < chunk.len {
+      buf.push(chunk[i]);
+      i += 1usize;
+    }
+  }
+
+  // Says that no more input will come; the frame is then completed by
+  // pulling until Done
+  pub fn finish(self: &mut) { finishing = true; }
+
+  // Bytes of input fed so far
+  pub fn totalIn(self: &) u64 { inTotal }
+
+  // Bytes of output delivered so far
+  pub fn totalOut(self: &) u64 { outTotal }
+
+  // Whether the frame is complete and every byte of it delivered
+  pub fn isDone(self: &) bool { done && outPos >= out.len() }
+
+  // Appends compressed bytes to 'out', at most 'max' of them, and answers
+  // what it waits for: NeedInput (all input used; feed more or 'finish'),
+  // MoreOutput (more is ready; pull again) or Done. A block's output comes
+  // whole when the block is written, so the output lags the input by up to
+  // 128 KiB; 'max' bounds what one pull hands over, not what the compressor
+  // holds.
+  pub fn pull(self: &mut, dest: &mut List[u8], max: usize) Status {
+    while out.len() - outPos < max && !done {
+      if !self.step() { break; }
+    }
+    let avail = out.len() - outPos;
+    let n = if avail < max {avail} else {max};
+    dest.reserve(n);
+    var i = 0usize;
+    while i < n {
+      dest.push(*out[outPos + i]);
+      i += 1usize;
+    }
+    outPos = outPos + n;
+    outTotal = outTotal + u64.from(n);
+    self.trimOutput();
+    if outPos < out.len() { return Status.MoreOutput; }
+    if done { return Status.Done; }
+    Status.NeedInput
+  }
+
+  // -------- inside --------
+
+  // Free the delivered front of the output, when it is at least half of it
+  fn trimOutput(self: &mut) {
+    let total = out.len();
+    if outPos > 0usize && outPos >= total - outPos {
+      var i = 0usize;
+      while i < total - outPos {
+        out.set(i, *out[outPos + i]);
+        i += 1usize;
+      }
+      out.truncate(total - outPos);
+      outPos = 0usize;
+    }
+  }
+
+  // One block, if one can be written; false when it needs more input
+  fn step(self: &mut) bool {
+    if done { return false; }
+    let avail = buf.len() - cur;
+    if !finishing && avail <= blockSizeMax() { return false; }
+    if !started {
+      self.tables();
+      self.header();
+    }
+    let n = if avail < blockSizeMax() {avail} else {blockSizeMax()};
+    let last = finishing && avail <= blockSizeMax();
+    self.block(n, last);
+    if last {
+      let sum = u32.from(xxh.digest() & 0xFFFFFFFFu64);
+      out.push(u8.from(sum & 255u32));
+      out.push(u8.from((sum >> 8u32) & 255u32));
+      out.push(u8.from((sum >> 16u32) & 255u32));
+      out.push(u8.from(sum >> 24u32));
+      done = true;
+    }
+    self.slide();
+    true
+  }
+
+  // The matcher's tables, made with the first block: as large as the level
+  // says, or, for an input whose whole size is known by then and is smaller
+  // than the window, no larger than it needs, as the reference's
+  // ZSTD_adjustCParams has them: a table's log at most one more than the
+  // log of the size (at least 10), the double-fast matcher's 5-byte table
+  // at most that log. An input of 128 KiB or less is always known by its
+  // first block, so its bytes still do not depend on how it was cut.
+  fn tables(self: &mut) {
+    var longLog = par.longLog;
+    var shortLog = par.shortLog;
+    if finishing && inTotal < (1u64 << u64.from(par.windowLog)) {
+      var need = 10u32;
+      while (1u64 << u64.from(need)) < inTotal { need += 1u32; }
+      if longLog > need + 1u32 { longLog = need + 1u32; }
+      let shortMax = if longLog > 0u32 {need} else {need + 1u32};
+      if shortLog > shortMax { shortLog = shortMax; }
+    }
+    par = Params(par.windowLog, longLog, shortLog, par.minMatch);
+    if longLog > 0u32 { longT.resize(1usize << usize.from(longLog), 0u32); }
+    shortT.resize(1usize << usize.from(shortLog), 0u32);
+  }
+
+  // RFC 8878 section 3.1.1.1: the magic number and the frame header. With
+  // the size known and no larger than the window, a single-segment frame
+  // (no window descriptor; the content size is the window); else the
+  // level's window, and the size if known.
+  fn header(self: &mut) {
+    started = true;
+    out.push(0x28u8);
+    out.push(0xB5u8);
+    out.push(0x2Fu8);
+    out.push(0xFDu8);
+    let known = finishing;
+    let size = inTotal;
+    let single = known && size <= (1u64 << u64.from(par.windowLog));
+    var flag = 0u8;
+    if known {
+      if single && size < 256u64 { flag = 0u8; }
+      else if size < 65792u64 { flag = 1u8; }
+      else if size <= 0xFFFFFFFFu64 { flag = 2u8; }
+      else { flag = 3u8; }
+    }
+    out.push((flag << 6u8) | (if single {0x20u8} else {0u8}) | 0x04u8);
+    if !single { out.push(u8.from((par.windowLog - 10u32) << 3u32)); }
+    if known {
+      let bytes = if flag == 0u8 {1usize} else {1usize << usize.from(flag)};
+      let v = if flag == 1u8 {size - 256u64} else {size};
+      var k = 0usize;
+      while k < bytes {
+        out.push(u8.from((v >> u64.from(8usize * k)) & 255u64));
+        k += 1usize;
+      }
+    }
+  }
+
+  // The block of the next n bytes of input
+  fn block(self: &mut, n: usize, last: bool) {
+    let start = cur;
+    let end = cur + n;
+    let lastBit = if last {1u32} else {0u32};
+    let hpos = out.len();
+    if n > 0usize && blocks > 0u64 && allSame(buf.view(), start, end) {
+      // RLE: the byte once
+      self.blockHeader(hpos, (u32.from(n) << 3u32) | 2u32 | lastBit);
+      out.push(*buf[start]);
+    } else {
+      out.push(0u8);
+      out.push(0u8);
+      out.push(0u8);
+      var coded = false;
+      if n > 0usize {
+        work = Reps(reps.r1, reps.r2, reps.r3);
+        seqs.clear();
+        let window = 1usize << usize.from(par.windowLog);
+        if par.longLog == 0u32 {
+          matchFast(&buf, start, end, window, par.shortLog, par.minMatch, &mut shortT, &mut work, &mut seqs);
+        } else {
+          matchDouble(&buf, start, end, window, par.longLog, par.shortLog, &mut longT, &mut shortT,
+            &mut work, &mut seqs);
+        }
+        writeLiterals(&seqs.lits, &mut enc.huf, &mut out);
+        writeSequences(&seqs, &mut enc, &mut out);
+        let size = out.len() - hpos - 3usize;
+        if size + minGain(n) < n {
+          coded = true;
+          reps = Reps(work.r1, work.r2, work.r3);
+          self.setHeader(hpos, (u32.from(size) << 3u32) | 4u32 | lastBit);
+        }
+      }
+      if !coded {
+        // Raw: the bytes as they are; the repeat offsets stay as they were
+        out.truncate(hpos + 3usize);
+        self.setHeader(hpos, (u32.from(n) << 3u32) | lastBit);
+        out.reserve(n);
+        var i = start;
+        while i < end {
+          out.push(*buf[i]);
+          i += 1usize;
+        }
+      }
+    }
+    cur = end;
+    blocks = blocks + 1u64;
+  }
+
+  fn blockHeader(self: &mut, at: usize, h: u32) {
+    out.push(0u8);
+    out.push(0u8);
+    out.push(0u8);
+    self.setHeader(at, h);
+  }
+
+  fn setHeader(self: &mut, at: usize, h: u32) {
+    out.set(at, u8.from(h & 255u32));
+    out.set(at + 1usize, u8.from((h >> 8u32) & 255u32));
+    out.set(at + 2usize, u8.from(h >> 16u32));
+  }
+
+  // Drop input no match can reach any more (all but the window before
+  // 'cur'), once that is at least as much as is kept, so each byte is moved
+  // at most once; the tables' positions move down with it (a position
+  // dropped becomes 0, which no match is taken from unless its bytes match)
+  fn slide(self: &mut) {
+    let window = 1usize << usize.from(par.windowLog);
+    if cur <= window { return; }
+    let drop = cur - window;
+    let keep = buf.len() - drop;
+    if drop < keep && cur < 0x40000000usize { return; }
+    var i = 0usize;
+    while i < keep {
+      buf.set(i, *buf[drop + i]);
+      i += 1usize;
+    }
+    buf.truncate(keep);
+    base = base + u64.from(drop);
+    cur = cur - drop;
+    shiftDown(&mut longT, drop);
+    shiftDown(&mut shortT, drop);
+  }
+
+  // -------- one-shot use --------
+
+  // Runs to the end of the input, keeping the whole output. For 'compress'.
+  fn runAll(self: &mut) {
+    while self.step() {}
+  }
+
+  // The output of 'runAll', moved out; the Compressor is given up
+  fn takeOutput(self) List[u8] { self.(out) }
+}
+
+// Whether b[start, end) is one byte value
+fn allSame(b: &Array[u8], start: usize, end: usize) bool {
+  let v = b[start];
+  var i = start + 1usize;
+  while i < end {
+    if b[i] != v { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+// Every position in 't' moved down by 'd', those before it to 0
+fn shiftDown(t: &mut List[u32], d: usize) {
+  let v = t.viewMut();
+  let dd = u32.from(if d > 0xFFFFFFFFusize {0xFFFFFFFFusize} else {d});
+  var i = 0usize;
+  while i < v.len {
+    let x = v[i];
+    v[i] = if x > dd {x - dd} else {0u32};
+    i += 1usize;
+  }
+}
