@@ -34,8 +34,8 @@
 // (EBADF for a handle that names nothing, EINVAL for a buffer with no room,
 // EBUSY for a lane's queue full, EMSGSIZE for a datagram cut to the room). A
 // getaddrinfo failure is its EAI_ number, which is below 0, kept as a u32
-// (EAI_SYSTEM is the errno it names instead). 'lxKind' sorts these into the
-// kinds that are the same on every system, and 'lxSystemText' gives the C
+// (EAI_SYSTEM is the errno it names instead). The ioerror package sorts
+// these into the kinds that are the same on every system, and 'lxSystemText' gives the C
 // library's words. The certificate errors tls reports (Windows' CERT_E_*,
 // which tls's verifier gives on Linux too) have Windows' words here
 // ('certificateWords').
@@ -177,17 +177,6 @@ const enotconn = 107i32;
 // The errno of the call that has just failed
 fn lastErrno() i32 {*libc.errno()}
 
-// The kind of a Linux error number (see the top of this file): an errno by
-// errnoKind, a getaddrinfo failure NotFound when the name has no address
-// (EAI_NONAME, EAI_NODATA), else Other
-fn lxKind(code: u32) IoErrorKind {
-  if code >= gaiFloor {
-    let rc = gaiOf(code);
-    return if rc == eaiNoName || rc == eaiNoData {IoErrorKind.NotFound} else {IoErrorKind.Other};
-  }
-  if code > 0x7FFFu32 {return IoErrorKind.Other;}
-  errnoKind(i32.from(code))
-}
 
 // Windows' own words (no line end, no full stop) for the certificate errors
 // the tls package reports with Windows' numbers on every system, since Linux
@@ -228,22 +217,15 @@ fn lxSystemText(code: u32) String {
   out
 }
 
-// getaddrinfo's failures, EAI_ numbers, are below 0: kept in an IoError's
-// u32 as they are (two's complement), they are the numbers from 'gaiFloor' up
-const gaiFloor = 0xFFFFFF00u32;
-const eaiNoName = 0i32 - 2i32;                      // EAI_NONAME
-const eaiNoData = 0i32 - 5i32;                      // EAI_NODATA
 const eaiSystem = 0i32 - 11i32;                     // EAI_SYSTEM: the errno says why
 
-// A getaddrinfo failure as an IoError's number: its EAI_ number as a u32, or
-// for EAI_SYSTEM the errno
-fn gaiNumber(rc: i32) u32 {
+// A getaddrinfo failure as an IoError's number: its EAI_ number kept as a u32
+// (ioerror's gaiNumber, the numbers from its 'gaiFloor' up), or for
+// EAI_SYSTEM the errno
+fn lookupFailure(rc: i32) u32 {
   if rc == eaiSystem {return u32.from(lastErrno());}
-  ~u32.from(0i32 - rc) + 1u32
+  gaiNumber(rc)
 }
-
-// The EAI_ number an IoError's number from 'gaiFloor' up holds
-fn gaiOf(code: u32) i32 {0i32 - i32.from(~code + 1u32)}
 
 // The same, in 'room' (of 'cap' bytes) when it fits, so that nothing is
 // allocated (the pool's work, with a room on its stack); else in a block from
@@ -961,7 +943,7 @@ fn lxResolve(arg: u64, buf: &mut IoBuf) Outcome {
   var res = null as *AddrInfoLx;
   let rc = sysGetaddrinfo(name, null, &mut hints as *AddrInfoLx, &mut res);
   uncopy(name, &mut narrow as *u8);
-  if rc != 0i32 {return Outcome.Failed(gaiNumber(rc));}
+  if rc != 0i32 {return Outcome.Failed(lookupFailure(rc));}
   buf.clear();
   var count = 0usize;
   var a = res;

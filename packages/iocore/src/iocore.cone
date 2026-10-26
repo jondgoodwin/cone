@@ -84,12 +84,11 @@
 //     c.outcome() c.isDone() c.count() c.bufLen() c.chainBack() c.record()   (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
-//   IoError: e.kind() (IoErrorKind: NotFound, ConnectionRefused, ..., Cancelled, TimedOut,
-//     Truncated, Other; errorKindName(k)), e.code (the system's own number), e.message(),
+//   IoError: e.kind() (the ioerror package's IoErrorKind: NotFound, ConnectionRefused, ...,
+//     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), e.message(),
 //     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
 //     IoError(code)  IoError.cancelled()  IoError.timedOut()  IoError.truncated()  IoError.aborted()
 //   c.error()  answerError(kind, status, code)   an answer that is not Done, as an IoError
-//   errnoKind(e)                        the kind of a C library errno
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
 // polls it. It is a resource: when it dies it cancels every operation still
@@ -242,21 +241,24 @@
 // it, home to its pool. A Completion is Sendable: it may go to another thread.
 //
 // ERRORS. An IoError says what went wrong in two ways. Its kind, an
-// IoErrorKind, is the same on every system: NotFound, PermissionDenied,
-// ConnectionRefused, ConnectionReset, AddressInUse, TimedOut, ... (Rust's
-// io::ErrorKind, trimmed to what the two systems give here), and Other for a
-// number no kind names; a caller matches on it ('e.kind() ==
-// IoErrorKind.ConnectionRefused'). Its code is the system's own number, kept
+// IoErrorKind of the ioerror package (a leaf the fs package shares), is the
+// same on every system: NotFound, PermissionDenied, ConnectionRefused,
+// ConnectionReset, AddressInUse, TimedOut, ... (Rust's io::ErrorKind, trimmed
+// to what the two systems give here), and Other for a number no kind names;
+// a caller matches on it ('e.kind() == IoErrorKind.ConnectionRefused', with
+// 'import ioerror use IoErrorKind'). Its code is the system's own number, kept
 // for diagnostics and the message: Windows' error number on Windows, the
 // errno on Linux, so the same failure has a different number on each (a
-// refused connection: 1225 and 111). Each system's numbers are sorted into
-// kinds by a table of its own (Rust's sorting, and iocore's own failures
-// given kinds alike on both). Cancelled and TimedOut from a cancel or a
-// deadline carry code 0; Truncated, a datagram cut to the room, carries the
-// system's number for a datagram too long. 'c.error()' (or 'answerError')
-// turns an answer that is not Done into its IoError; 'IoError(code)' is the
-// system's error of a number got elsewhere (the process package's, say);
-// 'errnoKind(e)' sorts a C library errno (the fs package's).
+// refused connection: 1225 and 111). ioerror sorts each system's numbers into
+// kinds by a table of its own (osKind). Cancelled and TimedOut from a cancel
+// or a deadline carry code 0 (the system aborting an operation,
+// ERROR_OPERATION_ABORTED or ECANCELED, is Cancelled too, with its number);
+// Truncated, a datagram cut to the room, carries the system's number for a
+// datagram too long. 'c.error()' (or 'answerError') turns an answer that is
+// not Done into its IoError; 'IoError(code)' is the system's error of a
+// number got elsewhere (the process package's, say). IoError stays here, not
+// in ioerror, because its words are the loop's system calls' (FormatMessageW,
+// strerror, gai_strerror).
 //
 // CANCEL. 'lp.cancel(id)' asks an operation to end. It is a request: the
 // operation still answers exactly once, and its answer says how it ended --
@@ -384,7 +386,7 @@
 // prompt TimedOut past the grace, and a later ending is dropped, the buffer
 // going home; a Completer that dies without an ending ends its operation
 // Failed with ERROR_OPERATION_ABORTED (Linux's ECANCELED: 'IoError.aborted()',
-// of the kind Other), so it still answers exactly once. The
+// of the kind Cancelled), so it still answers exactly once. The
 // Completer holds the operation's record while it is away (THE BLOCKING POOL):
 // one that outlives its loop (answered Cancelled at the death, its cancel
 // asked) still writes into 'buf()', and its ending, false then, dissolves the
@@ -588,6 +590,7 @@ import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
+import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
@@ -645,80 +648,6 @@ pub struct Handle {
   pub fn `!=`(self, o: Handle) bool {index != o.index || gen != o.gen}
 }
 
-// What went wrong, the same on every system: Rust's io::ErrorKind, trimmed to
-// what Windows and Linux give the packages over iocore, and named as Cone
-// names. Each system's own numbers are sorted into these kinds where an
-// IoError is read (windows.cone's 'winKind', linux.cone's 'lxKind', and
-// 'errnoKind' for the C library's errno); a number no kind names is Other.
-// Three kinds are iocore's own: Cancelled (ended by a cancel), Truncated (a
-// received datagram longer than the room that took it), and TimedOut, which
-// is also the system's own timeout
-pub enum IoErrorKind {
-  NotFound,             // no file, folder or host of that name
-  PermissionDenied,
-  AlreadyExists,
-  NotADirectory,
-  IsADirectory,
-  DirectoryNotEmpty,
-  ReadOnlyFilesystem,
-  StorageFull,          // the disk is full
-  FileTooLarge,
-  InvalidFilename,      // a name too long, or not a name the system takes
-  CrossesDevices,       // a rename from one device to another
-  ResourceBusy,         // in use, or a queue full (a lane's bound)
-  ConnectionRefused,
-  ConnectionReset,
-  ConnectionAborted,
-  NotConnected,
-  AddressInUse,
-  AddressNotAvailable,
-  HostUnreachable,
-  NetworkUnreachable,
-  NetworkDown,
-  BrokenPipe,           // a send on a connection the peer has closed
-  TimedOut,             // the deadline passed (code 0), or the system's own timeout
-  Cancelled,            // a cancel ended it (code 0)
-  Truncated,            // a datagram cut to the room of the buffer that took it
-  InvalidInput,         // a handle that names nothing, a buffer with no room, a bad argument
-  OutOfMemory,
-  Unsupported,
-  Other
-}
-
-// A few words for a kind, for a person. (A free function: a method of a
-// fieldless enum cannot be called on a value of it, Error 1150)
-pub fn errorKindName(k: IoErrorKind) &str {
-  if k == IoErrorKind.NotFound {"not found"}
-  else if k == IoErrorKind.PermissionDenied {"permission denied"}
-  else if k == IoErrorKind.AlreadyExists {"already exists"}
-  else if k == IoErrorKind.NotADirectory {"not a directory"}
-  else if k == IoErrorKind.IsADirectory {"is a directory"}
-  else if k == IoErrorKind.DirectoryNotEmpty {"directory not empty"}
-  else if k == IoErrorKind.ReadOnlyFilesystem {"read-only filesystem"}
-  else if k == IoErrorKind.StorageFull {"storage full"}
-  else if k == IoErrorKind.FileTooLarge {"file too large"}
-  else if k == IoErrorKind.InvalidFilename {"invalid filename"}
-  else if k == IoErrorKind.CrossesDevices {"crosses devices"}
-  else if k == IoErrorKind.ResourceBusy {"resource busy"}
-  else if k == IoErrorKind.ConnectionRefused {"connection refused"}
-  else if k == IoErrorKind.ConnectionReset {"connection reset"}
-  else if k == IoErrorKind.ConnectionAborted {"connection aborted"}
-  else if k == IoErrorKind.NotConnected {"not connected"}
-  else if k == IoErrorKind.AddressInUse {"address in use"}
-  else if k == IoErrorKind.AddressNotAvailable {"address not available"}
-  else if k == IoErrorKind.HostUnreachable {"host unreachable"}
-  else if k == IoErrorKind.NetworkUnreachable {"network unreachable"}
-  else if k == IoErrorKind.NetworkDown {"network down"}
-  else if k == IoErrorKind.BrokenPipe {"broken pipe"}
-  else if k == IoErrorKind.TimedOut {"timed out"}
-  else if k == IoErrorKind.Cancelled {"cancelled"}
-  else if k == IoErrorKind.Truncated {"truncated"}
-  else if k == IoErrorKind.InvalidInput {"invalid input"}
-  else if k == IoErrorKind.OutOfMemory {"out of memory"}
-  else if k == IoErrorKind.Unsupported {"unsupported"}
-  else {"other"}
-}
-
 // Where an IoError came from: the system (its kind read from its number), or
 // iocore's own ending of an operation
 enum ErrorSource {
@@ -750,19 +679,21 @@ pub struct IoError {
   pub fn timedOut() IoError {IoError(0u32, ErrorSource.Deadline)}
 
   // An operation that was given up before it could answer (a pool job's
-  // Completer that died unended, say): ERROR_OPERATION_ABORTED, ECANCELED.
-  // Its kind is Other: nobody cancelled it
+  // Completer that died unended, say): ERROR_OPERATION_ABORTED, ECANCELED,
+  // which are Cancelled, as iocore's own cancel is
   pub fn aborted() IoError {IoError(abandoned())}
 
-  // What went wrong
+  // What went wrong: the ioerror package's kind, the system's number read by
+  // its osKind
   pub fn kind(self: &) IoErrorKind {
     if source == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
     if source == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
     if source == ErrorSource.Cut {return IoErrorKind.Truncated;}
-    if isWindows() {winKind(code)} else {lxKind(code)}
+    osKind(code)
   }
 
-  // Ended by a cancel
+  // Ended by a cancel, or aborted by the system (ERROR_OPERATION_ABORTED,
+  // ECANCELED)
   pub fn isCancelled(self: &) bool {self.kind() == IoErrorKind.Cancelled}
 
   // Ended by its deadline (code 0), or timed out by the system
@@ -800,45 +731,6 @@ pub fn answerError(kind: u32, status: u32, code: u32) IoError {
   IoError(code)
 }
 
-// The kind of a C library error number (errno) on the system the program
-// runs on: Linux's, or Windows' C runtime's, whose numbers agree with
-// Linux's for files but for a few (its ENAMETOOLONG is 38, ENOSYS 40 and
-// ENOTEMPTY 41: Linux's are 36, 38 and 39). Rust's sorting
-pub fn errnoKind(e: i32) IoErrorKind {
-  if e == 2i32 {IoErrorKind.NotFound}                              // ENOENT
-  else if e == 1i32 || e == 13i32 {IoErrorKind.PermissionDenied}   // EPERM, EACCES
-  else if e == 17i32 {IoErrorKind.AlreadyExists}                   // EEXIST
-  else if e == 20i32 {IoErrorKind.NotADirectory}                   // ENOTDIR
-  else if e == 21i32 {IoErrorKind.IsADirectory}                    // EISDIR
-  else if e == 30i32 {IoErrorKind.ReadOnlyFilesystem}              // EROFS
-  else if e == 28i32 {IoErrorKind.StorageFull}                     // ENOSPC
-  else if e == 27i32 {IoErrorKind.FileTooLarge}                    // EFBIG
-  else if e == 18i32 {IoErrorKind.CrossesDevices}                  // EXDEV
-  else if e == 16i32 {IoErrorKind.ResourceBusy}                    // EBUSY
-  else if e == 32i32 {IoErrorKind.BrokenPipe}                      // EPIPE
-  else if e == 22i32 || e == 9i32 {IoErrorKind.InvalidInput}       // EINVAL, EBADF
-  else if e == 12i32 {IoErrorKind.OutOfMemory}                     // ENOMEM
-  else if isWindows() {
-    if e == 38i32 {IoErrorKind.InvalidFilename}                    // ENAMETOOLONG
-    else if e == 41i32 {IoErrorKind.DirectoryNotEmpty}             // ENOTEMPTY
-    else if e == 40i32 {IoErrorKind.Unsupported}                   // ENOSYS
-    else {IoErrorKind.Other}
-  }
-  else if e == 36i32 {IoErrorKind.InvalidFilename}                 // ENAMETOOLONG
-  else if e == 39i32 {IoErrorKind.DirectoryNotEmpty}               // ENOTEMPTY
-  else if e == 38i32 {IoErrorKind.Unsupported}                     // ENOSYS
-  else if e == 111i32 {IoErrorKind.ConnectionRefused}              // ECONNREFUSED
-  else if e == 104i32 {IoErrorKind.ConnectionReset}                // ECONNRESET
-  else if e == 103i32 {IoErrorKind.ConnectionAborted}              // ECONNABORTED
-  else if e == 107i32 {IoErrorKind.NotConnected}                   // ENOTCONN
-  else if e == 98i32 {IoErrorKind.AddressInUse}                    // EADDRINUSE
-  else if e == 99i32 {IoErrorKind.AddressNotAvailable}             // EADDRNOTAVAIL
-  else if e == 113i32 {IoErrorKind.HostUnreachable}                // EHOSTUNREACH
-  else if e == 101i32 {IoErrorKind.NetworkUnreachable}             // ENETUNREACH
-  else if e == 100i32 {IoErrorKind.NetworkDown}                    // ENETDOWN
-  else if e == 110i32 {IoErrorKind.TimedOut}                       // ETIMEDOUT
-  else {IoErrorKind.Other}
-}
 
 // The system's own number for each failure iocore finds itself, on the
 // system the program runs on (Windows' error number; Linux's errno)

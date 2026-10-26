@@ -4,17 +4,18 @@
 // number no kind names is Other. Cancelled and TimedOut from a cancel or a
 // deadline carry code 0; Truncated, a received datagram cut to its buffer's
 // room, carries the system's number for a datagram too long (WSAEMSGSIZE,
-// EMSGSIZE). The system's own timeout is TimedOut too, but a system error is
-// never Cancelled, and the number for a datagram too long is Truncated only
-// for a receive: Windows answers 995 (ERROR_OPERATION_ABORTED) itself, for
-// one, when the thread that issued an operation exits, which is Other.
-// 'errnoKind' reads a C library errno, on the system the program runs on.
+// EMSGSIZE). The system's own timeout is TimedOut too, and an operation the
+// system aborted (ERROR_OPERATION_ABORTED, ECANCELED) Cancelled, with its
+// number; the number for a datagram too long is Truncated only for a
+// receive. The kinds and the sorting are the ioerror package's ('osKind',
+// and 'errnoKind' for a C library errno, on the system the program runs on).
 
-mod ioerror;
+mod errors;
 
 import testing use *;
 import diag;
-import iocore use IoError, IoErrorKind, answerError, errnoKind, errorKindName;
+import iocore use IoError, answerError;
+import ioerror use IoErrorKind, errnoKind, errorKindName, osKind;
 
 // The system's number: Windows' or Linux's
 fn n(win: u32, lx: u32) u32 {if isWindows() {win} else {lx}}
@@ -76,7 +77,8 @@ fn main() i32 {
 
   let a = IoError.aborted();
   expectUInt(u64.from(a.code), u64.from(n(995u32, 125u32)), "aborted: ERROR_OPERATION_ABORTED, ECANCELED");
-  expect(!a.isCancelled() && a.kind() == IoErrorKind.Other, "a system error numbered so is not Cancelled");
+  expect(a.isCancelled() && !a.isTimedOut(), "a system error numbered so is Cancelled, as a cancel is");
+  expect(osKind(n(995u32, 125u32)) == IoErrorKind.Cancelled, "ioerror's osKind sorts the system's numbers too");
 
   // An answer that is not Done, read
   expect(answerError(diag.kindRecv, diag.outcomeCancelled, 0u32).isCancelled(), "a Cancelled answer is Cancelled");
@@ -93,6 +95,7 @@ fn main() i32 {
   expect(errnoKind(21i32) == IoErrorKind.IsADirectory, "errno: EISDIR");
   expect(errnoKind(if isWindows() {41i32} else {39i32}) == IoErrorKind.DirectoryNotEmpty, "errno: ENOTEMPTY, the C library's own");
   expect(errnoKind(if isWindows() {38i32} else {36i32}) == IoErrorKind.InvalidFilename, "errno: ENAMETOOLONG, the C library's own");
+  expect(errnoKind(if isWindows() {105i32} else {125i32}) == IoErrorKind.Cancelled, "errno: ECANCELED, the C library's own");
 
   // A kind's words
   expect(errorKindName(IoErrorKind.ConnectionRefused) == "connection refused", "a kind's name");

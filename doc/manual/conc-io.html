@@ -186,7 +186,8 @@ actor Server {
 	<p>(<span class="pre">say</span> prints a word and a number on a line, <span class="pre">sayKind</span> a word and
 		the name of an error's kind (<span class="pre">errorKindName(k)</span>);
 		<span class="pre">IoBuf</span> is <span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span>,
-		<span class="pre">IoError</span> and <span class="pre">IoErrorKind</span> <span class="pre">iocore</span>'s, and
+		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, <span class="pre">IoErrorKind</span> and
+		<span class="pre">errorKindName</span> <span class="pre">ioerror</span>'s, and
 		<span class="pre">Socket</span> <span class="pre">aio</span>'s.) Sent <span class="pre">serve()</span>, the server
 		prints:</p>
 <pre>
@@ -224,7 +225,10 @@ end of stream 5
 
 	<h3 id="await-io-errors">Why an operation failed: IoError and IoErrorKind</h3>
 	<p>An <span class="pre">IoError</span> says what went wrong in two ways. Its <span class="pre">kind()</span> is an
-		<span class="pre">IoErrorKind</span>, the same on every system, which is what a program matches on:
+		<span class="pre">IoErrorKind</span>, the same on every system, which is what a program matches on. The kinds are
+		the <span class="pre">ioerror</span> package's (<span class="pre">import ioerror use IoErrorKind;</span>), a small
+		package of its own that the synchronous <span class="pre">fs</span> shares (<a href="lib-fs.html#fs-failure">its
+		FsError</a>):
 		<span class="pre">NotFound</span>, <span class="pre">PermissionDenied</span>, <span class="pre">AlreadyExists</span>,
 		<span class="pre">NotADirectory</span>, <span class="pre">IsADirectory</span>, <span class="pre">DirectoryNotEmpty</span>,
 		<span class="pre">ReadOnlyFilesystem</span>, <span class="pre">StorageFull</span>, <span class="pre">FileTooLarge</span>,
@@ -236,7 +240,9 @@ end of stream 5
 		<span class="pre">TimedOut</span>, <span class="pre">Cancelled</span>, <span class="pre">Truncated</span>,
 		<span class="pre">InvalidInput</span>, <span class="pre">OutOfMemory</span>, <span class="pre">Unsupported</span>, and
 		<span class="pre">Other</span> for what none of them names. They are Rust's <span class="pre">io::ErrorKind</span>,
-		trimmed to what Windows and Linux give here; <span class="pre">errorKindName(k)</span> gives a kind's words.</p>
+		trimmed to what Windows and Linux give here; <span class="pre">ioerror</span>'s
+		<span class="pre">errorKindName(k)</span> gives a kind's words, and its <span class="pre">osKind(code)</span> sorts
+		the system's own numbers.</p>
 	<p>Its <span class="pre">code</span> is the system's own number for the failure, kept for diagnostics: Windows' error
 		number on Windows, the <span class="pre">errno</span> on Linux, so the same failure has a different number on each (a
 		refused connection is 1225 on Windows and 111 on Linux, both <span class="pre">ConnectionRefused</span>). Its
@@ -255,9 +261,10 @@ match r {
 	<p>Three kinds are the I/O runtime's own. <span class="pre">Cancelled</span> and <span class="pre">TimedOut</span> are an
 		operation ended by its cancel group or its deadline (<a href="#await-io-limits">next</a>), and carry
 		<span class="pre">code</span> 0; a system's own timeout (a connect the system gave up on) is
-		<span class="pre">TimedOut</span> too, with the system's number. A system error is never
-		<span class="pre">Cancelled</span>. <span class="pre">Truncated</span> is a datagram cut to the room of the buffer that
-		took it (<a href="#await-io-udp">UDP sockets</a>).</p>
+		<span class="pre">TimedOut</span> too, with the system's number, and an operation the system aborted
+		(<span class="pre">ERROR_OPERATION_ABORTED</span>, <span class="pre">ECANCELED</span>) is
+		<span class="pre">Cancelled</span>, with its number. <span class="pre">Truncated</span> is a datagram cut to the room
+		of the buffer that took it (<a href="#await-io-udp">UDP sockets</a>).</p>
 	<p>An operation's answer should be used. An <span class="pre">await</span> on one that is a statement of its own drops
 		the failure unread, so it is warned. The program still compiles, and the answer is dropped as any unused value
 		is:</p>
