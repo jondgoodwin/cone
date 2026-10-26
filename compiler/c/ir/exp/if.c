@@ -71,7 +71,6 @@ void ifRemoveReturns(IfNode *ifnode) {
 }
 
 // Does a type-checked block end by jumping away, so give its 'if' no value?
-// Generation reads the same three tags (genlIf).
 int ifBlockJumps(BlockNode *blk) {
     if (blk->tag != BlockTag || blk->stmts == NULL || blk->stmts->used == 0)
         return 0;

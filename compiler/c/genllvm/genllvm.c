@@ -159,6 +159,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     INode *svfnblock = gen->fnblock;
     FnDclNode *svfndcl = gen->fndcl;
     int svexitzero = gen->exitzero;
+    LLVMBasicBlockRef svunreached = gen->unreached;
     GenRoots svroots;
     genlRootsSave(gen, &svroots);
     // A function generated while another is -- a drop asked for by a death --
@@ -233,6 +234,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->fnblock = svfnblock;
     gen->fndcl = svfndcl;
     gen->exitzero = svexitzero;
+    gen->unreached = svunreached;
     gen->tempcnt = gen->tempbase;
     gen->tempbase = svtempbase;
     genlRootsRestore(gen, &svroots);
@@ -2243,6 +2245,37 @@ static void genlGpuAggregates(GenState *gen) {
     free(map.slots);
 }
 
+// Does every basic block of every function this object defines hold exactly
+// one terminator, as its last instruction? LLVM's verifier says so too, but it
+// runs only with --verify; this runs on every compile, so a path generation
+// failed to end where it jumped is a compiler defect reported, not a
+// miscompile. Each block that breaks the rule is reported, with its function.
+static int genlCheckBlockEnds(GenState *gen) {
+    int good = 1;
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (LLVMIsDeclaration(fn))
+            continue;
+        for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+            uint32_t terms = 0;
+            int lastterm = 0;
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+                lastterm = LLVMIsATerminatorInst(inst) != NULL;
+                terms += lastterm;
+            }
+            if (terms == 1 && lastterm)
+                continue;
+            size_t fnlen;
+            const char *fnname = LLVMGetValueName2(fn, &fnlen);
+            errorMsg(ErrorUnreachable,
+                "Compiler defect: generation left block '%s' of function '%.*s' with %u terminators%s. Please report this, with the source that provoked it.",
+                LLVMGetBasicBlockName(blk), (int)fnlen, fnname, terms,
+                terms > 0 && !lastterm ? ", the last of its instructions not one" : "");
+            good = 0;
+        }
+    }
+    return good;
+}
+
 // Generate IR nodes into LLVM IR using LLVM
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
@@ -2257,6 +2290,15 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // (genlGloVar) or a function calling itself (genlGpuCalls) -- so nothing
     // is emitted after one
     if (errors) {
+        LLVMDisposeModule(gen->module);
+        return;
+    }
+
+    // Every basic block generation made ends in its one terminator, before
+    // LLVM is handed the module, since LLVM reads a block's last instruction
+    // as its terminator and silently drops whatever terminator came before it
+    genlSettleUnreached(gen);
+    if (!genlCheckBlockEnds(gen)) {
         LLVMDisposeModule(gen->module);
         return;
     }
@@ -2520,6 +2562,10 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->tempcnt = 0;
     gen->tempmax = 0;
     gen->tempbase = 0;
+    gen->unreached = NULL;
+    gen->unreachedblks = NULL;
+    gen->unreachedcnt = 0;
+    gen->unreachedmax = 0;
     gen->seams = NULL;
     gen->resumeat = NULL;
     gen->resumeblk = NULL;
