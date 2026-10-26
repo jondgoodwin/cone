@@ -16,6 +16,7 @@ MacroDclNode *newMacroDclNode(Name *namesym) {
     newNode(gennode, MacroDclNode, MacroDclTag);
     gennode->vtype = NULL;
     gennode->namesym = namesym;
+    gennode->typeparms = NULL;
     gennode->parms = newNodes(4);
     gennode->body = NULL;
     gennode->memonodes = newNodes(4);
@@ -31,21 +32,35 @@ MacroDclNode *newMacroDclNode(Name *namesym) {
 // cloneNode copies a use hooked that way as a use rather than substituting.
 // The enclosing type's parameters are hooked to the instance's type arguments by
 // the caller, so those are substituted, and the instance's macro body names the
-// instance's types.
+// instance's types. So do its parameters' types: 'macro put[self, x: T]' in
+// 'Cell[T]' takes an 'x: i64' in 'Cell[i64]'. The macro's own type parameters
+// are hooked to their copies first, so a parameter's type naming one names the
+// copy's.
+static GenVarDclNode *cloneMacroParm(CloneState *cstate, GenVarDclNode *old) {
+    GenVarDclNode *parm = newGVarDclNode(old->namesym);
+    copyNodeLex(parm, old);
+    parm->flags = old->flags;
+    if (old->valtype)
+        parm->valtype = cloneNode(cstate, old->valtype);
+    nametblHookNode(parm->namesym, (INode*)parm);
+    return parm;
+}
+
 INode *cloneMacroDclNode(CloneState *cstate, MacroDclNode *node) {
     MacroDclNode *newnode = memAllocBlk(sizeof(MacroDclNode));
     memcpy(newnode, node, sizeof(MacroDclNode));
-    newnode->parms = newNodes(node->parms->used);
 
     INode **nodesp;
     uint32_t cnt;
     nametblHookPush();
-    for (nodesFor(node->parms, cnt, nodesp)) {
-        GenVarDclNode *parm = newGVarDclNode(((GenVarDclNode*)*nodesp)->namesym);
-        copyNodeLex(parm, *nodesp);
-        nodesAdd(&newnode->parms, (INode*)parm);
-        nametblHookNode(parm->namesym, (INode*)parm);
+    if (node->typeparms) {
+        newnode->typeparms = newNodes(node->typeparms->used);
+        for (nodesFor(node->typeparms, cnt, nodesp))
+            nodesAdd(&newnode->typeparms, (INode*)cloneMacroParm(cstate, (GenVarDclNode*)*nodesp));
     }
+    newnode->parms = newNodes(node->parms->used);
+    for (nodesFor(node->parms, cnt, nodesp))
+        nodesAdd(&newnode->parms, (INode*)cloneMacroParm(cstate, (GenVarDclNode*)*nodesp));
     newnode->body = cloneNode(cstate, node->body);
     nametblHookPop();
     return (INode*)newnode;
@@ -55,7 +70,17 @@ INode *cloneMacroDclNode(CloneState *cstate, MacroDclNode *node) {
 void macroPrint(MacroDclNode *name) {
     INode **nodesp;
     uint32_t cnt;
-    inodeFprint("macro %s (", &name->namesym->namestr);
+    inodeFprint("macro %s ", &name->namesym->namestr);
+    if (name->typeparms) {
+        inodeFprint("[");
+        for (nodesFor(name->typeparms, cnt, nodesp)) {
+            inodePrintNode(*nodesp);
+            if (cnt > 1)
+                inodeFprint(", ");
+        }
+        inodeFprint("]");
+    }
+    inodeFprint("(");
     for (nodesFor(name->parms, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt > 1)
@@ -88,8 +113,29 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
     // before it, the parameter would bind in the enclosing scope and the
     // matching pop would never remove it.
     nametblHookPush();
-    for (nodesFor(gennode->parms, cnt, nodesp))
+    // The type parameters first, so a value parameter's type may name one.
+    // A parameter's type is resolved where the macro is declared, as its body
+    // is, and inside the expander's window, so what it names is exported with
+    // the macro (an importer's include file declares it).
+    if (gennode->typeparms) {
+        for (nodesFor(gennode->typeparms, cnt, nodesp))
+            inodeNameRes(pstate, nodesp);
+    }
+    for (nodesFor(gennode->parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        if (parm->valtype) {
+            inodeNameRes(pstate, &parm->valtype);
+            // A parameter's type is a type, or what substituting a type
+            // parameter makes one (a name nothing declares is reported already)
+            if (!isTypeNode(parm->valtype) && !inodeIsProvisionalType(parm->valtype)
+                && !inodeIsError(parm->valtype)
+                && !(isNameUseNode(parm->valtype) && nameUseGetDcl((NameUseNode*)parm->valtype) == NULL))
+                errorMsgNode(parm->valtype, ErrorNotType,
+                    "A macro parameter's type must be a type: '%s: T', or '%s: lazy T'.",
+                    &parm->namesym->namestr, &parm->namesym->namestr);
+        }
         inodeNameRes(pstate, nodesp);
+    }
 
     inodeNameRes(pstate, (INode**)&gennode->body);
 
@@ -126,10 +172,54 @@ static INode *macroSrcSite(INode *use) {
     return use;
 }
 
-// Expand a macro in place of the node that used it, substituting 'args' for
-// its parameters, then type check what it expanded to. 'selfparm' is the
-// parameter a macro method's receiver stands in for, or NULL.
-static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *macro, Nodes *args, INode *selfparm) {
+// Do the type arguments a use wrote fit the macro's type parameters? Each is
+// substituted for its parameter, as a value argument is, so it must be a type.
+// Reported at the use, which becomes an error node, where they do not.
+// Inferring a type parameter from the arguments is not built, so a macro that
+// declares any is given all of them in brackets.
+static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs) {
+    if (macro->typeparms == NULL) {
+        if (typeargs == NULL)
+            return 1;
+        errorMsgNode(*nodep, ErrorMacroTypeArgs,
+            "%s declares no type parameters, so its use takes no type arguments: its arguments go in parentheses alone.",
+            &macro->namesym->namestr);
+        *nodep = newErrorNode(*nodep);
+        return 0;
+    }
+    if (typeargs == NULL) {
+        errorMsgNode(*nodep, ErrorMacroTypeArgs,
+            "%s declares type parameters, and inferring them from its arguments is not built yet: write them in brackets before the arguments, '%s[i32](...)'.",
+            &macro->namesym->namestr, &macro->namesym->namestr);
+        *nodep = newErrorNode(*nodep);
+        return 0;
+    }
+    if (typeargs->used != macro->typeparms->used) {
+        errorMsgNode(*nodep, ErrorArgCount, "Incorrect number of type arguments vs. type parameters expected");
+        *nodep = newErrorNode(*nodep);
+        return 0;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    int bad = 0;
+    for (nodesFor(typeargs, cnt, nodesp)) {
+        if (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp)) {
+            errorMsgNode(*nodesp, ErrorNotType, "Expected a type for a macro's type parameter");
+            bad = 1;
+        }
+    }
+    if (bad)
+        *nodep = newErrorNode(*nodep);
+    return !bad;
+}
+
+// Expand a macro in place of the node that used it, substituting 'typeargs'
+// for its type parameters and 'args' for its value parameters, then type
+// check what it expanded to. 'selfparm' is the parameter a macro method's
+// receiver stands in for, or NULL.
+static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *macro, Nodes *typeargs, Nodes *args, INode *selfparm) {
+    if (!macroTypeArgsFit(nodep, macro, typeargs))
+        return;
     uint32_t expected = macro->parms ? macro->parms->used : 0;
     uint32_t given = args ? args->used : 0;
     if (given != expected) {
@@ -142,6 +232,28 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
         return;
     }
 
+    // Type arguments and value arguments substitute alike: one list of each,
+    // the type parameters first
+    Nodes *parms = given ? macro->parms : NULL;
+    if (typeargs) {
+        Nodes *allparms = newNodes(typeargs->used + given);
+        Nodes *allargs = newNodes(typeargs->used + given);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(macro->typeparms, cnt, nodesp))
+            nodesAdd(&allparms, *nodesp);
+        for (nodesFor(typeargs, cnt, nodesp))
+            nodesAdd(&allargs, *nodesp);
+        if (given) {
+            for (nodesFor(macro->parms, cnt, nodesp))
+                nodesAdd(&allparms, *nodesp);
+            for (nodesFor(args, cnt, nodesp))
+                nodesAdd(&allargs, *nodesp);
+        }
+        parms = allparms;
+        args = allargs;
+    }
+
     // A macro whose body names itself expands without end, and no mark can see
     // it: each expansion is a fresh clone, never the node expanded before.
     if (!genericInstantiateEnter(*nodep)) {
@@ -151,7 +263,7 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
 
     // Replace the use with the body, substituting arguments for parameters
     CloneState cstate;
-    clonePushState(&cstate, *nodep, NULL, pstate->scope, given ? macro->parms : NULL, args);
+    clonePushState(&cstate, *nodep, NULL, pstate->scope, parms, args);
     cstate.selfparm = selfparm;
     // 'srcFile()' and 'srcLine()' in the body answer where it is used
     cstate.srcsite = macroSrcSite(*nodep);
@@ -196,7 +308,7 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
         copyNodeLex(call, *gennode);
         call->methfld = (INode*)*gennode;
         *((INode**)gennode) = (INode*)call;
-        macroMethodTypeCheck(pstate, (FnCallNode**)gennode, macrodcl);
+        macroMethodTypeCheck(pstate, (FnCallNode**)gennode, macrodcl, NULL);
         return;
     }
 
@@ -205,17 +317,13 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
         errorMsgNode((INode*)*gennode, ErrorNoArgs, "Generic or macro expects arguments to be provided");
         return;
     }
-    macroExpand(pstate, (INode**)gennode, macrodcl, NULL, NULL);
+    macroExpand(pstate, (INode**)gennode, macrodcl, NULL, NULL, NULL);
 }
 
-// Expand a macro called by name, substituting the arguments for its parameters
-void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    // Through the alias where a fold is what bound the name here: the binding
-    // carried the visibility, and the macro is what it stands for
-    MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)(*nodep)->objfn);
-
-    // A macro method called bare inside a method means 'self.name(args)', as a
-    // bare method call does
+// Expand a macro used by its name, with 'typeargs' for its type parameters
+// and 'args' for its value parameters. A macro method called bare inside a
+// method means 'self.name(args)', as a bare method call does.
+static void macroUseExpand(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macrodcl, Nodes *typeargs, Nodes *args) {
     if (macrodcl->flags & FlagMethFld) {
         INode *self = macroSelfReceiver(pstate, (INode*)*nodep, macrodcl->namesym);
         if (self == NULL) {
@@ -224,21 +332,45 @@ void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
         (*nodep)->methfld = (*nodep)->objfn;
         (*nodep)->objfn = self;
-        macroMethodTypeCheck(pstate, nodep, macrodcl);
+        (*nodep)->args = args;
+        macroMethodTypeCheck(pstate, nodep, macrodcl, typeargs);
         return;
     }
+    macroExpand(pstate, (INode**)nodep, macrodcl, typeargs, args, NULL);
+}
 
-    macroExpand(pstate, (INode**)nodep, macrodcl, (*nodep)->args, NULL);
+// Expand a macro called by name, substituting the arguments for its parameters.
+// The brackets of 'm[...]' fill the macro's first bracket list: its type
+// parameters where it declares them, 'three[i64]', its value parameters
+// where it does not, 'twice[x]'. Parentheses give value arguments alone.
+void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    // Through the alias where a fold is what bound the name here: the binding
+    // carried the visibility, and the macro is what it stands for
+    MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)(*nodep)->objfn);
+    if (((*nodep)->flags & FlagIndex) && macrodcl->typeparms)
+        macroUseExpand(pstate, nodep, macrodcl, (*nodep)->args, NULL);
+    else
+        macroUseExpand(pstate, nodep, macrodcl, NULL, (*nodep)->args);
+}
+
+// Expand a macro called with its type arguments in brackets and its value
+// arguments in parentheses, 'm[i32](x)': the call's callee is the bracketed use
+void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *index = (FnCallNode*)(*nodep)->objfn;
+    MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)index->objfn);
+    Nodes *typeargs = index->args ? index->args : newNodes(1);
+    (*nodep)->objfn = index->objfn;
+    macroUseExpand(pstate, nodep, macrodcl, typeargs, (*nodep)->args);
 }
 
 // Expand a macro method called on a receiver: 'x.name(args)' expands the body
 // with 'x' substituted for 'self' and the arguments for the parameters after it.
 // The receiver is an expression like any other argument, substituted wherever
 // 'self' appears and evaluated as many times as it appears.
-void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro) {
+void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, Nodes *typeargs) {
     FnCallNode *node = *nodep;
     if (node->args == NULL)
         node->args = newNodes(1);
     nodesInsert(&node->args, node->objfn, 0);
-    macroExpand(pstate, (INode**)nodep, macro, node->args, nodesGet(macro->parms, 0));
+    macroExpand(pstate, (INode**)nodep, macro, typeargs, node->args, nodesGet(macro->parms, 0));
 }

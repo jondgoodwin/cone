@@ -419,8 +419,15 @@ refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
 in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
-for a parameter annotated in a way that is not built, as a macro's parameter
-given one is. A value parameter, `[N: usize]`, has four codes of its own:
+for a parameter annotated in a way that is not built, as a macro's type
+parameter given one is, and a generic module's. A macro's value parameter has
+two codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
+type or `lazy`, whose remedy is to remove it. A use whose brackets do not fit
+the macro's type parameters is `ErrorMacroTypeArgs` (none written where it
+declares some, since inferring them is not built, or some written where it
+declares none); the wrong number of them is `ErrorArgCount`, as for a generic.
+A generic's value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);
 `ErrorGenValueArg`, an argument that is no non-negative integer literal the

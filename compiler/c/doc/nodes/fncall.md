@@ -209,13 +209,16 @@ access, with the instance the arguments name bound to the member
 (`genericMethodInstance`) — finished here rather than handed back, since the
 receiver is already checked. The type arguments are checked before the
 instance is made, as a generic function's are, so a written instance of a
-generic type, `h.pick[Box[i32]](...)`, is the type it names. A member that is not a generic method is
+generic type, `h.pick[Box[i32]](...)`, is the type it names. A macro method
+declared in the receiver's type, `h.scaled[i32](2)`, expands there with them
+(`macroMethodTypeCheck`). A member that is neither is
 `ErrorNotTyped` at the first type argument. A base that is a type or a module,
 or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
-to `self.name`); `<-` given a list of entries, an entry that is not a plain
+to `self.name`), and a macro called with its type arguments in brackets before
+its value arguments, `m[i32](x)` (`macroCallTypeArgsTypeCheck`); `<-` given a list of entries, an entry that is not a plain
 value, or a construction's contents, which becomes the applications it stands
 for (`contentsLower`, below, "The list after `<-`");
 a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names

@@ -103,7 +103,10 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
-    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a macro's or generic module's, any
+    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a generic module's, any; on a macro's type parameter, any
+    ErrorMacroParmType = 1533,  // A macro's value parameter written without a type (`macro twice[a]`): a macro parameter is always typed, `a: T` or `a: lazy T`. Only `self`, first in a macro declared in a type, is written bare. Pointed at the parameter
+    ErrorMacroSelfType = 1534,  // A macro method's `self` written with a type or `lazy` (`macro m[self: &Point]`): `self` is the receiver expression as it is, so it takes neither. Pointed at the type
+    ErrorMacroTypeArgs = 1535,  // A macro use whose brackets do not fit the macro's type parameters: none written where the macro declares some (inferring them is not built), or type arguments given to a macro that declares none (`m[i32](x)`). Pointed at the use
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'

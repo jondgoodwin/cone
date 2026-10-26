@@ -19,7 +19,7 @@
 mod generic_typecheck_macro;
 
 // -------- argument counts --------
-macro one[p] {
+macro one[p: i64] {
   p
 }
 
@@ -111,7 +111,7 @@ fn useMacroName() {
 }
 
 // The same, through the path that substitutes arguments for parameters.
-macro selfCalled[p] {
+macro selfCalled[p: i64] {
   selfCalled[p]                //~ ErrorInstDepth:13 "nested more than"
 }
 
@@ -132,13 +132,19 @@ struct Pair {
     self.a + self.b
   }
 
-  macro scaled[self, k] {
+  macro scaled[self, k: i64] {
     (self.a + self.b) * k
   }
 
   // No 'self': a static macro of the type, not a method
   pub macro unit {
     1i64
+  }
+
+  // A type parameter, which a use gives in brackets
+  macro scaledAs[T][self, k: T] {
+    let f: T = k;
+    (self.a + self.b) * f
   }
 
   // A macro method named bare inside a static function of its own type: the
@@ -163,4 +169,40 @@ fn staticMacroIsNotAMethod() {
   // function is not
   var p = Pair(1i64, 2i64);
   let r = p.unit;               //~ ErrorNoMbr:12 "not found"
+}
+
+// -------- type arguments --------
+
+// A macro's type parameters are given in brackets at its use, and its value
+// arguments in parentheses after them. Inferring the type arguments from the
+// value arguments is not built, so a use that leaves them off is refused, with
+// or without a receiver; a use giving them to a macro that declares none, or
+// the wrong number of them, or something that is not a type, is refused too.
+macro sizedAs[T][a: T] {
+  let v: T = a;
+  v
+}
+
+macro unitAs[T][] {
+  let z: T = 1;
+  z
+}
+
+fn typeArgumentsLeftOff() {
+  var p = Pair(1i64, 2i64);
+  let r = sizedAs(1i64);              //~ ErrorMacroTypeArgs:18 "not built yet"
+  let s = unitAs;                     //~ ErrorMacroTypeArgs:11 "not built yet"
+  let t = p.scaledAs(2i64);           //~ ErrorMacroTypeArgs:12 "not built yet"
+}
+
+fn typeArgumentsToNone() {
+  let r = one[i64](1i64);             //~ ErrorMacroTypeArgs:19 "declares no type parameters"
+}
+
+fn typeArgumentCount() {
+  let r = sizedAs[i64, i32](1i64);    //~ ErrorArgCount:28 "number of type arguments"
+}
+
+fn typeArgumentNotAType() {
+  let r = sizedAs[3i64](1i64);        //~ ErrorNotType:19 "Expected a type"
 }

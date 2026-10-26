@@ -804,15 +804,19 @@ struct Labelled[T] is Show if T is Show {
 		<span class="pre">+</span>, which only one of them has.</p>
 
 	<h2 id="macros">Macros: a fresh copy at every use</h2>
+	<p style="margin-left: 40px;"><i>Not built yet: a plain parameter is not yet evaluated once; like a
+		<span class="pre">lazy</span> one, its argument is put in wherever the parameter appears, and assigning to it is
+		not refused. An argument is not yet
+		checked against its parameter's type, and a macro's type arguments are not yet inferred from its arguments: they
+		are written at every use.</i></p>
 	<p>A generic makes one version per set of type arguments, and every call of it is a call. A <b>macro</b> is
 		closer to the source: its logic is written into the program in place, wherever it is used, with the arguments
-		put in wherever its parameters appear.</p>
+		put in for its parameters. Every parameter is typed, its type after a <span class="pre">:</span>, as a
+		function's is, and an argument is checked against it where the macro is used.</p>
 <pre>
-// A macro that evaluates to the largest value
-macro max[a, b] {
-	let aa = a;
-	let bb = b;
-	if aa &gt; bb {aa} else {bb}
+// A macro that evaluates to the larger of two values
+macro max[a: i32, b: i32] {
+	if a &gt; b {a} else {b}
 }
 
 fn tester(x: i32, y: i32) {
@@ -820,12 +824,57 @@ fn tester(x: i32, y: i32) {
 }
 </pre>
 	<p>A macro's logic must be syntactically complete and valid. Macros are hygienic: names defined in the macro are
-		out of reach of the code where it is used, and the other way round. <span class="pre">max</span> captures its
-		parameters into variables before using them so that each argument's expression is evaluated once; written
-		without that, each would be evaluated twice, possibly to different values. The other side of that is an argument
-		that is never evaluated at all, when the macro's logic does not reach it. Core's
-		<span class="pre">assertDebug</span> (<a href="safe-panics.html#panic">Panics</a>) is a macro for that reason: in
-		a release build its condition is not evaluated.</p>
+		out of reach of the code where it is used, and the other way round. A plain parameter, such as
+		<span class="pre">max</span>'s, is evaluated once, where the macro is used, however many times its logic names
+		it.</p>
+
+	<h3 id="lazy">lazy parameters</h3>
+	<p>A parameter whose type is written after the word <span class="pre">lazy</span> is not evaluated first: its
+		argument, still typed, is put in whole wherever the parameter appears in the macro's logic, so it is evaluated as
+		many times as the logic reaches it, and not at all when the logic does not. Core's
+		<span class="pre">assertDebug[cond: lazy bool]</span> (<a href="safe-panics.html#panic">Panics</a>) is a macro for
+		that reason: in a release build its condition is not evaluated. A block run for its effect is a
+		<span class="pre">lazy void</span> parameter. An argument the macro's logic assigns to must be
+		<span class="pre">lazy</span>.</p>
+<pre>
+// Run 'then' after reading 'first', and give back what was read
+macro afterward[first: i64, then: lazy void] {
+  let v = first;
+  then;
+  v
+}
+
+fn tester(n: i64) i64 {
+  var count = n;
+  afterward(count, {count = count + 1})
+}
+</pre>
+	<p><span class="pre">lazy</span> means this only before a macro parameter's type; anywhere else it is an ordinary
+		name.</p>
+
+	<h3 id="macrotypes">A macro's type parameters</h3>
+	<p>A macro may also take types, for the same logic over values of several types. Its type parameters come in a
+		first pair of brackets, before its parameters, and its parameters' types may name them; a use gives the types in
+		brackets before the arguments. Where the macro takes no other parameters the second brackets are empty, and the
+		use may leave off its parentheses.</p>
+<pre>
+macro sum[T][a: T, b: T] {
+  a + b
+}
+
+macro zero[T][] {
+  let z: T = 0;
+  z
+}
+
+fn tester(x: f64) f64 {
+  sum[f64](x, 1.5) + zero[f64]
+}
+</pre>
+	<p>A type parameter is a name alone: unlike a generic's, it takes no constraint yet. Brackets after a macro's name
+		hold its type arguments where it has type parameters, and its arguments where it has none: <span class="pre">max[x,
+		y]</span> means <span class="pre">max(x, y)</span>.</p>
+
 	<p>Written in a macro's logic, <a href="safe-intrinsics.html#srcloc">srcFile() and srcLine()</a> answer where the
 		macro is used, not where its logic is written; in a macro used inside another's logic, where the outermost one
 		is used. A macro may take no default argument.</p>
@@ -854,7 +903,7 @@ enum Maybe {
   pub struct Just {value: i32;}
 
   // The value held, or a default when nothing is
-  pub macro orElse[self, dflt] {
+  pub macro orElse[self, dflt: lazy i32] {
     let s = self;
     match s {
       case let &amp;Just(j) {j.value}
@@ -867,11 +916,13 @@ fn tester(m: &amp;imm Maybe) i32 {
   m.orElse(0)
 }
 </pre>
-	<p>The receiver stands in for <span class="pre">self</span> exactly as an argument stands in for any other macro
-		parameter: it is a piece of source, put in wherever <span class="pre">self</span> appears in the macro's logic,
-		and evaluated as many times as it appears. That is why <span class="pre">orElse</span> captures it into a variable
-		first. A macro method with no parameters beyond <span class="pre">self</span> is used as the bare member name,
-		<span class="pre">m.isSet</span>, or with an empty argument list.</p>
+	<p><span class="pre">self</span> is written bare, with no type and no <span class="pre">lazy</span>: it stands for
+		the receiver expression as it is, a piece of source put in wherever <span class="pre">self</span> appears in the
+		macro's logic, and evaluated as many times as it appears. That is why <span class="pre">orElse</span> captures it
+		into a variable first. A macro method with no parameters beyond <span class="pre">self</span> is used as the bare
+		member name, <span class="pre">m.isSet</span>, or with an empty argument list. A macro method with type
+		parameters, <span class="pre">macro scaled[T][self, k: T]</span>, is given them in brackets after its name, as a
+		generic method is: <span class="pre">m.scaled[i32](2)</span>.</p>
 	<p>Inside the macro's logic, the type's fields and methods are reached through <span class="pre">self</span>, as
 		in <span class="pre">self.value</span>, and never by their bare names. The logic expands into whichever function
 		uses the macro, so it may reach the type's private members through <span class="pre">self</span> just as a method

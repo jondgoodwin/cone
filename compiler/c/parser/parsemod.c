@@ -1473,7 +1473,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
 
         // 'macro'
         case MacroToken: {
-            MacroDclNode *macro = parseMacro(parse);
+            MacroDclNode *macro = parseMacro(parse, 0);
             macro->flags |= pubflag;
             modAddNode(mod, macro->namesym, (INode*)macro);
             made = (INode*)macro;

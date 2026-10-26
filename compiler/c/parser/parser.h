@@ -217,8 +217,8 @@ void parseSkipDclBody();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse);
+// Parse a macro declaration; 'member' when it is declared in a type
+MacroDclNode *parseMacro(ParseState *parse, int member);
 // Parse a list of generic variables and add to the genericnode; a struct's
 // lifetimes among them go to '*lifes' (NULL refuses them), and a type
 // parameter's lifetime bounds, '[T + 'a]', to '*bounds' (NULL refuses them)
