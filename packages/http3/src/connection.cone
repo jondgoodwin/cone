@@ -1,0 +1,1531 @@
+// ======== The connection: HTTP/3 over QUIC's streams (RFC 9114, sections 4 to 6) ========
+//
+// A Connection is one HTTP/3 connection's protocol state, as plain data. It
+// sees QUIC as RFC 9114 does: numbered streams of bytes, each of which may
+// end or be reset, and the connection's close. Bytes, ends and resets come
+// in by the calls that say so; what to write, finish, reset, stop or close
+// goes out from pollTransmit; what happened comes from pollEvent. Every
+// stream's state is one record in one SlotTable, found from its number by a
+// Dict.
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A connection's bounds, each a field to change (see the package's header,
+// CONNECTION BOUNDS)
+pub struct Config {
+  pub qpack: QpackConfig;           // QPACK's bounds, SETTINGS_MAX_FIELD_SECTION_SIZE among them
+  pub maxRequestStreams: usize;     // request streams the peer may have open at once: what to advertise
+  pub maxControlFrames: usize;      // control-stream frames the peer may send in one second
+  pub streamBuffer: usize;          // bytes a stream holds that are not yet read or handed on
+  pub bodyWindow: usize;            // body bytes a stream hands out unreleased
+  pub writeWatermark: usize;        // bytes a stream holds to send before sendData hands a buffer back
+  pub grease: bool;                 // send a reserved setting and frame (section 7.2.8, 7.2.4.1)
+
+  // The defaults
+  pub fn make() Config {
+    Config(qpack: QpackConfig.make(), maxRequestStreams: 100usize, maxControlFrames: 10000usize,
+      streamBuffer: 32768usize, bodyWindow: 65536usize, writeWatermark: 65536usize, grease: true)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Events and transmits
+// ---------------------------------------------------------------------------
+
+// What happened (see the package's header, EVENTS)
+pub enum Event {
+  pub struct NeedData {}
+  pub struct Request {pub stream: u64; pub head: RequestHead; pub body: BodyLength;}
+  pub struct Response {pub stream: u64; pub head: ResponseHead; pub body: BodyLength;}
+  pub struct Interim {pub stream: u64; pub head: ResponseHead;}
+  pub struct Data {pub stream: u64; pub buf: IoBuf;}
+  pub struct End {pub stream: u64; pub trailers: Headers;}
+  pub struct Failed {pub stream: u64; pub error: HttpError;}
+  pub struct GoAway {pub id: u64;}
+  pub struct Closed {pub error: Option[HttpError];}
+}
+
+// What to do to the QUIC connection (see the package's header, TRANSMITS)
+pub enum Transmit {
+  pub struct Nothing {}
+  pub struct Write {pub stream: u64; pub data: Chain; pub fin: bool;}
+  pub struct Reset {pub stream: u64; pub code: u64;}
+  pub struct StopSending {pub stream: u64; pub code: u64;}
+  pub struct Close {pub code: u64; pub reason: String; pub graceful: bool;}
+}
+
+// ---------------------------------------------------------------------------
+// Streams
+// ---------------------------------------------------------------------------
+
+// What a stream the peer opened is
+enum StreamKind {
+  Request,      // a request stream (a client's bidirectional stream)
+  Untyped,      // a unidirectional stream whose type has not all arrived
+  Control,      // the peer's control stream
+  Encoder,      // the peer's QPACK encoder stream
+  Decoder,      // the peer's QPACK decoder stream
+  Ignored       // a unidirectional stream of a type not known: read and dropped
+}
+
+// Where reading a request stream has got to (section 4.1)
+enum ReadState {
+  Head,         // the HEADERS of the message (a client: of a response, interim ones first)
+  Body,         // DATA, or HEADERS of the trailers
+  Tail,         // the trailers came: nothing but unknown frames until the end
+  Done,         // the stream ended and the message was whole
+  Stopped       // reading was given up: what arrives is dropped
+}
+
+// Where sending on a request stream has got to
+enum WriteState {
+  Idle,         // a server's: no response begun
+  Body,         // a message's body, by sendData
+  Done          // the message is whole
+}
+
+// One stream the connection reads, or a request stream it reads and
+// writes: one record from its first byte to its end
+struct H3Stream {
+  id: u64;
+  kind: StreamKind;
+  input: Chain;             // what arrived and is not yet read or handed on
+  peerFin: bool;            // every byte of the peer's side has arrived
+  peerEnded: bool;          // the peer's side is over: read to its end, or reset
+  rs: ReadState;
+  frameLeft: u64;           // the payload left of the DATA frame being read, or of an unknown frame being skipped
+  inData: bool;             // ...which is a DATA frame's
+  hasLength: bool;          // the message gave a Content-Length...
+  remaining: u64;           // ...with these bytes still to come
+  noBody: bool;             // a response that has no body (to HEAD, a 204 or a 304)
+  outstanding: usize;       // body bytes handed out, not yet released
+  blocked: bool;            // a field section waits for QPACK's inserts
+  section: Option[List[HeaderField]];  // a section decoded once unblocked, waiting for pollEvent
+  accepted: bool;           // a request the program sees; false for one refused
+  reported: bool;           // its failure has been reported (or the program reset it)
+  isHead: bool;             // the request is a HEAD
+  requestSeen: bool;        // a server's: the request's head was handed on
+
+  ws: WriteState;
+  wSized: bool;             // the body being sent has a Content-Length...
+  wremaining: u64;          // ...with these bytes still to send
+  out: Chain;               // whole buffers ready to send, in order
+  tail: IoBuf;              // small writes gathering after them
+  fin: bool;                // the end of the stream goes with them
+  writeDone: bool;          // the end was sent, or the stream reset
+}
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;  // what is queued to send is bounded by writeWatermark instead
+const tailSize = 4096usize;               // the buffer small writes gather in
+const smallCopy = 1024usize;              // body buffers up to this are copied in beside a frame's head
+const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
+const headRoom = 16usize;                 // the longest frame head: two 8-byte integers
+
+fn newStream(id: u64, kind: StreamKind, buffer: usize) H3Stream {
+  H3Stream(id: id, kind: kind, input: Chain.make(buffer), peerFin: false, peerEnded: false,
+    rs: ReadState.Head, frameLeft: 0u64, inData: false, hasLength: false, remaining: 0u64,
+    noBody: false, outstanding: 0usize, blocked: false, section: None, accepted: true,
+    reported: false, isHead: false, requestSeen: false,
+    ws: WriteState.Idle, wSized: false, wremaining: 0u64, out: Chain.make(noBound),
+    tail: IoBuf.empty(), fin: false, writeDone: false)
+}
+
+// Append bytes to what a stream is to send, gathering small writes in its
+// tail
+fn putBytes(s: &mut H3Stream, bytes: &Array[u8]) {
+  var i = 0usize;
+  while i < bytes.len {
+    if s.tail.room() == 0usize {
+      flushTail(s);
+      s.tail = IoBuf(tailSize);
+    }
+    i = i + s.tail.append(&bytes[i ..< bytes.len]);
+  }
+}
+
+// A body buffer: copied in after what is gathered when small, else queued
+// whole after it, never copied
+fn putBuf(s: &mut H3Stream, buf: IoBuf) {
+  let n = buf.len();
+  if n <= smallCopy && n <= s.tail.room() {
+    s.tail.append(buf.view());
+    return;
+  }
+  flushTail(s);
+  let refused = s.out.push(buf);
+}
+
+// The tail, whole, queued; until the next byte there is none
+fn flushTail(s: &mut H3Stream) {
+  if s.tail.len() == 0usize {return;}
+  var t = IoBuf.empty();
+  t <-> s.tail;
+  let refused = s.out.push(t);
+}
+
+// The bytes a stream holds to send
+fn queuedOf(s: &H3Stream) usize {s.out.len() + s.tail.len()}
+
+// A list's bytes as a Chain of one buffer, the list emptied
+fn takeList(l: &mut List[u8]) Chain {
+  var b = IoBuf(l.len());
+  b.append(l.view());
+  l.clear();
+  var c = Chain.make(noBound);
+  let refused = c.push(b);
+  c
+}
+
+// The kind of failure an HTTP/3 error code names
+fn kindOfCode(code: u64) ErrorKind {
+  if code == h3ExcessiveLoad {ErrorKind.TooLarge}
+  else if code == h3RequestRejected {ErrorKind.Refused}
+  else if code == h3RequestCancelled {ErrorKind.Reset}
+  else if code == h3NoError {ErrorKind.Closed}
+  else {ErrorKind.Malformed}
+}
+
+fn copyError(e: &HttpError) HttpError {
+  HttpError(e.kind, e.status, e.noResponse, e.detail.copy(), e.code, e.scope)
+}
+
+// ---------------------------------------------------------------------------
+// The connection
+// ---------------------------------------------------------------------------
+
+// One HTTP/3 connection's protocol state (see the package's header)
+pub struct Connection is Move {
+  clientRole: bool;
+  cfg: Config;
+  now: Instant;              // the time the last call brought
+  enc: QpackEncoder;         // our field sections, and our encoder stream
+  dec: QpackDecoder;         // the peer's field sections, and our decoder stream
+  streams: SlotTable[H3Stream];
+  ids: Dict[u64, Slot];      // each stream's record, by its number
+  requestRecords: usize;     // request streams with a record, refused ones too
+  activeRequests: usize;     // ...and those not refused
+
+  // Our own unidirectional streams, by number, and what each has to send
+  controlId: u64;
+  encoderId: u64;
+  decoderId: u64;
+  controlOut: List[u8];
+  encoderOut: List[u8];
+  decoderOut: List[u8];
+  nextRequest: u64;          // a client's next request stream
+  nextUnseen: u64;           // a server's: the lowest request stream above every one seen
+
+  // What the peer has said
+  peerControl: bool;         // it has opened its control stream...
+  peerEncoder: bool;         // ...its encoder stream...
+  peerDecoder: bool;         // ...its decoder stream
+  settingsIn: bool;          // its SETTINGS arrived
+  peer: Settings;
+  goAwaySent: bool;
+  goAwaySentId: u64;
+  goAwayIn: bool;
+  goAwayInId: u64;
+  maxPushIn: bool;           // a server's: the client's MAX_PUSH_ID
+  maxPushId: u64;
+  windowAt: Instant;         // the second control-stream frames are counted in...
+  windowFrames: usize;       // ...and how many have come in it
+
+  // Out and up
+  commands: Deque[Transmit]; // resets, stops and the close, ahead of the writes
+  events: Deque[Event];      // failures and GOAWAYs, ahead of the streams' events
+  rr: usize;                 // the stream after the last one pollEvent served
+  wrr: usize;                // the stream after the last one pollTransmit served
+
+  // The end
+  closed: bool;              // nothing more is read, sent or reported but Closed
+  gone: bool;                // the transport closed: what arrived whole is still read
+  failure: Option[HttpError];
+
+  // A client connection: its control and QPACK streams open at once (2, 6
+  // and 10), its requests on 0, 4, 8, ...
+  pub fn client(cfg: Config, now: Instant) Connection {Connection.make(true, cfg, now)}
+
+  // A server connection: its control and QPACK streams open at once (3, 7
+  // and 11)
+  pub fn server(cfg: Config, now: Instant) Connection {Connection.make(false, cfg, now)}
+
+  fn make(client: bool, cfg: Config, now: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Connection {
+    if cfg.streamBuffer < cfg.qpack.maxFieldSectionSize + headRoom {
+      panic("http3: streamBuffer must hold a whole HEADERS frame (maxFieldSectionSize and 16)", file, line);
+    }
+    let base = if client {2u64} else {3u64};
+    var control = List[u8].empty();
+    encodeVarint(&mut control, streamControl);
+    var ids = List[u64].empty();
+    var values = List[u64].empty();
+    ids.push(settingQpackMaxTableCapacity);
+    values.push(u64.from(cfg.qpack.maxTableCapacity));
+    ids.push(settingMaxFieldSectionSize);
+    values.push(u64.from(cfg.qpack.maxFieldSectionSize));
+    ids.push(settingQpackBlockedStreams);
+    values.push(u64.from(cfg.qpack.blockedStreams));
+    if cfg.grease {
+      ids.push(greaseValue);
+      values.push(0u64);
+    }
+    encodeSettings(&mut control, ids.view(), values.view());
+    if cfg.grease {encodeFrameHead(&mut control, greaseValue, 0u64);}
+    var encOut = List[u8].empty();
+    encodeVarint(&mut encOut, streamEncoder);
+    var decOut = List[u8].empty();
+    encodeVarint(&mut decOut, streamDecoder);
+    Connection(clientRole: client, cfg: cfg, now: now,
+      enc: QpackEncoder.make(&cfg.qpack), dec: QpackDecoder.make(cfg.qpack),
+      streams: SlotTable[H3Stream].make(16u32), ids: Dict[u64, Slot].empty(),
+      requestRecords: 0usize, activeRequests: 0usize,
+      controlId: base, encoderId: base + 4u64, decoderId: base + 8u64,
+      controlOut: control, encoderOut: encOut, decoderOut: decOut,
+      nextRequest: 0u64, nextUnseen: 0u64,
+      peerControl: false, peerEncoder: false, peerDecoder: false, settingsIn: false,
+      peer: Settings.defaults(), goAwaySent: false, goAwaySentId: 0u64, goAwayIn: false,
+      goAwayInId: 0u64, maxPushIn: false, maxPushId: 0u64, windowAt: now, windowFrames: 0usize,
+      commands: Deque[Transmit].empty(), events: Deque[Event].empty(), rr: 0usize, wrr: 0usize,
+      closed: false, gone: false, failure: None)
+  }
+
+  pub fn isClient(self: &) bool {clientRole}
+
+  // ------------------------------------------------------------- input
+
+  // Bytes that arrived on a stream at 'at', and whether they are its last
+  // (an empty buffer with fin: the stream ended). A stream the peer opens
+  // begins with its first bytes. More than readCredit(stream) is a program
+  // error, a panic
+  pub fn handleStream(self: &mut, stream: u64, buf: IoBuf, fin: bool, at: Instant,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    now = at;
+    if closed || gone {return;}
+    var slot = Slot.none();
+    match ids.getCopy(&stream) {
+      case let Some(sl) {slot = sl;}
+      case is None[Slot] {slot = self.peerStream(stream);}
+    }
+    if slot.isNone() {return;}
+    let i = usize.from(slot.index);
+    let s = streams.at(slot.index) as &mut H3Stream;
+    if s.kind == StreamKind.Request {
+      if s.rs == ReadState.Stopped || s.rs == ReadState.Done {
+        if fin {s.peerEnded = true;}
+      } else {
+        self.take(s, buf, file, line);
+        if fin {s.peerFin = true;}
+      }
+    } else if s.kind == StreamKind.Untyped {
+      self.take(s, buf, file, line);
+      self.typeStream(s);
+    } else if s.kind == StreamKind.Control {
+      self.take(s, buf, file, line);
+      self.readControl(s);
+    } else if s.kind == StreamKind.Encoder {
+      self.encoderBytes(buf.view());
+    } else if s.kind == StreamKind.Decoder {
+      self.decoderBytes(buf.view());
+    }
+    if fin && !closed {self.uniEnded(s);}
+    self.reap(i);
+  }
+
+  // The peer reset its side of a stream (QUIC's RESET_STREAM) with code
+  pub fn handleReset(self: &mut, stream: u64, code: u64, at: Instant) {
+    now = at;
+    if closed || gone {return;}
+    var slot = Slot.none();
+    match ids.getCopy(&stream) {
+      case let Some(sl) {slot = sl;}
+      case is None[Slot] {return;}
+    }
+    let i = usize.from(slot.index);
+    let s = streams.at(slot.index) as &mut H3Stream;
+    if s.kind == StreamKind.Request {
+      s.peerEnded = true;
+      if s.rs != ReadState.Done && s.rs != ReadState.Stopped {
+        let kind = if code == h3RequestRejected {ErrorKind.Refused} else {ErrorKind.Reset};
+        let e = HttpError(kind, 0u16, clientRole && s.rs == ReadState.Head,
+          String.from("the peer reset the stream"), Some[u64](code), ErrorScope.Stream);
+        self.endStream(s, e, h3RequestCancelled);
+      }
+    } else if s.kind == StreamKind.Control {
+      self.fail(h3ClosedCriticalStream, "the peer's control stream was reset");
+    } else if s.kind == StreamKind.Encoder {
+      let e = dec.encoderStreamClosed();
+      self.qpackFail(&e);
+    } else if s.kind == StreamKind.Decoder {
+      let e = enc.decoderStreamClosed();
+      self.qpackFail(&e);
+    } else {
+      // A unidirectional stream may be reset before its type arrives (section 6.2)
+      s.peerEnded = true;
+    }
+    self.reap(i);
+  }
+
+  // The peer asked us to stop sending on a stream (QUIC's STOP_SENDING)
+  // with code: its side is reset with that code. H3_NO_ERROR is a server
+  // saying it needs no more of a request it has answered (section 4.1);
+  // any other code fails the exchange
+  pub fn handleStopSending(self: &mut, stream: u64, code: u64, at: Instant) {
+    now = at;
+    if closed || gone {return;}
+    if stream == controlId || stream == encoderId || stream == decoderId {
+      self.fail(h3ClosedCriticalStream, "the peer asked to stop one of our critical streams");
+      return;
+    }
+    var slot = Slot.none();
+    match ids.getCopy(&stream) {
+      case let Some(sl) {slot = sl;}
+      case is None[Slot] {return;}
+    }
+    let i = usize.from(slot.index);
+    let s = streams.at(slot.index) as &mut H3Stream;
+    if s.kind != StreamKind.Request || s.writeDone {return;}
+    self.dropOutput(s);
+    s.writeDone = true;
+    s.ws = WriteState.Done;
+    commands.push(Transmit.Reset(s.id, code));
+    if code != h3NoError && !s.reported && s.rs != ReadState.Done && s.rs != ReadState.Stopped {
+      let e = HttpError(kindOfCode(code), 0u16, clientRole && s.rs == ReadState.Head,
+        String.from("the peer asked to stop sending"), Some[u64](code), ErrorScope.Stream);
+      self.endStream(s, e, h3RequestCancelled);
+    }
+    self.reap(i);
+  }
+
+  // The QUIC connection closed, by the peer's CONNECTION_CLOSE with code or
+  // the transport's own end (an idle timeout): every exchange still open
+  // fails, and so does the connection unless it ended cleanly (H3_NO_ERROR
+  // with nothing open)
+  pub fn handleClose(self: &mut, code: u64, at: Instant) {
+    now = at;
+    if closed || gone {return;}
+    gone = true;
+    commands.clear();
+    // What arrived whole is still read; every other exchange fails
+    var cut = false;
+    var i = 0usize;
+    while i < streams.bound() {
+      if streams.isLive(u32.from(i)) {
+        let s = streams.at(u32.from(i)) as &H3Stream;
+        if s.kind == StreamKind.Request && s.accepted && !s.reported && !wholeIn(s) {cut = true;}
+      }
+      i = i + 1usize;
+    }
+    if code == h3NoError && !cut {return;}
+    let e = HttpError.coded(kindOfCode(code), code, ErrorScope.Connection, "the connection closed");
+    self.failAll(&e, true);
+    failure = Some[HttpError](e);
+  }
+
+  // How many more bytes handleStream will take on a stream now
+  pub fn readCredit(self: &, stream: u64) usize {
+    if closed || gone {return 0usize;}
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let s = streams.at(sl.index) as &H3Stream;
+        if s.kind == StreamKind.Ignored || s.kind == StreamKind.Encoder || s.kind == StreamKind.Decoder ||
+            s.rs == ReadState.Stopped {
+          return cfg.streamBuffer;
+        }
+        let held = s.input.len();
+        return if held >= cfg.streamBuffer {0usize} else {cfg.streamBuffer - held};
+      }
+      case is None[Slot] {return cfg.streamBuffer;}
+    }
+  }
+
+  // The consumer is done with n bytes of a stream's body that Data events
+  // handed out
+  pub fn release(self: &mut, stream: u64, n: usize) {
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let s = streams.at(sl.index) as &mut H3Stream;
+        s.outstanding = if n >= s.outstanding {0usize} else {s.outstanding - n};
+      }
+      case is None[Slot] {}
+    }
+  }
+
+  // ------------------------------------------------------------- output
+
+  // The next thing to do to the QUIC connection: Nothing when there is none
+  pub fn pollTransmit(self: &mut, at: Instant) Transmit {
+    now = at;
+    match commands.popFront() {
+      case let Some(c) {return c;}
+      case is None[Transmit] {}
+    }
+    if closed || gone {return Transmit.Nothing;}
+    if controlOut.len() > 0usize {return Transmit.Write(controlId, takeList(&mut controlOut), false);}
+    // The encoder stream ahead of the sections that name its inserts
+    enc.pollTransmit(&mut encoderOut);
+    if encoderOut.len() > 0usize {return Transmit.Write(encoderId, takeList(&mut encoderOut), false);}
+    dec.pollTransmit(&mut decoderOut);
+    if decoderOut.len() > 0usize {return Transmit.Write(decoderId, takeList(&mut decoderOut), false);}
+    // The request streams take turns, a stream's whole queue at each
+    let n = streams.bound();
+    var k = 0usize;
+    var found = n;
+    while k < n && found == n {
+      let i = (wrr + k) % n;
+      k = k + 1usize;
+      if streams.isLive(u32.from(i)) {
+        let s = streams.at(u32.from(i)) as &H3Stream;
+        if s.kind == StreamKind.Request && !s.writeDone && (queuedOf(s) > 0usize || s.fin) {found = i;}
+      }
+    }
+    if found < n {
+      let s = streams.at(u32.from(found)) as &mut H3Stream;
+      flushTail(s);
+      // The queue is taken whole: empty is what it is next
+      var data = Chain.make(noBound);
+      data <-> s.out;
+      let fin = s.fin;
+      if fin {
+        s.fin = false;
+        s.writeDone = true;
+      }
+      let id = s.id;
+      wrr = (found + 1usize) % n;
+      self.reap(found);
+      return Transmit.Write(id, data, fin);
+    }
+    // Draining after a GOAWAY: once no request is open, the connection ends
+    if (goAwaySent || (clientRole && goAwayIn)) && activeRequests == 0usize {
+      closed = true;
+      return Transmit.Close(h3NoError, String.empty(), true);
+    }
+    Transmit.Nothing
+  }
+
+  // HTTP/3 keeps no deadline of its own (QUIC's idle timeout is the
+  // transport's): None. Here so a driver holds this core as it holds http1's
+  pub fn pollTimeout(self: &) Option[Instant] {None}
+  pub fn handleTimeout(self: &mut, at: Instant) {now = at;}
+
+  // ------------------------------------------------------------- events
+
+  // The next event (see the package's header, EVENTS)
+  pub fn pollEvent(self: &mut) Event {
+    while true {
+      match events.popFront() {
+        case let Some(e) {return e;}
+        case is None[Event] {}
+      }
+      if closed {
+        // The failure is reported once: none is what is left after
+        var f: Option[HttpError] = None;
+        f <-> failure;
+        return Event.Closed(f);
+      }
+      // The request streams take turns, one event at each
+      let n = streams.bound();
+      var k = 0usize;
+      var more = false;
+      var got: Option[Event] = None;
+      while k < n && !more {
+        let i = (rr + k) % n;
+        k = k + 1usize;
+        if streams.isLive(u32.from(i)) {
+          let s = streams.at(u32.from(i)) as &mut H3Stream;
+          if s.kind == StreamKind.Request && s.accepted {
+            var hit = false;
+            match self.step(s) {
+              case let Some(e) {
+                got = Some[Event](e);
+                hit = true;
+              }
+              case is None[Event] {}
+            }
+            self.reap(i);
+            if hit {
+              rr = (i + 1usize) % n;
+              more = true;
+            } else if events.len() > 0usize || closed {
+              more = true;
+            }
+          }
+        }
+      }
+      match got {
+        case let Some(e) {return e;}
+        case is None[Event] {}
+      }
+      if !more {
+        // The transport gone, what had arrived whole has been read: the end
+        if !gone {return Event.NeedData;}
+        closed = true;
+      }
+    }
+    Event.NeedData
+  }
+
+  // ------------------------------------------------------------- sending
+
+  // Whether a request may be sent now: a client, open, and no GOAWAY sent
+  // or received
+  pub fn canSendRequest(self: &) bool {clientRole && !closed && !gone && !goAwaySent && !goAwayIn}
+
+  // A client's request on a new request stream, whose number is returned:
+  // its head now, its body (if any) by sendData and finish. Anything but
+  // canSendRequest() is a program error, a panic
+  pub fn sendRequest(self: &mut, head: RequestHead, body: BodyLength,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) u64 {
+    if !clientRole {panic("http3: sendRequest on a server's connection", file, line);}
+    if !self.canSendRequest() {panic("http3: sendRequest after a GOAWAY or the connection's end", file, line);}
+    let id = nextRequest;
+    nextRequest = nextRequest + 4u64;
+    var fields = List[HeaderField].empty();
+    requestFields(&head, &body, &mut fields, file, line);
+    var s = newStream(id, StreamKind.Request, cfg.streamBuffer);
+    s.isHead = head.method == Method.Head;
+    self.putSection(&mut s, &fields);
+    if body.isUnsized() || (body.isSized() && body.length > 0u64) {
+      s.ws = WriteState.Body;
+      s.wSized = body.isSized();
+      s.wremaining = body.length;
+    } else {
+      s.ws = WriteState.Done;
+      s.fin = true;
+    }
+    let slot = streams.add(s);
+    let previous = ids.insert(id, slot);
+    requestRecords = requestRecords + 1usize;
+    activeRequests = activeRequests + 1usize;
+    id
+  }
+
+  // A server's response on the stream its request came on: its head now,
+  // its body (if any) by sendData and finish. A stream with no request
+  // handed on, or already answered, is a program error; one reset or gone,
+  // or a closed connection, takes nothing
+  pub fn sendResponse(self: &mut, stream: u64, head: ResponseHead, body: BodyLength,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if clientRole {panic("http3: sendResponse on a client's connection", file, line);}
+    if head.status < 200u16 || head.status > 599u16 {panic("http3: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
+    if closed || gone {return;}
+    let sl = self.writable(stream);
+    if sl.isNone() {return;}
+    let r = streams.at(sl.index) as &mut H3Stream;
+    if !r.requestSeen || r.ws != WriteState.Idle {panic("http3: sendResponse with no request awaiting one", file, line);}
+    self.respond(r, head, body, file, line);
+  }
+
+  // A server's interim response, a 1xx other than 101, before its final one
+  pub fn sendInterim(self: &mut, stream: u64, head: ResponseHead,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if clientRole {panic("http3: sendInterim on a client's connection", file, line);}
+    if head.status < 100u16 || head.status > 199u16 || head.status == 101u16 {panic("http3: sendInterim takes a 1xx other than 101", file, line);}
+    if closed || gone {return;}
+    let sl = self.writable(stream);
+    if sl.isNone() {return;}
+    let r = streams.at(sl.index) as &mut H3Stream;
+    if !r.requestSeen || r.ws != WriteState.Idle {panic("http3: sendInterim with no request awaiting a response", file, line);}
+    var fields = List[HeaderField].empty();
+    let none = BodyLength.empty();
+    responseFields(&head, &none, &mut fields, file, line);
+    self.putSection(r, &fields);
+  }
+
+  // Body bytes on a stream, moved in: None once they are queued (or dropped,
+  // when the stream was reset or the connection closed), or Some(buf) back
+  // when the stream holds writeWatermark bytes to send. Sending with no
+  // body under way, or past a Content-Length, is a program error
+  pub fn sendData(self: &mut, stream: u64, buf: IoBuf,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    if closed || gone {return None;}
+    let sl = self.writable(stream);
+    if sl.isNone() {return None;}
+    let s = streams.at(sl.index) as &mut H3Stream;
+    if s.ws != WriteState.Body {panic("http3: sendData with no body being sent", file, line);}
+    let n = buf.len();
+    if n == 0usize {return None;}
+    if s.wSized && u64.from(n) > s.wremaining {panic("http3: sendData past the body's Content-Length", file, line);}
+    let q = queuedOf(s);
+    if q > 0usize && q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
+    var head = List[u8].empty();
+    encodeFrameHead(&mut head, frameData, u64.from(n));
+    putBytes(s, head.view());
+    putBuf(s, buf);
+    if s.wSized {s.wremaining = s.wremaining - u64.from(n);}
+    None
+  }
+
+  // The body is whole, and the stream ends
+  pub fn finish(self: &mut, stream: u64, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.finishWith(stream, Headers.empty(), file, line);
+  }
+
+  // The body is whole, these trailer fields follow it, and the stream ends.
+  // Short of a Content-Length is a program error; already whole, reset or
+  // gone, nothing happens
+  pub fn finishWith(self: &mut, stream: u64, trailers: Headers,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if closed || gone {return;}
+    let sl = self.writable(stream);
+    if sl.isNone() {return;}
+    let s = streams.at(sl.index) as &mut H3Stream;
+    if s.ws == WriteState.Idle {panic("http3: finish with no message begun", file, line);}
+    if s.ws == WriteState.Done {return;}
+    if s.wSized && s.wremaining != 0u64 {panic("http3: finish short of the body's Content-Length", file, line);}
+    if !trailers.isEmpty() {
+      var fields = List[HeaderField].empty();
+      trailerFields(&trailers, &mut fields, file, line);
+      self.putSection(s, &fields);
+    }
+    s.ws = WriteState.Done;
+    s.fin = true;
+  }
+
+  // Give up one exchange: its stream is reset and reading it stopped, both
+  // with code (H3_REQUEST_CANCELLED, as a client cancelling a request does,
+  // section 4.1.1). No event follows for it
+  pub fn reset(self: &mut, stream: u64, code: u64 = h3RequestCancelled) {
+    if closed || gone {return;}
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let s = streams.at(sl.index) as &mut H3Stream;
+        if s.kind != StreamKind.Request {return;}
+        s.reported = true;
+        self.stopReading(s, code);
+        self.stopWriting(s, code);
+        self.reap(usize.from(sl.index));
+      }
+      case is None[Slot] {}
+    }
+  }
+
+  // Begin a graceful end (section 5.2): GOAWAY goes out, no request is sent
+  // or taken after it, and once the requests open have finished the
+  // connection closes with H3_NO_ERROR. A server's GOAWAY names the lowest
+  // request stream it has not seen, a client's push ID 0 (it allows no
+  // pushes)
+  pub fn goAway(self: &mut) {
+    if closed || gone || goAwaySent {return;}
+    let id = if clientRole {0u64} else {nextUnseen};
+    encodeIdFrame(&mut controlOut, frameGoAway, id);
+    goAwaySent = true;
+    goAwaySentId = id;
+  }
+
+  // End the connection now with code, every exchange open failing
+  pub fn abort(self: &mut, code: u64 = h3NoError) {
+    if closed || gone {return;}
+    let e = HttpError.coded(ErrorKind.Closed, code, ErrorScope.Connection, "the connection was aborted");
+    self.failAll(&e, false);
+    commands.clear();
+    commands.push(Transmit.Close(code, String.from("aborted"), false));
+    failure = Some[HttpError](e);
+    closed = true;
+  }
+
+  // How many more bytes sendData takes on a stream before it hands one back
+  pub fn writeRoom(self: &, stream: u64) usize {
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let q = queuedOf(streams.at(sl.index) as &H3Stream);
+        return if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q};
+      }
+      case is None[Slot] {return 0usize;}
+    }
+  }
+
+  // ------------------------------------------------------------- asking
+
+  pub fn isClosed(self: &) bool {closed || gone}
+
+  // Request streams open: those the program sees, then every one with a
+  // record (refused ones awaiting the peer's reset too)
+  pub fn openRequests(self: &) usize {activeRequests}
+  pub fn requestStreamRecords(self: &) usize {requestRecords}
+
+  // Whether the peer's SETTINGS arrived, and what they said
+  pub fn settingsReceived(self: &) bool {settingsIn}
+  pub fn peerSettings(self: &) &Settings {&peer}
+
+  // The GOAWAY id received, or None
+  pub fn goAwayReceived(self: &) Option[u64] {if goAwayIn {Some[u64](goAwayInId)} else {None}}
+
+  // The QPACK ends, to look at their tables
+  pub fn qpackEncoder(self: &) &QpackEncoder {&enc}
+  pub fn qpackDecoder(self: &) &QpackDecoder {&dec}
+
+  // ------------------------------------------------------------- inside: streams
+
+  // Take bytes into a stream's input. Past its bound is a program error
+  fn take(self: &mut, s: &mut H3Stream, buf: IoBuf, file: &Array[u8], line: u32) {
+    match s.input.push(buf) {
+      case let Some(b) {panic("http3: handleStream past the stream's read credit", file, line);}
+      case is None[IoBuf] {}
+    }
+  }
+
+  // A stream the peer opened, seen for the first time: its record's Slot,
+  // or Slot.none() when it is refused or not the peer's to open
+  fn peerStream(self: &mut, id: u64) Slot {
+    let cls = id & 3u64;
+    if cls == 0u64 || cls == 1u64 {
+      if clientRole {
+        // A server never opens a bidirectional stream (section 6.1); a
+        // client's own request streams are found by their record, so one
+        // without is done with
+        if cls == 1u64 {self.fail(h3StreamCreationError, "a server-initiated bidirectional stream");}
+        return Slot.none();
+      }
+      if cls == 1u64 {return Slot.none();}
+      return self.newRequest(id);
+    }
+    let theirs = if clientRole {3u64} else {2u64};
+    if cls != theirs {return Slot.none();}
+    let slot = streams.add(newStream(id, StreamKind.Untyped, cfg.streamBuffer));
+    let previous = ids.insert(id, slot);
+    slot
+  }
+
+  // A server's new request stream. Past maxRequestStreams it is refused at
+  // once, with no record; at or past the id of a GOAWAY we sent it is
+  // refused and kept until the peer's side ends, its bytes dropped. Either
+  // way H3_REQUEST_REJECTED: not processed, safe to retry
+  fn newRequest(self: &mut, id: u64) Slot {
+    if id + 4u64 > nextUnseen {nextUnseen = id + 4u64;}
+    if requestRecords >= cfg.maxRequestStreams {
+      commands.push(Transmit.StopSending(id, h3RequestRejected));
+      commands.push(Transmit.Reset(id, h3RequestRejected));
+      return Slot.none();
+    }
+    var s = newStream(id, StreamKind.Request, cfg.streamBuffer);
+    if goAwaySent && id >= goAwaySentId {
+      s.accepted = false;
+      s.reported = true;
+      s.rs = ReadState.Stopped;
+      s.ws = WriteState.Done;
+      s.writeDone = true;
+      commands.push(Transmit.StopSending(id, h3RequestRejected));
+      commands.push(Transmit.Reset(id, h3RequestRejected));
+    } else {
+      activeRequests = activeRequests + 1usize;
+    }
+    requestRecords = requestRecords + 1usize;
+    let slot = streams.add(s);
+    let previous = ids.insert(id, slot);
+    slot
+  }
+
+  // A stream's record, if it is over, is removed: a request stream once
+  // both sides are (the peer's read to its end or reset, ours finished or
+  // reset, and everything taken), any other once the peer's side is
+  fn reap(self: &mut, i: usize) {
+    if !streams.isLive(u32.from(i)) {return;}
+    let s = streams.at(u32.from(i)) as &H3Stream;
+    var done = false;
+    if s.kind == StreamKind.Request {
+      done = s.peerEnded && (s.rs == ReadState.Done || s.rs == ReadState.Stopped) && s.writeDone;
+    } else if s.kind == StreamKind.Untyped || s.kind == StreamKind.Ignored {
+      done = s.peerEnded;
+    }
+    if !done {return;}
+    let forgotten = ids.remove(&s.id);
+    if s.kind == StreamKind.Request {
+      requestRecords = requestRecords - 1usize;
+      if s.accepted {activeRequests = activeRequests - 1usize;}
+    }
+    let removed = streams.removeAt(u32.from(i));
+  }
+
+  // The Slot of a request stream the program may write on, or Slot.none()
+  fn writable(self: &, stream: u64) Slot {
+    match ids.getCopy(&stream) {
+      case let Some(sl) {
+        let r = streams.at(sl.index) as &H3Stream;
+        if r.kind == StreamKind.Request && r.accepted && !r.reported && !r.writeDone {return sl;}
+      }
+      case is None[Slot] {}
+    }
+    Slot.none()
+  }
+
+  // A field list as one field section, in a HEADERS frame, on a stream
+  fn putSection(self: &mut, s: &mut H3Stream, fields: &List[HeaderField]) {
+    var sec = List[u8].empty();
+    enc.encode(s.id, fields.view(), &mut sec);
+    var head = List[u8].empty();
+    encodeFrameHead(&mut head, frameHeaders, u64.from(sec.len()));
+    putBytes(s, head.view());
+    putBytes(s, sec.view());
+  }
+
+  // A server's final response, its body to follow (or not)
+  fn respond(self: &mut, s: &mut H3Stream, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
+    let status = head.status;
+    let noBody = s.isHead || status == 204u16 || status == 304u16;
+    var fields = List[HeaderField].empty();
+    let said = if status == 204u16 {BodyLength.empty()} else {body};
+    responseFields(&head, &said, &mut fields, file, line);
+    self.putSection(s, &fields);
+    if noBody || body.isEmpty() || (body.isSized() && body.length == 0u64) {
+      s.ws = WriteState.Done;
+      s.fin = true;
+    } else {
+      s.ws = WriteState.Body;
+      s.wSized = body.isSized();
+      s.wremaining = body.length;
+    }
+  }
+
+  fn dropOutput(self: &mut, s: &mut H3Stream) {
+    s.out = Chain.make(noBound);
+    s.tail = IoBuf.empty();
+    s.fin = false;
+  }
+
+  // Reading a stream is given up: what it holds and what arrives is
+  // dropped, QPACK forgets its sections (telling the peer's encoder), and
+  // the peer is asked to stop, unless its side is over
+  fn stopReading(self: &mut, s: &mut H3Stream, code: u64) {
+    if s.rs == ReadState.Done || s.rs == ReadState.Stopped {return;}
+    s.rs = ReadState.Stopped;
+    s.input.advance(s.input.len());
+    s.blocked = false;
+    s.section = None;
+    s.frameLeft = 0u64;
+    dec.cancelStream(s.id);
+    // Every byte arrived already: there is nothing to stop, and the peer's
+    // side is over
+    if s.peerFin {s.peerEnded = true;}
+    if !s.peerEnded {commands.push(Transmit.StopSending(s.id, code));}
+  }
+
+  // Sending on a stream is given up: what it holds is dropped and its side
+  // reset, unless the message was whole and its end already sent
+  fn stopWriting(self: &mut, s: &mut H3Stream, code: u64) {
+    if s.writeDone {return;}
+    self.dropOutput(s);
+    s.ws = WriteState.Done;
+    s.writeDone = true;
+    commands.push(Transmit.Reset(s.id, code));
+  }
+
+  // One exchange fails with e (a stream error, section 8): reading stops,
+  // sending stops unless the message sent is whole, both with code, and the
+  // failure is reported once, if the program knows of the exchange
+  fn endStream(self: &mut, s: &mut H3Stream, e: HttpError, code: u64) {
+    self.stopReading(s, code);
+    if s.ws != WriteState.Done {self.stopWriting(s, code);}
+    if !s.reported && s.accepted {
+      s.reported = true;
+      if self.known(s) {events.push(Event.Failed(s.id, e));}
+    }
+  }
+
+  // Whether the program knows of a request stream: a client's own, a
+  // server's once its request was handed on
+  fn known(self: &, s: &H3Stream) bool {clientRole || s.requestSeen}
+
+  // A malformed message (section 4.1.2): the stream's H3_MESSAGE_ERROR
+  fn messageError(self: &mut, s: &mut H3Stream, why: &str) {
+    let status = if clientRole {0u16} else {400u16};
+    let e = HttpError(ErrorKind.Malformed, status, clientRole && s.rs == ReadState.Head,
+      String.from(why), Some[u64](h3MessageError), ErrorScope.Stream);
+    self.endStream(s, e, h3MessageError);
+  }
+
+  // A field section past maxFieldSectionSize: a server answers a request's
+  // head that is too large with 431 (Request Header Fields Too Large), the
+  // program never seeing it; the stream is then stopped, and reset unless
+  // its message went whole, with H3_EXCESSIVE_LOAD
+  fn sectionTooLarge(self: &mut, s: &mut H3Stream) {
+    if !clientRole && !s.requestSeen && s.ws == WriteState.Idle && !s.writeDone {
+      self.respond(s, ResponseHead.make(431u16), BodyLength.empty(), srcFile(), srcLine());
+    }
+    let e = HttpError(ErrorKind.TooLarge, if clientRole {0u16} else {431u16}, clientRole && s.rs == ReadState.Head,
+      String.from("a field section past maxFieldSectionSize"), Some[u64](h3ExcessiveLoad), ErrorScope.Stream);
+    self.endStream(s, e, h3ExcessiveLoad);
+  }
+
+  // CONNECT, which this core does not support, answered 501 (Not
+  // Implemented) by the core itself, as http1 and http2 answer it: the
+  // response ends the stream, and the rest of the request is not wanted
+  // (STOP_SENDING with H3_NO_ERROR, section 4.1, unless it had all
+  // arrived). The program never sees it
+  fn answerConnect(self: &mut, s: &mut H3Stream) {
+    self.respond(s, ResponseHead.make(501u16), BodyLength.empty(), srcFile(), srcLine());
+    s.reported = true;
+    self.stopReading(s, h3NoError);
+  }
+
+  // ------------------------------------------------------------- inside: reading a request stream
+
+  // The next event of one request stream, or None when it has none now
+  fn step(self: &mut, s: &mut H3Stream) Option[Event] {
+    while !closed {
+      if s.rs == ReadState.Done || s.rs == ReadState.Stopped || s.blocked {return None;}
+      // A section QPACK decoded once its inserts came: taken, none left
+      var sec: Option[List[HeaderField]] = None;
+      sec <-> s.section;
+      match sec {
+        case let Some(fields) {return self.headed(s, fields);}
+        case is None[List[HeaderField]] {}
+      }
+      if s.frameLeft > 0u64 {
+        if s.input.len() == 0usize {
+          if s.peerFin {return self.cutOff();}
+          return None;
+        }
+        if !s.inData {
+          // An unknown frame's payload, skipped as it arrives
+          let n = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
+          s.input.advance(n);
+          s.frameLeft = s.frameLeft - u64.from(n);
+          continue;
+        }
+        if s.outstanding >= cfg.bodyWindow {return None;}
+        return Some[Event](self.deliver(s));
+      }
+      var h = FrameHead(0u64, 0u64, 0usize);
+      match peekFrameHead(&s.input) {
+        case let Some(x) {h = x;}
+        case is None[FrameHead] {
+          if !s.peerFin {return None;}
+          if s.input.len() > 0usize {return self.cutOff();}
+          return self.ended(s);
+        }
+      }
+      if h.kind == frameData {
+        if s.rs == ReadState.Head {return self.unexpected("a DATA frame before the message's HEADERS");}
+        if s.rs == ReadState.Tail {return self.unexpected("a DATA frame after the trailers");}
+        if s.noBody && h.length > 0u64 {
+          self.messageError(s, "DATA in a response that has no body");
+          return None;
+        }
+        if s.hasLength && h.length > s.remaining {
+          self.messageError(s, "DATA past the Content-Length");
+          return None;
+        }
+        s.input.advance(h.size);
+        s.frameLeft = h.length;
+        s.inData = true;
+        continue;
+      }
+      if h.kind == frameHeaders {
+        if s.rs == ReadState.Tail {return self.unexpected("a HEADERS frame after the trailers");}
+        // Refused from its head, before its payload is held
+        if h.length > u64.from(cfg.qpack.maxFieldSectionSize) {
+          self.sectionTooLarge(s);
+          return None;
+        }
+        let whole = h.size + usize.from(h.length);
+        if s.input.len() < whole {
+          if s.peerFin {return self.cutOff();}
+          return None;
+        }
+        return self.section(s, h);
+      }
+      if h.kind == framePushPromise {
+        if clientRole {return self.failNone(h3IdError, "a PUSH_PROMISE, with no MAX_PUSH_ID sent");}
+        return self.unexpected("a PUSH_PROMISE from a client");
+      }
+      if h.kind == frameSettings || h.kind == frameGoAway || h.kind == frameMaxPushId || h.kind == frameCancelPush {
+        return self.unexpected("a control stream's frame on a request stream");
+      }
+      if isHttp2FrameType(h.kind) {return self.unexpected("an HTTP/2 frame type, which HTTP/3 reserves");}
+      // A frame of an unknown type is skipped (section 9)
+      s.input.advance(h.size);
+      s.frameLeft = h.length;
+      s.inData = false;
+    }
+    None
+  }
+
+  // The next piece of a DATA frame's payload that has arrived: a whole
+  // segment of the input moved out where it lies wholly within the frame,
+  // or the bytes copied into a buffer of their own where it does not
+  fn deliver(self: &mut, s: &mut H3Stream) Event {
+    let avail = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
+    var buf = IoBuf.empty();
+    if s.input.firstLen() <= avail {
+      match s.input.popFront() {
+        case let Some(b) {buf = b;}
+        case is None[IoBuf] {}
+      }
+    } else {
+      let want = if avail > maxCopy {maxCopy} else {avail};
+      buf = IoBuf(want);
+      let room = buf.spare();
+      let k = s.input.copyOut(0usize, &mut room[0usize ..< want]);
+      buf.setLen(k);
+      s.input.advance(k);
+    }
+    let got = buf.len();
+    s.frameLeft = s.frameLeft - u64.from(got);
+    s.outstanding = s.outstanding + got;
+    if s.hasLength {s.remaining = s.remaining - u64.from(got);}
+    Event.Data(s.id, buf)
+  }
+
+  // A whole HEADERS frame: its section decoded, now or once QPACK's inserts
+  // arrive
+  fn section(self: &mut, s: &mut H3Stream, h: FrameHead) Option[Event] {
+    let len = usize.from(h.length);
+    var got = List[HeaderField].empty();
+    let r = self.decodeAt(s, h.size, len, &mut got);
+    s.input.advance(h.size + len);
+    match r {
+      case let Ok(d) {
+        match d {
+          case let Done(x) {return self.headed(s, got);}
+          case is Blocked {
+            s.blocked = true;
+            return None;
+          }
+        }
+      }
+      case let Error(e) {
+        self.qpackSectionFail(s, &e);
+        return None;
+      }
+    }
+  }
+
+  // QPACK's decoding of the len bytes at 'at' of a stream's input: read
+  // where they lie when they lie in one segment, else copied out first
+  fn decodeAt(self: &mut, s: &mut H3Stream, at: usize, len: usize, got: &mut List[HeaderField]) Result[Decoded, QpackError] {
+    match s.input.contiguous(at, len) {
+      case let Some(sl) {return dec.decode(s.id, sl, got);}
+      case is None[&Array[u8]] {}
+    }
+    var payload = List[u8].empty();
+    payload.resize(len, 0u8);
+    let copied = s.input.copyOut(at, payload.viewMut());
+    dec.decode(s.id, payload.view(), got)
+  }
+
+  // A field section decoded: the head, interim head or trailers it is
+  fn headed(self: &mut, s: &mut H3Stream, fields: List[HeaderField]) Option[Event] {
+    if s.rs == ReadState.Head {
+      if !clientRole {
+        match readRequest(fields.view()) {
+          case let Ok(r) {
+            let head, length, hasLength, connect = r.(head, length, hasLength, connect);
+            if connect {
+              self.answerConnect(s);
+              return None;
+            }
+            s.isHead = head.method == Method.Head;
+            s.requestSeen = true;
+            s.rs = ReadState.Body;
+            s.hasLength = hasLength;
+            s.remaining = length;
+            let body = bodyOf(s);
+            return Some[Event](Event.Request(s.id, head, body));
+          }
+          case let Error(why) {
+            self.messageError(s, why);
+            return None;
+          }
+        }
+      }
+      match readResponse(fields.view()) {
+        case let Ok(r) {
+          let head, length, hasLength = r.(head, length, hasLength);
+          if isInformational(head.status) {return Some[Event](Event.Interim(s.id, head));}
+          s.rs = ReadState.Body;
+          s.noBody = !responseHasBody(if s.isHead {Method.Head} else {Method.Get}, head.status);
+          s.hasLength = hasLength && !s.noBody;
+          s.remaining = length;
+          let body = if s.noBody {BodyLength.empty()} else {bodyOf(s)};
+          return Some[Event](Event.Response(s.id, head, body));
+        }
+        case let Error(why) {
+          self.messageError(s, why);
+          return None;
+        }
+      }
+    }
+    // Trailers
+    match readTrailers(fields.view()) {
+      case let Ok(t) {
+        if s.hasLength && s.remaining != 0u64 {
+          self.messageError(s, "trailers before the body reached its Content-Length");
+          return None;
+        }
+        s.rs = ReadState.Tail;
+        return Some[Event](Event.End(s.id, t));
+      }
+      case let Error(why) {
+        self.messageError(s, why);
+        return None;
+      }
+    }
+  }
+
+  // The peer's side ended, every frame whole
+  fn ended(self: &mut, s: &mut H3Stream) Option[Event] {
+    s.peerEnded = true;
+    if s.rs == ReadState.Head {
+      // No message (section 4.1.2): a server's H3_REQUEST_INCOMPLETE
+      if clientRole {
+        let e = HttpError(ErrorKind.Closed, 0u16, true, String.from("the stream ended before a response"),
+          None, ErrorScope.Stream);
+        self.endStream(s, e, h3RequestCancelled);
+      } else {
+        let e = HttpError(ErrorKind.Closed, 400u16, false, String.from("the stream ended before a whole request"),
+          Some[u64](h3RequestIncomplete), ErrorScope.Stream);
+        self.endStream(s, e, h3RequestIncomplete);
+      }
+      return None;
+    }
+    if s.rs == ReadState.Tail {
+      s.rs = ReadState.Done;
+      return None;
+    }
+    if s.hasLength && s.remaining != 0u64 {
+      self.messageError(s, "the body ended short of its Content-Length");
+      return None;
+    }
+    s.rs = ReadState.Done;
+    Some[Event](Event.End(s.id, Headers.empty()))
+  }
+
+  // A stream ended inside a frame (section 7.1): H3_FRAME_ERROR
+  fn cutOff(self: &mut) Option[Event] {self.failNone(h3FrameError, "a stream ended inside a frame")}
+
+  // A frame where it may not be (section 4.1): H3_FRAME_UNEXPECTED
+  fn unexpected(self: &mut, why: &str) Option[Event] {self.failNone(h3FrameUnexpected, why)}
+
+  fn failNone(self: &mut, code: u64, why: &str) Option[Event] {
+    self.fail(code, why);
+    None
+  }
+
+  // ------------------------------------------------------------- inside: unidirectional streams
+
+  // A unidirectional stream's type, once it has arrived (section 6.2): the
+  // stream becomes what it says, and what follows is read as that
+  fn typeStream(self: &mut, s: &mut H3Stream) {
+    var t = 0u64;
+    let n = peekVarint(&s.input, 0usize, &mut t);
+    if n == 0usize {return;}
+    s.input.advance(n);
+    if t == streamControl {
+      if peerControl {
+        self.fail(h3StreamCreationError, "a second control stream");
+        return;
+      }
+      peerControl = true;
+      s.kind = StreamKind.Control;
+      self.readControl(s);
+    } else if t == streamEncoder || t == streamDecoder {
+      let encoder = t == streamEncoder;
+      if (encoder && peerEncoder) || (!encoder && peerDecoder) {
+        self.fail(h3StreamCreationError, "a second QPACK encoder or decoder stream");
+        return;
+      }
+      if encoder {peerEncoder = true;} else {peerDecoder = true;}
+      s.kind = if encoder {StreamKind.Encoder} else {StreamKind.Decoder};
+      while !closed {
+        match s.input.popFront() {
+          case let Some(b) {
+            if encoder {self.encoderBytes(b.view());} else {self.decoderBytes(b.view());}
+          }
+          case is None[IoBuf] {break;}
+        }
+      }
+    } else if t == streamPush {
+      if clientRole {self.fail(h3IdError, "a push stream, with no MAX_PUSH_ID sent");}
+      else {self.fail(h3StreamCreationError, "a push stream from a client");}
+    } else {
+      // A type not known, reserved ones included: reading is given up
+      // (section 6.2)
+      s.kind = StreamKind.Ignored;
+      s.input.advance(s.input.len());
+      commands.push(Transmit.StopSending(s.id, h3StreamCreationError));
+    }
+  }
+
+  // A unidirectional stream's end: an error for the critical ones (section
+  // 6.2.1; RFC 9204, section 4.2)
+  fn uniEnded(self: &mut, s: &mut H3Stream) {
+    if s.kind == StreamKind.Control {
+      self.fail(h3ClosedCriticalStream, "the peer's control stream ended");
+    } else if s.kind == StreamKind.Encoder {
+      let e = dec.encoderStreamClosed();
+      self.qpackFail(&e);
+    } else if s.kind == StreamKind.Decoder {
+      let e = enc.decoderStreamClosed();
+      self.qpackFail(&e);
+    } else if s.kind == StreamKind.Untyped || s.kind == StreamKind.Ignored {
+      s.peerEnded = true;
+    }
+  }
+
+  // The peer's encoder stream's bytes, to our decoder: sections they
+  // unblock go to their streams
+  fn encoderBytes(self: &mut, b: &Array[u8]) {
+    match dec.encoderInput(b) {
+      case let Ok(n) {}
+      case let Error(e) {
+        self.qpackFail(&e);
+        return;
+      }
+    }
+    while !closed {
+      var got = List[HeaderField].empty();
+      match dec.pollUnblocked(&mut got) {
+        case let Some(u) {
+          let id, result = u.(streamId, result);
+          match ids.getCopy(&id) {
+            case let Some(sl) {
+              let s = streams.at(sl.index) as &mut H3Stream;
+              s.blocked = false;
+              match result {
+                case let Ok(size) {s.section = Some[List[HeaderField]](got);}
+                case let Error(e) {self.qpackSectionFail(s, &e);}
+              }
+            }
+            case is None[Slot] {}
+          }
+        }
+        case is None[Unblocked] {break;}
+      }
+    }
+  }
+
+  // The peer's decoder stream's bytes, to our encoder
+  fn decoderBytes(self: &mut, b: &Array[u8]) {
+    match enc.decoderInput(b) {
+      case let Ok(n) {}
+      case let Error(e) {self.qpackFail(&e);}
+    }
+  }
+
+  // QPACK refused a stream's section: too large for the one message, or a
+  // connection error
+  fn qpackSectionFail(self: &mut, s: &mut H3Stream, e: &QpackError) {
+    if e.isConnectionError() {self.qpackFail(e);}
+    else {self.sectionTooLarge(s);}
+  }
+
+  // A connection error QPACK found, with its code
+  fn qpackFail(self: &mut, e: &QpackError) {
+    var code = h3InternalError;
+    match e.code() {
+      case let Some(c) {code = c;}
+      case is None[u64] {}
+    }
+    self.fail(code, e.message().view());
+  }
+
+  // ------------------------------------------------------------- inside: the control stream
+
+  // The peer's control stream's frames, each as it is whole (section 6.2.1)
+  fn readControl(self: &mut, s: &mut H3Stream) {
+    while !closed {
+      if s.frameLeft > 0u64 {
+        let n = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
+        s.input.advance(n);
+        s.frameLeft = s.frameLeft - u64.from(n);
+        if s.frameLeft > 0u64 {return;}
+        continue;
+      }
+      var h = FrameHead(0u64, 0u64, 0usize);
+      match peekFrameHead(&s.input) {
+        case let Some(x) {h = x;}
+        case is None[FrameHead] {return;}
+      }
+      if !settingsIn {
+        if h.kind != frameSettings {
+          self.fail(h3MissingSettings, "the control stream's first frame is not SETTINGS");
+          return;
+        }
+      } else {
+        // Every frame after SETTINGS is work; maxControlFrames a second
+        if now >= windowAt + Duration.fromSeconds(1) {
+          windowAt = now;
+          windowFrames = 0usize;
+        }
+        windowFrames = windowFrames + 1usize;
+        if windowFrames > cfg.maxControlFrames {
+          self.fail(h3ExcessiveLoad, "more control-stream frames in a second than maxControlFrames");
+          return;
+        }
+      }
+      if h.kind == frameData || h.kind == frameHeaders || h.kind == framePushPromise {
+        self.fail(h3FrameUnexpected, "a DATA, HEADERS or PUSH_PROMISE frame on the control stream");
+        return;
+      }
+      if isHttp2FrameType(h.kind) {
+        self.fail(h3FrameUnexpected, "an HTTP/2 frame type, which HTTP/3 reserves");
+        return;
+      }
+      let known = h.kind == frameSettings || h.kind == frameGoAway || h.kind == frameMaxPushId ||
+        h.kind == frameCancelPush;
+      if !known {
+        // Unknown and reserved frames are skipped as they arrive (section 9)
+        s.input.advance(h.size);
+        s.frameLeft = h.length;
+        continue;
+      }
+      if h.kind == frameSettings {
+        if settingsIn {
+          self.fail(h3FrameUnexpected, "a second SETTINGS frame");
+          return;
+        }
+        if h.length > u64.from(cfg.streamBuffer - h.size) {
+          self.fail(h3ExcessiveLoad, "a SETTINGS frame longer than streamBuffer");
+          return;
+        }
+      } else if h.length > 8u64 {
+        self.fail(h3FrameError, "a GOAWAY, MAX_PUSH_ID or CANCEL_PUSH frame longer than one integer");
+        return;
+      }
+      let len = usize.from(h.length);
+      if s.input.len() < h.size + len {return;}
+      var payload = List[u8].empty();
+      payload.resize(len, 0u8);
+      let copied = s.input.copyOut(h.size, payload.viewMut());
+      s.input.advance(h.size + len);
+      if h.kind == frameSettings {
+        self.settings(payload.view());
+        continue;
+      }
+      match parseId(payload.view()) {
+        case let Some(v) {
+          if h.kind == frameGoAway {self.goAwayFrame(v);}
+          else if h.kind == frameMaxPushId {self.maxPushIdFrame(v);}
+          else {self.cancelPushFrame(v);}
+        }
+        case is None[u64] {self.fail(h3FrameError, "a GOAWAY, MAX_PUSH_ID or CANCEL_PUSH frame that is not one integer");}
+      }
+    }
+  }
+
+  // The peer's SETTINGS (section 7.2.4): QPACK's encoder learns the table
+  // and blocked streams it may use
+  fn settings(self: &mut, p: &Array[u8]) {
+    var st = Settings.defaults();
+    match parseSettings(p, &mut st) {
+      case let Some(e) {
+        self.fail(e.code, e.detail);
+        return;
+      }
+      case is None[FrameError] {}
+    }
+    settingsIn = true;
+    enc.peerSettings(usize.from(st.qpackMaxTableCapacity), usize.from(st.qpackBlockedStreams));
+    peer = st;
+  }
+
+  // The peer's GOAWAY (section 5.2). A server's names the first request
+  // stream it did not and will not process: a client's requests on it and
+  // above fail as Refused, safe to retry, and are cancelled. A client's
+  // names a push ID. Neither may raise the id of an earlier one
+  fn goAwayFrame(self: &mut, id: u64) {
+    if clientRole && (id & 3u64) != 0u64 {
+      self.fail(h3IdError, "a GOAWAY naming a stream that is not a client's bidirectional one");
+      return;
+    }
+    if goAwayIn && id > goAwayInId {
+      self.fail(h3IdError, "a GOAWAY with a larger id than an earlier one");
+      return;
+    }
+    goAwayIn = true;
+    goAwayInId = id;
+    if clientRole {
+      var i = 0usize;
+      while i < streams.bound() {
+        if streams.isLive(u32.from(i)) {
+          let s = streams.at(u32.from(i)) as &mut H3Stream;
+          if s.kind == StreamKind.Request && s.accepted && !s.reported && s.id >= id {
+            let e = HttpError(ErrorKind.Refused, 0u16, true,
+              String.from("above the server's GOAWAY: not processed, safe to retry"), None, ErrorScope.Stream);
+            self.stopWriting(s, h3RequestCancelled);
+            self.endStream(s, e, h3RequestCancelled);
+            // Its end is the peer's to report no more: the record goes
+            s.peerEnded = true;
+            self.reap(i);
+          }
+        }
+        i = i + 1usize;
+      }
+    }
+    events.push(Event.GoAway(id));
+  }
+
+  // A client's MAX_PUSH_ID (section 7.2.7): kept, though this server never
+  // pushes; it may not fall
+  fn maxPushIdFrame(self: &mut, id: u64) {
+    if clientRole {
+      self.fail(h3FrameUnexpected, "a MAX_PUSH_ID from a server");
+      return;
+    }
+    if maxPushIn && id < maxPushId {
+      self.fail(h3IdError, "a MAX_PUSH_ID lower than an earlier one");
+      return;
+    }
+    maxPushIn = true;
+    maxPushId = id;
+  }
+
+  // CANCEL_PUSH (section 7.2.3): a push ID past what MAX_PUSH_ID allowed is
+  // an error; any other is ignored, as no push is ever made
+  fn cancelPushFrame(self: &mut, id: u64) {
+    if clientRole {
+      self.fail(h3IdError, "a CANCEL_PUSH, with no MAX_PUSH_ID sent");
+      return;
+    }
+    if !maxPushIn || id > maxPushId {self.fail(h3IdError, "a CANCEL_PUSH past MAX_PUSH_ID");}
+  }
+
+  // ------------------------------------------------------------- inside: the end
+
+  // A connection error (section 8): every exchange open fails, the
+  // connection closes with code, and nothing more is read or sent
+  fn fail(self: &mut, code: u64, why: &str) {
+    if closed {return;}
+    let e = HttpError.coded(kindOfCode(code), code, ErrorScope.Connection, why);
+    self.failAll(&e, false);
+    commands.clear();
+    commands.push(Transmit.Close(code, String.from(why), false));
+    failure = Some[HttpError](e);
+    closed = true;
+  }
+
+  // Every exchange still open fails with a copy of e, its reading stopped;
+  // with 'spareWhole', not one whose every byte has arrived, still to be
+  // read
+  fn failAll(self: &mut, e: &HttpError, spareWhole: bool) {
+    var i = 0usize;
+    while i < streams.bound() {
+      if streams.isLive(u32.from(i)) {
+        let s = streams.at(u32.from(i)) as &mut H3Stream;
+        let whole = spareWhole && wholeIn(s);
+        if s.kind == StreamKind.Request && s.accepted && !s.reported && !(s.rs == ReadState.Done && s.writeDone) && !whole {
+          s.reported = true;
+          s.rs = ReadState.Stopped;
+          s.input.advance(s.input.len());
+          if self.known(s) {events.push(Event.Failed(s.id, copyError(e)));}
+        }
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+// Whether an exchange needs nothing more of the transport: every byte of
+// the peer's side arrived (and no section waits on QPACK) and ours all
+// taken to send
+fn wholeIn(s: &H3Stream) bool {s.peerFin && !s.blocked && s.writeDone}
+
+// What a message's head says of its body, as it arrives
+fn bodyOf(s: &H3Stream) BodyLength {
+  if s.hasLength {
+    return if s.remaining == 0u64 {BodyLength.empty()} else {BodyLength.sized(s.remaining)};
+  }
+  if s.peerFin && s.input.len() == 0usize {return BodyLength.empty();}
+  BodyLength.unsized()
+}
