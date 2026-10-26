@@ -89,8 +89,8 @@
 //                           the same four, limited by lim                  (THE BLOCKING POOL'S WORK)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
-//   Hosted (a trait)  aio.host[S](maker)  h.end()  aio.hostPost[S, J](h, job)
-//   aio.hostAwaitable[S, J, R](h, job)
+//   Hosted (a trait)  aio.host[S](maker)  h.end()  h.post[J](job)
+//   h.awaitable[J, R](job)  (h an aio.Host[S])
 //                           another package's service run ON the I/O thread, and its queue
 //                                                                (HOSTED SERVICES)
 //   Socket.none()  File.none()  UdpSocket.none()
@@ -306,20 +306,18 @@
 // plain data, in a global, made in its 'init' by 'aio.host[S](maker)': only
 // the host's block is made then. The first job queued for it attaches it to
 // the I/O thread (starting the thread if need be), which makes the service
-// with 'maker' before running that job. 'aio.hostPost[S, J](h, job)' queues a
+// with 'maker' before running that job. 'h.post[J](job)' queues a
 // job, any thread, and wakes the thread; J has 'run(self, lp &mut Loop, s &mut
-// S)'. 'aio.hostAwaitable[S, J, R](h, job)' is the same job as an Awaitable[R]:
+// S)'. 'h.awaitable[J, R](job)' is the same job as an Awaitable[R]:
 // the 'await' writes the reply beside the job when it queues it, and J's
 // 'run(self, lp &mut Loop, s &mut S, rp actors.Reply)' answers it (the job is
 // made whole, with no reply in it; nothing is allocated but the job's block;
 // dropped unawaited, the job is dropped). 'h.end()' ends the service now and waits
 // until it has (below). A job for a service that has ended, or queued once the
 // program is ending, is dropped unrun, its body finalized: what awaits it is
-// abandoned. The S of 'hostPost' and 'hostAwaitable' is checked against the
-// type the host was made for, at run time (a panic at the caller's line): a
-// Host is not Host[S] because a global of a generic instance whose type
-// argument's check reaches code using that global is refused today (the
-// compiler's, a gap; the typed form comes back when it is closed).
+// abandoned. A Host is a Host[S], S the service's type: a job whose 'run'
+// takes another type of service than S is refused by the compiler where it is
+// posted, so a job never reaches a service of another type.
 //
 // The seam does not assume a service is alone on its thread, or that there is
 // one thread: a service is handed the Loop it runs with at each call and
@@ -1124,6 +1122,22 @@ pub trait Hosted {
   pub fn end(self: &mut, lp: &mut Loop);
 }
 
+// What a job for a hosted service of type S does there: a type complies by
+// having this method (with 'self' or 'self: &mut'), so a job whose 'run' takes
+// another type of service is refused where it is posted, naming the
+// requirement, not inside aio. Called on the I/O thread, with its Loop and the
+// service, after the Completions of the last poll were handed out and before
+// the services' turns
+pub trait HostJob[S] {
+  pub fn run(self: &mut, lp: &mut Loop, s: &mut S);
+}
+
+// The same for a job an actor awaits (Host.awaitable): it answers through 'rp',
+// the reply the 'await' wrote beside the job when it queued it
+pub trait HostReplyJob[S] {
+  pub fn run(self: &mut, lp: &mut Loop, s: &mut S, rp: actors.Reply);
+}
+
 // Where a hosted service is in its life: its block's 'state', under ioLock
 const hostNew = 0u32;         // no job has come for it: attached to no thread, not made
 const hostLive = 1u32;        // attached to its thread, which makes it before its first job runs
@@ -1143,7 +1157,6 @@ struct HostHead {
   pub endNow: bool;             // its thread's: Host.end had asked at its last look
   pub made: bool;               // its thread's: the service is in the block
   pub done: Atomic[u32];        // 1 once it has ended: what Host.end waits on
-  pub tag: usize;               // its service type's (hostTag), checked by hostPost and hostAwaitable
   pub makeFn: &fn(at: *u8);
   pub turnFn: &fn(at: *u8, lp: &mut Loop);
   pub completeFn: &fn(at: *u8, lp: &mut Loop, c: &mut Completion) bool;
@@ -1165,9 +1178,30 @@ struct HostBlock[S] {
 // plain data naming it, which a hosting package keeps in a global, made by
 // 'aio.host' with the function that makes the service. Nothing but its block
 // is made, and no thread started, until its first job is queued. Its methods
-// may be called from any thread
-pub struct Host {
+// may be called from any thread. S is the type of the service, which a job
+// queued here is run with
+pub struct Host[S: Hosted] {
   at: usize;                   // its block, which lives as long as the process
+
+  // A job for the service, queued: J has 'run(self, lp &mut Loop, s &mut S)',
+  // which the I/O thread calls with the service, after it has handed out the
+  // Completions of its last poll and before the services' turns. The thread
+  // is woken. Dropped unrun (its body finalized) if the service has ended or
+  // the program is ending. A J whose 'run' takes another service than S does
+  // not compile
+  pub fn post[J: HostJob[S]](self: &, body: J) {
+    enqueue(newHostJob[S, J](at as *HostHead, body));
+  }
+
+  // A job for the service that an actor awaits: the 'await' writes the reply
+  // beside the job as it queues it, and J's 'run(self, lp &mut Loop, s &mut S,
+  // rp actors.Reply)' answers it with an R. Nothing is allocated but the
+  // job's block; dropped unawaited, the job is dropped; dropped once started,
+  // unrun, its reply with it. A J whose 'run' takes another service than S
+  // does not compile
+  pub fn awaitable[J: HostReplyJob[S], R](self: &, body: J) actors.Awaitable[R] {
+    actors.Awaitable[R].of(newHostAwaitJob[S, J](at as *HostHead, body), &startHostJob[J], &dropJobAt)
+  }
 
   // The service ended now, on its thread, and this waits until it has: the
   // jobs queued for it are dropped unrun (each reply dropped, what awaits it
@@ -1207,46 +1241,8 @@ pub struct Host {
 // for it is queued (the package's header, HOSTED SERVICES). Its block is made
 // now (one small allocation, kept for the life of the process); nothing else
 // is, and no thread is started
-pub fn host[S: Hosted](maker: &fn() S) Host {
-  Host(newHostBlock[S](maker))
-}
-
-// A job for h's service, an S, queued: J has 'run(self, lp &mut Loop, s &mut
-// S)', which the I/O thread calls with the service, after it has handed out the
-// Completions of its last poll and before the services' turns. The thread is
-// woken. Dropped unrun (its body finalized) if the service has ended or the
-// program is ending. An S that is not the type h was made for is a panic at
-// the caller's line
-pub fn hostPost[S, J](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-  enqueue(newHostJob[S, J](hostBlockOf[S](h, file, line), body));
-}
-
-// A job for h's service, an S, that an actor awaits: the 'await' writes the
-// reply beside the job as it queues it, and J's 'run(self, lp &mut Loop, s
-// &mut S, rp actors.Reply)' answers it with an R. Nothing is allocated but the
-// job's block; dropped unawaited, the job is dropped; dropped once started,
-// unrun, its reply with it. An S that is not the type h was made for is a
-// panic at the caller's line
-pub fn hostAwaitable[S, J, R](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine())
-    actors.Awaitable[R] {
-  actors.Awaitable[R].of(newHostAwaitJob[S, J](hostBlockOf[S](h, file, line), body), &startHostJob[J], &dropJobAt)
-}
-
-// h's block, checked to be a service of type S: its tag is S's (hostTag)
-fn hostBlockOf[S](h: Host, file: &Array[u8], line: u32) *HostHead {
-  let hh = h.at as *HostHead;
-  if (*hh).tag != hostTag[S]() {
-    die("aio: a job for a hosted service of another type than its Host's", file, line);
-  }
-  hh
-}
-
-// A number of S's own: the address of a static of this function's instance
-// for S, which no other instance shares. (Not the address of a function made
-// for S: functions whose code is the same are folded into one)
-fn hostTag[S]() usize {
-  static var mark = 0u8;
-  &mut mark as *u8 as usize
+pub fn host[S: Hosted](maker: &fn() S) Host[S] {
+  Host[S](newHostBlock[S](maker))
 }
 
 // A hosted service's block, the functions for S in its header; the service
@@ -1262,7 +1258,6 @@ fn newHostBlock[S](maker: &fn() S) usize {
   h.completeFn = &hostComplete[S];
   h.wakeAtFn = &hostWakeAt[S];
   h.endFn = &hostEnd[S];
-  h.tag = hostTag[S]();
   (*p).maker = maker;
   p as usize
 }
