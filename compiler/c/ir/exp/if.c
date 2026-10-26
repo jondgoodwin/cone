@@ -80,25 +80,15 @@ int ifBlockJumps(BlockNode *blk) {
 
 // Where a path through a type-checked block goes on past its end, or NULL when every
 // path leaves: the block ends in a jump (ifBlockJumps), or in an 'if' or 'match' with
-// an 'else' each of whose blocks leaves, or in a plain block that ends in one (as a
-// 'match' or a bound 'if' is, the block holding its matched value). The 'else' of
+// an 'else' each of whose blocks leaves, or in a plain block that leaves, written or
+// wrapped around a 'match' or a bound 'if' (the block holding its matched value). The 'else' of
 // 'let Some(n) = x else {...};' is held to this, as Rust holds it to diverge. A loop ends
 // when its condition fails or a 'break' leaves it, so it is a path that goes on. '*why'
 // says what the spot returned lacks. A match left without an 'else' has had its missing
 // cases reported (ifMatchCover), so it is not reported again.
-static INode *ifBlockFallsOut(BlockNode *blk, int plain, char **why) {
-    if (ifBlockJumps(blk)) {
-        if (!plain)
-            return NULL;
-        // STAND-IN, to come out when generation is fixed: a plain block that ends in the jump
-        // itself, '{ { return 7; } }', leaves, but is refused, because generation does not end
-        // the path at a 'return' that ends a plain block in an 'if''s branch ('fn x(c: bool) i32
-        // { if c { { return 7; } } 0 }' gives 0 for x(true)), so the binding after the 'else'
-        // would run. Scenario enum_typecheck_let_else_block pins it: removing these lines
-        // flips it to a run.
-        *why = "this plain block ends in the jump, which is not counted: write the jump without the block around it";
-        return (INode*)blk;
-    }
+static INode *ifBlockFallsOut(BlockNode *blk, char **why) {
+    if (ifBlockJumps(blk))
+        return NULL;
     // The statement the type check adds after a last statement that gives no value
     uint32_t used = blk->stmts == NULL ? 0 : blk->stmts->used;
     if (used > 0 && nodesLast(blk->stmts)->tag == BlockRetTag)
@@ -109,7 +99,7 @@ static INode *ifBlockFallsOut(BlockNode *blk, int plain, char **why) {
     }
     INode *last = nodesGet(blk->stmts, used - 1);
     if (last->tag == BlockTag && !(((BlockNode*)last)->flags & FlagLoop))
-        return ifBlockFallsOut((BlockNode*)last, 1, why);
+        return ifBlockFallsOut((BlockNode*)last, why);
     if (last->tag == IfTag) {
         IfNode *ifnode = (IfNode*)last;
         int hasElse = 0;
@@ -121,7 +111,7 @@ static INode *ifBlockFallsOut(BlockNode *blk, int plain, char **why) {
             cnt--; nodesp++;
             if ((*nodesp)->tag != BlockTag)
                 continue;
-            INode *out = ifBlockFallsOut((BlockNode*)*nodesp, 0, why);
+            INode *out = ifBlockFallsOut((BlockNode*)*nodesp, why);
             if (out != NULL)
                 return out;
         }
@@ -910,7 +900,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
         // after one that ends in a jump. Its changes are kept, as a 'continue' keeps them,
         // since some of its paths may continue a loop.
         else if ((ifnode->flags & FlagIfLetElse) && *(nodesp - 1) == elseCond && armblk
-            && ifBlockFallsOut(armblk, 0, &leavewhy) == NULL)
+            && ifBlockFallsOut(armblk, &leavewhy) == NULL)
             ;
         else {
             NarrowEnv *end = narrowSave();
@@ -969,7 +959,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     if ((ifnode->flags & FlagIfLetElse) && ifnode->condblk->used >= 2 && !condErrors) {
         INode *elseblk = nodesGet(ifnode->condblk, ifnode->condblk->used - 1);
         char *why = NULL;
-        INode *out = elseblk->tag == BlockTag ? ifBlockFallsOut((BlockNode *)elseblk, 0, &why) : NULL;
+        INode *out = elseblk->tag == BlockTag ? ifBlockFallsOut((BlockNode *)elseblk, &why) : NULL;
         if (out == elseblk)
             errorMsgNode(elseblk, ErrorLetElse,
                 "The 'else' of a binding like this must leave, and %s. End it with 'return', 'break', 'continue' or a call that does not return, such as 'panic(...)': otherwise the binding after it would take a variant that was not there.", why);
