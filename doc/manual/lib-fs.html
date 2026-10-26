@@ -610,6 +610,35 @@ removed again, nothing there
 		removes a link itself, never what it leads to. On Windows a link is any reparse point: a symbolic link
 		or a directory junction, and also some cloud-storage placeholders, which are then left whole. On POSIX
 		a link is a symbolic link, to a file or to a folder.</p>
+	<p><span class="pre">fs.lstat(path)</span> is <span class="pre">stat</span> without following: it
+		answers the same <span class="pre">FileInfo</span>, and for a link describes the link itself
+		(<span class="pre">isDir</span> and <span class="pre">isFile</span> both false, its own
+		<span class="pre">modified</span>). <span class="pre">fs.isLink(path)</span> asks only whether the name
+		is a link, a link whose target is gone included, and cannot fail; it makes the test a listing's
+		<span class="pre">isLink</span> does, so the two agree. On Windows both read the reparse-point attribute
+		through the C runtime's <span class="pre">_findfirst64</span> (the posix package's
+		<span class="pre">lstat</span>); on Linux they are the C library's <span class="pre">lstat</span>.</p>
+
+	<h3 id="fs-modes">Permissions and times</h3>
+	<ul>
+	<li><span class="pre">fs.chmod(path, mode)</span> sets a file's or folder's permission bits, following a
+		link, with POSIX's <span class="pre">mode</span> (a <span class="pre">u32</span>; <span class="pre">0x1ED</span>
+		is <span class="pre">0o755</span>). On Linux that is <span class="pre">chmod</span>. Windows has no
+		permission bits, only a read-only attribute, and <span class="pre">chmod</span> does not pretend
+		otherwise: it reads one bit, the owner's write bit (<span class="pre">0o200</span>), and makes the file
+		writable when it is set and read-only when it is not (the C runtime's <span class="pre">_chmod</span>).
+		The other bits are accepted and ignored there.</li>
+	<li><span class="pre">fs.utime(path, accessed, modified)</span> sets when a file or folder was last read
+		and last written, following a link; the two are <span class="pre">Timestamp</span>s of the
+		<span class="pre">time</span> package, the access time first as POSIX's <span class="pre">utime</span>
+		takes them. On Linux it is <span class="pre">utimensat</span>, keeping the nanoseconds; on Windows
+		<span class="pre">SetFileTime</span> on a handle opened for writing attributes alone, keeping 100
+		nanoseconds. <span class="pre">stat</span>'s <span class="pre">modified</span> shows the result in whole
+		seconds.</li>
+	</ul>
+	<p>Both answer <span class="pre">Result[void, FsError]</span>; a path that is not there is
+		<span class="pre">ENOENT</span> and one the caller may not change <span class="pre">EACCES</span> or
+		<span class="pre">EPERM</span>.</p>
 
 	<h3 id="fs-cwd">The current folder</h3>
 	<ul>

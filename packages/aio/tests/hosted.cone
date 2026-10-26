@@ -1,0 +1,238 @@
+// Services hosted on the I/O thread (the package's header, HOSTED SERVICES).
+// Two services of one type, 1 and 2, each with a timer of its own on the
+// Loop, submitted Here with a token of its own:
+//
+// - a job posted (not awaited) and one awaited, which reads what the first
+//   did: a service's jobs run in the order they were queued;
+// - a timer of service 2's, its Completion offered to service 1 first, which
+//   says it is not its own, then to 2, which answers;
+// - a turn asked for by time alone (wakeAt), with nothing else to wake the
+//   thread: the poll waits until the earliest wakeAt, not forever;
+// - Host.end called by main while the program runs: the service's 'end' runs
+//   and it is dropped before 'end' returns, and a job awaited on it after is
+//   dropped, so the behaviour awaiting it is abandoned ('keep' finalized,
+//   'answered' never printed);
+// - at the program's end, aio's finalizer ends service 1, its timer still
+//   pending, and the behaviour awaiting that timer is abandoned.
+
+mod hosted;
+
+import stdio use *;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import iocore use Loop, Completion, Target, forever;
+import actors;
+import aio use Host;
+
+let one: Host;
+let two: Host;
+
+fn @initpure init() {
+  one = aio.host[Timed](&makeOne);
+  two = aio.host[Timed](&makeTwo);
+}
+
+fn makeOne() Timed {Timed.make(1u64)}
+fn makeTwo() Timed {Timed.make(2u64)}
+
+fn hostOf(which: u64) Host {if which == 1u64 {one} else {two}}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop note "); printUInt(n); printStr("\n");}
+}
+
+// A token of the service's own: no other service claims it
+fn tokenOf(id: u64) u64 {0x7000u64 + id}
+
+struct Timed {
+  id: u64;
+  added: u64;                    // what AddJobs have added
+  due: Instant;                  // when 'tick' is answered: forever when none waits
+  tick: Option[actors.Reply];
+  later: Option[actors.Reply];
+
+  pub fn make(id: u64) Timed {Timed(id, 0u64, forever(), None, None)}
+
+  pub fn turn(self: &mut, lp: &mut Loop) {
+    if due < forever() && Instant.now() >= due {
+      match &mut tick {
+        case var &mut Some(r) {actors.answerNowIn[u64](r, id);}
+        else {}
+      }
+      tick = None;
+      due = forever();
+    }
+  }
+
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {
+    if c.token != tokenOf(id) {
+      return false;
+    }
+    match &mut later {
+      case var &mut Some(r) {actors.answerNowIn[u64](r, id * 100u64);}
+      else {}
+    }
+    later = None;
+    true
+  }
+
+  pub fn wakeAt(self: &) Instant {due}
+
+  pub fn end(self: &mut, lp: &mut Loop) {
+    printStr("end "); printUInt(id);
+    match &later {
+      case is &Some[actors.Reply] {printStr(", its timer pending");}
+      else {}
+    }
+    printStr("\n");
+  }
+
+  fn final(self: &uni) {printStr("drop "); printUInt(id); printStr("\n");}
+}
+
+// Adds n: not awaited
+struct AddJob {
+  pub n: u64;
+  pub fn run(self, lp: &mut Loop, s: &mut Timed) {s.added = s.added + n;}
+}
+
+// What has been added
+struct SumJob {
+  pub reply: actors.Reply;
+  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
+    let rp = self.(reply);
+    actors.answerNow[u64](rp, s.added);
+  }
+}
+
+// Answered by a timer of the Loop's, its Completion claimed by the service
+struct LaterJob {
+  pub ms: i64;
+  pub reply: actors.Reply;
+  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
+    let ms, rp = self.(ms, reply);
+    lp.after(Instant.now() + Duration.fromMillis(ms), Target.Here(tokenOf(s.id)));
+    s.later = Some[actors.Reply](rp);
+  }
+}
+
+// A timer that is not due before the program ends: 'ready' told once it is set
+struct KeepJob {
+  pub ready: OneshotSender[u64];
+  pub reply: actors.Reply;
+  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
+    let ready, rp = self.(ready, reply);
+    lp.after(Instant.now() + Duration.fromMillis(100000i64), Target.Here(tokenOf(s.id)));
+    s.later = Some[actors.Reply](rp);
+    var r = ready;
+    r.send(1u64);
+  }
+}
+
+// Answered at a turn the service asks for by its wakeAt
+struct TickJob {
+  pub ms: i64;
+  pub reply: actors.Reply;
+  pub fn run(self, lp: &mut Loop, s: &mut Timed) {
+    let ms, rp = self.(ms, reply);
+    s.due = Instant.now() + Duration.fromMillis(ms);
+    s.tick = Some[actors.Reply](rp);
+  }
+}
+
+actor Asker {
+  pub async fn sum(self, which: u64, done: OneshotSender[u64]) {
+    let h = hostOf(which);
+    aio.hostPost[Timed, AddJob](h, AddJob(5u64));
+    aio.hostPost[Timed, AddJob](h, AddJob(7u64));
+    let n = await aio.hostAwaitable[Timed, SumJob, u64](h, SumJob(actors.Reply()));
+    var d = done;
+    d.send(n);
+  }
+
+  pub async fn later(self, which: u64, ms: i64, done: OneshotSender[u64]) {
+    let n = await aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(ms, actors.Reply()));
+    var d = done;
+    d.send(n);
+  }
+
+  pub async fn tick(self, which: u64, ms: i64, done: OneshotSender[u64]) {
+    let n = await aio.hostAwaitable[Timed, TickJob, u64](hostOf(which), TickJob(ms, actors.Reply()));
+    var d = done;
+    d.send(n);
+  }
+
+  // Awaits a job that is never answered: the job tells 'ready' when it has
+  // run (2's, ended, never runs it: 'ready' is told by the stuck behaviour)
+  pub async fn stuck(self, which: u64, note: u64, ready: OneshotSender[u64]) {
+    let keep = Note(note);
+    if which == 2u64 {
+      let pending = aio.hostAwaitable[Timed, LaterJob, u64](hostOf(which), LaterJob(100000i64, actors.Reply()));
+      var r = ready;
+      r.send(1u64);
+      let n = await pending;
+    } else {
+      let n = await aio.hostAwaitable[Timed, KeepJob, u64](hostOf(which), KeepJob(ready, actors.Reply()));
+    }
+    printStr("answered\n");
+  }
+}
+
+fn show(what: &str, rx: OneshotReceiver[u64]) {
+  var r = rx;
+  match r.recv() {
+    case let Some(n) {printStr(what); printUInt(n); printStr("\n");}
+    case is None[u64] {printStr(what); printStr("none\n");}
+  }
+}
+
+fn main() {
+  initAll();
+  let a = Asker();
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    a.sum(2u64, tx);
+    show("sum of 2's: ", rx);
+  }
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    a.later(2u64, 10i64, tx);
+    show("2's timer: ", rx);
+  }
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let at = Instant.now();
+    a.tick(1u64, 30i64, tx);
+    show("1's tick: ", rx);
+    if (Instant.now() - at).nanos() >= 30000000i64 {printStr("  not before its time\n");}
+  }
+  two.end();
+  printStr("2 ended\n");
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let s = Asker();
+    s.stuck(2u64, 2u64, tx);
+    rx.recv();
+  }
+  thread.sleep(Duration.fromMillis(200i64));
+  {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let s = Asker();
+    s.stuck(1u64, 1u64, tx);
+    rx.recv();
+  }
+  finalAll();
+  printStr("end\n");
+}

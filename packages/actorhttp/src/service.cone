@@ -76,7 +76,8 @@ fn blankConn() ConnRec {
 const connBit = 0x100000000u64;
 
 // Everything the service thread keeps: its clients, its driver for the
-// connections a program makes itself, and what is awaited on those
+// connections a program makes itself, and what is awaited on those. A service
+// hosted on aio's I/O thread (aio.Hosted: turn, complete, wakeAt, end)
 struct Service {
   clients: SlotTable[ClientRec];
   drv: httpconn.Driver;
@@ -128,57 +129,60 @@ struct Service {
     conns.bound()
   }
 
-  // One turn: drive everything started, wait in the loop until something
-  // completes (or the latest any of it wants a turn), and hand each
-  // completion to whose it is
-  fn drive(self: &mut, lp: &mut Loop, comps: &mut List[Completion]) {
-    var limit = forever();
+  // Its turn on aio's I/O thread (aio.Hosted), after the jobs queued for it
+  // have run: drive everything started, each event to what awaits it, and let
+  // the servers and clients that are over leave
+  pub fn turn(self: &mut, lp: &mut Loop) {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
-        let rec = self.clientAt(k) as &mut ClientRec;
-        pumpClient(rec, lp);
-        let w = rec.client.wakeAt();
-        if w < limit {limit = w;}
+        pumpClient(self.clientAt(k) as &mut ClientRec, lp);
       }
       k = k + 1usize;
     }
     self.pumpConns(lp);
-    let dw = drv.wakeAt();
-    if dw < limit {limit = dw;}
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let srec = self.srvAt(s) as &mut SrvRec;
-        pumpServer(srec, lp);
-        let sw = srec.drv.wakeAt();
-        if sw < limit {limit = sw;}
+        pumpServer(self.srvAt(s) as &mut SrvRec, lp);
       }
       s = s + 1usize;
     }
     self.sweepServers(lp);
     self.sweep();
-    var cs = List[Completion].empty();
-    cs <-> *comps;
-    lp.poll(limit, &mut cs);
-    var j = 0usize;
-    while j < cs.len() {
-      let c = &mut cs[j];
-      self.route(lp, c);
-      j = j + 1usize;
-    }
-    cs.clear();
-    *comps <-> cs;
   }
 
-  // A completion goes to the client or the driver whose it is; any other
-  // (the waker's) is dropped
-  fn route(self: &mut, lp: &mut Loop, c: &mut Completion) {
+  // The latest the I/O thread may wait in its poll before the next turn: the
+  // earliest any client or driver wants (aio.Hosted)
+  pub fn wakeAt(self: &) Instant {
+    var limit = drv.wakeAt();
+    var k = 0usize;
+    while k < clients.bound() {
+      if clients.isLive(u32.from(k)) {
+        let w = (self.clientAt(k) as &ClientRec).client.wakeAt();
+        if w < limit {limit = w;}
+      }
+      k = k + 1usize;
+    }
+    var s = 0usize;
+    while s < srvs.bound() {
+      if srvs.isLive(u32.from(s)) {
+        let sw = (self.srvAt(s) as &SrvRec).drv.wakeAt();
+        if sw < limit {limit = sw;}
+      }
+      s = s + 1usize;
+    }
+    limit
+  }
+
+  // A completion the I/O thread's poll returned, offered to the clients and
+  // drivers in turn: true if one of them took it as its own (aio.Hosted)
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {
     var k = 0usize;
     while k < clients.bound() {
       if clients.isLive(u32.from(k)) {
         let rec = self.clientAt(k) as &mut ClientRec;
-        if rec.client.complete(lp, c) {return;}
+        if rec.client.complete(lp, c) {return true;}
       }
       k = k + 1usize;
     }
@@ -186,11 +190,34 @@ struct Service {
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
         let srec = self.srvAt(s) as &mut SrvRec;
-        if srec.drv.complete(lp, c) {return;}
+        if srec.drv.complete(lp, c) {return true;}
       }
       s = s + 1usize;
     }
-    drv.complete(lp, c);
+    drv.complete(lp, c)
+  }
+
+  // Its end, the Loop still alive (aio.Hosted; the package's header, THE
+  // PROGRAM'S END): every client, server and connection reset now, so that
+  // nothing of the service is left on the Loop; the events that makes are
+  // never pumped, and every exchange still awaited is abandoned when the
+  // service is dropped, its reply with it
+  pub fn end(self: &mut, lp: &mut Loop) {
+    var k = 0usize;
+    while k < clients.bound() {
+      if clients.isLive(u32.from(k)) {
+        (self.clientAt(k) as &mut ClientRec).client.abortAll(lp);
+      }
+      k = k + 1usize;
+    }
+    var s = 0usize;
+    while s < srvs.bound() {
+      if srvs.isLive(u32.from(s)) {
+        (self.srvAt(s) as &mut SrvRec).drv.abortAll(lp);
+      }
+      s = s + 1usize;
+    }
+    drv.abortAll(lp);
   }
 
   // Servers that are closed, with nothing left to answer, leave: their
@@ -456,7 +483,7 @@ struct CreateClientJob {
   pub cfg: httpclient.Config;
   pub maxBody: usize;
 
-  fn run(self, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, cfg, maxBody = self.(id, cfg, maxBody);
     sv.clients.add(ClientRec(id, 1u32, false, maxBody, httpclient.Client.make(cfg),
       SlotTable[Wait].make(16u32), SlotTable[StreamRec].make(16u32)));
@@ -469,7 +496,7 @@ struct RefJob {
   pub id: u64;
   pub add: bool;
 
-  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {return;}
     let rec = sv.clientAt(k) as &mut ClientRec;
@@ -487,7 +514,7 @@ struct FetchJob {
   pub req: httpclient.Request;
   pub reply: actors.Reply;
 
-  fn run(self, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, req, rp = self.(id, req, reply);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
@@ -517,7 +544,7 @@ struct ConnectJob {
   pub cfg: tls.ClientConfig;
   pub reply: actors.Reply;
 
-  fn run(self, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let host, port, secure, cfg, rp = self.(host, port, secure, cfg, reply);
     let slot = usize.from(sv.conns.add(blankConn()).index);
     let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
@@ -557,7 +584,7 @@ struct ExchangeJob {
   pub deadline: Instant;
   pub reply: actors.Reply;
 
-  fn run(self, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
     let id, head, body, group, deadline, rp = self.(id, head, body, group, deadline, reply);
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {
@@ -594,7 +621,7 @@ struct ExchangeJob {
 struct DropConnJob {
   pub id: u64;
 
-  fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
+  pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {return;}
     let c = sv.conns.at(u32.from(k)) as &mut ConnRec;

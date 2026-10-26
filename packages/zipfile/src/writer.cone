@@ -10,6 +10,28 @@
 // The extra field of the extended timestamp (Info-ZIP): flags, then the modification time
 const unixTimeTag = 0x5455u16;
 
+// WHAT A METHOD NEEDS TO BE WRITTEN. The three functions below are the whole of it: a method the writer
+// can make is listed in 'canWrite', compressed by 'compressWith' and given its APPNOTE 4.4.3 "version
+// needed to extract" by 'versionNeeded'. Nothing else in 'add' looks at the number. Method 93 (zstd) is
+// read but not yet written, because the compressor is not in package zstd yet; writing it is a branch in
+// each function (63 is its version, APPNOTE 6.3), the constructor 'EntryOptions.zstd(level)' in types.cone,
+// and the sentence in 'add''s refusal.
+
+// Whether entries can be written with this method
+fn canWrite(method: u16) bool {
+  method == methodStored() || method == methodDeflate()
+}
+
+// The raw compressed stream of 'data' by a method other than stored, at the method's own level
+fn compressWith(method: u16, level: i32, data: &Array[u8]) List[u8] {
+  deflate.rawDeflate(data, level)
+}
+
+// The version needed to extract an entry of this method (a stored entry, 10, is the oldest)
+fn versionNeeded(method: u16) u32 {
+  if method == methodDeflate() { 20u32 } else { 10u32 }
+}
+
 pub struct ZipWriter {
   // Bytes made and not yet dropped; those before 'outPos' have been pulled
   out: List[u8];
@@ -121,18 +143,18 @@ pub struct ZipWriter {
     if names.contains(name) {
       return refusal[void](ErrorKind.BadArgument, 0u64, about("the name", name, "is already in the archive").view());
     }
-    if opts.method != 0u16 && opts.method != 8u16 {
+    if !canWrite(opts.method) {
       return refusal[void](ErrorKind.BadArgument, 0u64, about("the method of", name, "must be 0 (stored) or 8 (deflate)").view());
     }
     let n = u64.from(data.len);
-    // Folders and empty files are stored; a deflated entry that does not get smaller is stored
-    var method = if folder || n == 0u64 { 0u16 } else { opts.method };
+    // Folders and empty files are stored; a compressed entry that does not get smaller is stored
+    var method = if folder || n == 0u64 { methodStored() } else { opts.method };
     var body = List[u8].empty();
-    if method == 8u16 {
-      body = deflate.rawDeflate(data, opts.level);
-      if u64.from(body.len()) >= n { method = 0u16; body = List[u8].empty(); }
+    if method != methodStored() {
+      body = compressWith(method, opts.level, data);
+      if u64.from(body.len()) >= n { method = methodStored(); body = List[u8].empty(); }
     }
-    let csize = if method == 8u16 { u64.from(body.len()) } else { n };
+    let csize = if method != methodStored() { u64.from(body.len()) } else { n };
     let sum = crc.update(0u32, data, 0usize, data.len);
     let offset = gone + u64.from(out.len());
     // zip64: the local header and the central record carry the sizes in an extra field
@@ -149,7 +171,7 @@ pub struct ZipWriter {
       time = d.time;
       stamped = true;
     }
-    let needed = if wide || wideOff { 45u32 } else if method == 8u16 || folder { 20u32 } else { 10u32 };
+    let needed = if wide || wideOff { 45u32 } else if folder { 20u32 } else { versionNeeded(method) };
     // Local header
     put32(&mut out, 0x04034B50u32);
     put16(&mut out, needed);
@@ -175,7 +197,7 @@ pub struct ZipWriter {
       out.push(1u8);
       put32(&mut out, u32.from(opts.modified));
     }
-    if method == 8u16 { putBytes(&mut out, body.view()); } else { putBytes(&mut out, data); }
+    if method != methodStored() { putBytes(&mut out, body.view()); } else { putBytes(&mut out, data); }
     // Central directory record
     let mode = if opts.mode != 0u32 { opts.mode } else if folder { 493u32 } else { 420u32 };
     let kind = if folder { 0x4000u32 } else { 0x8000u32 };
@@ -225,9 +247,7 @@ pub struct ZipWriter {
     }
     let cdOffset = gone + u64.from(out.len());
     let cdSize = u64.from(central.len());
-    out.reserve(central.len());
-    var c = 0usize;
-    while c < central.len() { out.push(*central[c]); c += 1usize; }
+    out.appendSlice(central.view());
     central.clear();
     let total = added;
     let wide = always64 || total >= 0xFFFFu64 || cdOffset >= 0xFFFFFFFFu64 || cdSize >= 0xFFFFFFFFu64;
@@ -268,16 +288,23 @@ pub struct ZipWriter {
   pub fn pull(self: &mut, dst: &mut List[u8], max: usize) Status {
     let avail = out.len() - outPos;
     let n = if avail < max { avail } else { max };
-    dst.reserve(n);
-    var k = 0usize;
-    while k < n { dst.push(*out[outPos + k]); k += 1usize; }
+    // 'dst' may be, to the compiler, the very list 'out' is, so a view of 'out' cannot be lent to
+    // 'dst.appendSlice' (1339); the run goes through a list of this call's own, and is moved on whole
+    var run = List[u8].withCapacity(n);
+    run.appendSlice(&out.view()[outPos..<outPos + n]);
+    dst.appendList(run);
     outPos += n;
     // Drop what is pulled when it is at least as much as what is left
     let left = out.len() - outPos;
     if outPos > 0usize && outPos >= left {
-      var i = 0usize;
-      while i < left { out.set(i, *out[outPos + i]); i += 1usize; }
-      out.truncate(left);
+      if left == 0usize {
+        out.clear();
+      } else {
+        // What is left is moved down by building the shorter list and putting it in the old one's place
+        var rest = List[u8].withCapacity(left);
+        rest.appendSlice(&out.view()[outPos..<outPos + left]);
+        out = rest;
+      }
       gone += u64.from(outPos);
       outPos = 0usize;
     }

@@ -1,0 +1,227 @@
+// What extraction gives back besides the bytes: each file's and folder's modified time (on by default) and
+// permission bits (off by default, 'restoreMode').
+//
+// - times: the extended timestamp when the entry has one, else the DOS time read as UTC (an archive from
+//   another tool, DOS host or not); a folder's time is set after the files in it are written, so writing
+//   them does not change it; 'restoreTimes = false' leaves every time as the extraction made it.
+// - modes: the nine permission bits come back (the execute bit of a script, a read-only file) only when
+//   asked, never setuid, setgid or sticky; a folder's mode is applied after its files are written, so a
+//   folder that forbids writing still gets its files; an entry from a system that records no Unix mode
+//   gets none. Windows keeps one bit of a mode, the owner's write bit (as a read-only attribute), and
+//   does not apply a folder's mode at all; each check says what each system should show, in the same
+//   number of checks.
+// - 'overwrite' replaces a read-only file an earlier extraction made, and puts its mode back.
+// - one entry (extractOne) gets its own time and mode; the folders made on its way are left as made.
+
+mod restoretest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import fs;
+import path use Path;
+import posix;
+
+fn load(name: &str) String {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) { s }
+    case let Error(e) {
+      expect(false, "a fixture is missing");
+      String.empty()
+    }
+  }
+}
+
+fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+
+fn modeOf(p: &str) u32 {
+  var c = String.from(p);
+  var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
+  require(posix.stat(c.cstr(), &mut st) == 0i32, "posix.stat of a path that is there");
+  u32.from(st.st_mode) & 0xFFFu32
+}
+
+fn modifiedOf(p: &str) i64 {
+  match fs.stat(&Path.from(p)) {
+    case let Ok(s) { s.modified.unixSeconds() }
+    case is Error { 0i64 - 1i64 }
+  }
+}
+
+// What a system keeps of a mode: POSIX the nine bits, Windows the owner's write bit
+fn kept(p: &str) u32 {
+  if isWindows() { modeOf(p) & 0x80u32 } else { modeOf(p) & 0x1FFu32 }
+}
+
+// What 'kept' should show: 'bits' on POSIX; on Windows the write bit if 'writable'
+fn want(bits: u32, writable: bool) u32 {
+  if isWindows() { if writable { 0x80u32 } else { 0u32 } } else { bits }
+}
+
+fn entry(modified: i64, mode: u32) EntryOptions {
+  var o = EntryOptions.stored();
+  o.modified = modified;
+  o.mode = mode;
+  o
+}
+
+// Folders come before the files in them, as archive tools write them
+fn build() List[u8] {
+  var w = ZipWriter.make();
+  w.addDir("bin", &entry(1400000000i64, 448u32));
+  w.add("bin/run.sh", "#!/bin/sh\necho hi\n", &entry(1600000000i64, 493u32));
+  w.add("bin/suid.sh", "#!/bin/sh\n", &entry(1610000000i64, 2541u32));
+  w.addDir("data", &entry(1450000000i64, 493u32));
+  w.add("data/plain.txt", "plain\n", &entry(1700000000i64, 420u32));
+  w.add("data/ro.txt", "readonly\n", &entry(1500000000i64, 292u32));
+  w.addDir("locked", &entry(1350000000i64, 320u32));
+  w.add("locked/f.txt", "inside\n", &entry(1360000000i64, 420u32));
+  w.add("old.txt", "old\n", &EntryOptions.stored());
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Error(e) { List[u8].empty() }
+  }
+}
+
+fn extractTo(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[Extracted] {
+  match Archive.open(data) {
+    case let Error(e) { None[Extracted] }
+    case let Ok(ar) {
+      match ar.extractAll(data, &Path.from(dest), opts) {
+        case let Ok(done) { Some[Extracted](done) }
+        case let Error(e) {
+          expect(false, e.reason.view());
+          None[Extracted]
+        }
+      }
+    }
+  }
+}
+
+fn unrestoredOf(got: Option[Extracted]) usize {
+  match got {
+    case let Some(g) { g.unrestored }
+    case is None { 999usize }
+  }
+}
+
+fn contentIs(p: &str, text: &str) bool {
+  match fs.readFile(&Path.from(p)) {
+    case let Ok(s) { s.view() == text }
+    case let Error(e) { false }
+  }
+}
+
+// So the folder can be removed: a read-only file or a folder without write permission is made writable
+fn unlock(p: &str) { fs.chmod(&Path.from(p), 0x1FFu32); }
+
+fn main() i32 {
+  let archive = build();
+  let defaults = ExtractOptions.safe();
+  expect(defaults.restoreTimes && !defaults.restoreMode, "by default times are restored and modes are not");
+
+  // ---------------- the defaults: times, not modes ----------------
+  clean("rs-a");
+  let a = extractTo(archive.view(), "rs-a", &defaults);
+  expectUInt(u64.from(unrestoredOf(a)), 0u64, "defaults: nothing was left unrestored");
+  expectInt(modifiedOf("rs-a/bin/run.sh"), 1600000000i64, "a file takes its entry's time");
+  expectInt(modifiedOf("rs-a/data/plain.txt"), 1700000000i64, "another file takes its own");
+  expectInt(modifiedOf("rs-a/locked/f.txt"), 1360000000i64, "a file in a folder too");
+  expectInt(modifiedOf("rs-a/bin"), 1400000000i64, "a folder takes its time, though files were written in it after");
+  expectInt(modifiedOf("rs-a/data"), 1450000000i64, "another folder too");
+  expectInt(modifiedOf("rs-a/old.txt"), 315532800i64, "an entry without an extended timestamp takes its DOS time: 1980-01-01 00:00");
+  expectUInt(u64.from(kept("rs-a/bin/run.sh") & 0x49u32), 0u64, "the mode is not restored: no execute bit on the script");
+  expectUInt(u64.from(modeOf("rs-a/data/ro.txt") & 0x80u32), 0x80u64, "the file that was read-only is writable");
+  clean("rs-a");
+
+  // ---------------- times off ----------------
+  var noTimes = ExtractOptions.safe();
+  noTimes.restoreTimes = false;
+  clean("rs-b");
+  let b = extractTo(archive.view(), "rs-b", &noTimes);
+  expectUInt(u64.from(unrestoredOf(b)), 0u64, "times off: nothing unrestored");
+  expect(modifiedOf("rs-b/bin/run.sh") > 1750000000i64, "times off: a file has the time it was made");
+  expect(modifiedOf("rs-b/bin") > 1750000000i64, "times off: a folder too");
+  clean("rs-b");
+
+  // ---------------- modes on ----------------
+  var withModes = ExtractOptions.safe();
+  withModes.restoreMode = true;
+  clean("rs-c");
+  let c = extractTo(archive.view(), "rs-c", &withModes);
+  expectUInt(u64.from(unrestoredOf(c)), 0u64, "modes: nothing was left unrestored");
+  expectUInt(u64.from(kept("rs-c/bin/run.sh")), u64.from(want(493u32, true)), "modes: the script is 0755 (Windows: writable)");
+  expectUInt(u64.from(kept("rs-c/data/plain.txt")), u64.from(want(420u32, true)), "modes: a plain file is 0644");
+  expectUInt(u64.from(kept("rs-c/data/ro.txt")), u64.from(want(292u32, false)), "modes: the read-only file is 0444 (Windows: read-only)");
+  expectUInt(u64.from(kept("rs-c/locked/f.txt")), u64.from(want(420u32, true)), "modes: a file in a folder that forbids writing was written, and has its mode");
+  expectUInt(u64.from(kept("rs-c/bin")), u64.from(want(448u32, true)), "modes: a folder is 0700 (Windows: a folder's mode is not applied)");
+  expectUInt(u64.from(kept("rs-c/data")), u64.from(want(493u32, true)), "modes: another folder is 0755");
+  expectUInt(u64.from(kept("rs-c/locked")), u64.from(want(320u32, true)), "modes: the folder that forbids writing is 0500 (Windows: writable)");
+  expectUInt(u64.from(modeOf("rs-c/bin/suid.sh") & 0xE00u32), 0u64, "modes: setuid, setgid and sticky are never restored");
+  expectUInt(u64.from(kept("rs-c/bin/suid.sh")), u64.from(want(493u32, true)), "modes: the file asking for setuid has its 0755");
+  expectInt(modifiedOf("rs-c/bin/run.sh"), 1600000000i64, "modes: the time is restored as well");
+  expectInt(modifiedOf("rs-c/bin"), 1400000000i64, "modes: a folder keeps its time through its mode being set");
+  expectInt(modifiedOf("rs-c/locked"), 1350000000i64, "modes: a folder without write permission has its time");
+
+  // ---------------- overwrite replaces a read-only file ----------------
+  unlock("rs-c/data/ro.txt");
+  fs.writeFile(&Path.from("rs-c/data/ro.txt"), "changed\n");
+  fs.chmod(&Path.from("rs-c/data/ro.txt"), 292u32);
+  unlock("rs-c/locked");
+  var overModes = ExtractOptions.safe();
+  overModes.restoreMode = true;
+  overModes.overwrite = true;
+  let again = extractTo(archive.view(), "rs-c", &overModes);
+  expectUInt(u64.from(unrestoredOf(again)), 0u64, "overwrite: nothing was left unrestored");
+  expect(contentIs("rs-c/data/ro.txt", "readonly\n"), "overwrite: the read-only file was replaced");
+  expectUInt(u64.from(kept("rs-c/data/ro.txt")), u64.from(want(292u32, false)), "overwrite: and is read-only again");
+  unlock("rs-c/data/ro.txt");
+  unlock("rs-c/locked");
+  clean("rs-c");
+
+  // ---------------- one entry ----------------
+  clean("rs-f");
+  match Archive.open(archive.view()) {
+    case let Error(e) { expect(false, "the archive opens"); }
+    case let Ok(ar) {
+      match ar.extractOne(archive.view(), 1usize, &Path.from("rs-f"), &withModes) {
+        case let Error(e) { expect(false, e.reason.view()); }
+        case let Ok(got) {
+          expectUInt(u64.from(got.unrestored), 0u64, "extractOne: nothing unrestored");
+          expectUInt(u64.from(kept("rs-f/bin/run.sh")), u64.from(want(493u32, true)), "extractOne: the entry has its mode");
+          expectInt(modifiedOf("rs-f/bin/run.sh"), 1600000000i64, "extractOne: and its time");
+          expect(modifiedOf("rs-f/bin") > 1750000000i64, "extractOne: the folder made on its way is left as made");
+        }
+      }
+    }
+  }
+  clean("rs-f");
+
+  // ---------------- archives from other tools ----------------
+  // Made on a DOS host: no Unix mode to give, a DOS time to read
+  let dos = load("zstd-mixed.zip");
+  clean("rs-d");
+  match Archive.open(dos.view()) {
+    case let Error(e) { expect(false, "zstd-mixed opens"); }
+    case let Ok(ar) {
+      expectUInt(u64.from(ar.entry(0usize).unixMode()), 0u64, "zstd-mixed: its entry records no Unix mode");
+      expect(!ar.entry(0usize).modifiedExact, "zstd-mixed: and no extended timestamp");
+    }
+  }
+  let d = extractTo(dos.view(), "rs-d", &withModes);
+  expectUInt(u64.from(unrestoredOf(d)), 0u64, "a DOS-host archive: modes asked for, none to give, nothing unrestored");
+  expectInt(modifiedOf("rs-d/a-stored.txt"), 1793018096i64, "its DOS time (2026-10-26 12:34:56) is read as UTC");
+  clean("rs-d");
+  // Made by Python on Unix: mode 0644, a DOS time
+  let py = load("py-basic.zip");
+  clean("rs-p");
+  let p = extractTo(py.view(), "rs-p", &withModes);
+  expectUInt(u64.from(unrestoredOf(p)), 0u64, "py-basic: nothing unrestored");
+  expectUInt(u64.from(kept("rs-p/hello.txt")), u64.from(want(420u32, true)), "py-basic: its 0644 mode");
+  expectInt(modifiedOf("rs-p/hello.txt"), 1793018096i64, "py-basic: its DOS time");
+  clean("rs-p");
+
+  done()
+}

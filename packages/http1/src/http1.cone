@@ -36,6 +36,7 @@
 //   c.handleInput(buf, now)      bytes that arrived; an empty buffer is the  (THE FOUR CALLS)
 //                                end of the peer's stream
 //   c.pollTransmit(now)          the next bytes to send: an IoBuf, empty when none
+//   c.pollTransmitAll(now)       every byte ready to send: a Chain, empty when none
 //   c.pollTimeout()              Some Instant the driver must wake at, or None
 //   c.handleTimeout(now)         the driver woke: deadlines due are acted on
 //   c.pollEvent()                the next Event
@@ -60,7 +61,10 @@
 // 'pollEvent()' gives what happened. Bytes come in as IoBufs, moved in: the
 // buffer a receive completed with, kept in an iobuf Chain, parsed across its
 // segments where they lie. Bytes go out as IoBufs too, moved to the driver
-// to send. The core knows the time only from the calls that bring it.
+// to send: one at a time by 'pollTransmit', or all that are ready at once by
+// 'pollTransmitAll', a Chain of the same buffers in the same order, for a
+// driver that sends them in one gather write (iocore's SendChain). The core
+// knows the time only from the calls that bring it.
 //
 // EVENTS. 'pollEvent' gives one Event each call, until it says to stop:
 // NeedData (nothing more until bytes arrive) or Paused (nothing more until
@@ -375,17 +379,7 @@ pub struct Connection is Move {
 
   // The next bytes to send, moved out: an empty IoBuf when there are none
   pub fn pollTransmit(self: &mut, at: Instant) IoBuf {
-    now = at;
-    if armHead && ws == WriteState.Done && !holding {
-      headAt = at + cfg.headTimeout;
-      headArmed = true;
-      armHead = false;
-    }
-    if armExpect && holding {
-      expectAt = at + cfg.expectTimeout;
-      expectArmed = true;
-      armExpect = false;
-    }
+    self.transmitting(at);
     var b = IoBuf.empty();
     if out.len() > 0usize {
       match out.popFront() {
@@ -397,6 +391,40 @@ pub struct Connection is Move {
     }
     bytesOut = bytesOut + u64.from(b.len());
     b
+  }
+
+  // Every byte ready to send, moved out at once as a Chain of the buffers
+  // they lie in, in order (what pollTransmit would give, call after call,
+  // until empty): an empty Chain when there are none. For a driver that
+  // sends several buffers in one gather write
+  pub fn pollTransmitAll(self: &mut, at: Instant) Chain {
+    self.transmitting(at);
+    // The queue is taken whole: empty is what it is next
+    var all = Chain.make(noBound);
+    all <-> out;
+    if tail.len() > 0usize && !holding {
+      // ...and so is the tail
+      var t = IoBuf.empty();
+      t <-> tail;
+      _ = all.push(t);
+    }
+    bytesOut = bytesOut + u64.from(all.len());
+    all
+  }
+
+  // A transmit at 'at': the deadlines that start when the bytes go
+  fn transmitting(self: &mut, at: Instant) {
+    now = at;
+    if armHead && ws == WriteState.Done && !holding {
+      headAt = at + cfg.headTimeout;
+      headArmed = true;
+      armHead = false;
+    }
+    if armExpect && holding {
+      expectAt = at + cfg.expectTimeout;
+      expectArmed = true;
+      armExpect = false;
+    }
   }
 
   // The one Instant the driver must wake at and call handleTimeout, or None

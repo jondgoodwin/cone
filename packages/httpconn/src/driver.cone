@@ -50,6 +50,12 @@ const kCall = 9u64;          // a layer's work on the blocking pool
 const genMask = 0xFFFFu32;           // a record's generation: bits 24 to 39
 const indexMask = 0xFFFFFFu32;
 
+// One gathered send's bounds (transmit): its segments, as many as one Linux
+// sendmsg takes, and its bytes, the core's default write watermark; past
+// either the next buffers go in the next send
+const gatherSegments = 64usize;
+const gatherBytes = 262144usize;
+
 // A connection's state
 const cFree = 0u32;
 const cResolving = 1u32;
@@ -778,19 +784,39 @@ pub struct Driver {
     if c.current == ri {c.current = noEntry;}
   }
 
-  // What the core has to send, through the layer, to the kernel
+  // What the core has to send, through the layer, to the kernel: everything
+  // the core has ready goes into the layer at once (pollTransmitAll), and the
+  // layer's wire buffers go out gathered, as many as 'gatherSegments' and
+  // 'gatherBytes' allow in one send (SendChain), a lone buffer as a plain Send
   fn transmit(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     if c.shut {return;}
     while c.sendsOut < cfg.sendDepth {
-      var b = c.layer.wireOut(now);
-      if b.len() == 0usize {
-        let p = c.core.pollTransmit(now);
-        if p.len() == 0usize {break;}
-        c.layer.plainIn(p);
-        continue;
+      var wire = Chain.make(noBound);
+      while wire.segments() < gatherSegments && wire.len() < gatherBytes {
+        let b = c.layer.wireOut(now);
+        if b.len() == 0usize {
+          var plain = c.core.pollTransmitAll(now);
+          if plain.isEmpty() {break;}
+          while true {
+            match plain.popFront() {
+              case var Some(p) {c.layer.plainIn(p);}
+              else {break;}
+            }
+          }
+          continue;
+        }
+        _ = wire.push(b);
       }
-      lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));
+      if wire.isEmpty() {break;}
+      if wire.segments() == 1usize {
+        match wire.popFront() {
+          case var Some(b) {lp.submit(Op.Send(c.sock, b), Target.Here(self.tok(kSend, i, c.gen)));}
+          else {}
+        }
+      } else {
+        lp.submit(Op.SendChain(c.sock, wire), Target.Here(self.tok(kSend, i, c.gen)));
+      }
       c.sendsOut = c.sendsOut + 1u32;
       // A layer's own bytes (a TLS handshake's) are not the request's
       if c.current != noEntry && c.layer.isOpen() {(self.reqAt(c.current) as &mut Req).wrote = true;}
@@ -1117,7 +1143,7 @@ pub struct Driver {
       }
     } else if kind == kSend {
       c.sendsOut = c.sendsOut - 1u32;
-      if comp.isDone() && comp.n == comp.buf.len() {
+      if comp.isDone() && comp.n == comp.bufLen() {
         st.bytesOut = st.bytesOut + u64.from(comp.n);
         self.markDirty(index);
       } else if comp.status != diag.outcomeCancelled {
