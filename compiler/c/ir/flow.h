@@ -21,6 +21,7 @@
 
 typedef struct VarDclNode VarDclNode;
 typedef struct FnSigNode FnSigNode;
+typedef struct BlockNode BlockNode;
 
 // Why a function would need a walk that follows borrows along each path: the
 // gate, set as the walk meets each trigger; fnDclTypeCheck reads it, -V 2 counts it.
@@ -84,8 +85,8 @@ void flowVarJoin(FlowVarPath *paths, uint32_t npaths);
 // states are joined into the state after the loop, a variable a break's path did
 // not write taking the head's state: the entry's, the continues' and the body's
 // end's, when 'bodylive' says it is reached
-void flowLoopBegin(struct BlockNode *loop);
-int flowLoopJump(struct BlockNode *target, int iscontinue);
+void flowLoopBegin(BlockNode *loop);
+int flowLoopJump(BlockNode *target, int iscontinue);
 void flowLoopEnd(int bodylive);
 
 // Is this variable one whose state the path walk follows for drop flags: a local
