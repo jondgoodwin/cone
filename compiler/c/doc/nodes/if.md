@@ -292,12 +292,15 @@ from each arm of `return if … { return a } else { b }`, recursively.
 conditions before it leave, a later condition and each arm one level deeper
 (`flowDepth`). Each arm's changes to *outer* variables' flags are taken and
 rolled back (`flowVarPathTake`, `flowVarRollback`), and the arms that did not
-return, and a missing `else`, are joined (`flowVarJoin`): a flag any of them set
-is set after the `if`, so a value moved in both arms compiles, and one moved in
-one arm may not be used after it. Whether each variable holds its value at its
-releases, where that differs by arm, is the path walk's to decide, and a drop
-flag's at run time ([Flow Analysis](../phases/flow.md), "Drop flags").
-`ifFlow` leaves `FlowState.jumped` set when every arm returned.
+jump away, and a missing `else`, are joined (`flowVarJoin`): a flag any of them
+set is set after the `if`, so a value moved in both arms compiles, and one moved
+in one arm may not be used after it. An arm that ends in a `return`, a `break`
+or a `continue` jumped away: what a `break` or `continue` changed went to its
+loop, which joins it where the loop ends ([Flow Analysis](../phases/flow.md),
+"What ends a path"). Whether each variable holds its value at its releases,
+where that differs by arm, is the path walk's to decide, and a drop flag's at
+run time ([Flow Analysis](../phases/flow.md), "Drop flags"). `ifFlow` leaves
+`FlowState.jumped` set when every arm jumped away.
 
 ## Generation
 
@@ -367,10 +370,6 @@ aggregate is merged through a slot").
   coercion or a deref silently breaks detection — and it surfaces as
   `ErrorNoElse`, not as a defect.
 - **`ErrorNoElse` returns with `vtype` still `unknownType`.**
-- **An arm ending in `break` or `continue` is joined**: only a `return` counts
-  as leaving (`jumped`), since the main walk walks a loop once and has no state
-  to hand a jump. So a value moved on an arm that breaks counts as moved after
-  the `if`, as it did before the join.
 - **`ifRemoveReturns` calls `nodesLast` without an emptiness guard.**
 
 ## What lives elsewhere

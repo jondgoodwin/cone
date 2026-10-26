@@ -91,8 +91,10 @@ the same sites, and the gate walks every function that has one.
 
 **3. A rule enforced on one walk rather than every path.** Initialization and
 move state live on the declaration and follow the walk in source order, the
-arms of an `if` joined after it, and a loop walked once. So a move in one arm
-counts as a move after the `if`, conservatively, and what a loop's later pass
+arms of an `if` joined after it (an arm ending in `return`, `break` or
+`continue` takes no part: a jump's state goes to its loop's end), and a loop
+walked once. So a move in one arm counts as a move after the `if`,
+conservatively, and what a loop's later pass
 sees is not there. Where a variable's state may differ by path, the path walk
 follows every path — for its drops (a drop flag where the paths disagree) and
 for the uses a loop's earlier pass leaves without a value — as it does for

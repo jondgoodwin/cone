@@ -1,0 +1,203 @@
+// A 'break' or 'continue' ends its path, but what it moved is not forgotten:
+// the state it leaves goes where it jumps (move_flow_jump_ok has the shapes
+// that compile). A 'break' reaches the code after its loop, so a value it moved
+// is moved there; a 'continue' reaches the next pass, so a value declared
+// outside the loop that it moved is moved for the whole of that pass, and so is
+// one a pass ended by the body's end moved. A labelled jump reaches the loop it
+// names, not the innermost one. Each function is one shape: the main walk's
+// refusal ("has been moved out") or, where the use comes before the move in
+// source order, the path walk's ("may have been moved out on a path"), which
+// also refuses the move itself on the pass after the one that moved.
+
+mod move_flow_jump;
+
+struct Fin {
+  pub v: i32;
+  fn final(self: &uni) { }
+}
+
+fn take(f: Fin) { }
+fn look(f: &Fin) i32 { f.v }
+fn opt(i: i32) Option[i32] { if i == 2 { None } else { Some(i) } }
+
+// Moved before a break out of an inner loop, used in the outer loop after it
+fn breakInner(n: i32) {
+  let a = Fin(1);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    while i < 10 {
+      if i == 2 { take(a); break; }
+      i = i + 1;
+    }
+    look(&a);           //~ ErrorMove:11 "has been moved out"
+  }
+}
+
+// Moved before a break out of an inner loop, used in the outer loop's next pass
+fn breakInnerNextPass(n: i32) {
+  let a = Fin(2);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+    while i < 10 {
+      if i == 2 { take(a); break; }  //~ ErrorMove:24 "may have been moved out"
+      i = i + 1;
+    }
+    i = 0;
+  }
+}
+
+// Declared before the loop, moved on a branch that continues, used on the next pass
+fn continueNextPass(n: i32) {
+  let a = Fin(3);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    if i == 1 { take(a); continue; }  //~ ErrorMove:22 "may have been moved out"
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+  }
+}
+
+// A labelled break out of two loops, used after the outer one
+fn labelledBreak(n: i32) {
+  let a = Fin(4);
+  var i = 0;
+  'outer: while i < n {
+    i = i + 1;
+    while i < 10 {
+      if i == 2 { take(a); break 'outer; }
+      i = i + 1;
+    }
+  }
+  look(&a);             //~ ErrorMove:9 "has been moved out"
+}
+
+// A labelled continue of the outer loop, used in the outer loop's next pass
+fn labelledContinue(n: i32) {
+  let a = Fin(5);
+  var i = 0;
+  'outer: while i < n {
+    i = i + 1;
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+    while i < 10 {
+      if i == 2 { take(a); continue 'outer; }  //~ ErrorMove:24 "may have been moved out"
+      i = i + 1;
+    }
+  }
+}
+
+// Moved on a branch that breaks, used after the loop
+fn breakThenAfter(n: i32) {
+  let a = Fin(6);
+  var i = 0;
+  while i < n {
+    if i == 2 { take(a); break; }
+    i = i + 1;
+  }
+  look(&a);             //~ ErrorMove:9 "has been moved out"
+}
+
+// Moved on a branch that continues, used after the loop
+fn continueThenAfter(n: i32) {
+  let a = Fin(7);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    if i == 2 { take(a); continue; }
+  }
+  look(&a);             //~ ErrorMove:9 "has been moved out"
+}
+
+// A loop with no condition: moved on a branch that continues, and the next
+// pass's break reached with nothing given to it, used after the loop
+fn continueThenBreak(n: i32) {
+  let a = Fin(14);
+  var i = 0;
+  while {
+    i = i + 1;
+    if i >= n { break; }
+    if i == 1 { take(a); continue; }
+  }
+  look(&a);             //~ ErrorMove:9 "has been moved out"
+}
+
+// A match arm that moves and continues, used on the next pass
+fn matchArmContinue(n: i32) {
+  let a = Fin(8);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    match i {
+      case 2 { take(a); continue; }  //~ ErrorMove:21 "may have been moved out"
+      else { }
+    }
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+  }
+}
+
+// A let-else that moves and continues, used on the next pass
+fn letElseContinue(n: i32) {
+  let a = Fin(9);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    let Some(k) = opt(i) else { take(a); continue; };  //~ ErrorMove:38 "may have been moved out"
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+  }
+}
+
+// Moved on a branch that continues, read in the loop's 'else', which the next
+// pass's test reaches
+fn continueThenElse(n: i32) i32 {
+  let a = Fin(10);
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    if i == 2 { take(a); continue; }  //~ ErrorMove:22 "may have been moved out"
+  } else {
+    look(&a)            //~ ErrorMove:11 "may have been moved out"
+  }
+}
+
+// An inner loop's continue moves the outer pass's value, read after the inner loop
+fn innerContinueThenAfter(n: i32) {
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    let a = Fin(11);
+    var j = 0;
+    while j < 2 {
+      j = j + 1;
+      if j == 1 { take(a); continue; }
+    }
+    look(&a);           //~ ErrorMove:11 "has been moved out"
+  }
+}
+
+// An inner loop's continue moves the outer pass's value, read on the inner loop's next pass
+fn innerContinueNextPass(n: i32) {
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    let a = Fin(12);
+    var j = 0;
+    while j < 2 {
+      j = j + 1;
+      look(&a);         //~ ErrorMove:13 "may have been moved out"
+      if j == 1 { take(a); continue; }  //~ ErrorMove:24 "may have been moved out"
+    }
+  }
+}
+
+// Given a value only on a branch that breaks, read after the loop
+fn givenOnBreak(n: i32) i32 {
+  var a: Fin;
+  var i = 0;
+  while i < n {
+    i = i + 1;
+    if i == 2 { a = Fin(13); break; }
+  }
+  a.v                   //~ ErrorMove:3 "may not have been given a value"
+}
