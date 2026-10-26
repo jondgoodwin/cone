@@ -280,13 +280,20 @@ pub struct Session is Move {
   // Whether close_notify has been queued
   pub fn closed(self: &) bool {sentClose}
 
-  // What it negotiated
-  pub fn info(self: &) TlsInfo {
+  // The application protocol ALPN chose ('h2', 'http/1.1'), or empty: none
+  // agreed, or the handshake not that far
+  pub fn alpn(self: &) String {
     var ap = null as *u8;
     var alen = 0u32;
     SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
-    var alpn = String.empty();
-    if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
+    var out = String.empty();
+    if alen > 0u32 {out.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
+    out
+  }
+
+  // What it negotiated
+  pub fn info(self: &) TlsInfo {
+    let alpn = self.alpn();
     let v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13} else {TlsVersion.Tls12};
     TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
       cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,

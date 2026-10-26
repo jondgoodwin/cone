@@ -46,12 +46,12 @@
 //   Server.make(cfg)  s.session()  s.stream()
 //   s.feed(cipher)  s.feedEnd()  s.pending()  s.transmit(out)          (SESSIONS)
 //   s.write(plain)  s.read(out)  s.canRead()  s.close()
-//   s.pollEvent()  s.isOpen()  s.isFailed()  s.peerEnded()  s.error()  s.info()
+//   s.pollEvent()  s.isOpen()  s.isFailed()  s.peerEnded()  s.error()  s.info()  s.alpn()
 //   s.wantsVerify()  s.verifyOp()  s.verifyDone(c)  s.verifyNow()  (THE OS'S VERIFIER)
 //   verifyWork  defaultVerifyLane()
 //   Stream: the Layer httpconn's driver takes (wireIn wireOut wireRoom    (STREAMS)
 //     plainIn plainOut pending isOpen peerEnded closeSend failed
-//     failureCode failureText wantsCall takeCall callDone describe);
+//     failureCode failureText wantsCall takeCall callDone describe alpn);
 //     Stream.make(session)  st.session()
 //   TlsError: e.kind e.code e.osError e.detail e.message()             (ERRORS)
 //   TlsErrorKind; errorName(k)
@@ -75,8 +75,9 @@
 //
 // CONFIGURATION. A Client is made from a ClientConfig: who verifies the
 // server's certificate ('verify'), the application protocols offered by
-// ALPN ('alpn': "http/1.1" alone for now; 'info().alpn' says what was
-// chosen), the lowest and highest versions (TLS 1.2 and 1.3), whether
+// ALPN ('alpn': "http/1.1" alone by default; "h2" first, then "http/1.1",
+// offers HTTP/2 too; 'alpn()' and 'info().alpn' say what was chosen), the
+// lowest and highest versions (TLS 1.2 and 1.3), whether
 // sessions are resumed ('resume'), the back end ('backend': Auto, which is
 // OpenSSL, the one built; a second fits behind the same Session), the
 // blocking pool's lane the OS's verifier runs on ('verifyLane'), and
@@ -133,7 +134,9 @@
 // it on 'verifyLane' and the handshake resumes on its completion; a request's
 // cancel or deadline during it ends the connection as at any other time, and
 // the verification's late answer is dropped. A Stream that fails reports it
-// once its last bytes (an alert, usually) have gone out.
+// once its last bytes (an alert, usually) have gone out. Its 'alpn()', once
+// open, is the protocol the driver speaks on the connection: "h2" is HTTP/2,
+// anything else HTTP/1.1.
 //
 // ERRORS. One TlsError for every back end. Its kind: a certificate
 // expired, for another name, untrusted, revoked, or refused for another
