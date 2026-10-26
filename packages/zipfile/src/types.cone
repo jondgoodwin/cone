@@ -21,7 +21,7 @@ pub enum ErrorKind {
   // A record is not what the format says, or two records disagree
   Corrupt;
   // The archive is well formed but asks for something this package does not do: more than one
-  // disk, or a compression method other than stored (0), deflate (8) and zstd (93, read only)
+  // disk, or a compression method other than stored (0), deflate (8) and zstd (93)
   Unsupported;
   // The entry is encrypted (traditional or AES): refused, never decrypted
   Encrypted;
@@ -160,8 +160,7 @@ pub struct Entry {
 
 fn copyBytes(a: &Array[u8]) List[u8] {
   var out = List[u8].withCapacity(a.len);
-  var i = 0usize;
-  while i < a.len { out.push(a[i]); i += 1usize; }
+  out.appendSlice(a);
   out
 }
 
@@ -172,9 +171,22 @@ pub struct ExtractOptions {
   // The most bytes all the entries may declare between them, 0 for no limit. Checked before anything
   // is written.
   pub maxTotal: u64;
+  // Give each extracted file and folder the permission bits its entry records (the nine bits, 0o777:
+  // never setuid, setgid or sticky), when the entry has a Unix mode ('Entry.unixMode' not 0); this is
+  // how the execute bit comes back. OFF by default: an archive is someone else's data, and modes it
+  // names (world-writable, no owner access at all) are theirs, not the extractor's, to impose; whoever
+  // wants them asks. On Windows 'fs.chmod' reads only the owner-write bit: a file whose mode lacks it
+  // becomes read-only, every other bit is lost, and a folder's mode is not applied at all.
+  pub restoreMode: bool;
+  // Give each extracted file and folder the modification time its entry records ('Entry.modified': the
+  // extended timestamp if the entry has one, else its DOS time read as UTC) as both its access and its
+  // modified time. ON by default: it changes no access and no content, and without it every file
+  // looks made now, which defeats the tools that compare times (make, rsync, backups). 'false' leaves
+  // the times as the extraction made them.
+  pub restoreTimes: bool;
 
-  // Refuse to replace, no limit
-  pub fn safe() ExtractOptions { ExtractOptions(false, 0u64) }
+  // Refuse to replace, no limit, times restored, modes not
+  pub fn safe() ExtractOptions { ExtractOptions(false, 0u64, false, true) }
 }
 
 // What an extraction did
@@ -182,13 +194,17 @@ pub struct Extracted {
   pub files: usize;
   pub folders: usize;
   pub bytes: u64;
+  // Files and folders whose mode or time was asked for and could not be set (a file system that does
+  // not keep them, a file someone else owns). They are extracted all the same, never a failure.
+  pub unrestored: usize;
 }
 
 // How an entry is written
 pub struct EntryOptions {
-  // 0 stored, 8 deflate (a deflated entry that does not get smaller is stored instead)
+  // 0 stored, 8 deflate, 93 zstd (a compressed entry that does not get smaller is stored instead)
   pub method: u16;
-  // The deflate package's level: 0, 1 or 2
+  // The method's own level: deflate's 0, 1 or 2, zstd's 1, 2 or 3 (the zstd package takes others as the
+  // nearest of these); ignored for stored
   pub level: i32;
   // Modification time, seconds since 1970 UTC; 0 writes 1980-01-01 00:00
   pub modified: i64;
@@ -209,5 +225,11 @@ pub struct EntryOptions {
 
   pub fn deflated(level: i32) EntryOptions {
     EntryOptions(8u16, level, 0i64, 0u32, false, String.empty())
+  }
+
+  // Zstd (method 93) at 'level' (1 to 3), the default time and mode. Whoever extracts the archive needs
+  // a tool that knows method 93 (bsdtar built with libzstd does; many older zip tools do not).
+  pub fn zstd(level: i32) EntryOptions {
+    EntryOptions(93u16, level, 0i64, 0u32, false, String.empty())
   }
 }

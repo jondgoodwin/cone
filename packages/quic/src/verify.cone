@@ -1,0 +1,170 @@
+// Certificates: a client's verdict on the server's chain, by the verifier
+// its Config names, with package tls's semantics (see the package's header,
+// CERTIFICATES).
+//
+// How it is built. tls's own verify callback cannot serve a QUIC connection
+// as it is: it reads the session's verdict from the SSL object's app data
+// (ex_data slot 0), and here that slot holds the connection's callback block,
+// which the crypto helper finds the connection through. So quic has its own
+// callback, verifyChain, which reads the verdict from the block. While there
+// is none, it marks the block and stops the handshake (SSL_set_retry_verify),
+// as tls's does. The crypto helper knows that stop as a failure, though: its
+// recv_crypto_data callback ends the connection on anything but OpenSSL's
+// client hello and certificate lookup callbacks. So the package hands CRYPTO
+// data to TLS through its own callback, onRecvCryptoData, which calls the
+// helper's ngtcp2_crypto_read_write_crypto_data as the helper's does, and
+// takes this stop as an interruption. Once the Connection has the verdict it
+// puts it in the block and calls the same function again with no data, and
+// the handshake goes on from where it stopped (Connection.verified). A
+// handshake that TLS finishes there has finished outside ngtcp2's read, and
+// ngtcp2 marks a handshake done only at a read's end, before its client may
+// send its Finished; so the Connection then reads one zero byte, which ngtcp2
+// drops as padding, and the read's end marks it (ngtcp2 1.22.1's
+// conn_read_handshake; tests/verify.cone's pinned and, on Linux, platform
+// cases go this way, and fail without it).
+//
+// The OS's verifier is tls's, unchanged: tls.verifyWork, a plain function of
+// a buffer that holds the name asked for and the chain the server sent (its
+// layout is in tls's verify.cone), run on the blocking pool (verifyOp) or
+// here (verifyNow), which answers with Windows' error (0: trusted). A
+// pinned key is checked when the chain comes, as tls checks it.
+
+// The verdict in the callback block, which verifyChain reads
+const verdictNone = 0usize;
+const verdictTrusted = 1usize;
+const verdictRefused = 2usize;
+
+// Windows' errors this package reports a refusal with
+const certUntrustedRoot = 0x800B0109u32;      // CERT_E_UNTRUSTEDROOT
+const genericFailure = 0x80004005u32;         // E_FAIL
+
+// OpenSSL calls this when the server's chain has come, in place of its own
+// check (SSL_CTX_set_cert_verify_callback), for the OS's verifier and
+// pinning. It reads the connection's verdict from its callback block (the
+// SSL object's app data); while there is none, it marks the block and stops
+// the handshake (SSL_set_retry_verify) for the connection to find one
+fn @c("coneQuicVerifyChain") verifyChain(store: *u8, arg: *u8) i32 {
+  let ssl = X509_STORE_CTX_get_ex_data(store, SSL_get_ex_data_X509_STORE_CTX_idx());
+  if ssl as usize == 0usize {return 0i32;}
+  let b = SSL_get_ex_data(ssl, appDataSlot) as *Box;
+  if b as usize == 0usize {return 0i32;}
+  let v = (*b).verdict;
+  if v == verdictTrusted {return 1i32;}
+  if v == verdictRefused {
+    X509_STORE_CTX_set_error(store, x509ApplicationVerification);
+    return 0i32;
+  }
+  (*b).verifyWanted = 1u32;
+  if SSL_ctrl(ssl, ctrlSetRetryVerify, 0i64, null) > 0i32 {1i32} else {0i32}
+}
+
+// ngtcp2 hands the CRYPTO frames' bytes to TLS through this: what the
+// crypto helper's ngtcp2_crypto_recv_crypto_data_cb does, but a handshake
+// verifyChain stopped is interrupted, not failed (see this file's header)
+fn @c("coneQuicRecvCryptoData") onRecvCryptoData(conn: *u8, level: i32, offset: u64, data: *u8,
+    datalen: usize, user: *u8) i32 {
+  let rv = ngtcp2_crypto_read_write_crypto_data(conn, level, data, datalen);
+  if rv == 0i32 {return 0i32;}
+  if rv == osslWantX509Lookup || rv == osslWantClientHelloCb {return 0i32;}
+  let b = user as *Box;
+  if (*b).ssl as usize != 0usize && SSL_get_error((*b).ssl, -1i32) == sslErrorWantRetryVerify {return 0i32;}
+  let e = ngtcp2_conn_get_tls_error(conn);
+  if e != 0i32 {e} else {errCrypto}
+}
+
+// The OS verifier's job for a chain the server sent: the name asked for,
+// then each certificate in DER, the server's own first (tls's layout)
+fn verifyJob(ssl: *u8, host: &str) IoBuf {
+  var job = List[u8].empty();
+  putU32(&mut job, u32.from(host.len()));
+  var k = 0usize;
+  while k < host.len() {
+    job.push(host[k]);
+    k = k + 1usize;
+  }
+  let chain = SSL_get_peer_cert_chain(ssl);
+  let n = if chain as usize == 0usize {0i32} else {OPENSSL_sk_num(chain)};
+  putU32(&mut job, u32.from(n));
+  var i = 0i32;
+  while i < n {
+    let x = OPENSSL_sk_value(chain, i);
+    let len = i2d_X509(x, null);
+    if len <= 0i32 {
+      putU32(&mut job, 0u32);
+    } else {
+      putU32(&mut job, u32.from(len));
+      let at = job.len();
+      job.resize(at + usize.from(len), 0u8);
+      var p = &mut (job.viewMut())[at] as *u8;
+      i2d_X509(x, &mut p as **u8);
+    }
+    i = i + 1i32;
+  }
+  var b = IoBuf(job.len());
+  b.append(job.view());
+  b
+}
+
+// Whether the server's own certificate's public key is one of the pins
+// (32 bytes each)
+fn pinMatches(ssl: *u8, pins: &Array[u8]) bool {
+  let chain = SSL_get_peer_cert_chain(ssl);
+  if chain as usize == 0usize || OPENSSL_sk_num(chain) <= 0i32 {return false;}
+  var hash = Array[u8, 32]() <- fill 0u8;
+  if !spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {return false;}
+  var k = 0usize;
+  while k + 32usize <= pins.len {
+    var same = true;
+    var j = 0usize;
+    while j < 32usize {
+      if pins[k + j] != hash[j] {same = false;}
+      j = j + 1usize;
+    }
+    if same {return true;}
+    k = k + 32usize;
+  }
+  false
+}
+
+// The SHA-256 of a certificate's public key, its DER SubjectPublicKeyInfo
+// (what tls's pins are)
+fn spkiSha256(x: *u8, out: &mut Array[u8, 32]) bool {
+  let pk = X509_get_X509_PUBKEY(x);
+  if pk as usize == 0usize {return false;}
+  let len = i2d_X509_PUBKEY(pk, null);
+  if len <= 0i32 {return false;}
+  let der = libc.malloc(usize.from(len));
+  var p = der;
+  i2d_X509_PUBKEY(pk, &mut p as **u8);
+  var size = 32u32;
+  let ok = EVP_Digest(der, usize.from(len), out as *u8, &mut size as *u32, EVP_sha256(), null) == 1i32;
+  libc.free(der);
+  ok
+}
+
+// The error for a certificate refused: by its pins, or by the OS's verifier
+// with Windows' error
+fn certRefused(kind: tls.VerifyKind, code: u32) QuicError {
+  if kind == tls.VerifyKind.Pinned {
+    return QuicError(errCrypto, 0u32, String.from("the server's certificate: no pinned key matches it"));
+  }
+  var d = String.from("the server's certificate was refused by the OS's verifier: ");
+  let text = IoError(code).message();
+  d.append(text.view());
+  d.append(" (Windows 0x");
+  d.appendHex(u64.from(code), 8usize);
+  d.append(")");
+  QuicError(errCrypto, code, d)
+}
+
+fn putU32(l: &mut List[u8], v: u32) {
+  l.push(u8.from(v & 255u32));
+  l.push(u8.from((v >> 8u32) & 255u32));
+  l.push(u8.from((v >> 16u32) & 255u32));
+  l.push(u8.from(v >> 24u32));
+}
+
+fn readU32(p: *u8) u32 {
+  u32.from(*p) | (u32.from(*(p + 1usize)) << 8u32) | (u32.from(*(p + 2usize)) << 16u32) |
+    (u32.from(*(p + 3usize)) << 24u32)
+}

@@ -1,0 +1,501 @@
+// Streams through the Connection, a client and a server in memory (as
+// tests/handshake.cone; the client trusts the test root by
+// tls.Verifier.roots). Checked:
+// - many streams at once: 12 of the client's, 48 KB each, echoed by the
+//   server, their data interleaved on the wire (every stream's first bytes
+//   reach the server before any stream's end does) and each whole;
+// - a stalled reader: the server never releases one stream's bytes, which
+//   then holds exactly its stream window and no end, while two others on the
+//   same connection go on to their ends, though the connection's window is
+//   smaller than the three streams' bodies together (its credit comes back
+//   as bytes arrive); released at last, the stalled stream ends too;
+// - a reset: the client resets a stream it has written on, the server hears
+//   Reset with the code and resets its own half, after which neither end
+//   holds the stream and the client may not write on it;
+// - stop sending: the server asks the client to stop a stream mid-body (it
+//   has read the stream's window and released none); the client hears
+//   WriteStopped and may write no more on it, and the server hears the Reset
+//   ngtcp2 sends for it, with the server's code; released, the stream goes
+//   from both ends;
+// - the stream limit: a server allowing 4 bidirectional streams; the
+//   client's fifth is refused until streams close and MoreStreams comes;
+// - the idle timeout: 31 s of silence ends both ends' connections, idle;
+// - a close with a code: the server closes with an application code, and
+//   the client hears it from the peer.
+
+mod streams;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import tls;
+import quic;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Error(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty()
+}
+
+fn clientCtx() quic.Context {
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  match quic.Context.client(cfg) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client's context could not be made")
+}
+
+fn serverCtx(cfg: quic.Config) quic.Context {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(cfg, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
+fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
+
+// What one end read on a stream, and was told of it
+struct In {
+  id: i64;
+  bytes: String;
+  fin: bool;
+  reset: bool;
+  resetCode: u64;
+  stopped: bool;            // WriteStopped came
+  firstAt: u32;             // the number of Data events before its first
+}
+
+// One end's view: its streams, and its connection's events. 'echo': a
+// server writes back what it reads on a bidirectional stream, and ends it
+// when the peer's end comes; 'stall': a stream whose bytes are never
+// released; 'resetBack': a stream reset by the peer is reset here too
+struct Side {
+  ins: List[In];
+  dataEvents: u32;
+  firstFinAt: u32;          // Data events before the first end of a stream, or 0
+  handshake: bool;
+  more: u32;
+  closedSeen: bool;
+  closedByPeer: bool;
+  closedApp: bool;
+  closedIdle: bool;
+  closedCode: u64;
+  echo: bool;
+  stall: i64;
+  resetBack: bool;
+
+  fn make() Side {
+    Side(ins: List[In].empty(), dataEvents: 0u32, firstFinAt: 0u32, handshake: false, more: 0u32,
+      closedSeen: false, closedByPeer: false, closedApp: false, closedIdle: false, closedCode: 0u64,
+      echo: false, stall: -1i64, resetBack: false)
+  }
+
+  // The index of a stream's record, made when it has none
+  fn at(self: &mut, id: i64) usize {
+    var k = 0usize;
+    while k < ins.len() {
+      if ins[k].id == id {return k;}
+      k = k + 1usize;
+    }
+    ins.push(In(id, String.empty(), false, false, 0u64, false, dataEvents));
+    ins.len() - 1usize
+  }
+}
+
+fn drain(c: &mut quic.Connection, side: &mut Side) {
+  while true {
+    match c.pollEvent() {
+      case is Nothing {return;}
+      case is HandshakeDone {side.handshake = true;}
+      case is VerifyNeeded {c.verifyNow();}
+      case let PeerStream(p) {side.at(p.stream);}
+      case let Data(d) {
+        let k = side.at(d.stream);
+        side.dataEvents = side.dataEvents + 1u32;
+        let n = d.buf.len();
+        let r = &mut side.ins[k];
+        r.bytes.appendBytes(d.buf.view());
+        if d.fin {
+          r.fin = true;
+          if side.firstFinAt == 0u32 {side.firstFinAt = side.dataEvents;}
+        }
+        if d.stream != side.stall {c.release(d.stream, n);}
+        if side.echo && (d.stream & 2i64) == 0i64 {
+          c.writeBytes(d.stream, d.buf.view());
+          if d.fin {c.finish(d.stream);}
+        }
+      }
+      case let Reset(x) {
+        let k = side.at(x.stream);
+        side.ins[k].reset = true;
+        side.ins[k].resetCode = x.code;
+        if side.resetBack {c.reset(x.stream, x.code);}
+      }
+      case let WriteStopped(x) {
+        let k = side.at(x.stream);
+        side.ins[k].stopped = true;
+      }
+      case let MoreStreams(m) {side.more = side.more + 1u32;}
+      case let Closed(x) {
+        side.closedSeen = true;
+        side.closedByPeer = x.byPeer;
+        side.closedApp = x.app;
+        side.closedIdle = x.idle;
+        side.closedCode = x.code;
+      }
+    }
+  }
+}
+
+fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
+  match a {
+    case let Some(x) {
+      match b {
+        case let Some(y) {return Some(if y < x {y} else {x});}
+        case is None[Instant] {return Some(x);}
+      }
+    }
+    case is None[Instant] {}
+  }
+  b
+}
+
+// Move every payload each end has for the other until neither has any and
+// neither must wake within a second
+fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mut Side, now: &mut Instant) {
+  var rounds = 0u32;
+  while rounds < 100000u32 {
+    rounds = rounds + 1u32;
+    var moved = false;
+    while true {
+      let p = c.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      s.handleInput(p.view(), *now);
+      moved = true;
+    }
+    drain(s, ss);
+    while true {
+      let p = s.pollTransmit(*now);
+      if p.len() == 0usize {break;}
+      c.handleInput(p.view(), *now);
+      moved = true;
+    }
+    drain(c, cs);
+    if moved {
+      *now = *now + Duration.fromMillis(1i64);
+      continue;
+    }
+    var t = *now;
+    match earliest(c.wakeAt(), s.wakeAt()) {
+      case let Some(w) {t = w;}
+      case is None[Instant] {return;}
+    }
+    if t > *now + Duration.fromSeconds(1i64) {return;}
+    *now = if t > *now {t} else {*now + Duration.fromMillis(1i64)};
+  }
+}
+
+// A client and a server made from these contexts, their handshake done
+fn connect(cctx: &quic.Context, sctx: &quic.Context, cs: &mut Side, ss: &mut Side, now: &mut Instant)
+    (quic.Connection, quic.Connection) {
+  var c = mustClient(cctx, *now);
+  let first = c.pollTransmit(*now);
+  var s = mustAccept(sctx, first.view(), *now);
+  pump(&mut c, &mut s, cs, ss, now);
+  if !cs.handshake || !ss.handshake {panic("the handshake did not finish");}
+  (c, s)
+}
+
+fn mustClient(cctx: &quic.Context, now: Instant) quic.Connection {
+  match quic.Connection.client(cctx, "localhost", &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {return c;}
+    case let Error(err) {
+      printStr(err.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client could not be made")
+}
+
+fn mustAccept(sctx: &quic.Context, first: &Array[u8], now: Instant) quic.Connection {
+  match quic.Connection.accept(sctx, first, &serverAddr(), &clientAddr(), now) {
+    case var Ok(s) {return s;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server could not accept the client's first packet")
+}
+
+fn openBidi(c: &mut quic.Connection) i64 {
+  match c.openBidi() {
+    case let Some(id) {return id;}
+    case is None[i64] {}
+  }
+  -1i64
+}
+
+// A stream's body: n bytes of a pattern naming the stream, which shows a
+// byte out of place
+fn body(id: i64, n: usize) String {
+  var s = String.empty();
+  var k = 0u32;
+  while s.len() < n {
+    s.append("s");
+    s.appendInt(id);
+    s.append(":");
+    s.appendUInt(u64.from(k));
+    s.append(" ");
+    k = k + 1u32;
+  }
+  var out = String.empty();
+  out.appendBytes(&s.view()[0usize ..< n]);
+  out
+}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+fn line(what: &str, value: &str) {
+  printStr(what);
+  printStr(": ");
+  printStr(value);
+  printStr("\n");
+}
+
+fn lineU(what: &str, value: u64) {
+  printStr(what);
+  printStr(": ");
+  printUInt(value);
+  printStr("\n");
+}
+
+fn manyStreams(cctx: &quic.Context) {
+  printStr("-- 12 streams at once, echoed\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  ss.echo = true;
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  var ids = List[i64].empty();
+  var k = 0u32;
+  while k < 12u32 {
+    let id = openBidi(&mut c);
+    ids.push(id);
+    let b = body(id, 49152usize);
+    c.writeBytes(id, b.view());
+    c.finish(id);
+    k = k + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  var whole = 0u32;
+  var echoed = 0u32;
+  var early = 0u32;
+  k = 0u32;
+  while k < 12u32 {
+    let id = *ids[usize.from(k)];
+    let want = body(id, 49152usize);
+    let si = ss.at(id);
+    if ss.ins[si].bytes.view() == want.view() && ss.ins[si].fin {whole = whole + 1u32;}
+    if ss.ins[si].firstAt < ss.firstFinAt {early = early + 1u32;}
+    let ci = cs.at(id);
+    if cs.ins[ci].bytes.view() == want.view() && cs.ins[ci].fin {echoed = echoed + 1u32;}
+    k = k + 1u32;
+  }
+  lineU("streams the server read whole, with their ends", u64.from(whole));
+  lineU("streams whose first bytes came before any stream's end", u64.from(early));
+  lineU("streams the client read back whole", u64.from(echoed));
+  lineU("streams either end still holds", u64.from(c.openStreams() + s.openStreams()));
+}
+
+fn stalledReader(cctx: &quic.Context) {
+  printStr("-- a stalled reader beside two others\n");
+  var cfg = quic.Config.make();
+  cfg.streamWindow = 16384u64;
+  cfg.connectionWindow = 24576u64;
+  let sctx = serverCtx(cfg);
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  let a = openBidi(&mut c);
+  let b = openBidi(&mut c);
+  let d = openBidi(&mut c);
+  ss.stall = a;
+  let ba = body(a, 102400usize);
+  let bb = body(b, 102400usize);
+  let bd = body(d, 102400usize);
+  c.writeBytes(a, ba.view());
+  c.finish(a);
+  c.writeBytes(b, bb.view());
+  c.finish(b);
+  c.writeBytes(d, bd.view());
+  c.finish(d);
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  let ai = ss.at(a);
+  let bi = ss.at(b);
+  let di = ss.at(d);
+  lineU("the stalled stream: bytes the server holds unreleased", s.unreleased(a));
+  lineU("...bytes it read", u64.from(ss.ins[ai].bytes.len()));
+  line("...its end", yesNo(ss.ins[ai].fin));
+  lineU("...bytes the client still has queued on it", c.queued(a));
+  line("the other two read whole, with their ends", yesNo(ss.ins[bi].bytes.view() == bb.view() &&
+    ss.ins[bi].fin && ss.ins[di].bytes.view() == bd.view() && ss.ins[di].fin));
+  s.release(a, usize.from(s.unreleased(a)));
+  ss.stall = -1i64;
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("released, the stalled stream reads whole, with its end", yesNo(ss.ins[ai].bytes.view() == ba.view() &&
+    ss.ins[ai].fin));
+}
+
+fn resets(cctx: &quic.Context) {
+  printStr("-- a reset, and stop sending\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  ss.resetBack = true;
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  // The client resets a stream it wrote on
+  let r = openBidi(&mut c);
+  c.writeBytes(r, body(r, 10000usize).view());
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  let ri = ss.at(r);
+  lineU("the server read before the reset", u64.from(ss.ins[ri].bytes.len()));
+  line("the client resets it", yesNo(c.reset(r, 0x10Cu64)));
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("the server heard Reset", yesNo(ss.ins[ri].reset));
+  lineU("...with the code", ss.ins[ri].resetCode);
+  line("...and no end", yesNo(!ss.ins[ri].fin));
+  let rc = cs.at(r);
+  line("the client heard the server's Reset back", yesNo(cs.ins[rc].reset));
+  line("the client may still write on it", yesNo(c.writeBytes(r, "more")));
+  lineU("streams either end still holds", u64.from(c.openStreams() + s.openStreams()));
+
+  // The server asks the client to stop, mid-body
+  let t = openBidi(&mut c);
+  let ti = ss.at(t);
+  ss.stall = t;
+  c.writeBytes(t, body(t, 400000usize).view());
+  c.finish(t);
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  lineU("the server read of a 400000-byte body, unreleased (its window)", u64.from(ss.ins[ti].bytes.len()));
+  line("the server asks the client to stop", yesNo(s.stopSending(t, 0x10Bu64)));
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  let tc = cs.at(t);
+  line("the client heard WriteStopped", yesNo(cs.ins[tc].stopped));
+  line("...and may not write on it", yesNo(!c.writeBytes(t, "more")));
+  line("the server heard the Reset ngtcp2 sent for it", yesNo(ss.ins[ti].reset));
+  lineU("...with the code", ss.ins[ti].resetCode);
+  line("...and no end", yesNo(!ss.ins[ti].fin));
+  lineU("the server releases what it read; streams the server still holds",
+    u64.from(releaseAll(&mut s, &ss)));
+}
+
+// Release every stream's unreleased bytes: how many streams the connection
+// holds after
+fn releaseAll(c: &mut quic.Connection, side: &Side) usize {
+  var k = 0usize;
+  while k < side.ins.len() {
+    let id = side.ins[k].id;
+    c.release(id, usize.from(c.unreleased(id)));
+    k = k + 1usize;
+  }
+  c.openStreams()
+}
+
+fn streamLimit(cctx: &quic.Context) {
+  printStr("-- the stream limit\n");
+  var cfg = quic.Config.make();
+  cfg.maxStreamsBidi = 4u64;
+  let sctx = serverCtx(cfg);
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  ss.echo = true;
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  var opened = 0u32;
+  var k = 0u32;
+  while k < 4u32 {
+    let id = openBidi(&mut c);
+    if id >= 0i64 {
+      opened = opened + 1u32;
+      c.writeBytes(id, "x");
+      c.finish(id);
+    }
+    k = k + 1u32;
+  }
+  lineU("streams opened of the 4 allowed", u64.from(opened));
+  line("a fifth is refused", yesNo(openBidi(&mut c) < 0i64));
+  let before = cs.more;
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  line("once they closed, MoreStreams came", yesNo(cs.more > before));
+  line("...and a fifth opens", yesNo(openBidi(&mut c) >= 0i64));
+}
+
+fn idleAndClose(cctx: &quic.Context) {
+  printStr("-- the idle timeout\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  now = now + Duration.fromSeconds(31i64);
+  let cp = c.pollTransmit(now);
+  let sp = s.pollTransmit(now);
+  drain(&mut c, &mut cs);
+  drain(&mut s, &mut ss);
+  line("the client's connection ended, idle", yesNo(c.isClosed() && cs.closedSeen && cs.closedIdle));
+  line("the server's connection ended, idle", yesNo(s.isClosed() && ss.closedSeen && ss.closedIdle));
+  line("neither sent anything", yesNo(cp.len() == 0usize && sp.len() == 0usize));
+
+  printStr("-- the server closes with a code\n");
+  var now2 = Instant.fromNanos(1000000000i64);
+  var cs2 = Side.make();
+  var ss2 = Side.make();
+  var c2, s2 = connect(cctx, &sctx, &mut cs2, &mut ss2, &mut now2);
+  s2.close(0x101u64);
+  pump(&mut c2, &mut s2, &mut cs2, &mut ss2, &mut now2);
+  line("the server's connection ended, by itself", yesNo(s2.isClosed() && ss2.closedSeen && !ss2.closedByPeer));
+  line("the client heard it from the peer", yesNo(c2.isClosed() && cs2.closedSeen && cs2.closedByPeer));
+  line("...an application's code", yesNo(cs2.closedApp));
+  lineU("...which is", cs2.closedCode);
+  line("the client may not open a stream after", yesNo(openBidi(&mut c2) < 0i64));
+}
+
+fn main() {
+  let cctx = clientCtx();
+  manyStreams(&cctx);
+  stalledReader(&cctx);
+  resets(&cctx);
+  streamLimit(&cctx);
+  idleAndClose(&cctx);
+}

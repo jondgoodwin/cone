@@ -1,0 +1,298 @@
+// ======== Writing a compressed block: literals, then sequences ========
+//
+// RFC 8878 section 3.1.1.3, the writing side of block.cone. Every choice is
+// made for the block alone, by its size: no table is carried from the block
+// before ("treeless" literals and the "repeat" table mode are never written),
+// so a block written raw instead costs nothing but its repeat offsets.
+//
+//   literals    raw when there are fewer than 64 (as the reference does) or
+//               Huffman does not save at least 1/64 of them and 2 bytes; RLE
+//               when they are one byte value; else Huffman-coded, in one
+//               stream under 256 literals and in four from 256 on, the tree
+//               by FSE-coded weights when that is smaller than 4 bits each
+//   sequences   for each of literal lengths, offsets and match lengths, the
+//               cheapest of the predefined table, RLE (one code only) and a
+//               table of its own (FSE), by an estimate of the bits each costs
+//               (a table of its own pays for its description)
+
+// The smallest saving that makes a coded form worth it over the raw one:
+// 1/64 of the size and 2 bytes (the reference's ZSTD_minGain at these levels)
+fn minGain(size: usize) usize { (size >> 6usize) + 2usize }
+
+// The literal-length and match-length codes of RFC 8878 section
+// 3.1.1.3.2.1.1, for a value under 64 (lengths) or a match length less 3
+// under 128; beyond those the code is the value's highest bit plus 19 (or 36)
+fn smallCodes(base: &Array[u32], bias: u32, n: usize) List[u8] {
+  var t = List[u8].withCapacity(n);
+  var c = 0usize;
+  var v = 0usize;
+  while v < n {
+    while c + 1usize < base.len && usize.from(base[c + 1usize] - bias) <= v { c += 1usize; }
+    t.push(u8.from(c));
+    v += 1usize;
+  }
+  t
+}
+
+// What a block's encoding needs besides the block: the Huffman code, the
+// three FSE tables, the codes of the sequences and scratch for counting
+struct BlockEnc {
+  huf: HufEnc;
+  ll: FseEnc;
+  of: FseEnc;
+  ml: FseEnc;
+  llCodes: List[u8];
+  ofCodes: List[u8];
+  mlCodes: List[u8];
+  llSmall: List[u8];
+  mlSmall: List[u8];
+  cnt: List[u32];
+  norm: List[i16];
+  desc: List[u8];
+
+  fn make() BlockEnc {
+    BlockEnc(HufEnc.empty(), FseEnc.empty(), FseEnc.empty(), FseEnc.empty(), List[u8].empty(),
+      List[u8].empty(), List[u8].empty(), smallCodes(&llBase, 0u32, 64usize), smallCodes(&mlBase, 3u32, 128usize),
+      List[u32].empty(), List[i16].empty(), List[u8].empty())
+  }
+}
+
+// The literals section header for 'n' raw (kind 0) or RLE (kind 1)
+// literals: 1, 2 or 3 bytes as the size needs
+fn writeLitHeader(out: &mut List[u8], kind: u8, n: usize) {
+  if n < 32usize {
+    out.push(kind | u8.from(n << 3usize));
+  } else if n < 4096usize {
+    out.push(kind | 4u8 | u8.from((n & 15usize) << 4usize));
+    out.push(u8.from(n >> 4usize));
+  } else {
+    out.push(kind | 12u8 | u8.from((n & 15usize) << 4usize));
+    out.push(u8.from((n >> 4usize) & 255usize));
+    out.push(u8.from(n >> 12usize));
+  }
+}
+
+fn writeRawLiterals(out: &mut List[u8], lits: &List[u8]) {
+  let n = lits.len();
+  writeLitHeader(out, 0u8, n);
+  out.reserve(n);
+  var i = 0usize;
+  while i < n {
+    out.push(*lits[i]);
+    i += 1usize;
+  }
+}
+
+// Appends the literals section for 'lits'. (They are read through the List,
+// not a slice of it, for the reason matcher.cone gives.)
+fn writeLiterals(lits: &List[u8], huf: &mut HufEnc, out: &mut List[u8]) {
+  let n = lits.len();
+  if n < 64usize {
+    writeRawLiterals(out, lits);
+    return;
+  }
+  let distinct = huf.histogram(lits);
+  if distinct == 1usize {
+    writeLitHeader(out, 1u8, n);
+    out.push(*lits[0usize]);
+    return;
+  }
+  huf.build(maxHuffBits());
+  // The header's size follows the literals' count: the coded size is smaller
+  let hs = if n < 1024usize {3usize} else if n < 16384usize {4usize} else {5usize};
+  let mark = out.len();
+  var k = 0usize;
+  while k < hs {
+    out.push(0u8);
+    k += 1usize;
+  }
+  if !huf.writeTree(out) {
+    out.truncate(mark);
+    writeRawLiterals(out, lits);
+    return;
+  }
+  let single = n < 256usize;
+  if single {
+    huf.encodeStream(lits, 0usize, n, out);
+  } else {
+    // A jump table of the first three streams' sizes, then the four
+    let jump = out.len();
+    k = 0usize;
+    while k < 6usize {
+      out.push(0u8);
+      k += 1usize;
+    }
+    let seg = (n + 3usize) / 4usize;
+    var i = 0usize;
+    while i < 4usize {
+      let from = i * seg;
+      let to = if i == 3usize {n} else {from + seg};
+      let at = out.len();
+      huf.encodeStream(lits, from, to, out);
+      if i < 3usize {
+        let size = out.len() - at;
+        out.set(jump + 2usize * i, u8.from(size & 255usize));
+        out.set(jump + 2usize * i + 1usize, u8.from((size >> 8usize) & 255usize));
+      }
+      i += 1usize;
+    }
+  }
+  let csize = out.len() - mark - hs;
+  if csize + minGain(n) >= n {
+    out.truncate(mark);
+    writeRawLiterals(out, lits);
+    return;
+  }
+  let sf = if single {0u64} else if hs == 3usize {1u64} else if hs == 4usize {2u64} else {3u64};
+  let sizeBits = if hs == 3usize {10u64} else if hs == 4usize {14u64} else {18u64};
+  let h = 2u64 | (sf << 2u64) | (u64.from(n) << 4u64) | (u64.from(csize) << (4u64 + sizeBits));
+  k = 0usize;
+  while k < hs {
+    out.set(mark + k, u8.from((h >> u64.from(8usize * k)) & 255u64));
+    k += 1usize;
+  }
+}
+
+// The code of a literal length or of a match length (its value less 3)
+fn lengthCode(small: &List[u8], v: u32, delta: u32) u8 {
+  if usize.from(v) < small.len() { return *small[usize.from(v)]; }
+  u8.from(highBit(v) + delta)
+}
+
+// The table for one of the three codes, by cost: appends its description
+// (an RLE symbol, or FSE counts) to 'desc', builds 't', answers the mode
+// (0 predefined, 1 RLE, 2 FSE)
+fn chooseTable(codes: &List[u8], alphabet: usize, defaults: &Array[i16], defaultLog: u32, maxLog: u32,
+    cnt: &mut List[u32], norm: &mut List[i16], desc: &mut List[u8], t: &mut FseEnc) u8 {
+  let nb = codes.len();
+  cnt.clear();
+  cnt.resize(alphabet, 0u32);
+  var i = 0usize;
+  while i < nb {
+    let c = usize.from(*codes[i]);
+    cnt.set(c, *cnt[c] + 1u32);
+    i += 1usize;
+  }
+  var maxSym = 0usize;
+  var distinct = 0usize;
+  var s = 0usize;
+  while s < alphabet {
+    if *cnt[s] > 0u32 {
+      maxSym = s;
+      distinct += 1usize;
+    }
+    s += 1usize;
+  }
+  // Costs in 1/256 bits; none is "not possible"
+  let none = 0xFFFFFFFFFFFFFFFFu64;
+  var predef = none;
+  if maxSym < defaults.len {
+    predef = 0u64;
+    s = 0usize;
+    while s <= maxSym {
+      let c = *cnt[s];
+      if c > 0u32 {
+        let d = defaults[s];
+        if d == 0i16 { predef = none; break; }
+        let p = if d < 0i16 {1u32} else {u32.from(d)};
+        predef = predef + u64.from(c) * u64.from(defaultLog * 256u32 - log2x256(p));
+      }
+      s += 1usize;
+    }
+  }
+  if distinct == 1usize {
+    if predef <= 2048u64 {
+      t.build(defaults, defaultLog);
+      return 0u8;
+    }
+    desc.push(u8.from(maxSym));
+    t.setRle();
+    return 1u8;
+  }
+  let log = fseTableLog(maxLog, u32.from(nb), maxSym);
+  normalize(cnt.view(), maxSym, u32.from(nb), log, norm);
+  let mark = desc.len();
+  writeNCount(desc, norm.view(), log);
+  var own = u64.from(desc.len() - mark) * 2048u64;
+  s = 0usize;
+  while s <= maxSym {
+    let c = *cnt[s];
+    if c > 0u32 { own = own + u64.from(c) * u64.from(log * 256u32 - log2x256(u32.from(*norm[s]))); }
+    s += 1usize;
+  }
+  if predef <= own {
+    desc.truncate(mark);
+    t.build(defaults, defaultLog);
+    return 0u8;
+  }
+  t.build(norm.view(), log);
+  2u8
+}
+
+// Appends the sequences section for 'seqs'
+fn writeSequences(seqs: &Seqs, enc: &mut BlockEnc, out: &mut List[u8]) {
+  let nb = seqs.ll.len();
+  if nb < 128usize {
+    out.push(u8.from(nb));
+  } else if nb < 0x7F00usize {
+    out.push(u8.from((nb >> 8usize) + 128usize));
+    out.push(u8.from(nb & 255usize));
+  } else {
+    out.push(255u8);
+    out.push(u8.from((nb - 0x7F00usize) & 255usize));
+    out.push(u8.from((nb - 0x7F00usize) >> 8usize));
+  }
+  if nb == 0usize { return; }
+  enc.llCodes.clear();
+  enc.ofCodes.clear();
+  enc.mlCodes.clear();
+  var i = 0usize;
+  while i < nb {
+    enc.llCodes.push(lengthCode(&enc.llSmall, *seqs.ll[i], 19u32));
+    enc.mlCodes.push(lengthCode(&enc.mlSmall, *seqs.ml[i] - 3u32, 36u32));
+    enc.ofCodes.push(u8.from(highBit(*seqs.off[i])));
+    i += 1usize;
+  }
+  enc.desc.clear();
+  let llMode = chooseTable(&enc.llCodes, 36usize, &llDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ll);
+  let ofMode = chooseTable(&enc.ofCodes, 32usize, &ofDefault, 5u32, 8u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.of);
+  let mlMode = chooseTable(&enc.mlCodes, 53usize, &mlDefault, 6u32, 9u32, &mut enc.cnt, &mut enc.norm, &mut enc.desc, &mut enc.ml);
+  out.push((llMode << 6u8) | (ofMode << 4u8) | (mlMode << 2u8));
+  out.reserve(enc.desc.len());
+  i = 0usize;
+  while i < enc.desc.len() {
+    out.push(*enc.desc[i]);
+    i += 1usize;
+  }
+  // The bitstream, the last sequence first: each sequence's codes are
+  // written after the next one's extra bits, so that reading backward the
+  // decoder takes a sequence's extra bits, then moves its states on
+  var bw = BitOut.make();
+  let last = nb - 1usize;
+  var llc = usize.from(*enc.llCodes[last]);
+  var ofc = usize.from(*enc.ofCodes[last]);
+  var mlc = usize.from(*enc.mlCodes[last]);
+  var llState = enc.ll.first(llc);
+  var ofState = enc.of.first(ofc);
+  var mlState = enc.ml.first(mlc);
+  bw.put(out, u64.from(*seqs.ll[last] - llBase[llc]), llBits[llc]);
+  bw.put(out, u64.from(*seqs.ml[last] - mlBase[mlc]), mlBits[mlc]);
+  bw.put(out, u64.from(*seqs.off[last]), u32.from(ofc));
+  var n = last;
+  while n > 0usize {
+    n -= 1usize;
+    llc = usize.from(*enc.llCodes[n]);
+    ofc = usize.from(*enc.ofCodes[n]);
+    mlc = usize.from(*enc.mlCodes[n]);
+    ofState = enc.of.encode(&mut bw, out, ofState, ofc);
+    mlState = enc.ml.encode(&mut bw, out, mlState, mlc);
+    llState = enc.ll.encode(&mut bw, out, llState, llc);
+    bw.put(out, u64.from(*seqs.ll[n] - llBase[llc]), llBits[llc]);
+    bw.put(out, u64.from(*seqs.ml[n] - mlBase[mlc]), mlBits[mlc]);
+    bw.put(out, u64.from(*seqs.off[n]), u32.from(ofc));
+  }
+  enc.ml.flush(&mut bw, out, mlState);
+  enc.of.flush(&mut bw, out, ofState);
+  enc.ll.flush(&mut bw, out, llState);
+  bw.close(out);
+}

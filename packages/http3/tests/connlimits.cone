@@ -1,0 +1,439 @@
+// Every bound of the connection's Config crossed (see the package's header,
+// CONNECTION BOUNDS), each on a fresh connection fed bytes by hand:
+// - qpack.maxFieldSectionSize: a HEADERS frame longer, refused from its
+//   head before its payload is held, and a short one that decodes past it:
+//   a server answers 431 and stops reading (H3_EXCESSIVE_LOAD), the program
+//   never seeing the request; a client's response, and a server's request
+//   trailers, fail TooLarge (the stream's H3_EXCESSIVE_LOAD); at the bound,
+//   read;
+// - maxRequestStreams: one more is refused, H3_REQUEST_REJECTED; once one
+//   ends, another is taken;
+// - maxControlFrames: one more control-stream frame in a second is
+//   H3_EXCESSIVE_LOAD; in the next second the count starts again;
+// - streamBuffer: the read credit falls as bytes wait and rises as they are
+//   read; a SETTINGS frame longer is H3_EXCESSIVE_LOAD;
+// - bodyWindow: Data stops at it until released;
+// - writeWatermark: sendData hands a buffer back past it, and takes it
+//   once what waited is taken;
+// - qpack.blockedStreams and qpack.maxTableCapacity, as the connection
+//   meets them: one more blocked stream is QPACK_DECOMPRESSION_FAILED, a
+//   capacity past ours QPACK_ENCODER_STREAM_ERROR.
+
+mod connlimits;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import time use Instant, Duration;
+import http use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn t0() Instant {Instant.fromNanos(1000000000i64)}
+
+fn bufOf(b: &Array[u8]) IoBuf {
+  if b.len == 0usize {return IoBuf.empty();}
+  var x = IoBuf(b.len);
+  x.append(b);
+  x
+}
+
+fn feedAt(c: &mut Connection, stream: u64, b: &Array[u8], fin: bool, at: Instant) {
+  c.handleStream(stream, bufOf(b), fin, at);
+}
+
+fn feed(c: &mut Connection, stream: u64, b: &Array[u8], fin: bool) {feedAt(c, stream, b, fin, t0());}
+
+fn frame(out: &mut List[u8], kind: u64, payload: &Array[u8]) {
+  encodeFrameHead(out, kind, u64.from(payload.len));
+  out.appendSlice(payload);
+}
+
+fn fields(spec: &str) List[HeaderField] {
+  var out = List[HeaderField].empty();
+  var i = 0usize;
+  while i < spec.len() {
+    var j = i;
+    while j < spec.len() && spec[j] != '|' {j = j + 1usize;}
+    var e = i;
+    while spec[e] != '=' {e = e + 1usize;}
+    out.push(HeaderField.make(&spec[i ..< e], &spec[e + 1usize ..< j]));
+    i = j + 1usize;
+  }
+  out
+}
+
+fn headers(out: &mut List[u8], spec: &str) {
+  var enc = QpackEncoder.make(&QpackConfig.make());
+  var sec = List[u8].empty();
+  let f = fields(spec);
+  enc.encode(0u64, f.view(), &mut sec);
+  frame(out, frameHeaders, sec.view());
+}
+
+fn errorText(e: &HttpError) String {
+  var s = String.from(kindName(e.kind));
+  match e.code {
+    case let Some(c) {
+      s.append(" ");
+      s.append(errorName(c));
+    }
+    case is None[u64] {}
+  }
+  s.append(if e.scope == ErrorScope.Stream {" (stream)"} else {" (connection)"});
+  if e.status != 0u16 {
+    s.append(" ");
+    s.appendUInt(u64.from(e.status));
+  }
+  s
+}
+
+fn evs(c: &mut Connection) String {
+  var s = String.empty();
+  var going = true;
+  while going {
+    var t = String.empty();
+    match c.pollEvent() {
+      case let Request(r) {
+        t.append("request ");
+        t.appendUInt(r.stream);
+      }
+      case let Response(r) {
+        t.append("response ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.appendUInt(u64.from(r.head.status));
+      }
+      case let Interim(r) {t.append("interim");}
+      case let Data(d) {
+        t.append("data ");
+        t.appendUInt(d.stream);
+        t.append(" ");
+        t.appendUInt(u64.from(d.buf.len()));
+      }
+      case let End(e) {
+        t.append("end ");
+        t.appendUInt(e.stream);
+      }
+      case let Failed(f) {
+        t.append("failed ");
+        t.appendUInt(f.stream);
+        t.append(": ");
+        t.append(errorText(&f.error).view());
+      }
+      case let GoAway(g) {t.append("goaway");}
+      case let Closed(x) {
+        t.append("closed");
+        match x.error {
+          case let Some(e) {
+            t.append(": ");
+            t.append(errorText(&e).view());
+          }
+          case is None[HttpError] {}
+        }
+        going = false;
+      }
+      case is NeedData {going = false;}
+    }
+    if t.len() > 0usize {
+      if s.len() > 0usize {s.append("; ");}
+      s.append(t.view());
+    }
+  }
+  s
+}
+
+fn sent(c: &mut Connection) String {
+  var s = String.empty();
+  var going = true;
+  while going {
+    var t = String.empty();
+    match c.pollTransmit(t0()) {
+      case let Write(w) {
+        if (w.stream & 2u64) == 0u64 {
+          t.append("w");
+          t.appendUInt(w.stream);
+          if w.fin {t.append(" fin");}
+        }
+      }
+      case let Reset(r) {
+        t.append("reset ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let StopSending(r) {
+        t.append("stop ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let Close(x) {
+        t.append("close ");
+        t.append(errorName(x.code));
+      }
+      case is Nothing {going = false;}
+    }
+    if t.len() > 0usize {
+      if s.len() > 0usize {s.append("; ");}
+      s.append(t.view());
+    }
+  }
+  s
+}
+
+fn serverWith(cfg: Config) Connection {
+  var s = Connection.server(cfg, t0());
+  sent(&mut s);
+  s
+}
+
+fn controlStream() List[u8] {
+  var b = List[u8].empty();
+  encodeVarint(&mut b, streamControl);
+  let none = List[u64].empty();
+  encodeSettings(&mut b, none.view(), none.view());
+  b
+}
+
+const get = ":method=GET|:scheme=https|:authority=a|:path=/";
+
+fn fieldSection() {
+  var cfg = Config.make();
+  cfg.qpack.maxFieldSectionSize = 200usize;
+  // A HEADERS frame of 201 bytes: refused from its head and 4 bytes of it
+  var a = serverWith(cfg);
+  var head = List[u8].empty();
+  encodeFrameHead(&mut head, frameHeaders, 201u64);
+  head.appendSlice("abcd");
+  feed(&mut a, 0u64, head.view(), false);
+  expectStr(evs(&mut a).view(), "", "the program never sees it");
+  expectStr(sent(&mut a).view(), "stop 0 H3_EXCESSIVE_LOAD; w0 fin", "a HEADERS frame of 201: 431 and the end, reading stopped");
+  expectUInt(u64.from(a.readCredit(0u64)), u64.from(cfg.streamBuffer), "what follows is dropped");
+  // A section of 12 bytes decoding to 10 x 38
+  var b = serverWith(cfg);
+  var sec = List[u8].empty();
+  sec.push(0u8);
+  sec.push(0u8);
+  var k = 0usize;
+  while k < 10usize {
+    sec.push(0xC1u8);
+    k = k + 1usize;
+  }
+  var f = List[u8].empty();
+  frame(&mut f, frameHeaders, sec.view());
+  feed(&mut b, 0u64, f.view(), true);
+  expectStr(evs(&mut b).view(), "", "a section decoding past the bound: the program never sees it");
+  expectStr(sent(&mut b).view(), "w0 fin", "431 and the end (every byte had arrived: no stop)");
+  // At the bound: :method GET 42, :scheme https 44, :path / 38, :authority a
+  // 43, and x= 33: 200
+  var d = serverWith(cfg);
+  var gd = List[u8].empty();
+  headers(&mut gd, ":method=GET|:scheme=https|:path=/|:authority=a|x=");
+  feed(&mut d, 0u64, gd.view(), true);
+  expectStr(evs(&mut d).view(), "request 0; end 0", "a section of exactly 200: read");
+  var e = serverWith(cfg);
+  var ge = List[u8].empty();
+  headers(&mut ge, ":method=GET|:scheme=https|:path=/|:authority=a|xy=");
+  feed(&mut e, 0u64, ge.view(), true);
+  expectStr(evs(&mut e).view(), "", "201: refused");
+  expectStr(sent(&mut e).view(), "w0 fin", "...431");
+  // A server's request trailers past it: the exchange fails, no 431
+  var h = serverWith(cfg);
+  var gh = List[u8].empty();
+  headers(&mut gh, ":method=POST|:scheme=https|:path=/|:authority=a");
+  feed(&mut h, 0u64, gh.view(), false);
+  expectStr(evs(&mut h).view(), "request 0", "a request");
+  var tr = List[u8].empty();
+  frame(&mut tr, frameHeaders, sec.view());
+  feed(&mut h, 0u64, tr.view(), false);
+  expectStr(evs(&mut h).view(), "failed 0: too large H3_EXCESSIVE_LOAD (stream) 431", "its trailers past the bound: TooLarge");
+  expectStr(sent(&mut h).view(), "stop 0 H3_EXCESSIVE_LOAD; reset 0 H3_EXCESSIVE_LOAD", "stopped and reset");
+  h.sendResponse(0u64, ResponseHead.make(200u16), BodyLength.empty());
+  expectStr(sent(&mut h).view(), "", "a response after the failure goes nowhere");
+  // A client's response past it
+  var cl = Connection.client(cfg, t0());
+  let id = cl.sendRequest(RequestHead.make("GET", "/", "a"), BodyLength.empty());
+  sent(&mut cl);
+  var big = List[u8].empty();
+  encodeFrameHead(&mut big, frameHeaders, 5000u64);
+  feed(&mut cl, id, big.view(), false);
+  expectStr(evs(&mut cl).view(), "failed 0: too large H3_EXCESSIVE_LOAD (stream)", "a response's head of 5000: TooLarge");
+  expectStr(sent(&mut cl).view(), "stop 0 H3_EXCESSIVE_LOAD", "reading stopped; the request had gone whole");
+}
+
+fn requestStreams() {
+  var cfg = Config.make();
+  cfg.maxRequestStreams = 2usize;
+  var s = serverWith(cfg);
+  var g = List[u8].empty();
+  headers(&mut g, get);
+  feed(&mut s, 0u64, g.view(), false);
+  feed(&mut s, 4u64, g.view(), false);
+  feed(&mut s, 8u64, g.view(), false);
+  expectStr(evs(&mut s).view(), "request 0; request 4", "two requests");
+  expectStr(sent(&mut s).view(), "stop 8 H3_REQUEST_REJECTED; reset 8 H3_REQUEST_REJECTED", "the third refused: not processed, safe to retry");
+  expectUInt(u64.from(s.openRequests()), 2u64, "two open");
+  // Stream 0 ends both ways: another is taken
+  feed(&mut s, 0u64, "", true);
+  s.sendResponse(0u64, ResponseHead.make(204u16), BodyLength.empty());
+  expectStr(evs(&mut s).view(), "end 0", "0's end");
+  expectStr(sent(&mut s).view(), "w0 fin", "0 answered");
+  feed(&mut s, 12u64, g.view(), false);
+  expectStr(evs(&mut s).view(), "request 12", "12 taken");
+  expectStr(sent(&mut s).view(), "", "nothing refused");
+}
+
+fn controlFrames() {
+  var cfg = Config.make();
+  cfg.maxControlFrames = 3usize;
+  var s = serverWith(cfg);
+  let t = t0();
+  feedAt(&mut s, 2u64, controlStream().view(), false, t);
+  var three = List[u8].empty();
+  frame(&mut three, 0x21u64, "");
+  frame(&mut three, 0x40u64, "x");
+  frame(&mut three, 0x5Fu64, "xy");
+  feedAt(&mut s, 2u64, three.view(), false, t);
+  expectStr(sent(&mut s).view(), "", "3 frames after SETTINGS in a second: fine");
+  let later = t + Duration.fromMillis(999);
+  var one = List[u8].empty();
+  frame(&mut one, 0x21u64, "");
+  feedAt(&mut s, 2u64, one.view(), false, later);
+  expectStr(sent(&mut s).view(), "close H3_EXCESSIVE_LOAD", "a fourth within the second: H3_EXCESSIVE_LOAD");
+  var s2 = serverWith(cfg);
+  feedAt(&mut s2, 2u64, controlStream().view(), false, t);
+  feedAt(&mut s2, 2u64, three.view(), false, t);
+  feedAt(&mut s2, 2u64, three.view(), false, t + Duration.fromSeconds(1));
+  expectStr(sent(&mut s2).view(), "", "3, then 3 more a second later: fine");
+  feedAt(&mut s2, 2u64, one.view(), false, t + Duration.fromMillis(1500));
+  expectStr(sent(&mut s2).view(), "close H3_EXCESSIVE_LOAD", "then a fourth in that second");
+}
+
+fn buffers() {
+  var cfg = Config.make();
+  cfg.streamBuffer = 16400usize;
+  cfg.bodyWindow = 1000usize;
+  var s = serverWith(cfg);
+  var b = List[u8].empty();
+  headers(&mut b, ":method=POST|:scheme=https|:authority=a|:path=/");
+  encodeFrameHead(&mut b, frameData, 5000u64);
+  feed(&mut s, 0u64, b.view(), false);
+  let before = s.readCredit(0u64);
+  var body = List[u8].empty();
+  body.resize(5000usize, 7u8);
+  feed(&mut s, 0u64, &body.view()[0usize ..< 600usize], false);
+  feed(&mut s, 0u64, &body.view()[600usize ..< 5000usize], false);
+  expectUInt(u64.from(before - s.readCredit(0u64)), 5000u64, "the credit falls by the 5000 bytes waiting");
+  expectStr(evs(&mut s).view(), "request 0; data 0 600; data 0 4400", "Data stops once bodyWindow (1000) is out: the second piece goes too, whole");
+  expectUInt(u64.from(s.readCredit(0u64)), 16400u64, "every byte handed on: the credit back");
+  var more = List[u8].empty();
+  frame(&mut more, frameData, "abc");
+  feed(&mut s, 0u64, more.view(), false);
+  expectStr(evs(&mut s).view(), "", "past bodyWindow: no Data until released");
+  s.release(0u64, 5000usize);
+  expectStr(evs(&mut s).view(), "data 0 3", "released: the rest");
+  // A stream's bytes held up to streamBuffer
+  var t = serverWith(cfg);
+  var c = List[u8].empty();
+  headers(&mut c, ":method=POST|:scheme=https|:authority=a|:path=/");
+  encodeFrameHead(&mut c, frameData, 100000u64);
+  feed(&mut t, 0u64, c.view(), false);
+  expectStr(evs(&mut t).view(), "request 0", "the request");
+  var fill = List[u8].empty();
+  fill.resize(1000usize, 1u8);
+  feed(&mut t, 0u64, fill.view(), false);
+  expectStr(evs(&mut t).view(), "data 0 1000", "1000 out: bodyWindow");
+  var n = 0usize;
+  while t.readCredit(0u64) > 0usize {
+    let k = if t.readCredit(0u64) < 1000usize {t.readCredit(0u64)} else {1000usize};
+    feed(&mut t, 0u64, &fill.view()[0usize ..< k], false);
+    n = n + k;
+  }
+  expectUInt(u64.from(n), 16400u64, "then streamBuffer bytes held, the credit 0");
+  // A SETTINGS frame longer than the stream's buffer
+  var u = serverWith(cfg);
+  var st = List[u8].empty();
+  encodeVarint(&mut st, streamControl);
+  encodeFrameHead(&mut st, frameSettings, 16396u64);
+  feed(&mut u, 2u64, st.view(), false);
+  expectStr(sent(&mut u).view(), "close H3_EXCESSIVE_LOAD", "SETTINGS longer than streamBuffer");
+  // writeWatermark
+  var wcfg = Config.make();
+  wcfg.writeWatermark = 1000usize;
+  var w = serverWith(wcfg);
+  var g = List[u8].empty();
+  headers(&mut g, get);
+  feed(&mut w, 0u64, g.view(), true);
+  evs(&mut w);
+  w.sendResponse(0u64, ResponseHead.make(200u16), BodyLength.unsized());
+  sent(&mut w);
+  var p = List[u8].empty();
+  p.resize(800usize, 2u8);
+  match w.sendData(0u64, bufOf(p.view())) {
+    case let Some(x) {expect(false, "800 taken");}
+    case is None[IoBuf] {expect(true, "800 taken");}
+  }
+  expect(w.writeRoom(0u64) < 200usize, "the room left: under 200");
+  match w.sendData(0u64, bufOf(&p.view()[0usize ..< 300usize])) {
+    case let Some(x) {expectUInt(u64.from(x.len()), 300u64, "300 more: handed back");}
+    case is None[IoBuf] {expect(false, "300 more: handed back");}
+  }
+  sent(&mut w);
+  expectUInt(u64.from(w.writeRoom(0u64)), 1000u64, "taken: the room back");
+  match w.sendData(0u64, bufOf(&p.view()[0usize ..< 300usize])) {
+    case let Some(x) {expect(false, "...and the 300 taken");}
+    case is None[IoBuf] {expect(true, "...and the 300 taken");}
+  }
+}
+
+fn qpackBounds() {
+  // One more blocked stream than we allow
+  var cfg = Config.make();
+  cfg.qpack.maxTableCapacity = 4096usize;
+  cfg.qpack.blockedStreams = 1usize;
+  var s = serverWith(cfg);
+  var ecfg = QpackConfig.make();
+  ecfg.encoderTableCapacity = 4096usize;
+  var enc = QpackEncoder.make(&ecfg);
+  enc.peerSettings(4096usize, 2usize);
+  var held = List[u8].empty();
+  enc.pollTransmit(&mut held);
+  var k = 0u64;
+  while k < 2u64 {
+    var f = fields(get);
+    f.push(HeaderField.make("x-new", if k == 0u64 {"zero"} else {"one"}));
+    var sec = List[u8].empty();
+    enc.encode(k * 4u64, f.view(), &mut sec);
+    var fr = List[u8].empty();
+    frame(&mut fr, frameHeaders, sec.view());
+    feed(&mut s, k * 4u64, fr.view(), true);
+    if k == 0u64 {
+      expectStr(evs(&mut s).view(), "", "stream 0 blocked: within blockedStreams (1)");
+      expectUInt(u64.from(s.qpackDecoder().blockedStreams()), 1u64, "one blocked");
+    }
+    k = k + 1u64;
+  }
+  expectStr(evs(&mut s).view(), "closed: malformed QPACK_DECOMPRESSION_FAILED (connection)", "a second blocked stream, read: QPACK_DECOMPRESSION_FAILED");
+  expectStr(sent(&mut s).view(), "close QPACK_DECOMPRESSION_FAILED", "...the connection closed with it");
+  // A table capacity past ours
+  var cfg2 = Config.make();
+  cfg2.qpack.maxTableCapacity = 100usize;
+  var t = serverWith(cfg2);
+  var es = List[u8].empty();
+  encodeVarint(&mut es, streamEncoder);
+  es.push(0x3Fu8);
+  es.push(0xA9u8);
+  es.push(0x01u8);
+  feed(&mut t, 6u64, es.view(), false);
+  expectStr(sent(&mut t).view(), "close QPACK_ENCODER_STREAM_ERROR", "Set Dynamic Table Capacity 200, past 100");
+}
+
+fn main() i32 {
+  fieldSection();
+  requestStreams();
+  controlFrames();
+  buffers();
+  qpackBounds();
+  done()
+}

@@ -1,0 +1,570 @@
+// The frames' wire (QUIC's integers, a frame's head, the control stream's
+// payloads) and the unidirectional streams' rules (RFC 9114, sections 6.2,
+// 7 and 8), each case on a fresh connection fed bytes by hand:
+// - integers at every length's edges, non-minimal ones, cut off, across a
+//   chain's segments; reserved values; SETTINGS and one-integer payloads
+//   checked; error names;
+// - the control stream: SETTINGS first (else H3_MISSING_SETTINGS) and once
+//   (else H3_FRAME_UNEXPECTED); DATA, HEADERS, PUSH_PROMISE and HTTP/2's
+//   types refused (H3_FRAME_UNEXPECTED); unknown and reserved frames and
+//   settings skipped, even byte by byte; HTTP/2's settings, one given
+//   twice, a 0-or-1 setting of 2 (H3_SETTINGS_ERROR); a payload cut off or
+//   with bytes over (H3_FRAME_ERROR); its end or reset, and a STOP_SENDING
+//   on ours (H3_CLOSED_CRITICAL_STREAM);
+// - the stream types: a second control, encoder or decoder stream
+//   (H3_STREAM_CREATION_ERROR); a push stream (a client's: H3_ID_ERROR, a
+//   server's: H3_STREAM_CREATION_ERROR); a type not known (reading stopped
+//   with H3_STREAM_CREATION_ERROR, the connection open); the QPACK
+//   streams' end (H3_CLOSED_CRITICAL_STREAM, which QPACK reports); a
+//   server's bidirectional stream (H3_STREAM_CREATION_ERROR);
+// - GOAWAY (a stream not a client's bidirectional one, or raising an
+//   earlier id: H3_ID_ERROR), MAX_PUSH_ID (from a server:
+//   H3_FRAME_UNEXPECTED; falling: H3_ID_ERROR), CANCEL_PUSH (past
+//   MAX_PUSH_ID: H3_ID_ERROR).
+
+mod control;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf, Chain;
+import time use Instant;
+import http use *;
+import http3 use *;
+
+fn t0() Instant {Instant.fromNanos(1000000000i64)}
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn bufOf(b: &Array[u8]) IoBuf {
+  if b.len == 0usize {return IoBuf.empty();}
+  var x = IoBuf(b.len);
+  x.append(b);
+  x
+}
+
+fn feed(c: &mut Connection, stream: u64, b: &Array[u8], fin: bool) {
+  c.handleStream(stream, bufOf(b), fin, t0());
+}
+
+// Fed a byte at a time
+fn trickle(c: &mut Connection, stream: u64, b: &Array[u8]) {
+  var i = 0usize;
+  while i < b.len {
+    feed(c, stream, &b[i ..< i + 1usize], false);
+    i = i + 1usize;
+  }
+}
+
+fn frame(out: &mut List[u8], kind: u64, payload: &Array[u8]) {
+  encodeFrameHead(out, kind, u64.from(payload.len));
+  out.appendSlice(payload);
+}
+
+fn idFrame(out: &mut List[u8], kind: u64, id: u64) {encodeIdFrame(out, kind, id);}
+
+// A unidirectional stream's type, then an empty SETTINGS frame for a
+// control stream
+fn opens(t: u64) List[u8] {
+  var b = List[u8].empty();
+  encodeVarint(&mut b, t);
+  if t == streamControl {
+    let none = List[u64].empty();
+    encodeSettings(&mut b, none.view(), none.view());
+  }
+  b
+}
+
+fn errorText(e: &HttpError) String {
+  var s = String.from(kindName(e.kind));
+  match e.code {
+    case let Some(c) {
+      s.append(" ");
+      s.append(errorName(c));
+    }
+    case is None[u64] {}
+  }
+  s.append(if e.scope == ErrorScope.Stream {" (stream)"} else {" (connection)"});
+  s
+}
+
+// What the connection would do, writes to its own unidirectional streams
+// left out: 'w0 fin; stop 8 H3_REQUEST_REJECTED; close H3_FRAME_ERROR'
+fn sent(c: &mut Connection) String {
+  var s = String.empty();
+  var going = true;
+  while going {
+    var t = String.empty();
+    match c.pollTransmit(t0()) {
+      case let Write(w) {
+        if (w.stream & 2u64) == 0u64 {
+          t.append("w");
+          t.appendUInt(w.stream);
+          if w.fin {t.append(" fin");}
+        }
+      }
+      case let Reset(r) {
+        t.append("reset ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let StopSending(r) {
+        t.append("stop ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let Close(x) {
+        t.append("close ");
+        t.append(errorName(x.code));
+      }
+      case is Nothing {going = false;}
+    }
+    if t.len() > 0usize {
+      if s.len() > 0usize {s.append("; ");}
+      s.append(t.view());
+    }
+  }
+  s
+}
+
+// The close code, or "open"
+fn closeOf(c: &mut Connection) String {
+  let s = sent(c);
+  let v = s.view();
+  var i = 0usize;
+  while i + 6usize <= v.len {
+    if v[i] == 'c' && v[i + 1usize] == 'l' && v[i + 2usize] == 'o' && v[i + 3usize] == 's' && v[i + 4usize] == 'e' && v[i + 5usize] == ' ' {
+      return String.fromBytes(&v[i + 6usize ..< v.len]);
+    }
+    i = i + 1usize;
+  }
+  String.from("open")
+}
+
+fn server() Connection {
+  var s = Connection.server(Config.make(), t0());
+  sent(&mut s);
+  s
+}
+
+fn client() Connection {
+  var c = Connection.client(Config.make(), t0());
+  sent(&mut c);
+  c
+}
+
+// A server whose peer's control stream (2) is open, SETTINGS read
+fn settled() Connection {
+  var s = server();
+  feed(&mut s, 2u64, opens(streamControl).view(), false);
+  s
+}
+
+fn settledClient() Connection {
+  var c = client();
+  feed(&mut c, 3u64, opens(streamControl).view(), false);
+  c
+}
+
+// ---------------------------------------------------------------------------
+
+fn wire() {
+  var b = List[u8].empty();
+  encodeVarint(&mut b, 0u64);
+  encodeVarint(&mut b, 63u64);
+  encodeVarint(&mut b, 64u64);
+  encodeVarint(&mut b, 16383u64);
+  encodeVarint(&mut b, 16384u64);
+  encodeVarint(&mut b, 1073741823u64);
+  encodeVarint(&mut b, 1073741824u64);
+  encodeVarint(&mut b, maxVarint);
+  expectStr(hex(b.view()).view(), "003f40407fff80004000bfffffffc000000040000000ffffffffffffffff", "integers at each length's edges");
+  var pos = 0usize;
+  var v = 0u64;
+  var all = String.empty();
+  while pos < b.len() {
+    if !decodeVarint(b.view(), &mut pos, &mut v) {break;}
+    all.appendUInt(v);
+    all.append(" ");
+  }
+  expectStr(all.view(), "0 63 64 16383 16384 1073741823 1073741824 4611686018427387903 ", "read back");
+  // RFC 9000 Appendix A.1's examples, non-minimal ones included
+  let ex: Array[u8, 17] = [0xc2u8, 0x19u8, 0x7cu8, 0x5eu8, 0xffu8, 0x14u8, 0xe8u8, 0x8cu8, 0x9du8, 0x7fu8,
+    0x3eu8, 0x7du8, 0x7bu8, 0xbdu8, 0x40u8, 0x25u8, 0x25u8];
+  pos = 0usize;
+  decodeVarint(&ex, &mut pos, &mut v);
+  expectUInt(v, 151288809941952652u64, "the 8-byte example");
+  decodeVarint(&ex, &mut pos, &mut v);
+  expectUInt(v, 494878333u64, "the 4-byte example");
+  decodeVarint(&ex, &mut pos, &mut v);
+  expectUInt(v, 15293u64, "the 2-byte example");
+  decodeVarint(&ex, &mut pos, &mut v);
+  expectUInt(v, 37u64, "37 in two bytes, not minimal, read");
+  decodeVarint(&ex, &mut pos, &mut v);
+  expectUInt(v, 37u64, "37 in one byte");
+  pos = 0usize;
+  expect(!decodeVarint(&ex[0usize ..< 7usize], &mut pos, &mut v) && pos == 0usize, "cut off: false, nothing consumed");
+  expectUInt(u64.from(varintLen(16384u64)), 4u64, "16384 takes 4 bytes");
+  // Across a chain's segments
+  var c = Chain.make(1000usize);
+  c.push(bufOf(&ex[0usize ..< 3usize]));
+  c.push(bufOf(&ex[3usize ..< 9usize]));
+  expectUInt(u64.from(peekVarint(&c, 0usize, &mut v)), 8u64, "8 bytes across two segments");
+  expectUInt(v, 151288809941952652u64, "...read");
+  expectUInt(u64.from(peekVarint(&c, 8usize, &mut v)), 0u64, "a 4-byte integer of which 1 byte has come: 0");
+  // A frame's head
+  var f = List[u8].empty();
+  encodeFrameHead(&mut f, 0x21u64, 300u64);
+  var fc = Chain.make(100usize);
+  fc.push(bufOf(f.view()));
+  match peekFrameHead(&fc) {
+    case let Some(h) {expect(h.kind == 0x21u64 && h.length == 300u64 && h.size == 3usize, "a frame's head: type 0x21, length 300, 3 bytes");}
+    case is None[FrameHead] {expect(false, "a frame's head");}
+  }
+  expect(isReserved(0x21u64) && isReserved(0x40u64) && isReserved(0x5Fu64) && !isReserved(0x20u64) && !isReserved(0x41u64), "reserved values");
+  expectStr(errorName(0x10Bu64), "H3_REQUEST_REJECTED", "an error code's name");
+  expectStr(errorName(0x0201u64), "QPACK_ENCODER_STREAM_ERROR", "QPACK's");
+  expectStr(errorName(0x9999u64), "", "a code not defined");
+}
+
+fn settingsPayloads() {
+  var p = List[u8].empty();
+  encodeVarint(&mut p, settingQpackMaxTableCapacity);
+  encodeVarint(&mut p, 4096u64);
+  encodeVarint(&mut p, settingMaxFieldSectionSize);
+  encodeVarint(&mut p, 8192u64);
+  encodeVarint(&mut p, 0x21u64);
+  encodeVarint(&mut p, 7u64);
+  encodeVarint(&mut p, settingEnableConnectProtocol);
+  encodeVarint(&mut p, 1u64);
+  var s = Settings.defaults();
+  match parseSettings(p.view(), &mut s) {
+    case let Some(e) {expect(false, "a good SETTINGS");}
+    case is None[FrameError] {
+      expect(s.qpackMaxTableCapacity == 4096u64 && s.maxFieldSectionSize == 8192u64 && s.qpackBlockedStreams == 0u64, "its values, defaults for the rest");
+      expect(s.enableConnectProtocol && s.unknown == 1usize, "connect protocol on; one unknown setting");
+    }
+  }
+  expect(Settings.defaults().maxFieldSectionSize == maxVarint, "max field section size unlimited by default");
+  expectStr(settingsWhy("0204").view(), "H3_SETTINGS_ERROR: an HTTP/2 SETTINGS parameter", "HTTP/2's ENABLE_PUSH");
+  expectStr(settingsWhy("0501").view(), "H3_SETTINGS_ERROR: an HTTP/2 SETTINGS parameter", "HTTP/2's MAX_FRAME_SIZE");
+  expectStr(settingsWhy("01000101").view(), "H3_SETTINGS_ERROR: a SETTINGS parameter given twice", "one given twice");
+  expectStr(settingsWhy("0802").view(), "H3_SETTINGS_ERROR: SETTINGS_ENABLE_CONNECT_PROTOCOL other than 0 or 1", "connect protocol of 2");
+  expectStr(settingsWhy("4033 02").view(), "H3_SETTINGS_ERROR: SETTINGS_H3_DATAGRAM other than 0 or 1", "datagram of 2");
+  expectStr(settingsWhy("0140").view(), "H3_FRAME_ERROR: a SETTINGS frame cut off inside a parameter", "cut off");
+  expectStr(settingsWhy("01").view(), "H3_FRAME_ERROR: a SETTINGS frame cut off inside a parameter", "an id alone");
+  let one: Array[u8, 2] = [0x40u8, 0x0cu8];
+  match parseId(&one) {
+    case let Some(v) {expectUInt(v, 12u64, "one integer: 12");}
+    case is None[u64] {expect(false, "one integer");}
+  }
+  let two: Array[u8, 2] = [0x0cu8, 0x00u8];
+  match parseId(&two) {
+    case let Some(v) {expect(false, "a byte over refused");}
+    case is None[u64] {expect(true, "a byte over refused");}
+  }
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < s.len {
+    if s[i] == ' ' {
+      i = i + 1usize;
+      continue;
+    }
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn settingsWhy(h: &str) String {
+  let p = unhex(h);
+  var s = Settings.defaults();
+  match parseSettings(p.view(), &mut s) {
+    case let Some(e) {
+      var t = String.from(errorName(e.code));
+      t.append(": ");
+      t.append(e.detail);
+      return t;
+    }
+    case is None[FrameError] {return String.from("ok");}
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+fn controlStream() {
+  // SETTINGS first
+  var a = server();
+  var b = opens(streamControl);
+  b.truncate(1usize);
+  idFrame(&mut b, frameGoAway, 0u64);
+  feed(&mut a, 2u64, b.view(), false);
+  expectStr(closeOf(&mut a).view(), "H3_MISSING_SETTINGS", "a GOAWAY before SETTINGS");
+  var a2 = server();
+  var b2 = opens(streamControl);
+  b2.truncate(1usize);
+  frame(&mut b2, 0x21u64, "");
+  feed(&mut a2, 2u64, b2.view(), false);
+  expectStr(closeOf(&mut a2).view(), "H3_MISSING_SETTINGS", "even a reserved frame before SETTINGS");
+  match a2.pollEvent() {
+    case let Closed(x) {
+      match x.error {
+        case let Some(e) {expectStr(errorText(&e).view(), "malformed H3_MISSING_SETTINGS (connection)", "reported as the connection's failure");}
+        case is None[HttpError] {expect(false, "a failure");}
+      }
+    }
+    else {expect(false, "Closed");}
+  }
+  // Once
+  var c = settled();
+  var two = List[u8].empty();
+  let none = List[u64].empty();
+  encodeSettings(&mut two, none.view(), none.view());
+  feed(&mut c, 2u64, two.view(), false);
+  expectStr(closeOf(&mut c).view(), "H3_FRAME_UNEXPECTED", "a second SETTINGS");
+  // Frames that belong on request streams, and HTTP/2's
+  var kinds: Array[u64, 7] = [frameData, frameHeaders, framePushPromise, 0x2u64, 0x6u64, 0x8u64, 0x9u64];
+  var k = 0usize;
+  while k < 7usize {
+    var d = settled();
+    var f = List[u8].empty();
+    frame(&mut f, kinds[k], "ab");
+    feed(&mut d, 2u64, f.view(), false);
+    var l = String.from("type ");
+    l.appendUInt(kinds[k]);
+    l.append(" on the control stream");
+    expectStr(closeOf(&mut d).view(), "H3_FRAME_UNEXPECTED", l.view());
+    k = k + 1usize;
+  }
+  // Unknown frames and settings, byte by byte, are skipped
+  var e = server();
+  var g = opens(streamControl);
+  g.truncate(1usize);
+  var ids = List[u64].empty();
+  var vals = List[u64].empty();
+  ids.push(0x21u64);
+  vals.push(5u64);
+  ids.push(0x1234u64);
+  vals.push(6u64);
+  ids.push(settingMaxFieldSectionSize);
+  vals.push(5000u64);
+  encodeSettings(&mut g, ids.view(), vals.view());
+  frame(&mut g, 0x21u64, "reserved");
+  frame(&mut g, 0x77u64, "unknown frame type with a payload");
+  frame(&mut g, 0x40u64, "");
+  trickle(&mut e, 2u64, g.view());
+  expectStr(closeOf(&mut e).view(), "open", "unknown and reserved frames and settings: skipped");
+  expect(e.settingsReceived() && e.peerSettings().maxFieldSectionSize == 5000u64 && e.peerSettings().unknown == 2usize, "SETTINGS read a byte at a time");
+  // A setting HTTP/2 had
+  var h = server();
+  var hb = opens(streamControl);
+  hb.truncate(1usize);
+  frame(&mut hb, frameSettings, unhex("0332").view());
+  feed(&mut h, 2u64, hb.view(), false);
+  expectStr(closeOf(&mut h).view(), "H3_SETTINGS_ERROR", "SETTINGS_MAX_CONCURRENT_STREAMS");
+  var h2 = server();
+  var hb2 = opens(streamControl);
+  hb2.truncate(1usize);
+  frame(&mut hb2, frameSettings, unhex("0140").view());
+  feed(&mut h2, 2u64, hb2.view(), false);
+  expectStr(closeOf(&mut h2).view(), "H3_FRAME_ERROR", "SETTINGS cut off inside a parameter");
+  // One-integer frames: bytes over, or longer than 8
+  var i = settledClient();
+  var ib = List[u8].empty();
+  frame(&mut ib, frameGoAway, unhex("0400").view());
+  feed(&mut i, 3u64, ib.view(), false);
+  expectStr(closeOf(&mut i).view(), "H3_FRAME_ERROR", "a GOAWAY of an integer and a byte over");
+  var j = settledClient();
+  var jb = List[u8].empty();
+  encodeFrameHead(&mut jb, frameGoAway, 9u64);
+  feed(&mut j, 3u64, jb.view(), false);
+  expectStr(closeOf(&mut j).view(), "H3_FRAME_ERROR", "a GOAWAY 9 bytes long, refused from its head");
+  // The control stream's end, its reset, and a STOP_SENDING on ours
+  var m = settled();
+  feed(&mut m, 2u64, "", true);
+  expectStr(closeOf(&mut m).view(), "H3_CLOSED_CRITICAL_STREAM", "the control stream ends");
+  var m2 = settled();
+  m2.handleReset(2u64, h3NoError, t0());
+  expectStr(closeOf(&mut m2).view(), "H3_CLOSED_CRITICAL_STREAM", "the control stream is reset");
+  var m3 = settled();
+  m3.handleStopSending(3u64, h3NoError, t0());
+  expectStr(closeOf(&mut m3).view(), "H3_CLOSED_CRITICAL_STREAM", "STOP_SENDING on our control stream");
+  var m4 = settled();
+  m4.handleStopSending(7u64, h3NoError, t0());
+  expectStr(closeOf(&mut m4).view(), "H3_CLOSED_CRITICAL_STREAM", "STOP_SENDING on our encoder stream");
+}
+
+fn streamTypes() {
+  var a = settled();
+  feed(&mut a, 6u64, opens(streamControl).view(), false);
+  expectStr(closeOf(&mut a).view(), "H3_STREAM_CREATION_ERROR", "a second control stream");
+  var b = server();
+  feed(&mut b, 6u64, opens(streamEncoder).view(), false);
+  feed(&mut b, 10u64, opens(streamEncoder).view(), false);
+  expectStr(closeOf(&mut b).view(), "H3_STREAM_CREATION_ERROR", "a second encoder stream");
+  var c = server();
+  feed(&mut c, 6u64, opens(streamDecoder).view(), false);
+  feed(&mut c, 10u64, opens(streamDecoder).view(), false);
+  expectStr(closeOf(&mut c).view(), "H3_STREAM_CREATION_ERROR", "a second decoder stream");
+  var d = server();
+  feed(&mut d, 6u64, opens(streamPush).view(), false);
+  expectStr(closeOf(&mut d).view(), "H3_STREAM_CREATION_ERROR", "a push stream from a client");
+  var e = client();
+  feed(&mut e, 7u64, opens(streamPush).view(), false);
+  expectStr(closeOf(&mut e).view(), "H3_ID_ERROR", "a push stream to a client that allowed none");
+  var f = client();
+  feed(&mut f, 1u64, "x", false);
+  expectStr(closeOf(&mut f).view(), "H3_STREAM_CREATION_ERROR", "a server's bidirectional stream");
+  // Types not known: reading stopped, the connection open; their end forgotten
+  var g = settled();
+  feed(&mut g, 6u64, unhex("21 0102030405").view(), false);
+  feed(&mut g, 10u64, unhex("4054").view(), false);
+  feed(&mut g, 10u64, "more", false);
+  expectStr(sent(&mut g).view(), "stop 6 H3_STREAM_CREATION_ERROR; stop 10 H3_STREAM_CREATION_ERROR", "reserved type 0x21, unknown 0x54: stopped");
+  feed(&mut g, 6u64, "", true);
+  g.handleReset(10u64, h3NoError, t0());
+  feed(&mut g, 14u64, "", true);
+  expectStr(closeOf(&mut g).view(), "open", "the connection goes on, through their ends and a stream with no type");
+  // The QPACK streams' end, which QPACK reports
+  var h = settled();
+  feed(&mut h, 6u64, opens(streamEncoder).view(), false);
+  feed(&mut h, 6u64, "", true);
+  expectStr(closeOf(&mut h).view(), "H3_CLOSED_CRITICAL_STREAM", "the encoder stream ends");
+  var i = settled();
+  feed(&mut i, 10u64, opens(streamDecoder).view(), false);
+  i.handleReset(10u64, h3NoError, t0());
+  expectStr(closeOf(&mut i).view(), "H3_CLOSED_CRITICAL_STREAM", "the decoder stream is reset");
+  // A stream's type a byte at a time, in a stream that begins with its end
+  var j = server();
+  trickle(&mut j, 2u64, opens(streamControl).view());
+  expect(j.settingsReceived(), "a control stream a byte at a time");
+  expectStr(closeOf(&mut j).view(), "open", "...and fine");
+}
+
+fn ids() {
+  // GOAWAY at a client: a client's bidirectional stream, never rising
+  var a = settledClient();
+  var ab = List[u8].empty();
+  idFrame(&mut ab, frameGoAway, 6u64);
+  feed(&mut a, 3u64, ab.view(), false);
+  expectStr(closeOf(&mut a).view(), "H3_ID_ERROR", "a GOAWAY naming stream 6");
+  var b = settledClient();
+  let r = b.sendRequest(RequestHead.make("GET", "/", "example.com"), BodyLength.empty());
+  var bb = List[u8].empty();
+  idFrame(&mut bb, frameGoAway, 400u64);
+  idFrame(&mut bb, frameGoAway, 100u64);
+  feed(&mut b, 3u64, bb.view(), false);
+  expectStr(sent(&mut b).view(), "w0 fin", "GOAWAY 400 then 100: the request on 0 goes on");
+  expect(!b.canSendRequest(), "...and no new one may be sent");
+  var bb2 = List[u8].empty();
+  idFrame(&mut bb2, frameGoAway, 104u64);
+  feed(&mut b, 3u64, bb2.view(), false);
+  expectStr(closeOf(&mut b).view(), "H3_ID_ERROR", "then 104: rising");
+  // GOAWAY at a server names a push ID, never rising
+  var c = settled();
+  var cb = List[u8].empty();
+  idFrame(&mut cb, frameGoAway, 3u64);
+  idFrame(&mut cb, frameGoAway, 3u64);
+  feed(&mut c, 2u64, cb.view(), false);
+  expectStr(closeOf(&mut c).view(), "open", "a client's GOAWAY: push ID 3, twice");
+  // MAX_PUSH_ID
+  var d = settledClient();
+  var db = List[u8].empty();
+  idFrame(&mut db, frameMaxPushId, 3u64);
+  feed(&mut d, 3u64, db.view(), false);
+  expectStr(closeOf(&mut d).view(), "H3_FRAME_UNEXPECTED", "MAX_PUSH_ID from a server");
+  var e = settled();
+  var eb = List[u8].empty();
+  idFrame(&mut eb, frameMaxPushId, 5u64);
+  idFrame(&mut eb, frameCancelPush, 5u64);
+  idFrame(&mut eb, frameMaxPushId, 5u64);
+  feed(&mut e, 2u64, eb.view(), false);
+  expectStr(closeOf(&mut e).view(), "open", "MAX_PUSH_ID 5, CANCEL_PUSH 5, MAX_PUSH_ID 5");
+  var eb2 = List[u8].empty();
+  idFrame(&mut eb2, frameCancelPush, 6u64);
+  feed(&mut e, 2u64, eb2.view(), false);
+  expectStr(closeOf(&mut e).view(), "H3_ID_ERROR", "CANCEL_PUSH 6, past MAX_PUSH_ID");
+  var f = settled();
+  var fb = List[u8].empty();
+  idFrame(&mut fb, frameMaxPushId, 5u64);
+  idFrame(&mut fb, frameMaxPushId, 4u64);
+  feed(&mut f, 2u64, fb.view(), false);
+  expectStr(closeOf(&mut f).view(), "H3_ID_ERROR", "MAX_PUSH_ID falling");
+  var g = settled();
+  var gb = List[u8].empty();
+  idFrame(&mut gb, frameCancelPush, 0u64);
+  feed(&mut g, 2u64, gb.view(), false);
+  expectStr(closeOf(&mut g).view(), "H3_ID_ERROR", "CANCEL_PUSH with no MAX_PUSH_ID");
+  var h = settledClient();
+  var hb = List[u8].empty();
+  idFrame(&mut hb, frameCancelPush, 0u64);
+  feed(&mut h, 3u64, hb.view(), false);
+  expectStr(closeOf(&mut h).view(), "H3_ID_ERROR", "CANCEL_PUSH to a client, which allowed none");
+}
+
+// What a connection sends first: its three streams' types, and SETTINGS
+fn opening() {
+  var cfg = Config.make();
+  cfg.grease = false;
+  cfg.qpack.maxTableCapacity = 4096usize;
+  cfg.qpack.blockedStreams = 10usize;
+  var c = Connection.client(cfg, t0());
+  var out = String.empty();
+  var going = true;
+  while going {
+    match c.pollTransmit(t0()) {
+      case let Write(w) {
+        let stream, data, fin = w.(stream, data, fin);
+        var b = List[u8].empty();
+        b.resize(data.len(), 0u8);
+        let n = data.copyOut(0usize, b.viewMut());
+        out.appendUInt(stream);
+        out.append(": ");
+        out.append(hex(b.view()).view());
+        out.append("; ");
+      }
+      case is Nothing {going = false;}
+      else {}
+    }
+  }
+  expectStr(out.view(), "2: 00040a0150000680004000070a; 6: 02; 10: 03; ", "control (SETTINGS: capacity 4096, field section 16384, blocked 10), encoder, decoder");
+  var s = Connection.server(Config.make(), t0());
+  var first = String.empty();
+  match s.pollTransmit(t0()) {
+    case let Write(w) {
+      let stream, data, fin = w.(stream, data, fin);
+      var b = List[u8].empty();
+      b.resize(data.len(), 0u8);
+      let n = data.copyOut(0usize, b.viewMut());
+      first.appendUInt(stream);
+      first.append(": ");
+      first.append(hex(b.view()).view());
+    }
+    else {}
+  }
+  expectStr(first.view(), "3: 00040c010006800040000700404000404000", "a server's, greased: a reserved setting 0x40 and a reserved frame 0x40");
+}
+
+fn main() i32 {
+  wire();
+  settingsPayloads();
+  controlStream();
+  streamTypes();
+  ids();
+  opening();
+  done()
+}
