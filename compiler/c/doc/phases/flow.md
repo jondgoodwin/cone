@@ -1344,7 +1344,10 @@ a struct, means **both** hold of its methods (`siInferStruct`):
   storage read from `*self` (or from a local that copied it) to a callee the
   compiler cannot read; or it lends a place of `*self` writable to a callee
   that does either. A cursor advancing writes a number; an element written in
-  place is a write through a pointer, not to it; neither is storage. A
+  place is a write through a pointer, not to it; neither is storage. A `_`
+  target is no place (`assignIsAnon`): it takes its value to drop it and names
+  nothing, so it writes nothing and has no type to ask (`siWriteHits`,
+  `siTypeWriteHits`), and its value, still made, is read as any other. A
   type that owns its block through a member (a `Set`'s `Dict`, a `String`'s
   `List`) has no pointer field of its own and writes through the member's method
   all the same, which is why the test is not "has a pointer field";
@@ -1475,7 +1478,8 @@ locals, which only a call that reaches one of them is asked of):
   — makes the call one that reshapes when its body is not visible, or when the
   callee reshapes a value of the type that is not its own local
   (`shapeTypeReshapes`, `SiModeType`: a whole value replaced, a header field of one
-  written, or a call that reshapes one, asked in turn).
+  written, or a call that reshapes one, asked in turn; a `_` target replaces nothing,
+  and the call whose value it drops is asked as any call is).
 - **A mutable virtual call** (a receiver that is a `&<mut Trait`, which a `&<mut fn` called is:
   `FlagVDisp`, the virtual reference its first argument) hides the type behind it. The trait
   method's declared `self: &mut Trait` names no fields, so `reshapeCall` walks the virtual
