@@ -1,13 +1,51 @@
 // The http2 package: HTTP/2 (RFC 9113), sans-IO, in the shape of http1: the
 // protocol's state as plain data, which does no I/O, reads no clock and
-// starts no threads (invariant I13). It is built in three parts, each its
-// own module: HPACK, the header compression (RFC 7541, here now); the
-// frames (RFC 9113, sections 4 and 6, here now); and the connection, client
-// and server, over package http's message types (to come). HPACK and its
-// Huffman code know nothing of frames or connections, and the Huffman code
-// knows nothing of HPACK, so HTTP/3's QPACK can take what it shares with
-// them. The frames know nothing of HPACK: a field block passes through them
-// as bytes.
+// starts no threads (invariant I13). It is built in three parts: HPACK, the
+// header compression (RFC 7541), and the frames (RFC 9113, sections 4 and
+// 6), each its own module; and the connection, client and server, over
+// package http's message types, which is the root module's own files
+// (connection.cone, semantics.cone). HPACK and its Huffman code know nothing
+// of frames or connections, and the Huffman code knows nothing of HPACK, so
+// HTTP/3's QPACK can take what it shares with them. The frames know nothing
+// of HPACK: a field block passes through them as bytes.
+//
+//   mod get;
+//   import http use *;
+//   import http2 use *;
+//
+//   mut conn = Connection.client(Config.make(), now);
+//   var head = RequestHead.get("/a.bin", "example.com");
+//   head.scheme = String.from("https");                 // HTTP/2 sends the scheme
+//   let id = conn.sendRequest(head, BodyLength.empty());  // its stream's id
+//   while true {                                        // the driver's loop, http1's:
+//     send(conn.pollTransmit(now));                     // a Chain, one gather write
+//     conn.handleInput(arrived, now);                   // within conn.readCredit()
+//     match conn.pollEvent() {                          // every event names its stream
+//       case let Response(r) { ... r.stream ... r.head.status ... }
+//       case let Data(d) { ... d.buf ...; conn.release(d.stream, n); }
+//       case let End(e) { ... }                         // that stream is whole
+//       case let Reset(r) { ... r.error.isRetrySafe() ... }   // that stream alone ended
+//       case let Failed(f) { ... }                      // the connection ended
+//       ...
+//     }
+//     wake at conn.pollTimeout(), then conn.handleTimeout(now);
+//   }
+//
+//   Connection.client(config, now)  Connection.server(config, now)  (THE CONNECTION)
+//   c.handleInput(buf, now)  c.pollTransmit(now)  c.pollTimeout()  c.handleTimeout(now)
+//   c.pollEvent()  c.readCredit()  c.release(stream, n)
+//   c.sendRequest(head, body) -> stream   c.canSendRequest()       (SENDING)
+//   c.sendResponse(stream, head, body)  c.sendInterim(stream, head)
+//   c.sendData(stream, buf)  c.finish(stream)  c.finishWith(stream, trailers)
+//   c.queued(stream)  c.writeRoom(stream)
+//   c.reset(stream, code)  c.cancel(stream)  c.ping(data)  c.shutdown()  (ENDING)
+//   c.isClosed()  c.shouldClose()  c.abort()
+//   c.liveStreams()  c.openLocalStreams()  c.queuedRequests()  c.streamsOpenedCount()
+//   c.peerMaxConcurrentStreams()  c.peerMaxHeaderListSize()
+//   c.connectionSendWindow()  c.streamSendWindow(stream)  c.bytesReceived()  c.bytesSent()
+//   Config.make(): the bounds, each a field to change           (CONNECTION BOUNDS)
+//   Event: NeedData Request Response Interim Data End Reset      (EVENTS)
+//     GoAway Pong Failed Closed   e.streamId()
 //
 //   mod headers;
 //   import collections use List;
@@ -262,43 +300,192 @@
 // does not read, end the connection instead: each control frame past it is
 // refused, false, and the connection answers with GOAWAY, which is never
 // refused. 'enablePush' (false) is a client's SETTINGS_ENABLE_PUSH. The
-// abuse bounds that need the connection's state are its own: rapid reset
-// (streams reset by the peer, CVE-2023-44487), MadeYouReset (streams we
-// reset), the stream limit and the windows.
+// abuse bounds that need the connection's state are the connection's (see
+// CONNECTION BOUNDS).
 //
-// H2SPEC. h2spec's list for sections 4 to 6, from memory (h2spec was
-// neither run nor fetched: there is no server yet), followed as a
-// checklist; the frame-level cases are tests/frames, frameerrors and
-// framelimits:
-// - 4.1 unknown type, unknown flags, reserved bit: done. 4.2 DATA at
-//   SETTINGS_MAX_FRAME_SIZE, past it (DATA, HEADERS): done. 4.3 header
-//   compression errors: HPACK's (tests/malformed).
-// - 6.1 DATA on stream 0, bad padding: done; on an idle or half-closed
-//   stream: the connection's. 6.2 HEADERS on stream 0, bad padding, a field
-//   block interrupted (PRIORITY, a frame of another stream): done. 6.3
-//   PRIORITY on stream 0, of the wrong length: done. 6.4 RST_STREAM on
-//   stream 0, of the wrong length: done; on an idle stream: the
-//   connection's. 6.5 SETTINGS ACK with a payload, on a stream, of the
-//   wrong length: done. 6.5.2 SETTINGS_ENABLE_PUSH, INITIAL_WINDOW_SIZE,
-//   MAX_FRAME_SIZE out of range: done; an unknown parameter: kept, done.
-//   6.5.3 the ACK in time: the connection's. 6.7 PING on a stream, of the
-//   wrong length, its ACK: parsed, the answer the connection's. 6.8 GOAWAY
-//   on a stream: done. 6.9 WINDOW_UPDATE of 0, of the wrong length: done;
-//   6.9.1-6.9.2 the windows: the connection's. 6.10 CONTINUATION alone,
-//   after END_HEADERS, after DATA, on another stream: done.
-// - 5.1 stream states, 5.1.1 stream ids, 5.1.2 the stream limit, 5.3.1 a
-//   stream depending on itself (PRIORITY and HEADERS: done here), 5.4 error
-//   handling, 5.5 extensions (unknown types: done here), section 3's
-//   preface and section 8's messages: the connection's.
+// THE CONNECTION. http1's outside (its header, THE FOUR CALLS), with a
+// stream id wherever HTTP/2 needs one. 'handleInput(bytes, now)' acts on
+// every whole frame that arrived at once, so the core reads the network
+// continuously and never waits on any stream's consumer (section 5.2.2);
+// what is left of a frame stays in the input, bounded by 'maxBuffered',
+// which must hold a whole frame. 'pollTransmit(now)' gives a Chain for one
+// gather write: the client's preface first, every control frame queued,
+// then DATA cut from the streams with something to send, one frame from
+// each in turn (so no stream monopolises the connection), as the peer's
+// windows allow. Take again only once the last send is done: the control-
+// frame flood bound counts what is taken in between. 'pollTimeout' gives the
+// deadline for our SETTINGS's acknowledgement while it is awaited.
+//
+// STREAMS (section 5.1). Each stream is one record in a slots SlotTable,
+// found by its id in a Dict, its state two flags: END_STREAM (or a reset)
+// sent, and received. A client's stream ids go 1, 3, 5 in the order
+// 'sendRequest' is called; a request past the peer's
+// SETTINGS_MAX_CONCURRENT_STREAMS (assumed 'assumedPeerStreams' until its
+// SETTINGS arrive) waits in the core's queue, its id kept, its HEADERS
+// encoded when it goes out (HPACK's tables must see blocks in wire order),
+// its body queued meanwhile; the queue is bounded by 'maxQueuedRequests',
+// past which canSendRequest() says no. A server counts against its own
+// 'maxConcurrentStreams' every stream of the peer's it still holds: one
+// closed on the wire but whose events the program has not yet taken still
+// counts (the research file's R14: the stream limit binds what the server
+// is still doing), and a stream past it is refused, REFUSED_STREAM. A
+// stream leaves the table once both directions are done and its last event
+// has been polled. Frames on a stream the peer has not opened (idle) are a
+// connection error; on one this end reset, ignored (they were in flight,
+// section 5.4.2); on one otherwise closed, STREAM_CLOSED for that stream.
+// The streams closed lately are remembered (twice maxConcurrentStreams and
+// 32 of them) to tell those apart from a new stream numbered too low, which
+// is a connection error (section 5.1.1).
+//
+// FLOW CONTROL (section 5.2; the research file's Question 1, approach A).
+// Sending: a stream's DATA goes out only within its own window and the
+// connection's, the peer's SETTINGS_INITIAL_WINDOW_SIZE moving every
+// stream's (below zero too, section 6.9.2); 'sendData' queues the program's
+// buffers per stream and hands one back once 'writeWatermark' bytes wait.
+// A buffer no longer than the peer's SETTINGS_MAX_FRAME_SIZE, with window
+// to spare, goes out as one DATA frame's payload, moved, never copied; a
+// longer one, or one the windows cut, is copied a frame at a time.
+// Receiving: a stream's credit comes back only as the program releases its
+// bytes ('release(stream, n)', the http1 model), so a stream's unread data
+// is bounded by its own window ('initialWindowSize') and one stalled reader
+// holds up only itself; the connection's credit comes back as DATA
+// arrives, so the connection's window ('connectionWindowSize') limits how
+// fast the network delivers, never how much sits unread, and a few stalled
+// readers cannot freeze the rest (gRPC-Go's, nginx's, .NET's answer).
+// What a connection can hold unread is maxConcurrentStreams x
+// initialWindowSize. Credit goes back in a WINDOW_UPDATE once half a window
+// is owed.
+//
+// EVENTS. 'pollEvent' gives one Event each call, every one naming its
+// stream (0 for the connection's own), until NeedData (nothing more until
+// bytes arrive or the program acts). A request comes to a server as
+// Request (its head, with the stream id), any number of Data (owned IoBufs,
+// in order), then End (with the trailer fields); a response comes to a
+// client the same way, as Response, Data, End, any 1xx before it as
+// Interim. Reset says that one stream ended without its End: the peer's
+// RST_STREAM (ErrorKind.Reset, its code; Refused for REFUSED_STREAM before
+// the response's head), a stream error of the peer's this end answered
+// with RST_STREAM (Malformed, TooLarge), or a request above the peer's
+// GOAWAY or never sent (Refused: 'isRetrySafe()', safe on another
+// connection whatever the method, section 8.7). GoAway says the peer is
+// going away (its last stream and code); Pong answers our PING. A
+// connection error (or the peer's close with streams under way) gives a
+// Reset of the connection's scope to every stream under way, then Failed,
+// then Closed; data already queued is delivered first. Closed alone is a
+// clean end: after a GOAWAY either way, once every stream is done, or the
+// peer's close with nothing under way.
+//
+// MESSAGES (section 8; semantics.cone). Package http's heads, with the
+// pseudo-header fields mapped to their fields: ':method', ':scheme',
+// ':authority' (or Host, when it is absent), ':path' to a RequestHead's,
+// ':status' to a ResponseHead's, never into Headers. Names go out in lower
+// case. A request is malformed, and refused with RST_STREAM(PROTOCOL_ERROR)
+// before the program sees it, with: a name in upper case, a value with a
+// space or tab at either end, NUL, CR, LF or another control character; a
+// connection-specific field (Connection, Keep-Alive, Proxy-Connection,
+// Transfer-Encoding, Upgrade) or TE other than 'trailers'; a pseudo-header
+// field missing, empty (':scheme', ':path'), given twice, unknown, a
+// response's, after a header field, or in trailers; ':protocol' (extended
+// CONNECT, RFC 8441: not supported); a Host that differs from ':authority';
+// a Content-Length the body does not match. A response is checked the same
+// way (one ':status', three digits; no 101), and a 1xx may not end the
+// stream. Cookie crumbs are joined with "; " (section 8.2.3).
+// Content-Length stays among the fields, as http1 leaves it, and gives the
+// body's BodyLength; a response to HEAD, and a 204 or 304, has none. A
+// CONNECT, which this core does not support (as http1 does not), is
+// answered 501 by the server itself, the program never seeing it. Sending,
+// a head with Content-Length, Host, a connection-specific field or TE other
+// than trailers is a program error (Content-Length is written from a Sized
+// BodyLength, Host as ':authority'), and so are a request's CONNECT and an
+// empty scheme, target or authority.
+//
+// ENDING. 'reset(stream, code)' ends one stream with RST_STREAM ('cancel'
+// says CANCEL); a server that has answered whole may say NO_ERROR to stop
+// the request's body (section 8.1), which a client takes as no error. A
+// stream error of the peer's resets that stream alone; a connection error
+// sends GOAWAY with the last stream taken and ends everything (section
+// 5.4). 'shutdown()' closes gracefully (section 6.8): a server sends GOAWAY
+// with the largest id and a PING, and when the PING comes back, a round
+// trip later, a second GOAWAY naming the last stream it took (streams the
+// client opened before it heard the first are taken); a client sends
+// GOAWAY at once and its waiting requests are refused. A peer's GOAWAY
+// refuses every request of ours above its last stream, and every one still
+// waiting; those at or below it go on.
+//
+// CONNECTION BOUNDS (each a field of Config; the defaults are the research
+// file's, Question 4, and http1's). 'frames' and 'hpack' are the frame
+// layer's and HPACK's (above): frames.maxFrameSize is our
+// SETTINGS_MAX_FRAME_SIZE, hpack.maxHeaderListSize our
+// SETTINGS_MAX_HEADER_LIST_SIZE (past it a server answers 431 and goes on, a
+// client resets the stream, CANCEL), hpack.headerTableSize our
+// SETTINGS_HEADER_TABLE_SIZE. 'maxConcurrentStreams' (100, RFC 9113's
+// floor and the industry's figure) is our SETTINGS_MAX_CONCURRENT_STREAMS;
+// 'assumedPeerStreams' (100) the peer's until it says. 'initialWindowSize'
+// (256 KiB, http1's bodyWindow; at least 65535) is our
+// SETTINGS_INITIAL_WINDOW_SIZE, a stream's unreleased bytes;
+// 'connectionWindowSize' (16 MiB) the connection's window, raised by a
+// WINDOW_UPDATE at the start. 'maxBuffered' (64 KiB) is the input held
+// unparsed, at least a whole frame. 'writeWatermark' (256 KiB, http1's) a
+// stream's queued body bytes. 'maxQueuedRequests' (100) a client's requests
+// waiting for the peer's limit. 'maxPeerResets' (200 in 'resetInterval',
+// 30 s: Netty's and SwiftNIO's) bounds the streams of the peer's that it
+// resets (rapid reset, CVE-2023-44487); 'maxLocalResets' (200 in the same)
+// the streams this end resets for the peer's faults, REFUSED_STREAM and
+// the core's own 431 and 501 answers included (MadeYouReset,
+// CVE-2025-8671); past either, GOAWAY ENHANCE_YOUR_CALM. 'settingsTimeout'
+// (10 s) is how long our SETTINGS may go unacknowledged before GOAWAY
+// SETTINGS_TIMEOUT (section 6.5.3).
+//
+// H2SPEC. h2spec's list, from memory (h2spec was neither run nor fetched:
+// there is no server to run it against yet), followed as a checklist. The
+// frame-level cases are tests/frames, frameerrors and framelimits; those
+// that need the connection are tests/h2spec, the windows and limits
+// tests/connlimits; HPACK's are tests/malformed:
+// - 3.5 the preface: the server's SETTINGS first, a wrong preface, a first
+//   frame not SETTINGS: done.
+// - 4.1 unknown type (also ignored by the connection), unknown flags,
+//   reserved bit; 4.2 DATA at SETTINGS_MAX_FRAME_SIZE, past it (DATA,
+//   HEADERS); 4.3 a block HPACK cannot decode (COMPRESSION_ERROR): done.
+// - 5.1 idle (DATA, RST_STREAM, WINDOW_UPDATE, PRIORITY allowed),
+//   half-closed remote (DATA, HEADERS), closed (after RST_STREAM, after
+//   END_STREAM both ways, after our own RST_STREAM ignored); 5.1.1 an even
+//   id from a client, an id below one used; 5.1.2 the stream limit; 5.3.1 a
+//   stream depending on itself; 5.4.1 GOAWAY then close; 5.5 unknown
+//   frames: done.
+// - 6.1 to 6.10 at the frame's level (above), and: 6.1 DATA on a stream not
+//   open; 6.4 RST_STREAM on an idle stream; 6.5.3 SETTINGS acknowledged,
+//   and its timeout; 6.7 PING answered, a PING ACK not; 6.9.1 a window past
+//   2^31-1, stream and connection; 6.9.2 SETTINGS_INITIAL_WINDOW_SIZE of 1,
+//   a change taking windows below zero: done.
+// - 8.1 a second HEADERS without END_STREAM, trailers with a pseudo-header;
+//   8.1.1 Content-Length longer and shorter than the body; 8.2.1 an
+//   upper-case name, a value ending in a space; 8.2.2 Connection, TE other
+//   than trailers; 8.3.1 :method, :scheme, :path missing, :scheme and :path
+//   empty, a pseudo-header twice, unknown, a response's, after a header
+//   field, ':protocol'; 8.4 a PUSH_PROMISE to a client: done.
+// - Not covered: anything over a real socket (h2spec itself), 6.9.1's
+//   pacing of tiny windows over time, and section 8's server push.
 //
 // MEASURED, release, an i7-13700HX on Windows 11, other builds running
 // beside it (examples/framebench.cone; numbers vary run to run): written,
 // taken as one Chain and read back, in batches of 64, a DATA of 16 KiB 52
 // to 54 ns to write (its buffer moved, not copied) and 191 to 197 ns to
 // read (its data copied out, cache-warm); a HEADERS of a 200-byte block 15
-// ns and 234 to 241 ns; a PING 14 ns and 41 ns.
+// ns and 234 to 241 ns; a PING 14 ns and 41 ns. The connection, client and
+// server cores in memory (examples/connbench.cone, three runs): a GET with
+// two fields answered 200 with two fields and a 100-byte body, 100 streams
+// at a time, 5.2 to 5.3 us an exchange, both cores together; one 256 MiB
+// body in 16 KiB buffers, 19.3 to 19.5 GB/s (the pool's buffers reused and
+// cache-warm, no sockets: the core's own cost, not a network's).
 //
-// Not here yet: the connection (the next part); a decoder fed a block in
+// Not here yet: a driver over a socket (the HTTP-onto-aio lane, then an h2
+// driver), ALPN's h2 in tls, server push, priority signals (RFC 9218: the
+// streams take turns, all at one urgency), windows that grow to the link's
+// bandwidth-delay product (they are fixed), a PING-timed check that the
+// peer is alive, an idle timeout, and a bound on how long a graceful
+// shutdown waits; a client checking its own heads against the peer's
+// SETTINGS_MAX_HEADER_LIST_SIZE (advisory: it is only reported); changing
+// our SETTINGS mid-connection; a decoder fed a block in
 // pieces as its frames arrive (it takes the block whole); an encoder that
 // leaves an often-changing field (a date, a path with an id) out of its
 // table to save room for fields that repeat; DATA read without a copy (its
@@ -309,6 +496,12 @@
 // into the writer's buffers.
 
 mod http2;
+
+import collections use List, Deque, Dict, String;
+import iobuf use IoBuf, Chain;
+import time use Instant, Duration;
+import slots use SlotTable, Slot;
+import http use *;
 
 pub use hpack;
 pub use huffman;

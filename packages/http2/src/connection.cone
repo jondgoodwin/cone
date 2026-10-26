@@ -1,0 +1,1555 @@
+// ======== The connection: HTTP/2's protocol state, client or server (RFC 9113) ========
+//
+// One TCP connection's HTTP/2 state as plain data, in http1's shape: the
+// driver hands it bytes and the time, asks what to send, what happened and
+// when to wake it, and gives read credit back. It does no I/O, reads no
+// clock and starts no threads (invariant I13). See the package's header,
+// THE CONNECTION, for how streams, windows and limits work.
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;     // the output chain is bounded by the windows and watermarks instead
+const prefaceLen = 24usize;
+const protocolWindow = 65535u32;             // every window's size until SETTINGS or WINDOW_UPDATE say otherwise
+const shutdownPing = 0x73687574646f776eu64;  // "shutdown": the PING that times a graceful GOAWAY
+
+// The client's connection preface (section 3.4)
+fn clientPreface() &str {"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A connection's bounds, each a field to change (see the package's header,
+// CONNECTION BOUNDS)
+pub struct Config {
+  pub frames: FrameConfig;            // the frame layer's bounds; maxFrameSize is our SETTINGS_MAX_FRAME_SIZE
+  pub hpack: HpackConfig;             // HPACK's; maxHeaderListSize is our SETTINGS_MAX_HEADER_LIST_SIZE
+  pub maxConcurrentStreams: u32;      // our SETTINGS_MAX_CONCURRENT_STREAMS: a peer's stream past it is refused
+  pub assumedPeerStreams: u32;        // the peer's, assumed until its SETTINGS say
+  pub initialWindowSize: u32;         // our SETTINGS_INITIAL_WINDOW_SIZE: a stream's unreleased bytes
+  pub connectionWindowSize: u32;      // the connection's receive window
+  pub maxBuffered: usize;             // input held unparsed: at least frameHeaderLen + frames.maxFrameSize
+  pub writeWatermark: usize;          // a stream's body bytes queued before sendData hands a buffer back
+  pub maxQueuedRequests: usize;       // a client's requests waiting for the peer's stream limit
+  pub maxPeerResets: u32;             // streams the peer resets, in one resetInterval (rapid reset)
+  pub maxLocalResets: u32;            // streams reset for the peer's faults, in one resetInterval (MadeYouReset)
+  pub resetInterval: Duration;
+  pub settingsTimeout: Duration;      // how long our SETTINGS may go unacknowledged
+
+  // The defaults
+  pub fn make() Config {
+    Config(frames: FrameConfig.make(), hpack: HpackConfig.make(), maxConcurrentStreams: 100u32,
+      assumedPeerStreams: 100u32, initialWindowSize: 262144u32, connectionWindowSize: 16777216u32,
+      maxBuffered: 65536usize, writeWatermark: 262144usize, maxQueuedRequests: 100usize,
+      maxPeerResets: 200u32, maxLocalResets: 200u32, resetInterval: Duration.fromSeconds(30),
+      settingsTimeout: Duration.fromSeconds(10))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// What happened (see the package's header, EVENTS). Every event names its
+// stream; those of the whole connection name stream 0
+pub enum Event {
+  pub struct NeedData {pub stream: u32;}
+  pub struct Request {pub stream: u32; pub head: RequestHead; pub body: BodyLength;}
+  pub struct Response {pub stream: u32; pub head: ResponseHead; pub body: BodyLength;}
+  pub struct Interim {pub stream: u32; pub head: ResponseHead;}
+  pub struct Data {pub stream: u32; pub buf: IoBuf;}
+  pub struct End {pub stream: u32; pub trailers: Headers;}
+  pub struct Reset {pub stream: u32; pub error: HttpError;}
+  pub struct GoAway {pub stream: u32; pub lastStream: u32; pub code: ErrorCode; pub debug: String;}
+  pub struct Pong {pub stream: u32; pub data: u64;}
+  pub struct Failed {pub stream: u32; pub error: HttpError;}
+  pub struct Closed {pub stream: u32;}
+
+  // The stream it names (0: the connection)
+  pub fn streamId(self: &) u32 {self.stream}
+}
+
+// ---------------------------------------------------------------------------
+// Streams
+// ---------------------------------------------------------------------------
+
+// One stream's state (section 5.1), as one record in the connection's table.
+// Its state is two flags: 'sendDone' (END_STREAM sent, or reset) and
+// 'recvDone' (END_STREAM received, or reset); open is neither, half-closed
+// one, closed both. A client's request waiting for the peer's stream limit
+// is in the table, not yet 'opened': on the wire it is idle
+struct Stream {
+  id: u32;
+  ours: bool;              // this end opened it
+  opened: bool;             // its HEADERS have crossed the wire
+  counted: bool;            // it counts against the peer's MAX_CONCURRENT_STREAMS
+  sendDone: bool;
+  recvDone: bool;
+  wireClosed: bool;         // both done, and accounted for
+  resetByUs: bool;          // this end sent its RST_STREAM: frames still in flight are ignored
+  announced: bool;          // the program knows of it (a client's own request; a server's Request event)
+  events: usize;            // its events queued, not yet polled
+
+  // Sending
+  fields: List[HeaderField];      // a waiting request's head, encoded when its HEADERS go out
+  trailerFields: List[HeaderField];
+  hasTrailers: bool;
+  bodyFollows: bool;        // a body is being sent: sendData and finish
+  sized: bool;              // ...of a Content-Length: 'left' bytes still to come
+  left: u64;
+  outQ: Deque[IoBuf];       // body buffers waiting for window
+  outOff: usize;            // how far into the first the frames have gone
+  outBytes: usize;
+  finishing: bool;          // END_STREAM (and trailers) once the queue is sent
+  sendWindow: i64;          // what the peer lets us send
+  ready: bool;              // on the connection's ready list
+  responded: bool;          // a server's final response has gone out
+  headRequest: bool;        // the request is a HEAD
+
+  // Receiving
+  recvWindow: i64;          // what the peer may still send
+  unacked: usize;           // credit released (or padding), not yet given back
+  outstanding: usize;       // body bytes handed out in Data events, not yet released
+  finalSeen: bool;          // a client has the response's head; a server the request's
+  noBody: bool;             // DATA is malformed: a response to HEAD, a 204, a 304
+  expect: u64;              // Content-Length, when 'expectSet'
+  expectSet: bool;
+  got: u64;
+}
+
+fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64) Stream {
+  Stream(id: id, ours: ours, opened: false, counted: false, sendDone: false, recvDone: false,
+    wireClosed: false, resetByUs: false, announced: false, events: 0usize,
+    fields: List[HeaderField].empty(), trailerFields: List[HeaderField].empty(), hasTrailers: false,
+    bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf].empty(), outOff: 0usize,
+    outBytes: 0usize, finishing: false, sendWindow: sendWindow, ready: false, responded: false,
+    headRequest: false, recvWindow: recvWindow, unacked: 0usize, outstanding: 0usize,
+    finalSeen: false, noBody: false, expect: 0u64, expectSet: false, got: 0u64)
+}
+
+// A stream recently closed, remembered so a frame on it can be told from
+// one on a stream never opened, and ignored when this end reset it
+struct Gone {
+  id: u32;
+  byUs: bool;
+}
+
+// A count of costly events within a stretch of time: past 'max' in one
+// interval, the peer is abusing the connection
+struct Budget {
+  count: u32;
+  since: Instant;
+}
+
+// One more event: whether that passes the budget
+fn spend(b: &mut Budget, now: Instant, interval: Duration, max: u32) bool {
+  if now - b.since >= interval {
+    b.count = 0u32;
+    b.since = now;
+  }
+  b.count = b.count + 1u32;
+  b.count > max
+}
+
+// The error kind a code we send names
+fn kindOfCode(code: ErrorCode) ErrorKind {
+  let v = code.value();
+  if v == 0xbu32 {ErrorKind.TooLarge}        // ENHANCE_YOUR_CALM: a bound passed
+  else if v == 0x4u32 {ErrorKind.TimedOut}   // SETTINGS_TIMEOUT
+  else if v == 0x7u32 {ErrorKind.Refused}    // REFUSED_STREAM
+  else {ErrorKind.Malformed}
+}
+
+fn minI64(a: i64, b: i64) i64 {if a < b {a} else {b}}
+
+// ---------------------------------------------------------------------------
+// The connection
+// ---------------------------------------------------------------------------
+
+// One HTTP/2 connection's protocol state (see the package's header, THE
+// CONNECTION)
+pub struct Connection is Move {
+  clientRole: bool;
+  cfg: Config;
+  now: Instant;
+
+  // Reading
+  input: Chain;
+  reader: FrameReader;
+  decoder: HpackDecoder;
+  prefaceLeft: usize;        // a server: the client's preface bytes still to check
+  sawSettings: bool;         // the peer's first SETTINGS has arrived
+  eof: bool;
+  fields: List[HeaderField]; // a field block's fields, decoded or to encode
+
+  // Writing
+  writer: FrameWriter;
+  encoder: HpackEncoder;
+  block: List[u8];           // a field block being encoded
+  prefaceOut: bool;          // the client's preface has gone to the driver
+
+  // SETTINGS
+  settingsOut: u32;          // ours, unacknowledged
+  settingsAt: Instant;
+  peerMaxStreams: u32;
+  peerWindow: i64;           // the peer's SETTINGS_INITIAL_WINDOW_SIZE
+  peerMaxHeaderList: u32;
+
+  // The connection's windows
+  connSend: i64;
+  connRecv: i64;
+  connUnacked: usize;
+
+  // Streams
+  streams: SlotTable[Stream];
+  byId: Dict[u32, Slot];
+  ready: Deque[u32];         // streams with something to send, in turn
+  waiting: Deque[u32];       // a client's requests waiting for the peer's limit
+  gone: Deque[Gone];
+  goneMax: usize;
+  nextLocal: u32;
+  lastLocal: u32;            // the highest stream this end has opened
+  lastPeer: u32;             // the highest the peer has
+  localOpen: u32;            // ours open on the wire
+  peerLive: u32;             // the peer's in the table
+
+  events: Deque[Event];
+  pingsOut: u32;
+
+  // The end
+  goAwaySent: bool;
+  goAwayLast: u32;
+  shutdownPinged: bool;      // a server's first GOAWAY awaits its PING's answer
+  peerGoAway: bool;
+  peerLast: u32;
+  failed: bool;
+  closed: bool;
+  peerResets: Budget;
+  localResets: Budget;
+
+  // Counts
+  bytesIn: u64;
+  bytesOut: u64;
+  streamsOpened: u64;
+
+  // A client connection: its preface and SETTINGS go out at the first
+  // pollTransmit
+  pub fn client(cfg: Config, now: Instant) Connection {Connection.make(true, cfg, now)}
+
+  // A server connection, awaiting the client's preface; its SETTINGS go out
+  // at the first pollTransmit
+  pub fn server(cfg: Config, now: Instant) Connection {Connection.make(false, cfg, now)}
+
+  fn make(client: bool, cfg: Config, now: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Connection {
+    if cfg.maxBuffered < frameHeaderLen + cfg.frames.maxFrameSize {
+      panic("http2: Config.maxBuffered must hold a whole frame (frameHeaderLen + frames.maxFrameSize)", file, line);
+    }
+    if cfg.initialWindowSize < protocolWindow || cfg.initialWindowSize > maxWindowSize {
+      panic("http2: Config.initialWindowSize outside 65535 to 2^31-1", file, line);
+    }
+    if cfg.connectionWindowSize < protocolWindow || cfg.connectionWindowSize > maxWindowSize {
+      panic("http2: Config.connectionWindowSize outside 65535 to 2^31-1", file, line);
+    }
+    if cfg.maxConcurrentStreams == 0u32 {panic("http2: Config.maxConcurrentStreams of 0", file, line);}
+    var c = Connection(clientRole: client, cfg: cfg, now: now,
+      input: Chain.make(cfg.maxBuffered),
+      reader: if client {FrameReader.client(cfg.frames)} else {FrameReader.server(cfg.frames)},
+      decoder: HpackDecoder.make(cfg.hpack), prefaceLeft: if client {0usize} else {prefaceLen},
+      sawSettings: false, eof: false, fields: List[HeaderField].empty(),
+      writer: FrameWriter.make(&cfg.frames), encoder: HpackEncoder.make(&cfg.hpack),
+      block: List[u8].empty(), prefaceOut: !client,
+      settingsOut: 0u32, settingsAt: now, peerMaxStreams: cfg.assumedPeerStreams,
+      peerWindow: i64.from(protocolWindow), peerMaxHeaderList: 0xFFFFFFFFu32,
+      connSend: i64.from(protocolWindow), connRecv: i64.from(protocolWindow), connUnacked: 0usize,
+      streams: SlotTable[Stream].make(64u32), byId: Dict[u32, Slot].empty(),
+      ready: Deque[u32].empty(), waiting: Deque[u32].empty(), gone: Deque[Gone].empty(),
+      goneMax: usize.from(cfg.maxConcurrentStreams) * 2usize + 32usize,
+      nextLocal: if client {1u32} else {2u32}, lastLocal: 0u32, lastPeer: 0u32,
+      localOpen: 0u32, peerLive: 0u32, events: Deque[Event].empty(), pingsOut: 0u32,
+      goAwaySent: false, goAwayLast: maxStreamId, shutdownPinged: false,
+      peerGoAway: false, peerLast: maxStreamId, failed: false, closed: false,
+      peerResets: Budget(0u32, now), localResets: Budget(0u32, now),
+      bytesIn: 0u64, bytesOut: 0u64, streamsOpened: 0u64);
+    c.start();
+    c
+  }
+
+  // Our SETTINGS (section 3.4: the first frame either end sends), and the
+  // connection's window raised to connectionWindowSize
+  fn start(self: &mut) {
+    var values = List[Setting].empty();
+    if cfg.hpack.headerTableSize != defaultHeaderTableSize {
+      values.push(Setting(settingHeaderTableSize, u32.from(cfg.hpack.headerTableSize)));
+    }
+    if clientRole {values.push(Setting(settingEnablePush, 0u32));}
+    values.push(Setting(settingMaxConcurrentStreams, cfg.maxConcurrentStreams));
+    if cfg.initialWindowSize != protocolWindow {values.push(Setting(settingInitialWindowSize, cfg.initialWindowSize));}
+    if cfg.frames.maxFrameSize != defaultMaxFrameSize {values.push(Setting(settingMaxFrameSize, u32.from(cfg.frames.maxFrameSize)));}
+    values.push(Setting(settingMaxHeaderListSize, u32.from(cfg.hpack.maxHeaderListSize)));
+    let queued = writer.settings(values.view());
+    decoder.settingSent();
+    settingsOut = 1u32;
+    settingsAt = now + cfg.settingsTimeout;
+    if cfg.connectionWindowSize > protocolWindow {
+      let raised = writer.windowUpdate(0u32, cfg.connectionWindowSize - protocolWindow);
+      connRecv = i64.from(cfg.connectionWindowSize);
+    }
+  }
+
+  pub fn isClient(self: &) bool {clientRole}
+
+  // ------------------------------------------------------------- the four calls
+
+  // Bytes that arrived, at 'at': every whole frame among them is acted on
+  // now. An empty buffer says the peer has finished sending. More than
+  // readCredit() is a program error
+  pub fn handleInput(self: &mut, buf: IoBuf, at: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    now = at;
+    let n = buf.len();
+    if n == 0usize {
+      self.onEof();
+      return;
+    }
+    if failed || closed {return;}
+    if input.len() + n > cfg.maxBuffered {panic("http2: handleInput past the read credit", file, line);}
+    let over = input.push(buf);
+    bytesIn = bytesIn + u64.from(n);
+    self.process();
+  }
+
+  // What to send next, moved out as a Chain for one gather write (empty when
+  // there is nothing). Body frames are cut here, a frame at a time from each
+  // stream in turn, as the windows allow. Take again only once the last send
+  // is done: the control-frame flood bound counts what is taken in between
+  pub fn pollTransmit(self: &mut, at: Instant) Chain {
+    now = at;
+    self.schedule();
+    var out = writer.take();
+    if !prefaceOut {
+      prefaceOut = true;
+      var all = Chain.make(noBound);
+      var p = IoBuf(prefaceLen);
+      let copied = p.append(clientPreface());
+      let first = all.push(p);
+      while out.segments() > 0usize {
+        match out.popFront() {
+          case let Some(b) {
+            let rest = all.push(b);
+          }
+          case is None[IoBuf] {break;}
+        }
+      }
+      bytesOut = bytesOut + u64.from(all.len());
+      return all;
+    }
+    bytesOut = bytesOut + u64.from(out.len());
+    out
+  }
+
+  // The one Instant the driver must wake at and call handleTimeout, or None:
+  // our SETTINGS's acknowledgement, while it is awaited
+  pub fn pollTimeout(self: &) Option[Instant] {
+    if failed || closed || settingsOut == 0u32 {return None;}
+    Some[Instant](settingsAt)
+  }
+
+  // The driver woke at 'at': a deadline passed is acted on
+  pub fn handleTimeout(self: &mut, at: Instant) {
+    now = at;
+    if failed || closed {return;}
+    if settingsOut > 0u32 && at >= settingsAt {
+      self.connError(ErrorCode.SettingsTimeout, "our SETTINGS were not acknowledged within settingsTimeout");
+    }
+  }
+
+  // The next event (see the package's header, EVENTS)
+  pub fn pollEvent(self: &mut) Event {
+    match events.popFront() {
+      case let Some(e) {
+        let id = (&e).streamId();
+        if id != 0u32 {self.eventTaken(id);}
+        return e;
+      }
+      case is None[Event] {}
+    }
+    if failed || closed {return Event.Closed(0u32);}
+    if self.drained() {
+      closed = true;
+      return Event.Closed(0u32);
+    }
+    Event.NeedData(0u32)
+  }
+
+  // ------------------------------------------------------------- credit
+
+  // How many more bytes handleInput takes now
+  pub fn readCredit(self: &) usize {
+    if failed || closed || eof {return 0usize;}
+    if input.len() >= cfg.maxBuffered {0usize} else {cfg.maxBuffered - input.len()}
+  }
+
+  // The program is done with n bytes of a stream's body, handed out in Data
+  // events: the stream's window gets them back (the connection's got them
+  // back as they arrived)
+  pub fn release(self: &mut, stream: u32, n: usize) {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    let k = if n > s.outstanding {s.outstanding} else {n};
+    s.outstanding = s.outstanding - k;
+    s.unacked = s.unacked + k;
+    self.creditStream(s);
+  }
+
+  // A stream's body bytes queued to send, and how many more sendData takes
+  // before it hands a buffer back
+  pub fn queued(self: &, stream: u32) usize {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return 0usize;}
+    (*streams.get(slot)).outBytes
+  }
+
+  pub fn writeRoom(self: &, stream: u32) usize {
+    let q = self.queued(stream);
+    if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q}
+  }
+
+  // ------------------------------------------------------------- sending
+
+  // Whether a request may be sent now: a client, open, not going away, with
+  // a stream id left and room among the open streams or in the queue
+  pub fn canSendRequest(self: &) bool {
+    clientRole && !failed && !closed && !eof && !goAwaySent && !peerGoAway && nextLocal <= maxStreamId &&
+      (localOpen < peerMaxStreams || waiting.len() < cfg.maxQueuedRequests)
+  }
+
+  // A client's request: its stream's id, by which every later call and
+  // event names it. Its HEADERS go out now, or, with the peer's stream limit
+  // reached, once a stream closes (it waits in the queue, which
+  // maxQueuedRequests bounds); its body (if any) by sendData and finish,
+  // queued meanwhile. Anything but canSendRequest() is a program error, and
+  // so are CONNECT, an empty scheme, target or authority, and a field the
+  // core writes itself or HTTP/2 does not have
+  pub fn sendRequest(self: &mut, head: RequestHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
+    if !clientRole {panic("http2: sendRequest on a server's connection", file, line);}
+    if !self.canSendRequest() {panic("http2: sendRequest when canSendRequest() is false", file, line);}
+    var f = List[HeaderField].empty();
+    requestFields(&head, &body, &mut f, file, line);
+    let id = nextLocal;
+    nextLocal = nextLocal + 2u32;
+    let slot = streams.add(newStream(id, true, peerWindow, i64.from(cfg.initialWindowSize)));
+    byId.insert(id, slot);
+    let s = streams.get(slot) as &mut Stream;
+    s.fields = f;
+    s.announced = true;
+    s.headRequest = head.method == Method.Head;
+    s.bodyFollows = !body.isEmpty() && !(body.isSized() && body.length == 0u64);
+    s.sized = body.isSized();
+    s.left = body.length;
+    if waiting.len() == 0usize && localOpen < peerMaxStreams {
+      self.openStream(s);
+    } else {
+      waiting.push(id);
+    }
+    id
+  }
+
+  // A server's response to a stream's request: its head now, its body (if
+  // any) by sendData and finish. A stream that has ended meanwhile (reset)
+  // drops it; one not a request's, or answered already, is a program error
+  pub fn sendResponse(self: &mut, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if clientRole {panic("http2: sendResponse on a client's connection", file, line);}
+    if failed || closed {return;}
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    if s.sendDone {return;}
+    if s.responded {panic("http2: sendResponse on a stream already answered", file, line);}
+    let status = head.status;
+    if status < 200u16 || status > 599u16 {panic("http2: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
+    let noBody = s.headRequest || status == 204u16 || status == 304u16;
+    let length = if body.isSized() && status != 204u16 && status != 304u16 {Some[u64](body.length)} else {None[u64]};
+    fields.clear();
+    responseFields(&head, length, &mut fields, file, line);
+    let end = noBody || body.isEmpty() || (body.isSized() && body.length == 0u64);
+    self.writeBlock(stream, end);
+    s.responded = true;
+    if end {
+      s.sendDone = true;
+      self.settle(s);
+      return;
+    }
+    s.bodyFollows = true;
+    s.sized = body.isSized();
+    s.left = body.length;
+  }
+
+  // A server's interim response, a 1xx other than 101, before its final one
+  pub fn sendInterim(self: &mut, stream: u32, head: ResponseHead, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if clientRole {panic("http2: sendInterim on a client's connection", file, line);}
+    if failed || closed {return;}
+    if head.status < 100u16 || head.status > 199u16 || head.status == 101u16 {panic("http2: sendInterim takes a 1xx other than 101", file, line);}
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    if s.sendDone {return;}
+    if s.responded {panic("http2: sendInterim after the final response", file, line);}
+    fields.clear();
+    responseFields(&head, None, &mut fields, file, line);
+    self.writeBlock(stream, false);
+  }
+
+  // Body bytes for a stream, moved in: None once queued (or dropped, the
+  // stream or the connection having ended), or Some(buf) back when the
+  // stream's queue is past writeWatermark. Sending with no body under way,
+  // or past a Content-Length, is a program error. A buffer no longer than
+  // the peer's SETTINGS_MAX_FRAME_SIZE, sent with window to spare, goes out
+  // as one frame's payload without a copy; a longer one is cut, copying
+  pub fn sendData(self: &mut, stream: u32, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Option[IoBuf] {
+    if failed || closed {return None;}
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return None;}
+    let s = streams.get(slot) as &mut Stream;
+    if s.sendDone {return None;}
+    if !s.bodyFollows || s.finishing {panic("http2: sendData with no body being sent", file, line);}
+    let n = buf.len();
+    if n == 0usize {return None;}
+    if s.sized && u64.from(n) > s.left {panic("http2: sendData past the body's Content-Length", file, line);}
+    if s.outBytes > 0usize && s.outBytes + n > cfg.writeWatermark {return Some[IoBuf](buf);}
+    if s.sized {s.left = s.left - u64.from(n);}
+    s.outQ.push(buf);
+    s.outBytes = s.outBytes + n;
+    if s.opened {self.makeReady(s);}
+    None
+  }
+
+  // A stream's body is whole: END_STREAM once its queue is sent. Nothing to
+  // do (ended, finished) does nothing; short of a Content-Length is a
+  // program error
+  pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    self.finishWith(stream, Headers.empty(), file, line);
+  }
+
+  // The body is whole, and these trailer fields follow it
+  pub fn finishWith(self: &mut, stream: u32, trailers: Headers, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if failed || closed {return;}
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    if s.sendDone || !s.bodyFollows || s.finishing {return;}
+    if s.sized && s.left != 0u64 {panic("http2: finish short of the body's Content-Length", file, line);}
+    if !trailers.isEmpty() {
+      putRegular(&trailers, &mut s.trailerFields, file, line);
+      s.hasTrailers = true;
+    }
+    s.finishing = true;
+    if s.opened {self.makeReady(s);}
+  }
+
+  // End a stream now, with RST_STREAM and this code (CANCEL, say; a server
+  // that has answered whole may say NO_ERROR to stop the request's body,
+  // section 8.1): what it had queued is dropped, frames still in flight are
+  // ignored, and no event follows. A waiting request leaves the queue,
+  // never sent. A stream already ended does nothing
+  pub fn reset(self: &mut, stream: u32, code: ErrorCode) {
+    if failed || closed {return;}
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    if s.sendDone && s.recvDone {return;}
+    if s.opened {
+      if !writer.rstStream(stream, code) {
+        self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+        return;
+      }
+    }
+    self.abandon(s, true);
+    self.settle(s);
+  }
+
+  // reset with CANCEL: the program no longer wants the stream
+  pub fn cancel(self: &mut, stream: u32) {self.reset(stream, ErrorCode.Cancel);}
+
+  // A PING with these eight bytes; its answer comes as a Pong event. False
+  // when control frames are past their bound, untaken
+  pub fn ping(self: &mut, data: u64) bool {
+    if failed || closed {return false;}
+    if !writer.ping(data, false) {return false;}
+    pingsOut = pingsOut + 1u32;
+    true
+  }
+
+  // Close gracefully (section 6.8): no new streams, those in flight finish,
+  // then Closed. A server sends GOAWAY with the largest id and a PING, and
+  // when the PING comes back (a round trip, so whatever the client sent
+  // before it has arrived) a second GOAWAY naming the last stream it took;
+  // a client sends GOAWAY at once, and its waiting requests are refused
+  pub fn shutdown(self: &mut) {
+    if failed || closed || goAwaySent {return;}
+    goAwaySent = true;
+    if clientRole {
+      goAwayLast = 0u32;
+      writer.goAway(0u32, ErrorCode.NoError, "");
+      self.refuseWaiting("the connection is shutting down: never sent", ErrorCode.NoError);
+      return;
+    }
+    writer.goAway(maxStreamId, ErrorCode.NoError, "");
+    if writer.ping(shutdownPing, false) {
+      shutdownPinged = true;
+    } else {
+      goAwayLast = lastPeer;
+      writer.goAway(lastPeer, ErrorCode.NoError, "");
+    }
+  }
+
+  // ------------------------------------------------------------- closing
+
+  // Whether the connection has ended, cleanly or not
+  pub fn isClosed(self: &) bool {failed || closed}
+
+  // Whether the driver should close the socket now: the connection has
+  // ended and everything it had to send has been taken
+  pub fn shouldClose(self: &) bool {(failed || closed) && writer.queuedBytes() == 0usize}
+
+  // End the connection now, dropping whatever was not yet sent
+  pub fn abort(self: &mut) {
+    closed = true;
+    let dropped = writer.take();
+    ready.clear();
+  }
+
+  pub fn bytesReceived(self: &) u64 {bytesIn}
+  pub fn bytesSent(self: &) u64 {bytesOut}
+  pub fn streamsOpenedCount(self: &) u64 {streamsOpened}
+  pub fn liveStreams(self: &) usize {streams.len()}
+  pub fn openLocalStreams(self: &) u32 {localOpen}
+  pub fn queuedRequests(self: &) usize {waiting.len()}
+  pub fn peerMaxConcurrentStreams(self: &) u32 {peerMaxStreams}
+  pub fn peerMaxHeaderListSize(self: &) u32 {peerMaxHeaderList}
+  pub fn connectionSendWindow(self: &) i64 {connSend}
+
+  // A stream's send window, or 0 when it is gone
+  pub fn streamSendWindow(self: &, stream: u32) i64 {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return 0i64;}
+    (*streams.get(slot)).sendWindow
+  }
+
+  // ------------------------------------------------------------- reading, inside
+
+  fn process(self: &mut) {
+    // A server reads the client's preface first (section 3.4)
+    if prefaceLeft > 0usize {
+      let want = clientPreface();
+      while prefaceLeft > 0usize && input.len() > 0usize {
+        let at = prefaceLen - prefaceLeft;
+        if input.byteAt(0usize) != want[at] {
+          self.connError(ErrorCode.ProtocolError, "the client's connection preface is wrong");
+          return;
+        }
+        input.advance(1usize);
+        prefaceLeft = prefaceLeft - 1usize;
+      }
+      if prefaceLeft > 0usize {return;}
+    }
+    while !failed && !closed {
+      match reader.next(&mut input) {
+        case is NeedData {return;}
+        case let Got(g) {self.onFrame(g.frame);}
+        case let Failed(f) {self.onFrameError(f.error);}
+      }
+    }
+  }
+
+  fn onFrame(self: &mut, f: Frame) {
+    if !sawSettings {
+      // The peer's first frame is its SETTINGS (section 3.4)
+      let first = match &f {
+        case let Settings(s) {!s.ack}
+        else {false}
+      };
+      if !first {
+        self.connError(ErrorCode.ProtocolError, "the peer's first frame is not SETTINGS");
+        return;
+      }
+      sawSettings = true;
+    }
+    match f {
+      case let Data(d) {
+        let stream, endStream, data, flowLength = d.(stream, endStream, data, flowLength);
+        self.onData(stream, endStream, data, flowLength);
+      }
+      case let Headers(h) {
+        let stream, endStream, block, streamError = h.(stream, endStream, block, streamError);
+        self.onHeaders(stream, endStream, block, streamError);
+      }
+      case let Priority(p) {}
+      case let RstStream(r) {self.onRst(r.stream, r.code);}
+      case let Settings(s) {self.onSettings(s.ack, s.values.view());}
+      case let PushPromise(p) {self.connError(ErrorCode.ProtocolError, "a PUSH_PROMISE: server push is not supported");}
+      case let Ping(p) {self.onPing(p.ack, p.data);}
+      case let GoAway(g) {self.onGoAway(g.lastStream, g.code, g.debug.view());}
+      case let WindowUpdate(w) {self.onWindowUpdate(w.stream, w.increment);}
+    }
+  }
+
+  // A frame the frame layer refused: a connection error ends the
+  // connection; a stream error resets the one stream, a DATA frame's length
+  // counted against the connection's window all the same
+  fn onFrameError(self: &mut, e: FrameError) {
+    if e.isConnectionError() {
+      self.connError(e.code, e.detail);
+      return;
+    }
+    if e.flowLength > 0usize {
+      if !self.takeConnection(e.flowLength) {return;}
+      if self.isIdle(e.stream) {
+        self.connError(ErrorCode.ProtocolError, "DATA on an idle stream");
+        return;
+      }
+    }
+    self.streamError(e.stream, e.code, e.detail);
+  }
+
+  // The connection's receive window takes n bytes of DATA (section 6.9.1),
+  // its credit given back at once: false, and the connection failed, when
+  // the peer has sent past it
+  fn takeConnection(self: &mut, n: usize) bool {
+    if i64.from(n) > connRecv {
+      self.connError(ErrorCode.FlowControlError, "DATA past the connection's window");
+      return false;
+    }
+    connRecv = connRecv - i64.from(n);
+    connUnacked = connUnacked + n;
+    if connUnacked >= usize.from(cfg.connectionWindowSize) / 2usize {
+      if !writer.windowUpdate(0u32, u32.from(connUnacked)) {
+        self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+        return false;
+      }
+      connRecv = connRecv + i64.from(connUnacked);
+      connUnacked = 0usize;
+    }
+    true
+  }
+
+  // A stream's credit back to the peer, once half its window is owed
+  fn creditStream(self: &mut, s: &mut Stream) {
+    if s.recvDone || s.unacked == 0usize {return;}
+    if s.unacked < usize.from(cfg.initialWindowSize) / 2usize {return;}
+    if !writer.windowUpdate(s.id, u32.from(s.unacked)) {
+      self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+      return;
+    }
+    s.recvWindow = s.recvWindow + i64.from(s.unacked);
+    s.unacked = 0usize;
+  }
+
+  fn onData(self: &mut, id: u32, endStream: bool, data: IoBuf, flow: usize) {
+    if !self.takeConnection(flow) {return;}
+    let slot = self.slotOf(id);
+    if slot.isNone() {
+      if self.isIdle(id) {self.connError(ErrorCode.ProtocolError, "DATA on an idle stream");}
+      else {self.onClosed(id, "DATA on a closed stream");}
+      return;
+    }
+    let s = streams.get(slot) as &mut Stream;
+    if !s.opened {
+      self.connError(ErrorCode.ProtocolError, "DATA on a stream not yet opened");
+      return;
+    }
+    if s.recvDone {
+      if !s.resetByUs {self.streamError(id, ErrorCode.StreamClosed, "DATA after the stream's END_STREAM");}
+      return;
+    }
+    if clientRole && !s.finalSeen {
+      self.streamError(id, ErrorCode.ProtocolError, "DATA before the response's head");
+      return;
+    }
+    if i64.from(flow) > s.recvWindow {
+      self.streamError(id, ErrorCode.FlowControlError, "DATA past the stream's window");
+      return;
+    }
+    s.recvWindow = s.recvWindow - i64.from(flow);
+    let n = data.len();
+    s.unacked = s.unacked + (flow - n);
+    if n > 0usize && s.noBody {
+      self.streamError(id, ErrorCode.ProtocolError, "DATA in a response that has no body");
+      return;
+    }
+    s.got = s.got + u64.from(n);
+    if s.expectSet && s.got > s.expect {
+      self.streamError(id, ErrorCode.ProtocolError, "a body longer than its Content-Length");
+      return;
+    }
+    if endStream && s.expectSet && s.got != s.expect {
+      self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
+      return;
+    }
+    if n > 0usize {
+      s.outstanding = s.outstanding + n;
+      self.emit(s, Event.Data(id, data));
+    }
+    if endStream {
+      s.recvDone = true;
+      self.emit(s, Event.End(id, Headers.empty()));
+      self.settle(s);
+      return;
+    }
+    self.creditStream(s);
+  }
+
+  fn onHeaders(self: &mut, id: u32, endStream: bool, block: List[u8], frameError: Option[FrameError]) {
+    // The block is decoded first, whatever becomes of it: the peer's HPACK
+    // table and ours must stay in step (section 4.3)
+    fields.clear();
+    var tooLarge = false;
+    match decoder.decode(block.view(), &mut fields) {
+      case let Ok(n) {}
+      case let Error(e) {
+        if e.kind == HpackErrorKind.Abandoned {
+          self.connError(ErrorCode.EnhanceYourCalm, "a header list past headerListAbortSize");
+          return;
+        }
+        if e.isConnectionError() {
+          self.connError(ErrorCode.CompressionError, "a field block HPACK cannot decode");
+          return;
+        }
+        tooLarge = true;
+      }
+    }
+    let slot = self.slotOf(id);
+    if !slot.isNone() {
+      let s = streams.get(slot) as &mut Stream;
+      if !s.opened {
+        self.connError(ErrorCode.ProtocolError, "HEADERS on a stream not yet opened");
+        return;
+      }
+      if s.recvDone {
+        if !s.resetByUs {self.streamError(id, ErrorCode.StreamClosed, "HEADERS after the stream's END_STREAM");}
+        return;
+      }
+      if tooLarge {
+        self.refuseLarge(s);
+        return;
+      }
+      match frameError {
+        case let Some(fe) {
+          self.streamError(id, fe.code, fe.detail);
+          return;
+        }
+        case is None[FrameError] {}
+      }
+      if s.finalSeen {self.onTrailers(s, endStream);}
+      else {self.onResponseHead(s, endStream);}
+      return;
+    }
+
+    // Not in the table: a stream of ours closed or idle, or the peer's
+    let ours = if clientRole {(id & 1u32) == 1u32} else {(id & 1u32) == 0u32};
+    if ours {
+      if id > lastLocal {self.connError(ErrorCode.ProtocolError, "HEADERS on an idle stream");}
+      else {self.onClosed(id, "HEADERS on a closed stream");}
+      return;
+    }
+    if clientRole {
+      self.connError(ErrorCode.ProtocolError, "a stream the server opened: push is off");
+      return;
+    }
+    if id <= lastPeer {
+      // A closed stream, or a new one numbered below one already opened
+      // (section 5.1.1)
+      if self.goneOf(id) == 0u32 {
+        self.connError(ErrorCode.ProtocolError, "a new stream's id is not above every earlier one");
+        return;
+      }
+      self.onClosed(id, "HEADERS on a closed stream");
+      return;
+    }
+    lastPeer = id;
+    if goAwaySent && id > goAwayLast {
+      // After our GOAWAY: not processed, and the peer knows it
+      self.pushGone(id, true);
+      return;
+    }
+    match frameError {
+      case let Some(fe) {
+        self.streamError(id, fe.code, fe.detail);
+        return;
+      }
+      case is None[FrameError] {}
+    }
+    if tooLarge {
+      self.answer(id, 431u16, endStream);
+      return;
+    }
+    // The stream limit, counting every stream of the peer's this end still
+    // holds (section 5.1.2): past it, refused, safe for the peer to retry
+    if peerLive >= cfg.maxConcurrentStreams {
+      self.streamError(id, ErrorCode.RefusedStream, "past maxConcurrentStreams");
+      return;
+    }
+    match readRequest(fields.view()) {
+      case let Error(why) {self.streamError(id, ErrorCode.ProtocolError, why);}
+      case let Ok(r) {
+        let head, length, hasLength, connect = r.(head, length, hasLength, connect);
+        if connect {
+          self.answer(id, 501u16, endStream);
+          return;
+        }
+        if endStream && hasLength && length != 0u64 {
+          self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
+          return;
+        }
+        let slot2 = streams.add(newStream(id, false, peerWindow, i64.from(cfg.initialWindowSize)));
+        byId.insert(id, slot2);
+        peerLive = peerLive + 1u32;
+        streamsOpened = streamsOpened + 1u64;
+        let s = streams.get(slot2) as &mut Stream;
+        s.opened = true;
+        s.announced = true;
+        s.finalSeen = true;
+        s.headRequest = head.method == Method.Head;
+        s.expect = length;
+        s.expectSet = hasLength;
+        let body = if endStream {BodyLength.empty()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
+        self.emit(s, Event.Request(id, head, body));
+        if endStream {
+          s.recvDone = true;
+          self.emit(s, Event.End(id, Headers.empty()));
+        }
+      }
+    }
+  }
+
+  // A client's response head, or an interim one (section 8.1)
+  fn onResponseHead(self: &mut, s: &mut Stream, endStream: bool) {
+    let id = s.id;
+    match readResponse(fields.view()) {
+      case let Error(why) {self.streamError(id, ErrorCode.ProtocolError, why);}
+      case let Ok(r) {
+        let head, length, hasLength = r.(head, length, hasLength);
+        if isInformational(head.status) {
+          if endStream {
+            self.streamError(id, ErrorCode.ProtocolError, "an interim response that ends the stream");
+            return;
+          }
+          self.emit(s, Event.Interim(id, head));
+          return;
+        }
+        s.finalSeen = true;
+        s.noBody = !responseHasBody(if s.headRequest {Method.Head} else {Method.Get}, head.status);
+        if hasLength && !s.noBody {
+          s.expect = length;
+          s.expectSet = true;
+        }
+        if endStream && s.expectSet && length != 0u64 {
+          self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
+          return;
+        }
+        let body = if s.noBody || endStream {BodyLength.empty()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
+        self.emit(s, Event.Response(id, head, body));
+        if endStream {
+          s.recvDone = true;
+          self.emit(s, Event.End(id, Headers.empty()));
+          self.settle(s);
+        }
+      }
+    }
+  }
+
+  // A field block after the head: the trailers, which end the stream
+  // (section 8.1)
+  fn onTrailers(self: &mut, s: &mut Stream, endStream: bool) {
+    let id = s.id;
+    if !endStream {
+      self.streamError(id, ErrorCode.ProtocolError, "a field block after the head that does not end the stream");
+      return;
+    }
+    match readTrailers(fields.view()) {
+      case let Error(why) {self.streamError(id, ErrorCode.ProtocolError, why);}
+      case let Ok(t) {
+        if s.expectSet && s.got != s.expect {
+          self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
+          return;
+        }
+        s.recvDone = true;
+        self.emit(s, Event.End(id, t));
+        self.settle(s);
+      }
+    }
+  }
+
+  // A head past maxHeaderListSize on a stream under way: a server answers
+  // 431 (if it has not answered), a client gives up the stream
+  fn refuseLarge(self: &mut, s: &mut Stream) {
+    let id = s.id;
+    if !self.spendLocal() {return;}
+    if !clientRole && !s.responded {
+      fields.clear();
+      fields.push(HeaderField.make(":status", "431"));
+      self.writeBlock(id, true);
+      s.responded = true;
+    }
+    var e = HttpError.coded(ErrorKind.TooLarge, u64.from(ErrorCode.Cancel.value()), ErrorScope.Stream, "a header list past maxHeaderListSize");
+    e.status = 431u16;
+    e.noResponse = clientRole && !s.finalSeen;
+    if !writer.rstStream(id, ErrorCode.Cancel) {
+      self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+      return;
+    }
+    if s.announced {self.emit(s, Event.Reset(id, e));}
+    self.abandon(s, true);
+    self.settle(s);
+  }
+
+  // A server answers a new stream's request itself, the program never
+  // seeing it: 431 for a head past maxHeaderListSize, 501 for CONNECT. A
+  // request still sending its body is then reset with NO_ERROR (section
+  // 8.1)
+  fn answer(self: &mut, id: u32, status: u16, requestEnded: bool) {
+    if !self.spendLocal() {return;}
+    fields.clear();
+    var s = String.empty();
+    s.appendUInt(u64.from(status));
+    fields.push(HeaderField(String.from(":status"), s, false));
+    self.writeBlock(id, true);
+    if !requestEnded {
+      if !writer.rstStream(id, ErrorCode.NoError) {
+        self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+        return;
+      }
+    }
+    self.pushGone(id, true);
+  }
+
+  fn onRst(self: &mut, id: u32, code: ErrorCode) {
+    let slot = self.slotOf(id);
+    if slot.isNone() {
+      if self.isIdle(id) {self.connError(ErrorCode.ProtocolError, "RST_STREAM on an idle stream");}
+      return;
+    }
+    let s = streams.get(slot) as &mut Stream;
+    if !s.opened {
+      self.connError(ErrorCode.ProtocolError, "RST_STREAM on a stream not yet opened");
+      return;
+    }
+    if s.sendDone && s.recvDone {return;}
+    // Rapid reset (CVE-2023-44487): the peer's streams it resets are counted
+    if !s.ours && spend(&mut peerResets, now, cfg.resetInterval, cfg.maxPeerResets) {
+      self.connError(ErrorCode.EnhanceYourCalm, "more streams reset by the peer than maxPeerResets in resetInterval");
+      return;
+    }
+    let v = code.value();
+    // NO_ERROR after the whole response only stops our request's body
+    // (section 8.1): the response stands, and nothing is reported
+    let quiet = s.ours && s.recvDone && v == 0u32;
+    if s.announced && !quiet {
+      let refused = v == 0x7u32 && !(s.ours && s.finalSeen);
+      var d = String.from("the peer reset the stream: ");
+      d.append(code.name());
+      var e = HttpError.coded(if refused {ErrorKind.Refused} else {ErrorKind.Reset}, u64.from(v), ErrorScope.Stream, d.view());
+      e.noResponse = s.ours && !s.finalSeen;
+      self.emit(s, Event.Reset(id, e));
+    }
+    self.abandon(s, false);
+    self.settle(s);
+  }
+
+  fn onWindowUpdate(self: &mut, id: u32, inc: u32) {
+    if id == 0u32 {
+      connSend = connSend + i64.from(inc);
+      if connSend > i64.from(maxWindowSize) {
+        self.connError(ErrorCode.FlowControlError, "a WINDOW_UPDATE past 2^31-1 for the connection");
+      }
+      return;
+    }
+    let slot = self.slotOf(id);
+    if slot.isNone() {
+      if self.isIdle(id) {self.connError(ErrorCode.ProtocolError, "WINDOW_UPDATE on an idle stream");}
+      return;
+    }
+    let s = streams.get(slot) as &mut Stream;
+    if !s.opened {
+      self.connError(ErrorCode.ProtocolError, "WINDOW_UPDATE on a stream not yet opened");
+      return;
+    }
+    if s.sendDone {return;}
+    s.sendWindow = s.sendWindow + i64.from(inc);
+    if s.sendWindow > i64.from(maxWindowSize) {
+      self.streamError(id, ErrorCode.FlowControlError, "a WINDOW_UPDATE past 2^31-1");
+      return;
+    }
+    if s.outBytes > 0usize || s.finishing {self.makeReady(s);}
+  }
+
+  fn onSettings(self: &mut, ack: bool, values: &'v Array[Setting]) {
+    if ack {
+      if settingsOut > 0u32 {
+        settingsOut = settingsOut - 1u32;
+        if settingsOut == 0u32 {decoder.settingAcknowledged();}
+      }
+      return;
+    }
+    // In order (section 6.5.3): HPACK's encoder sees every table size
+    var i = 0usize;
+    while i < values.len {
+      let id = values[i].id;
+      let v = values[i].value;
+      if id == settingHeaderTableSize {
+        encoder.setPeerTableSize(usize.from(v));
+      } else if id == settingMaxConcurrentStreams {
+        peerMaxStreams = v;
+      } else if id == settingInitialWindowSize {
+        // Every stream's window moves by the change (section 6.9.2)
+        let delta = i64.from(v) - peerWindow;
+        peerWindow = i64.from(v);
+        if !self.shiftWindows(delta) {return;}
+      } else if id == settingMaxFrameSize {
+        writer.setPeerMaxFrameSize(usize.from(v));
+      } else if id == settingMaxHeaderListSize {
+        peerMaxHeaderList = v;
+      }
+      i = i + 1usize;
+    }
+    if !writer.settingsAck() {
+      self.connError(ErrorCode.EnhanceYourCalm, "the peer's SETTINGS past maxQueuedControlFrames, unacknowledged");
+      return;
+    }
+    self.openWaiting();
+  }
+
+  // Every stream's send window moved by delta: false, and the connection
+  // failed, when one passes 2^31-1
+  fn shiftWindows(self: &mut, delta: i64) bool {
+    var i = 0u32;
+    while usize.from(i) < streams.bound() {
+      if streams.isLive(i) {
+        let s = streams.at(i) as &mut Stream;
+        s.sendWindow = s.sendWindow + delta;
+        if s.sendWindow > i64.from(maxWindowSize) {
+          self.connError(ErrorCode.FlowControlError, "SETTINGS_INITIAL_WINDOW_SIZE takes a stream's window past 2^31-1");
+          return false;
+        }
+        if delta > 0i64 && s.opened && !s.sendDone && (s.outBytes > 0usize || s.finishing) {self.makeReady(s);}
+      }
+      i = i + 1u32;
+    }
+    true
+  }
+
+  fn onPing(self: &mut, ack: bool, data: u64) {
+    if ack {
+      if shutdownPinged && data == shutdownPing {
+        // A round trip since our first GOAWAY: the second names the last
+        // stream taken
+        shutdownPinged = false;
+        goAwayLast = lastPeer;
+        writer.goAway(lastPeer, ErrorCode.NoError, "");
+        return;
+      }
+      if pingsOut > 0u32 {
+        pingsOut = pingsOut - 1u32;
+        events.push(Event.Pong(0u32, data));
+      }
+      return;
+    }
+    if !writer.ping(data, true) {
+      self.connError(ErrorCode.EnhanceYourCalm, "the peer's PINGs past maxQueuedControlFrames, unanswered");
+    }
+  }
+
+  // The peer is going away (section 6.8): every request of ours above its
+  // last stream was not processed, refused (safe to retry elsewhere), and
+  // so is every one still waiting; those at or below it go on
+  fn onGoAway(self: &mut, last: u32, code: ErrorCode, debug: &'d Array[u8]) {
+    if !peerGoAway || last < peerLast {peerLast = last;}
+    peerGoAway = true;
+    var i = 0u32;
+    while usize.from(i) < streams.bound() {
+      if streams.isLive(i) {
+        let s = streams.at(i) as &mut Stream;
+        if s.ours && !(s.sendDone && s.recvDone) && (!s.opened || s.id > peerLast) {
+          var e = HttpError.coded(ErrorKind.Refused, u64.from(code.value()), ErrorScope.Connection,
+            "above the peer's GOAWAY last stream, or never sent: not processed");
+          e.noResponse = true;
+          let id = s.id;
+          self.emit(s, Event.Reset(id, e));
+          self.abandon(s, false);
+          self.settle(s);
+        }
+      }
+      i = i + 1u32;
+    }
+    waiting.clear();
+    events.push(Event.GoAway(0u32, last, code, String.fromBytes(debug)));
+  }
+
+  // The peer finished sending: a clean end with nothing under way, else a
+  // failure every stream under way hears of
+  fn onEof(self: &mut) {
+    if eof {return;}
+    eof = true;
+    if failed || closed {return;}
+    let ended = self.endAll(ErrorKind.Closed, None, "the connection closed with the stream under way");
+    if ended == 0usize && input.len() == 0usize {
+      closed = true;
+      return;
+    }
+    failed = true;
+    events.push(Event.Failed(0u32, HttpError.make(ErrorKind.Closed, 0u16, "the connection closed with streams under way")));
+  }
+
+  // A frame on a stream no longer in the table but not idle: ignored when
+  // this end reset it (section 5.4.2: frames in flight), else
+  // STREAM_CLOSED for that stream (section 5.1)
+  fn onClosed(self: &mut, id: u32, why: &'static str) {
+    if self.goneOf(id) == 1u32 {return;}
+    self.streamError(id, ErrorCode.StreamClosed, why);
+  }
+
+  // ------------------------------------------------------------- errors
+
+  // A stream error of the peer's (section 5.4.2): RST_STREAM, the stream
+  // ended, the program told if it knew of it. Counted (MadeYouReset)
+  fn streamError(self: &mut, id: u32, code: ErrorCode, why: &str) {
+    if !self.spendLocal() {return;}
+    if !writer.rstStream(id, code) {
+      self.connError(ErrorCode.EnhanceYourCalm, "control frames past maxQueuedControlFrames, untaken");
+      return;
+    }
+    let slot = self.slotOf(id);
+    if slot.isNone() {
+      self.pushGone(id, true);
+      return;
+    }
+    let s = streams.get(slot) as &mut Stream;
+    if s.announced {
+      var e = HttpError.coded(kindOfCode(code), u64.from(code.value()), ErrorScope.Stream, why);
+      e.noResponse = s.ours && !s.finalSeen;
+      self.emit(s, Event.Reset(id, e));
+    }
+    self.abandon(s, true);
+    self.settle(s);
+  }
+
+  // One more stream reset for the peer's fault: false, and the connection
+  // failed, past maxLocalResets in resetInterval (MadeYouReset,
+  // CVE-2025-8671)
+  fn spendLocal(self: &mut) bool {
+    if spend(&mut localResets, now, cfg.resetInterval, cfg.maxLocalResets) {
+      self.connError(ErrorCode.EnhanceYourCalm, "more streams reset for the peer's faults than maxLocalResets in resetInterval");
+      return false;
+    }
+    true
+  }
+
+  // A connection error (section 5.4.1): GOAWAY with the last stream taken,
+  // every stream under way told, then Failed and Closed
+  fn connError(self: &mut, code: ErrorCode, why: &str) {
+    if failed || closed {return;}
+    writer.goAway(lastPeer, code, why);
+    failed = true;
+    let kind = kindOfCode(code);
+    let ended = self.endAll(kind, Some[u64](u64.from(code.value())), why);
+    ready.clear();
+    events.push(Event.Failed(0u32, HttpError.coded(kind, u64.from(code.value()), ErrorScope.Connection, why)));
+  }
+
+  // Every stream under way ended with the connection: told, as a Reset of
+  // the connection's scope (Refused for a request never sent or above the
+  // peer's GOAWAY, which was not processed). How many there were
+  fn endAll(self: &mut, kind: ErrorKind, code: Option[u64], why: &str) usize {
+    var n = 0usize;
+    var i = 0u32;
+    while usize.from(i) < streams.bound() {
+      if streams.isLive(i) {
+        let s = streams.at(i) as &mut Stream;
+        if !(s.sendDone && s.recvDone) {
+          n = n + 1usize;
+          if s.announced {
+            let refused = s.ours && (!s.opened || (peerGoAway && s.id > peerLast));
+            var e = HttpError.make(if refused {ErrorKind.Refused} else {kind}, 0u16, why);
+            e.code = code;
+            e.noResponse = s.ours && !s.finalSeen;
+            let id = s.id;
+            self.emit(s, Event.Reset(id, e));
+          }
+          s.sendDone = true;
+          s.recvDone = true;
+          s.wireClosed = true;
+          s.outQ.clear();
+          s.outBytes = 0usize;
+          if s.events == 0usize {self.reap(s.id);}
+        }
+      }
+      i = i + 1u32;
+    }
+    waiting.clear();
+    n
+  }
+
+  // ------------------------------------------------------------- streams, inside
+
+  fn slotOf(self: &, id: u32) Slot {
+    match byId.getCopy(&id) {
+      case let Some(s) {s}
+      case is None[Slot] {Slot.none()}
+    }
+  }
+
+  // Whether a stream id is idle: above every one its opener has opened
+  fn isIdle(self: &, id: u32) bool {
+    let ours = if clientRole {(id & 1u32) == 1u32} else {(id & 1u32) == 0u32};
+    if ours {id > lastLocal} else {id > lastPeer}
+  }
+
+  // 0: not remembered; 1: reset by this end; 2: closed otherwise
+  fn goneOf(self: &, id: u32) u32 {
+    var i = gone.len();
+    while i > 0usize {
+      i = i - 1usize;
+      if gone[i].id == id {return if gone[i].byUs {1u32} else {2u32};}
+    }
+    0u32
+  }
+
+  fn pushGone(self: &mut, id: u32, byUs: bool) {
+    gone.push(Gone(id, byUs));
+    if gone.len() > goneMax {
+      let oldest = gone.popFront();
+    }
+  }
+
+  fn emit(self: &mut, s: &mut Stream, e: Event) {
+    s.events = s.events + 1usize;
+    events.push(e);
+  }
+
+  // An event of a stream's was polled: once the stream is closed and its
+  // events all taken, it leaves the table
+  fn eventTaken(self: &mut, id: u32) {
+    let slot = self.slotOf(id);
+    if slot.isNone() {return;}
+    let s = streams.get(slot) as &mut Stream;
+    s.events = s.events - 1usize;
+    if s.wireClosed && s.events == 0usize {self.reap(id);}
+  }
+
+  // Nothing more goes out or comes in on s: what it had to send is dropped
+  fn abandon(self: &mut, s: &mut Stream, byUs: bool) {
+    s.sendDone = true;
+    s.recvDone = true;
+    s.resetByUs = byUs;
+    s.outQ.clear();
+    s.outBytes = 0usize;
+    s.finishing = false;
+  }
+
+  // After s changed: once both its directions are done, it is closed on the
+  // wire (its slot under the peer's limit freed, a waiting request opened),
+  // and once its events are all taken too, it leaves the table. The last
+  // use of s by the caller
+  fn settle(self: &mut, s: &mut Stream) {
+    if !(s.sendDone && s.recvDone) {return;}
+    let id = s.id;
+    if !s.wireClosed {
+      s.wireClosed = true;
+      if s.counted {
+        s.counted = false;
+        localOpen = localOpen - 1u32;
+      }
+      if s.opened {self.pushGone(id, s.resetByUs);}
+      if s.ours {self.openWaiting();}
+    }
+    if s.events == 0usize {self.reap(id);}
+  }
+
+  // A closed stream with no events left leaves the table, taken apart once
+  fn reap(self: &mut, id: u32) {
+    match streams.take(self.slotOf(id)) {
+      case let Some(s) {
+        let ours = s.(ours);
+        byId.remove(&id);
+        if !ours {peerLive = peerLive - 1u32;}
+      }
+      case is None[Stream] {}
+    }
+  }
+
+  // Whether the connection has wound down after a GOAWAY: no stream left,
+  // and no graceful GOAWAY's second half owed
+  fn drained(self: &) bool {
+    (goAwaySent || peerGoAway) && !shutdownPinged && streams.len() == 0usize && waiting.len() == 0usize
+  }
+
+  // Waiting requests opened while the peer's limit has room
+  fn openWaiting(self: &mut) {
+    while waiting.len() > 0usize && localOpen < peerMaxStreams && !failed && !closed && !peerGoAway && !goAwaySent {
+      match waiting.popFront() {
+        case let Some(id) {
+          let slot = self.slotOf(id);
+          if !slot.isNone() {
+            let s = streams.get(slot) as &mut Stream;
+            if !(s.sendDone && s.recvDone) {self.openStream(s);}
+          }
+        }
+        case is None[u32] {}
+      }
+    }
+  }
+
+  // A client's waiting requests refused, never sent
+  fn refuseWaiting(self: &mut, why: &str, code: ErrorCode) {
+    while waiting.len() > 0usize {
+      match waiting.popFront() {
+        case let Some(id) {
+          let slot = self.slotOf(id);
+          if !slot.isNone() {
+            let s = streams.get(slot) as &mut Stream;
+            if !(s.sendDone && s.recvDone) {
+              var e = HttpError.coded(ErrorKind.Refused, u64.from(code.value()), ErrorScope.Connection, why);
+              e.noResponse = true;
+              self.emit(s, Event.Reset(id, e));
+              self.abandon(s, false);
+              self.settle(s);
+            }
+          }
+        }
+        case is None[u32] {}
+      }
+    }
+  }
+
+  // A client's request goes on the wire: its HEADERS, encoded now, so the
+  // HPACK tables see blocks in the order they travel
+  fn openStream(self: &mut, s: &mut Stream) {
+    s.opened = true;
+    s.counted = true;
+    localOpen = localOpen + 1u32;
+    lastLocal = s.id;
+    streamsOpened = streamsOpened + 1u64;
+    block.clear();
+    encoder.encode(s.fields.view(), &mut block);
+    s.fields.clear();
+    let end = !s.bodyFollows;
+    writer.headers(s.id, block.view(), end);
+    if end {s.sendDone = true;}
+    if s.outBytes > 0usize || s.finishing {self.makeReady(s);}
+  }
+
+  // The fields in 'fields', encoded and sent as one HEADERS (and its
+  // CONTINUATIONs)
+  fn writeBlock(self: &mut, id: u32, endStream: bool) {
+    block.clear();
+    encoder.encode(fields.view(), &mut block);
+    writer.headers(id, block.view(), endStream);
+  }
+
+  fn makeReady(self: &mut, s: &mut Stream) {
+    if s.ready {return;}
+    s.ready = true;
+    ready.push(s.id);
+  }
+
+  // ------------------------------------------------------------- sending, inside
+
+  // Body frames cut from the ready streams, one frame from each in turn
+  // (section 5.2: the windows allowing), until none can go on
+  fn schedule(self: &mut) {
+    if failed || closed {return;}
+    var stalled = 0usize;
+    while ready.len() > 0usize && stalled < ready.len() {
+      match ready.popFront() {
+        case let Some(id) {
+          let slot = self.slotOf(id);
+          if !slot.isNone() {
+            let s = streams.get(slot) as &mut Stream;
+            let r = self.sendSome(s);
+            if r == 1u32 {
+              ready.push(id);
+              stalled = 0usize;
+            } else if r == 2u32 {
+              stalled = 0usize;
+            } else if r == 3u32 {
+              ready.push(id);
+              stalled = stalled + 1usize;
+            }
+          }
+        }
+        case is None[u32] {}
+      }
+    }
+  }
+
+  // One frame of s's: 0 nothing it can send (it leaves the ready list until
+  // its window opens or it has more), 1 a frame sent and more to come, 2 a
+  // frame sent and nothing more for now, 3 waiting on the connection's
+  // window
+  fn sendSome(self: &mut, s: &mut Stream) u32 {
+    let id = s.id;
+    if s.sendDone {
+      s.ready = false;
+      return 0u32;
+    }
+    if s.outBytes > 0usize {
+      if s.sendWindow <= 0i64 {
+        s.ready = false;
+        return 0u32;
+      }
+      if connSend <= 0i64 {return 3u32;}
+      let room = minI64(minI64(s.sendWindow, connSend), i64.from(writer.peerMaxFrameSize()));
+      let buf = self.chunk(s, usize.from(room));
+      let n = buf.len();
+      s.sendWindow = s.sendWindow - i64.from(n);
+      connSend = connSend - i64.from(n);
+      s.outBytes = s.outBytes - n;
+      let last = s.finishing && s.outBytes == 0usize && !s.hasTrailers;
+      writer.data(id, buf, last);
+      if last {
+        s.sendDone = true;
+        s.ready = false;
+        self.settle(s);
+        return 2u32;
+      }
+      if s.outBytes > 0usize || s.finishing {return 1u32;}
+      s.ready = false;
+      return 2u32;
+    }
+    if s.finishing {
+      if s.hasTrailers {
+        block.clear();
+        encoder.encode(s.trailerFields.view(), &mut block);
+        s.trailerFields.clear();
+        writer.headers(id, block.view(), true);
+      } else {
+        writer.data(id, IoBuf.empty(), true);
+      }
+      s.sendDone = true;
+      s.ready = false;
+      self.settle(s);
+      return 2u32;
+    }
+    s.ready = false;
+    0u32
+  }
+
+  // The next 'room' bytes (at most) of s's queue as one buffer: the first
+  // buffer itself, moved, when it fits whole; else a copy of its part
+  fn chunk(self: &mut, s: &mut Stream, room: usize) IoBuf {
+    let have = s.outQ[0usize].len() - s.outOff;
+    if s.outOff == 0usize && have <= room {
+      match s.outQ.popFront() {
+        case let Some(b) {return b;}
+        case is None[IoBuf] {return IoBuf.empty();}
+      }
+    }
+    let n = if have < room {have} else {room};
+    var b = IoBuf(n);
+    let copied = b.append(&s.outQ[0usize].view()[s.outOff ..< s.outOff + n]);
+    s.outOff = s.outOff + n;
+    if s.outOff == s.outQ[0usize].len() {
+      let spent = s.outQ.popFront();
+      s.outOff = 0usize;
+    }
+    b
+  }
+}

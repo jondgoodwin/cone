@@ -50,5 +50,25 @@ fn main() i32 {
   let err = HttpError.make(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");
   expectStr(err.message().view(), "too large: the head is longer than maxHeadBytes", "an error's message");
   expect(err.status == 431u16 && !err.noResponse, "its status");
+  expect(err.scope == ErrorScope.Connection, "an error made plainly ends the connection");
+  match err.code {
+    case let Some(c) {expect(false, "and names no protocol code");}
+    case is None[u64] {expect(true, "and names no protocol code");}
+  }
+  expect(!err.isRetrySafe(), "a TooLarge is not safe to retry");
+
+  let refused = HttpError.coded(ErrorKind.Refused, 7u64, ErrorScope.Stream, "REFUSED_STREAM");
+  expectStr(refused.message().view(), "refused: REFUSED_STREAM", "a refused stream's message");
+  expect(refused.isRetrySafe() && refused.scope == ErrorScope.Stream, "a refused stream may be retried");
+  match refused.code {
+    case let Some(c) {expectUInt(c, 7u64, "its code");}
+    case is None[u64] {expect(false, "its code");}
+  }
+  let reset = HttpError.coded(ErrorKind.Reset, 8u64, ErrorScope.Stream, "CANCEL");
+  expect(!reset.isRetrySafe(), "a reset stream is not safe to retry");
+  let rk: &str = kindName(ErrorKind.Reset);
+  let fk: &str = kindName(ErrorKind.Refused);
+  let tk: &str = kindName(ErrorKind.TimedOut);
+  expect(rk == "reset" && fk == "refused" && tk == "timed out", "the new kinds' names");
   done()
 }
