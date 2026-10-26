@@ -9,7 +9,9 @@
 // - malformed messages, the stream's H3_MESSAGE_ERROR, the connection
 //   going on: upper case, pseudo-header fields missing, twice, after a
 //   header field or of the wrong kind, connection-specific fields, TE other
-//   than trailers, Content-Length against the DATA, a 101;
+//   than trailers, Content-Length against the DATA, a 101, extended
+//   CONNECT; plain CONNECT answered 501 by the core, as http1 and http2
+//   answer it, the rest of the request stopped with H3_NO_ERROR;
 // - a client's responses: interim ones first, HEAD and 204 with no body
 //   (DATA in a 204 refused), a stream ending before a response;
 // - resets: a peer's reset (H3_REQUEST_CANCELLED: Reset; H3_REQUEST_REJECTED:
@@ -250,6 +252,73 @@ fn serve(b: &List[u8], fin: bool) String {
   t
 }
 
+// A server fed these bytes on stream 0: its events, then what it sends,
+// each write's HEADERS decoded to its fields
+fn connectAnswer(b: &List[u8], fin: bool) String {
+  var s = server();
+  var own = List[u8].empty();
+  own.appendSlice(b.view());
+  feed(&mut s, 0u64, own.view(), fin);
+  var t = evs(&mut s);
+  t.append(" |");
+  var going = true;
+  var first = true;
+  while going {
+    match s.pollTransmit(t0()) {
+      case let Write(x) {
+        let stream, data, end = x.(stream, data, fin);
+        if (stream & 2u64) == 0u64 {
+          t.append(if first {" "} else {"; "});
+          first = false;
+          t.append("w");
+          t.appendUInt(stream);
+          if end {t.append(" fin");}
+          var bytes = List[u8].empty();
+          bytes.resize(data.len(), 0u8);
+          let n = data.copyOut(0usize, bytes.viewMut());
+          var pos = 0usize;
+          var kind = 0u64;
+          var len = 0u64;
+          if decodeVarint(bytes.view(), &mut pos, &mut kind) && decodeVarint(bytes.view(), &mut pos, &mut len) && kind == frameHeaders {
+            var dec = QpackDecoder.make(QpackConfig.make());
+            var got = List[HeaderField].empty();
+            match dec.decode(stream, &bytes.view()[pos ..< pos + usize.from(len)], &mut got) {
+              case let Ok(d) {
+                var k = 0usize;
+                while k < got.len() {
+                  t.append(" ");
+                  t.append(got[k].name.view());
+                  t.append("=");
+                  t.appendBytes(got[k].value.view());
+                  k = k + 1usize;
+                }
+              }
+              case let Error(e) {t.append(" (undecodable)");}
+            }
+          }
+        }
+      }
+      case let StopSending(r) {
+        t.append(if first {" "} else {"; "});
+        first = false;
+        t.append("stop ");
+        t.appendUInt(r.stream);
+        t.append(" ");
+        t.append(errorName(r.code));
+      }
+      case let Reset(r) {
+        t.append(if first {" "} else {"; "});
+        first = false;
+        t.append("reset ");
+        t.appendUInt(r.stream);
+      }
+      case let Close(c) {t.append(" close");}
+      case is Nothing {going = false;}
+    }
+  }
+  t
+}
+
 // A server fed one request's head and ending
 fn serveHead(spec: &str) String {
   var b = List[u8].empty();
@@ -357,8 +426,14 @@ fn malformed() {
   headers(&mut h, ":method=GET|:scheme=https|:path=/");
   expectStr(serve(&h, false).view(), w, "https with no authority");
   var i = List[u8].empty();
-  headers(&mut i, ":method=CONNECT|:authority=a:443");
-  expectStr(serve(&i, false).view(), w, "CONNECT, not supported");
+  headers(&mut i, ":method=CONNECT|:protocol=websocket|:scheme=https|:authority=a|:path=/chat");
+  expectStr(serve(&i, false).view(), w, "extended CONNECT: malformed, as in http2");
+  // CONNECT: answered 501 by the core, as http1 and http2 answer it
+  var i2 = List[u8].empty();
+  headers(&mut i2, ":method=CONNECT|:authority=a:443");
+  expectStr(connectAnswer(&i2, false).view(), " | stop 0 H3_NO_ERROR; w0 fin :status=501",
+    "CONNECT: answered 501 and ended, the rest not wanted (H3_NO_ERROR), the program not told");
+  expectStr(connectAnswer(&i2, true).view(), " | w0 fin :status=501", "...with the request whole: no stop");
   // Content-Length against the DATA
   var j = List[u8].empty();
   headers(&mut j, ":method=POST|:scheme=https|:authority=a|:path=/|content-length=5");

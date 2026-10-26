@@ -176,17 +176,20 @@ fn readSection(fields: &Array[HeaderField], kind: SectionKind, f: &mut SectionFi
 }
 
 // A request's section, read and checked (section 4.3.1): the head and the
-// content length it gives (when 'hasLength')
+// content length it gives (when 'hasLength'). 'connect' says the method is
+// CONNECT, which this core does not support: the connection answers it 501,
+// as http1 and http2 do
 struct ReadRequest {
   head: RequestHead;
   length: u64;
   hasLength: bool;
+  connect: bool;
 }
 
 fn badRequest(why: &'static str) Result[ReadRequest, &'static str] {Error[ReadRequest, &str](why)}
 
-// A request's section as a head, or why it is malformed. CONNECT, extended
-// CONNECT included, is refused as malformed too: this core does not tunnel
+// A request's section as a head, or why it is malformed. Extended CONNECT
+// (':protocol', RFC 9220) is refused as malformed, as http2 refuses it
 fn readRequest(fields: &Array[HeaderField]) Result[ReadRequest, &'static str] {
   var f = newSectionFields();
   let why = readSection(fields, SectionKind.Request, &mut f);
@@ -195,12 +198,15 @@ fn readRequest(fields: &Array[HeaderField]) Result[ReadRequest, &'static str] {
     f.(headers, method, scheme, authority, path, seen, length, hasLength, host, hasHost);
   if (seen & seenMethod) == 0u32 {return badRequest("a request without :method");}
   if !isToken(method.view()) {return badRequest("a :method that is not a token");}
-  if (seen & seenProtocol) != 0u32 || method.view() == "CONNECT" {return badRequest("CONNECT, which is not supported");}
-  if (seen & seenScheme) == 0u32 || scheme.isEmpty() {return badRequest("a request without :scheme, or with it empty");}
-  if (seen & seenPath) == 0u32 || path.isEmpty() {return badRequest("a request without :path, or with it empty");}
-  let p = path.view();
-  let star = p == "*" && method.view() == "OPTIONS";
-  if p[0usize] != '/' && !star {return badRequest("a :path that is neither absolute nor '*' for OPTIONS");}
+  if (seen & seenProtocol) != 0u32 {return badRequest("extended CONNECT (:protocol), which is not supported");}
+  let connect = method.view() == "CONNECT";
+  if !connect {
+    if (seen & seenScheme) == 0u32 || scheme.isEmpty() {return badRequest("a request without :scheme, or with it empty");}
+    if (seen & seenPath) == 0u32 || path.isEmpty() {return badRequest("a request without :path, or with it empty");}
+    let p = path.view();
+    let star = p == "*" && method.view() == "OPTIONS";
+    if p[0usize] != '/' && !star {return badRequest("a :path that is neither absolute nor '*' for OPTIONS");}
+  }
   var auth = authority;
   if hasHost {
     if (seen & seenAuthority) != 0u32 {
@@ -217,7 +223,7 @@ fn readRequest(fields: &Array[HeaderField]) Result[ReadRequest, &'static str] {
   head.scheme = scheme;
   head.version = Version.Http3;
   head.headers = headers;
-  Ok[ReadRequest, &str](ReadRequest(head, length, hasLength))
+  Ok[ReadRequest, &str](ReadRequest(head, length, hasLength, connect))
 }
 
 // A response's section (section 4.3.2), or its interim's: the head and the

@@ -947,6 +947,17 @@ pub struct Connection is Move {
     self.endStream(s, e, h3ExcessiveLoad);
   }
 
+  // CONNECT, which this core does not support, answered 501 (Not
+  // Implemented) by the core itself, as http1 and http2 answer it: the
+  // response ends the stream, and the rest of the request is not wanted
+  // (STOP_SENDING with H3_NO_ERROR, section 4.1, unless it had all
+  // arrived). The program never sees it
+  fn answerConnect(self: &mut, s: &mut H3Stream) {
+    self.respond(s, ResponseHead.make(501u16), BodyLength.empty(), srcFile(), srcLine());
+    s.reported = true;
+    self.stopReading(s, h3NoError);
+  }
+
   // ------------------------------------------------------------- inside: reading a request stream
 
   // The next event of one request stream, or None when it has none now
@@ -1099,7 +1110,11 @@ pub struct Connection is Move {
       if !clientRole {
         match readRequest(fields.view()) {
           case let Ok(r) {
-            let head, length, hasLength = r.(head, length, hasLength);
+            let head, length, hasLength, connect = r.(head, length, hasLength, connect);
+            if connect {
+              self.answerConnect(s);
+              return None;
+            }
             s.isHead = head.method == Method.Head;
             s.requestSeen = true;
             s.rs = ReadState.Body;
