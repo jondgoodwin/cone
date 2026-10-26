@@ -44,6 +44,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->threadbound = CarriesBorrowUnknown;
     snode->callmut = 0;
     snode->callsig = NULL;
+    snode->latewhere = NULL;
     return snode;
 }
 
@@ -81,6 +82,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
     newnode->lifecycle = NULL;
+    newnode->latewhere = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
     // whether they carry a borrow, hold a traced reference or an atomic value,
@@ -5127,6 +5129,10 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
     if (fromdcl->tag != StructTag || !(to->flags & TraitType))
         return NoMatch;
     StructNode *from = (StructNode*)fromdcl;
+    // A fit is read from the type's members: an instance's whose 'where' waited
+    // are decided first
+    if (from->latewhere)
+        genericLateWhereNow(from);
 
     // The virtual reference compare has extra logic for building vtables info
     // So, we just handle it separately

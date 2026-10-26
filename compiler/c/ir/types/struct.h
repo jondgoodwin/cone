@@ -61,6 +61,7 @@ typedef struct StructNode {
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
     uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
+    struct GenericLateWhere *latewhere;  // An instance's members whose 'where' waits on an argument's layout, not yet decided (genericLateWhere); NULL once they are, and for every other type
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
