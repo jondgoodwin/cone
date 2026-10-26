@@ -353,6 +353,65 @@ pub struct Loop {
     Ok[SocketAddr, IoError](a)
   }
 
+  // TCP keepalive on a connected socket (KeepAlive says what), set now: 0,
+  // or the Windows error number of the option the OS refused
+  pub fn setKeepAlive(self: &mut, h: Handle, ka: KeepAlive) u32 {
+    let raw = self.rawOf(h, hSocket);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    let on = ka.probes > 0u32;
+    var flag = if on {1i32} else {0i32};
+    let sol = if isWindows() {solSocket} else {solSocketLx};
+    let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
+    if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
+    if !on {return 0u32;}
+    var idle = keepSeconds(ka.idle);
+    var every = keepSeconds(ka.interval);
+    var count = i32.from(ka.probes);
+    let idleOpt = if isWindows() {tcpKeepIdle} else {tcpKeepIdleLx};
+    let everyOpt = if isWindows() {tcpKeepIntvl} else {tcpKeepIntvlLx};
+    let countOpt = if isWindows() {tcpKeepCnt} else {tcpKeepCntLx};
+    if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
+    if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
+    if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
+    if !isWindows() && ka.userTimeout > Duration.zero() {
+      var ms = i32.from(ka.userTimeout.millis());
+      if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
+    }
+    0u32
+  }
+
+  // A connected socket's TCP keepalive, as the OS reads it back: probes 0
+  // when it is off (Windows reads userTimeout as 0: it has no such option)
+  pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
+    let raw = self.rawOf(h, hSocket);
+    if raw == invalidHandle {return Error[KeepAlive, IoError](IoError(errorInvalidHandle));}
+    let sol = if isWindows() {solSocket} else {solSocketLx};
+    let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
+    var flag = 0i32;
+    var len = 4i32;
+    if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
+    var idle = 0i32;
+    var every = 0i32;
+    var count = 0i32;
+    var ms = 0i32;
+    let idleOpt = if isWindows() {tcpKeepIdle} else {tcpKeepIdleLx};
+    let everyOpt = if isWindows() {tcpKeepIntvl} else {tcpKeepIntvlLx};
+    let countOpt = if isWindows() {tcpKeepCnt} else {tcpKeepCntLx};
+    len = 4i32;
+    if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    len = 4i32;
+    if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    len = 4i32;
+    if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if !isWindows() {
+      len = 4i32;
+      if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    }
+    Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
+      u32.from(count), Duration.fromMillis(i64.from(ms))))
+  }
+
   // A file, for ReadAt and WriteAt
   pub fn openFile(self: &mut, path: &Path, access: Access) Result[Handle, IoError] {
     let text: &Array[u8] = path.view();

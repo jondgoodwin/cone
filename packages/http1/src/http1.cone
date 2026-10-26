@@ -130,12 +130,16 @@
 // a message differently is how requests are smuggled.
 //
 // BOUNDS AND TIMEOUTS (CONFIG, each a field of Config, each passed a
-// visible Failed, never silent growth): 'maxHeadBytes' (16 KiB) a head or
-// trailer section; 'maxLineBytes' (8 KiB) one line of it; 'maxHeaders' (100)
+// visible Failed, never silent growth): 'maxHeadBytes' (32 KiB) a request's
+// head or trailer section, which a server reads; 'maxResponseHeadBytes' (64
+// KiB) a response's, which a client reads (servers it did not write send
+// large Set-Cookie and policy fields); 'maxLineBytes' (8 KiB) one line of
+// either; 'maxHeaders' (100)
 // its fields; 'maxChunkLineBytes' (1 KiB) a chunk's size line;
 // 'maxChunkDigits' (16) its hexadecimal digits; 'maxBuffered' (256 KiB) the
 // input held; 'bodyWindow' (256 KiB) body bytes out unreleased;
-// 'writeWatermark' (256 KiB) bytes queued to send. Timeouts are Durations,
+// 'writeWatermark' (256 KiB) bytes queued to send ('maxBuffered' holds a
+// whole head of the role's, or making the connection panics). Timeouts are Durations,
 // each turned into an absolute Instant when it starts: 'headTimeout' (30 s)
 // from the moment a head is awaited (a client: its request handed over
 // whole; a server: the request's first byte) to its last byte;
@@ -201,7 +205,8 @@ import http use *;
 // A connection's bounds and timeouts (see the package's header, BOUNDS AND
 // TIMEOUTS)
 pub struct Config {
-  pub maxHeadBytes: usize;
+  pub maxHeadBytes: usize;           // a request's head, a server reading it
+  pub maxResponseHeadBytes: usize;   // a response's head, a client reading it
   pub maxLineBytes: usize;
   pub maxHeaders: usize;
   pub maxChunkLineBytes: usize;
@@ -217,7 +222,7 @@ pub struct Config {
 
   // The defaults
   pub fn make() Config {
-    Config(maxHeadBytes: 16384usize, maxLineBytes: 8192usize, maxHeaders: 100usize,
+    Config(maxHeadBytes: 32768usize, maxResponseHeadBytes: 65536usize, maxLineBytes: 8192usize, maxHeaders: 100usize,
       maxChunkLineBytes: 1024usize, maxChunkDigits: 16usize, maxBuffered: 262144usize,
       bodyWindow: 262144usize, writeWatermark: 262144usize,
       headTimeout: Duration.fromSeconds(30), bodyTimeout: Duration.fromSeconds(30),
@@ -266,7 +271,7 @@ enum WriteState {
 }
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by the watermark instead
-const tailSize = 4096usize;               // the buffer small writes gather in
+const tailSize = 4096usize;               // a buffer small writes gather in, when the last queued has no room
 const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
 const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
 
@@ -290,9 +295,8 @@ pub struct Connection is Move {
   // Writing
   ws: WriteState;
   wremaining: u64;           // a Sized body's bytes still to send
-  out: Chain;                // whole buffers ready to send, in order
-  tail: IoBuf;               // small writes gathering after them
-  held: Chain;               // a body held back for 100 Continue
+  out: Chain;                // buffers ready to send, in order; small writes gather in the last
+  held: Chain;               // a body held back for 100 Continue (and what is written after it)
   holding: bool;
   abandoned: bool;           // the rest of the body being sent is dropped
   requestSeen: bool;         // a server's request awaits its response
@@ -316,8 +320,7 @@ pub struct Connection is Move {
   // The end
   closed: bool;
   failed: bool;
-  failureOut: bool;
-  failure: HttpError;
+  failure: List[Event];      // the Failed event, made when it failed, until pollEvent gives it
 
   // Counts
   exchanges: u64;
@@ -332,17 +335,19 @@ pub struct Connection is Move {
   pub fn server(cfg: Config, now: Instant) Connection {Connection.make(false, cfg, now)}
 
   fn make(client: bool, cfg: Config, now: Instant, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Connection {
-    if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
+    if !client && cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
+    if client && cfg.maxBuffered < cfg.maxResponseHeadBytes {
+      panic("http1: maxBuffered must hold a whole head (maxResponseHeadBytes)", file, line);
+    }
     Connection(clientRole: client, cfg: cfg, now: now,
       input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
       headBuf: IoBuf.empty(), headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
-      ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), tail: IoBuf.empty(),
-      held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
+      ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
       answeringHead: false, peer10: false, keepAlive: true,
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
-      closed: false, failed: false, failureOut: false, failure: HttpError.empty(),
+      closed: false, failed: false, failure: List[Event].empty(),
       exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64)
   }
 
@@ -380,17 +385,13 @@ pub struct Connection is Move {
   // The next bytes to send, moved out: an empty IoBuf when there are none
   pub fn pollTransmit(self: &mut, at: Instant) IoBuf {
     self.transmitting(at);
-    var b = IoBuf.empty();
-    if out.len() > 0usize {
-      match out.popFront() {
-        case let Some(s) {b = s;}
-        case is None[IoBuf] {}
+    match out.popFront() {
+      case var Some(b) {
+        bytesOut = bytesOut + u64.from(b.len());
+        b
       }
-    } else if tail.len() > 0usize && !holding {
-      b <-> tail;
+      else {IoBuf.empty()}
     }
-    bytesOut = bytesOut + u64.from(b.len());
-    b
   }
 
   // Every byte ready to send, moved out at once as a Chain of the buffers
@@ -402,12 +403,6 @@ pub struct Connection is Move {
     // The queue is taken whole: empty is what it is next
     var all = Chain.make(noBound);
     all <-> out;
-    if tail.len() > 0usize && !holding {
-      // ...and so is the tail
-      var t = IoBuf.empty();
-      t <-> tail;
-      _ = all.push(t);
-    }
     bytesOut = bytesOut + u64.from(all.len());
     all
   }
@@ -478,10 +473,7 @@ pub struct Connection is Move {
   // The next event (see the package's header, EVENTS)
   pub fn pollEvent(self: &mut) Event {
     while true {
-      if failed {
-        if !failureOut {return self.failedEvent();}
-        return Event.Closed;
-      }
+      if failed {return self.failedEvent();}
       if closed {return Event.Closed;}
       if rs == ReadState.Idle {
         if clientRole {
@@ -577,7 +569,7 @@ pub struct Connection is Move {
   }
 
   // Bytes waiting to be sent
-  pub fn queued(self: &) usize {out.len() + tail.len() + held.len()}
+  pub fn queued(self: &) usize {out.len() + held.len()}
 
   // How many more bytes sendData takes before the watermark refuses
   pub fn writeRoom(self: &) usize {
@@ -638,7 +630,7 @@ pub struct Connection is Move {
     sawBytes = false;
     armHead = true;
     if ws != WriteState.Done && head.headers.hasToken("Expect", "100-continue") {
-      self.flushTail();
+      // What is written from here on is held, after the head
       holding = true;
       armExpect = true;
     }
@@ -763,7 +755,7 @@ pub struct Connection is Move {
 
   // Whether the driver should close the socket now: the connection has
   // ended and everything it had to send has been taken
-  pub fn shouldClose(self: &) bool {(closed || failed) && out.len() == 0usize && tail.len() == 0usize}
+  pub fn shouldClose(self: &) bool {(closed || failed) && out.len() == 0usize}
 
   // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
   // only way to cancel an exchange
@@ -796,12 +788,12 @@ pub struct Connection is Move {
     }
   }
 
-  // The failure, moved out, once
+  // The Failed event, given once; Closed after it
   fn failedEvent(self: &mut) Event {
-    failureOut = true;
-    var e = HttpError.empty();
-    e <-> failure;
-    Event.Failed(e)
+    match failure.pop() {
+      case var Some(e) {e}
+      else {Event.Closed}
+    }
   }
 
   fn fail(self: &mut, kind: ErrorKind, status: u16, why: &str) {
@@ -810,10 +802,10 @@ pub struct Connection is Move {
 
   // The connection fails with e. A server that has not begun a response
   // answers with e's status first, when configured to
-  fn failWith(self: &mut, e: HttpError) {
+  fn failWith(self: &mut, err: HttpError) {
     if failed || closed {return;}
-    failure = e;
-    failure.noResponse = clientRole && !sawBytes && rs == ReadState.Head;
+    var e = err;
+    e.noResponse = clientRole && !sawBytes && rs == ReadState.Head;
     failed = true;
     headArmed = false;
     bodyArmed = false;
@@ -821,12 +813,13 @@ pub struct Connection is Move {
     expectArmed = false;
     holding = false;
     held = Chain.make(noBound);
-    if !clientRole && cfg.autoErrorResponse && failure.status != 0u16 && ws == WriteState.Idle &&
-        failure.kind != ErrorKind.Closed {
-      self.putStatusLine(failure.status);
+    if !clientRole && cfg.autoErrorResponse && e.status != 0u16 && ws == WriteState.Idle &&
+        e.kind != ErrorKind.Closed {
+      self.putStatusLine(e.status);
       self.put("Connection: close\r\nContent-Length: 0\r\n\r\n");
       ws = WriteState.Done;
     }
+    failure.push(Event.Failed(e));
   }
 
   fn closedMidBody(self: &mut) Event {
@@ -837,18 +830,19 @@ pub struct Connection is Move {
   // Copy what arrived into headBuf and check it, up to the blank line that
   // ends a head: the head's length then, or 0 (not all here yet, or failed)
   fn gatherHead(self: &mut) usize {
+    let most = if clientRole {cfg.maxResponseHeadBytes} else {cfg.maxHeadBytes};
     if headBuf.capacity() == 0usize {
-      headBuf = IoBuf(cfg.maxHeadBytes);
+      headBuf = IoBuf(most);
       headScan = 0usize;
     }
     let have = headBuf.len();
-    if input.len() > have && have < cfg.maxHeadBytes {
+    if input.len() > have && have < most {
       let room = headBuf.spare();
       let n = input.copyOut(have, room);
       headBuf.setLen(have + n);
     }
     let v = headBuf.view();
-    let lim = if v.len < cfg.maxHeadBytes {v.len} else {cfg.maxHeadBytes};
+    let lim = if v.len < most {v.len} else {most};
     var i = headScan;
     while i < lim {
       let c = v[i];
@@ -877,8 +871,9 @@ pub struct Connection is Move {
       i = i + 1usize;
     }
     headScan = i;
-    if lim >= cfg.maxHeadBytes {
-      self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");
+    if lim >= most {
+      if clientRole {self.fail(ErrorKind.TooLarge, 0u16, "the head is longer than maxResponseHeadBytes");}
+      else {self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");}
     }
     0usize
   }
@@ -909,72 +904,47 @@ pub struct Connection is Move {
   // A server's request head, gathered: parsed, checked, and its body's
   // framing decided
   fn requestHead(self: &mut, len: usize) Event {
-    var head = RequestHead.empty();
-    var err = HttpError.empty();
-    var host = String.empty();
-    var hosts = 0usize;
-    var ok = false;
-    {
-      let h = headBuf.view();
-      let first = lineEnd(h, 0usize);
-      if first > cfg.maxLineBytes {
-        bad(&mut err, ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
-      } else {
-        ok = parseRequestLine(&h[0usize ..< first], &mut head, &mut err) &&
-          parseFields(h, lineNext(h, first), &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
+    let read = readRequest(headBuf.view(), &cfg);
+    self.consumeHead(len);
+    match read {
+      case var Ok(r) {
+        let head, framing = r.(head, framing);
+        peer10 = head.version == Version.Http10;
+        keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
+        answeringHead = head.method == Method.Head;
+        requestSeen = true;
+        sawBytes = false;
+        let body = self.startBody(framing.mode, framing.n);
+        Event.Request(head, body)
+      }
+      case var Error(e) {
+        self.failWith(e);
+        self.failedEvent()
       }
     }
-    self.consumeHead(len);
-    if ok {
-      let http10 = head.version == Version.Http10;
-      if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "the request has more than one Host");}
-      else if hosts == 0usize && !http10 {ok = bad(&mut err, ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
-      else if head.method == Method.Connect {ok = bad(&mut err, ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
-    }
-    var mode = 0u32;
-    var n = 0u64;
-    if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
-    if !ok {
-      self.failWith(err);
-      return self.failedEvent();
-    }
-    head.authority = host;
-    peer10 = head.version == Version.Http10;
-    keepAlive = !peer10 && !head.headers.hasToken("Connection", "close");
-    answeringHead = head.method == Method.Head;
-    requestSeen = true;
-    sawBytes = false;
-    let body = self.startBody(mode, n);
-    Event.Request(head, body)
   }
 
   // A client's response head, gathered: an interim one, or the final one
   // with its body's framing decided
   fn responseHead(self: &mut, len: usize) Event {
-    var head = ResponseHead.empty();
-    var err = HttpError.empty();
-    var host = String.empty();
-    var hosts = 0usize;
-    var ok = false;
-    {
-      let h = headBuf.view();
-      let first = lineEnd(h, 0usize);
-      if first > cfg.maxLineBytes {
-        bad(&mut err, ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
-      } else {
-        ok = parseStatusLine(&h[0usize ..< first], &mut head, &mut err) &&
-          parseFields(h, lineNext(h, first), &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
+    let read = readResponse(headBuf.view(), &cfg);
+    self.consumeHead(len);
+    match read {
+      case var Ok(r) {
+        let head, framing = r.(head, framing);
+        self.finalOrInterim(head, framing)
+      }
+      case var Error(e) {
+        self.failWith(e);
+        self.failedEvent()
       }
     }
-    self.consumeHead(len);
-    if ok && head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");}
-    var mode = 0u32;
-    var n = 0u64;
-    if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10, &mut mode, &mut n, &mut err);}
-    if !ok {
-      self.failWith(err);
-      return self.failedEvent();
-    }
+  }
+
+  // A response head read: an interim one, or the final one, its body begun
+  fn finalOrInterim(self: &mut, head: ResponseHead, framing: Framing) Event {
+    var mode = framing.mode;
+    var n = framing.n;
     if isInformational(head.status) {
       // An interim response: the final one is still to come
       if head.status == 100u16 && holding {
@@ -997,7 +967,6 @@ pub struct Connection is Move {
       holding = false;
       expectArmed = false;
       held = Chain.make(noBound);
-      self.dropTail();
       abandoned = true;
       keepAlive = false;
       ws = WriteState.Done;
@@ -1128,26 +1097,24 @@ pub struct Connection is Move {
       self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
       return false;
     }
-    var size = 0u64;
-    var err = HttpError.empty();
-    var ok = false;
-    var copied = false;
-    match input.contiguous(0usize, at) {
-      case let Some(s) {ok = parseChunkLine(s, &cfg, &mut size, &mut err);}
-      case is None[&Array[u8]] {copied = true;}
-    }
-    if copied {
-      // The line lies across segments: copy it out to read it
-      var tmp = IoBuf(at + 1usize);
-      let room = tmp.spare();
-      let k = input.copyOut(0usize, &mut room[0usize ..< at]);
-      tmp.setLen(k);
-      ok = parseChunkLine(tmp.view(), &cfg, &mut size, &mut err);
-    }
-    if !ok {
-      self.failWith(err);
-      return false;
-    }
+    let read = match input.contiguous(0usize, at) {
+      case let Some(s) {parseChunkLine(s, &cfg)}
+      case is None[&Array[u8]] {
+        // The line lies across segments: copy it out to read it
+        var tmp = IoBuf(at + 1usize);
+        let room = tmp.spare();
+        let k = input.copyOut(0usize, &mut room[0usize ..< at]);
+        tmp.setLen(k);
+        parseChunkLine(tmp.view(), &cfg)
+      }
+    };
+    let size = match read {
+      case var Ok(v) {v}
+      case var Error(e) {
+        self.failWith(e);
+        return false;
+      }
+    };
     input.advance(at + skip);
     if size == 0u64 {
       rs = ReadState.Trailers;
@@ -1178,21 +1145,15 @@ pub struct Connection is Move {
       if eof {return self.closedMidBody();}
       return Event.NeedData;
     }
-    var trailers = Headers.empty();
-    var err = HttpError.empty();
-    var host = String.empty();
-    var hosts = 0usize;
-    var ok = false;
-    {
-      let h = headBuf.view();
-      ok = parseFields(h, 0usize, &cfg, !clientRole, false, &mut trailers, &mut host, &mut hosts, &mut err);
-    }
+    let read = parseFields(headBuf.view(), 0usize, &cfg, !clientRole, false);
     self.consumeHead(len);
-    if !ok {
-      self.failWith(err);
-      return self.failedEvent();
+    match read {
+      case var Ok(f) {self.endMessage(f.(headers))}
+      case var Error(e) {
+        self.failWith(e);
+        self.failedEvent()
+      }
     }
-    self.endMessage(trailers)
   }
 
   // The message read is whole
@@ -1248,16 +1209,10 @@ pub struct Connection is Move {
 
   // ------------------------------------------------------------- writing, inside
 
-  // Append bytes to what is to be sent, gathering small writes in the tail
+  // Append bytes to what is to be sent (held, while holding), gathering
+  // small writes in the last buffer queued
   fn put(self: &mut, bytes: &Array[u8]) {
-    var i = 0usize;
-    while i < bytes.len {
-      if tail.room() == 0usize {
-        self.flushTail();
-        tail = IoBuf(tailSize);
-      }
-      i = i + tail.append(&bytes[i ..< bytes.len]);
-    }
+    if holding {putInto(&mut held, bytes);} else {putInto(&mut out, bytes);}
   }
 
   // A number in decimal (base 10) or hexadecimal (16), lower case
@@ -1295,38 +1250,27 @@ pub struct Connection is Move {
     }
   }
 
-  // A body buffer: copied in after what is gathered when small, else queued
-  // whole after it
+  // A body buffer: copied in after what is gathered when small and the
+  // last buffer queued has room, else queued whole after it
   fn putBuf(self: &mut, buf: IoBuf) {
     let n = buf.len();
-    if n <= smallCopy && n <= tail.room() {
-      tail.append(buf.view());
-      return;
+    if n <= smallCopy {
+      if holding {
+        if n <= held.lastRoom() {
+          held.appendLast(buf.view());
+          return;
+        }
+      } else if n <= out.lastRoom() {
+        out.appendLast(buf.view());
+        return;
+      }
     }
-    self.flushTail();
-    self.pushOut(buf);
-  }
-
-  // The tail, whole, queued
-  fn flushTail(self: &mut) {
-    if tail.len() == 0usize {return;}
-    var t = IoBuf.empty();
-    t <-> tail;
-    self.pushOut(t);
-  }
-
-  fn pushOut(self: &mut, b: IoBuf) {
-    if holding {held.push(b);} else {out.push(b);}
-  }
-
-  fn dropTail(self: &mut) {
-    tail = IoBuf.empty();
+    if holding {held.push(buf);} else {out.push(buf);}
   }
 
   fn dropOutput(self: &mut) {
     out = Chain.make(noBound);
     held = Chain.make(noBound);
-    self.dropTail();
   }
 
   // 100 Continue came, or the wait for it ended: the held body goes out
@@ -1340,6 +1284,17 @@ pub struct Connection is Move {
         case is None[IoBuf] {}
       }
     }
+  }
+}
+
+// Append bytes to q: into its last buffer's room, then into new buffers of
+// tailSize, each queued once filled as far as it goes
+fn putInto(q: &mut Chain, bytes: &Array[u8]) {
+  var i = q.appendLast(bytes);
+  while i < bytes.len {
+    var t = IoBuf(tailSize);
+    i = i + t.append(&bytes[i ..< bytes.len]);
+    q.push(t);
   }
 }
 

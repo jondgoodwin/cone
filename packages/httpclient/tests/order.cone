@@ -288,10 +288,10 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
-fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], until: Instant) {
+fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
   var sevs = List[httpconn.Event].empty();
   cl.pump(lp, out);
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   var limit = until;
   let a = cl.wakeAt();
   if a < limit {limit = a;}
@@ -307,7 +307,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], unt
     k = k + 1usize;
   }
   comps.clear();
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
   k = 0usize;
   while k < sevs.len() {
     serve(sv, lp, &mut sevs[k]);
@@ -320,7 +320,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &mut List[Event], unt
 fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
   var sevs = List[httpconn.Event].empty();
-  sv.drv.pump(lp, &mut sevs);
+  sv.drv.pump(lp, &uni sevs);
 }
 
 fn url(port: u16, path: &str) String {
@@ -377,7 +377,7 @@ fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut S
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
-    step(cl, sv, lp, &mut out, giveUp);
+    step(cl, sv, lp, &uni out, giveUp);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -402,7 +402,7 @@ fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
   var out = List[Event].empty();
   let until = Instant.now() + d;
   while Instant.now() < until {
-    step(cl, sv, lp, &mut out, until);
+    step(cl, sv, lp, &uni out, until);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -445,7 +445,7 @@ fn collect(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, n: u64
   var out = List[Event].empty();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while fs.done + fs.cancelled + fs.timedOut + fs.failed < n && Instant.now() < giveUp {
-    step(cl, sv, lp, &mut out, giveUp);
+    step(cl, sv, lp, &uni out, giveUp);
     var k = 0usize;
     while k < out.len() {
       let e = &mut out[k];
@@ -577,7 +577,7 @@ fn main() i32 {
   var out = List[Event].empty();
   let until = Instant.now() + Duration.fromSeconds(5i64);
   while sv.order.len() == from && Instant.now() < until {
-    step(&mut cl, &mut sv, &mut lp, &mut out, until);
+    step(&mut cl, &mut sv, &mut lp, &uni out, until);
     out.clear();
   }
   expectUInt(u64.from(cl.queued()), 2u64, "two wait behind the one under way");

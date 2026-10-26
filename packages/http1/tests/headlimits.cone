@@ -1,0 +1,115 @@
+// The head limits by role (Config's defaults): a server reads a request's
+// head up to maxHeadBytes (32 KiB) and refuses a longer one with 431; a
+// client reads a response's head up to maxResponseHeadBytes (64 KiB), since
+// servers it did not write send large Set-Cookie and policy fields, and
+// refuses a longer one. Each is tried just under and just over its bound.
+
+mod headlimits;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn feed(c: &mut Connection, text: &Array[u8], at: Instant) {
+  var i = 0usize;
+  while i < text.len {
+    var b = IoBuf(4096usize);
+    let n = b.append(&text[i ..< text.len]);
+    c.handleInput(b, at);
+    i = i + n;
+  }
+}
+
+fn drain(c: &mut Connection, at: Instant) String {
+  var s = String.empty();
+  while true {
+    let b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    s.appendBytes(b.view());
+  }
+  s
+}
+
+// 'fields' field lines of 'size' bytes of value each, after 'first'
+fn head(first: &str, fields: usize, size: usize) String {
+  var s = String.from(first);
+  var i = 0usize;
+  while i < fields {
+    s.append("X-Pad-");
+    s.appendUInt(u64.from(i));
+    s.append(": ");
+    var j = 0usize;
+    while j < size {
+      s.append("p");
+      j = j + 1usize;
+    }
+    s.append("\r\n");
+    i = i + 1usize;
+  }
+  s.append("\r\n");
+  s
+}
+
+// The first event's name, and a failure's message after it
+fn first(c: &mut Connection) String {
+  var log = String.empty();
+  match c.pollEvent() {
+    case is Request {log.append("request");}
+    case is Response {log.append("response");}
+    case var Failed(f) {
+      log.append("failed ");
+      log.append(f.error.message().view());
+    }
+    else {log.append("other");}
+  }
+  log
+}
+
+fn main() i32 {
+  let t = Instant.fromNanos(1000000000i64);
+  let cfg = Config.make();
+  expectUInt(u64.from(cfg.maxHeadBytes), 32768u64, "a server's request head: 32 KiB by default");
+  expectUInt(u64.from(cfg.maxResponseHeadBytes), 65536u64, "a client's response head: 64 KiB by default");
+
+  // A server: 30 KiB of head read, past 32 KiB refused with 431
+  {
+    let h = head("GET / HTTP/1.1\r\nHost: h\r\n", 50usize, 600usize);
+    expect(h.len() > 16384usize && h.len() < 32768usize, "the request head is between 16 and 32 KiB");
+    var s = Connection.server(Config.make(), t);
+    feed(&mut s, h.view(), t);
+    expectStr(first(&mut s).view(), "request", "...and is read");
+  }
+  {
+    let h = head("GET / HTTP/1.1\r\nHost: h\r\n", 56usize, 600usize);
+    expect(h.len() > 32768usize, "the request head is past 32 KiB");
+    var s = Connection.server(Config.make(), t);
+    feed(&mut s, h.view(), t);
+    expectStr(first(&mut s).view(), "failed too large: the head is longer than maxHeadBytes", "...and is refused");
+    let sent = drain(&mut s, t);
+    expect(sent.startsWith("HTTP/1.1 431 "), "...answered 431");
+  }
+
+  // A client: 60 KiB of head read, past 64 KiB refused
+  {
+    let h = head("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n", 50usize, 1200usize);
+    expect(h.len() > 32768usize && h.len() < 65536usize, "the response head is between 32 and 64 KiB");
+    var c = Connection.client(Config.make(), t);
+    c.sendRequest(RequestHead.get("/", "example.com"), BodyLength.empty());
+    drain(&mut c, t);
+    feed(&mut c, h.view(), t);
+    expectStr(first(&mut c).view(), "response", "...and is read");
+  }
+  {
+    let h = head("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n", 56usize, 1200usize);
+    expect(h.len() > 65536usize, "the response head is past 64 KiB");
+    var c = Connection.client(Config.make(), t);
+    c.sendRequest(RequestHead.get("/", "example.com"), BodyLength.empty());
+    drain(&mut c, t);
+    feed(&mut c, h.view(), t);
+    expectStr(first(&mut c).view(), "failed too large: the head is longer than maxResponseHeadBytes", "...and is refused");
+  }
+  done()
+}
