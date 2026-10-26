@@ -216,7 +216,9 @@ too — `assignlvalrtype` and `flowScopeDealias` both consult them.
 
 The flags are the state along the walk in source order, the arms of an `if`
 joined after it: a move in one arm of an `if` is not seen by the other, and
-counts as a move after the `if`; "initialized on one branch" reads as
+counts as a move after the `if` unless that arm jumped away (a `return`, or a
+`break` or `continue`, whose state its loop joins where the loop ends);
+"initialized on one branch" reads as
 initialized after it. What the walk in source order cannot see — a loop's
 earlier pass, and a variable given a value on one branch only — the path walk
 refuses for a variable that moves or has anything to do as it dies, and for

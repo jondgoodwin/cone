@@ -78,6 +78,15 @@ void flowVarRollback(uint32_t mark);
 // Join the paths that went on after the fork -- 'npaths' of them, those that
 // changed nothing left out of 'paths' -- into the state at the fork
 void flowVarJoin(FlowVarPath *paths, uint32_t npaths);
+// A loop's body is being walked: each 'break' or 'continue' to it ends its path
+// there, and hands the loop the state it leaves (flowLoopJump: 0 when 'target'
+// is no loop being walked, and the path goes on). At the loop's end the breaks'
+// states are joined into the state after the loop, a variable a break's path did
+// not write taking the head's state: the entry's, the continues' and the body's
+// end's, when 'bodylive' says it is reached
+void flowLoopBegin(struct BlockNode *loop);
+int flowLoopJump(struct BlockNode *target, int iscontinue);
+void flowLoopEnd(int bodylive);
 
 // Is this variable one whose state the path walk follows for drop flags: a local
 // or a parameter whose value moves or has something to do as it dies?
