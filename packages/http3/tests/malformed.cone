@@ -1,0 +1,278 @@
+// Malformed input, each case on a fresh end, with the error it gives, its
+// HTTP/3 code, and that it ends the connection:
+// - field sections (QPACK_DECOMPRESSION_FAILED): a static index past 98; a
+//   relative index at or past Base; a dynamic index at or past the Required
+//   Insert Count, pre-base and post-base, indexed and as a name; an evicted
+//   entry; Required Insert Counts out of range (past twice MaxEntries,
+//   nonzero with no table, 0 encoded as nonzero, past what the table can
+//   reach) and one larger than the lines need; Base below 0; prefixes,
+//   integers and strings cut off; integers past 62 bits; Huffman padding;
+// - the encoder stream (QPACK_ENCODER_STREAM_ERROR): a capacity past
+//   SETTINGS_QPACK_MAX_TABLE_CAPACITY; an entry larger than the capacity
+//   (refused from its declared length, before its bytes arrive); a static
+//   index past 98; a name index or a Duplicate past the insert count or of
+//   an evicted entry; a bad Huffman name; an integer past 62 bits;
+// - the decoder stream (QPACK_DECODER_STREAM_ERROR): a Section
+//   Acknowledgment with nothing outstanding; an Insert Count Increment of 0
+//   or past the inserts sent; an integer past 62 bits;
+// - either instruction stream closed (H3_CLOSED_CRITICAL_STREAM);
+// and that an end refuses everything after a connection error, while a
+// well-formed instruction split across many arrivals is read whole.
+
+mod malformed;
+
+import testing use *;
+import collections use *;
+import http2 use HeaderField;
+import http3 use *;
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i < s.len {
+    if s[i] == ' ' {
+      i = i + 1usize;
+      continue;
+    }
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn config() QpackConfig {
+  var c = QpackConfig.make();
+  c.maxTableCapacity = 220usize;      // MaxEntries 6
+  c.blockedStreams = 4usize;
+  c.encoderTableCapacity = 220usize;
+  c.huffman = false;
+  c
+}
+
+// An error as 'message [code] (connection)'
+fn describe(e: &QpackError) String {
+  var s = e.message();
+  match e.code() {
+    case let Some(c) {
+      s.append(" [");
+      s.appendHex(c, 4usize);
+      s.append("]");
+    }
+    case is None[u64] {}
+  }
+  if e.isConnectionError() {s.append(" (connection)");}
+  s
+}
+
+// A fresh decoder given the encoder stream 'setup', then a section on stream
+// 4: what came of it
+fn section(setup: &str, coded: &str) String {
+  var dec = QpackDecoder.make(config());
+  let s = unhex(setup);
+  match dec.encoderInput(s.view()) {
+    case let Ok(n) {}
+    case let Error(e) {return describe(&e);}
+  }
+  let b = unhex(coded);
+  var got = List[HeaderField].empty();
+  match dec.decode(4u64, b.view(), &mut got) {
+    case let Ok(d) {
+      match d {
+        case let Done(x) {return String.from("ok");}
+        case is Blocked {return String.from("blocked");}
+      }
+    }
+    case let Error(e) {
+      if got.len() != 0usize {return String.from("the list was changed");}
+      return describe(&e);
+    }
+  }
+}
+
+// A fresh decoder given an encoder stream: the insert count, or the error
+fn encoderStream(coded: &str) String {
+  var dec = QpackDecoder.make(config());
+  let b = unhex(coded);
+  match dec.encoderInput(b.view()) {
+    case let Ok(n) {
+      var s = String.from("inserts ");
+      s.appendUInt(n);
+      return s;
+    }
+    case let Error(e) {return describe(&e);}
+  }
+}
+
+const dfail = "decompression failed: ";
+const conn = " [0200] (connection)";
+
+fn expectFail(got: String, why: &str, label: &str) {
+  var want = String.from(dfail);
+  want.append(why);
+  want.append(conn);
+  expectStr(got.view(), want.view(), label);
+}
+
+// Two inserts: 0 :authority=www.example.com (57), 1 :path=/sample/path (49)
+const two = "3fbd01 c00f7777772e6578616d706c652e636f6d c10c2f73616d706c652f70617468";
+
+fn sections() {
+  // Well-formed, to show the setup is right
+  expectStr(section(two, "0381 10 11").view(), "ok", "B.2's section");
+  expectStr(section(two, "0300 81 80").view(), "ok", "the same, pre-base");
+  // Indexes
+  expectFail(section("", "0000 ff24"), "a static index past the table's 99 entries", "indexed static 99");
+  expectFail(section("", "0000 5f54 00"), "a static index past the table's 99 entries", "name static 99");
+  expectStr(section("", "0000 ff23").view(), "ok", "indexed static 98");
+  expectFail(section(two, "0300 82"), "a relative index at or past Base", "relative 2, Base 2");
+  expectFail(section(two, "0300 42 00"), "a relative index at or past Base", "name relative 2, Base 2");
+  expectFail(section(two, "0201 80"), "a dynamic index at or past the Required Insert Count", "abs 1, RIC 1");
+  expectFail(section(two, "0201 40 00"), "a dynamic index at or past the Required Insert Count", "name abs 1, RIC 1");
+  expectFail(section(two, "0280 11"), "a dynamic index at or past the Required Insert Count", "post-base abs 1, RIC 1");
+  expectFail(section(two, "0280 01 00"), "a dynamic index at or past the Required Insert Count", "post-base name abs 1, RIC 1");
+  // Entry 0 evicted: capacity 60, two inserts of 57
+  expectFail(section("3f1d c00f7777772e6578616d706c652e636f6d 00", "0200 80"), "a reference to an evicted entry", "evicted");
+  // The Required Insert Count
+  expectFail(section(two, "0d00"), "an encoded Required Insert Count past twice the table's entries", "encoded 13 > 12");
+  expectFail(section("", "0100"), "a Required Insert Count of 0 encoded as nonzero", "0 encoded as 1");
+  expectFail(section("", "0c00"), "a Required Insert Count past what the table can reach", "11 with no inserts");
+  expectFail(section(two, "0300 81"), "a Required Insert Count other than one past the largest index referenced", "RIC 2, only entry 0 named");
+  expectFail(section(two, "0300 5100"), "a Required Insert Count other than one past the largest index referenced", "RIC 2, no dynamic line");
+  // Base
+  expectFail(section(two, "0281 80"), "a Base below 0", "Base -1");
+  // Cut off
+  expectFail(section("", "00"), "a section's prefix is cut off", "no Delta Base");
+  expectFail(section("", ""), "a section's prefix is cut off or past 62 bits", "empty");
+  expectFail(section("", "0000 5f"), "a field line is cut off or past 62 bits", "an index cut off");
+  expectFail(section("", "0000 51"), "a string runs past the section's end", "a value missing");
+  expectFail(section("", "0000 5105 6162"), "a string runs past the section's end", "a value cut off");
+  expectFail(section("", "0000 2361 62"), "a string runs past the section's end", "a name cut off");
+  // Past 62 bits
+  expectFail(section("", "0000 ffffffffffffffffffff01"), "a field line is cut off or past 62 bits", "index past 62 bits");
+  expectFail(section("", "ffffffffffffffffffffff01 00"), "a section's prefix is cut off or past 62 bits", "RIC past 62 bits");
+  // Huffman: eight bits of padding in a name; padding of zeros in a value
+  expectFail(section("", "0000 29ff 00"), "a Huffman string's padding is longer than 7 bits or not all ones", "name padding");
+  expectFail(section("", "0000 51 8100"), "a Huffman string's padding is longer than 7 bits or not all ones", "value padding");
+  // After a failure every section fails
+  var dec = QpackDecoder.make(config());
+  var got = List[HeaderField].empty();
+  let bad = unhex("0000ff24");
+  let good = unhex("0000c1");
+  match dec.decode(4u64, bad.view(), &mut got) {
+    case let Ok(d) {expect(false, "fails");}
+    case let Error(e) {}
+  }
+  match dec.decode(8u64, good.view(), &mut got) {
+    case let Ok(d) {expect(false, "a later section refused");}
+    case let Error(e) {expectStr(describe(&e).view(), "decompression failed: an earlier error ended the connection [0200] (connection)", "a later section refused");}
+  }
+}
+
+const efail = " [0201] (connection)";
+
+fn expectEnc(got: String, why: &str, label: &str) {
+  var want = String.from("encoder stream: ");
+  want.append(why);
+  want.append(efail);
+  expectStr(got.view(), want.view(), label);
+}
+
+fn encoderStreams() {
+  expectStr(encoderStream(two).view(), "inserts 2", "well-formed");
+  // Capacity: 220 is SETTINGS_QPACK_MAX_TABLE_CAPACITY
+  expectStr(encoderStream("3fbd01").view(), "inserts 0", "capacity 220");
+  expectEnc(encoderStream("3fbe01"), "a table capacity past SETTINGS_QPACK_MAX_TABLE_CAPACITY", "capacity 221");
+  // Entries larger than the capacity: refused from the declared length when
+  // the bytes have not come (capacity 0; a 10-byte name), or once read (a
+  // 57-byte entry in 56)
+  expectEnc(encoderStream("4a6375"), "an entry larger than the table's capacity", "capacity 0, cut off");
+  expectEnc(encoderStream("3f19 c00f7777772e6578616d706c652e636f6d"), "an entry larger than the table's capacity", "57 in 56");
+  expectStr(encoderStream("3f1a c00f7777772e6578616d706c652e636f6d").view(), "inserts 1", "57 in 57");
+  expectEnc(encoderStream("3f1a 5a77"), "an entry larger than the table's capacity", "a literal name too long, cut off");
+  // Indexes
+  expectEnc(encoderStream("3fbd01 ff24 00"), "a static index past the table's 99 entries", "static 99");
+  expectEnc(encoderStream("3fbd01 80 00"), "a name's index past the insert count", "name index past the count");
+  expectEnc(encoderStream("3fbd01 00"), "a Duplicate's index past the insert count", "Duplicate past the count");
+  // Entry 0 evicted (capacity 60), then named and duplicated
+  expectEnc(encoderStream("3f1d c00f7777772e6578616d706c652e636f6d 00 8100"), "a name from an evicted entry", "name of an evicted entry");
+  expectEnc(encoderStream("3f1d c00f7777772e6578616d706c652e636f6d 00 01"), "a Duplicate of an evicted entry", "Duplicate of an evicted entry");
+  // A Huffman name with eight bits of padding
+  expectEnc(encoderStream("3fbd01 61ff 00"), "a Huffman string's padding is longer than 7 bits or not all ones", "bad Huffman name");
+  expectEnc(encoderStream("3fffffffffffffffffffff01"), "an integer past 62 bits", "capacity past 62 bits");
+  // Closed, and everything refused after
+  var dec = QpackDecoder.make(config());
+  expectStr(describe(&dec.encoderStreamClosed()).view(), "critical stream closed: the encoder stream closed [0104] (connection)", "encoder stream closed");
+  let b = unhex("3fbd01");
+  match dec.encoderInput(b.view()) {
+    case let Ok(n) {expect(false, "nothing after");}
+    case let Error(e) {expectStr(describe(&e).view(), "decompression failed: an earlier error ended the connection [0200] (connection)", "nothing after");}
+  }
+  // An insert split byte by byte is applied once its last byte arrives
+  var d2 = QpackDecoder.make(config());
+  let whole = unhex(two);
+  var i = 0usize;
+  var counts = String.empty();
+  while i < whole.len() {
+    match d2.encoderInput(&whole.view()[i ..< i + 1usize]) {
+      case let Ok(n) {counts.appendUInt(n);}
+      case let Error(e) {counts.append("!");}
+    }
+    i = i + 1usize;
+  }
+  expectStr(counts.view(), "0000000000000000000111111111111112", "byte by byte");
+}
+
+fn decoderStream(sent: &str, coded: &str) String {
+  var enc = QpackEncoder.make(&config());
+  enc.peerSettings(220usize, 4usize);
+  if sent.len() > 0usize {
+    var out = List[u8].empty();
+    var fields = List[HeaderField].empty();
+    fields.push(HeaderField.make("custom-key", "custom-value"));
+    enc.encode(4u64, fields.view(), &mut out);
+  }
+  let b = unhex(coded);
+  match enc.decoderInput(b.view()) {
+    case let Ok(n) {
+      var s = String.from("known ");
+      s.appendUInt(n);
+      return s;
+    }
+    case let Error(e) {return describe(&e);}
+  }
+}
+
+fn decoderStreams() {
+  expectStr(decoderStream("", "").view(), "known 0", "nothing");
+  // The encoder's table: no entries unless a section was sent (one insert,
+  // stream 4)
+  expectStr(decoderStream("yes", "84").view(), "known 1", "a section acknowledged");
+  expectStr(decoderStream("", "84").view(), "decoder stream: a Section Acknowledgment for a stream with no section outstanding [0202] (connection)", "nothing outstanding");
+  expectStr(decoderStream("yes", "8484").view(), "decoder stream: a Section Acknowledgment for a stream with no section outstanding [0202] (connection)", "acknowledged twice");
+  expectStr(decoderStream("yes", "88").view(), "decoder stream: a Section Acknowledgment for a stream with no section outstanding [0202] (connection)", "the wrong stream");
+  expectStr(decoderStream("yes", "01").view(), "known 1", "an increment of 1");
+  expectStr(decoderStream("yes", "00").view(), "decoder stream: an Insert Count Increment of 0 [0202] (connection)", "an increment of 0");
+  expectStr(decoderStream("yes", "02").view(), "decoder stream: an Insert Count Increment past the inserts sent [0202] (connection)", "an increment of 2");
+  expectStr(decoderStream("yes", "0101").view(), "decoder stream: an Insert Count Increment past the inserts sent [0202] (connection)", "1, then 1 more");
+  expectStr(decoderStream("yes", "44").view(), "known 0", "Stream Cancellation");
+  expectStr(decoderStream("yes", "4484").view(), "decoder stream: a Section Acknowledgment for a stream with no section outstanding [0202] (connection)", "acknowledged after its cancellation");
+  expectStr(decoderStream("", "7fffffffffffffffffffff01").view(), "decoder stream: an integer past 62 bits [0202] (connection)", "past 62 bits");
+  // A Section Acknowledgment for stream 300 split byte by byte waits for its end
+  expectStr(decoderStream("", "ff").view(), "known 0", "cut off: waits");
+  var enc = QpackEncoder.make(&config());
+  expectStr(describe(&enc.decoderStreamClosed()).view(), "critical stream closed: the decoder stream closed [0104] (connection)", "decoder stream closed");
+  let b = unhex("01");
+  match enc.decoderInput(b.view()) {
+    case let Ok(n) {expect(false, "nothing after");}
+    case let Error(e) {expectStr(describe(&e).view(), "decoder stream: an earlier instruction failed [0202] (connection)", "nothing after");}
+  }
+}
+
+fn main() i32 {
+  sections();
+  encoderStreams();
+  decoderStreams();
+  done()
+}

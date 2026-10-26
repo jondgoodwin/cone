@@ -104,7 +104,9 @@ def dos(t):
 def raw_zip(entries, zip64=False, comment=b"", prefix=b""):
     """Builds an archive by hand. Each entry is a dict: name (bytes), data (bytes), method (0 or 8),
     flags (default 0), attr (external attributes), extra_local, extra_central (bytes), z64 (put sizes and
-    the offset in a zip64 extra of the central record), made_by (version made by, high byte the system)."""
+    the offset in a zip64 extra of the central record), made_by (version made by, high byte the system).
+    An entry may also give body (the compressed bytes as stored, for a method this module cannot compress),
+    crc and usize (the CRC-32 and size the headers claim, when they are to be wrong)."""
     out = bytearray(prefix)
     base = len(prefix)
     central = bytearray()
@@ -112,12 +114,13 @@ def raw_zip(entries, zip64=False, comment=b"", prefix=b""):
     for e in entries:
         data = e["data"]
         method = e.get("method", 0)
-        body = zlib.compress(data)[2:-4] if method == 8 else data
-        crc = zlib.crc32(data) & 0xFFFFFFFF
+        body = e["body"] if "body" in e else zlib.compress(data)[2:-4] if method == 8 else data
+        crc = e["crc"] if "crc" in e else zlib.crc32(data) & 0xFFFFFFFF
+        usize = e.get("usize", len(data))
         flags = e.get("flags", 0)
         name = e["name"]
         offset = len(out) - base
-        out += le("IHHHHHIIIHH", 0x04034B50, 20, flags, method, tm, date, crc, len(body), len(data), len(name),
+        out += le("IHHHHHIIIHH", 0x04034B50, 20, flags, method, tm, date, crc, len(body), usize, len(name),
                   len(e.get("extra_local", b"")))
         out += name + e.get("extra_local", b"") + body
         z64 = e.get("z64", False)
@@ -126,10 +129,10 @@ def raw_zip(entries, zip64=False, comment=b"", prefix=b""):
             # only the offset is in the zip64 field; the sizes stay in their 32-bit places
             extra = le("HHQ", 1, 8, offset) + extra
         elif z64:
-            extra = le("HHQQQ", 1, 24, len(data), len(body), offset) + extra
+            extra = le("HHQQQ", 1, 24, usize, len(body), offset) + extra
         wide = z64 is True
         central += le("IHHHHHHIIIHHHHHII", 0x02014B50, e.get("made_by", 20), 20, flags, method, tm, date, crc,
-                      0xFFFFFFFF if wide else len(body), 0xFFFFFFFF if wide else len(data), len(name), len(extra), 0,
+                      0xFFFFFFFF if wide else len(body), 0xFFFFFFFF if wide else usize, len(name), len(extra), 0,
                       0, 0, e.get("attr", 0), 0xFFFFFFFF if z64 else offset)
         central += name + extra
     cd_off = len(out) - base

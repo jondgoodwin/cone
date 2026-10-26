@@ -1,0 +1,274 @@
+// QPACK's wire layer alone: prefix integers to 62 bits (RFC 9204, section
+// 4.1.1, with RFC 7541's C.1 examples) and past them; strings with their
+// Huffman flag above a 7-, 5- or 3-bit prefix (section 4.1.2), and the
+// length checks made before a byte of a string is waited for; the
+// Required Insert Count's encoding, round-tripped across the whole window
+// the decoder may be in, and its refusals (section 4.5.1.1); Base's sign;
+// and the static table (Appendix A): its 99 entries, spot-checked, unique,
+// lowercase, and found by staticFind.
+
+mod wire;
+
+import testing use *;
+import collections use *;
+import http2 use encodeInteger;
+import http3 use *;
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+fn statusName(st: WireStatus) &str {
+  if st == WireStatus.Done {"done"} else if st == WireStatus.Short {"short"}
+  else if st == WireStatus.Malformed {"malformed"} else {"too long"}
+}
+
+// Read the integer the hex holds: its value, or its status
+fn readInt(coded: &str, prefixBits: u32) String {
+  let b = unhex(coded);
+  var pos = 0usize;
+  var v = 0u64;
+  let st = decodeInteger(b.view(), &mut pos, prefixBits, &mut v);
+  var s = String.empty();
+  if st == WireStatus.Done {
+    s.appendUInt(v);
+    if pos != b.len() {s.append(" (not all read)");}
+  } else {s.append(statusName(st));}
+  s
+}
+
+fn writeInt(flags: u8, prefixBits: u32, v: u64) String {
+  var out = List[u8].empty();
+  encodeInteger(&mut out, flags, prefixBits, v);
+  hex(out.view())
+}
+
+fn integers() {
+  // RFC 7541 C.1: 10 and 1337 in a 5-bit prefix, 42 in 8 bits
+  expectStr(writeInt(0u8, 5u32, 10u64).view(), "0a", "10, 5-bit prefix");
+  expectStr(writeInt(0u8, 5u32, 1337u64).view(), "1f9a0a", "1337, 5-bit prefix");
+  expectStr(writeInt(0u8, 8u32, 42u64).view(), "2a", "42, 8-bit prefix");
+  expectStr(readInt("1f9a0a", 5u32).view(), "1337", "1337 read");
+  expectStr(readInt("2a", 8u32).view(), "42", "42 read");
+  // The flags above the prefix are not the value's
+  expectStr(readInt("ea", 5u32).view(), "10", "flags ignored");
+  // 62 bits, the most QPACK must read, in every prefix; one more is refused
+  var p = 1u32;
+  while p <= 8u32 {
+    let w = writeInt(0u8, p, maxInteger);
+    expectStr(readInt(w.view(), p).view(), "4611686018427387903", "2^62-1 read back");
+    expectStr(readInt(writeInt(0u8, p, maxInteger + 1u64).view(), p).view(), "malformed", "2^62 refused");
+    p = p + 1u32;
+  }
+  // 2^62-1 in a 6-bit prefix: 63, then nine continuation bytes
+  expectStr(writeInt(0u8, 6u32, maxInteger).view(), "3fc0ffffffffffffff3f", "2^62-1 coded");
+  // A run of continuation bytes stops at 62 bits, however long it goes on
+  expectStr(readInt("1f8080808080808080808080808000", 5u32).view(), "malformed", "zero continuations past 62 bits");
+  // Cut off: in the prefix's continuation, or before anything
+  expectStr(readInt("1f9a", 5u32).view(), "short", "cut off");
+  expectStr(readInt("", 5u32).view(), "short", "empty");
+}
+
+fn writeStr(flags: u8, prefixBits: u32, s: &str, huffman: bool) String {
+  var out = List[u8].empty();
+  encodeString(&mut out, flags, prefixBits, s, huffman);
+  hex(out.view())
+}
+
+fn readStr(coded: &str, prefixBits: u32, limit: usize) String {
+  let b = unhex(coded);
+  var pos = 0usize;
+  var out = List[u8].empty();
+  var why = "";
+  let st = decodeString(b.view(), &mut pos, prefixBits, limit, &mut out, &mut why);
+  var s = String.empty();
+  if st == WireStatus.Done {
+    s.appendBytes(out.view());
+    if pos != b.len() {s.append(" (not all read)");}
+  } else {
+    s.append(statusName(st));
+    if why.len() > 0usize {
+      s.append(": ");
+      s.append(why);
+    }
+  }
+  s
+}
+
+fn strings() {
+  // "custom-key" raw and Huffman-coded under each prefix the RFC uses: the
+  // Huffman flag is the bit above the prefix, the flags above that kept
+  expectStr(writeStr(0u8, 7u32, "custom-key", false).view(), "0a637573746f6d2d6b6579", "raw, 7-bit");
+  expectStr(writeStr(0x40u8, 5u32, "custom-key", false).view(), "4a637573746f6d2d6b6579", "raw, 5-bit (insert, literal name)");
+  expectStr(writeStr(0x20u8, 3u32, "custom-key", false).view(), "2703637573746f6d2d6b6579", "raw, 3-bit (literal name)");
+  // RFC 7541 C.4.1's "www.example.com", Huffman-coded in 12 bytes
+  expectStr(writeStr(0u8, 7u32, "www.example.com", true).view(), "8cf1e3c2e5f23a6ba0ab90f4ff", "Huffman, 7-bit");
+  expectStr(writeStr(0x40u8, 5u32, "www.example.com", true).view(), "6cf1e3c2e5f23a6ba0ab90f4ff", "Huffman, 5-bit");
+  expectStr(writeStr(0x20u8, 3u32, "www.example.com", true).view(), "2f05f1e3c2e5f23a6ba0ab90f4ff", "Huffman, 3-bit");
+  expectStr(readStr("2f05f1e3c2e5f23a6ba0ab90f4ff", 3u32, 100usize).view(), "www.example.com", "Huffman, 3-bit, read");
+  expectStr(readStr("6cf1e3c2e5f23a6ba0ab90f4ff", 5u32, 100usize).view(), "www.example.com", "Huffman, 5-bit, read");
+  expectStr(readStr("2703637573746f6d2d6b6579", 3u32, 100usize).view(), "custom-key", "raw, 3-bit, read");
+  // A string Huffman would make longer ('~' is 13 bits) is sent raw; "" is raw
+  expectStr(writeStr(0u8, 7u32, "~", true).view(), "017e", "Huffman longer: raw");
+  expectStr(writeStr(0u8, 7u32, "", true).view(), "00", "empty");
+  // The limit: exactly at it is read; past it, refused from the length
+  // alone, before the bytes are there (a raw 10, a Huffman 12 that decodes
+  // to at least 3)
+  expectStr(readStr("0a637573746f6d2d6b6579", 7u32, 10usize).view(), "custom-key", "raw at the limit");
+  expectStr(readStr("0a63", 7u32, 9usize).view(), "too long", "raw past the limit, cut off");
+  expectStr(readStr("8cf1e3c2e5f23a6ba0ab90f4ff", 7u32, 15usize).view(), "www.example.com", "Huffman at the limit");
+  expectStr(readStr("8cf1e3c2e5f23a6ba0ab90f4ff", 7u32, 14usize).view(), "too long", "Huffman past the limit");
+  expectStr(readStr("8cf1", 7u32, 1usize).view(), "too long", "Huffman that cannot fit, cut off");
+  expectStr(readStr("8cf1", 7u32, 2usize).view(), "short", "Huffman that may fit, cut off");
+  // Bad Huffman strings
+  expectStr(readStr("81ff", 7u32, 10usize).view(), "malformed: a Huffman string's padding is longer than 7 bits or not all ones", "8 bits of padding");
+  expectStr(readStr("8100", 7u32, 10usize).view(), "malformed: a Huffman string's padding is longer than 7 bits or not all ones", "padding of zeros");
+  expectStr(readStr("84ffffffff", 7u32, 10usize).view(), "malformed: a Huffman string holds the EOS symbol", "EOS");
+}
+
+fn ric(encoded: u64, maxEntries: u64, inserts: u64) String {
+  var s = String.empty();
+  match decodeRequiredInsertCount(encoded, maxEntries, inserts) {
+    case let Ok(v) {s.appendUInt(v);}
+    case let Error(e) {s.append(e);}
+  }
+  s
+}
+
+fn requiredInsertCount() {
+  // RFC 9204 B.2 and B.4: MaxEntries 6 (220 / 32)
+  expectUInt(encodeRequiredInsertCount(2u64, 6u64), 3u64, "B.2: 2 is 3");
+  expectUInt(encodeRequiredInsertCount(4u64, 6u64), 5u64, "B.4: 4 is 5");
+  expectUInt(encodeRequiredInsertCount(0u64, 0u64), 0u64, "0 is 0");
+  // Every count from 1 to 200 comes back from every insert count the
+  // decoder can have when the section arrives: from MaxEntries before it
+  // (the encoder can be no further ahead) to MaxEntries - 1 after
+  var bad = 0u64;
+  var tried = 0u64;
+  var m = 1u64;
+  while m <= 7u64 {
+    var r = 1u64;
+    while r <= 200u64 {
+      let lo = if r > m {r - m} else {0u64};
+      var ic = lo;
+      while ic < r + m {
+        match decodeRequiredInsertCount(encodeRequiredInsertCount(r, m), m, ic) {
+          case let Ok(v) {if v != r {bad = bad + 1u64;}}
+          case let Error(e) {bad = bad + 1u64;}
+        }
+        tried = tried + 1u64;
+        ic = ic + 1u64;
+      }
+      r = r + 1u64;
+    }
+    m = m + 1u64;
+  }
+  expectUInt(bad, 0u64, "every count in its window comes back");
+  expect(tried > 10000u64, "the windows were tried");
+  // Refusals
+  expectStr(ric(13u64, 6u64, 0u64).view(), "an encoded Required Insert Count past twice the table's entries", "past 2 x MaxEntries");
+  expectStr(ric(1u64, 0u64, 0u64).view(), "an encoded Required Insert Count past twice the table's entries", "nonzero with no table");
+  expectStr(ric(1u64, 6u64, 0u64).view(), "a Required Insert Count of 0 encoded as nonzero", "0 encoded as 1");
+  expectStr(ric(12u64, 6u64, 0u64).view(), "a Required Insert Count past what the table can reach", "11 with no inserts");
+}
+
+fn prefix(coded: &str, inserts: u64) String {
+  let b = unhex(coded);
+  var pos = 0usize;
+  var r = 0u64;
+  var base = 0u64;
+  let why = readPrefix(b.view(), &mut pos, &mut r, &mut base, 6u64, inserts);
+  var s = String.empty();
+  if why.len() > 0usize {s.append(why);}
+  else {
+    s.append("ric ");
+    s.appendUInt(r);
+    s.append(" base ");
+    s.appendUInt(base);
+  }
+  s
+}
+
+fn bases() {
+  expectStr(prefix("0381", 2u64).view(), "ric 2 base 0", "B.2's prefix: Base = 2 - 1 - 1");
+  expectStr(prefix("0500", 4u64).view(), "ric 4 base 4", "B.4's prefix");
+  expectStr(prefix("0302", 2u64).view(), "ric 2 base 4", "Base above the count");
+  expectStr(prefix("0000", 0u64).view(), "ric 0 base 0", "no dynamic table");
+  expectStr(prefix("0381", 2u64).view(), "ric 2 base 0", "Base 0");
+  expectStr(prefix("0382", 2u64).view(), "a Base below 0", "Base -1");
+  expectStr(prefix("03", 2u64).view(), "a section's prefix is cut off", "Delta Base missing");
+  expectStr(prefix("", 2u64).view(), "a section's prefix is cut off or past 62 bits", "empty");
+}
+
+fn staticTable() {
+  expectUInt(u64.from(staticTableLen), 99u64, "99 entries");
+  expectStr(staticName(0usize), ":authority", "0");
+  expectStr(staticName(1usize), ":path", "1 name");
+  expectStr(staticValue(1usize), "/", "1 value");
+  expectStr(staticValue(17usize), "GET", "17");
+  expectStr(staticValue(25usize), "200", "25");
+  expectStr(staticValue(31usize), "gzip, deflate, br", "31");
+  expectStr(staticValue(52usize), "text/html; charset=utf-8", "52");
+  expectStr(staticName(62usize), "x-xss-protection", "62");
+  expectStr(staticValue(63usize), "100", "63");
+  expectStr(staticValue(71usize), "500", "71");
+  expectStr(staticName(84usize), "authorization", "84");
+  expectStr(staticValue(85usize), "script-src 'none'; object-src 'none'; base-uri 'none'", "85");
+  expectStr(staticName(98usize), "x-frame-options", "98 name");
+  expectStr(staticValue(98usize), "sameorigin", "98 value");
+  // No two entries alike; every name lowercase; each found at itself
+  var dup = 0u64;
+  var upper = 0u64;
+  var lost = 0u64;
+  var i = 0usize;
+  while i < staticTableLen {
+    var j = i + 1usize;
+    while j < staticTableLen {
+      if staticName(i) == staticName(j) && staticValue(i) == staticValue(j) {dup = dup + 1u64;}
+      j = j + 1usize;
+    }
+    let n = staticName(i);
+    var k = 0usize;
+    while k < n.len() {
+      if n[k] >= 'A' && n[k] <= 'Z' {upper = upper + 1u64;}
+      k = k + 1usize;
+    }
+    let hit = staticFind(staticName(i), staticValue(i));
+    if !hit.exact || hit.index != u64.from(i) {lost = lost + 1u64;}
+    i = i + 1usize;
+  }
+  expectUInt(dup, 0u64, "no duplicates");
+  expectUInt(upper, 0u64, "lowercase names");
+  expectUInt(lost, 0u64, "each found at its own index");
+  // A name alone finds its first entry; nothing finds nothing
+  let named = staticFind(":status", "418");
+  expect(named.found && !named.exact && named.index == 24u64, ":status by name: 24");
+  expect(!staticFind("x-unknown", "1").found, "not there");
+}
+
+fn main() i32 {
+  integers();
+  strings();
+  requiredInsertCount();
+  bases();
+  staticTable();
+  done()
+}
