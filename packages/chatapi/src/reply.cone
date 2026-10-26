@@ -125,7 +125,7 @@ pub fn apiError(status: u16, body: &Array[u8]) ChatError {
         case is None {}
       }
     }
-    case let Error(bad) {}
+    case let Err(bad) {}
   }
   var d = String.from("the server answered ");
   d.appendUInt(u64.from(status));
@@ -151,16 +151,16 @@ pub fn apiError(status: u16, body: &Array[u8]) ChatError {
 pub fn parseReply(text: &Array[u8]) Result[ChatReply, ChatError] {
   match json.parse(text) {
     case let Ok(doc) {replyOf(&doc)}
-    case let Error(e) {Error[ChatReply, ChatError](decodeError("the reply", &e))}
+    case let Err(e) {Err[ChatReply, ChatError](decodeError("the reply", &e))}
   }
 }
 
 fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
   if !doc.isObject() {
-    return Error[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
+    return Err[ChatReply, ChatError](shapeError("the reply is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Api, 200u16) {
-    case let Some(e) {return Error[ChatReply, ChatError](e);}
+    case let Some(e) {return Err[ChatReply, ChatError](e);}
     case is None {}
   }
   var r = ChatReply.empty();
@@ -178,13 +178,13 @@ fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
               r.role = textOr(m, "role");
               r.content = textOr(m, "content");
             }
-            case is None {return Error[ChatReply, ChatError](shapeError("the reply's first choice has no \"message\""));}
+            case is None {return Err[ChatReply, ChatError](shapeError("the reply's first choice has no \"message\""));}
           }
         }
-        case is None {return Error[ChatReply, ChatError](shapeError("the reply has no choices"));}
+        case is None {return Err[ChatReply, ChatError](shapeError("the reply has no choices"));}
       }
     }
-    case is None {return Error[ChatReply, ChatError](shapeError("the reply has no \"choices\""));}
+    case is None {return Err[ChatReply, ChatError](shapeError("the reply has no \"choices\""));}
   }
   Ok[ChatReply, ChatError](r)
 }
@@ -194,10 +194,10 @@ fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
 // httpclient itself with the request 'httpRequest' made
 pub fn replyOfResponse(r: &httpclient.Response) Result[ChatReply, ChatError] {
   if r.outcome != httpclient.EventKind.Done {
-    return Error[ChatReply, ChatError](ChatError.make(ChatErrorKind.Transport, r.failure.message().view()));
+    return Err[ChatReply, ChatError](ChatError.make(ChatErrorKind.Transport, r.failure.message().view()));
   }
   if r.status < 200u16 || r.status >= 300u16 {
-    return Error[ChatReply, ChatError](apiError(r.status, r.body.view()));
+    return Err[ChatReply, ChatError](apiError(r.status, r.body.view()));
   }
   parseReply(r.body.view())
 }
@@ -222,16 +222,16 @@ pub fn isDone(data: &Array[u8]) bool {
 pub fn parseChunk(text: &Array[u8]) Result[Delta, ChatError] {
   match json.parse(text) {
     case let Ok(doc) {deltaOf(&doc)}
-    case let Error(e) {Error[Delta, ChatError](decodeError("a chunk", &e))}
+    case let Err(e) {Err[Delta, ChatError](decodeError("a chunk", &e))}
   }
 }
 
 fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
   if !doc.isObject() {
-    return Error[Delta, ChatError](shapeError("a chunk is not a JSON object"));
+    return Err[Delta, ChatError](shapeError("a chunk is not a JSON object"));
   }
   match errorObject(doc, ChatErrorKind.Stream, 0u16) {
-    case let Some(e) {return Error[Delta, ChatError](e);}
+    case let Some(e) {return Err[Delta, ChatError](e);}
     case is None {}
   }
   var d = Delta.empty();
@@ -240,7 +240,7 @@ fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
   d.usage = usageOf(doc);
   match doc.get("choices") {
     case let Some(cs) {
-      if !cs.isArray() {return Error[Delta, ChatError](shapeError("a chunk's \"choices\" is not an array"));}
+      if !cs.isArray() {return Err[Delta, ChatError](shapeError("a chunk's \"choices\" is not an array"));}
       // The usage chunk has none; n above 1 is not asked for, so the first is the reply
       match cs.at(0usize) {
         case let Some(c) {
@@ -256,7 +256,7 @@ fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
         case is None {}
       }
     }
-    case is None {return Error[Delta, ChatError](shapeError("a chunk has no \"choices\""));}
+    case is None {return Err[Delta, ChatError](shapeError("a chunk has no \"choices\""));}
   }
   Ok[Delta, ChatError](d)
 }

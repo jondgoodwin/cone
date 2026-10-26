@@ -475,7 +475,7 @@ variant in flight for an enum, and the types its field walk passed through to
 `structLayoutCycle`, which reads the rest off the stack of layouts in flight:
 
 ```
-Error 1069: Field p cannot be held by value: P contains Q contains R contains P by value: infinite size. Break the cycle by holding one of them through a reference.
+Err 1069: Field p cannot be held by value: P contains Q contains R contains P by value: infinite size. Break the cycle by holding one of them through a reference.
 ```
 
 An array or a tuple on the stack is part of the type holding it and is not
@@ -513,7 +513,7 @@ because of something several levels below it. The diagnostic names the
 declaration that actually lacks the size, and uncounted lines name the hops:
 
 ```
-Error 1069: Variable o cannot be held by value: Handle is declared @opaque, ...
+Err 1069: Variable o cannot be held by value: Handle is declared @opaque, ...
 ... Outer has no size because its field w has type Wrapper
 ... Wrapper has no size because its field h has type Handle
 ```

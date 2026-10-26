@@ -18,7 +18,7 @@
 //         if o.timedOut { ... }                  // stopped after 60 s
 //         if o.exitCode != 0u32 { ... o.stderr.view() ... }
 //       }
-//       case imm e Error {
+//       case imm e Err {
 //         imm m = e.message();                   // 'run conec: The system cannot find the file specified'
 //         ...
 //       }
@@ -79,7 +79,7 @@
 // reports it (134 for abort, which a Cone panic ends in; 139 for a
 // segmentation fault). 'success()' is exit code 0 within the time. Go's 'Run' makes
 // a nonzero exit an error; here, as in Python's 'run' and Rust's 'output',
-// it is the answer, which the caller reads. An Error is only a program that
+// it is the answer, which the caller reads. An Err is only a program that
 // could not be started: none of that name, a folder that is not there, an
 // argument the system cannot be given.
 //
@@ -157,7 +157,7 @@
 // current folder (never from 'dir' either), and a name without one is looked
 // for in each folder on PATH.
 //
-// **Failure.** An Error holds a ProcessError: what was being done ('op'),
+// **Failure.** An Err holds a ProcessError: what was being done ('op'),
 // the program, the folder it was to start in, and the system's error number
 // ('code': on Windows GetLastError's, on POSIX errno's). Its 'message()' is
 // one line for a person, in the system's own words (on Windows in English
@@ -655,25 +655,25 @@ pub struct Output {
 }
 
 // Run a program and wait for it: args[0] is the program, the rest its
-// arguments. Its exit code is in the Output, whatever it is; an Error is a
+// arguments. Its exit code is in the Output, whatever it is; an Err is a
 // program that could not be started. It starts in 'dir', a Path lent or a
 // string literal (made one for the call), or in this program's current folder
 // when 'dir' is left out or empty.
 pub fn run(args: &Array[String], opts: Options = Options(), dir: &Path = "") Result[Output, ProcessError] {
   if args.len == 0usize {
-    return Error[Output, ProcessError](failure("run", "", dir, invalidParameter()));
+    return Err[Output, ProcessError](failure("run", "", dir, invalidParameter()));
   }
   let program = args[0usize].view();
   var i = 0usize;
   while i < args.len {
     if hasByte(args[i].view(), 0u8) {
-      return Error[Output, ProcessError](failure("run", program, dir, invalidParameter()));
+      return Err[Output, ProcessError](failure("run", program, dir, invalidParameter()));
     }
     i = i + 1usize;
   }
   // The program's name may not hold a '"' on Windows, which cannot write it
   if isWindows() && hasByte(program, '"') {
-    return Error[Output, ProcessError](failure("run", program, dir, errorInvalidName));
+    return Err[Output, ProcessError](failure("run", program, dir, errorInvalidName));
   }
   if isWindows() {
     let line = commandLine(args);
@@ -689,7 +689,7 @@ pub fn run(args: &Array[String], opts: Options = Options(), dir: &Path = "") Res
 // otherwise as 'run'
 pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Output, ProcessError] {
   if hasByte(line, 0u8) {
-    return Error[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
+    return Err[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
   }
   if isWindows() {
     start("runLine", line, line, dir, opts)
@@ -946,18 +946,18 @@ fn waitFor(timed: bool, deadline: time.Instant, debugging: bool) u32 {
 fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[Output, ProcessError] {
   let wline = widen(line);
   if wline as usize == 0usize {
-    return Error[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
+    return Err[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
   }
   var wdir: *u16 = null;
   if !dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       libc.free(wline as *u8);
-      return Error[Output, ProcessError](failure(op, program, dir, errorInvalidParameter));
+      return Err[Output, ProcessError](failure(op, program, dir, errorInvalidParameter));
     }
     wdir = widen(dir.view());
     if wdir as usize == 0usize {
       libc.free(wline as *u8);
-      return Error[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
+      return Err[Output, ProcessError](failure(op, program, dir, errorNoUnicodeTranslation));
     }
   }
 
@@ -1042,7 +1042,7 @@ fn start(op: &str, program: &str, line: &str, dir: &Path, opts: Options) Result[
     closeStream(&mut so);
     closeStream(&mut se);
     if code == 0u32 { code = errorInvalidParameter; }
-    return Error[Output, ProcessError](failure(op, program, dir, code));
+    return Err[Output, ProcessError](failure(op, program, dir, code));
   }
 
   // With a time limit, the child goes in a job of its own before it runs,
@@ -1215,15 +1215,15 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   var cdir = String.empty();
   if !dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
-      return Error[Output, ProcessError](failure(op, program, dir, errnoInvalid));
+      return Err[Output, ProcessError](failure(op, program, dir, errnoInvalid));
     }
     cdir = String.from(dir.view());
     var st = posix.Stat(0u64, 0u64, 0u16, 0u32, 0u32, 0u32, 0u64, 0i64, 0i64, 0i64, 0i64);
     if posix.stat(cdir.cstr(), &mut st) != 0i32 {
-      return Error[Output, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
+      return Err[Output, ProcessError](failure(op, program, dir, u32.from(*libc.errno())));
     }
     if (st.st_mode & posix.S_IFMT) != posix.S_IFDIR {
-      return Error[Output, ProcessError](failure(op, program, dir, errnoNotDirectory));
+      return Err[Output, ProcessError](failure(op, program, dir, errnoNotDirectory));
     }
   }
 
@@ -1329,7 +1329,7 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   if rc != 0i32 {
     closeFdIf(so.fd);
     closeFdIf(se.fd);
-    return Error[Output, ProcessError](failure(op, program, dir, u32.from(rc)));
+    return Err[Output, ProcessError](failure(op, program, dir, u32.from(rc)));
   }
 
   // A child with a time limit is its group's leader, so a stop reaches what
@@ -1441,7 +1441,7 @@ fn currentExePosix() Result[Path, ProcessError] {
     if n < 0isize {
       let code = u32.from(*libc.errno());
       libc.free(buf);
-      return Error[Path, ProcessError](failure("currentExe", "", "", code));
+      return Err[Path, ProcessError](failure("currentExe", "", "", code));
     }
     if usize.from(n) < size {
       let got = String.fromBytes(mem.sliceFromParts(buf, usize.from(n)));
@@ -1452,7 +1452,7 @@ fn currentExePosix() Result[Path, ProcessError] {
     libc.free(buf);
     size = size * 2usize;
   }
-  Error[Path, ProcessError](failure("currentExe", "", "", errnoInvalid))
+  Err[Path, ProcessError](failure("currentExe", "", "", errnoInvalid))
 }
 
 // This program's arguments, its own name first, as Windows' parser
@@ -1490,7 +1490,7 @@ fn currentExeWindows() Result[Path, ProcessError] {
     if n == 0u32 {
       let code = GetLastError();
       libc.free(buf as *u8);
-      return Error[Path, ProcessError](failure("currentExe", "", "", code));
+      return Err[Path, ProcessError](failure("currentExe", "", "", code));
     }
     if n < size {
       let got = narrow(buf, i32.from(n));
@@ -1501,5 +1501,5 @@ fn currentExeWindows() Result[Path, ProcessError] {
     libc.free(buf as *u8);
     size = size * 2u32;
   }
-  Error[Path, ProcessError](failure("currentExe", "", "", errorInvalidParameter))
+  Err[Path, ProcessError](failure("currentExe", "", "", errorInvalidParameter))
 }

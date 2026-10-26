@@ -291,7 +291,7 @@ struct Service {
       c.closed = true;
       if c.connecting {
         c.connecting = false;
-        answerConn(c, Error[Conn, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
+        answerConn(c, Err[Conn, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
       }
       if c.dropped {self.freeConn(slot);}
     }
@@ -342,14 +342,14 @@ struct Service {
         answerResponse(w, Ok[httpclient.Response, FetchError](takeResponse(w)));
       } else if k == httpconn.EventKind.Failed {
         w.resp.outcome = httpclient.EventKind.Failed;
-        answerResponse(w, Error[httpclient.Response, FetchError](
+        answerResponse(w, Err[httpclient.Response, FetchError](
           FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
       } else if k == httpconn.EventKind.TimedOut {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.timedOut()));
+        answerResponse(w, Err[httpclient.Response, FetchError](FetchError.timedOut()));
       } else if w.tooBig {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
+        answerResponse(w, Err[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
       } else {
-        answerResponse(w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+        answerResponse(w, Err[httpclient.Response, FetchError](FetchError.cancelled()));
       }
       clearWait(w);
       xwaits.removeAt(u32.from(slot));
@@ -460,13 +460,13 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: &mut httpclient.Event) {
     if k == httpclient.EventKind.Done {
       answerResponse(w, Ok[httpclient.Response, FetchError](takeResponse(w)));
     } else if k == httpclient.EventKind.Failed {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(e.failure.copy())));
+      answerResponse(w, Err[httpclient.Response, FetchError](FetchError.failed(e.failure.copy())));
     } else if k == httpclient.EventKind.TimedOut {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.timedOut()));
+      answerResponse(w, Err[httpclient.Response, FetchError](FetchError.timedOut()));
     } else if w.tooBig {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
+      answerResponse(w, Err[httpclient.Response, FetchError](FetchError.failed(limitFailure())));
     } else {
-      answerResponse(w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+      answerResponse(w, Err[httpclient.Response, FetchError](FetchError.cancelled()));
     }
     clearWait(w);
     rec.waits.removeAt(u32.from(slot));
@@ -520,7 +520,7 @@ struct FetchJob {
     if k >= sv.clients.bound() {
       var w = blankWait();
       w.reply = rp;
-      answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.cancelled()));
+      answerResponse(&mut w, Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
@@ -564,9 +564,9 @@ struct ConnectJob {
       case let Ok(t) {
         c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view())), sink);
       }
-      case let Error(x) {
+      case let Err(x) {
         c.connecting = false;
-        answerConn(c, Error[Conn, FetchError](FetchError.failed(
+        answerConn(c, Err[Conn, FetchError](FetchError.failed(
           httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, x.message().view()))));
         sv.freeConn(slot);
       }
@@ -590,7 +590,7 @@ struct ExchangeJob {
     if k >= sv.conns.bound() {
       var w = blankWait();
       w.reply = rp;
-      answerResponse(&mut w, Error[httpclient.Response, FetchError](FetchError.failed(
+      answerResponse(&mut w, Err[httpclient.Response, FetchError](FetchError.failed(
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }

@@ -98,7 +98,7 @@ pub struct Engine {
   pub fn open(device: &mut Device, dir: &str) Result[Engine, String] {
     let loaded = match Weights.load(device, dir) {
       case var Ok(w) { w }
-      case let Error(m) { return Error[Engine, String](m.copy()); }
+      case let Err(m) { return Err[Engine, String](m.copy()); }
     };
     let weights, buf = loaded;
     var vocab = Dict[String, u32].empty();
@@ -121,15 +121,15 @@ pub struct Engine {
           i = i + 1usize;
         }
       }
-      case let Error(e) {
+      case let Err(e) {
         var m = String.from("texttospeech: cannot read ");
         m <- path.view();
-        return Error[Engine, String](m);
+        return Err[Engine, String](m);
       }
     }
     let kernels = Kernels.make(device);
     let llm = llmkernels.Kernels.make(device);
-    if !kernels.isValid() || !llm.isValid() { return Error[Engine, String](String.from("texttospeech: the kernels could not be made on this device")); }
+    if !kernels.isValid() || !llm.isValid() { return Err[Engine, String](String.from("texttospeech: the kernels could not be made on this device")); }
     var held = List[Buffer].empty();
     held.push(buf);
     Ok[Engine, String](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32].empty()))
@@ -706,9 +706,9 @@ pub struct Engine {
     let ids = self.tokens(phonemes);
     let t = ids.len();
     if t < 3usize || t > 512usize {
-      return Error[Spoken, String](String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes"));
+      return Err[Spoken, String](String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes"));
     }
-    if style.len < 256usize { return Error[Spoken, String](String.from("texttospeech: a style is 256 floats")); }
+    if style.len < 256usize { return Err[Spoken, String](String.from("texttospeech: a style is 256 floats")); }
     var probes = List[Probe].empty();
 
     // ---- A: the text ----
@@ -723,7 +723,7 @@ pub struct Engine {
     let t2 = Instant.now();
     self.recordNanos = self.recordNanos + t1.since(t0).nanos();
     self.gpuNanos = self.gpuNanos + t2.since(t1).nanos();
-    if !okA { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage A)")); }
+    if !okA { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage A)")); }
     appendProbes(&mut probes, probesA);
 
     // ---- the durations ----
@@ -771,7 +771,7 @@ pub struct Engine {
     let t5 = Instant.now();
     self.recordNanos = self.recordNanos + t4.since(t3).nanos();
     self.gpuNanos = self.gpuNanos + t5.since(t4).nanos();
-    if !okB { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)")); }
+    if !okB { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)")); }
     appendProbes(&mut probes, probesB);
     let f0 = match backsB.pop() {
       case var Some(b) { b }
@@ -811,7 +811,7 @@ pub struct Engine {
     let t8 = Instant.now();
     self.recordNanos = self.recordNanos + t7.since(t6).nanos();
     self.gpuNanos = self.gpuNanos + t8.since(t7).nanos();
-    if !okC { return Error[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage C)")); }
+    if !okC { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage C)")); }
     appendProbes(&mut probes, probesC);
 
     // ---- the inverse STFT, on the CPU ----

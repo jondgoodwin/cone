@@ -136,7 +136,7 @@ Current compiler behavior:
   - **A generic enum's variant has its own copy of the enum's parameters hooked**, spelled as the enum's, so it names a sibling as the enum's own methods do, `Full[T][v]`, whether that sibling is declared before it or after: an instance's variants are all instantiated before any is type checked ([generic](../../compiler/c/doc/nodes/generic.md), "A tagged trait fans out").
 - A variant is a name of the enum and never a member of the enum's values: `e.KeyEvent` on a value is `ErrorNoMbr`.
 - An enum that extends another holds its own copy of each of its base's variants, bound in its namespace while it is resolved, beside the variants it adds. So `RichColors.Red` names the extension's copy, and `use RichColors;` folds all of its variants, the copies included; `use Colors;` beside it collides on every name the two share.
-- `Some`, `None`, `Ok` and `Error` are bare in every program because core writes `pub use Option;` and `pub use Result;`, and every module's automatic import of core is a wildcard, which carries a public fold on.
+- `Some`, `None`, `Ok` and `Err` are bare in every program because core writes `pub use Option;` and `pub use Result;`, and every module's automatic import of core is a wildcard, which carries a public fold on.
 ### Generics and Macros
 
 The declared name of every generic or macro is an ordinary NameDef in its containing namespace, which may be a module/package or a type. It participates in the same cross-category uniqueness rules as every other name there.
@@ -412,7 +412,7 @@ What it may fold from and what it admits:
 - A folded name must be unique in the module, whatever brought the other one: a declaration, an import's fold, another enum's `use`. `ErrorDupName`, reported at the fold. Two enums may each have a `Quit`; a module folding both settles it with `as` or `but`. The same variant arriving again by a wildcard — an import that re-exports `Colors`'s variants, or the core import's `Some` beside a module's own `use Option;` — is the binding the name has already; written again — a second `use Colors;`, or a listed import of the variant — it is refused, once per variant ("One declaration by two routes") [Jon 23 Sep].
 - **`pub use` is the binding's own visibility**, as on a global's clause: the fold is private to the module that made it unless the statement says `pub`, and a `pub` fold is reachable as `mod.Red` and carried on by a wildcard import. It never widens past the origin, so `pub use` of a private enum is `ErrorNotPublic`, reported at the `use`. `use pub Colors;` is `ErrorBadPub`, naming the spelling.
 
-**Core folds its own two enums with `pub use`**, and that is the whole reason `Some`, `None`, `Ok` and `Error` are bare in every program: the automatic import of core is a wildcard, and a wildcard carries a public fold on. No prelude rule stands behind them, and `?T` still lowers to `Option[T]` by the enum's own name.
+**Core folds its own two enums with `pub use`**, and that is the whole reason `Some`, `None`, `Ok` and `Err` are bare in every program: the automatic import of core is a wildcard, and a wildcard carries a public fold on. No prelude rule stands behind them, and `?T` still lowers to `Option[T]` by the enum's own name.
 
 `enum_nameres_use` and `enum_parse_use` pin the refusals; `module_use_enum` runs a public fold reached by a path and through a wildcard import, and `module_use_enum_nameres` pins what a private one keeps out of reach.
 

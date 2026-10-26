@@ -135,11 +135,11 @@ fn dequantBlock(kind: &TensorType, src: &Array[u8], at: usize, dst: &mut Array[f
 pub fn dequantize(kind: &TensorType, src: &Array[u8], count: usize, out: &mut List[f32]) Result[usize, GgufError] {
   let bs = kind.blockSize();
   if count % bs != 0usize {
-    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
+    return Err[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the element count is not a whole number of blocks"));
   }
   let blocks = count / bs;
   if blocks > src.len / kind.blockBytes() {
-    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "there are fewer bytes than the elements need"));
+    return Err[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "there are fewer bytes than the elements need"));
   }
   let base = out.len();
   out.resize(base + count, 0.0);
@@ -187,7 +187,7 @@ pub fn tensorToF32(model: &Model, file: &Array[u8], t: &Tensor) Result[List[f32]
   var out = List[f32].withCapacity(usize.from(t.elements));
   match dequantize(&t.kind, model.tensorBytes(file, t), usize.from(t.elements), &mut out) {
     case is Ok { Ok[List[f32], GgufError](out) }
-    case let Error(e) {Error[List[f32], GgufError](e)}
+    case let Err(e) {Err[List[f32], GgufError](e)}
   }
 }
 
@@ -196,7 +196,7 @@ pub fn tensorToF32(model: &Model, file: &Array[u8], t: &Tensor) Result[List[f32]
 // product dequantises one at a time.
 pub fn rowToF32(model: &Model, file: &Array[u8], t: &Tensor, row: u64, out: &mut List[f32]) Result[usize, GgufError] {
   if row >= t.rowCount() {
-    return Error[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the row is past the tensor's last"));
+    return Err[usize, GgufError](GgufError.make(ErrorKind.BadSize, 0u64, "the row is past the tensor's last"));
   }
   let rb = usize.from(t.rowBytes());
   let start = usize.from(row) * rb;

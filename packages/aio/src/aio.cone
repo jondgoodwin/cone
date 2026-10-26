@@ -18,7 +18,7 @@
 //   fn socketOf(r: Result[Socket, IoError]) Socket {
 //     match r {
 //       case let Ok(s) {s}
-//       case is Error {Socket.none()}
+//       case is Err {Socket.none()}
 //     }
 //   }
 //
@@ -30,7 +30,7 @@
 //       imm sent = await conn.write(buf);          // pauses until all of it is sent
 //       match sent {
 //         case imm n Ok {...n bytes were sent...}
-//         case imm e Error {...e.code is Windows' error number...}
+//         case imm e Err {...e.code is Windows' error number...}
 //       }
 //     }                                           // conn closes here
 //   }
@@ -460,7 +460,7 @@
 // arguments, what '/bin/sh -c' is). Only the waiting is different: the
 // process package's call runs on a thread of the pool's general lane, and the
 // actor's behaviour pauses until it ends. An exit code is an answer (Ok); an
-// Error is a program that could not be started, an IoError of the system's
+// Err is a program that could not be started, an IoError of the system's
 // number (the process package's ProcessError code, which is errno on Linux,
 // turned into the Windows number iocore uses for IoError everywhere). The
 // ProcessError's text (the program's name, the folder) is not carried: the
@@ -1693,21 +1693,21 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   let back = &mut (*rp).ask.reply;
   let e = IoError.timedOut();
   if w == opRecv || w == opRecvAny || w == opReadAt {
-    actors.answerNowIn[Result[IoBuf, IoError]](back, Error[IoBuf, IoError](e));
+    actors.answerNowIn[Result[IoBuf, IoError]](back, Err[IoBuf, IoError](e));
   } else if w == opAccept || w == opConnect {
-    actors.answerNowIn[Result[Socket, IoError]](back, Error[Socket, IoError](e));
+    actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
   } else if w == opRecvFrom {
-    actors.answerNowIn[Result[Datagram, IoError]](back, Error[Datagram, IoError](e));
+    actors.answerNowIn[Result[Datagram, IoError]](back, Err[Datagram, IoError](e));
   } else if w == opSleep {
-    actors.answerNowIn[Result[void, IoError]](back, Error[void, IoError](e));
+    actors.answerNowIn[Result[void, IoError]](back, Err[void, IoError](e));
   } else if w == opResolve {
-    actors.answerNowIn[Result[List[SocketAddr], IoError]](back, Error[List[SocketAddr], IoError](e));
+    actors.answerNowIn[Result[List[SocketAddr], IoError]](back, Err[List[SocketAddr], IoError](e));
   } else if w == opStat {
-    actors.answerNowIn[Result[FileStat, IoError]](back, Error[FileStat, IoError](e));
+    actors.answerNowIn[Result[FileStat, IoError]](back, Err[FileStat, IoError](e));
   } else if w == opRun {
-    actors.answerNowIn[Result[process.Output, IoError]](back, Error[process.Output, IoError](e));
+    actors.answerNowIn[Result[process.Output, IoError]](back, Err[process.Output, IoError](e));
   } else {
-    actors.answerNowIn[Result[usize, IoError]](back, Error[usize, IoError](e));
+    actors.answerNowIn[Result[usize, IoError]](back, Err[usize, IoError](e));
   }
 }
 
@@ -1742,7 +1742,7 @@ fn bufOf(buf: Option[IoBuf]) IoBuf {
 
 fn readResult(status: u32, code: u32, buf: Option[IoBuf]) Result[IoBuf, IoError] {
   if status != diag.outcomeDone {
-    return Error[IoBuf, IoError](errorOf(status, code));
+    return Err[IoBuf, IoError](errorOf(status, code));
   }
   Ok[IoBuf, IoError](bufOf(buf))
 }
@@ -1762,7 +1762,7 @@ fn takeRead(p: *u8, to: *u8) {
 fn takeSocket(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[Socket, IoError](errorOf(core.status, core.code));
+  var v = Err[Socket, IoError](errorOf(core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[Socket, IoError](newSocket(core.newHandle));
   }
@@ -1777,9 +1777,9 @@ fn datagramResult(status: u32, code: u32, from: SocketAddr, buf: Option[IoBuf]) 
     return Ok[Datagram, IoError](Datagram(bufOf(buf), from));
   }
   if status == diag.outcomeFailed && code == msgSizeCode() {
-    return Error[Datagram, IoError](IoError.truncated());
+    return Err[Datagram, IoError](IoError.truncated());
   }
-  Error[Datagram, IoError](errorOf(status, code))
+  Err[Datagram, IoError](errorOf(status, code))
 }
 
 // A receive's: the datagram, in its buffer, and who sent it. A datagram cut to
@@ -1799,7 +1799,7 @@ fn takeDatagram(p: *u8, to: *u8) {
 fn takeCount(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[usize, IoError](errorOf(core.status, core.code));
+  var v = Err[usize, IoError](errorOf(core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[usize, IoError](core.n);
   }
@@ -1810,7 +1810,7 @@ fn takeCount(p: *u8, to: *u8) {
 fn takeSleep(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[void, IoError](errorOf(core.status, core.code));
+  var v = Err[void, IoError](errorOf(core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[void, IoError](nil);
   }
@@ -1819,7 +1819,7 @@ fn takeSleep(p: *u8, to: *u8) {
 
 fn resolveResult(status: u32, code: u32, buf: Option[IoBuf]) Result[List[SocketAddr], IoError] {
   if status != diag.outcomeDone {
-    return Error[List[SocketAddr], IoError](errorOf(status, code));
+    return Err[List[SocketAddr], IoError](errorOf(status, code));
   }
   let b = bufOf(buf);
   Ok[List[SocketAddr], IoError](addressesIn(&b))
@@ -1837,7 +1837,7 @@ fn takeResolve(p: *u8, to: *u8) {
 
 fn statResult(status: u32, code: u32, buf: Option[IoBuf]) Result[FileStat, IoError] {
   if status != diag.outcomeDone {
-    return Error[FileStat, IoError](errorOf(status, code));
+    return Err[FileStat, IoError](errorOf(status, code));
   }
   let b = bufOf(buf);
   Ok[FileStat, IoError](fileStatIn(&b))
@@ -1858,7 +1858,7 @@ fn abortedCode() u32 {errorOperationAborted}
 
 fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.Output, IoError] {
   if status != diag.outcomeDone {
-    return Error[process.Output, IoError](errorOf(status, code));
+    return Err[process.Output, IoError](errorOf(status, code));
   }
   match run {
     case var Some(owner) {
@@ -1866,10 +1866,10 @@ fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.O
       let out = part.(out);
       match out {
         case var Some(o) {o}
-        else {Error[process.Output, IoError](IoError(abortedCode()))}
+        else {Err[process.Output, IoError](IoError(abortedCode()))}
       }
     }
-    else {Error[process.Output, IoError](IoError(abortedCode()))}
+    else {Err[process.Output, IoError](IoError(abortedCode()))}
   }
 }
 
@@ -1888,7 +1888,7 @@ fn takeRun(p: *u8, to: *u8) {
 fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Output, IoError] {
   match r {
     case let Ok(o) {Ok[process.Output, IoError](o)}
-    case let Error(e) {Error[process.Output, IoError](IoError(systemCode(e.code)))}
+    case let Err(e) {Err[process.Output, IoError](IoError(systemCode(e.code)))}
   }
 }
 
@@ -1962,7 +1962,7 @@ struct ListenJob {
     let addr, rp = self.(addr, reply);
     match lp.listen(addr) {
       case let Ok(ok) {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError](newSocket(ok)));}
-      case let Error(e) {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError](e));}
+      case let Err(e) {actors.answerNow[Result[Socket, IoError]](rp, Err[Socket, IoError](e));}
     }
   }
 }
@@ -1976,7 +1976,7 @@ struct BindUdpJob {
     let addr, rp = self.(addr, reply);
     match lp.bindUdp(addr) {
       case let Ok(ok) {actors.answerNow[Result[UdpSocket, IoError]](rp, Ok[UdpSocket, IoError](newUdp(ok)));}
-      case let Error(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Error[UdpSocket, IoError](e));}
+      case let Err(e) {actors.answerNow[Result[UdpSocket, IoError]](rp, Err[UdpSocket, IoError](e));}
     }
   }
 }
@@ -1991,7 +1991,7 @@ struct OpenFileJob {
     let path, access, rp = self.(path, access, reply);
     match lp.openFile(&path, access) {
       case let Ok(ok) {actors.answerNow[Result[File, IoError]](rp, Ok[File, IoError](newFile(ok)));}
-      case let Error(e) {actors.answerNow[Result[File, IoError]](rp, Error[File, IoError](e));}
+      case let Err(e) {actors.answerNow[Result[File, IoError]](rp, Err[File, IoError](e));}
     }
   }
 }
@@ -2437,7 +2437,7 @@ fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Opti
 // Runs args[0] with the rest as its arguments, in the folder dir (the current
 // one if empty), and waits for it to end, as the process package's 'run': the
 // Output holds its exit code and what it wrote to its standard output and
-// standard error, apart; a program that could not be started is the Error
+// standard error, apart; a program that could not be started is the Err
 // (its system error number: ERROR_FILE_NOT_FOUND, 2, for none of that name).
 // The behaviour pauses meanwhile, and a thread of the blocking pool waits for
 // the child (the package's header, CHILD PROCESSES). 'opts' is the process

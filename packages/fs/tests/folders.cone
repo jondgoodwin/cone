@@ -36,7 +36,7 @@ fn makeRoot(name: &str) Path {
   var root = Path.from("");
   match fs.absolute(&tempPath) {
     case let Ok(t) { root = t.join(name); }
-    case is Error { require(false, "TEMP has an absolute path"); }
+    case is Err { require(false, "TEMP has an absolute path"); }
   }
   let up = root.parent();
   let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
@@ -52,7 +52,7 @@ fn shown(root: &Path, text: &Array[u8]) String {
 
 fn messageOf[T](root: &Path, r: Result[T, fs.FsError]) String {
   match r {
-    case let Error(e) { let m = e.message(); shown(root, m.view()) }
+    case let Err(e) { let m = e.message(); shown(root, m.view()) }
     case is Ok { String.from("<succeeded>") }
   }
 }
@@ -88,7 +88,7 @@ fn showEntries(root: &Path, entries: &List[fs.DirEntry]) String {
 fn listingIs(root: &Path, dir: &Path, want: &Array[u8], label: &Array[u8]) {
   match fs.readDir(dir) {
     case let Ok(l) { let s = showEntries(root, &l); expectStr(s.view(), want, label); }
-    case let Error(e) {
+    case let Err(e) {
       let m = e.message();
       let s = shown(root, m.view());
       expectStr(s.view(), want, label);
@@ -99,7 +99,7 @@ fn listingIs(root: &Path, dir: &Path, want: &Array[u8], label: &Array[u8]) {
 fn walkIs(root: &Path, dir: &Path, want: &Array[u8], label: &Array[u8]) {
   match fs.walk(dir) {
     case let Ok(l) { let s = showEntries(root, &l); expectStr(s.view(), want, label); }
-    case let Error(e) {
+    case let Err(e) {
       let m = e.message();
       let s = shown(root, m.view());
       expectStr(s.view(), want, label);
@@ -115,7 +115,7 @@ fn making(root: &Path) {
   expect(fs.isDir(&one), "made a folder");
   failsWith(root, fs.makeDir(&one), "makeDir <root>/one: File exists", "makeDir again");
   match fs.makeDir(&one) {
-    case let Error(e) { expect(e.alreadyExists(), "makeDir again is alreadyExists"); }
+    case let Err(e) { expect(e.alreadyExists(), "makeDir again is alreadyExists"); }
     case is Ok { expect(false, "makeDir again fails"); }
   }
   let deep = root.join("two/three/four");
@@ -295,7 +295,7 @@ fn currentFolder(root: &Path) {
   var before = Path.from("");
   match fs.currentDir() {
     case var Ok(c) { before <-> c; }
-    case is Error { require(false, "currentDir"); }
+    case is Err { require(false, "currentDir"); }
   }
   expect(before.isAbsolute(), "currentDir is absolute");
   expect(!before.view().contains("\\"), "currentDir is normalized");
@@ -308,7 +308,7 @@ fn currentFolder(root: &Path) {
       let want = here.normalize();
       expectStr(c.view(), want.view(), "currentDir is where it was set");
     }
-    case is Error { expect(false, "currentDir after setCurrentDir"); }
+    case is Err { expect(false, "currentDir after setCurrentDir"); }
   }
   // Relative paths read from it
   ok(fs.writeFile("rel.txt", "relative"), "write a relative path");
@@ -321,35 +321,35 @@ fn currentFolder(root: &Path) {
   wantRel.append("/rel.txt");
   match fs.absolute("rel.txt") {
     case let Ok(a) { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
-    case is Error { expect(false, "absolute of a name"); }
+    case is Err { expect(false, "absolute of a name"); }
   }
   let dotted = Path.from(if isWindows() {"sub\\..\\.\\rel.txt"} else {"sub/.././rel.txt"});
   match fs.absolute(&dotted) {
     case let Ok(a) { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
-    case is Error { expect(false, "absolute with '..'"); }
+    case is Err { expect(false, "absolute with '..'"); }
   }
   match fs.absolute("not-there.txt") {
     case let Ok(a) {
       let want = norm.join("not-there.txt");
       expectStr(a.view(), want.view(), "absolute of a name not there");
     }
-    case is Error { expect(false, "absolute of a name not there"); }
+    case is Err { expect(false, "absolute of a name not there"); }
   }
   match fs.absolute("") {
     case let Ok(a) { expectStr(a.view(), norm.view(), "absolute of \"\" is the current folder"); }
-    case is Error { expect(false, "absolute of \"\""); }
+    case is Err { expect(false, "absolute of \"\""); }
   }
   match fs.absolute("..") {
     case let Ok(a) {
       let want = root.normalize();
       expectStr(a.view(), want.view(), "absolute of '..'");
     }
-    case is Error { expect(false, "absolute of '..'"); }
+    case is Err { expect(false, "absolute of '..'"); }
   }
   let elsewhere = Path.from(if isWindows() {"C:\\Some\\..\\Where"} else {"/Some/../Where"});
   match fs.absolute(&elsewhere) {
     case let Ok(a) { expectStr(a.view(), if isWindows() {"C:/Where"} else {"/Where"}, "absolute of an absolute path"); }
-    case is Error { expect(false, "absolute of an absolute path"); }
+    case is Err { expect(false, "absolute of an absolute path"); }
   }
   let missing = root.join("missing");
   failsWith(root, fs.setCurrentDir(&missing), "setCurrentDir <root>/missing: No such file or directory",
@@ -359,7 +359,7 @@ fn currentFolder(root: &Path) {
   ok(fs.setCurrentDir(&before), "setCurrentDir back");
   match fs.currentDir() {
     case let Ok(c) { expectStr(c.view(), before.view(), "currentDir restored"); }
-    case is Error { expect(false, "currentDir restored"); }
+    case is Err { expect(false, "currentDir restored"); }
   }
   ok(fs.removeAll(&here), "remove 'here é'");
 }

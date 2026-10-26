@@ -56,10 +56,10 @@ fn encodeCut(fmt: &binarytext.Base64Format, data: &Array[u8], a: usize, b: usize
 fn decodeCut(fmt: &binarytext.Base64Format, text: &Array[u8], a: usize, b: usize) Option[List[u8]] {
   var dec = binarytext.Base64Decoder.forFormat(fmt);
   var out = List[u8].empty();
-  match dec.update(part(text, 0usize, a), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.update(part(text, a, b), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.update(part(text, b, text.len), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.finish(&mut out) { case is Error { return None; } case is Ok { } }
+  match dec.update(part(text, 0usize, a), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.update(part(text, a, b), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.update(part(text, b, text.len), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.finish(&mut out) { case is Err { return None; } case is Ok { } }
   Some[List[u8]](out)
 }
 
@@ -134,10 +134,10 @@ fn checkBlocks(fmt: &binarytext.Base64Format, data: &Array[u8], block: usize) {
   while i < text.len() {
     var j = i + block;
     if j > text.len() { j = text.len(); }
-    match dec.update(part(text.view(), i, j), &mut back) { case is Error { allOk = false; } case is Ok { } }
+    match dec.update(part(text.view(), i, j), &mut back) { case is Err { allOk = false; } case is Ok { } }
     i = j;
   }
-  match dec.finish(&mut back) { case is Error { allOk = false; } case is Ok { } }
+  match dec.finish(&mut back) { case is Err { allOk = false; } case is Ok { } }
   expect(allOk, "decode in blocks: accepted");
   same(back.view(), data, "decode in blocks", block, data.len);
 }
@@ -156,10 +156,10 @@ fn hexCut(data: &Array[u8], a: usize, b: usize, upper: bool) String {
 
 fn hexDecodeCut(dec: &mut binarytext.HexDecoder, text: &Array[u8], a: usize, b: usize) Option[List[u8]] {
   var out = List[u8].empty();
-  match dec.update(part(text, 0usize, a), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.update(part(text, a, b), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.update(part(text, b, text.len), &mut out) { case is Error { return None; } case is Ok { } }
-  match dec.finish(&mut out) { case is Error { return None; } case is Ok { } }
+  match dec.update(part(text, 0usize, a), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.update(part(text, a, b), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.update(part(text, b, text.len), &mut out) { case is Err { return None; } case is Ok { } }
+  match dec.finish(&mut out) { case is Err { return None; } case is Ok { } }
   Some[List[u8]](out)
 }
 
@@ -252,34 +252,34 @@ fn main() i32 {
   var out = List[u8].empty();
   match dec.update("Zm9v", &mut out) {
     case let Ok(k) { expectUInt(u64.from(k), 3u64, "a whole group gives 3 bytes"); }
-    case is Error { expect(false, "update refused"); }
+    case is Err { expect(false, "update refused"); }
   }
   match dec.update("Yg", &mut out) {
     case let Ok(k) { expectUInt(u64.from(k), 0u64, "half a group gives none yet"); }
-    case is Error { expect(false, "update refused"); }
+    case is Err { expect(false, "update refused"); }
   }
   expectUInt(u64.from(dec.consumed()), 6u64, "six characters consumed");
   match dec.update("==", &mut out) {
     case let Ok(k) { expectUInt(u64.from(k), 1u64, "the padding releases the last byte"); }
-    case is Error { expect(false, "update refused"); }
+    case is Err { expect(false, "update refused"); }
   }
   match dec.finish(&mut out) {
     case let Ok(k) { expectUInt(u64.from(k), 0u64, "finish adds nothing here"); }
-    case is Error { expect(false, "finish refused"); }
+    case is Err { expect(false, "finish refused"); }
   }
   expectStr(out.view(), "foob", "decoded in pieces");
   expectUInt(u64.from(dec.consumed()), 0u64, "finish readies the decoder for the next text");
   out.clear();
-  match dec.update("Zm8=", &mut out) { case is Ok { } case is Error { expect(false, "second text refused"); } }
-  match dec.finish(&mut out) { case is Ok { } case is Error { expect(false, "second text refused at its end"); } }
+  match dec.update("Zm8=", &mut out) { case is Ok { } case is Err { expect(false, "second text refused"); } }
+  match dec.finish(&mut out) { case is Ok { } case is Err { expect(false, "second text refused at its end"); } }
   expectStr(out.view(), "fo", "second text, same decoder");
 
   // finish is where the end of a text is judged: a cut-off group is fine
   // mid-stream and refused at the end
   dec.reset();
   out.clear();
-  match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "a partial group is waiting"); } case is Error { expect(false, "refused early"); } }
-  match dec.finish(&mut out) { case is Ok { expect(false, "padding missing at the end was accepted"); } case is Error { expect(true, "padding missing at the end"); } }
+  match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "a partial group is waiting"); } case is Err { expect(false, "refused early"); } }
+  match dec.finish(&mut out) { case is Ok { expect(false, "padding missing at the end was accepted"); } case is Err { expect(true, "padding missing at the end"); } }
 
   done()
 }

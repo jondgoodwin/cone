@@ -11,7 +11,7 @@
 //     var text = String.empty();
 //     match fs.readFile("notes.txt") {
 //       case let Ok(ok) { text = ok; }              // the String moved out
-//       case let Error(e) {
+//       case let Err(e) {
 //         let m = e.message();                      // 'readFile notes.txt: No such file or directory'
 //         eprintStr(m.view());
 //         return 1i32;
@@ -19,7 +19,7 @@
 //     }
 //     text.append("another line\n");
 //     imm wrote = fs.writeFile("notes.txt", text.view());
-//     if wrote is Error { return 1i32; }
+//     if wrote is Err { return 1i32; }
 //     0i32;
 //   }
 //
@@ -27,7 +27,7 @@
 //
 // **Failure.** Everything that can fail answers a core 'Result': 'Ok' with
 // the value ('Result[void, FsError]' where there is none, its 'Ok' holding
-// 'nil'), or 'Error' with an 'FsError', which says what was being done
+// 'nil'), or 'Err' with an 'FsError', which says what was being done
 // ('op', the function's name), to which path ('path', and 'other' for the
 // second path of 'rename'), and why ('code', the C library's errno, a posix
 // 'E...' constant). Its 'message()' is one line to show a person,
@@ -97,7 +97,7 @@
 //
 //   match fs.mapFile("model.bin") {
 //     case imm m Ok { imm w = m.view(); ... w[0usize] ... }   // read in place, nothing copied
-//     case imm e Error { ... }                                // as readFile's
+//     case imm e Err { ... }                                // as readFile's
 //   }
 //
 // Method choices (defaults for review, not rulings):
@@ -202,7 +202,7 @@ fn failure(op: &str, p: &Path, code: i32) FsError {
 }
 
 fn fail[T](op: &str, p: &Path, code: i32) Result[T, FsError] {
-  Error[T, FsError](failure(op, p, code))
+  Err[T, FsError](failure(op, p, code))
 }
 
 fn succeeded() Result[void, FsError] { Ok[void, FsError](nil) }
@@ -659,13 +659,13 @@ fn mapLinux(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
 pub fn rename(from: &Path, to: &Path) Result[void, FsError] {
   if hasNul(from) || hasNul(to) {
-    return Error[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
+    return Err[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), posix.EINVAL));
   }
   useUtf8();
   var a = cText(from);
   var b = cText(to);
   if libc.rename(a.cstr(), b.cstr()) != 0i32 {
-    return Error[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
+    return Err[void, FsError](FsError(String.from("rename"), from.copy(), to.copy(), lastErrno()));
   }
   succeeded()
 }
@@ -702,7 +702,7 @@ pub fn makeDirAll(path: &Path) Result[void, FsError] {
   let up = path.parent();
   if !up.isEmpty() && up.view() != path.view() {
     let made = makeDirAll(&up);
-    if made is Error { return made; }
+    if made is Err { return made; }
   }
   var c = cText(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
@@ -785,8 +785,8 @@ pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
   var out = List[DirEntry].empty();
   let went = walkInto(root, &mut out);
   match went {
-    case let Error(e) {
-      return Error[List[DirEntry], FsError](e);
+    case let Err(e) {
+      return Err[List[DirEntry], FsError](e);
     }
     case is Ok {}
   }
@@ -795,9 +795,9 @@ pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
 
 fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
   match readDir(dir) {
-    case var Error(e) {
+    case var Err(e) {
       e.op = String.from("walk");
-      return Error[void, FsError](e);
+      return Err[void, FsError](e);
     }
     case let Ok(listed) {
       let entries = &listed;
@@ -807,7 +807,7 @@ fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
         out.push(DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
         if entry.isDir {
           let below = walkInto(&entry.path, out);
-          if below is Error { return below; }
+          if below is Err { return below; }
         }
         i = i + 1usize;
       }
@@ -855,9 +855,9 @@ fn removeTree(path: &Path, kind: u16) Result[void, FsError] {
     return succeeded();
   }
   match readDir(path) {
-    case var Error(e) {
+    case var Err(e) {
       e.op = String.from("removeAll");
-      return Error[void, FsError](e);
+      return Err[void, FsError](e);
     }
     case let Ok(listed) {
       let entries = &listed;
@@ -866,7 +866,7 @@ fn removeTree(path: &Path, kind: u16) Result[void, FsError] {
         let entry = entries[i];
         let childKind = if entry.isLink {posix.S_IFLNK} else if entry.isDir {posix.S_IFDIR} else {posix.S_IFREG};
         let gone = removeTree(&entry.path, childKind);
-        if gone is Error { return gone; }
+        if gone is Err { return gone; }
         i = i + 1usize;
       }
     }
@@ -921,9 +921,9 @@ pub fn absolute(path: &Path) Result[Path, FsError] {
     // current folder, then the path, normalized
     match currentDir() {
       case let Ok(here) { return Ok[Path, FsError](here.join(path).normalize()); }
-      case var Error(e) {
+      case var Err(e) {
         e.op = String.from("absolute");
-        return Error[Path, FsError](e);
+        return Err[Path, FsError](e);
       }
     }
   }

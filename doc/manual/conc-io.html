@@ -39,7 +39,7 @@ actor Timer {
   pub async fn ring(self, what: &amp;'static imm str, ms: i64, done: Sender[i64]) {
     let r = await aio.sleep(Duration.fromMillis(ms));
     match r {
-      case let Error(e) { print &lt;- what, ": the timer failed\n"; }
+      case let Err(e) { print &lt;- what, ": the timer failed\n"; }
       else { print &lt;- what, " is ready after ", ms, " ms\n"; }
     }
     var d = done;
@@ -125,7 +125,7 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
   var s = Socket.none();
   match &amp;mut res {
     case var &amp;mut Ok(ok) {s &lt;-&gt; *ok;}
-    case let &amp;mut Error(e) {say("failed", u64.from((*e).code));}
+    case let &amp;mut Err(e) {say("failed", u64.from((*e).code));}
   }
   s
 }
@@ -137,7 +137,7 @@ actor Client {
     buf.append("hello");
     let sent = await conn.write(buf);          // pauses until all of it is sent
     match sent {
-      case let Error(e) {say("write failed", u64.from(e.code));}
+      case let Err(e) {say("write failed", u64.from(e.code));}
       else {}
     }
   }                                           // conn closes here
@@ -151,12 +151,12 @@ actor Server {
     let addr = await listener.localAddr();     // the port the system chose
     match addr {
       case let Ok(a) {client.send(a.port());}
-      case let Error(e) {say("no address", u64.from(e.code));}
+      case let Err(e) {say("no address", u64.from(e.code));}
     }
     let conn = socketOf(await listener.accept());
     let none = await conn.read(IoBuf.empty());           // a buffer with no room
     match none {
-      case let Error(e) {say("no room: error", u64.from(e.code));}
+      case let Err(e) {say("no room: error", u64.from(e.code));}
       else {}
     }
     var total = 0u64;
@@ -173,7 +173,7 @@ actor Server {
             total = total + u64.from(b.len());
           }
         }
-        case let Error(e) {
+        case let Err(e) {
           say("read failed", u64.from(e.code));
           more = false;
         }
@@ -243,8 +243,8 @@ answers, so a failure here goes unread: bind it, 'let r = await ...', and match 
 	<h3 id="await-io-limits">Cancelling an operation, and limiting it</h3>
 	<p>A read from a peer that never sends would wait for ever. So every operation can be limited, and is answered exactly
 		once, with one of four outcomes: done (the <span class="pre">Ok</span> answer), failed (an
-		<span class="pre">Error</span> whose <span class="pre">code</span> is the system's), cancelled, or timed out. The last
-		two are <span class="pre">Error</span>s too. An <span class="pre">IoError</span> has a <span class="pre">kind()</span>,
+		<span class="pre">Err</span> whose <span class="pre">code</span> is the system's), cancelled, or timed out. The last
+		two are <span class="pre">Err</span>s too. An <span class="pre">IoError</span> has a <span class="pre">kind()</span>,
 		an <span class="pre">IoErrorKind</span>: <span class="pre">Os</span> for a failure of the system (its
 		<span class="pre">code</span> and <span class="pre">message()</span> are the system's), <span class="pre">Cancelled</span>
 		or <span class="pre">TimedOut</span> (its <span class="pre">code</span> is 0), or <span class="pre">Truncated</span> (a
@@ -276,7 +276,7 @@ actor Reader {
     let got = await conn.readIn(IoBuf(4096usize), IoLimits(Some[CancelGroup](group), until));
     match got {
       case let Ok(b) {u64.from(b.len())}
-      case let Error(e) {
+      case let Err(e) {
         if aio.isCancelled(e) {say("cancelled", 0u64);}
         else if aio.isTimedOut(e) {say("too slow", 0u64);}
         else {say("failed", u64.from(e.code));}
@@ -336,7 +336,7 @@ actor Reader {
       let r = await conn.read();          // no buffer is held while this waits
       match r {
         case let Ok(b) {if b.len() == 0usize {more = false;} else {handle(b);}}
-        case is Error {more = false;}
+        case is Err {more = false;}
       }
     }
   }
@@ -366,7 +366,7 @@ actor Reader {
 		the datagram's, and whose <span class="pre">from</span> is the sender's <span class="pre">SocketAddr</span>. A
 		datagram of no bytes is a datagram, not an end: the length does not grow. A buffer with no room fails with 122, as a
 		read's does.</li>
-	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Error</span> whose
+	<li>A datagram longer than the buffer's room is cut: the answer is an <span class="pre">Err</span> whose
 		<span class="pre">IoError</span> is of the kind <span class="pre">Truncated</span> (<span class="pre">aio.isTruncated(e)</span>
 		or <span class="pre">e.isTruncated()</span>; its <span class="pre">code</span> is 10040,
 		<span class="pre">WSAEMSGSIZE</span>, on both systems). The rest of the datagram is lost, the next one is whole, and
@@ -390,7 +390,7 @@ actor Echo {
         reply.append("got it");
         let sent = await u.sendTo(d.from, reply);          // back to the sender
       }
-      case let Error(e) {
+      case let Err(e) {
         if aio.isTruncated(e) {say("too long", 0u64);}     // longer than 1500 bytes
       }
     }
@@ -420,7 +420,7 @@ actor Patcher {
     let w = await f.writeAt(100u64, b);                     // five bytes at offset 100
     match w {
       case let Ok(n) {u64.from(n)}                          // 5
-      case let Error(e) {u64.from(e.code)}
+      case let Err(e) {u64.from(e.code)}
     }
   }                                                         // f closes here
 }
@@ -439,7 +439,7 @@ actor Patcher {
 		<span class="pre">await</span>; <span class="pre">at</span> is an absolute <span class="pre">Instant</span> (one already
 		past is answered at once, as is a zero <span class="pre">Duration</span>). Both answer
 		<span class="pre">Result[void, IoError]</span>: <span class="pre">Ok</span> when the time has come, an
-		<span class="pre">Error</span> of kind <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> when
+		<span class="pre">Err</span> of kind <span class="pre">Cancelled</span> or <span class="pre">TimedOut</span> when
 		the limits ended it first. Their <span class="pre">In</span> forms, <span class="pre">aio.sleepIn(d, lim)</span> and
 		<span class="pre">aio.sleepUntilIn(at, lim)</span>, take the <a href="#await-io-limits"><span class="pre">IoLimits</span></a>
 		of the other operations. A group's cancel ends the sleep as <span class="pre">Cancelled</span>, at once if the group is
@@ -452,7 +452,7 @@ actor Patcher {
     // Half a second, unless the group is cancelled first
     let r = await aio.sleepIn(Duration.fromMillis(500i64), IoLimits.within(group));
     match r {
-      case let Error(e) {say("cancelled", 0u64);}
+      case let Err(e) {say("cancelled", 0u64);}
       else {say("half a second has passed", 0u64);}
     }
   }
@@ -475,7 +475,7 @@ actor Patcher {
 		child process and wait for it, as the <span class="pre">process</span> package's synchronous
 		<span class="pre">run</span> and <span class="pre">runLine</span> do, with the same <span class="pre">Options</span>
 		and the same <span class="pre">Output</span>: its exit code (an answer, not an error), and what it wrote to its
-		standard output and standard error, apart. The <span class="pre">Error</span> is a program that could not be started,
+		standard output and standard error, apart. The <span class="pre">Err</span> is a program that could not be started,
 		an <span class="pre">IoError</span> whose code is the system's number. The synchronous <span class="pre">process</span>
 		package stays beside it.</li>
 	</ul>
@@ -498,7 +498,7 @@ actor Builder {
     let r = await aio.run(args.view(), process.Options(timeout: Duration.fromSeconds(60i64)));
     match r {
       case let Ok(ok) {u64.from(ok.exitCode)}
-      case let Error(e) {u64.from(e.code)}      // 2: no program of that name
+      case let Err(e) {u64.from(e.code)}      // 2: no program of that name
     }
   }
 }
@@ -528,7 +528,7 @@ actor Weather {
         printStr(ok.body.view());
         printStr("\n");
       }
-      case let Error(e) {
+      case let Err(e) {
         if e.isTimedOut() {printStr("too slow\n");}
         else if e.isCancelled() {printStr("cancelled\n");}
         else {printStr(e.message().view()); printStr("\n");}
@@ -552,7 +552,7 @@ actor Weather {
 		with its method, header fields, body, intent and redirect limit) answer a <span class="pre">Result</span>: the success
 		is <span class="pre">httpclient</span>'s <span class="pre">Response</span>, with the status, the header fields, the
 		whole body as bytes, the URL that answered after any redirects, and its timing. An HTTP error status such as 404 is
-		an answer, not an <span class="pre">Error</span>. The <span class="pre">Error</span> is a
+		an answer, not an <span class="pre">Err</span>. The <span class="pre">Err</span> is a
 		<span class="pre">FetchError</span>: the network or the client refusing (a name not found, a refused connection, a
 		certificate refused, a body longer than the limit, a URL that does not parse), with <span class="pre">httpclient</span>'s
 		<span class="pre">Failure</span> in its <span class="pre">failure</span> saying at which stage and why, or the fetch
@@ -573,7 +573,7 @@ actor Weather {
 	<p>A response can instead be read as it arrives. <span class="pre">client.stream(request)</span> is answered when the
 		response's head is in, with a <span class="pre">BodyStream</span> (the status and header fields are fields of it) whose
 		<span class="pre">read()</span> awaits the next piece of the body: <span class="pre">Some(piece)</span>, then
-		<span class="pre">None</span> when the body is whole, or an <span class="pre">Error</span> as above.
+		<span class="pre">None</span> when the body is whole, or an <span class="pre">Err</span> as above.
 		<span class="pre">client.events(request)</span> is the same for server-sent events (the <span class="pre">sse</span>
 		package's, <a href="lib-http.html#sse">HTTP, TLS and URLs</a>): an <span class="pre">EventStream</span> whose
 		<span class="pre">next()</span> awaits the next <span class="pre">sse.Event</span>. A reader that awaits slowly slows the

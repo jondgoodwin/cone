@@ -18,7 +18,7 @@ fn load(name: &str) String {
   p.append(name);
   match fs.readFile(&Path.from(p.view())) {
     case let Ok(s) { s }
-    case let Error(e) {
+    case let Err(e) {
       expect(false, "a fixture is missing");
       String.empty()
     }
@@ -75,11 +75,11 @@ fn texty(n: usize) List[u8] {
 // Extracts the archive in 'data' into 'dest'; the failure's kind, or None for success
 fn extractKind(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[ErrorKind] {
   match Archive.open(data) {
-    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Err(e) { Some[ErrorKind](e.kind) }
     case let Ok(ar) {
       match ar.extractAll(data, &Path.from(dest), opts) {
         case let Ok(done) { None[ErrorKind] }
-        case let Error(e) { Some[ErrorKind](e.kind) }
+        case let Err(e) { Some[ErrorKind](e.kind) }
       }
     }
   }
@@ -97,7 +97,7 @@ fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
 fn fileIs(p: &str, want: &Array[u8]) bool {
   match fs.readFile(&Path.from(p)) {
     case let Ok(s) { s.view() == want }
-    case let Error(e) { false }
+    case let Err(e) { false }
   }
 }
 
@@ -109,7 +109,7 @@ fn archiveOf(name: &str) List[u8] {
   w.add(name, "evil\n", &EntryOptions.stored());
   match w.bytes() {
     case let Ok(b) { b }
-    case let Error(e) { List[u8].empty() }
+    case let Err(e) { List[u8].empty() }
   }
 }
 
@@ -120,10 +120,10 @@ fn main() i32 {
   let basic = load("py-basic.zip");
   clean("x-basic");
   match Archive.open(basic.view()) {
-    case let Error(e) { expect(false, why("py-basic opens", &e).view()); }
+    case let Err(e) { expect(false, why("py-basic opens", &e).view()); }
     case let Ok(ar) {
       match ar.extractAll(basic.view(), &Path.from("x-basic/deeper/still"), &safe) {
-        case let Error(e) { expect(false, why("extractAll", &e).view()); }
+        case let Err(e) { expect(false, why("extractAll", &e).view()); }
         case let Ok(got) {
           expectUInt(u64.from(got.files), 5u64, "extractAll: five files");
           expectUInt(u64.from(got.folders), 1u64, "extractAll: one folder");
@@ -140,7 +140,7 @@ fn main() i32 {
   expect(fs.isDir(&Path.from("x-basic/deeper/still/emptydir")), "extracted the empty folder");
   match fs.stat(&Path.from("x-basic/deeper/still/bin/pattern.bin")) {
     case let Ok(info) { expectInt(info.size, 2000i64, "extracted pattern.bin has its size"); }
-    case let Error(e) { expect(false, "pattern.bin is there"); }
+    case let Err(e) { expect(false, "pattern.bin is there"); }
   }
 
   // Existing files: refused before anything is written; replaced with overwrite
@@ -177,17 +177,17 @@ fn main() i32 {
   // One entry
   clean("x-one");
   match Archive.open(basic.view()) {
-    case let Error(e) { expect(false, "extractOne: opens"); }
+    case let Err(e) { expect(false, "extractOne: opens"); }
     case let Ok(ar) {
       match ar.extractOne(basic.view(), 1usize, &Path.from("x-one"), &safe) {
         case let Ok(got) { expectUInt(u64.from(got.files), 1u64, "extractOne: one file"); expectUInt(got.bytes, 16090u64, "extractOne: its bytes"); }
-        case let Error(e) { expect(false, why("extractOne", &e).view()); }
+        case let Err(e) { expect(false, why("extractOne", &e).view()); }
       }
       expect(fileIs("x-one/dir/sub/lorem.txt", l.view()), "extractOne wrote the entry under its folders");
       expect(!exists("x-one/hello.txt"), "extractOne wrote only that entry");
       match ar.extractOne(basic.view(), 99usize, &Path.from("x-one"), &safe) {
         case let Ok(got) { expect(false, "extractOne of a missing index succeeds"); }
-        case let Error(e) { expect(e.kind == ErrorKind.NotFound, "extractOne of a missing index is NotFound"); }
+        case let Err(e) { expect(e.kind == ErrorKind.NotFound, "extractOne of a missing index is NotFound"); }
       }
     }
   }
@@ -201,7 +201,7 @@ fn main() i32 {
     w.add("big/deflated.txt", big.view(), &EntryOptions.deflated(1i32));
     w.add("big/stored.bin", rnd.view(), &EntryOptions.stored());
     match w.bytes() {
-      case let Error(e) { expect(false, "big: bytes"); }
+      case let Err(e) { expect(false, "big: bytes"); }
       case let Ok(arc) {
         clean("x-big");
         expect(extractKind(arc.view(), "x-big", &safe) is None, "big: extracts");
@@ -261,7 +261,7 @@ fn main() i32 {
     while i < 8usize { w.add(okNames[i], "fine\n", &EntryOptions.stored()); i += 1usize; }
     w.addDir("./", &EntryOptions.stored());
     match w.bytes() {
-      case let Error(e) { expect(false, "ok names: bytes"); }
+      case let Err(e) { expect(false, "ok names: bytes"); }
       case let Ok(arc) {
         clean("x-names");
         expect(extractKind(arc.view(), "x-names", &safe) is None, "odd but safe names extract");
@@ -308,11 +308,11 @@ fn main() i32 {
       expect(!ar.entry(0usize).isSymlink(), "the file entry is not");
       match ar.extractOne(sym.view(), 1usize, &Path.from("x-sym"), &safe) {
         case let Ok(got) { expect(false, "extractOne of a symlink succeeds"); }
-        case let Error(e) { expect(e.kind == ErrorKind.SymlinkEntry, "extractOne of a symlink is SymlinkEntry"); }
+        case let Err(e) { expect(e.kind == ErrorKind.SymlinkEntry, "extractOne of a symlink is SymlinkEntry"); }
       }
       expect(!exists("x-sym"), "extractOne of a symlink wrote nothing");
     }
-    case let Error(e) { expect(false, "hand-symlink opens"); }
+    case let Err(e) { expect(false, "hand-symlink opens"); }
   }
   let enc = load("hand-encrypted.zip");
   clean("x-enc");
@@ -336,7 +336,7 @@ fn main() i32 {
         case is None { expect(false, "find d.txt"); }
       }
     }
-    case let Error(e) { expect(false, "hand-dup opens"); }
+    case let Err(e) { expect(false, "hand-dup opens"); }
   }
   clean("x-dup");
 
@@ -347,12 +347,12 @@ fn main() i32 {
     w.add("second.bin", noise(3000000usize, 7u64).view(), &EntryOptions.stored());
     w.add("third.txt", "third\n", &EntryOptions.stored());
     match w.bytes() {
-      case let Error(e) { expect(false, "bad: bytes"); }
+      case let Err(e) { expect(false, "bad: bytes"); }
       case let Ok(arc) {
         var b = arc;
         // flip a byte in the last megabyte of the second entry's data: the CRC-32 fails at its end
         match Archive.open(b.view()) {
-          case let Error(e) { expect(false, "bad: opens"); }
+          case let Err(e) { expect(false, "bad: opens"); }
           case let Ok(ar) {
             let e = ar.entry(1usize);
             let at = usize.from(e.offset) + 30usize + e.rawName.len() + 2900000usize;
@@ -376,8 +376,8 @@ fn main() i32 {
     fs.makeDirAll(&Path.from("lk-dest"));
     fs.makeDirAll(&Path.from("lk-target"));
     var args = List[String].empty();
-    let target = match fs.absolute(&Path.from("lk-target")) { case let Ok(p) { p } case let Error(e) { Path.from("lk-target") } };
-    let link = match fs.absolute(&Path.from("lk-dest/inside")) { case let Ok(p) { p } case let Error(e) { Path.from("lk-dest/inside") } };
+    let target = match fs.absolute(&Path.from("lk-target")) { case let Ok(p) { p } case let Err(e) { Path.from("lk-target") } };
+    let link = match fs.absolute(&Path.from("lk-dest/inside")) { case let Ok(p) { p } case let Err(e) { Path.from("lk-dest/inside") } };
     if isWindows() {
       // mklink wants backslashes
       var wl = String.from(link.view());
@@ -399,7 +399,7 @@ fn main() i32 {
     var made = false;
     match process.run(args.view(), process.Options()) {
       case let Ok(o) { made = o.success(); }
-      case let Error(e) { made = false; }
+      case let Err(e) { made = false; }
     }
     expect(made, "the test made a link in the destination");
     let one = archiveOf("inside/evil.txt");

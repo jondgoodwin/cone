@@ -100,7 +100,7 @@ actor Handler {
       let f = await ex.finish();
       match f {
         case let Ok(n) {finished.send(n);}
-        case let Error(e) {finished.send(0u64);}
+        case let Err(e) {finished.send(0u64);}
       }
     } else if p == "/sized" {
       ex.start(ResponseHead.make(200u16), BodyLength.sized(10u64));
@@ -109,7 +109,7 @@ actor Handler {
       let f = await ex.finish();
       match f {
         case let Ok(n) {finished.send(n);}
-        case let Error(e) {finished.send(0u64);}
+        case let Err(e) {finished.send(0u64);}
       }
     } else if p == "/big" {
       ex.respond(ResponseHead.make(200u16), bigBody(600000usize));
@@ -138,7 +138,7 @@ actor Acceptor {
     var res = r;
     match &mut res {
       case var &mut Ok(ok) {server <-> *ok;}
-      case let &mut Error(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
+      case let &mut Err(e) {printStr("listen failed: "); printStr(e.message().view()); printStr("\n");}
     }
     ports.send(server.port());
   }
@@ -153,7 +153,7 @@ actor Acceptor {
           count = count + 1u64;
           dispatch(ok, finished.clone());
         }
-        case let Error(e) {break;}
+        case let Err(e) {break;}
       }
     }
     ended.send(count);
@@ -202,7 +202,7 @@ fn say2(what: &str, r: Result[Response, FetchError]) {
       }
       printStr("\n");
     }
-    case let &Error(e) {
+    case let &Err(e) {
       if e.isTimedOut() {printStr("timed out\n");}
       else if e.isCancelled() {printStr("cancelled\n");}
       else {printStr("failed: "); printStr(e.message().view()); printStr("\n");}
@@ -213,7 +213,7 @@ fn say2(what: &str, r: Result[Response, FetchError]) {
 fn statusOf(r: &Result[Response, FetchError]) u64 {
   match r {
     case let &Ok(ok) {u64.from(ok.status)}
-    case let &Error(e) {0u64}
+    case let &Err(e) {0u64}
   }
 }
 
@@ -257,7 +257,7 @@ actor Prober {
         say2("euros posted on a connection, bytes",
           await c.request(RequestHead.make("POST", "/count", "127.0.0.1"), euros2));
       }
-      case let Error(er) {printStr("connect failed\n");}
+      case let Err(er) {printStr("connect failed\n");}
     }
 
     let head = await client.send(Request.make("HEAD", url(port, "/head").view()));
@@ -271,7 +271,7 @@ actor Prober {
         printUInt(u64.from(ok.body.len()));
         printStr("\n");
       }
-      case let &Error(e) {printStr("head failed\n");}
+      case let &Err(e) {printStr("head failed\n");}
     }
     let nc = await client.get(url(port, "/nocontent").view());
     match &nc {
@@ -590,7 +590,7 @@ actor Prober2 {
     let r = await client.get(url(port, "/hello").view());
     printStr(label.view());
     match &r {
-      case let &Error(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
+      case let &Err(e) {printStr(": refused ("); printStr(yes(e.failure.stage == httpclient.Stage.Connect)); printStr(")\n");}
       case let &Ok(ok) {printStr(": ANSWERED\n");}
     }
     var d = done;
