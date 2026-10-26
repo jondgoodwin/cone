@@ -5,7 +5,13 @@
 //    on a one-thread lane and a job queued behind it: one cancel answers the
 //    receives, the timer and the queued job Cancelled at once (the job never
 //    runs, its buffer back); the running job, which cannot be stopped,
-//    answers Done when it returns. A second cancel says false.
+//    answers Done when it returns. A second cancel says false. The first job
+//    is HELD (it has started, and returns only when the test lets it) so that
+//    it is running at the cancel and the second cannot have started: iocore
+//    promises that a job still in its queue is answered Cancelled and a
+//    running one is not stopped (iocore.cone, CANCEL), so which of them a job
+//    is depends on whether the lane's thread has taken it, which the test
+//    makes certain rather than hopes.
 // 2. Cancelled is a state: an operation submitted in a cancelled group is
 //    answered Cancelled at once, its buffer back, and never started.
 // 3. Children: a parent's cancel reaches its child's operations; a child's
@@ -32,6 +38,15 @@ import iobuf use *;
 import iocore use *;
 import diag;
 
+// Held work: how many jobs have started, and whether they may return
+var started: Atomic[u32];
+var gate: Atomic[u32];
+
+fn @initpure init() {
+  started = Atomic[u32].of(0u32);
+  gate = Atomic[u32].of(0u32);
+}
+
 fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
   let limit = Instant.now() + Duration.fromSeconds(5i64);
   while out.len() < n && Instant.now() < limit {
@@ -49,11 +64,33 @@ fn find(out: &List[Completion], token: u64) usize {
   out.len()
 }
 
-// Work that sleeps arg milliseconds
-fn slowWork(arg: u64, buf: &mut IoBuf) Outcome {
-  thread.sleep(Duration.fromMillis(i64.from(arg)));
-  buf.append("slept");
+// Work that says it has started, then holds until the gate is opened (or
+// 10 seconds, so a broken test ends)
+fn heldWork(arg: u64, buf: &mut IoBuf) Outcome {
+  started.add(1u32);
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while gate.load() == 0u32 && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  buf.append("held");
   Outcome.Done(5usize)
+}
+
+// Wait (up to 5 seconds) until n jobs have started
+fn waitStarted(n: u32) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while started.load() < n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+}
+
+// Wait (up to 5 seconds) until the lane has counted n jobs run: its thread
+// counts a job after posting it home, so the count may trail the answer
+fn waitRan(l: Lane, n: u64) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while l.stats().ran < n && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(1i64));
+  }
 }
 
 // A connected pair of sockets on lp
@@ -124,10 +161,12 @@ fn main() i32 {
       lp.submitIn(Op.Recv(a, IoBuf(100usize)), Target.Here(1u64), g, forever());
       lp.submitIn(Op.Recv(c, IoBuf(100usize)), Target.Here(2u64), g, forever());
       lp.afterIn(Instant.now() + Duration.fromSeconds(10i64), Target.Here(3u64), g);
-      lp.submitIn(Op.Call(one, &slowWork, 100u64, IoBuf(100usize)), Target.Here(4u64), g, forever());
-      lp.submitIn(Op.Call(one, &slowWork, 1u64, IoBuf(100usize)), Target.Here(5u64), g, forever());
+      lp.submitIn(Op.Call(one, &heldWork, 0u64, IoBuf(100usize)), Target.Here(4u64), g, forever());
+      lp.submitIn(Op.Call(one, &heldWork, 0u64, IoBuf(100usize)), Target.Here(5u64), g, forever());
+      waitStarted(1u32);        // the first job is running, so the second is queued behind it
       lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "all five in flight");
+      expectUInt(u64.from(started.load()), 1u64, "the first job running, the second waiting behind it");
       expect(!g.isCancelled(), "the group live");
       expect(g.cancel(), "cancelled");
       expect(g.isCancelled(), "and cancelled is a state");
@@ -144,13 +183,16 @@ fn main() i32 {
       }
       expect(find(&out, 4u64) == out.len(), "not the running job");
       out.clear();
+      gate.store(1u32);         // let the running job return
       waitFor(&mut lp, &mut out, 1usize);
       requireUInt(u64.from(out.len()), 1u64, "the running job answers when it returns");
       expectUInt(out[0usize].token, 4u64, "the running job");
       expect(out[0usize].isDone(), "Done: it ran to its end");
-      expectStr(out[0usize].buf.view(), "slept", "its buffer, written by the work");
+      expectStr(out[0usize].buf.view(), "held", "its buffer, written by the work");
       out.clear();
+      waitRan(one, 1u64);
       let st = one.stats();
+      expectUInt(u64.from(started.load()), 1u64, "the queued job never started");
       expectUInt(st.ran, 1u64, "one job ran on the lane");
       expectUInt(st.cancelled, 1u64, "one taken out of its queue, never run");
       expectUInt(lp.counters().groupCancels, 5u64, "five cancels asked through the group, the running job's among them");
