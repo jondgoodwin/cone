@@ -629,9 +629,7 @@ struct Svc {
 // Listen, connect, and make the requests: answered with how many were done
 // and right, once all have their answers
 struct RunJob {
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Svc) {
-    let rp = self.(reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.Reply) {
     var port = 0u16;
     match s.srv.listen(lp, SocketAddr.localhost(0u16), serverCtx(100u64, 0i64), 1u64) {
       case let Ok(l) {
@@ -661,9 +659,7 @@ struct RunJob {
 
 // Close the connection gracefully: answered once both ends have told Closed
 struct CloseJob {
-  pub reply: actors.Reply;
-  pub fn run(self, lp: &mut Loop, s: &mut Svc) {
-    let rp = self.(reply);
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.Reply) {
     s.cli.close(lp, s.conn);
     s.waitClosed = Some[actors.Reply](rp);
   }
@@ -671,13 +667,13 @@ struct CloseJob {
 
 actor Asker {
   pub async fn run(self, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Svc, RunJob, u64](host, RunJob(actors.Reply()));
+    let n = await aio.hostAwaitable[Svc, RunJob, u64](host, RunJob());
     var d = done;
     d.send(n);
   }
 
   pub async fn close(self, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Svc, CloseJob, u64](host, CloseJob(actors.Reply()));
+    let n = await aio.hostAwaitable[Svc, CloseJob, u64](host, CloseJob());
     var d = done;
     d.send(n);
   }
