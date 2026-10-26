@@ -1454,13 +1454,14 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GtToken, 1);
             }
 
-        // '?.' is held for None propagation (guide-enums.html#option). It is reported
-        // and read as '.', so the member it reaches is parsed as it was meant.
+        // '?.' is held (syntax-lexical.html#held): a member of what '?' gives is
+        // reached as '(a?).b'. It is reported and read as '.', so the member it
+        // reaches is parsed as it was meant.
         case '?':
             if (*(srcp + 1) == '.') {
                 lex->tokp = srcp;
                 errorMsgLex(ErrorReserved,
-                    "'?.' is reserved for None propagation, which is not implemented yet");
+                    "'?.' is reserved. To reach a member of what '?' gives, write '(a?).b'");
                 lexReturnPuncTok(DotToken, 2);
             }
             else

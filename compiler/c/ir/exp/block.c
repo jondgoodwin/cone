@@ -324,6 +324,13 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 1), &hoists);
         eachRangeFirstAdopt(blk);
     }
+    // 'x?': what 'x' is, and what the function returns, say what the test and
+    // the early return are, so 'x' is checked first, as the initializer of the
+    // variable that holds it, and the statements below are checked as built
+    else if (blk->flags & FlagPropagate) {
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
+        propagateLower(pstate, blk);
+    }
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
     if (blk->flags & FlagLoop) {
