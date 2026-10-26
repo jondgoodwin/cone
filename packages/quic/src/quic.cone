@@ -1,77 +1,177 @@
-// The quic package: QUIC version 1 (RFC 9000) over ngtcp2, sans-IO. It does
-// no I/O, reads no clock and starts no thread: its owner hands it the UDP
-// payloads that came off the wire and the time, and takes back the payloads
-// to send, what happened on the connection, and when to wake it. TLS 1.3 is
-// OpenSSL 3.5's, the library package tls uses, through ngtcp2's OpenSSL crypto
-// helper (OpenSSL's own QUIC TLS interface).
+// The quic package: QUIC version 1 (RFC 9000) over ngtcp2, sans-IO, in the
+// shape of the http1, http2 and http3 cores: a connection's state as plain
+// data, which does no I/O, reads no clock and starts no thread (invariant
+// I13). Its owner hands it the UDP payloads that came off the wire and the
+// time, and takes back the payloads to send, what happened on the
+// connection, and when to wake it. It presents QUIC as RFC 9114 sees it:
+// numbered bidirectional and unidirectional streams of bytes that end or are
+// reset, and a connection that closes with a code. TLS 1.3 is OpenSSL 3.5's,
+// the library package tls uses, through ngtcp2's OpenSSL crypto helper
+// (OpenSSL's own QUIC TLS interface); a server's certificate is checked by
+// tls's verifiers.
 //
-// THIS IS THE BINDING (the package's first part). What is here: ngtcp2 and
-// its crypto helper bound (ngtcp2.cone), the OpenSSL the package needs
-// (openssl.cone), a QUIC TLS context (tlsctx.cone), and the Engine
-// (engine.cone): one ngtcp2 connection with its TLS session, the callbacks
-// ngtcp2 makes, and ngtcp2's calls one for one, which tests/handshake.cone
-// drives as a client and a server in one process, in memory. The package's
-// face comes next, over the Engine: a quic.Connection in the shape the http3
-// core expects (handleInput, pollTransmit, pollEvent, wakeAt; streams, read
-// credit, close with a code), its Config with named defaults, ALPN h3, and the
-// OS's certificate verifier.
-//
+//   mod fetch;
 //   import quic;
+//   import time use Instant;
 //
-//   let ctls = quic.TlsContext.client(rootsPem, "h3");        // or .server(cert, key, "h3")
-//   match quic.Engine.client(&ctls, "localhost", &here, &there, &quic.Params.make(), now) {
-//     case var Ok(e) {... e.transmit(&mut buf, now) ... e.read(&pkt, now) ... e.pollEvent() ...}
-//     case let Error(err) {... err.message() ...}
+//   let ctx = quic.Context.client(quic.Config.make())...;     // ALPN h3, the OS's verifier
+//   var c = quic.Connection.client(&ctx, "example.com", &here, &there, now)...;
+//   while !c.isClosed() {                          // the driver's loop:
+//     send(c.pollTransmit(now));                   // payloads to send, until empty
+//     c.handleInput(received.view(), now);         // a payload that came
+//     match c.pollEvent() {                        // what that means, until Nothing
+//       case is VerifyNeeded {... submit c.verifyOp() ... c.verifyDone(&mut completion) ...}
+//       case is HandshakeDone { let s = c.openBidi()...; c.writeBytes(s, request); c.finish(s); }
+//       case let Data(d) {... d.buf ... d.fin ...; c.release(d.stream, n); }   // credit back
+//       case let Closed(x) {... x.code ...}
+//       ...
+//     }
+//     wake at c.wakeAt()
 //   }
 //
-//   TlsContext.client(rootsPem, alpn)  TlsContext.server(certFile, keyFile, alpn)   (TLS)
-//   Addr.v4(a, b, c, d, port)  Params.make()                                       (SETUP)
-//   Engine.client(tls, host, localAddr, remoteAddr, params, now)                  (ENGINE)
-//   Engine.accept(tls, firstPacket, localAddr, remoteAddr, params, now)
-//   e.read(packet, now)  e.transmit(out, now)  e.expiry()  e.onExpiry(now)
-//   e.openBidi()  e.openUni()  e.send(stream, data, fin)  e.consume(stream, n)
-//   e.resetStream(stream, code)  e.close(out, code, now)
-//   e.pollEvent(): EngineEvent  e.isClosed()  e.handshakeDone()  e.error()
-//   e.alpn()  e.tlsVersion()  e.cipher()  e.verifyResult()
-//   ngtcp2Version()  backendVersion()                                             (DIAGNOSTICS)
+//   Config.make(): the defaults, each a field to change                 (CONFIG)
+//   defaultStreamWindow defaultConnectionWindow defaultMaxStreamsBidi
+//   defaultMaxStreamsUni defaultIdleSeconds defaultMaxUdpPayload
+//   Context.client(cfg)  Context.server(cfg, certFile, keyFile)            (CONTEXTS)
+//   ctx.isServer()  ctx.config()
+//   Addr.v4(a, b, c, d, port)
+//   Connection.client(ctx, host, localAddr, remoteAddr, now)                (CONNECTIONS)
+//   Connection.accept(ctx, firstPacket, localAddr, remoteAddr, now)
+//   c.handleInput(packet, now)  c.pollTransmit(now)  c.wakeAt()  c.pollEvent()
+//   c.openBidi()  c.openUni()  c.write(stream, buf)  c.writeBytes(stream, bytes)  (STREAMS)
+//   c.finish(stream)  c.reset(stream, code)  c.stopSending(stream, code)
+//   c.release(stream, n)  c.unreleased(stream)  c.queued(stream)  c.openStreams()  (CREDIT)
+//   c.close(code)  c.isClosed()                                              (CLOSING)
+//   c.wantsVerify()  c.verifyOp()  c.verifyDone(completion)  c.verifyNow()   (CERTIFICATES)
+//   Event: Nothing HandshakeDone VerifyNeeded PeerStream Data Reset          (EVENTS)
+//     WriteStopped MoreStreams Closed
+//   c.isServer()  c.handshakeDone()  c.error()  c.alpn()  c.tlsVersion()     (DIAGNOSTICS)
+//   c.cipher()  c.verifiedBy()  QuicError: e.code e.osError e.detail e.message()
+//   ngtcp2Version()  backendVersion()
 //
-// ENGINE. The Engine is the low-level layer: ngtcp2's own calls, made safe,
-// with no stream table and no policy of its own. The package's face is built
-// over it, and the face's PR decides whether the Engine stays public beside
-// it. 'read' takes one UDP payload; 'transmit' writes the next one to
-// send into 'out' (at least 1200 bytes) and says how long it is, 0 when there
-// is nothing: queued stream data first, a stream at a time, then what ngtcp2
-// has of its own (handshake, acknowledgements, flow control). 'send' queues
-// bytes on a stream, copied, and the Engine keeps them until the peer has
-// acknowledged them, as ngtcp2 requires (ngtcp2 retransmits from them). What
-// happened comes out of 'pollEvent', once each, in order: the handshake done,
-// a stream the peer opened, stream data (and its end), a stream reset or
-// stopped by the peer, a stream closed, the connection closed (by whom, and
-// the code). A stream's received bytes are credited back to the peer by
-// 'consume', which the owner calls as it uses them: the flow-control window
-// moves only then. 'expiry' is the time ngtcp2's next timer fires, and
-// 'onExpiry' runs it. A failure inside ngtcp2 makes the next 'transmit' write
-// the CONNECTION_CLOSE that ends the connection; 'error' says what it was.
+// CONNECTIONS. A Connection is one QUIC connection's state, in either role.
+// A client's is made from a client Context, the name its server's
+// certificate must be for, and the path's two addresses; its first packet is
+// ready at once. A server's is made from the first packet a client sent
+// (Connection.accept refuses one that is not a client's Initial). A driver
+// keeps four calls going, as for every core of this runtime:
+// 'handleInput(packet, now)' takes one UDP payload that came; 'pollTransmit(now)'
+// gives the next one to send, an IoBuf of at most maxUdpPayload bytes, empty
+// when there is none (ngtcp2 coalesces several frames, and several streams'
+// data, into one packet, and its long-header packets into one payload);
+// 'wakeAt()' is when to call again with no packet; 'pollEvent()' says what
+// happened. A wake time that has come is acted on by the next handleInput or
+// pollTransmit: a lost packet's retransmission queued, an acknowledgement
+// sent, the idle timeout's end. The connection knows the time only from these
+// calls. Connection migration is off (MIGRATION below): the path is fixed for
+// the connection's life.
 //
-// TLS. CERTIFICATES ARE CHECKED AGAINST PEM ROOTS ONLY, NOT BY THE
-// PLATFORM'S VERIFIER YET: a client trusts exactly the roots it is given, in
-// PEM, and checks the name it connects to (OpenSSL's own check, which tls's
-// Verifier.roots also uses). The machine's roots, revocation and enterprise
-// policy are not consulted, so the package must not be used against the open
-// internet yet. The face's first item is its own certificate-verify callback
-// reusing tls.verifyWork, with tls's semantics: the OS's chain engine by
-// default, Verifier.roots and Verifier.pinnedSha256 for development (tls's
-// own verifyChain cannot be shared as it is: it reads its verdict from the SSL
-// object's app data, which ngtcp2's crypto helper holds). A server presents a certificate chain and key from PEM
-// files. Each offers or accepts one ALPN protocol, which the handshake must
-// agree on. TLS 1.3 only, as QUIC requires. No 0-RTT, no session resumption.
+// EVENTS. 'pollEvent' gives one Event each call, Nothing when there is none
+// new, in order: HandshakeDone (streams may carry data both ways); for a
+// client, VerifyNeeded (the OS's verifier must run, see CERTIFICATES); a
+// stream the peer opened (PeerStream), before its first data; a stream's
+// bytes (Data: an IoBuf, in order, 'fin' on the last), consecutive pieces
+// of one stream gathered into one buffer where they fit; the peer's reset of
+// its sending half (Reset, with its code); WriteStopped when the peer has
+// stopped this end's sending half (its STOP_SENDING, which ngtcp2 answers
+// itself with a RESET_STREAM carrying the peer's code, calling back for
+// neither: so it is known, without the code, when this end next has bytes
+// for the stream, and 'write' refuses more); MoreStreams when the peer
+// allows this end more streams of a kind; and
+// Closed, once, last: by the peer or this end, an application's code or a
+// transport's (a TLS alert is CRYPTO_ERROR, 0x100 + the alert), or the idle
+// timeout. 'error()' says what failed when this end failed.
 //
-// NOT HERE YET (the package's face, and later): connection migration (the
-// path is fixed for the connection's life), Retry and address validation
-// tokens, stateless reset (the reset tokens are random), datagrams, key
-// update initiated here (ngtcp2 answers the peer's), qlog, coalescing more than
-// one stream's data into a packet, and retransmitting a CONNECTION_CLOSE when
-// packets keep coming after it.
+// STREAMS. A stream is named by its QUIC number (RFC 9000, section 2.1:
+// bit 0 the opener, a server's odd; bit 1 unidirectional). This end opens
+// one with 'openBidi' or 'openUni', which give None while the peer's
+// MAX_STREAMS allows no more (MoreStreams says when it does). 'write' moves
+// an IoBuf in, kept until the peer acknowledges its bytes (ngtcp2
+// retransmits from it); 'writeBytes' copies. 'finish' ends the stream after
+// what was written. 'reset' abandons this end's sending half with a code
+// (RESET_STREAM); 'stopSending' asks the peer to abandon its (STOP_SENDING),
+// and what arrives after is dropped. A stream's state is one record in one
+// table, made when the stream opens and gone when ngtcp2 has closed the
+// stream (both halves done) and its owner has released all its bytes; a
+// stream of the peer's that goes lets the peer open one more of its kind
+// (ngtcp2 raises the peer's limit only when told). Written bytes are not
+// bounded here: 'queued(stream)' says how many wait for acknowledgement, for
+// the owner to bound.
+//
+// CREDIT (invariant I9: bounded memory). A stream's Data events are bytes on
+// loan: the peer may send 'streamWindow' bytes on a stream past what the
+// owner has released, and 'release(stream, n)' gives n back
+// (ngtcp2_conn_extend_max_stream_offset, a MAX_STREAM_DATA in time). The
+// connection's credit (MAX_DATA) comes back as the bytes arrive
+// (ngtcp2_conn_extend_max_offset), not as they are released: so a stream
+// whose owner stops reading stops only itself, and the others go on
+// (research-http2-multiplexing's choice (A), gRPC-Go's). Unread bytes are
+// bounded by the stream windows: at most (maxStreamsBidi + maxStreamsUni) x
+// streamWindow for the peer's streams, about 29 MiB at the defaults, plus
+// streamWindow for each of this end's bidirectional streams; the connection
+// window bounds only what is in flight.
+//
+// CONFIG (each a field of Config; Config.make() gives the defaults, each a
+// named constant). 'alpn' ("h3") is the one application protocol: a client
+// offers it, a server accepts it alone (a client offering others is refused
+// with no_application_protocol, alert 120), and either end closes with that
+// alert when the handshake did not agree on it. 'verify'
+// (tls.Verifier.platform()), 'offline' (false) and 'verifyLane'
+// (tls.defaultVerifyLane()) are a client's, as in tls's ClientConfig.
+// 'streamWindow' (256 KiB, as quic-go's starting window halved and
+// Kestrel's below its 768 KiB; the memory a stalled stream may hold) and
+// 'connectionWindow' (16 MiB, msquic's: under the CREDIT rule above it bounds
+// only bytes in flight, so it is sized for a fast link's bandwidth x delay)
+// are what the peer may send. 'maxStreamsBidi' (100, the de facto number:
+// quinn, quic-go, curl, RFC 9113's recommendation) and 'maxStreamsUni' (16:
+// HTTP/3's three, its control and QPACK streams, with room for the reserved
+// stream types a peer may open first) are how many of each the peer may
+// have open. 'idleTimeout' (30 s, RFC 9308's suggestion and quinn's,
+// quic-go's and msquic's; the smaller of both ends' wins). 'maxUdpPayload'
+// (1452: ngtcp2's own default, an Ethernet MTU of 1500 less the IPv6 and UDP
+// headers) is the largest payload sent and the largest the peer is told this
+// end takes; 1200, QUIC's least, at the smallest. ngtcp2's window
+// auto-tuning is off: the windows are the Config's.
+//
+// CERTIFICATES. A client checks the server's certificate by its Config's
+// 'verify', a tls.Verifier, with tls's semantics (tls's header, VERIFIERS):
+// - Verifier.platform(), the default: the operating system, through
+//   tls.verifyWork. On Windows that is crypt32's chain engine and SSL policy
+//   for the name asked for, with the machine's roots, policy and enterprise
+//   settings and the end certificate's revocation checked when the data can
+//   be had; on Linux, OpenSSL's own check against the system's roots
+//   (SSL_CERT_FILE and SSL_CERT_DIR, else the default places of the OpenSSL
+//   the program loaded: for a user-prefix OpenSSL 3.5 that is the prefix's
+//   own 'ssl' folder, not Ubuntu's /etc/ssl/certs, so a deployment names the
+//   system's roots by those variables or builds OpenSSL with
+//   --openssldir=/usr/lib/ssl). It may fetch over the network, so it never
+//   runs inside handleInput: the handshake stops when the chain comes, the
+//   connection says VerifyNeeded, its owner runs 'verifyOp' on the blocking
+//   pool (or 'verifyNow' where blocking is fine), and the handshake goes on
+//   from 'verifyDone'. A refusal closes the connection with the TLS alert
+//   OpenSSL sends, and 'error()' carries Windows' error ('osError') and its
+//   words.
+// - Verifier.roots(pem): FOR DEVELOPMENT. OpenSSL checks the chain against
+//   these roots alone, and the name.
+// - Verifier.pinnedSha256(hex): FOR DEVELOPMENT. The server's key's SHA-256
+//   must be one of these, whatever signed it and whatever names it holds.
+// - Verifier.insecureDevelopmentOnly(): FOR DEVELOPMENT ONLY. Nothing is
+//   checked.
+// A server presents a certificate chain and key from PEM files. TLS 1.3
+// only, as QUIC requires. 0-RTT is off: a client keeps no tickets and so
+// never resumes, and a server sends none and takes no early data.
+//
+// MIGRATION. Connection migration is off: this end announces
+// disable_active_migration, so the peer must not move the connection to
+// another address, and this end never does. The path given when the
+// connection was made is the only one.
+//
+// NOT HERE YET: migration (above), Retry and address validation tokens,
+// stateless reset (the reset tokens are random), datagrams, key update
+// initiated here (ngtcp2 answers the peer's), qlog, ECN, IPv6 addresses
+// (Addr.v4 only), a bound on written bytes (queued), priorities (streams
+// take turns round robin), and retransmitting a CONNECTION_CLOSE when packets
+// keep coming after it.
 //
 // WINDOWS AND LINUX. On Windows ngtcp2 1.22.1 is built from its signed release
 // source by tools/deps/build_ngtcp2.py with MSVC (Release, shared libraries,
@@ -93,19 +193,24 @@
 // same script then builds ngtcp2 with the system's compiler against it
 // ('python3 tools/deps/build_ngtcp2.py --openssl <prefix>'), into
 // deps/ngtcp2/ ([link.linux]), with that OpenSSL's libraries beside it, and a
-// program runs with LD_LIBRARY_PATH naming that folder. So built (OpenSSL
-// 3.5.9 from its signed source, gcc 13), tests/handshake.cone passes on Ubuntu
-// 24.04, debug and release. tls stays on the system's OpenSSL 3.0, and one
-// program cannot load both, so a program on Linux does not import both
-// packages yet.
+// program runs with LD_LIBRARY_PATH naming that folder. The package imports
+// tls (its verifiers), so on Linux tls runs on that OpenSSL 3.5 too, in a
+// program that imports quic: the two have one soname, libssl.so.3, and tls
+// uses nothing newer than 3.0. So built (OpenSSL 3.5.9 from its signed
+// source, gcc 13), the package's tests pass on Ubuntu 24.04, debug and
+// release.
 
 mod quic;
 
 import libc;
-import collections use List, String, Deque;
+import collections use List, String, Deque, Dict;
 import sync use Once;
 import time use Instant, Duration;
 import path use Path;
+import iobuf use IoBuf;
+import iocore use Op, Completion, Lane, IoError;
+import slots use SlotTable;
+import tls;
 
 fn @initpure init() {
   helperOnce = Once.make();
@@ -134,11 +239,12 @@ fn checkLayout() {
       || mem.sizeof[ConnRef]() != 16usize || mem.sizeof[PktHd]() != 112usize {
     panic("quic: the ngtcp2 binding's structs are not ngtcp2 1.22.1's sizes");
   }
-  let s = settingsFor(Instant.fromNanos(0i64));
-  if s.initialRtt != 333000000u64 || s.maxTxUdpPayloadSize != 1452usize || s.ackThresh != 2usize {
+  let s = defaultSettings();
+  if s.initialRtt != 333000000u64 || s.maxTxUdpPayloadSize != 1452usize || s.ackThresh != 2usize
+      || s.maxWindow != 0u64 || s.maxStreamWindow != 0u64 {
     panic("quic: ngtcp2's default settings are not where the binding reads them");
   }
-  let tp = paramsFor(&Params.make());
+  let tp = defaultParams();
   if tp.maxUdpPayloadSize != 65527u64 || tp.ackDelayExponent != 3u64 || tp.maxAckDelay != 25000000u64
       || tp.activeConnectionIdLimit != 2u64 {
     panic("quic: ngtcp2's default transport parameters are not where the binding reads them");
@@ -154,13 +260,15 @@ fn helperReady() {helperOnce.callOnce(&initHelper);}
 // Why a connection could not be made, or failed
 pub struct QuicError {
   pub code: i32;           // ngtcp2's error (negative), or 0 when the failure was not ngtcp2's
+  pub osError: u32;        // Windows' error when the OS's verifier refused the certificate, else 0
   pub detail: String;      // what was wrong, one line
 
-  pub fn make(code: i32, detail: &str) QuicError {QuicError(code, String.from(detail))}
+  pub fn make(code: i32, detail: &str) QuicError {QuicError(code, 0u32, String.from(detail))}
 
-  pub fn copy(self: &) QuicError {QuicError(code, detail.copy())}
+  pub fn copy(self: &) QuicError {QuicError(code, osError, detail.copy())}
 
-  // 'quic: the server's certificate could not be checked: ERR_INVALID_ARGUMENT'
+  // 'quic: the server's certificate was refused by the OS's verifier: ...
+  // (Windows 0x800B0109) (ERR_CRYPTO)'
   pub fn message(self: &) String {
     var out = String.from("quic: ");
     out.append(detail.view());
@@ -174,12 +282,12 @@ pub struct QuicError {
 }
 
 // ---------------------------------------------------------------------------
-// Setup
+// Addresses
 // ---------------------------------------------------------------------------
 
-// An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them: the
-// ends of a connection's path, which ngtcp2 keeps and checks every packet
-// against. The package sends nothing to it; the owner's sockets do
+// An IPv4 address and a port, as the OS's sockaddr holds them: the ends of a
+// connection's path, which ngtcp2 keeps and checks every packet against.
+// The package sends nothing to it; the owner's sockets do
 pub struct Addr {
   raw: Array[u8, 28];
   size: u32;
@@ -195,24 +303,6 @@ pub struct Addr {
     s.raw[6usize] = c;
     s.raw[7usize] = d;
     s
-  }
-}
-
-// The transport parameters an Engine announces: how much the peer may send
-// before this end credits more (per stream and for the connection), how many
-// streams it may open, and how long the connection may be idle
-pub struct Params {
-  pub streamWindow: u64;        // bytes, each stream: bidirectional, either side's, and unidirectional
-  pub connectionWindow: u64;    // bytes, every stream together
-  pub maxStreamsBidi: u64;      // streams the peer may open
-  pub maxStreamsUni: u64;
-  pub idleTimeout: Duration;    // zero: none
-
-  // 256 KiB a stream, 1 MiB the connection, 100 bidirectional streams and
-  // 3 unidirectional (HTTP/3's control and QPACK streams), 30 s idle
-  pub fn make() Params {
-    Params(streamWindow: 262144u64, connectionWindow: 1048576u64, maxStreamsBidi: 100u64,
-      maxStreamsUni: 3u64, idleTimeout: Duration.fromSeconds(30i64))
   }
 }
 

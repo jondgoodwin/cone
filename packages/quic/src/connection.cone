@@ -1,0 +1,1228 @@
+// The Connection: one QUIC connection, in either role, as plain data and
+// ngtcp2's handle (see the package's header, CONNECTIONS, STREAMS and
+// CREDIT).
+//
+// How it is built. ngtcp2 calls back into the package from inside its own
+// calls (read, write, expiry). As tls does with OpenSSL's callbacks, those
+// callbacks touch nothing of Cone's: each appends a record to the
+// connection's callback block, a block of C memory that never moves (ngtcp2's
+// user data, and the SSL object's app data), and the Connection turns the
+// records into its events and its bookkeeping once ngtcp2's call has returned
+// ('harvest'). The block begins with the ngtcp2_crypto_conn_ref the crypto
+// helper looks for in the SSL object's app data, through which it reaches the
+// connection. A record holds a stream's received bytes by value: ngtcp2's
+// pointer to them lasts only for the callback.
+//
+// Each stream's state is one record in one table (a SlotTable), found from
+// its number by an index of stream numbers to cells. A stream's record is
+// made when this end opens it or ngtcp2 says the peer has, and goes when
+// ngtcp2 has closed the stream (both halves done) and the owner has released
+// every byte it was handed ('retire'). The bytes written to a stream
+// are kept in the IoBufs they were written in, each with the stream offset
+// after it, so the memory ngtcp2 is handed never moves: ngtcp2 keeps pointing
+// at it until the peer acknowledges it (it retransmits from it), and says so
+// in order, stream by stream. The acknowledged buffers go then, and a
+// stream's every buffer when the stream closes.
+
+// The records a callback leaves
+const recData = 1u32;
+const recOpen = 2u32;
+const recClose = 3u32;
+const recReset = 4u32;
+const recAcked = 6u32;
+const recHandshake = 7u32;
+const recMoreBidi = 8u32;
+const recMoreUni = 9u32;
+
+const callbackFailure = -502i32;    // NGTCP2_ERR_CALLBACK_FAILURE
+
+// A record's head, then its bytes, padded to 8
+struct Rec {
+  kind: u32;
+  flags: u32;
+  stream: i64;
+  a: u64;
+  b: u64;
+  len: u64;
+}
+
+// The callback block: C memory, at an address that never changes
+struct Box {
+  ref: ConnRef;            // first: the SSL object's app data points here
+  conn: *u8;               // the ngtcp2_conn, once made
+  ssl: *u8;                // the SSL object
+  inbox: *u8;              // records not yet harvested
+  inLen: usize;
+  inCap: usize;
+  alpn: *u8;               // a server's: the protocol it accepts, ALPN's wire format
+  alpnLen: u32;
+  oom: u32;                // a record could not be kept: the connection fails
+  verdict: usize;          // the certificate's verdict, which verifyChain reads (verify.cone)
+  verifyWanted: u32;       // verifyChain stopped the handshake for one
+}
+
+// What happened, once each (see the package's header, EVENTS)
+pub enum Event {
+  pub struct Nothing {}
+  pub struct HandshakeDone {}                                  // streams may carry data both ways
+  pub struct VerifyNeeded {}                                   // the OS's verifier must run: verifyOp or verifyNow
+  pub struct PeerStream {pub stream: i64;}                     // the peer opened it
+  pub struct Data {pub stream: i64; pub buf: IoBuf; pub fin: bool;}   // in order; fin: its end
+  pub struct Reset {pub stream: i64; pub code: u64;}           // the peer reset its sending half
+  pub struct WriteStopped {pub stream: i64;}                   // the peer stopped this end's sending (STOP_SENDING)
+  pub struct MoreStreams {pub bidi: bool;}                     // the peer allows this end more streams
+  pub struct Closed {pub byPeer: bool; pub app: bool; pub code: u64; pub idle: bool;}
+}
+
+// Written bytes: an IoBuf, and the stream offset after it
+struct Piece {
+  buf: IoBuf;
+  end: u64;
+}
+
+// A stream's state: one record in the Connection's table
+struct Stream {
+  id: i64;
+  out: Deque[Piece];        // written, not yet acknowledged, in order
+  offered: u64;             // the stream offset up to which ngtcp2 has the bytes
+  queued: u64;              // the stream offset after the last byte written
+  acked: u64;               // the offset up to which the peer has acknowledged them
+  fin: bool;                // the end is written
+  finSent: bool;            // ...and ngtcp2 has it
+  writeShut: bool;          // reset here, or stopped by the peer: nothing more goes out
+  unreleased: u64;          // bytes delivered in Data events, not yet released
+  gone: bool;               // ngtcp2 has closed it; the record waits for its bytes' release
+
+  fn make(id: i64) Stream {
+    Stream(id: id, out: Deque[Piece].empty(), offered: 0u64, queued: 0u64, acked: 0u64, fin: false,
+      finSent: false, writeShut: false, unreleased: 0u64, gone: false)
+  }
+
+  fn hasUnsent(self: &) bool {!writeShut && (offered < queued || (fin && !finSent))}
+
+  // The unsent bytes of the buffer that holds the stream offset 'offered':
+  // where they are and how many (none: only the end is left to send)
+  fn nextVec(self: &) NgVec {
+    var i = 0usize;
+    while i < out.len() {
+      let end = out[i].end;
+      let start = end - u64.from(out[i].buf.len());
+      if offered >= start && offered < end {
+        let at = usize.from(offered - start);
+        return NgVec(out[i].buf.base() + at, usize.from(end - offered));
+      }
+      i = i + 1usize;
+    }
+    NgVec(null, 0usize)
+  }
+
+  // The peer has acknowledged the stream's bytes up to 'upTo'
+  fn ackedTo(self: &mut, upTo: u64) {
+    if upTo > acked {acked = upTo;}
+    while true {
+      var drop = false;
+      match out.peekFront() {
+        case let Some(p) {drop = p.end <= acked;}
+        case is None[&Piece] {}
+      }
+      if !drop {break;}
+      out.popFront();
+    }
+  }
+}
+
+// How the connection is to be closed by the next pollTransmit: by the
+// application with its code, by a TLS alert, or for ngtcp2's error
+const closeApp = 1u32;
+const closeAlert = 2u32;
+const closeLib = 3u32;
+
+struct CloseWith {
+  kind: u32;
+  code: u64;               // closeApp: the application's code; closeAlert: the alert
+  liberr: i32;             // closeLib: ngtcp2's error
+}
+
+// Where the OS's verifier stands, for a client
+const stageIdle = 0u32;        // not asked
+const stageWanted = 1u32;      // the handshake waits: VerifyNeeded given, the job not yet taken
+const stageRunning = 2u32;     // the job is out (verifyOp)
+const stageDone = 3u32;        // the verdict is in
+
+// The largest IoBuf writeBytes makes: a longer write is several
+const writePiece = 65536usize;
+
+// One QUIC connection, in either role (see the package's header, CONNECTIONS)
+pub struct Connection is Move {
+  conn: *u8;
+  ossl: *u8;               // the crypto helper's per-connection state
+  ssl: *u8;
+  box: *u8;                // the callback block
+  ps: *u8;                 // the path: ngtcp2_path_storage, C memory
+  server: bool;
+  host: String;            // a client's: the name the server's certificate must be for
+  alpnName: String;        // the protocol the handshake must choose
+  kind: tls.VerifyKind;    // a client's verifier
+  pins: List[u8];          // a Pinned verifier's keys, 32 bytes each
+  offline: bool;
+  lane: Lane;
+  maxUdp: usize;
+  streams: SlotTable[Stream];
+  byId: Dict[i64, u32];    // a stream's number to its cell
+  cursor: usize;           // the cell whose stream sends first next
+  events: Deque[Event];
+  verifyStage: u32;
+  lastNow: Instant;        // the latest time a call brought (the verifier's calls bring none)
+  closed: bool;            // closing, draining, or gone: nothing more goes out
+  closing: Option[CloseWith];    // the next pollTransmit writes this CONNECTION_CLOSE
+  err: Option[QuicError];
+
+  // A client's connection to 'host' (its certificate must be for that name),
+  // its first packet ready to transmit
+  pub fn client(ctx: &Context, host: &str, localAddr: &Addr, remoteAddr: &Addr,
+      now: Instant) Result[Connection, QuicError] {
+    if ctx.isServer() {return Error[Connection, QuicError](QuicError.make(0i32, "a client needs a client's Context"));}
+    let cfg = ctx.config();
+    let b = boxMake();
+    let ssl = SSL_new(ctx.ctx);
+    if ssl as usize == 0usize {
+      boxFree(b);
+      return Error[Connection, QuicError](tlsError("SSL_new failed"));
+    }
+    var ossl = null as *u8;
+    if ngtcp2_crypto_ossl_ctx_new(&mut ossl, ssl) != 0i32 || ngtcp2_crypto_ossl_configure_client_session(ssl) != 0i32 {
+      SSL_free(ssl);
+      if ossl as usize != 0usize {ngtcp2_crypto_ossl_ctx_del(ossl);}
+      boxFree(b);
+      return Error[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
+    }
+    (*(b as *Box)).ssl = ssl;
+    SSL_set_ex_data(ssl, appDataSlot, b);
+    SSL_set_connect_state(ssl);
+    var name = String.from(host);
+    let cname = name.cstr();
+    // SNI carries a DNS name, never an address (RFC 6066)
+    if !isAddressText(host) {SSL_ctrl(ssl, ctrlSetTlsextHostname, 0i64, cname.ptr());}
+    // The Roots verifier checks the name in OpenSSL; the others, themselves
+    if cfg.verify.kind == tls.VerifyKind.Roots {SSL_set1_host(ssl, cname);}
+    let ps = pathMake(localAddr, remoteAddr);
+    var dcid = randomCid(18usize);
+    var scid = randomCid(17usize);
+    let cb = callbacks(false);
+    var settings = settingsFor(now, cfg);
+    var tp = paramsFor(cfg);
+    var conn = null as *u8;
+    let rv = ngtcp2_conn_client_new_versioned(&mut conn, &dcid, &scid, &(*(ps as *PathStorage)).path,
+      protoVerV1, callbacksV3, &cb, settingsV3, &settings, transportParamsV1, &tp, null, b);
+    if rv != 0i32 {
+      SSL_set_ex_data(ssl, appDataSlot, null);
+      SSL_free(ssl);
+      ngtcp2_crypto_ossl_ctx_del(ossl);
+      libc.free(ps);
+      boxFree(b);
+      return Error[Connection, QuicError](QuicError.make(rv, "the client connection could not be made"));
+    }
+    (*(b as *Box)).conn = conn;
+    ngtcp2_conn_set_tls_native_handle(conn, ossl);
+    Ok[Connection, QuicError](made(conn, ossl, ssl, b, ps, false, host, cfg, now))
+  }
+
+  // A server's connection from a client's first packet, which it reads:
+  // its answer is ready to transmit. A packet that is not a client's Initial
+  // is refused
+  pub fn accept(ctx: &Context, packet: &Array[u8], localAddr: &Addr, remoteAddr: &Addr,
+      now: Instant) Result[Connection, QuicError] {
+    if !ctx.isServer() {return Error[Connection, QuicError](QuicError.make(0i32, "a server needs a server's Context"));}
+    if packet.len == 0usize {return Error[Connection, QuicError](QuicError.make(0i32, "an empty packet"));}
+    let cfg = ctx.config();
+    var hd = PktHd(Cid.none(), Cid.none(), 0i64, null, 0usize, 0usize, 0usize, 0u32, 0u8, 0u8);
+    let arv = ngtcp2_accept(&mut hd, &packet[0usize] as *u8, packet.len);
+    if arv != 0i32 {return Error[Connection, QuicError](QuicError.make(arv, "the packet is not a client's first"));}
+    let b = boxMake();
+    let wire = ctx.alpn.view();
+    let a = libc.malloc(wire.len);
+    libc.memcpy(a, &wire[0usize] as *u8, wire.len);
+    (*(b as *Box)).alpn = a;
+    (*(b as *Box)).alpnLen = u32.from(wire.len);
+    let ssl = SSL_new(ctx.ctx);
+    if ssl as usize == 0usize {
+      boxFree(b);
+      return Error[Connection, QuicError](tlsError("SSL_new failed"));
+    }
+    var ossl = null as *u8;
+    if ngtcp2_crypto_ossl_ctx_new(&mut ossl, ssl) != 0i32 || ngtcp2_crypto_ossl_configure_server_session(ssl) != 0i32 {
+      SSL_free(ssl);
+      if ossl as usize != 0usize {ngtcp2_crypto_ossl_ctx_del(ossl);}
+      boxFree(b);
+      return Error[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
+    }
+    (*(b as *Box)).ssl = ssl;
+    SSL_set_ex_data(ssl, appDataSlot, b);
+    SSL_set_accept_state(ssl);
+    let ps = pathMake(localAddr, remoteAddr);
+    var scid = randomCid(17usize);
+    let cb = callbacks(true);
+    var settings = settingsFor(now, cfg);
+    var tp = paramsFor(cfg);
+    tp.originalDcid = hd.dcid;
+    tp.originalDcidPresent = 1u8;
+    var conn = null as *u8;
+    let rv = ngtcp2_conn_server_new_versioned(&mut conn, &hd.scid, &scid, &(*(ps as *PathStorage)).path,
+      hd.version, callbacksV3, &cb, settingsV3, &settings, transportParamsV1, &tp, null, b);
+    if rv != 0i32 {
+      SSL_set_ex_data(ssl, appDataSlot, null);
+      SSL_free(ssl);
+      ngtcp2_crypto_ossl_ctx_del(ossl);
+      libc.free(ps);
+      boxFree(b);
+      return Error[Connection, QuicError](QuicError.make(rv, "the server connection could not be made"));
+    }
+    (*(b as *Box)).conn = conn;
+    ngtcp2_conn_set_tls_native_handle(conn, ossl);
+    var c = made(conn, ossl, ssl, b, ps, true, "", cfg, now);
+    c.handleInput(packet, now);
+    Ok[Connection, QuicError](c)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Packets in and out, and the time
+  // ---------------------------------------------------------------------------
+
+  // One UDP payload that came from the peer
+  pub fn handleInput(self: &mut, packet: &Array[u8], now: Instant) {
+    self.expire(now);
+    if closed || packet.len == 0usize {return;}
+    let pi = PktInfo.none();
+    let rv = ngtcp2_conn_read_pkt_versioned(conn, &(*(ps as *PathStorage)).path, pktInfoV1, &pi,
+      &packet[0usize] as *u8, packet.len, tsOf(now));
+    self.harvest();
+    if rv == 0i32 {return;}
+    if rv == errDraining {
+      // The peer closed the connection: its CONNECTION_CLOSE came
+      let cc = ngtcp2_conn_get_ccerr(conn);
+      self.ended(true, (*cc).kind == ccerrApplication, (*cc).errorCode, false);
+    } else if rv == errClosing {
+      // This end is closing: the packet is dropped
+    } else if rv == errDropConn {
+      self.fail(rv, "the connection was dropped");
+      self.ended(false, false, 0u64, false);
+    } else if rv == errRetry {
+      self.fail(rv, "the client must retry with an address validation token, which this package does not send yet");
+      self.ended(false, false, 0u64, false);
+    } else {
+      self.fail(rv, "a packet could not be processed");
+      self.closeFor(rv);
+    }
+  }
+
+  // The next UDP payload to send: an IoBuf of at most maxUdpPayload bytes,
+  // empty when there is nothing to send now. Streams' data goes a stream at
+  // a time, round robin, several streams' into one packet where they fit;
+  // ngtcp2's own frames (the handshake, acknowledgements, flow control) ride
+  // with them or alone. A wake time that has come is acted on first
+  pub fn pollTransmit(self: &mut, now: Instant) IoBuf {
+    self.expire(now);
+    var buf = IoBuf(maxUdp);
+    let n = self.transmitInto(buf.base(), maxUdp, now);
+    if n == 0usize {return IoBuf.empty();}
+    buf.setLen(n);
+    buf
+  }
+
+  // When the connection must be woken (a loss, an acknowledgement's delay,
+  // pacing, the idle timeout), or None. The next handleInput or pollTransmit
+  // at or after it acts on it
+  pub fn wakeAt(self: &) Option[Instant] {
+    if closed {return None;}
+    let t = ngtcp2_conn_get_expiry(conn);
+    if t == noExpiry {return None;}
+    Some(Instant.fromNanos(i64.from(t as i64)))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Streams
+  // ---------------------------------------------------------------------------
+
+  // A new bidirectional stream of this end's, or None when the peer allows
+  // no more yet (MoreStreams says when it does)
+  pub fn openBidi(self: &mut) Option[i64] {
+    var id = 0i64;
+    if closed || ngtcp2_conn_open_bidi_stream(conn, &mut id, null) != 0i32 {return None;}
+    self.addStream(id);
+    Some(id)
+  }
+
+  // A new unidirectional stream of this end's, or None
+  pub fn openUni(self: &mut) Option[i64] {
+    var id = 0i64;
+    if closed || ngtcp2_conn_open_uni_stream(conn, &mut id, null) != 0i32 {return None;}
+    self.addStream(id);
+    Some(id)
+  }
+
+  // Write a buffer's bytes to a stream, the buffer moved in and kept until
+  // the peer acknowledges them. False: the stream cannot take them (no such
+  // stream, the peer's unidirectional one, finished, reset or stopped), and
+  // the buffer is dropped
+  pub fn write(self: &mut, stream: i64, buf: IoBuf) bool {
+    let p = self.writable(stream);
+    if p as usize == 0usize {return false;}
+    let s = p as &mut Stream;
+    if buf.len() > 0usize {
+      s.queued = s.queued + u64.from(buf.len());
+      s.out.push(Piece(buf, s.queued));
+    }
+    true
+  }
+
+  // The same, the bytes copied
+  pub fn writeBytes(self: &mut, stream: i64, bytes: &Array[u8]) bool {
+    if self.writable(stream) as usize == 0usize {return false;}
+    var at = 0usize;
+    while at < bytes.len {
+      let n = if bytes.len - at > writePiece {writePiece} else {bytes.len - at};
+      var b = IoBuf(n);
+      b.append(&bytes[at ..< at + n]);
+      self.write(stream, b);
+      at = at + n;
+    }
+    true
+  }
+
+  // The stream's end, after what was written. False as for write
+  pub fn finish(self: &mut, stream: i64) bool {
+    let p = self.writable(stream);
+    if p as usize == 0usize {return false;}
+    (*p).fin = true;
+    true
+  }
+
+  // Abandon a stream's sending half with an application code (RESET_STREAM):
+  // what was written and not yet sent goes nowhere
+  pub fn reset(self: &mut, stream: i64, code: u64) bool {
+    let p = self.streamAt(stream);
+    if closed || p as usize == 0usize || (*p).gone || (*p).writeShut || !self.canSend(stream) {return false;}
+    ngtcp2_conn_shutdown_stream_write(conn, 0u32, stream, code);
+    (*p).writeShut = true;
+    true
+  }
+
+  // Ask the peer to stop sending on a stream, with an application code
+  // (STOP_SENDING); what arrives on it after is dropped, its credit given
+  // back by ngtcp2
+  pub fn stopSending(self: &mut, stream: i64, code: u64) bool {
+    let p = self.streamAt(stream);
+    if closed || p as usize == 0usize || (*p).gone || !self.canReceive(stream) {return false;}
+    ngtcp2_conn_shutdown_stream_read(conn, 0u32, stream, code) == 0i32
+  }
+
+  // The owner has used n more of a stream's received bytes: the peer may
+  // send that many more on it (see the package's header, CREDIT). A stream
+  // ngtcp2 has closed goes once its bytes are all released
+  pub fn release(self: &mut, stream: i64, n: usize) {
+    let p = self.streamAt(stream);
+    if n == 0usize || p as usize == 0usize {return;}
+    let k = u64.from(n);
+    (*p).unreleased = if k > (*p).unreleased {0u64} else {(*p).unreleased - k};
+    if (*p).gone {
+      if (*p).unreleased == 0u64 {self.retire(stream);}
+      return;
+    }
+    if !closed {ngtcp2_conn_extend_max_stream_offset(conn, stream, k);}
+  }
+
+  // A stream's bytes delivered in Data events and not yet released
+  pub fn unreleased(self: &, stream: i64) u64 {
+    let p = self.streamAt(stream);
+    if p as usize == 0usize {0u64} else {(*p).unreleased}
+  }
+
+  // A stream's bytes written and not yet acknowledged by the peer
+  pub fn queued(self: &, stream: i64) u64 {
+    let p = self.streamAt(stream);
+    if p as usize == 0usize {0u64} else {(*p).queued - (*p).acked}
+  }
+
+  // How many streams the connection holds: those not yet closed both ways,
+  // or whose bytes are not all released
+  pub fn openStreams(self: &) usize {streams.len()}
+
+  // ---------------------------------------------------------------------------
+  // Closing
+  // ---------------------------------------------------------------------------
+
+  // Close the connection with an application error code (0: no error): the
+  // next pollTransmit writes the CONNECTION_CLOSE, and Closed follows
+  pub fn close(self: &mut, code: u64) {
+    if closed {return;}
+    match &closing {
+      case let Some(c) {return;}
+      case is None[CloseWith] {}
+    }
+    closing = Some(CloseWith(closeApp, code, 0i32));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Events and state
+  // ---------------------------------------------------------------------------
+
+  // What happened next, once each; Nothing when nothing is new
+  pub fn pollEvent(self: &mut) Event {
+    match events.popFront() {
+      case let Some(e) {return e;}
+      case is None[Event] {}
+    }
+    Event.Nothing
+  }
+
+  pub fn isServer(self: &) bool {server}
+  pub fn isClosed(self: &) bool {closed}
+  pub fn handshakeDone(self: &) bool {ngtcp2_conn_get_handshake_completed(conn) != 0i32}
+
+  // What failed, when something did
+  pub fn error(self: &) Option[QuicError] {
+    match &err {
+      case let Some(e) {return Some(e.copy());}
+      case is None[QuicError] {}
+    }
+    None
+  }
+
+  // The protocol ALPN chose, or empty
+  pub fn alpn(self: &) String {
+    var p = null as *u8;
+    var n = 0u32;
+    SSL_get0_alpn_selected(ssl, &mut p, &mut n);
+    var out = String.empty();
+    if n > 0u32 {out.appendBytes(mem.sliceFromParts(p, usize.from(n)));}
+    out
+  }
+
+  // 'TLSv1.3'
+  pub fn tlsVersion(self: &) &str {cText(SSL_get_version(ssl))}
+
+  // 'TLS_AES_128_GCM_SHA256'
+  pub fn cipher(self: &) &str {
+    let c = SSL_get_current_cipher(ssl);
+    if c as usize == 0usize {""} else {cText(SSL_CIPHER_get_name(c))}
+  }
+
+  // A client's: who decided the server's certificate
+  pub fn verifiedBy(self: &) tls.VerifyKind {kind}
+
+  // ---------------------------------------------------------------------------
+  // The OS's verifier (see the package's header, CERTIFICATES)
+  // ---------------------------------------------------------------------------
+
+  // Whether the handshake waits for the OS's verifier, its job not yet
+  // handed out
+  pub fn wantsVerify(self: &) bool {verifyStage == stageWanted}
+
+  // The OS's verifier as a pool operation on the Config's verifyLane: the
+  // chain the server sent and the name asked for, in a buffer, for
+  // tls.verifyWork. Its completion goes to verifyDone. Asked for only when
+  // wantsVerify says so
+  pub fn verifyOp(self: &mut) Op {
+    verifyStage = stageRunning;
+    Op.Call(lane, &tls.verifyWork, if offline {1u64} else {0u64}, verifyJob(ssl, host.view()))
+  }
+
+  // The OS's verifier's answer, from the pool
+  pub fn verifyDone(self: &mut, c: &mut Completion) {
+    if verifyStage != stageRunning {return;}
+    if c.isDone() && c.buf.len() >= 4usize {
+      self.verified(readU32(c.buf.base()));
+    } else if c.isDone() {
+      self.verified(genericFailure);
+    } else {
+      let code = if c.code == 0u32 {genericFailure} else {c.code};
+      var d = String.from("the OS's verifier could not be run: ");
+      let text = IoError(code).message();
+      d.append(text.view());
+      self.failWith(QuicError(errCrypto, code, d));
+      self.verified(code);
+    }
+  }
+
+  // The OS's verifier, run here: it blocks, perhaps fetching over the
+  // network (unless the Config is offline). For a program with no loop,
+  // and tests
+  pub fn verifyNow(self: &mut) {
+    if verifyStage != stageWanted {return;}
+    verifyStage = stageRunning;
+    var job = verifyJob(ssl, host.view());
+    tls.verifyWork(if offline {1u64} else {0u64}, &mut job);
+    self.verified(if job.len() >= 4usize {readU32(job.base())} else {genericFailure});
+  }
+
+  // Pinning: the server's own key against the pins, now
+  fn checkPins(self: &mut) {
+    verifyStage = stageRunning;
+    self.verified(if pinMatches(ssl, pins.view()) {0u32} else {certUntrustedRoot});
+  }
+
+  // The verdict: 0 trusted, else Windows' error. It goes in the callback
+  // block for verifyChain, and the handshake goes on from where it stopped
+  fn verified(self: &mut, code: u32) {
+    if verifyStage != stageRunning {return;}
+    verifyStage = stageDone;
+    let b = box as *Box;
+    if code == 0u32 {
+      (*b).verdict = verdictTrusted;
+    } else {
+      (*b).verdict = verdictRefused;
+      self.failWith(certRefused(kind, code));
+    }
+    if closed {return;}
+    ERR_clear_error();
+    let rv = ngtcp2_crypto_read_write_crypto_data(conn, 0i32, null, 0usize);
+    self.harvest();
+    if rv != 0i32 {
+      self.fail(errCrypto, "the handshake failed");
+      self.closeFor(errCrypto);
+      return;
+    }
+    // TLS may have finished the handshake here, outside ngtcp2's read, and
+    // ngtcp2 takes the handshake as done only at the end of a read (its
+    // client must not send its Finished before that, or a HANDSHAKE_DONE
+    // that comes before its next write finds it still waiting, its Handshake
+    // keys gone). So it reads one zero byte, which it drops as padding, and
+    // its read's end does that step now, as it would have had the verdict
+    // come inside the read
+    var pad = Array[u8, 1]() <- fill 0u8;
+    let pi = PktInfo.none();
+    ngtcp2_conn_read_pkt_versioned(conn, &(*(ps as *PathStorage)).path, pktInfoV1, &pi, &pad[0usize] as *u8,
+      1usize, tsOf(lastNow));
+    self.harvest();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inside
+  // ---------------------------------------------------------------------------
+
+  // A wake time that has come: ngtcp2's timer run (a retransmission queued,
+  // the idle timeout's end)
+  fn expire(self: &mut, now: Instant) {
+    if now > lastNow {lastNow = now;}
+    if closed {return;}
+    let t = ngtcp2_conn_get_expiry(conn);
+    if t == noExpiry || t > tsOf(now) {return;}
+    let rv = ngtcp2_conn_handle_expiry(conn, tsOf(now));
+    self.harvest();
+    if rv == 0i32 {return;}
+    if rv == errIdleClose {
+      self.ended(false, false, 0u64, true);
+    } else if rv == errHandshakeTimeout {
+      self.fail(rv, "the handshake took too long");
+      self.ended(false, false, 0u64, false);
+    } else {
+      self.fail(rv, "the connection's timer failed");
+      self.closeFor(rv);
+    }
+  }
+
+  // The next packet into dest: its length, 0 for none
+  fn transmitInto(self: &mut, dest: *u8, len: usize, now: Instant) usize {
+    let ts = tsOf(now);
+    var ck = 0u32;
+    var code = 0u64;
+    var liberr = 0i32;
+    match &closing {
+      case let Some(c) {
+        ck = c.kind;
+        code = c.code;
+        liberr = c.liberr;
+      }
+      case is None[CloseWith] {}
+    }
+    if ck != 0u32 {
+      closing = None;
+      return self.writeClose(dest, len, ck, code, liberr, ts);
+    }
+    if closed {return 0usize;}
+    var pi = PktInfo.none();
+    // Streams' data first, round robin from the cursor, as many streams'
+    // into the packet as ngtcp2 will coalesce
+    let bound = streams.bound();
+    var k = if cursor < bound {cursor} else {0usize};
+    var visited = 0usize;
+    var written = 0isize;
+    var done = false;
+    while visited < bound && !done {
+      let cell = u32.from(k);
+      k = if k + 1usize < bound {k + 1usize} else {0usize};
+      visited = visited + 1usize;
+      if !streams.isLive(cell) {continue;}
+      let s = streams.at(cell) as &mut Stream;
+      var going = true;
+      while going && s.hasUnsent() {
+        let v = s.nextVec();
+        let finNow = s.fin && s.offered + u64.from(v.len) == s.queued;
+        let flags = writeStreamFlagMore | (if finNow {writeStreamFlagFin} else {0u32});
+        var accepted = -1isize;
+        let r = ngtcp2_conn_writev_stream_versioned(conn, null, pktInfoV1, &mut pi, dest, len,
+          &mut accepted, flags, s.id, &v, if v.len == 0usize {0usize} else {1usize}, ts);
+        var progress = false;
+        if accepted >= 0isize {
+          s.offered = s.offered + u64.from(accepted as usize);
+          if finNow && s.offered == s.queued && !s.finSent {
+            s.finSent = true;
+            progress = true;
+          }
+          if accepted > 0isize {progress = true;}
+        }
+        if r == isize.from(errWriteMore) {
+          // Room for more: this stream's next bytes, or the next stream's
+          if !progress {break;}
+          continue;
+        }
+        if r == isize.from(errStreamDataBlocked) {break;}
+        if r == isize.from(errStreamShutWr) || r == isize.from(errStreamNotFound) {
+          // Not this end's reset: the peer's STOP_SENDING, which ngtcp2
+          // answered with a RESET_STREAM of its own (ngtcp2 calls back for
+          // neither)
+          s.writeShut = true;
+          events.push(Event.WriteStopped(s.id));
+          break;
+        }
+        if r < 0isize {
+          self.harvest();
+          self.failWrite(liberrOf(r));
+          return 0usize;
+        }
+        // A packet, or none when nothing may go now (congestion, pacing)
+        written = r;
+        done = true;
+        cursor = k;
+        going = false;
+      }
+    }
+    if !done {
+      // No stream filled a packet: ngtcp2 writes what it has, with any
+      // streams' data coalesced so far
+      var none = -1isize;
+      let nothing = NgVec(null, 0usize);
+      written = ngtcp2_conn_writev_stream_versioned(conn, null, pktInfoV1, &mut pi, dest, len, &mut none,
+        0u32, -1i64, &nothing, 0usize, ts);
+      if written < 0isize {
+        self.harvest();
+        self.failWrite(liberrOf(written));
+        return 0usize;
+      }
+    }
+    self.harvest();
+    usize.from(written as usize)
+  }
+
+  // The CONNECTION_CLOSE asked for, into dest; the connection ends
+  fn writeClose(self: &mut, dest: *u8, len: usize, ck: u32, code: u64, liberr: i32, ts: u64) usize {
+    var cc = CcErr(0i32, 0u64, 0u64, null, 0usize);
+    ngtcp2_ccerr_default(&mut cc);
+    if ck == closeApp {
+      ngtcp2_ccerr_set_application_error(&mut cc, code, null, 0usize);
+    } else if ck == closeAlert {
+      ngtcp2_ccerr_set_tls_alert(&mut cc, u8.from(code & 0xFFu64), null, 0usize);
+    } else if liberr == errCrypto {
+      // TLS's failure goes to the peer as its alert (CRYPTO_ERROR 0x100 + the alert)
+      ngtcp2_ccerr_set_tls_alert(&mut cc, ngtcp2_conn_get_tls_alert(conn), null, 0usize);
+    } else {
+      ngtcp2_ccerr_set_liberr(&mut cc, liberr, null, 0usize);
+    }
+    var pi = PktInfo.none();
+    let n = ngtcp2_conn_write_connection_close_versioned(conn, null, pktInfoV1, &mut pi, dest, len, &cc, ts);
+    self.harvest();
+    self.ended(false, ck == closeApp, cc.errorCode, false);
+    if n > 0isize {usize.from(n as usize)} else {0usize}
+  }
+
+  // The connection fails for ngtcp2's error: the next pollTransmit writes
+  // the CONNECTION_CLOSE
+  fn closeFor(self: &mut, liberr: i32) {
+    match &closing {
+      case let Some(c) {return;}
+      case is None[CloseWith] {}
+    }
+    closing = Some(CloseWith(closeLib, 0u64, liberr));
+  }
+
+  // The connection ended: the Closed event, once
+  fn ended(self: &mut, byPeer: bool, app: bool, code: u64, idle: bool) {
+    if closed {return;}
+    closed = true;
+    events.push(Event.Closed(byPeer, app, code, idle));
+  }
+
+  // A write failed inside ngtcp2: closing, draining, or a failure whose
+  // CONNECTION_CLOSE goes out next
+  fn failWrite(self: &mut, e: i32) {
+    if e == errClosing || e == errDraining {
+      self.ended(false, false, 0u64, false);
+      return;
+    }
+    self.fail(e, "a packet could not be written");
+    if ngtcp2_err_is_fatal(e) != 0i32 {
+      self.ended(false, false, 0u64, false);
+    } else {
+      self.closeFor(e);
+    }
+  }
+
+  // Remember the first failure, from ngtcp2's error
+  fn fail(self: &mut, code: i32, what: &str) {
+    var d = String.from(what);
+    if code == errCrypto {
+      let alert = ngtcp2_conn_get_tls_alert(conn);
+      if alert != 0u8 {
+        d.append(": TLS alert ");
+        d.appendUInt(u64.from(alert));
+      }
+      // OpenSSL's own check, for the Roots verifier
+      let vr = SSL_get_verify_result(ssl);
+      if !server && vr != 0i32 && kind == tls.VerifyKind.Roots {
+        d.append(": the server's certificate: ");
+        d.append(cText(X509_verify_cert_error_string(i64.from(vr))));
+        d.append(" (OpenSSL's verify result ");
+        d.appendInt(i64.from(vr));
+        d.append(")");
+      }
+      sslErrors(&mut d);
+    }
+    self.failWith(QuicError(code, 0u32, d));
+  }
+
+  fn failWith(self: &mut, e: QuicError) {
+    match &err {
+      case let Some(x) {return;}
+      case is None[QuicError] {}
+    }
+    err = Some(e);
+  }
+
+  // A stream's record, or null
+  fn streamAt(self: &, stream: i64) *Stream {
+    match byId.getCopy(&stream) {
+      case let Some(cell) {return streams.at(cell);}
+      case is None[u32] {}
+    }
+    null
+  }
+
+  // A stream's record when it may be written to now, or null
+  fn writable(self: &, stream: i64) *Stream {
+    let p = self.streamAt(stream);
+    if closed || p as usize == 0usize || (*p).gone || !self.canSend(stream) || (*p).fin || (*p).writeShut {
+      return null;
+    }
+    p
+  }
+
+  // A stream's record goes: ngtcp2 has closed the stream, and its owner has
+  // released its bytes. The peer may then open one more stream of its kind
+  // (ngtcp2 raises the peer's limit only when told)
+  fn retire(self: &mut, stream: i64) {
+    match byId.getCopy(&stream) {
+      case let Some(cell) {
+        streams.removeAt(cell);
+        byId.remove(&stream);
+      }
+      case is None[u32] {return;}
+    }
+    if closed || self.isLocal(stream) {return;}
+    if (stream & 2i64) == 0i64 {
+      ngtcp2_conn_extend_max_streams_bidi(conn, 1usize);
+    } else {
+      ngtcp2_conn_extend_max_streams_uni(conn, 1usize);
+    }
+  }
+
+  // A stream this end may send on: bidirectional, or its own unidirectional
+  fn canSend(self: &, stream: i64) bool {(stream & 2i64) == 0i64 || self.isLocal(stream)}
+
+  // A stream this end may receive on: bidirectional, or the peer's unidirectional
+  fn canReceive(self: &, stream: i64) bool {(stream & 2i64) == 0i64 || !self.isLocal(stream)}
+
+  // A stream this end opened: a server's numbers are odd
+  fn isLocal(self: &, stream: i64) bool {((stream & 1i64) == 1i64) == server}
+
+  fn addStream(self: &mut, id: i64) {
+    match byId.getCopy(&id) {
+      case let Some(cell) {return;}
+      case is None[u32] {}
+    }
+    let s = streams.add(Stream.make(id));
+    byId.insert(id, s.index);
+  }
+
+  // ---------------------------------------------------------------------------
+  // The callback block's records, after each of ngtcp2's calls
+  // ---------------------------------------------------------------------------
+
+  fn harvest(self: &mut) {
+    let bx = box as *Box;
+    var at = 0usize;
+    let len = (*bx).inLen;
+    let base = (*bx).inbox;
+    var delivered = 0u64;
+    // Consecutive records of one stream's bytes go into one IoBuf while it
+    // has room
+    var cur = IoBuf.empty();
+    var curOn = false;
+    var curStream = 0i64;
+    var curFin = false;
+    while at < len {
+      let r = *((base + at) as *Rec);
+      let n = usize.from(r.len);
+      let data = base + at + mem.sizeof[Rec]();
+      if r.kind == recData {
+        let fin = (r.flags & streamDataFlagFin) != 0u32;
+        delivered = delivered + u64.from(n);
+        let p = self.streamAt(r.stream);
+        if p as usize != 0usize {(*p).unreleased = (*p).unreleased + u64.from(n);}
+        if curOn && curStream == r.stream && !curFin && cur.room() >= n {
+          if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
+          curFin = fin;
+        } else {
+          if curOn {events.push(Event.Data(curStream, cur, curFin));}
+          cur = if n == 0usize {IoBuf.empty()} else {IoBuf(n)};
+          if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
+          curOn = true;
+          curStream = r.stream;
+          curFin = fin;
+        }
+      } else {
+        if curOn {
+          events.push(Event.Data(curStream, cur, curFin));
+          cur = IoBuf.empty();
+          curOn = false;
+        }
+        if r.kind == recOpen {
+          self.addStream(r.stream);
+          events.push(Event.PeerStream(r.stream));
+        } else if r.kind == recClose {
+          let p = self.streamAt(r.stream);
+          if p as usize != 0usize {
+            (*p).gone = true;
+            if (*p).unreleased == 0u64 {self.retire(r.stream);}
+          }
+        } else if r.kind == recReset {
+          events.push(Event.Reset(r.stream, r.b));
+        } else if r.kind == recAcked {
+          let p = self.streamAt(r.stream);
+          if p as usize != 0usize {(p as &mut Stream).ackedTo(r.a + r.b);}
+        } else if r.kind == recHandshake {
+          self.handshakeEnded();
+        } else if r.kind == recMoreBidi {
+          events.push(Event.MoreStreams(true));
+        } else if r.kind == recMoreUni {
+          events.push(Event.MoreStreams(false));
+        }
+      }
+      at = at + mem.sizeof[Rec]() + padded(n);
+    }
+    if curOn {events.push(Event.Data(curStream, cur, curFin));}
+    (*bx).inLen = 0usize;
+    // The connection's credit comes back as bytes arrive; a stream's, as its
+    // owner releases them (see the package's header, CREDIT)
+    if delivered > 0u64 && !closed {ngtcp2_conn_extend_max_offset(conn, delivered);}
+    if (*bx).oom != 0u32 && !closed {
+      (*bx).oom = 0u32;
+      self.fail(callbackFailure, "out of memory in a callback");
+      self.closeFor(callbackFailure);
+    }
+    // The verify callback stopped the handshake: a pinned key is checked
+    // now; the OS's verifier is the owner's to run
+    if (*bx).verifyWanted != 0u32 {
+      (*bx).verifyWanted = 0u32;
+      if verifyStage == stageIdle && !closed {
+        verifyStage = stageWanted;
+        if kind == tls.VerifyKind.Pinned {
+          self.checkPins();
+        } else {
+          events.push(Event.VerifyNeeded);
+        }
+      }
+    }
+  }
+
+  // ngtcp2 says the handshake is done: the protocol both ends agreed on
+  // must be the one asked for, or the connection closes with
+  // no_application_protocol
+  fn handshakeEnded(self: &mut) {
+    let got = self.alpn();
+    if got.view() != alpnName.view() {
+      var d = String.from("the peer agreed on no ALPN protocol, or not on ");
+      d.append(alpnName.view());
+      self.failWith(QuicError(errCrypto, 0u32, d));
+      match &closing {
+        case let Some(c) {return;}
+        case is None[CloseWith] {}
+      }
+      closing = Some(CloseWith(closeAlert, u64.from(alertNoApplicationProtocol), 0i32));
+      return;
+    }
+    events.push(Event.HandshakeDone);
+  }
+
+  fn final(self: &uni) {
+    ngtcp2_conn_del(conn);
+    SSL_set_ex_data(ssl, appDataSlot, null);
+    SSL_free(ssl);
+    ngtcp2_crypto_ossl_ctx_del(ossl);
+    libc.free(ps);
+    boxFree(box);
+  }
+}
+
+const alertNoApplicationProtocol = 120u32;
+
+// A connection's record, its handles made
+fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &str, cfg: &Config,
+    now: Instant) Connection {
+  var pins = List[u8].empty();
+  let keys = cfg.verify.pinnedKeys();
+  var k = 0usize;
+  while k < keys.len {
+    pins.push(keys[k]);
+    k = k + 1usize;
+  }
+  Connection(conn: conn, ossl: ossl, ssl: ssl, box: b, ps: ps, server: server, host: String.from(host),
+    alpnName: cfg.alpn.copy(), kind: cfg.verify.kind, pins: pins, offline: cfg.offline,
+    lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, streams: SlotTable[Stream].make(16u32),
+    byId: Dict[i64, u32].empty(), cursor: 0usize, events: Deque[Event].empty(), verifyStage: stageIdle,
+    lastNow: now, closed: false, closing: None, err: None)
+}
+
+fn padded(n: usize) usize {(n + 7usize) / 8usize * 8usize}
+
+// ngtcp2's error, from a write's negative result (ngtcp2_ssize)
+fn liberrOf(n: isize) i32 {i32.from(n)}
+
+// ---------------------------------------------------------------------------
+// The callback block, the path, and what a connection is made with
+// ---------------------------------------------------------------------------
+
+fn boxMake() *u8 {
+  let b = libc.malloc(mem.sizeof[Box]());
+  *(b as *Box) = Box(ConnRef(&getConn, b), null, null, null, 0usize, 0usize, null, 0u32, 0u32, verdictNone, 0u32);
+  b
+}
+
+fn boxFree(b: *u8) {
+  let bx = b as *Box;
+  if (*bx).inbox as usize != 0usize {libc.free((*bx).inbox);}
+  if (*bx).alpn as usize != 0usize {libc.free((*bx).alpn);}
+  libc.free(b);
+}
+
+// The path, both ends' sockaddrs with it, in C memory: it points into itself
+fn pathMake(localAddr: &Addr, remoteAddr: &Addr) *u8 {
+  let p = libc.malloc(mem.sizeof[PathStorage]());
+  ngtcp2_path_storage_init(&mut *(p as *PathStorage), &localAddr.raw as *u8, localAddr.size,
+    &remoteAddr.raw as *u8, remoteAddr.size, null);
+  p
+}
+
+// A connection ID of n random bytes
+fn randomCid(n: usize) Cid {
+  var c = Cid.none();
+  RAND_bytes(&mut c.data as *u8, i32.from(n));
+  c.datalen = n;
+  c
+}
+
+// ngtcp2's default settings
+fn defaultSettings() Settings {
+  var s = Settings(null, 0i32, 0u64, 0u64, null, 0usize, null, 0usize, 0i32, null, 0u64, 0u64,
+    0usize, 0u8, 0u64, null, 0usize, null, 0usize, 0u32, 0u8, 0u32, null, 0usize, 0u64, 0u64);
+  ngtcp2_settings_default_versioned(settingsV3, &mut s);
+  s
+}
+
+// ngtcp2's settings: its defaults, its clock started at 'now', and the
+// largest payload it sends. Window auto-tuning stays off (max_window and
+// max_stream_window 0): the windows are the Config's
+fn settingsFor(now: Instant, cfg: &Config) Settings {
+  var s = defaultSettings();
+  s.initialTs = tsOf(now);
+  s.maxTxUdpPayloadSize = cfg.maxUdpPayload;
+  s
+}
+
+
+
+// ngtcp2's default transport parameters
+fn defaultParams() TransportParams {
+  var tp = TransportParams(
+    PreferredAddr(Cid.none(), Array[u8, 16]() <- fill 0u8, Array[u8, 28]() <- fill 0u8, 0u8, 0u8,
+      Array[u8, 16]() <- fill 0u8),
+    Cid.none(), Cid.none(), Cid.none(), 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    0u64, 0u64, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, Array[u8, 16]() <- fill 0u8, 0u8,
+    VersionInfo(0u32, null, 0usize), 0u8);
+  ngtcp2_transport_params_default_versioned(transportParamsV1, &mut tp);
+  tp
+}
+
+// The transport parameters announced: ngtcp2's defaults, and the Config's
+fn paramsFor(cfg: &Config) TransportParams {
+  var tp = defaultParams();
+  tp.initialMaxStreamDataBidiLocal = cfg.streamWindow;
+  tp.initialMaxStreamDataBidiRemote = cfg.streamWindow;
+  tp.initialMaxStreamDataUni = cfg.streamWindow;
+  tp.initialMaxData = cfg.connectionWindow;
+  tp.initialMaxStreamsBidi = cfg.maxStreamsBidi;
+  tp.initialMaxStreamsUni = cfg.maxStreamsUni;
+  let idle = cfg.idleTimeout.nanos();
+  tp.maxIdleTimeout = if idle > 0i64 {u64.from(idle as u64)} else {0u64};
+  tp.maxUdpPayloadSize = u64.from(cfg.maxUdpPayload);
+  // Connection migration is off (see the package's header, MIGRATION)
+  tp.disableActiveMigration = 1u8;
+  tp
+}
+
+// The callbacks: the crypto helper's for packet protection, the package's
+// for the handshake's data and what happens on the connection
+fn callbacks(server: bool) Callbacks {
+  Callbacks(
+    clientInitial: if server {null} else {&ngtcp2_crypto_client_initial_cb as *u8},
+    recvClientInitial: if server {&ngtcp2_crypto_recv_client_initial_cb as *u8} else {null},
+    recvCryptoData: &onRecvCryptoData,
+    handshakeCompleted: &onHandshakeCompleted,
+    recvVersionNegotiation: null,
+    encrypt: &ngtcp2_crypto_encrypt_cb as *u8,
+    decrypt: &ngtcp2_crypto_decrypt_cb as *u8,
+    hpMask: &ngtcp2_crypto_hp_mask_cb as *u8,
+    recvStreamData: &onRecvStreamData,
+    ackedStreamDataOffset: &onAckedStreamDataOffset,
+    streamOpen: &onStreamOpen,
+    streamClose: &onStreamClose,
+    recvStatelessReset: null,
+    recvRetry: if server {null} else {&ngtcp2_crypto_recv_retry_cb as *u8},
+    extendMaxLocalStreamsBidi: &onMoreBidi,
+    extendMaxLocalStreamsUni: &onMoreUni,
+    rand: &onRand,
+    getNewConnectionId: &onGetNewConnectionId,
+    removeConnectionId: null,
+    updateKey: &ngtcp2_crypto_update_key_cb as *u8,
+    pathValidation: null,
+    selectPreferredAddr: null,
+    streamReset: &onStreamReset,
+    extendMaxRemoteStreamsBidi: null,
+    extendMaxRemoteStreamsUni: null,
+    extendMaxStreamData: null,
+    dcidStatus: null,
+    handshakeConfirmed: null,
+    recvNewToken: null,
+    deleteCryptoAeadCtx: &ngtcp2_crypto_delete_crypto_aead_ctx_cb as *u8,
+    deleteCryptoCipherCtx: &ngtcp2_crypto_delete_crypto_cipher_ctx_cb as *u8,
+    recvDatagram: null,
+    ackDatagram: null,
+    lostDatagram: null,
+    getPathChallengeData: &ngtcp2_crypto_get_path_challenge_data_cb as *u8,
+    streamStopSending: null,
+    versionNegotiation: &ngtcp2_crypto_version_negotiation_cb as *u8,
+    recvRxKey: null,
+    recvTxKey: null,
+    tlsEarlyDataRejected: null,
+    beginPathValidation: null,
+    recvStatelessReset2: null,
+    getNewConnectionId2: null,
+    dcidStatus2: null,
+    getPathChallengeData2: null)
+}
+
+// Is this text an IP address (IPv4 dotted, or IPv6 with a colon)?
+fn isAddressText(host: &str) bool {
+  if host.len() == 0usize {return false;}
+  var allDigitsDots = true;
+  var k = 0usize;
+  while k < host.len() {
+    let c = host[k];
+    if c == ':' {return true;}
+    if !(c == '.' || (c >= '0' && c <= '9')) {allDigitsDots = false;}
+    k = k + 1usize;
+  }
+  allDigitsDots
+}
+
+// ---------------------------------------------------------------------------
+// The callbacks: each appends a record to the callback block, and touches
+// nothing else of the package's
+// ---------------------------------------------------------------------------
+
+// Append a record: 0, or NGTCP2_ERR_CALLBACK_FAILURE when the memory for it
+// cannot be had (the block marks it, and the connection fails)
+fn post(user: *u8, kind: u32, flags: u32, stream: i64, a: u64, b: u64, data: *u8, len: usize) i32 {
+  let bx = user as *Box;
+  let need = mem.sizeof[Rec]() + padded(len);
+  if (*bx).inLen + need > (*bx).inCap {
+    var cap = if (*bx).inCap == 0usize {4096usize} else {(*bx).inCap * 2usize};
+    while cap < (*bx).inLen + need {cap = cap * 2usize;}
+    let p = libc.realloc((*bx).inbox, cap);
+    if p as usize == 0usize {
+      (*bx).oom = 1u32;
+      return callbackFailure;
+    }
+    (*bx).inbox = p;
+    (*bx).inCap = cap;
+  }
+  let at = (*bx).inbox + (*bx).inLen;
+  *(at as *Rec) = Rec(kind, flags, stream, a, b, u64.from(len));
+  if len > 0usize {libc.memcpy(at + mem.sizeof[Rec](), data, len);}
+  (*bx).inLen = (*bx).inLen + need;
+  0i32
+}
+
+// The crypto helper asks for the connection, from the SSL object's app data
+fn @c("coneQuicGetConn") getConn(ref: *u8) *u8 {(*(ref as *Box)).conn}
+
+fn @c("coneQuicRecvStreamData") onRecvStreamData(conn: *u8, flags: u32, stream: i64, offset: u64,
+    data: *u8, datalen: usize, user: *u8, streamUser: *u8) i32 {
+  post(user, recData, flags, stream, offset, 0u64, data, datalen)
+}
+
+fn @c("coneQuicStreamOpen") onStreamOpen(conn: *u8, stream: i64, user: *u8) i32 {
+  post(user, recOpen, 0u32, stream, 0u64, 0u64, null, 0usize)
+}
+
+fn @c("coneQuicStreamClose") onStreamClose(conn: *u8, flags: u32, stream: i64, appErrorCode: u64,
+    user: *u8, streamUser: *u8) i32 {
+  let code = if (flags & streamCloseFlagAppErrorCodeSet) != 0u32 {appErrorCode} else {0u64};
+  post(user, recClose, flags, stream, code, 0u64, null, 0usize)
+}
+
+fn @c("coneQuicStreamReset") onStreamReset(conn: *u8, stream: i64, finalSize: u64,
+    appErrorCode: u64, user: *u8, streamUser: *u8) i32 {
+  post(user, recReset, 0u32, stream, finalSize, appErrorCode, null, 0usize)
+}
+
+fn @c("coneQuicAckedStreamDataOffset") onAckedStreamDataOffset(conn: *u8, stream: i64, offset: u64,
+    datalen: u64, user: *u8, streamUser: *u8) i32 {
+  post(user, recAcked, 0u32, stream, offset, datalen, null, 0usize)
+}
+
+fn @c("coneQuicHandshakeCompleted") onHandshakeCompleted(conn: *u8, user: *u8) i32 {
+  post(user, recHandshake, 0u32, 0i64, 0u64, 0u64, null, 0usize)
+}
+
+fn @c("coneQuicMoreBidi") onMoreBidi(conn: *u8, maxStreams: u64, user: *u8) i32 {
+  post(user, recMoreBidi, 0u32, 0i64, maxStreams, 0u64, null, 0usize)
+}
+
+fn @c("coneQuicMoreUni") onMoreUni(conn: *u8, maxStreams: u64, user: *u8) i32 {
+  post(user, recMoreUni, 0u32, 0i64, maxStreams, 0u64, null, 0usize)
+}
+
+// ngtcp2's randomness: OpenSSL's
+fn @c("coneQuicRand") onRand(dest: *u8, destlen: usize, randCtx: *u8) {
+  RAND_bytes(dest, i32.from(destlen));
+}
+
+// A new connection ID of this end's, and its stateless reset token: random
+// (stateless reset is not here yet)
+fn @c("coneQuicGetNewConnectionId") onGetNewConnectionId(conn: *u8, cid: &mut Cid, token: *u8,
+    cidlen: usize, user: *u8) i32 {
+  if RAND_bytes(&mut cid.data as *u8, i32.from(cidlen)) != 1i32 {return callbackFailure;}
+  cid.datalen = cidlen;
+  if RAND_bytes(token, i32.from(statelessResetTokenLen)) != 1i32 {return callbackFailure;}
+  0i32
+}
