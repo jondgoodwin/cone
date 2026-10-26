@@ -354,9 +354,14 @@ is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
 target mode suspended (`genericConditioned`). An argument that is in flight
 cannot be laid out first, and a type that holds an instance of a generic by value
 is that argument when the instance is made from its own layout, as in `struct
-Node { kids List[Node]; }`, so a **member's** clause is not decided then: the
-member is kept, and `genericLateWhere` decides it as a check that reads layouts,
-once none is in flight (nodes/generic.md). An `is` entry's condition is part of
+Node { kids List[Node]; }`, so a **member's** clause that asks what an argument
+is — a trait, a signature — is not decided then: the member is kept, and
+`genericLateWhere` decides it as a check that reads layouts, once none is in
+flight, or sooner, when something reads the instance's members
+(`genericLateWhereNow`), since a body can be checked inside a layout (a type
+fitting a bound structurally has its methods checked there). A clause naming a
+type, `K is String`, reads no layout and is decided at once (nodes/generic.md).
+An `is` entry's condition is part of
 the layout and is decided at once. A `Sendable` clause standing
 alone is the exception: whether a type may cross threads is answered
 provisionally of one not yet laid out, noted, and judged again once every type
@@ -876,6 +881,18 @@ Kept so that reopening one is a decision rather than a rediscovery.
   target may not be laid out yet: a check reading its fields, its flags, whether
   it holds a borrow or its vtable goes through `structDeferCheck`, as each of
   section 4's table does, or reads a half-made answer that nothing reports.
+- **A body can be checked inside a layout in flight.** Layout before members
+  keeps the members queue from running while one is, but demand does not wait:
+  deciding a bound a type fits structurally checks the type's methods, bodies
+  included (`genericDemandMatch`), wherever the instance is made — a field's
+  type, a signature, a global's held declared type. So such a body can meet
+  what the queue has not reached yet. An instance's members whose `where`
+  waited are decided when something reads them (`genericLateWhereNow`), unless
+  an argument is itself in flight, when they stay undecided until the queue
+  (`generic_global_where_member`). A global read in a method its own declared
+  type's bound checks still has the generic call it was written as, since the
+  instance is stored only once its check returns: `g.at` in Svc's method, with
+  `g: Host[Svc]` and `S: Hosted`, is `ErrorNoMeth`.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the

@@ -1281,7 +1281,10 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     if (genericTraitIsMarker(trait))
         return 0;
     // Fitting it: 'structMatches' is the structural subtype test a trait's
-    // uses are made by, under the constraint monomorphization asks for
+    // uses are made by, under the constraint monomorphization asks for. What
+    // it compares is the type's members, so an instance's are decided first
+    if (strnode->latewhere)
+        genericLateWhereNow(strnode);
     genericDemandMatch(trait, strnode);
     return structMatches(trait, dcl, Monomorph) != NoMatch;
 }
@@ -1303,12 +1306,19 @@ static StaticBorrow genericStaticHow(StructNode *trait, GenVarDclNode *parm) {
 }
 
 // What a condition comes to at an instance's arguments. Unknown is a
-// condition turning on a parameter not bound there.
+// condition turning on a parameter not bound there. Late is a clause that asks
+// what a type is -- a trait it meets, a signature -- while the question is
+// held back (genericLayoutUnasked): only genericMemberWhereNow sees it.
 typedef enum {
     WhereFalse,
     WhereTrue,
-    WhereUnknown
+    WhereUnknown,
+    WhereLate
 } WhereValue;
+
+// Set while a member's clauses are decided as far as they can be without asking
+// any type what it is (genericMemberWhereNow)
+static int genericLayoutUnasked = 0;
 
 // The use that asked for the instance a condition is being decided for, and the
 // walk it was asked in, which an instance of a clause's generic trait is made
@@ -1338,7 +1348,11 @@ static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *a
         fresh.extend = NULL;
         tstate = &fresh;
     }
+    // Whatever the check instantiates decides its own conditions in full
+    int svunasked = genericLayoutUnasked;
+    genericLayoutUnasked = 0;
     inodeTypeCheckAny(tstate, &copy);
+    genericLayoutUnasked = svunasked;
     if (inodeIsError(copy) || !isTypeNode(copy))
         return NULL;
     return copy;
@@ -1587,6 +1601,8 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
         WhereValue rval = genericConditionValue(((LogicNode*)cond)->rexp, parms, args, 1);
         if (rval == decides)
             return decides;
+        if (lval == WhereLate || rval == WhereLate)
+            return WhereLate;
         return lval == WhereUnknown || rval == WhereUnknown ? WhereUnknown : rval;
     }
     GenVarDclNode *parm;
@@ -1596,6 +1612,8 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     if (((CastNode*)cond)->typ->tag == FnSigTag) {
         if (type == NULL || (parm == NULL && !nested))
             return WhereUnknown;
+        if (genericLayoutUnasked)
+            return WhereLate;
         INode *sig = genericClauseCloneChecked((CastNode*)cond, parms, args);
         if (sig == NULL)
             return WhereUnknown;
@@ -1607,6 +1625,8 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     if (trait == NULL && genericNamedGenericTrait(((CastNode*)cond)->typ)) {
         if (type == NULL || (parm == NULL && !nested))
             return WhereUnknown;
+        if (genericLayoutUnasked)
+            return WhereLate;
         trait = genericClauseTrait((CastNode*)cond, parms, args);
         if (trait == NULL)
             return WhereUnknown;
@@ -1624,6 +1644,8 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     }
     if (type == NULL || (trait == NULL && named == NULL) || (parm == NULL && !nested))
         return WhereUnknown;
+    if (trait && genericLayoutUnasked)
+        return WhereLate;
     if (trait)
         return genericTypeIsHow(type, trait, genericStaticHow(trait, parm)) ? WhereTrue : WhereFalse;
     // A type is met by itself alone
@@ -1657,6 +1679,34 @@ static INode *genericUnmetCondition(INode *generic, Nodes *where, Nodes *parms, 
     }
     genericAskerLeave(&asker);
     return unmet;
+}
+
+// A member's 'where' at arguments still being laid out, decided as far as it can
+// be without asking any type what it is: a clause naming a type is answered by
+// that type alone ('K is String', 'K is Uni[str]'), whatever is in flight; a
+// clause naming a trait or a signature waits (WhereLate), unless the rest of a
+// '||' or a '&&' decides it. WhereFalse if a clause is false, WhereLate if one
+// waits, else WhereTrue.
+static WhereValue genericMemberWhereNow(INode *generic, Nodes *where, Nodes *parms, Nodes *args) {
+    GenericAsker asker;
+    genericAskerEnter(&asker, generic);
+    int svunasked = genericLayoutUnasked;
+    genericLayoutUnasked = 1;
+    WhereValue value = WhereTrue;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        WhereValue clause = genericConditionValue(*nodesp, parms, args, 0);
+        if (clause == WhereFalse) {
+            value = WhereFalse;
+            break;
+        }
+        if (clause == WhereLate)
+            value = WhereLate;
+    }
+    genericLayoutUnasked = svunasked;
+    genericAskerLeave(&asker);
+    return value;
 }
 
 // Append a type's name, with an instance's type arguments, to 'buf'
@@ -2422,8 +2472,11 @@ static int genericArgsUnsettled(Nodes *args) {
 // inside Node's own layout -- what it comes to is not settled, and answering
 // then would answer by the order the declarations happen to be laid out in
 // ('Node' is Copy until its fields say it moves). So with 'late' given, such a
-// member is not decided here: it is listed in 'late', cloned, and decided once
-// no layout is in flight, before any member is checked (genericLateWhere). An
+// member is decided here only as far as no type is asked what it is
+// (genericMemberWhereNow): a clause naming a type is answered now. One that
+// waits on a trait or a signature is listed in 'late', cloned, and decided once
+// no layout is in flight, before any member is checked (genericLateWhere), or
+// sooner, when something reads the instance's members (genericLateWhereNow). An
 // 'is' entry's condition is not deferred: it is part of the layout.
 static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **late) {
     Nodes *absent = NULL;
@@ -2434,9 +2487,19 @@ static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **l
         if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->where == NULL)
             continue;
         if (unsettled) {
-            if (*late == NULL)
-                *late = newNodes(4);
-            nodesAdd(late, *nodesp);
+            WhereValue now = genericMemberWhereNow((INode*)generic, ((FnDclNode*)*nodesp)->where,
+                generic->genericinfo->parms, args);
+            if (now == WhereTrue)
+                continue;
+            if (now == WhereLate) {
+                if (*late == NULL)
+                    *late = newNodes(4);
+                nodesAdd(late, *nodesp);
+                continue;
+            }
+            if (absent == NULL)
+                absent = newNodes(4);
+            nodesAdd(&absent, *nodesp);
             continue;
         }
         if (genericUnmetCondition((INode*)generic, ((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args) == NULL)
@@ -2705,25 +2768,32 @@ static INode *genericReserve(INode *generic) {
 }
 
 // An instance's members whose 'where' waited on its arguments' layouts: each
-// beside its copy in the instance, alternating
-typedef struct {
+// beside its copy in the instance, alternating, and the walk the instance was
+// made in, which they are decided under
+typedef struct GenericLateWhere {
     StructNode *generic;
     FnCallNode *srcgencall;
     Nodes *args;
     Nodes *pairs;
+    TypeCheckState state;
 } GenericLateWhere;
 
-// Decide, once no layout is in flight, which of an instance's members its
-// arguments' 'where' clauses leave out, and take those out of it before any
-// member is checked. An argument no layout has reached is laid out first.
-static void genericLateWhere(TypeCheckState *pstate, INode *instance, void *extra) {
-    GenericLateWhere *late = (GenericLateWhere *)extra;
+// Lay out each argument no layout has reached
+static void genericLateSettle(TypeCheckState *pstate, Nodes *args) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(late->args, cnt, nodesp)) {
+    for (nodesFor(args, cnt, nodesp)) {
         if ((*nodesp)->tag != ULitTag && isTypeNode(*nodesp))
             structTypeSettle(pstate, *nodesp);
     }
+}
+
+// Decide which of an instance's members its arguments' 'where' clauses leave
+// out, and take those out of it. Decided once: the instance stops pointing at
+// what waits before anything is asked, so a read of the instance while it is
+// decided does not decide it again.
+static void genericLateDecide(TypeCheckState *pstate, StructNode *instance, GenericLateWhere *late) {
+    instance->latewhere = NULL;
     INode *svsite = genericCondSite;
     TypeCheckState *svstate = genericCondState;
     genericCondSite = (INode*)late->srcgencall;
@@ -2731,10 +2801,50 @@ static void genericLateWhere(TypeCheckState *pstate, INode *instance, void *extr
     for (uint32_t i = 0; i + 1 < late->pairs->used; i += 2) {
         FnDclNode *original = (FnDclNode*)nodesGet(late->pairs, i);
         if (genericUnmetCondition((INode*)late->generic, original->where, late->generic->genericinfo->parms, late->args) != NULL)
-            structRetireMember((StructNode*)instance, nodesGet(late->pairs, i + 1));
+            structRetireMember(instance, nodesGet(late->pairs, i + 1));
     }
     genericCondSite = svsite;
     genericCondState = svstate;
+}
+
+// Decide, once no layout is in flight, the members of an instance whose 'where'
+// waited, before any member is checked, unless a read of the instance decided
+// them already (genericLateWhereNow). An argument no layout has reached is laid
+// out first.
+static void genericLateWhere(TypeCheckState *pstate, INode *instance, void *extra) {
+    GenericLateWhere *late = (GenericLateWhere *)extra;
+    if (((StructNode*)instance)->latewhere != late)
+        return;
+    genericLateSettle(pstate, late->args);
+    genericLateDecide(pstate, (StructNode*)instance, late);
+}
+
+// A read of an instance's members, while those whose 'where' waited are not yet
+// decided: they are decided now, so that no use selects, or checks the body of,
+// a member its arguments leave out. The queue decides them only once no layout
+// is in flight, and a body can be checked inside one: a type fitting a trait
+// structurally has its methods checked as the fit is decided, and that can
+// happen inside a layout (a field's type, a global's declared type, a
+// signature, each naming 'Host[Svc]' with 'S: Hosted').
+//
+// What waits is a clause asking what an argument is, which needs its layout. An
+// argument no layout has reached is laid out here, as the queue would. One whose
+// layout is in flight cannot be answered yet; nor can the instance's own
+// members be changed while it is laid out (TypeChecking without TypeChecked).
+// Either way they are left to the queue.
+void genericLateWhereNow(StructNode *instance) {
+    GenericLateWhere *late = instance->latewhere;
+    if (late == NULL || (instance->flags & (TypeChecking | TypeChecked)) == TypeChecking)
+        return;
+    // Held as a layout in flight, so that nothing this settles works the members
+    // queue before the instance is decided
+    structLayoutEnter();
+    uint32_t target = structTargetSuspend();
+    genericLateSettle(&late->state, late->args);
+    structTargetResume(target);
+    if (instance->latewhere == late && !genericArgsUnsettled(late->args))
+        genericLateDecide(&late->state, instance, late);
+    structLayoutExit();
 }
 
 // Clone the generic's instance for parms and remember it, without type checking it.
@@ -2771,6 +2881,8 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
         wait->srcgencall = srcgencall;
         wait->args = srcgencall->args;
         wait->pairs = cstate.latepairs;
+        wait->state = *pstate;
+        ((StructNode*)instance)->latewhere = wait;
         structDeferCheck(pstate, genericLateWhere, instance, wait);
     }
 

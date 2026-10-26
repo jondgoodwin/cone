@@ -1,0 +1,91 @@
+// A global of a generic instance whose type argument is bounded by a trait it
+// fits structurally, 'g: Host[Svc]' with 'S: Hosted', declared above Svc. The
+// global's declared type is held as a layout in flight (varDclTypeCheck), and
+// deciding the bound checks Svc's 'turn' inside that hold. Its body calls
+// overloaded methods of instances its fields hold, made there while their
+// argument Req was not yet laid out, each set holding a member that exists only
+// where its 'where' holds:
+//   - 'K is u64', a clause naming a type: false for Table[i32, Req], true for
+//     Table[u64, Req], whose call selects that member;
+//   - 'V is Copy', a clause asking what a type is: false for Cells[Req] (Req
+//     moves), true for Cells[Pt], whose call selects that member.
+// A member whose clause is false is left out of its instance, so its body,
+// which compiles at no other argument, is never checked. Before, every member
+// with a clause was kept until no layout was in flight, and its body was
+// checked inside the hold: 'let n: u64 = key' was refused for an i32 key, and
+// '*vals' as a move out of a field for Req. The printed values were checked by
+// hand: Table[i32, Req]'s find takes the key overload (5 is its key: 1),
+// Table[u64, Req]'s the text one (5 + 3), Cells[Req]'s the borrow (Req's 4),
+// Cells[Pt]'s the copy (Pt's 9).
+
+mod generic_global_where_member;
+
+import stdio use *;
+
+trait Hosted {
+  pub fn turn(self: &mut) u64;
+}
+
+struct Host[S: Hosted] {
+  pub at: u64;
+}
+
+fn @initpure init() {
+  g = Host[Svc](7u64);
+}
+
+struct Table[K, V] {
+  key: K;
+  vals: *V;
+  pub fn findKey overload find(self: &, k: &K) u64 {if *k == key {1u64} else {0u64}}
+  pub fn findText overload find(self: &, k: &str) u64 where K is u64 {
+    let n: u64 = key;
+    n + u64.from(k.len())
+  }
+}
+
+struct Cells[V] {
+  vals: *V;
+  pub fn getRef overload get(self: &, tag: &str) &V {&*vals}
+  pub fn getCopy overload get(self: &, i: u64) V where V is Copy {*vals}
+}
+
+let g: Host[Svc];
+
+struct Svc {
+  r: Rec;
+  pub fn turn(self: &mut) u64 {
+    printStr("absent type = "); printUInt(r.ti.find(&5i32)); printStr("\n");
+    printStr("present type = "); printUInt(r.tu.find("abc")); printStr("\n");
+    printStr("absent trait = "); printUInt(r.cr.get("a").n); printStr("\n");
+    printStr("present trait = "); printUInt(r.cp.get(0u64).n); printStr("\n");
+    2u64
+  }
+}
+
+struct Rec {
+  ti: Table[i32, Req];
+  tu: Table[u64, Req];
+  cr: Cells[Req];
+  cp: Cells[Pt];
+}
+
+struct Req is Move {
+  n: u64;
+}
+
+struct Pt {
+  n: u64;
+}
+
+fn main() {
+  initAll();
+  let q = Req(4u64);
+  let p = Pt(9u64);
+  var s = Svc(Rec(Table[i32, Req](5i32, &q as *Req), Table[u64, Req](5u64, &q as *Req),
+    Cells[Req](&q as *Req), Cells[Pt](&p as *Pt)));
+  let t = s.turn();
+  printStr("turn = "); printUInt(t); printStr("\n");
+  printStr("at = "); printUInt(g.at); printStr("\n");
+  finalAll();
+}
