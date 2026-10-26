@@ -1,6 +1,7 @@
-# The reference zstd, for MAKING test data only: libzstd 1.5.7 as Git for Windows installs it, called through
-# ctypes. Nothing here is shipped or linked into the package, and no test runs it: the scripts beside this file use
-# it to write the .bin files the tests read, and to check that what they wrote is what the reference makes of it.
+# The reference zstd, for MAKING and CHECKING test data only: libzstd 1.5.7 as Git for Windows installs it, called
+# through ctypes. Nothing here is shipped or linked into the package, and no test runs it: the scripts beside this
+# file use it to write the .bin files the tests read, to check that what they wrote is what the reference makes of
+# it, and (crosscheck.py) to decode what this package's compressor writes.
 #
 # Pinned: the library must be exactly this file (version and SHA-256 below), or the scripts refuse to run.
 import ctypes, hashlib
@@ -155,7 +156,9 @@ class Zstd:
                 o = _OutBuf(ctypes.addressof(ob), cap, 0)
                 r = self._check(d.ZSTD_decompressStream(x, ctypes.byref(o), ctypes.byref(ib)), "decompress")
                 out += ob.raw[:o.pos]
-                if ib.pos == ib.size and o.pos < cap:
+                # Done when the input is used and the frame is complete (r == 0, even when this call filled the
+                # buffer exactly, as a 128 KiB output does) or nothing more will come out
+                if ib.pos == ib.size and (r == 0 or o.pos < cap):
                     break
             if r != 0:
                 raise RuntimeError("decompress: the input ends inside a frame")

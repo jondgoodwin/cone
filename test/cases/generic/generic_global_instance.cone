@@ -1,0 +1,60 @@
+// A global whose type is an instance of a generic, 'Box[Svc]', reached first
+// from a function above both it and Svc, so checking the global's declared type
+// is what lays Box[Svc] out, and Svc with it. That layout works the members
+// queue on its way out: Svc's method makes a Y, whose finalizer calls a generic
+// function that calls the generic method 'post' on the global. The declared type
+// is in place before that queue is worked (varDclTypeCheck), so 'g.post[C]'
+// reads the instance and finds its generic method. Before, the global still had
+// the generic call it was written as, and 'post' was refused as not generic.
+// Reduced from two packages (the generic type in a library, the global in the
+// program); the package boundary was not needed. The printed value was checked
+// by hand: A's run adds one to Box's 10.
+
+mod generic_global_instance;
+
+import stdio use *;
+
+fn @initpure init() {
+  g = Box[Svc](10u64);
+}
+
+fn wrap[J](j: J) u64 {g.post[J](j)}
+
+struct Box[S] {
+  at: u64;
+  pub fn post[J](self: &, j: J) u64 {j.run(at)}
+}
+
+struct Svc {
+  n: u64;
+  pub fn turn(self: &mut) u64 {
+    let y = Y(n);
+    n
+  }
+}
+
+let g: Box[Svc];
+
+struct A {
+  pub fn run(self, at: u64) u64 {at + 1u64}
+}
+struct C {
+  pub id: u64;
+  pub fn run(self, at: u64) u64 {at + id + 100u64}
+}
+
+struct X is Move {
+  id: u64;
+  pub fn go(self: &) u64 {wrap[A](A())}
+}
+struct Y is Move {
+  id: u64;
+  fn final(self: &uni) {printUInt(wrap[C](C(id))); printStr("\n");}
+}
+
+fn main() {
+  initAll();
+  let x = X(1u64);
+  printStr("go = "); printUInt(x.go()); printStr("\n");
+  finalAll();
+}

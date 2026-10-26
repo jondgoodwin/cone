@@ -1,0 +1,176 @@
+// The program ends with hosted services mid-request (the package's header,
+// HOSTED SERVICES and THE PROGRAM'S END). Three services are hosted on the I/O
+// thread, each an httpconn Driver whose one request waits on a listener that
+// never answers: the system makes the connection, the request goes out, and
+// no response comes. An actor awaits a fourth job of the first service, whose
+// reply the service keeps and never answers.
+//
+// finalAll() runs this module's finalizer first, as it does a hosting
+// package's: it ends service 3 with Host.end, which waits until the I/O thread
+// has run its 'end' (the Loop alive: it resets its connection) and dropped it.
+// Then aio's finalizer ends the services still hosted, newest first: 2, then
+// 1. Dropping service 1 drops the reply it kept, so the behaviour awaiting it
+// is abandoned: its actor dies and 'keep' is finalized ('answered' is never
+// printed). Main prints 'end' after.
+
+mod hostending;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use List;
+import time use Instant;
+import iocore use Loop, Completion, Handle, SocketAddr;
+import http use RequestHead, BodyLength;
+import httpconn;
+import actors;
+import aio use Host;
+
+let one: Host;
+let two: Host;
+let three: Host;
+
+fn @initpure init() {
+  one = aio.host[Holder](&makeOne);
+  two = aio.host[Holder](&makeTwo);
+  three = aio.host[Holder](&makeThree);
+}
+
+fn makeOne() Holder {Holder.make(1u64)}
+fn makeTwo() Holder {Holder.make(2u64)}
+fn makeThree() Holder {Holder.make(3u64)}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {printStr("  drop note "); printUInt(n); printStr("\n");}
+}
+
+// A hosted service: a Driver with one request in flight to a listener that
+// never answers
+struct Holder {
+  name: u64;
+  drv: httpconn.Driver;
+  ls: Handle;
+  ready: Option[actors.Reply];   // answered once the connection is made
+  kept: Option[actors.Reply];    // never answered
+
+  pub fn make(name: u64) Holder {
+    Holder(name, httpconn.Driver.make(httpconn.Config.make()), Handle.none(), None, None)
+  }
+
+  pub fn turn(self: &mut, lp: &mut Loop) {
+    var evs = List[httpconn.Event].empty();
+    drv.pump(lp, &mut evs);
+    var k = 0usize;
+    while k < evs.len() {
+      if evs[k].kind == httpconn.EventKind.Connected {
+        match &mut ready {
+          case var &mut Some(r) {actors.answerNowIn[u64](r, name);}
+          else {}
+        }
+        ready = None;
+      }
+      k = k + 1usize;
+    }
+  }
+
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {drv.complete(lp, c)}
+
+  pub fn wakeAt(self: &) Instant {drv.wakeAt()}
+
+  pub fn end(self: &mut, lp: &mut Loop) {
+    printStr("end "); printUInt(name); printStr(": ");
+    printUInt(u64.from(drv.live())); printStr(" connection live, its request unanswered\n");
+    drv.abortAll(lp);
+    lp.close(ls);
+  }
+
+  fn final(self: &uni) {printStr("drop "); printUInt(name); printStr("\n");}
+}
+
+// Listen, connect to the listener, and ask on the connection; answered when
+// the connection is made
+struct StartJob {
+  pub reply: actors.Reply;
+
+  pub fn run(self, lp: &mut Loop, s: &mut Holder) {
+    let rp = self.(reply);
+    s.ls = lp.mustListen(SocketAddr.localhost(0u16));
+    var port = 0u16;
+    match lp.localAddr(s.ls) {
+      case let Ok(a) {port = a.port();}
+      else {}
+    }
+    let conn = s.drv.connect(lp, "127.0.0.1", port, httpconn.Sink.Here(1u64));
+    s.drv.request(lp, conn, RequestHead.make("GET", "/", "127.0.0.1"), BodyLength.empty(), httpconn.Sink.Here(2u64));
+    s.ready = Some[actors.Reply](rp);
+  }
+}
+
+// A reply the service keeps and never answers
+struct KeepJob {
+  pub reply: actors.Reply;
+
+  pub fn run(self, lp: &mut Loop, s: &mut Holder) {
+    let rp = self.(reply);
+    s.kept = Some[actors.Reply](rp);
+  }
+}
+
+actor Starter {
+  pub async fn start(self, which: u64, done: OneshotSender[u64]) {
+    var h = one;
+    if which == 2u64 {h = two;}
+    if which == 3u64 {h = three;}
+    let n = await aio.hostAwaitable[Holder, StartJob, u64](h, StartJob(actors.Reply()));
+    var d = done;
+    d.send(n);
+  }
+}
+
+actor Waiter {
+  pub async fn hold(self, ready: OneshotSender[u64]) {
+    let keep = Note(1u64);
+    let pending = aio.hostAwaitable[Holder, KeepJob, u64](one, KeepJob(actors.Reply()));
+    var r = ready;
+    r.send(1u64);
+    let n = await pending;
+    printStr("answered\n");
+  }
+}
+
+fn started(which: u64) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let s = Starter();
+    s.start(which, tx);
+  }
+  match rx.recv() {
+    case let Some(n) {printStr("started "); printUInt(n); printStr("\n");}
+    case is None[u64] {printStr("not started\n");}
+  }
+}
+
+// As a hosting package's finalizer does: its service ended before aio's
+fn final() {
+  actors.waitQuiet();
+  three.end();
+}
+
+fn main() {
+  initAll();
+  started(1u64);
+  started(2u64);
+  started(3u64);
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let w = Waiter();
+    w.hold(tx);
+  }
+  rx.recv();
+  finalAll();
+  printStr("end\n");
+}

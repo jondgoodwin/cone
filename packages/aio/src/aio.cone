@@ -89,6 +89,10 @@
 //                           the same four, limited by lim                  (THE BLOCKING POOL'S WORK)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
+//   Hosted (a trait)  aio.host[S](maker)  h.end()  aio.hostPost[S, J](h, job)
+//   aio.hostAwaitable[S, J, R](h, job)
+//                           another package's service run ON the I/O thread, and its queue
+//                                                                (HOSTED SERVICES)
 //   Socket.none()  File.none()  UdpSocket.none()
 //                           a Socket, File or UdpSocket naming nothing: to swap one out of a Result
 //   s.isNone()  s.handle()  f.isNone()  f.handle()  u.isNone()  u.handle()
@@ -263,40 +267,93 @@
 // cancelled (iocore's 'close'). A Socket waiting in a paused behaviour's
 // record stays open until the behaviour ends, as any value does.
 //
-// THE I/O THREAD. One thread, started by the first operation awaited, owns
-// the actor runtime's iocore Loop and waits in its poll; it is the one thread
-// that touches the Loop, as iocore asks. The actors' workers never wait on
-// I/O (they could not: an actor's behaviour runs to its 'await' and
-// returns). An 'await' on an operation hands its record to the I/O thread
-// through a QUEUE: records linked by their own link (and the jobs, a list of
-// their own) under a Mutex, which the I/O thread takes whole after each poll,
-// and a Waker that ends the poll at once. After each poll the I/O thread takes
-// the records the Loop has answered (lp.takeDone), each started again or
-// sprung (ONE RECORD PER OPERATION), then runs the jobs and starts the records
-// queued. Either way the reply goes to the actor's mailbox as any reply does
-// -- one push, and, if the actor was idle, its scheduling. Nothing of the
-// actor runs on the I/O thread.
+// THE I/O THREAD. One thread, started by the first operation awaited (or the
+// first job queued for a hosted service), owns the actor runtime's iocore Loop
+// and waits in its poll; it is the one thread that touches the Loop, as iocore
+// asks. The actors' workers never wait on I/O (they could not: an actor's
+// behaviour runs to its 'await' and returns). An 'await' on an operation hands
+// its record to the I/O thread through a QUEUE: records linked by their own
+// link (and the jobs, a list of their own, and each hosted service's jobs, a
+// list of the service's) under a Mutex, which the I/O thread takes whole after
+// each poll, and a Waker that ends the poll at once. The poll waits until the
+// earliest instant a hosted service wants its turn ('wakeAt'; forever when
+// there is none; aio's own timers, a sleep's, are the Loop's). After each poll
+// the I/O thread, in this order: offers each Completion the poll returned to
+// the hosted services, oldest first, until one says it is its own (one none
+// claims is dropped, its buffer home: aio's own operations come back as
+// records, never as Completions); takes the records the Loop has answered
+// (lp.takeDone), each started again or sprung (ONE RECORD PER OPERATION); runs
+// aio's jobs; makes the services attached since, runs each service's jobs with
+// it, and ends the services Host.end has asked to end; starts the records
+// queued; and gives each service its turn. Either way a reply goes to the
+// actor's mailbox as any reply does -- one push, and, if the actor was idle,
+// its scheduling. Nothing of the actor runs on the I/O thread.
+//
+// HOSTED SERVICES. Another package's code that runs ON the I/O thread, with its
+// Loop: the actorhttp package's HTTP clients, connections and servers
+// (httpconn's Drivers and httpclient's Clients, driven as they always are, by
+// polling) share the thread and the Loop with aio's own operations. A service
+// is a value of a type that complies with the trait Hosted, by having its
+// methods: 'turn(lp)' (its turn, once each pass, after its jobs have run),
+// 'complete(lp, &mut c) bool' (offered a Completion: true means it is its own,
+// so a service submits with tokens no other service claims -- each httpconn
+// Driver's carry a number of its own -- or claims by the OpIds it was given),
+// 'wakeAt()' (the latest the thread may wait before its next turn) and
+// 'end(lp)' (its end, the Loop still alive). The hosting package keeps a Host,
+// plain data, in a global, made in its 'init' by 'aio.host[S](maker)': only
+// the host's block is made then. The first job queued for it attaches it to
+// the I/O thread (starting the thread if need be), which makes the service
+// with 'maker' before running that job. 'aio.hostPost[S, J](h, job)' queues a
+// job, any thread, and wakes the thread; J has 'run(self, lp &mut Loop, s &mut
+// S)'. 'aio.hostAwaitable[S, J, R](h, job)' is the same job as an Awaitable[R]:
+// J has a field 'reply' that the 'await' puts in before the job is queued,
+// which its 'run' answers (nothing is allocated but the job's block; dropped
+// unawaited, the job is dropped). 'h.end()' ends the service now and waits
+// until it has (below). A job for a service that has ended, or queued once the
+// program is ending, is dropped unrun, its body finalized: what awaits it is
+// abandoned. The S of 'hostPost' and 'hostAwaitable' is checked against the
+// type the host was made for, at run time (a panic at the caller's line): a
+// Host is not Host[S] because a global of a generic instance whose type
+// argument's check reaches code using that global is refused today (the
+// compiler's, a gap; the typed form comes back when it is closed).
+//
+// The seam does not assume a service is alone on its thread, or that there is
+// one thread: a service is handed the Loop it runs with at each call and
+// keeps nothing of the thread, and its block names the thread it is attached
+// to (bound at its first job), which its jobs and 'end' reach through it, not
+// through 'io'. A second hosting thread is then an IoThread more, with a Loop
+// of its own, and 'aio.host' taking which thread a service binds to; nothing
+// of a service, nor of the four calls, changes. (Not built: one I/O thread
+// today, the later server-side step.)
 //
 // AN ACTOR'S LIFE. An operation in flight holds a count of the actor that
 // awaits it, in its reply's envelope, as a request to another actor does: the
 // actor lives until the answer comes, whether or not anything else holds it.
 // A socket whose peer never answers keeps its reader alive for as long.
 //
-// THE PROGRAM'S END. The package's finalizer, which finalAll() runs before
-// the actors package's, waits until no actor is queued or running (an actor
-// paused on I/O is neither; one with an answer waiting in its mailbox, a lent
-// one among them, is queued, so its 'take' has run, and its record is
-// dissolved, before this goes on), then ends the I/O, in this order: the I/O
-// thread stops taking from its queues, and what is queued there and not yet
-// started is dissolved unstarted (each reply dropped unsent, each buffer home);
-// then its Loop dies, which cancels and drains every operation still in flight,
-// closes every socket, and dissolves every record it still holds, their
+// THE PROGRAM'S END. A hosting package's finalizer, which finalAll() runs
+// before aio's (it imports aio, and before the packages it uses itself), waits
+// until no actor is queued or running and ends its service with 'h.end()': on
+// the I/O thread the jobs queued for it are dropped unrun (each reply dropped,
+// what awaits it abandoned), its 'end' runs with the Loop alive (actorhttp's
+// resets its connections), and it is dropped, the replies it held with it; the
+// thread goes on with aio's operations and the other services. Then the
+// package's finalizer, which finalAll() runs before the actors package's,
+// waits until no actor is queued or running (an actor paused on I/O is
+// neither; one with an answer waiting in its mailbox, a lent one among them, is
+// queued, so its 'take' has run, and its record is dissolved, before this goes
+// on), then ends the I/O, in this order: the I/O thread stops taking from its
+// queues, and what is queued there and not yet started is dropped or dissolved
+// unstarted (each reply dropped unsent, each buffer home); every service still
+// hosted (one its package did not end) is ended as 'h.end' ends one, newest
+// first; then its Loop dies, which cancels and drains every operation still in
+// flight, closes every socket, and dissolves every record it still holds, their
 // answers abandoned (a record away with its job, a child still running, is
 // dissolved when its job ends, the same way); only then is anything else of
-// aio's let go (its pool and the I/O thread's block are kept for the life of
-// the process). Each paused behaviour is ABANDONED: its reply's envelope is
-// dropped, letting go of the actor's count, and an actor with nothing else
-// holding it dies; its pending table then drops the records still parked, so
+// aio's let go (its pool, the I/O thread's block and the hosts' blocks are kept
+// for the life of the process). Each paused behaviour is ABANDONED: its
+// reply's envelope is dropped, letting go of the actor's count, and an actor
+// with nothing else holding it dies; its pending table then drops the records still parked, so
 // every value a paused behaviour held is finalized, in the order its 'await'
 // would have had them die, and the rest of the behaviour never runs. An
 // operation awaited after that is abandoned the same way at once, its record
@@ -449,7 +506,15 @@
 //    needs no place of its own: on the awaiting actor's worker when it is
 //    lent, on the I/O thread when the slot holds it.
 //  - A handle's close is a record (opClose), as a cancel is; listen, bindUdp,
-//    openFile and localAddr stay jobs (one per handle).
+//    openFile and localAddr stay jobs (one per handle). A job is the
+//    Awaitable's context word (Awaitable.of), its block the one allocation.
+//  - HOSTED SERVICES: the contract is a trait (Hosted), met by a service's
+//    methods, and the I/O thread calls each service through functions made for
+//    its type when the host is made (no virtual call, and a job's 'run' gets
+//    the service as its own type); a service is made on the I/O thread by the
+//    hosting package's 'maker', at its first job, not by the package; services
+//    are offered Completions and turned oldest first, and ended newest first;
+//    a job's 'reply' field is the one actorhttp's jobs already had.
 //  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
@@ -643,32 +708,39 @@ fn dropRec(ctx: *u8) {
 // The I/O thread and its queue
 // ---------------------------------------------------------------------------
 
-// A job's header, first in its block: the next job queued, and the functions
-// made for the job's type, which take the block. Jobs are what is one per
-// handle and synchronous on the I/O thread: listen, bindUdp, openFile,
-// localAddr
+// A job's header, first in its block: the next job queued, the functions
+// made for the job's type, which take the block, and the hosted service it
+// is for (null for aio's own). aio's own jobs are what is one per handle and
+// synchronous on the I/O thread: listen, bindUdp, openFile, localAddr; a
+// hosted service's are whatever its package queues (HOSTED SERVICES). 'run'
+// is handed the service's block ('at'), which aio's own ignore
 struct JobHead {
   pub next: *JobHead;
-  pub run: &fn(job: *u8, lp: &mut Loop);
+  pub run: &fn(job: *u8, lp: &mut Loop, at: *u8);
   pub drop: &fn(job: *u8);
+  pub host: *HostHead;
 }
 
-// A job: its header, then what it is. J has 'run(self, lp &mut Loop)'
+// A job: its header, then what it is. J has 'run(self, lp &mut Loop)' (aio's
+// own) or 'run(self, lp &mut Loop, s &mut S)' (a hosted service S's)
 struct Job[J] {
   pub head: JobHead;
   pub body: J;
 }
 
-// The I/O thread, once started: its two queues, under ioLock -- jobs, and
-// records linked by their own 'qnext' -- and its loop's waker, set before
-// 'ready' and never changed. It lives as long as the process, the waker with
-// it: a thread that queued something just before the end may still be waking
-// the loop after the thread has been joined
+// The I/O thread, once started: its queues, under ioLock -- jobs, records
+// linked by their own 'qnext', and the hosted services attached since it last
+// looked, linked by their 'fresh' -- and its loop's waker, set before 'ready'
+// and never changed. It lives as long as the process, the waker with it: a
+// thread that queued something just before the end may still be waking the
+// loop after the thread has been joined
 struct IoThread {
   pub head: *JobHead;
   pub tail: *JobHead;
   pub rhead: *OpCore;
   pub rtail: *OpCore;
+  pub fhead: *HostHead;
+  pub ftail: *HostHead;
   pub waker: Waker;
   pub ready: Atomic[u32];       // 1 once the thread has put its waker here
   pub os: thread.Thread[u32];
@@ -687,24 +759,44 @@ let ended: Atomic[bool];
 
 fn nullJob() *JobHead {null}
 fn nullCore() *OpCore {null}
+fn nullHost() *HostHead {null}
 
-// A job's block, its body moved in
+// A job's block, its body moved in: aio's own
 fn newJob[J](body: J) *u8 {
+  jobBlock[J](body, &runJob[J], nullHost())
+}
+
+// A job's block for the hosted service S at 'host', its body moved in
+fn newHostJob[S, J](host: *HostHead, body: J) *u8 {
+  jobBlock[J](body, &runHostJob[S, J], host)
+}
+
+fn jobBlock[J](body: J, run: &fn(job: *u8, lp: &mut Loop, at: *u8), host: *HostHead) *u8 {
   let p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
   if p as usize == 0usize {
     die("aio: out of memory for an operation");
   }
-  (*p).head = JobHead(nullJob(), &runJob[J], &dropJob[J]);
+  (*p).head = JobHead(nullJob(), run, &dropJob[J], host);
   mem.writeRaw[J](&(*p).body as *J, body);
   p as *u8
 }
 
 // On the I/O thread: the job's body moved out, its block freed, and run
-fn runJob[J](job: *u8, lp: &mut Loop) {
+fn runJob[J](job: *u8, lp: &mut Loop, at: *u8) {
   let p = job as *Job[J];
   var body = mem.readRaw[J](&(*p).body as *J);
   libc.free(job);
   body.run(lp);
+}
+
+// On the I/O thread: a hosted service's job, run with the service ('at' is
+// its block, the service made)
+fn runHostJob[S, J](job: *u8, lp: &mut Loop, at: *u8) {
+  let p = job as *Job[J];
+  var body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+  let b = at as *HostBlock[S];
+  body.run(lp, &mut (*b).svc);
 }
 
 // A job never run: its body dropped (its reply among it, abandoning what
@@ -720,13 +812,16 @@ fn dropHead(h: *JobHead) {
   f(h as *u8);
 }
 
-// Queue a job for the I/O thread, starting the thread if this is the first;
-// once the program is ending, the job is dropped instead
+// Queue a job for the I/O thread, starting the thread if this is the first:
+// aio's own on the thread's queue, a hosted service's on the service's (which
+// is attached to the thread first, if this is its first job). Once the program
+// is ending, or the service has ended, the job is dropped instead
 fn enqueue(job: *u8) {
   let h = job as *JobHead;
   (*h).next = nullJob();
+  let hh = (*h).host;
   ioLock.lock();
-  if ended.load() {
+  if ended.load() || (hh as usize != 0usize && (*hh).state >= hostEnding) {
     ioLock.unlock();
     dropHead(h);
     return;
@@ -734,13 +829,26 @@ fn enqueue(job: *u8) {
   if io.load() == 0usize {
     startIo();
   }
-  let t = io.load() as *IoThread;
-  if (*t).tail as usize == 0usize {
-    (*t).head = h;
+  var t = io.load() as *IoThread;
+  if hh as usize == 0usize {
+    if (*t).tail as usize == 0usize {
+      (*t).head = h;
+    } else {
+      (*(*t).tail).next = h;
+    }
+    (*t).tail = h;
   } else {
-    (*(*t).tail).next = h;
+    if (*hh).state == hostNew {
+      attachHost(hh, t);
+    }
+    t = (*hh).thread;
+    if (*hh).jtail as usize == 0usize {
+      (*hh).jhead = h;
+    } else {
+      (*(*hh).jtail).next = h;
+    }
+    (*hh).jtail = h;
   }
-  (*t).tail = h;
   ioLock.unlock();
   (*t).waker.wake();
 }
@@ -792,13 +900,19 @@ fn startIo() {
   io.store(t as usize);
 }
 
-// The I/O thread: it waits in its Loop's poll, and after each takes the
+// The I/O thread: it waits in its Loop's poll, until the earliest instant a
+// hosted service wants its turn, and after each poll hands the Completions it
+// returned to the services, each offered to one after another until one says
+// it is its own (one none claims is dropped, its buffer home); then takes the
 // records the Loop has answered (each is answered, or begun again), and then
-// what is queued: jobs, which it runs, and records, which it starts. Once the
-// program is ending (THE PROGRAM'S END), what is queued is dissolved
-// unstarted, and only then does its Loop die, cancelling and draining every
-// operation in flight and dissolving the records it still holds, their
-// answers abandoned
+// what is queued: aio's jobs, which it runs, the services attached since (each
+// made), each service's jobs, which it runs with the service, the services
+// asked to end (Host.end), which it ends, and records, which it starts; then
+// gives each service its turn. Once the program is ending (THE PROGRAM'S
+// END), what is queued is dropped or dissolved unstarted, the services still
+// hosted are ended, newest first, and only then does its Loop die, cancelling
+// and draining every operation in flight and dissolving the records it still
+// holds, their answers abandoned
 fn ioMain(arg: IoArg) u32 {
   let me = arg.t as *IoThread;
   let pool = thePool();
@@ -810,9 +924,16 @@ fn ioMain(arg: IoArg) u32 {
     sync.futexWake(&(*me).ready);
     var out = List[Completion].empty();
     var got = List[*OpCore].empty();
+    var hosts = List[*HostHead].empty();     // the services hosted here, oldest first: this thread's alone
+    var until = forever();                   // the earliest wakeAt, taken at the services' last turns
     var more = true;
+    // With no service hosted the pass is aio's alone: every step for the
+    // services is skipped, one test each
     while more {
-      lp.poll(forever(), &mut out);
+      lp.poll(until, &mut out);
+      if hosts.len() != 0usize {
+        offerAll(&hosts, &mut lp, &mut out);
+      }
       out.clear();
       ioLock.lock();
       let h = (*me).head;
@@ -821,11 +942,20 @@ fn ioMain(arg: IoArg) u32 {
       let r = (*me).rhead;
       (*me).rhead = nullCore();
       (*me).rtail = nullCore();
+      if (*me).fhead as usize != 0usize {
+        takeFresh(me, &mut hosts);
+      }
+      if hosts.len() != 0usize {
+        takeHostJobs(&hosts);
+      }
       let stop = ended.load();
       ioLock.unlock();
       if stop {
         dropJobs(h);
         dissolveUnstarted(r);
+        if hosts.len() != 0usize {
+          endAllHosts(&mut hosts, &mut lp);
+        }
         more = false;
       } else {
         lp.takeDone(&mut got);
@@ -836,7 +966,13 @@ fn ioMain(arg: IoArg) u32 {
         }
         got.clear();
         runJobs(h, &mut lp);
-        startRecs(r, &mut lp);
+        if hosts.len() == 0usize {
+          startRecs(r, &mut lp);
+        } else {
+          serveHosts(&mut hosts, &mut lp);
+          startRecs(r, &mut lp);
+          until = turnHosts(&hosts, &mut lp);
+        }
       }
       pool.flushHere();
     }
@@ -850,7 +986,7 @@ fn runJobs(first: *JobHead, lp: &mut Loop) {
   while h as usize != 0usize {
     let next = (*h).next;
     let f = (*h).run;
-    f(h as *u8, lp);
+    f(h as *u8, lp, null);
     h = next;
   }
 }
@@ -899,6 +1035,360 @@ fn final() {
   (*t).waker.wake();
   let th = mem.readRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32]);
   th.join();
+}
+
+// ---------------------------------------------------------------------------
+// Hosted services (the package's header, HOSTED SERVICES)
+// ---------------------------------------------------------------------------
+
+// What a service hosted on the I/O thread does there. A type complies by
+// having these methods; each is called on the thread the service is hosted
+// on, with that thread's Loop, and never concurrently with another
+pub trait Hosted {
+  // Its turn, once per pass of its thread, after the jobs queued for it have
+  // run: it drives what it has started
+  pub fn turn(self: &mut, lp: &mut Loop);
+  // A Completion the Loop's poll returned: true if it is this service's (its
+  // token is one the service gave), which takes what it needs from it; false
+  // leaves it for the next service, and one no service claims is dropped
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool;
+  // The latest instant its thread may wait in the poll before its next turn:
+  // forever when it waits only for Completions or jobs, now when it has work
+  // ready
+  pub fn wakeAt(self: &) Instant;
+  // Its end, the Loop still alive: it lets go of what it holds on the Loop
+  // (resets its sockets, say). It is dropped right after
+  pub fn end(self: &mut, lp: &mut Loop);
+}
+
+// Where a hosted service is in its life: its block's 'state', under ioLock
+const hostNew = 0u32;         // no job has come for it: attached to no thread, not made
+const hostLive = 1u32;        // attached to its thread, which makes it before its first job runs
+const hostEnding = 2u32;      // Host.end has asked: its thread ends it at its next pass
+const hostEnded = 3u32;       // ended and dropped: a job for it is dropped
+
+// A hosted service's header, first in its block: its jobs (under ioLock), the
+// link that attaches it to its thread, the functions made for its type, which
+// take the block, and what its thread alone keeps of it
+struct HostHead {
+  pub fresh: *HostHead;         // the next service attached to the thread and not yet taken (under ioLock)
+  pub jhead: *JobHead;          // its jobs queued (under ioLock)
+  pub jtail: *JobHead;
+  pub state: u32;               // hostNew ... (under ioLock)
+  pub thread: *IoThread;        // the thread it is hosted on, from its attaching on
+  pub taken: *JobHead;          // its thread's: the jobs it took at its last look, to run
+  pub endNow: bool;             // its thread's: Host.end had asked at its last look
+  pub made: bool;               // its thread's: the service is in the block
+  pub done: Atomic[u32];        // 1 once it has ended: what Host.end waits on
+  pub tag: usize;               // its service type's (hostTag), checked by hostPost and hostAwaitable
+  pub makeFn: &fn(at: *u8);
+  pub turnFn: &fn(at: *u8, lp: &mut Loop);
+  pub completeFn: &fn(at: *u8, lp: &mut Loop, c: &mut Completion) bool;
+  pub wakeAtFn: &fn(at: *u8) Instant;
+  pub endFn: &fn(at: *u8, lp: &mut Loop);
+}
+
+// A hosted service's block: its header, the function that makes it, and the
+// service, made on its thread before its first job and dropped at its end.
+// The block lives as long as the process: a Host may still name it after the
+// service has ended
+struct HostBlock[S] {
+  pub head: HostHead;
+  pub maker: &fn() S;
+  pub svc: S;
+}
+
+// A service hosted on the I/O thread (the package's header, HOSTED SERVICES):
+// plain data naming it, which a hosting package keeps in a global, made by
+// 'aio.host' with the function that makes the service. Nothing but its block
+// is made, and no thread started, until its first job is queued. Its methods
+// may be called from any thread
+pub struct Host {
+  at: usize;                   // its block, which lives as long as the process
+
+  // The service ended now, on its thread, and this waits until it has: the
+  // jobs queued for it are dropped unrun (each reply dropped, what awaits it
+  // abandoned), its 'end' runs with the Loop alive, and it is dropped. Jobs
+  // queued for it from then on are dropped. A hosting package calls this in
+  // its finalizer, which runs before aio's (THE PROGRAM'S END); a service never
+  // given a job has nothing to end. Not from the I/O thread (a panic), and once
+  // only matters: a second call returns when the first's end is done
+  pub fn end(self: &, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if onIo {
+      die("aio: Host.end on the I/O thread, which would wait for itself", file, line);
+    }
+    let hh = at as *HostHead;
+    ioLock.lock();
+    let s = (*hh).state;
+    if s == hostNew {
+      (*hh).state = hostEnded;
+      (*hh).done.store(1u32);
+      ioLock.unlock();
+      return;
+    }
+    if s == hostLive {
+      (*hh).state = hostEnding;
+    }
+    let t = (*hh).thread;
+    ioLock.unlock();
+    if t as usize != 0usize {
+      (*t).waker.wake();
+    }
+    while (*hh).done.load() == 0u32 {
+      sync.futexWait(&(*hh).done, 0u32);
+    }
+  }
+}
+
+// A host for the service 'maker' makes, on the I/O thread, when the first job
+// for it is queued (the package's header, HOSTED SERVICES). Its block is made
+// now (one small allocation, kept for the life of the process); nothing else
+// is, and no thread is started
+pub fn host[S: Hosted](maker: &fn() S) Host {
+  Host(newHostBlock[S](maker))
+}
+
+// A job for h's service, an S, queued: J has 'run(self, lp &mut Loop, s &mut
+// S)', which the I/O thread calls with the service, after it has handed out the
+// Completions of its last poll and before the services' turns. The thread is
+// woken. Dropped unrun (its body finalized) if the service has ended or the
+// program is ending. An S that is not the type h was made for is a panic at
+// the caller's line
+pub fn hostPost[S, J](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+  enqueue(newHostJob[S, J](hostBlockOf[S](h, file, line), body));
+}
+
+// A job for h's service, an S, that an actor awaits: J has a field 'reply' (an
+// actors.Reply) that the 'await' puts in before the job is queued, and its
+// 'run' answers it with an R. Nothing is allocated but the job's block;
+// dropped unawaited, the job is dropped, its reply with it. An S that is not
+// the type h was made for is a panic at the caller's line
+pub fn hostAwaitable[S, J, R](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine())
+    actors.Awaitable[R] {
+  actors.Awaitable[R].of(newHostJob[S, J](hostBlockOf[S](h, file, line), body), &startJob[J], &dropJobAt)
+}
+
+// h's block, checked to be a service of type S: its tag is S's (hostTag)
+fn hostBlockOf[S](h: Host, file: &Array[u8], line: u32) *HostHead {
+  let hh = h.at as *HostHead;
+  if (*hh).tag != hostTag[S]() {
+    die("aio: a job for a hosted service of another type than its Host's", file, line);
+  }
+  hh
+}
+
+// A number of S's own: the address of a static of this function's instance
+// for S, which no other instance shares. (Not the address of a function made
+// for S: functions whose code is the same are folded into one)
+fn hostTag[S]() usize {
+  static var mark = 0u8;
+  &mut mark as *u8 as usize
+}
+
+// A hosted service's block, the functions for S in its header; the service
+// itself is not made yet
+fn newHostBlock[S](maker: &fn() S) usize {
+  let p = libc.calloc(1usize, mem.sizeof[HostBlock[S]]()) as *HostBlock[S];
+  if p as usize == 0usize {
+    die("aio: out of memory for a hosted service");
+  }
+  let h = &mut (*p).head;
+  h.makeFn = &hostMake[S];
+  h.turnFn = &hostTurn[S];
+  h.completeFn = &hostComplete[S];
+  h.wakeAtFn = &hostWakeAt[S];
+  h.endFn = &hostEnd[S];
+  h.tag = hostTag[S]();
+  (*p).maker = maker;
+  p as usize
+}
+
+fn hostMake[S](at: *u8) {
+  let b = at as *HostBlock[S];
+  let mk = (*b).maker;
+  mem.writeRaw[S](&(*b).svc as *S, mk());
+}
+
+fn hostTurn[S](at: *u8, lp: &mut Loop) {
+  let s = &mut (*(at as *HostBlock[S])).svc;
+  s.turn(lp);
+}
+
+fn hostComplete[S](at: *u8, lp: &mut Loop, c: &mut Completion) bool {
+  let s = &mut (*(at as *HostBlock[S])).svc;
+  s.complete(lp, c)
+}
+
+fn hostWakeAt[S](at: *u8) Instant {
+  let s = &(*(at as *HostBlock[S])).svc;
+  s.wakeAt()
+}
+
+// The service's end, then the service dropped, its block left
+fn hostEnd[S](at: *u8, lp: &mut Loop) {
+  let b = at as *HostBlock[S];
+  {
+    let s = &mut (*b).svc;
+    s.end(lp);
+  }
+  let gone = mem.readRaw[S](&(*b).svc as *S);
+}
+
+// An awaitable job dropped unawaited: its body dropped, its block freed
+fn dropJobAt(ctx: *u8) {
+  dropHead(ctx as *JobHead);
+}
+
+// Hosted service hh attached to thread t, under ioLock: the thread takes it
+// at its next look and makes it
+fn attachHost(hh: *HostHead, t: *IoThread) {
+  (*hh).state = hostLive;
+  (*hh).thread = t;
+  (*hh).fresh = nullHost();
+  if (*t).ftail as usize == 0usize {
+    (*t).fhead = hh;
+  } else {
+    (*(*t).ftail).fresh = hh;
+  }
+  (*t).ftail = hh;
+}
+
+// On the I/O thread, under ioLock: the services attached since its last look,
+// added to its own list, oldest first
+fn takeFresh(me: *IoThread, hosts: &mut List[*HostHead]) {
+  var hh = (*me).fhead;
+  while hh as usize != 0usize {
+    hosts.push(hh);
+    hh = (*hh).fresh;
+  }
+  (*me).fhead = nullHost();
+  (*me).ftail = nullHost();
+}
+
+// On the I/O thread, under ioLock: each service's jobs taken, to run, and
+// whether it has been asked to end
+fn takeHostJobs(hosts: &List[*HostHead]) {
+  var k = 0usize;
+  while k < hosts.len() {
+    let hh = *hosts[k];
+    (*hh).taken = (*hh).jhead;
+    (*hh).jhead = nullJob();
+    (*hh).jtail = nullJob();
+    (*hh).endNow = (*hh).state == hostEnding;
+    k = k + 1usize;
+  }
+}
+
+// Each Completion the poll returned offered to the services in turn, oldest
+// first, until one says it is its own
+fn offerAll(hosts: &List[*HostHead], lp: &mut Loop, out: &mut List[Completion]) {
+  var j = 0usize;
+  while j < out.len() {
+    let c = &mut out[j];
+    var k = 0usize;
+    while k < hosts.len() {
+      let hh = *hosts[k];
+      if (*hh).made {
+        let f = (*hh).completeFn;
+        if f(hh as *u8, lp, c) {
+          k = hosts.len();
+        }
+      }
+      k = k + 1usize;
+    }
+    j = j + 1usize;
+  }
+}
+
+// Each service asked to end is ended and leaves the list; each other is made
+// if it is new, and runs the jobs taken for it
+fn serveHosts(hosts: &mut List[*HostHead], lp: &mut Loop) {
+  var k = 0usize;
+  while k < hosts.len() {
+    let hh = *hosts[k];
+    if (*hh).endNow {
+      endHost(hh, lp);
+      removeHost(hosts, k);
+    } else {
+      if !(*hh).made {
+        let mk = (*hh).makeFn;
+        mk(hh as *u8);
+        (*hh).made = true;
+      }
+      var j = (*hh).taken;
+      (*hh).taken = nullJob();
+      while j as usize != 0usize {
+        let next = (*j).next;
+        let f = (*j).run;
+        f(j as *u8, lp, hh as *u8);
+        j = next;
+      }
+      k = k + 1usize;
+    }
+  }
+}
+
+// Each service's turn, oldest first, and the earliest instant one wants its
+// next (its wakeAt, asked right after its turn): the limit of the next poll
+fn turnHosts(hosts: &List[*HostHead], lp: &mut Loop) Instant {
+  var until = forever();
+  var k = 0usize;
+  while k < hosts.len() {
+    let hh = *hosts[k];
+    if (*hh).made {
+      let f = (*hh).turnFn;
+      f(hh as *u8, lp);
+      let wf = (*hh).wakeAtFn;
+      let w = wf(hh as *u8);
+      if w < until {until = w;}
+    }
+    k = k + 1usize;
+  }
+  until
+}
+
+// The program is ending: every service still hosted is ended, newest first
+fn endAllHosts(hosts: &mut List[*HostHead], lp: &mut Loop) {
+  var k = hosts.len();
+  while k > 0usize {
+    k = k - 1usize;
+    endHost(*hosts[k], lp);
+  }
+  hosts.clear();
+}
+
+// Service hh ended on its thread: the jobs it took dropped unrun (each reply
+// dropped, what awaits it abandoned), its 'end' run with the Loop alive and
+// the service dropped; then it is marked ended (a job queued for it since is
+// dropped too), and whoever waits in Host.end goes on. No lock is held while
+// the service ends or a job is dropped: what they let go may queue to aio
+fn endHost(hh: *HostHead, lp: &mut Loop) {
+  dropJobs((*hh).taken);
+  (*hh).taken = nullJob();
+  if (*hh).made {
+    let f = (*hh).endFn;
+    f(hh as *u8, lp);
+    (*hh).made = false;
+  }
+  ioLock.lock();
+  (*hh).state = hostEnded;
+  let late = (*hh).jhead;
+  (*hh).jhead = nullJob();
+  (*hh).jtail = nullJob();
+  ioLock.unlock();
+  dropJobs(late);
+  (*hh).done.store(1u32);
+  sync.futexWake(&(*hh).done);
+}
+
+// The entry at k gone from the list, the rest kept in order
+fn removeHost(hosts: &mut List[*HostHead], k: usize) {
+  var i = k;
+  while i + 1usize < hosts.len() {
+    hosts.set(i, *hosts[i + 1usize]);
+    i = i + 1usize;
+  }
+  hosts.truncate(hosts.len() - 1usize);
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,37 +1938,19 @@ pub fn opStats() OpStats {
 // ---------------------------------------------------------------------------
 
 // The seam starts a job: the reply its answer goes back in is written into
-// the job, which goes to the I/O thread (actors.Awaitable's closure)
+// the job, which goes to the I/O thread, or to its hosted service's queue
+// (the Awaitable's 'run'; the job's block is its context word)
 fn startJob[J](ctx: *u8, rp: actors.Reply) {
   let p = ctx as *Job[J];
   (*p).body.reply = rp;
   enqueue(ctx);
 }
 
-// A job's block until the 'await' starts it: 'take' hands it on, and an
-// Awaitable that dies unawaited, its closure finalized, drops the job it still
-// holds (its body dropped, its reply among it)
-struct JobHold is Move {
-  job: *u8;
-
-  fn take(self: &mut) *u8 {
-    let j = job;
-    job = null;
-    j
-  }
-
-  fn final(self: &uni) {
-    if job as usize != 0usize {
-      dropHead(job as *JobHead);
-    }
-  }
-}
-
-// The job awaited: its block, made now, started by the 'await'
+// The job awaited: its block, made now, the Awaitable's context word (nothing
+// else is allocated), started by the 'await'; dropped unawaited, the job is
+// dropped (dropJobAt), its reply with it
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
-  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = JobHold(newJob[J](body))] {
-    startJob[J](held.take(), rp);
-  })
+  actors.Awaitable[R].of(newJob[J](body), &startJob[J], &dropJobAt)
 }
 
 // A listening socket, made on the I/O thread's Loop, which holds it
