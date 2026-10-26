@@ -1,0 +1,102 @@
+// OpenSSL 3.5: what the package asks of libssl and libcrypto, bound by hand
+// from the 3.5 headers, as package tls binds them. Every OpenSSL object is
+// opaque, so every handle is a '*u8'. A C name is declared the same way in
+// every module of a program (the compiler checks that they agree), so each
+// function tls binds too is declared here exactly as tls declares it, for a
+// program that imports both; tls's openssl.cone explains the 'long' widths
+// and the macros written as control calls.
+//
+// QUIC's TLS runs through OpenSSL's own QUIC TLS interface
+// (SSL_set_quic_tls_cbs, new in 3.5), which ngtcp2's crypto helper drives:
+// the package itself only makes the SSL_CTX and the SSL object, and reads
+// what the handshake chose.
+
+// OpenSSL asks a server which of the protocols a client offers it speaks
+// (tls's AlpnSelectFn, the same C signature)
+alias QuicAlpnSelectFn = &fn @c (ssl: *u8, out: &mut *u8, outLen: &mut u8, offered: *u8, offeredLen: u32, arg: *u8) i32;
+
+extern {
+  fn @c OpenSSL_version(t: i32) *u8;
+
+  // Contexts
+  fn @c TLS_client_method() *u8;
+  fn @c TLS_server_method() *u8;
+  fn @c SSL_CTX_new(method: *u8) *u8;
+  fn @c SSL_CTX_free(ctx: *u8);
+  fn @c SSL_CTX_ctrl(ctx: *u8, cmd: i32, larg: i64, parg: *u8) i32;
+  fn @c SSL_CTX_set_verify(ctx: *u8, mode: i32, cb: *u8);
+  fn @c SSL_CTX_set_alpn_select_cb(ctx: *u8, cb: QuicAlpnSelectFn, arg: *u8);
+  fn @c SSL_CTX_set_alpn_protos(ctx: *u8, protos: *u8, len: u32) i32;   // 0 is success
+  fn @c SSL_CTX_get_cert_store(ctx: *u8) *u8;
+  fn @c SSL_CTX_use_certificate_chain_file(ctx: *u8, file: cstr) i32;
+  fn @c SSL_CTX_use_PrivateKey_file(ctx: *u8, file: cstr, kind: i32) i32;
+  fn @c SSL_CTX_check_private_key(ctx: *u8) i32;
+  fn @c X509_STORE_add_cert(store: *u8, x: *u8) i32;
+
+  // Sessions
+  fn @c SSL_new(ctx: *u8) *u8;
+  fn @c SSL_free(ssl: *u8);
+  fn @c SSL_set_connect_state(ssl: *u8);
+  fn @c SSL_set_accept_state(ssl: *u8);
+  fn @c SSL_ctrl(ssl: *u8, cmd: i32, larg: i64, parg: *u8) i32;
+  fn @c SSL_set1_host(ssl: *u8, host: cstr) i32;
+  fn @c SSL_get_verify_result(ssl: *u8) i32;
+  fn @c SSL_get0_alpn_selected(ssl: *u8, data: &mut *u8, len: &mut u32);
+  fn @c SSL_get_version(ssl: *u8) *u8;
+  fn @c SSL_get_current_cipher(ssl: *u8) *u8;
+  fn @c SSL_CIPHER_get_name(c: *u8) *u8;
+  fn @c SSL_set_ex_data(ssl: *u8, idx: i32, data: *u8) i32;
+  fn @c SSL_get_ex_data(ssl: *u8, idx: i32) *u8;
+  fn @c SSL_select_next_proto(out: &mut *u8, outLen: &mut u8, server: *u8, serverLen: u32,
+      client: *u8, clientLen: u32) i32;
+
+  // Certificates
+  fn @c X509_free(x: *u8);
+  fn @c PEM_read_bio_X509(bio: *u8, x: *u8, cb: *u8, u: *u8) *u8;
+  fn @c BIO_new_mem_buf(buf: *u8, len: i32) *u8;
+  fn @c BIO_free(b: *u8) i32;
+
+  // Randomness: connection IDs, reset tokens, and ngtcp2's own
+  fn @c RAND_bytes(buf: *u8, num: i32) i32;
+
+  // The error queue (per thread)
+  fn @c ERR_get_error() u32;
+  fn @c ERR_clear_error();
+  fn @c ERR_error_string_n(e: u64, buf: *u8, len: usize);
+}
+
+// Control commands (tls's openssl.cone)
+const ctrlSetTlsextHostname = 55i32;
+const ctrlSetMinProtoVersion = 123i32;
+const ctrlSetMaxProtoVersion = 124i32;
+const tls13Version = 0x0304i32;
+
+const verifyNone = 0i32;
+const verifyPeer = 1i32;
+const filetypePem = 1i32;
+const tlsextErrOk = 0i32;
+const tlsextErrAlertFatal = 2i32;
+const npnNegotiated = 1i32;
+const appDataSlot = 0i32;       // SSL_set_app_data and _get_ are ex_data slot 0
+
+// A C string's text, without its terminating zero
+fn cText(p: *u8) &str {
+  if p as usize == 0usize {return "";}
+  cstr.fromPtr(p).view()
+}
+
+// What OpenSSL's error queue says, as one line, the queue emptied
+fn sslErrors(out: &mut String) {
+  var buf = Array[u8, 256]() <- fill 0u8;
+  var first = true;
+  while true {
+    let e = ERR_get_error();
+    if e == 0u32 {break;}
+    if first {
+      first = false;
+      ERR_error_string_n(u64.from(e), &mut buf as *u8, 256usize);
+      if out.len() > 0usize {out.append(": ");}
+      out.append(cText(&mut buf as *u8));
+    }
+  }
+}
