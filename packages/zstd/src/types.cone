@@ -1,0 +1,63 @@
+// ======== Status and failure ========
+
+// What a 'pull' found
+pub enum Status {
+  // All the input fed so far is used: feed more, or 'finish'
+  NeedInput;
+  // The output limit of this pull was reached; more is ready, pull again
+  MoreOutput;
+  // The input is complete: every frame of it has been delivered
+  Done;
+  // The input is not valid (or asks for what is refused); 'error()' says why
+  Failed;
+}
+
+// What kind of thing was wrong with a compressed stream
+pub enum ErrorKind {
+  // Not a zstd frame (nor a skippable one), or a frame header that is not valid
+  BadHeader;
+  // A frame header asks for a window larger than the Decompressor's maxWindow
+  WindowTooLarge;
+  // A frame names a dictionary (by its ID): none was given, or the one
+  // given is a raw-content dictionary, which has no ID to match
+  NeedsDictionary;
+  // A block header, a literals section header or a sequences section
+  // header that is not valid, or sizes in it that do not add up
+  BadBlock;
+  // An FSE table description or a Huffman tree description that is not
+  // valid, or a table reused ("repeat", "treeless") when there is none
+  BadTable;
+  // A Huffman or FSE bitstream that does not decode to exactly its end, a
+  // literal or match length past what the block holds
+  BadSequence;
+  // A match that reaches back before the window (or the start of the
+  // output and the dictionary)
+  BadOffset;
+  // The input ended before a frame did
+  Truncated;
+  // The content checksum, or the content size a frame header declared, does
+  // not match the content
+  BadChecksum;
+  // More output than the limit allows
+  TooLarge;
+}
+
+// Why a stream could not be decompressed: what kind, how many bytes of input
+// had been used when it was noticed (the start of the unit that failed: a
+// frame header, a block, a checksum), and a sentence.
+pub struct ZstdError {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) ZstdError {
+    ZstdError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn message(self: &) String { reason.copy() }
+
+  pub fn copy(self: &) ZstdError {
+    ZstdError(kind, offset, reason.copy())
+  }
+}

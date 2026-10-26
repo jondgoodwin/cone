@@ -1,0 +1,61 @@
+// A zstd frame (66 bytes, made by 'zstd -19' of the text below) decompressed
+// in one call, then the same bytes fed the way a socket would hand them over:
+// five at a time, the output taken eight bytes at a time.
+//
+//   congo run examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import collections use *;
+import zstd;
+
+fn main() i32 {
+  let frame: Array[u8, 66] = [0x28u8, 0xB5u8, 0x2Fu8, 0xFDu8, 0x24u8, 0x58u8, 0xADu8, 0x01u8, 0x00u8, 0xD4u8,
+    0x02u8, 0x74u8, 0x68u8, 0x65u8, 0x20u8, 0x71u8, 0x75u8, 0x69u8, 0x63u8, 0x6Bu8, 0x20u8, 0x62u8, 0x72u8, 0x6Fu8,
+    0x77u8, 0x6Eu8, 0x20u8, 0x66u8, 0x6Fu8, 0x78u8, 0x20u8, 0x6Au8, 0x75u8, 0x6Du8, 0x70u8, 0x73u8, 0x20u8, 0x6Fu8,
+    0x76u8, 0x65u8, 0x72u8, 0x20u8, 0x74u8, 0x68u8, 0x65u8, 0x20u8, 0x6Cu8, 0x61u8, 0x7Au8, 0x79u8, 0x20u8, 0x64u8,
+    0x6Fu8, 0x67u8, 0x2Cu8, 0x20u8, 0x01u8, 0x00u8, 0x05u8, 0x9Au8, 0xAAu8, 0x0Cu8, 0xC7u8, 0xAAu8, 0x36u8, 0x43u8];
+  let data: &Array[u8] = &frame;
+
+  // One call: every frame in the input, checksums verified
+  match zstd.decompress(data, 0usize) {
+    case let Ok(text) {
+      printInt(i64.from(data.len));
+      printStr(" bytes became ");
+      printInt(i64.from(text.len()));
+      printStr(":\n");
+      printStr(String.fromBytes(text.view()).view());
+      printStr("\n");
+    }
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+  }
+
+  // The same frame fed in pieces: the state is the Decompressor, which holds
+  // what it needs between the calls
+  var d = zstd.Decompressor.make();
+  var out = List[u8].empty();
+  var piece = List[u8].empty();
+  var pulls = 0;
+  var pos = 0usize;
+  while pos < data.len {
+    let n = if data.len - pos < 5usize {data.len - pos} else {5usize};
+    d.feed(&data[pos..<pos + n]);
+    pos += n;
+    if pos == data.len { d.finish(); }
+    var st: zstd.Status = zstd.Status.MoreOutput;
+    while st == zstd.Status.MoreOutput {
+      piece.clear();
+      st = d.pull(&mut piece, 8usize);
+      pulls += 1;
+      var k = 0usize;
+      while k < piece.len() { out.push(*piece[k]); k += 1usize; }
+    }
+    if st == zstd.Status.Failed { return 1i32; }
+  }
+  printStr(String.fromBytes(out.view()).view());
+  printStr("\n");
+  printInt(i64.from(pulls));
+  printStr(" pulls\n");
+  0i32
+}

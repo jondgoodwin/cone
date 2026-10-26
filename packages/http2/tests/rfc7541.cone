@@ -1,0 +1,275 @@
+// Every example of RFC 7541 Appendix C, C.2 to C.6, as data: the header
+// list, the block's bytes and the dynamic table after it, each taken from
+// the RFC's text. Each block is decoded (the list and the table must be the
+// RFC's) and the list encoded (the bytes and the encoder's table must be the
+// RFC's). C.3 and C.5 are without Huffman coding, C.4 and C.6 the same lists
+// with it; C.2's four are each on a fresh pair. The RFC's C.5 and C.6 run
+// with a 256-byte table and start from it; here both ends get there the way
+// a connection does, by one block holding only the size update (the
+// example's own bytes then follow it unchanged). C.2.3's field arrives
+// never-indexed and is written '(never indexed)'; encoding it so marked
+// sends it the same way. C.2.2 is a literal without indexing, which the
+// encoder chooses only for a field too large for its table, so its bytes
+// are written with encodeLiteral. C.1's integers are in tests/wire.cone.
+
+mod rfc7541;
+
+import testing use *;
+import collections use *;
+import http2 use *;
+
+const never = " (never indexed)";
+
+fn hex(b: &Array[u8]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < b.len {
+    s.appendHex(u64.from(b[i]), 2usize);
+    i = i + 1usize;
+  }
+  s
+}
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// 'name: value', a line each
+fn listing(fields: &Array[HeaderField]) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < fields.len {
+    s.append(fields[i].name.view());
+    s.append(": ");
+    s.append(fields[i].value.view());
+    if fields[i].sensitive {s.append(never);}
+    s.append("\n");
+    i = i + 1usize;
+  }
+  s
+}
+
+// The table as the RFC prints it, newest first
+fn dump(t: &DynamicTable) String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < t.len() {
+    s.append("[");
+    s.appendUInt(u64.from(i + 1usize));
+    s.append("] (s = ");
+    s.appendUInt(u64.from(t.entrySize(i)));
+    s.append(") ");
+    s.append(t.name(i));
+    s.append(": ");
+    s.appendBytes(t.value(i));
+    s.append("\n");
+    i = i + 1usize;
+  }
+  s.append("size ");
+  s.appendUInt(u64.from(t.size()));
+  s.append("\n");
+  s
+}
+
+// A listing back into fields
+fn parseList(text: &Array[u8]) List[HeaderField] {
+  var fields = List[HeaderField].empty();
+  var start = 0usize;
+  while start < text.len {
+    var end = start;
+    while text[end] != '\n' {end = end + 1usize;}
+    var colon = start + 1usize;
+    while !(text[colon] == ':' && text[colon + 1usize] == ' ') {colon = colon + 1usize;}
+    var vend = end;
+    var secret = false;
+    if end - start > never.len() && bytesEqual(&text[end - never.len() ..< end], never) {
+      vend = end - never.len();
+      secret = true;
+    }
+    var f = HeaderField.make(&text[start ..< colon], &text[colon + 2usize ..< vend]);
+    f.sensitive = secret;
+    fields.push(f);
+    start = end + 1usize;
+  }
+  fields
+}
+
+fn label(l: &str, what: &str) String {
+  var s = String.from(l);
+  s.append(" ");
+  s.append(what);
+  s
+}
+
+fn example(enc: &mut HpackEncoder, dec: &mut HpackDecoder, l: &str, blockHex: &str, list: &str, table: &str, without: bool) {
+  let block = unhex(blockHex);
+  var got = List[HeaderField].empty();
+  match dec.decode(block.view(), &mut got) {
+    case let Ok(size) {expectUInt(u64.from(size), u64.from(listSize(got.view())), label(l, "size").view());}
+    case let Error(e) {expectStr(e.message().view(), "", label(l, "decode").view());}
+  }
+  expectStr(listing(got.view()).view(), list, label(l, "decoded list").view());
+  expectStr(dump(dec.dynamicTable()).view(), table, label(l, "decoder's table").view());
+
+  let fields = parseList(list);
+  var out = List[u8].empty();
+  if without {
+    let f = fields[0usize];
+    encodeLiteral(&mut out, Indexing.Without, staticFind(f.name.view(), f.value.view()).index,
+      f.name.view(), f.value.view(), false);
+  } else {
+    enc.encode(fields.view(), &mut out);
+  }
+  expectStr(hex(out.view()).view(), blockHex, label(l, "encoded").view());
+  expectStr(dump(enc.dynamicTable()).view(), table, label(l, "encoder's table").view());
+}
+
+fn config(huffman: bool, tableSize: usize) HpackConfig {
+  var c = HpackConfig.make();
+  c.huffman = huffman;
+  c.headerTableSize = tableSize;
+  c.encoderTableSize = tableSize;
+  c
+}
+
+// Both ends to a table of 256 bytes, as a connection gets there: the
+// encoder owes the update, and the decoder, once its SETTINGS is
+// acknowledged, requires it
+fn prime(enc: &mut HpackEncoder, dec: &mut HpackDecoder, l: &str) {
+  var out = List[u8].empty();
+  enc.startBlock(&mut out);
+  expectStr(hex(out.view()).view(), "3fe101", label(l, "size update to 256").view());
+  dec.settingSent();
+  dec.settingAcknowledged();
+  var got = List[HeaderField].empty();
+  match dec.decode(out.view(), &mut got) {
+    case let Ok(size) {expectUInt(u64.from(size), 0u64, label(l, "an empty list").view());}
+    case let Error(e) {expectStr(e.message().view(), "", label(l, "the update").view());}
+  }
+  expectUInt(u64.from(dec.dynamicTable().maxSize()), 256u64, label(l, "decoder at 256").view());
+  expectUInt(u64.from(enc.dynamicTable().maxSize()), 256u64, label(l, "encoder at 256").view());
+}
+
+// C.2: four representations, each on its own fresh pair
+fn c2() {
+  let cfg = config(false, 4096usize);
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.2.1",
+    "400a637573746f6d2d6b65790d637573746f6d2d686561646572",
+    "custom-key: custom-header\n",
+    "[1] (s = 55) custom-key: custom-header\nsize 55\n", false);
+  enc = HpackEncoder.make(&cfg);
+  dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.2.2",
+    "040c2f73616d706c652f70617468",
+    ":path: /sample/path\n",
+    "size 0\n", true);
+  enc = HpackEncoder.make(&cfg);
+  dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.2.3",
+    "100870617373776f726406736563726574",
+    "password: secret (never indexed)\n",
+    "size 0\n", false);
+  enc = HpackEncoder.make(&cfg);
+  dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.2.4",
+    "82",
+    ":method: GET\n",
+    "size 0\n", false);
+}
+
+// C.3: three requests on one connection, no Huffman
+fn c3() {
+  let cfg = config(false, 4096usize);
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.3.1",
+    "828684410f7777772e6578616d706c652e636f6d",
+    ":method: GET\n:scheme: http\n:path: /\n:authority: www.example.com\n",
+    "[1] (s = 57) :authority: www.example.com\nsize 57\n", false);
+  example(&mut enc, &mut dec, "C.3.2",
+    "828684be58086e6f2d6361636865",
+    ":method: GET\n:scheme: http\n:path: /\n:authority: www.example.com\ncache-control: no-cache\n",
+    "[1] (s = 53) cache-control: no-cache\n[2] (s = 57) :authority: www.example.com\nsize 110\n", false);
+  example(&mut enc, &mut dec, "C.3.3",
+    "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+    ":method: GET\n:scheme: https\n:path: /index.html\n:authority: www.example.com\ncustom-key: custom-value\n",
+    "[1] (s = 54) custom-key: custom-value\n[2] (s = 53) cache-control: no-cache\n[3] (s = 57) :authority: www.example.com\nsize 164\n", false);
+}
+
+// C.4: the same with Huffman
+fn c4() {
+  let cfg = config(true, 4096usize);
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  example(&mut enc, &mut dec, "C.4.1",
+    "828684418cf1e3c2e5f23a6ba0ab90f4ff",
+    ":method: GET\n:scheme: http\n:path: /\n:authority: www.example.com\n",
+    "[1] (s = 57) :authority: www.example.com\nsize 57\n", false);
+  example(&mut enc, &mut dec, "C.4.2",
+    "828684be5886a8eb10649cbf",
+    ":method: GET\n:scheme: http\n:path: /\n:authority: www.example.com\ncache-control: no-cache\n",
+    "[1] (s = 53) cache-control: no-cache\n[2] (s = 57) :authority: www.example.com\nsize 110\n", false);
+  example(&mut enc, &mut dec, "C.4.3",
+    "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf",
+    ":method: GET\n:scheme: https\n:path: /index.html\n:authority: www.example.com\ncustom-key: custom-value\n",
+    "[1] (s = 54) custom-key: custom-value\n[2] (s = 53) cache-control: no-cache\n[3] (s = 57) :authority: www.example.com\nsize 164\n", false);
+}
+
+// C.5: three responses, a table of 256 bytes, evictions, no Huffman
+fn c5() {
+  let cfg = config(false, 256usize);
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  prime(&mut enc, &mut dec, "C.5");
+  example(&mut enc, &mut dec, "C.5.1",
+    "4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d",
+    ":status: 302\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:21 GMT\nlocation: https://www.example.com\n",
+    "[1] (s = 63) location: https://www.example.com\n[2] (s = 65) date: Mon, 21 Oct 2013 20:13:21 GMT\n[3] (s = 52) cache-control: private\n[4] (s = 42) :status: 302\nsize 222\n", false);
+  example(&mut enc, &mut dec, "C.5.2",
+    "4803333037c1c0bf",
+    ":status: 307\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:21 GMT\nlocation: https://www.example.com\n",
+    "[1] (s = 42) :status: 307\n[2] (s = 63) location: https://www.example.com\n[3] (s = 65) date: Mon, 21 Oct 2013 20:13:21 GMT\n[4] (s = 52) cache-control: private\nsize 222\n", false);
+  example(&mut enc, &mut dec, "C.5.3",
+    "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31",
+    ":status: 200\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:22 GMT\nlocation: https://www.example.com\ncontent-encoding: gzip\nset-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1\n",
+    "[1] (s = 98) set-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1\n[2] (s = 52) content-encoding: gzip\n[3] (s = 65) date: Mon, 21 Oct 2013 20:13:22 GMT\nsize 215\n", false);
+}
+
+// C.6: the same with Huffman
+fn c6() {
+  let cfg = config(true, 256usize);
+  var enc = HpackEncoder.make(&cfg);
+  var dec = HpackDecoder.make(cfg);
+  prime(&mut enc, &mut dec, "C.6");
+  example(&mut enc, &mut dec, "C.6.1",
+    "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3",
+    ":status: 302\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:21 GMT\nlocation: https://www.example.com\n",
+    "[1] (s = 63) location: https://www.example.com\n[2] (s = 65) date: Mon, 21 Oct 2013 20:13:21 GMT\n[3] (s = 52) cache-control: private\n[4] (s = 42) :status: 302\nsize 222\n", false);
+  example(&mut enc, &mut dec, "C.6.2",
+    "4883640effc1c0bf",
+    ":status: 307\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:21 GMT\nlocation: https://www.example.com\n",
+    "[1] (s = 42) :status: 307\n[2] (s = 63) location: https://www.example.com\n[3] (s = 65) date: Mon, 21 Oct 2013 20:13:21 GMT\n[4] (s = 52) cache-control: private\nsize 222\n", false);
+  example(&mut enc, &mut dec, "C.6.3",
+    "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007",
+    ":status: 200\ncache-control: private\ndate: Mon, 21 Oct 2013 20:13:22 GMT\nlocation: https://www.example.com\ncontent-encoding: gzip\nset-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1\n",
+    "[1] (s = 98) set-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1\n[2] (s = 52) content-encoding: gzip\n[3] (s = 65) date: Mon, 21 Oct 2013 20:13:22 GMT\nsize 215\n", false);
+}
+
+fn main() i32 {
+  c2();
+  c3();
+  c4();
+  c5();
+  c6();
+  done()
+}

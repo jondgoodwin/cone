@@ -1,0 +1,132 @@
+// Header blocks the decoder must refuse as malformed (RFC 7541; a
+// COMPRESSION_ERROR in HTTP/2), each on a fresh decoder, each with the
+// reason it gives: bad indexes (0, past the static table with the dynamic
+// one empty, past both, a name's index past both), integers cut off and too
+// large, strings whose length runs past the block, Huffman strings with
+// bad padding or EOS, and table size updates in the wrong place (after a
+// field, past SETTINGS_HEADER_TABLE_SIZE, missing where one is owed). Then:
+// the list handed in is left as it was, a refused block leaves the decoder
+// refusing every later one, and the shapes that are allowed (several
+// updates at a block's start, an empty block, an empty name) are not
+// refused.
+
+mod malformed;
+
+import testing use *;
+import collections use *;
+import http2 use *;
+
+fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
+
+fn unhex(s: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  var i = 0usize;
+  while i + 1usize < s.len {
+    out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
+    i = i + 2usize;
+  }
+  out
+}
+
+// What decoding the block says: 'ok N' with the fields' count, or the error
+fn run(dec: &mut HpackDecoder, coded: &str) String {
+  let block = unhex(coded);
+  var got = List[HeaderField].empty();
+  var s = String.empty();
+  match dec.decode(block.view(), &mut got) {
+    case let Ok(size) {
+      s.append("ok ");
+      s.appendUInt(u64.from(got.len()));
+    }
+    case let Error(e) {
+      s.append(e.message().view());
+      if !e.isConnectionError() {s.append(" (the connection goes on)");}
+    }
+  }
+  s
+}
+
+fn fresh(coded: &str) String {
+  var dec = HpackDecoder.make(HpackConfig.make());
+  run(&mut dec, coded)
+}
+
+fn bad(coded: &str, why: &str, label: &str) {
+  var want = String.from("malformed: ");
+  want.append(why);
+  expectStr(fresh(coded).view(), want.view(), label);
+}
+
+fn main() i32 {
+  // Indexes
+  bad("80", "an index of 0", "indexed 0");
+  bad("be", "an index past the tables' ends", "62 with the dynamic table empty");
+  bad("4001610162bf", "an index past the tables' ends", "63 with one entry");
+  bad("ff00", "an index past the tables' ends", "127");
+  bad("7f200161", "a name's index past the tables' ends", "a name's index of 95 (incremental)");
+  bad("0f2f0161", "a name's index past the tables' ends", "a name's index of 62 (without indexing)");
+  bad("1f2f0161", "a name's index past the tables' ends", "a name's index of 62 (never indexed)");
+
+  // Integers
+  bad("ff", "an integer is cut off by the block's end", "an index's prefix full, nothing after");
+  bad("ff80", "an integer is cut off by the block's end", "an index's continuation cut off");
+  bad("ffe1ffffff0f", "an integer is too large", "an index past maxInteger");
+  bad("ff808080808000", "an integer is too large", "an index with six continuation bytes");
+  bad("3f", "an integer is cut off by the block's end", "a size update cut off");
+  bad("4f", "a string is cut off by the block's end", "a literal with no value");
+
+  // Strings
+  bad("400a6162", "a string's length runs past the block's end", "a name's length past the end");
+  bad("44056162", "a string's length runs past the block's end", "a value's length past the end");
+  bad("447f", "an integer is cut off by the block's end", "a value's length cut off");
+  bad("44ffffffff0f", "a string's length runs past the block's end", "a value's length of 32 MiB");
+  bad("4081ff0161", "a Huffman string's padding is longer than 7 bits or not all ones", "a name's padding of 8 ones");
+  bad("0081180161","a Huffman string's padding is longer than 7 bits or not all ones", "a name's padding of zeros");
+  bad("1084ffffffff0161", "a Huffman string holds the EOS symbol", "EOS in a never-indexed name");
+  bad("04851fffffffff", "a Huffman string holds the EOS symbol", "EOS in a value");
+  bad("04841fffffff", "a Huffman string's padding is longer than 7 bits or not all ones", "27 bits of ones after a value");
+
+  // Table size updates
+  bad("8220", "a table size update after a field", "an update after a field");
+  bad("204001610162203fe11f", "a table size update after a field", "an update after a literal");
+  bad("3fe21f", "a table size update past SETTINGS_HEADER_TABLE_SIZE", "an update to 4097");
+  {
+    var c = HpackConfig.make();
+    c.headerTableSize = 1024usize;
+    var dec = HpackDecoder.make(c);
+    dec.settingSent();
+    dec.settingAcknowledged();
+    expectStr(run(&mut dec, "82").view(),
+      "malformed: a block after a smaller SETTINGS_HEADER_TABLE_SIZE does not begin with a table size update",
+      "no update after the table was made smaller");
+    var dec2 = HpackDecoder.make(c);
+    dec2.settingSent();
+    dec2.settingAcknowledged();
+    expectStr(run(&mut dec2, "3fe10782").view(), "ok 1", "the update owed, to 1024, then a field");
+    expectStr(run(&mut dec2, "82").view(), "ok 1", "the next block owes none");
+  }
+
+  // The list handed in is as it was
+  {
+    var dec = HpackDecoder.make(HpackConfig.make());
+    var got = List[HeaderField].empty();
+    got.push(HeaderField.make("kept", "1"));
+    let block = unhex("828680");
+    match dec.decode(block.view(), &mut got) {
+      case let Ok(size) {expect(false, "a bad block decoded");}
+      case let Error(e) {expect(e.isConnectionError(), "a malformed block is a connection error");}
+    }
+    expectUInt(u64.from(got.len()), 1u64, "two good fields before the bad one are not kept");
+    expectStr(got[0usize].name.view(), "kept", "what was there is");
+    // ...and every later block is refused
+    expectStr(run(&mut dec, "82").view(), "malformed: an earlier block failed: the table is lost", "after a failure");
+  }
+
+  // Allowed
+  expectStr(fresh("").view(), "ok 0", "an empty block");
+  expectStr(fresh("203fe11f82").view(), "ok 1", "two updates, then a field");
+  expectStr(fresh("20").view(), "ok 0", "an update alone");
+  expectStr(fresh("40000162").view(), "ok 1", "an empty name (HTTP's to refuse, not HPACK's)");
+  expectStr(fresh("4001610162be").view(), "ok 2", "a literal, then its entry by index");
+  done()
+}
