@@ -26,7 +26,7 @@
 //       case let Closed(x) {... x.code ...}
 //       ...
 //     }
-//     wake at c.wakeAt()
+//     wake at c.wakeAt(), and call c.pollTransmit(now) then, input or none
 //   }
 //
 //   Config.make(): the defaults, each a field to change                 (CONFIG)
@@ -60,10 +60,12 @@
 // when there is none (ngtcp2 coalesces several frames, and several streams'
 // data, into one packet, and its long-header packets into one payload);
 // 'wakeAt()' is when to call again with no packet; 'pollEvent()' says what
-// happened. A wake time that has come is acted on by the next handleInput or
-// pollTransmit: a lost packet's retransmission queued, an acknowledgement
-// sent, the idle timeout's end. The connection knows the time only from these
-// calls. Connection migration is off (MIGRATION below): the path is fixed for
+// happened. There is no handleTimeout: a wake time that has come is acted on
+// by the next handleInput or pollTransmit (a lost packet's retransmission
+// queued, an acknowledgement sent, the idle timeout's end), so THE OWNER MUST
+// CALL pollTransmit WHEN wakeAt IS REACHED, EVEN WITH NO INPUT, and send what
+// it gives; a connection left alone past its wake time does nothing. The
+// connection knows the time only from these calls. Connection migration is off (MIGRATION below): the path is fixed for
 // the connection's life.
 //
 // EVENTS. 'pollEvent' gives one Event each call, Nothing when there is none
@@ -150,7 +152,11 @@
 //   pool (or 'verifyNow' where blocking is fine), and the handshake goes on
 //   from 'verifyDone'. A refusal closes the connection with the TLS alert
 //   OpenSSL sends, and 'error()' carries Windows' error ('osError') and its
-//   words.
+//   words. UNTESTED: an acceptance by Windows' own store. tests/verify.cone
+//   shows the OS's store alone accepting on Linux (SSL_CERT_FILE naming the
+//   test root, for the test's process) and crypt32 refusing the test root
+//   on Windows; a Windows acceptance would need the test root in the
+//   machine's store, which no test puts there.
 // - Verifier.roots(pem): FOR DEVELOPMENT. OpenSSL checks the chain against
 //   these roots alone, and the name.
 // - Verifier.pinnedSha256(hex): FOR DEVELOPMENT. The server's key's SHA-256
@@ -160,6 +166,29 @@
 // A server presents a certificate chain and key from PEM files. TLS 1.3
 // only, as QUIC requires. 0-RTT is off: a client keeps no tickets and so
 // never resumes, and a server sends none and takes no early data.
+//
+// WORKAROUNDS FOR NGTCP2 1.22.1, pinned to it. Both make the handshake stop
+// for the certificate's verdict and go on from it (verify.cone):
+// (i) The package's own recv_crypto_data callback, in place of the crypto
+//   helper's: it calls ngtcp2_crypto_read_write_crypto_data as the helper
+//   does, but takes the stop OpenSSL makes for the verdict
+//   (SSL_set_retry_verify, SSL_get_error's WANT_RETRY_VERIFY) as an
+//   interruption, where the helper ends the connection (it knows only its
+//   client hello and certificate lookup interruptions).
+// (ii) The one-byte datagram. TLS finishes a resumed handshake outside
+//   ngtcp2's read, and ngtcp2 marks a handshake done only at a read's end.
+//   Without the mark the client sends its Finished while ngtcp2 still waits;
+//   a HANDSHAKE_DONE that comes before the client's next write then discards
+//   its Handshake keys while it waits, and that write crashes (an access
+//   violation in ngtcp2_conn_writev_stream). So after the verdict the
+//   connection reads one zero byte, which ngtcp2 drops as padding, and that
+//   read's end marks the handshake.
+// No release after 1.22.1 (1.23.0, 1.24.0, 1.25.0) names a fix for either,
+// in its notes or in ngtcp2's GitHub issues (read 26 Oct 2026): none was
+// found, and none has been reported. Both are to be checked, and taken out
+// if no longer needed, when the package moves to a newer ngtcp2 (which needs
+// MSVC 19.44 or later, WINDOWS AND LINUX below). 1.24.0 also adds a
+// recv_stop_sending callback, which would give WriteStopped the peer's code.
 //
 // MIGRATION. Connection migration is off: this end announces
 // disable_active_migration, so the peer must not move the connection to
