@@ -183,10 +183,13 @@ pub struct FrameError {
   pub scope: Scope;
   pub stream: u32;            // the frame's stream: the one a stream error resets
   pub flowLength: usize;      // a refused DATA frame's length, still counted against the connection's window
-  pub detail: &'static str;   // what was wrong, one line
+  pub detail: String;         // what was wrong, one line
 
   // Whether the connection must end
   pub fn isConnectionError(self: &) bool {scope == Scope.Connection}
+
+  // The same error again
+  pub fn copy(self: &) FrameError {FrameError(code, scope, stream, flowLength, detail.copy())}
 
   // 'PROTOCOL_ERROR on the connection: a DATA frame on stream 0'
   pub fn message(self: &) String {
@@ -201,17 +204,17 @@ pub struct FrameError {
       out.appendUInt(u64.from(stream));
       out.append(": ");
     }
-    out.append(detail);
+    out.append(detail.view());
     out
   }
 }
 
 fn connectionError(code: ErrorCode, stream: u32, why: &'static str) FrameError {
-  FrameError(code, Scope.Connection, stream, 0usize, why)
+  FrameError(code, Scope.Connection, stream, 0usize, String.from(why))
 }
 
 fn streamError(code: ErrorCode, stream: u32, why: &'static str) FrameError {
-  FrameError(code, Scope.Stream, stream, 0usize, why)
+  FrameError(code, Scope.Stream, stream, 0usize, String.from(why))
 }
 
 // ---------------------------------------------------------------------------
@@ -544,9 +547,9 @@ pub struct FrameReader {
 
   // Whether a connection error has ended reading
   pub fn isFailed(self: &) bool {
-    match failed {
-      case let Some(e) {true}
-      case is None[FrameError] {false}
+    match &failed {
+      case let &Some(e) {true}
+      else {false}
     }
   }
 
@@ -554,12 +557,11 @@ pub struct FrameReader {
   // all arrived (nothing is consumed but what a refused frame leaves to
   // skip); Failed for a frame refused. The chain must be able to hold
   // frameHeaderLen + maxFrameSize bytes. The lifetimes are named apart from
-  // the result's so a caller knows the frame borrows neither (its one
-  // reference, an error's detail, is static)
+  // the result's so a caller knows the frame borrows neither
   pub fn next(self: &'r mut, input: &'c mut Chain) Parsed {
-    match failed {
-      case let Some(e) {return Parsed.Failed(e);}
-      case is None[FrameError] {}
+    match &failed {
+      case let &Some(e) {return Parsed.Failed(e.copy());}
+      else {}
     }
     while true {
       if discard > 0usize {
@@ -755,12 +757,12 @@ pub struct FrameReader {
     input.advance(frameHeaderLen);
     discard = h.length;
     let flow = if h.kind == typeData {h.length} else {0usize};
-    Parsed.Failed(FrameError(code, Scope.Stream, h.stream, flow, why))
+    Parsed.Failed(FrameError(code, Scope.Stream, h.stream, flow, String.from(why)))
   }
 
   // A connection error: reading ends, and every later call repeats it
   fn fail(self: &'r mut, e: FrameError) Parsed {
-    failed = Some[FrameError](e);
+    failed = Some[FrameError](e.copy());
     Parsed.Failed(e)
   }
 
