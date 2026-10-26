@@ -1,6 +1,7 @@
 // The loop's owner, natively: a window (unless headless), the world clock and
-// the fixed step, the network slot's queues, and the statistics. World's
-// default 'run' drives it; the world sees it as the host of every callback.
+// the fixed step, the network tick count, and the statistics (the network
+// queues are the frame loop's own). World's default 'run' drives it; the world
+// sees it as the host of every callback.
 
 // A message for or from a server: its bytes, and when it arrived or was queued
 pub struct Packet {
@@ -28,8 +29,7 @@ pub struct Host {
   pub fixed: FixedStep;      // the accumulator and the steps
   pub stats: Stats;
   pub frame: u64;            // the frame under way (0 before the first)
-  net: NetQueues;
-  netAccum: u64;             // world time not yet spent in network ticks
+  netAccum: u64;            // world time not yet spent in network ticks
   pub sent: u64;             // packets queued to send (and dropped: no transport)
   lastReal: u64;             // the real clock at the last frame's start
   lastWorld: u64;            // the world clock at the last frame's start
@@ -58,7 +58,7 @@ pub struct Host {
       stdio.print <- "No window could be opened\n";
       running = false;
     }
-    Host(config, win, running, clock, fixed, Stats.empty(), 0u64, NetQueues.empty(), 0u64, 0u64,
+    Host(config, win, running, clock, fixed, Stats.empty(), 0u64, 0u64, 0u64,
       0u64, 0u64, 0usize, PHASE_COUNT, PHASE_COUNT, 0u64)
   }
 
@@ -186,22 +186,24 @@ pub struct Host {
     f32.from(fixed.alpha())
   }
 
-  // The network slot's queues, lent out for the network phase and given back
-  pub fn takeNet(self: &mut) NetQueues {
-    var out = NetQueues.empty();
-    out <-> net;
-    out.ticks = 0u32;
+  // The network ticks due this frame (at Config.netTickNs), for the network
+  // phase's queues ('q.ticks'); the world time left over waits for the next
+  pub fn netTicks(self: &mut) u32 {
+    var ticks = 0u32;
     if config.netTickNs > 0u64 {
-      out.ticks = u32.from(netAccum / config.netTickNs);
+      ticks = u32.from(netAccum / config.netTickNs);
       netAccum = netAccum % config.netTickNs;
     }
-    out
+    ticks
   }
-  pub fn giveNet(self: &mut, q: NetQueues) {
-    net = q;
-    net.inbound.clear();
-    sent = sent + u64.from(net.outbound.len());
-    net.outbound.clear();
+
+  // The network phase over, its queues emptied for the next: what arrived is
+  // done with, and what was queued to send is counted ('sent') and dropped
+  // (no transport)
+  pub fn endNet(self: &mut, q: &mut NetQueues) {
+    q.inbound.clear();
+    sent = sent + u64.from(q.outbound.len());
+    q.outbound.clear();
   }
 
   // The run's end: print the statistics if asked

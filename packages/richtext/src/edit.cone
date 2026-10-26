@@ -136,20 +136,25 @@ fn mergeBlockEdit(prev: &mut BlockEdit, next: &BlockEdit) bool {
   false
 }
 
+// An edit's window, between 'begin' and 'commit': its first block, the blocks it held, and the
+// selection before
+struct EditWindow {
+  first: usize;
+  removed: List[Block];
+  before: Sel;
+}
+
 pub struct RichEditor {
   pub core: RichCore;
   pub hist: History[BlockEdit];
   pub pending: Style;
   pub pendingSet: bool = false;
-  pendFirst: usize = 0usize;
-  pendRemoved: List[Block];
-  pendBefore: Sel;
 
   pub fn make() RichEditor {
     var b = List[Block].empty();
     b.push(Block.empty());
     RichEditor(RichCore(b, List[ImageInfo].empty(), pos(0usize, 0usize), pos(0usize, 0usize)),
-      History[BlockEdit].make(), Style.plain(), false, 0usize, List[Block].empty(), Sel(pos(0usize, 0usize), pos(0usize, 0usize)))
+      History[BlockEdit].make(), Style.plain(), false)
   }
 
   // A document of these blocks
@@ -216,18 +221,17 @@ pub struct RichEditor {
 
   // ---- the edit window ----
 
-  fn begin(self: &mut, first: usize, count: usize) {
-    pendFirst = first;
-    pendRemoved = cloneBlocks(&core.blocks, first, count);
-    pendBefore = Sel(core.anchor, core.head);
+  // Open a window of 'count' blocks at 'first' that an edit is about to change: what they are now, and
+  // the selection, kept by the method making the edit until it commits
+  fn begin(self: &, first: usize, count: usize) EditWindow {
+    EditWindow(first, cloneBlocks(&core.blocks, first, count), Sel(core.anchor, core.head))
   }
 
   // Record the window (now 'newCount' blocks) as one command
-  fn commit(self: &mut, newCount: usize, tag: u32, merging: bool) {
-    markDirty(&mut core, pendFirst, pendRemoved.len(), newCount);
-    var removed = List[Block].empty();
-    removed <-> pendRemoved;
-    let cmd = BlockEdit(pendFirst, removed, cloneBlocks(&core.blocks, pendFirst, newCount), pendBefore,
+  fn commit(self: &mut, win: EditWindow, newCount: usize, tag: u32, merging: bool) {
+    let first, removed, before = win.(first, removed, before);
+    markDirty(&mut core, first, removed.len(), newCount);
+    let cmd = BlockEdit(first, removed, cloneBlocks(&core.blocks, first, newCount), before,
       Sel(core.anchor, core.head));
     core.version = core.version + 1u64;
     if merging { hist.pushMerging(cmd, tag, &mergeBlockEdit); } else { hist.push(cmd, tag); }
@@ -260,7 +264,7 @@ pub struct RichEditor {
     let a = lo();
     let z = hi();
     let selected = hasSelection();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var count = z.block - a.block + 1usize;
     if selected { count = deleteSelectionRaw(); }
     var style = if pendingSet { pending } else { styleAt(core.blocks[a.block], a.off) };
@@ -290,7 +294,7 @@ pub struct RichEditor {
     core.head = p;
     pendingSet = false;
     let typing = !selected && count == 1usize && s.len() <= 4usize && s[0usize] != 32u8 && s[0usize] != 10u8;
-    commit(count, RT_TAG_TYPING, typing);
+    commit(win, count, RT_TAG_TYPING, typing);
     if !typing { hist.breakMerge(); }
   }
 
@@ -300,27 +304,27 @@ pub struct RichEditor {
     if hasSelection() { deleteSelection(); return; }
     let p = core.head;
     if p.off > 0usize {
-      begin(p.block, 1usize);
+      let win = begin(p.block, 1usize);
       let from = prevCharOff(core.blocks[p.block].text.view(), p.off);
       deleteInBlock(&mut core.blocks[p.block], from, p.off);
       core.head = pos(p.block, from);
       core.anchor = core.head;
       pendingSet = false;
-      commit(1usize, RT_TAG_BACKSPACE, true);
+      commit(win, 1usize, RT_TAG_BACKSPACE, true);
     } else if core.blocks[p.block].kind != BK_PARA {
-      begin(p.block, 1usize);
+      let win = begin(p.block, 1usize);
       core.blocks[p.block].kind = BK_PARA;
       core.blocks[p.block].depth = 0u32;
-      commit(1usize, RT_TAG_FORMAT, false);
+      commit(win, 1usize, RT_TAG_FORMAT, false);
     } else if p.block > 0usize {
-      begin(p.block - 1usize, 2usize);
+      let win = begin(p.block - 1usize, 2usize);
       let at = core.blocks[p.block - 1usize].text.len();
       let tail = cloneBlock(core.blocks[p.block]);
       appendBlock(&mut core.blocks[p.block - 1usize], &tail);
       spliceBlocks(&mut core.blocks, p.block, 1usize, List[Block].empty());
       core.head = pos(p.block - 1usize, at);
       core.anchor = core.head;
-      commit(1usize, RT_TAG_OTHER, false);
+      commit(win, 1usize, RT_TAG_OTHER, false);
     }
   }
 
@@ -330,16 +334,16 @@ pub struct RichEditor {
     let p = core.head;
     let t = core.blocks[p.block].text.len();
     if p.off < t {
-      begin(p.block, 1usize);
+      let win = begin(p.block, 1usize);
       let to = nextCharOff(core.blocks[p.block].text.view(), p.off);
       deleteInBlock(&mut core.blocks[p.block], p.off, to);
-      commit(1usize, RT_TAG_DELETE, true);
+      commit(win, 1usize, RT_TAG_DELETE, true);
     } else if p.block + 1usize < core.blocks.len() {
-      begin(p.block, 2usize);
+      let win = begin(p.block, 2usize);
       let tail = cloneBlock(core.blocks[p.block + 1usize]);
       appendBlock(&mut core.blocks[p.block], &tail);
       spliceBlocks(&mut core.blocks, p.block + 1usize, 1usize, List[Block].empty());
-      commit(1usize, RT_TAG_OTHER, false);
+      commit(win, 1usize, RT_TAG_OTHER, false);
     }
   }
 
@@ -347,17 +351,17 @@ pub struct RichEditor {
     if !hasSelection() { return; }
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     let n = deleteSelectionRaw();
     pendingSet = false;
-    commit(n, RT_TAG_OTHER, false);
+    commit(win, n,RT_TAG_OTHER, false);
   }
 
   // Enter: split the block at the caret; Enter on an empty list item leaves the list
   pub fn enter(self: &mut) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     if hasSelection() { deleteSelectionRaw(); }
     let p = core.head;
     let b = core.blocks[p.block];
@@ -376,7 +380,7 @@ pub struct RichEditor {
       pendingSet = true;
       count = 2usize;
     }
-    commit(count, RT_TAG_OTHER, false);
+    commit(win, count, RT_TAG_OTHER, false);
   }
 
   // ---- formatting ----
@@ -418,7 +422,7 @@ pub struct RichEditor {
     }
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var bi = a.block;
     while bi <= z.block {
       let from = if bi == a.block { a.off } else { 0usize };
@@ -426,7 +430,7 @@ pub struct RichEditor {
       styleRange(&mut core.blocks[bi], from, to, op);
       bi = bi + 1usize;
     }
-    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    commit(win, z.block - a.block + 1usize, RT_TAG_FORMAT, false);
     hist.breakMerge();
   }
 
@@ -434,14 +438,14 @@ pub struct RichEditor {
   pub fn setBlockKind(self: &mut, kind: u32) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var bi = a.block;
     while bi <= z.block {
       core.blocks[bi].kind = kind;
       if kind != BK_BULLET && kind != BK_NUMBER { core.blocks[bi].depth = 0u32; }
       bi = bi + 1usize;
     }
-    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    commit(win, z.block - a.block + 1usize, RT_TAG_FORMAT, false);
     hist.breakMerge();
   }
 
@@ -462,7 +466,7 @@ pub struct RichEditor {
   pub fn indent(self: &mut, delta: i32) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var bi = a.block;
     while bi <= z.block {
       let d = core.blocks[bi].depth;
@@ -472,7 +476,7 @@ pub struct RichEditor {
       }
       bi = bi + 1usize;
     }
-    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    commit(win, z.block - a.block + 1usize, RT_TAG_FORMAT, false);
     hist.breakMerge();
   }
 
@@ -480,26 +484,26 @@ pub struct RichEditor {
   pub fn setListDepth(self: &mut, depth: u32) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var bi = a.block;
     while bi <= z.block {
       if core.blocks[bi].isList() { core.blocks[bi].depth = depth; }
       bi = bi + 1usize;
     }
-    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    commit(win, z.block - a.block + 1usize, RT_TAG_FORMAT, false);
     hist.breakMerge();
   }
 
   pub fn setAlign(self: &mut, align: u32) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     var bi = a.block;
     while bi <= z.block {
       core.blocks[bi].align = align;
       bi = bi + 1usize;
     }
-    commit(z.block - a.block + 1usize, RT_TAG_FORMAT, false);
+    commit(win, z.block - a.block + 1usize, RT_TAG_FORMAT, false);
     hist.breakMerge();
   }
 
@@ -507,7 +511,7 @@ pub struct RichEditor {
   pub fn insertImage(self: &mut, image: u32) {
     let a = lo();
     let z = hi();
-    begin(a.block, z.block - a.block + 1usize);
+    let win = begin(a.block, z.block - a.block + 1usize);
     if hasSelection() { deleteSelectionRaw(); }
     let p = core.head;
     var s = Style.plain();
@@ -520,7 +524,7 @@ pub struct RichEditor {
     insertInBlock(&mut core.blocks[p.block], p.off, anchorChar.view(), s);
     core.head = pos(p.block, p.off + OBJECT_CHAR_BYTES);
     core.anchor = core.head;
-    commit(1usize, RT_TAG_OTHER, false);
+    commit(win, 1usize, RT_TAG_OTHER, false);
     hist.breakMerge();
   }
 

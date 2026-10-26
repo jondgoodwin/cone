@@ -53,13 +53,28 @@ fn startJob(p: &mut Parakeet, device: &mut Device, dispatches: usize) Job {
   job
 }
 
-// Take the resident buffers back from a finished job's Completion, in their slots
-fn endJob(p: &mut Parakeet, done: &mut List[Completion]) {
+// Take a finished job's one Completion apart: the resident buffers back, in their slots, and the
+// buffer in slot 'extra', handed back
+fn endJob(p: &mut Parakeet, done: &mut List[Completion], extra: u32) Buffer {
+  var slots = List[u32].withCapacity(p.nres + 1usize);
   var i = 0usize;
   while i < p.nres {
-    p.resident.push(done[0usize].take(u32.from(i)));
+    slots.push(u32.from(i));
     i = i + 1usize;
   }
+  slots.push(extra);
+  var back = match done.pop() {
+    case var Some(c) { c.buffersIn(slots.view()) }
+    case is None { List[Buffer].empty() }
+  };
+  let last = match back.pop() {
+    case var Some(b) { b }
+    case is None { Buffer.none() }
+  };
+  {
+    each b in back.drain() { p.resident.push(b); }
+  }
+  last
 }
 
 fn finishJob(p: &mut Parakeet, device: &mut Device, job: Job) List[Completion] {
@@ -201,19 +216,20 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
   if done.len() != 1usize {
     return Error[Encoded, String](String.from("speechtotext: the encoder job gave no completion"));
   }
-  endJob(p, &mut done);
-  if !ok || !done[0usize].ok {
-    return Error[Encoded, String](String.from("speechtotext: a kernel refused its arguments in the encoder or failed on the GPU"));
-  }
-  p.ep.clear();
-  p.ep.push(done[0usize].take(ep));
-  if trace {
+  let ran = ok && done[0usize].ok;
+  if ran && trace {
     tr.preEncode = wordFloats(done[0usize].words(rbPre).view());
     tr.layer0 = wordFloats(done[0usize].words(rb0).view());
     tr.layer11 = wordFloats(done[0usize].words(rb11).view());
     tr.layer23 = wordFloats(done[0usize].words(rb23).view());
     tr.out = wordFloats(done[0usize].words(rbOut).view());
   }
+  let epBuf = endJob(p, &mut done, ep);
+  if !ran {
+    return Error[Encoded, String](String.from("speechtotext: a kernel refused its arguments in the encoder or failed on the GPU"));
+  }
+  p.ep.clear();
+  p.ep.push(epBuf);
   Ok[Encoded, String](Encoded(t, tr))
 }
 
@@ -270,12 +286,14 @@ fn stepJob(p: &mut Parakeet, device: &mut Device, update: bool, label: u32, cur:
   let back = job.readback(device, p.slotLogits);
   var done = finishJob(p, device, job);
   if done.len() != 1usize { return Error[List[f32], String](String.from("speechtotext: a decoder job gave no completion")); }
-  endJob(p, &mut done);
-  p.ep.push(done[0usize].take(epSlot));
-  if !ok || !done[0usize].ok {
+  let ran = ok && done[0usize].ok;
+  let logits = if ran { wordFloats(done[0usize].words(back).view()) } else { List[f32].empty() };
+  let epBack = endJob(p, &mut done, epSlot);
+  p.ep.push(epBack);
+  if !ran {
     return Error[List[f32], String](String.from("speechtotext: a kernel refused its arguments in the decoder or failed on the GPU"));
   }
-  Ok[List[f32], String](wordFloats(done[0usize].words(back).view()))
+  Ok[List[f32], String](logits)
 }
 
 fn argmaxRange(v: &Array[f32], from: usize, to: usize) usize {

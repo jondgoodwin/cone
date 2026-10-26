@@ -591,12 +591,6 @@ pub enum Json {
 
 // -------- reading a tree --------
 
-// What an open container is while it is read
-struct Frame {
-  pub value: Json;
-  pub key: String;
-}
-
 // Read text as JSON: the tree it holds, or why it cannot be read. The text is
 // taken as bytes (a '&str' is also accepted), and a leading UTF-8 byte-order
 // mark is passed over.
@@ -607,7 +601,10 @@ pub fn parse(text: &Array[u8]) Result[Json, JsonError] {
 
 pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
   var r = readerWith(text, opts);
-  var stack = List[Frame].empty();
+  // The containers open, innermost last, and the names of the members whose
+  // values are being read, each popped as its value goes into its object
+  var stack = List[Json].empty();
+  var keys = List[String].empty();
   var root: Json = Json.Null;
   while true {
     var ev: Event = Event.Done;
@@ -618,27 +615,27 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
     if ev == Event.Done { break; }
     if ev == Event.Key {
       let top = stack.len() - 1usize;
-      if opts.rejectDuplicateKeys && hasMember(&stack[top].value, r.text()) {
+      if opts.rejectDuplicateKeys && hasMember(stack[top], r.text()) {
         var m = String.from("the name \"");
         m.append(r.text());
         m.append("\" is already in this object");
         return Error[Json, JsonError](errorAt(text, r.offset(), ErrorKind.DuplicateKey, m.view()));
       }
-      stack[top].key = String.from(r.text());
+      keys.push(String.from(r.text()));
       continue;
     }
     var v: Json = Json.Null;
     if ev == Event.StartObject {
-      stack.push(Frame(Json.newObject(), String.empty()));
+      stack.push(Json.newObject());
       continue;
     }
     if ev == Event.StartArray {
-      stack.push(Frame(Json.newArray(), String.empty()));
+      stack.push(Json.newArray());
       continue;
     }
     if ev == Event.EndObject || ev == Event.EndArray {
       match stack.pop() {
-        case let Some(f) { v = f.(value); }
+        case var Some(c) { v = c; }
         case is None { }
       }
     }
@@ -652,7 +649,7 @@ pub fn parseWith(text: &Array[u8], opts: &Options) Result[Json, JsonError] {
     }
     else {
       let top = stack.len() - 1usize;
-      attach(&mut stack[top], v);
+      attach(&mut stack[top], &mut keys, v);
     }
   }
   Ok[Json, JsonError](root)
@@ -671,13 +668,17 @@ fn hasMember(j: &Json, key: &str) bool {
   }
 }
 
-// A finished value into the container being read
-fn attach(f: &mut Frame, v: Json) {
-  var key = String.empty();
-  key <-> f.key;
-  match &mut f.value {
+// A finished value into the container being read: an object's with the name
+// read before it, popped
+fn attach(c: &mut Json, keys: &mut List[String], v: Json) {
+  match c {
     case var Array(a) { a.push(v); }
-    case var Object(o) { o.push(Member(key, v)); }
+    case var Object(o) {
+      match keys.pop() {
+        case var Some(key) { o.push(Member(key, v)); }
+        case is None { }
+      }
+    }
     else { }
   }
 }

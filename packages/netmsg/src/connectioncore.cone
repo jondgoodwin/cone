@@ -143,10 +143,9 @@ struct RelSlot {
   data: List[u8];
 }
 
-// A reliable message received out of order, waiting for the ones before it
+// A reliable message a packet carried
 struct RelRecv {
   id: u16;
-  used: bool;
   data: List[u8];
 }
 
@@ -206,7 +205,7 @@ pub struct ConnectionCore {
   rel: List[RelSlot];
   relOldest: u16;             // the oldest id not yet acknowledged
   relNext: u16;               // the id the next message gets
-  recv: List[RelRecv];
+  recv: Dict[u16, List[u8]];  // received out of order, by id, waiting for the ones before them
   relDeliver: u16;            // the next id to give the application
 
   // latest-wins streams
@@ -236,19 +235,17 @@ pub struct ConnectionCore {
     var sent = List[SentSlot].withCapacity(ringSize);
     var seen = List[u32].withCapacity(ringSize);
     var rel = List[RelSlot].withCapacity(ringSize);
-    var recv = List[RelRecv].withCapacity(ringSize);
     var i = 0usize;
     while i < ringSize {
       sent.push(SentSlot(0u16, false, false, 0i64, List[u16].empty()));
       seen.push(0u32);
       rel.push(RelSlot(0u16, false, false, -1i64, List[u8].empty()));
-      recv.push(RelRecv(0u16, false, List[u8].empty()));
       i = i + 1usize;
     }
     let t = now.nanos();
     ConnectionCore(cfg, session, CoreState.Active, CloseReason.Local,
       0u16, sent, seen, 65535u16, false, 0u16, 0u16, false,
-      rel, 0u16, 0u16, recv, 0u16,
+      rel, 0u16, 0u16, Dict[u16, List[u8]].empty(), 0u16,
       List[StreamOut].empty(), List[StreamIn].empty(),
       t, t - cfg.keepAliveMs * msNs, t, false, false,
       false, 0i64, 0i64, 0i64, true, -1i64, 4i64 * secNs, t,
@@ -680,7 +677,7 @@ pub struct ConnectionCore {
       // message that sets either is refused
       if (lf >> 14u16) != 0u16 {c.ok = false;}
       let body = c.rdBytes(data, usize.from(lf & 0x3FFFu16));
-      pk.rel.push(RelRecv(id, true, body));
+      pk.rel.push(RelRecv(id, body));
       i = i + 1u8;
     }
     i = 0u8;
@@ -757,24 +754,24 @@ pub struct ConnectionCore {
   fn takeReliable(self: &mut, id: u16, data: List[u8]) {
     let ahead = usize.from(id - relDeliver);
     if ahead >= reliableWindow {return;}
-    let s = &mut recv[usize.from(id) % ringSize];
-    if s.used {return;}
-    s.id = id;
-    s.used = true;
-    s.data = data;
+    match recv.get(&id) {
+      case is None {}
+      else {return;}
+    }
+    recv.insert(id, data);
   }
 
   // Give the application every reliable message that is next in order
   fn deliverReliable(self: &mut, events: &mut List[CoreEvent]) {
     while true {
-      let s = &mut recv[usize.from(relDeliver) % ringSize];
-      if !s.used || s.id != relDeliver {return;}
-      var d = List[u8].empty();
-      d <-> s.data;
-      s.used = false;
-      events.push(CoreEvent.Reliable(d));
-      st.reliableDelivered = st.reliableDelivered + 1u64;
-      relDeliver = relDeliver + 1u16;
+      match recv.remove(&relDeliver) {
+        case var Some(d) {
+          events.push(CoreEvent.Reliable(d));
+          st.reliableDelivered = st.reliableDelivered + 1u64;
+          relDeliver = relDeliver + 1u16;
+        }
+        case is None {return;}
+      }
     }
   }
 

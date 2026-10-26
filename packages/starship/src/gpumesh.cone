@@ -241,11 +241,27 @@ struct ShipMesher {
     var done = List[Completion].empty();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize || !done[0usize].ok { return mesh.Mesh.empty(); }
-    var samples = List[Buffer].empty();
-    k = 0usize;
-    while k < nslabs {
-      samples.push(done[0usize].take(*sampleSlots[k]));
-      k = k + 1usize;
+    // Taken apart: the slabs' samples go on to be meshed, and the job's other buffers are kept to the end
+    // ('spent'): a buffer's end waits for the GPU to be idle, and ending these before the meshing makes the
+    // sampling and the meshing slower (measured: 6% in all)
+    var all = match done.pop() {
+      case var Some(c) { c.(buffers) }
+      case is None { List[Buffer].empty() }
+    };
+    var samples = List[Buffer].withCapacity(nslabs);
+    var spent = List[Buffer].empty();
+    {
+      var slot = 0u32;
+      var next = 0usize;      // the slabs' slots are in order
+      each b in all.drain() {
+        if next < sampleSlots.len() && *sampleSlots[next] == slot {
+          samples.push(b);
+          next = next + 1usize;
+        } else {
+          spent.push(b);
+        }
+        slot = slot + 1u32;
+      }
     }
     times.sampling = micros(t0);
 
@@ -268,13 +284,15 @@ struct ShipMesher {
     // many of each slab's vertices are in its first layer of cells
     let t2 = Instant.now();
     var drops = List[u32].empty();
+    var relaxed = List[GridNet].withCapacity(nslabs);
     k = 0usize;
-    while k < nslabs {
-      let net = &mut nets[k];
+    each net in nets.drain() {
       let z0 = *slabs[2usize * k];
       let layers = *slabs[2usize * k + 1usize];
-      let nv = net.vertexCount;
-      let nq = net.triangleCount / 2u32;
+      // Taken apart: its buffers are the relax job's while it runs, and a net is made again of them after
+      let ok, netGrid, nv, nt, netSamples, pos, nor, cel, ind =
+        net.(ok, grid, vertexCount, triangleCount, samples, positions, normals, vertexCells, indices);
+      let nq = nt / 2u32;
       var rjob = Job.make(device);
       let ss = rjob.give(uploadValue(device, ship));
       let sweep7 = Sweep(grid, z0, layers, sp, nv, 0u32, 7u32, h);
@@ -285,18 +303,27 @@ struct ShipMesher {
       let grad6 = rjob.give(uploadValue(device, &sweep6));
       let verts = rjob.give(uploadValue(device, &sweepV));
       let quads = rjob.give(uploadValue(device, &sweepQ));
-      var pb = Buffer.none();
-      var nb = Buffer.none();
-      var cb = Buffer.none();
-      var ib = Buffer.none();
-      pb <-> net.positions;
-      nb <-> net.normals;
-      cb <-> net.vertexCells;
-      ib <-> net.indices;
-      let ps = rjob.give(pb);
-      let ns = rjob.give(nb);
-      let cs = rjob.give(cb);
-      let xs = rjob.give(ib);
+      // (an 'ok' net, as every net here is, has all four)
+      var ps = 0u32;
+      var ns = 0u32;
+      var cs = 0u32;
+      var xs = 0u32;
+      match pos {
+        case var Some(b) { ps = rjob.give(b); }
+        case is None { return mesh.Mesh.empty(); }
+      }
+      match nor {
+        case var Some(b) { ns = rjob.give(b); }
+        case is None { return mesh.Mesh.empty(); }
+      }
+      match cel {
+        case var Some(b) { cs = rjob.give(b); }
+        case is None { return mesh.Mesh.empty(); }
+      }
+      match ind {
+        case var Some(b) { xs = rjob.give(b); }
+        case is None { return mesh.Mesh.empty(); }
+      }
       let probed = rjob.give(scratch(device, 7u64 * u64.from(nv)));
       let endSlot = rjob.give(scratch(device, 1u64));
       var r = 0u32;
@@ -314,14 +341,18 @@ struct ShipMesher {
       var rdone = List[Completion].empty();
       works.waitFor(device, rt, &mut rdone);
       if rdone.len() != 1usize { return mesh.Mesh.empty(); }
-      let c = &mut rdone[0usize];
-      if !c.ok { return mesh.Mesh.empty(); }
-      let w = c.words(back);
+      if !rdone[0usize].ok { return mesh.Mesh.empty(); }
+      let w = rdone[0usize].words(back);
       drops.push(if w.len() > 0usize { *w[0usize] } else { 0u32 });
-      net.positions = c.take(ps);
-      net.normals = c.take(ns);
-      net.vertexCells = c.take(cs);
-      net.indices = c.take(xs);
+      var got = match rdone.pop() {
+        case var Some(c) { c.buffersIn(&[ps, ns, cs, xs]) }
+        case is None { List[Buffer].empty() }
+      };
+      let indices = got.pop();
+      let cells = got.pop();
+      let normals = got.pop();
+      let positions = got.pop();
+      relaxed.push(GridNet(ok, netGrid, nv, nt, netSamples, positions, normals, cells, indices));
       k = k + 1usize;
     }
     times.relaxing = micros(t2);
@@ -331,7 +362,7 @@ struct ShipMesher {
     var joined = mesh.Mesh.empty();
     k = 0usize;
     while k < nslabs {
-      let part = nets[k].readBackMesh(device);
+      let part = relaxed[k].readBackMesh(device);
       join(&mut joined, &part, if k == 0usize { 0u32 } else { *drops[k] });
       k = k + 1usize;
     }

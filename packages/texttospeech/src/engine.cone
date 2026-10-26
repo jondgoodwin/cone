@@ -658,13 +658,7 @@ pub struct Engine {
     var backs = List[List[f32]].empty();
     var probes = List[Probe].empty();
     if done.len() != 1usize { return (buffers, backs, probes, false); }
-    held.push(done[0usize].take(st.ws));
     var k = 0usize;
-    while k < keep.len {
-      buffers.push(done[0usize].take(keep[k]));
-      k = k + 1usize;
-    }
-    k = 0usize;
     while k < wantBack.len {
       backs.push(llmkernels.wordFloats(done[0usize].words(wantBack[k]).view()));
       k = k + 1usize;
@@ -674,7 +668,26 @@ pub struct Engine {
       probes.push(Probe(st.probeNames[k].copy(), llmkernels.wordFloats(done[0usize].words(*st.probeSlots[k]).view())));
       k = k + 1usize;
     }
-    (buffers, backs, probes, done[0usize].ok && st.ok)
+    let ran = done[0usize].ok && st.ok;
+    // Then the Completion taken apart: the weights' buffer held again, and the buffers kept, in keep's order
+    var slots = List[u32].withCapacity(keep.len + 1usize);
+    slots.push(st.ws);
+    k = 0usize;
+    while k < keep.len {
+      slots.push(keep[k]);
+      k = k + 1usize;
+    }
+    var back = match done.pop() {
+      case var Some(c) { c.buffersIn(slots.view()) }
+      case is None { List[Buffer].empty() }
+    };
+    {
+      var wsFirst = true;
+      each b in back.drain() {
+        if wsFirst { held.push(b); wsFirst = false; } else { buffers.push(b); }
+      }
+    }
+    (buffers, backs, probes, ran)
   }
 
   // The weights' buffer, for a job to hold
