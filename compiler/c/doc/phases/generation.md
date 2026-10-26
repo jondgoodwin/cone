@@ -301,7 +301,7 @@ attached where the body is generated.
 individually discardable, and keeps alive everything it names. A vtable did
 exactly that: a struct coerced to `&<Trait` kept every one of its trait methods
 in the image whether or not anything ever dispatched. The call sites are
-`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, `genlStitch`, and the
+`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtableImpls`, `genlStitch`, and the
 `StringLitTag` case in `genlAddr`. **A new kind of generated global needs a
 seventh.**
 
@@ -609,6 +609,22 @@ itself is built. The same cycle runs through the symbol pass: declaring such a
 method types its signature, which builds the vtable, which asks for the symbol
 of every method in its slots. So `genlGloFnName` types the signature first and
 checks again whether the function has been declared before declaring it.
+
+**A vtable's implementers are measured after the type that reached it, not
+inside it.** Each implementer's vtable global holds byte offsets into the
+implementer (its virtual fields) and its type record, which holds its size and
+alignment. A trait's virtual reference is reached from the middle of a struct's
+fields, and the struct may be one of the trait's implementers (`struct One is
+Show {first: Uni[Show]}`, or a field's field holding one) whose body is still
+unset there. Measured then, it has size 0, and LLVM caches a struct's layout
+the first time it is asked, so every later allocation of it is a block too small
+for it. So `genlVtable` builds the two types at once but, while `genlType` is
+generating a type, queues the vtable, and `genlType` builds the queued vtables'
+globals (`genlVtableImpls`) once its outermost type and its pointees are done.
+Outside type generation `genlVtable` builds them at once, and a coercion or
+match calls it every time, so whatever it reads is whole. An implementer's
+global is added before its contents are worked out, since its type record may
+generate a finalizer whose code asks for the same vtable.
 
 **Which vtable a tag names is found two ways, and the tag values decide.** Where
 every variant's tag value is its position in `derived`, the tag indexes the list
@@ -2394,12 +2410,12 @@ variables.
 | | `genlOut` | emit object and asm, the asm from a copy of the module, by a target machine of its own, on a GPU target |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
-| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
+| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees, then the queued vtables' globals, once the outermost type is done, and the per-tag lowering switch |
 | | `genlUsize` | `usize`'s LLVM type: `ConeOptions.ptrsize` bits, the target's pointer, but 32 on SPIR-V's Vulkan form (section 7) |
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
-| | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants (the implementer's type record last), the virtref fat pointer |
+| | `genlVtable`, `genlVtableImpls`, `genlVtableImpl` | vtable type and the virtref fat pointer; then, once no type is being generated, the per-struct constants (the implementer's type record last) and their list |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
