@@ -1,0 +1,155 @@
+// The compressor's half of the check against the reference decoder: it reads
+// a corpus of inputs, compresses each at levels 1, 2 and 3 three ways, checks
+// that this package's Decompressor gives every one back, and writes the
+// frames out for tests/data/crosscheck.py to hand to the reference library
+// (libzstd 1.5.7) as well. The script makes the corpus and runs this:
+//
+//   congo run --release packages/zstd/examples/crosscheck.cone -- corpus.bin frames.bin
+//
+// The three ways: one call ('compress'); a Compressor fed 4096 bytes at a
+// time and pulled 1000 at a time between the feeds (so a frame over 128 KiB
+// has no content size); and a Compressor fed 1 byte at a time and pulled 7 at
+// a time, for inputs of 4096 bytes or less.
+//
+// corpus.bin: a little-endian u32 count, then each input as a u32 length and
+// its bytes. frames.bin: the same, frames in the order input, level, way.
+
+mod crosscheck;
+
+import stdio use *;
+import collections use *;
+import zstd use *;
+import fs;
+import path use Path;
+import process;
+
+fn rd32(b: &Array[u8], p: usize) usize {
+  usize.from(b[p]) | (usize.from(b[p + 1usize]) << 8usize) | (usize.from(b[p + 2usize]) << 16usize)
+    | (usize.from(b[p + 3usize]) << 24usize)
+}
+
+fn put32(out: &mut List[u8], v: usize) {
+  out.push(u8.from(v & 255usize));
+  out.push(u8.from((v >> 8usize) & 255usize));
+  out.push(u8.from((v >> 16usize) & 255usize));
+  out.push(u8.from((v >> 24usize) & 255usize));
+}
+
+// A Compressor fed 'chunk' bytes at a time, pulled 'maxPull' at a time after each feed
+fn streamed(d: &Array[u8], level: i32, chunk: usize, maxPull: usize) List[u8] {
+  var c = Compressor.make(level);
+  var out = List[u8].empty();
+  var piece = List[u8].empty();
+  var pos = 0usize;
+  while true {
+    if pos < d.len {
+      let n = if d.len - pos < chunk {d.len - pos} else {chunk};
+      c.feed(&d[pos..<pos + n]);
+      pos += n;
+    }
+    if pos >= d.len { c.finish(); }
+    var st: Status = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      piece.clear();
+      st = c.pull(&mut piece, maxPull);
+      var k = 0usize;
+      while k < piece.len() {
+        out.push(*piece[k]);
+        k += 1usize;
+      }
+    }
+    if st == Status.Done { break; }
+  }
+  out
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool {
+  if a.len != b.len { return false; }
+  var i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i += 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 3usize {
+    printStr("usage: crosscheck corpus.bin frames.bin\n");
+    return 2i32;
+  }
+  match fs.readFile(&Path.from(args[1usize].view())) {
+    case let Ok(file) { return run(file.view().bytes(), args[2usize].view()); }
+    case let Error(e) { printStr("cannot read the corpus\n"); }
+  }
+  2i32
+}
+
+fn run(corpus: &Array[u8], outName: &str) i32 {
+  let count = rd32(corpus, 0usize);
+  var pos = 4usize;
+  var frames = List[u8].empty();
+  var nframes = 0usize;
+  var bad = 0usize;
+  var ins = 0usize;
+  var outs = 0usize;
+  put32(&mut frames, 0usize);
+  var i = 0usize;
+  while i < count {
+    let n = rd32(corpus, pos);
+    pos += 4usize;
+    let d = &corpus[pos..<pos + n];
+    pos += n;
+    var level = 1;
+    while level <= 3 {
+      var way = 0;
+      while way < 3 {
+        if way < 2 || n <= 4096usize {
+          let f = if way == 0 {compress(d, level)} else if way == 1 {streamed(d, level, 4096usize, 1000usize)}
+            else {streamed(d, level, 1usize, 7usize)};
+          match decompress(f.view(), 0usize) {
+            case let Ok(back) { if !same(back.view(), d) { bad += 1usize; } }
+            case let Error(e) { bad += 1usize; }
+          }
+          if way == 0 {
+            ins += n;
+            outs += f.len();
+          }
+          put32(&mut frames, f.len());
+          var k = 0usize;
+          while k < f.len() {
+            frames.push(*f[k]);
+            k += 1usize;
+          }
+          nframes += 1usize;
+        }
+        way += 1;
+      }
+      level += 1;
+    }
+    i += 1usize;
+  }
+  frames.set(0usize, u8.from(nframes & 255usize));
+  frames.set(1usize, u8.from((nframes >> 8usize) & 255usize));
+  frames.set(2usize, u8.from((nframes >> 16usize) & 255usize));
+  frames.set(3usize, u8.from((nframes >> 24usize) & 255usize));
+  match fs.writeFile(&Path.from(outName), frames.view()) {
+    case let Ok(v) {}
+    case let Error(e) { printStr("cannot write the frames\n"); return 2i32; }
+  }
+  printInt(i64.from(count));
+  printStr(" inputs, ");
+  printInt(i64.from(nframes));
+  printStr(" frames; ");
+  printInt(i64.from(nframes - bad));
+  printStr(" decoded to their input by this package's decoder, ");
+  printInt(i64.from(bad));
+  printStr(" did not; one-call bytes in ");
+  printInt(i64.from(ins));
+  printStr(", out ");
+  printInt(i64.from(outs));
+  printStr("\n");
+  if bad > 0usize { return 1i32; }
+  0i32
+}
