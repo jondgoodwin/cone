@@ -67,10 +67,14 @@
 //   s.readIn(lim)  s.readIn(room, lim)
 //                           the two reads with no buffer, limited by lim
 //   aio.setReadQuiet(d)     how long a read with no buffer may hold one (2 ms)
-//   s.cancelRead()  s.cancelWrite()   end the read (accept, receive) or the write (send) in flight
-//                           on the handle, alone (ONE OPERATION ALONE); also on a UdpSocket and a File
-//   aio.opStats()           how many operations began on a record's own side, and on a spill block;
-//                           the records open (RECORDS)
+//   s.cancelRead()  s.cancelWrite()   end every read (accept, receive) or every write (send) in
+//                           flight on the handle (ONE DIRECTION OF A HANDLE); also on a UdpSocket and a File
+//   aio.opStats()           the records in use and made, the operations cancelRead and cancelWrite
+//                           asked to end, the answers taken on the awaiting actor's worker, a
+//                           record's size (ONE RECORD PER OPERATION)
+//   aio.testLateQuiet(on)   TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
+//                           public): while on, reads with no buffer that begin with one go through
+//                           the bad case's late path when answered (READS WITH NO BUFFER)
 //   IoLimits.none()  IoLimits.until(deadline)  IoLimits.within(group)  IoLimits(group, deadline)
 //   aio.sleep(d)  aio.sleepUntil(at)   a pause of d (a Duration) / until at (an Instant)
 //                                                                Result[void, IoError]
@@ -133,20 +137,27 @@
 // a zero-byte one), so that a connection that was busy and has gone quiet pins
 // nothing from then on, and its next read waits without a buffer. The most
 // buffers pinned at once are those of the reads that began calm in the last
-// quiet time. The hint is a flag in the socket's record (RECORDS), and the
-// stage the read is in is in the read side that holds it.
+// quiet time. The hint is a bit of the handle's hint word, which iocore's Loop
+// keeps for the layer that opened the handle ('lp.hint'), the one thing aio
+// keeps that lives as long as the socket; the stage the read is in is in the
+// read's record.
 // 'setReadQuiet' with a zero Duration makes every read wait without a buffer;
 // with a long one a socket's reads after its first take one at once.
 // 'read(buf)' is neither: the caller's buffer is in flight from the start, as
 // before.
 //
-// The read is advanced on the I/O thread from one operation to the next: the
-// side keeps the OpId of the iocore operation outstanding, replacing it with
-// each new one, and the caller's deadline and group (its limits) for the whole
-// read. A receive begun with a buffer carries a deadline of the quiet time
-// when that is earlier than the caller's; when it ends TimedOut by that
-// deadline, the buffer has come back with the answer and goes home, and the
-// same side begins the read again as a zero-byte one, with the same limits. A
+// The read is advanced on the I/O thread from one operation to the next on ONE
+// RECORD, started again: after a zero-byte receive's answer a buffer is put in
+// (over None) and the record is started as a receive; the record keeps the
+// caller's deadline and group (its limits) for the whole read. A receive begun
+// with a buffer carries a deadline of the quiet time when that is earlier than
+// the caller's; when it ends TimedOut by that deadline, the buffer has come
+// back in the record and goes home (None over it), and the same record begins
+// the read again as a zero-byte one, with the same limits. (In the bad case,
+// that receive answered early while the kernel still holds it, nothing is
+// answered: when the kernel gives the record back, a receive it finished
+// after all is the read's answer, its bytes kept, and one it cancelled holds
+// none, and the read goes on as a zero-byte one.) A
 // read ended by a cancel, a deadline (the caller's, or its group's) or its
 // socket's closing is answered as every operation is, exactly once; one still
 // waiting when the program ends is abandoned like any awaited operation (THE
@@ -175,72 +186,78 @@
 // cancel from another actor or thread may arrive before it has started: the
 // group's state, not the order of the calls, decides.
 //
-// ONE OPERATION ALONE. 's.cancelRead()' and 's.cancelWrite()' (on a Socket, a
-// UdpSocket and a File) end the read, accept or receive in flight on the
-// handle's read side, or the write or send on its write side, and nothing else
-// of the handle's or of any group: the operation is answered Cancelled, with
-// its buffer given back, as a group's cancel answers it, and a read with no
-// buffer is ended whichever of its two operations it is in. They may be called
-// from any thread and are idempotent. They reach the operation on the record's
-// own side that has been STARTED (by its 'await'): there is nothing yet to end
-// in one that has only been made, or that is not on the record's side because
-// the side was busy (RECORDS, the second operation at once); a group or a
-// deadline reaches those. With no operation in flight a cancel does nothing.
+// ONE DIRECTION OF A HANDLE. 's.cancelRead()' and 's.cancelWrite()' (on a
+// Socket, a UdpSocket and a File) end EVERY operation in flight on the
+// handle's read side (accept, receive, a datagram's receive, a file's read),
+// or on its write side (send, a datagram's send, a file's write), and nothing
+// else of the handle's or of any group: each is answered Cancelled, with its
+// buffer given back, as a group's cancel answers it, and a read with no buffer
+// is ended whichever of its two operations it is in. A file's many reads at
+// once, or two reads at once on a socket, are all ended. The cancel is a small
+// record of its own queued to the I/O thread (nothing is allocated), which asks
+// iocore's 'cancelHandle'; they may be called from any thread and are
+// idempotent. They reach the operations that have been STARTED (by their
+// 'await') when the cancel reaches the I/O thread: there is nothing yet to end
+// in one that has only been made; a group or a deadline reaches those. With
+// no operation in flight a cancel does nothing.
 //
-// RECORDS. Each Socket, UdpSocket and File has a RECORD, made with it on the I/O
-// thread and freed when it is closed and nothing is using it. A record has two
-// SIDES, a read side and a write side (accept and a UDP receive use the read
-// side; send and a UDP send the write side). A side holds what its operation
-// needs and no more: the buffer (to send, or to read into: while the system
-// holds it, iocore does), the limits (the group and deadline), the reply to
-// wake, the iocore OpId of the operation in flight (kept, so that
-// 'cancelRead' and 'cancelWrite' can end it, and so that a read with no buffer
-// can go from one operation to the next on the same side), and, for the
-// operation's answer, a place of its own for it. An operation on a free side
-// TAKES it when the operation is made ('conn.read(buf)': a bit set in the
-// record's life word, by a compare-and-swap, from any thread) and the side is
-// the operation: it is the Awaitable's context (actors.Awaitable.of: no closure
-// is made), it is queued to the I/O thread as it is (it begins with the queue's
-// link), the I/O thread starts the iocore operation from it with a token that
-// names the record by slot and generation (an answer for a record freed and
-// reused is known and dropped), and the typed answer is written into the side's
-// place by the I/O thread. What the actor is told is that the answer is there:
-// actors.answerLent, which allocates nothing; the actor's worker moves the
-// answer out of the side into a place of its own, and gives the side back,
-// before the behaviour goes on, so that a loop of reads takes the same side
-// each time. Nothing is allocated for an operation on a record's own side:
-// none of the Awaitable's closure, the job block, the hook's closure, the
-// boxed reply, or the read's record, which an operation made before (opStats
-// counts the operations begun on a record's own side and on the fallback).
+// ONE RECORD PER OPERATION. Every awaited operation (a socket's, a datagram
+// socket's and a file's, a connect, a sleep, a lookup, a file's metadata, a
+// child process) is ONE RECORD of iocore's (an OpRec, its OpCore and aio's
+// part after it: the reply, what the record is doing, a read with no buffer's
+// stage, a run's request and answer), taken from aio's pool, which lives as
+// long as the process. aio keeps no record of its own of anything: a Socket,
+// a UdpSocket and a File are a Handle. The record is the carrier:
 //
-// THE SECOND OPERATION AT ONCE. A side busy (an operation made and not yet
-// answered, or only made and held, or whose answer has not been taken) cannot be
-// taken again: two reads in flight on one socket, or a read made while another
-// is held, are the fallback, as .NET's cached socket arguments are: the operation
-// gets a SPILL BLOCK, a side (and place for its answer) of its own, allocated
-// for the one operation and freed when its answer has been taken. It is correct
-// and costs one allocation; a File takes many reads at once by design, and all
-// but the first of them spill. A Socket.none() has no record, and each
-// operation on it takes a spill block, to fail as it must. Operations that make
-// a handle (listen, connect, bindUdp, openFile), a timer, a lookup, a file's
-// metadata and a child process are not on a handle's side: they are jobs with
-// their own allocations, as before, since each is one per connection or per
-// request rather than per read.
+// - The call that makes the operation ('conn.read(buf)') takes a record on its
+//   own thread (iocore's 'pool.take', under the pool's lock) and puts in the
+//   request and the buffer. The record is the Awaitable's context
+//   (actors.Awaitable.of: no closure); the 'await' puts the reply in and queues
+//   the record to the I/O thread by its own link; dropped unawaited, the
+//   Awaitable dissolves the record where it is dropped, its buffer home.
+// - The I/O thread starts it on the Loop ('lp.start'); its answer comes back
+//   on the Loop's done list, and the I/O thread either starts the same record
+//   again (a read with no buffer's next stage) or SPRINGS the reply: the
+//   record is lent to the answer's 'take' (actors.answerLentIn), and 'take'
+//   DISSOLVES it -- reads it whole and takes it apart, once -- and makes the
+//   answer from its pieces, the Result written straight into the awaiting
+//   actor's place: Ok(buf), or the error from the status and the code; a
+//   failed read's buffer, or a sent one, goes home with the rest. Where the
+//   awaiting actor's slot holds the answer, 'take' runs on the I/O thread,
+//   before the answer is pushed (the record dissolved there, batched); where it
+//   does not (most actors: a slot holds 16 bytes of answer), the answer is
+//   lent and 'take' runs on the awaiting actor's worker as it reaches the
+//   reply, before the behaviour goes on (the record dissolved there, under the
+//   pool's lock). Nothing is allocated for an operation: no closure, no job
+//   block, no hook, no box for the answer, no record of aio's.
+// - A record is lent only once the Loop holds nothing of it: off its handle's
+//   in-flight list, off the grouped list and the done list, its timer
+//   cancelled, no job away (iocore's RECORDS, a record let go). A trust claim:
+//   from the spring on, only 'take' touches the record, on whichever thread
+//   runs it, and a cancel, a close or a group's cancel on the same handle
+//   cannot reach it. aio checks it at the spring ('isLetGo'; a panic if not).
+// - The one bad case: a deadline's grace runs out while the kernel still
+//   holds the record and its buffer (iocore's RECORDS). The actor is answered
+//   TimedOut at once, by a value made on the I/O thread with nothing from the
+//   record (actors.answerNowIn: the Reply left spent in the record, which may
+//   allocate a box for the answer, on this rare path alone); the record stays
+//   until the kernel gives it back, and is then dissolved like any other, its
+//   buffer home, nothing delivered.
+// - Two operations at once on one handle are two records. A handle's close is
+//   a small record too, queued behind the operations queued before it.
+// - A record is reached by a raw pointer, and a store through one does not
+//   finalize the value it replaces (the manual's safe-pointers page): a Move
+//   field of a record (its buffer, its reply, a run's part) is assigned
+//   through a reference ('setBuf'), so that what it held is let go.
 //
-// THE RECORD'S LIFE. The record is freed by whoever finds it closed with both
-// sides idle: the I/O thread when the Socket's close job runs (the close cancels
-// every operation in flight; each still answers, Cancelled), or the thread that
-// takes the last answer out of a side, which asks the I/O thread to free it. On
-// Windows the kernel holds a closed socket's receive until its completion
-// arrives; the record, which holds no buffer the kernel uses (the buffer is
-// iocore's by then), waits for that answer all the same, since the answer is
-// written into it.
+// The synchronous calls that make a handle or read one -- listen, bindUdp,
+// openFile, localAddr -- are one per handle, not per operation: each is a job
+// block of its own on the I/O thread's other queue (one allocation), as
+// before.
 //
-// A SOCKET is a handle on one of the I/O thread's sockets and its record: plain
-// data, which moves (it may be sent in a message, to another actor). It declares
-// itself Sendable, a promise taken on trust, for the record's address it holds:
-// the record is freed only after the Socket is dropped, and a side is used by one
-// operation at a time (RECORDS). Dropping it closes
+// A SOCKET is a handle on one of the I/O thread's sockets: plain data, a
+// Handle, which moves (it may be sent in a message, to another actor). Dropping
+// it closes
 // the socket: its finalizer queues the close on the I/O thread, behind the
 // operations queued before it, and every operation then in flight on it is
 // cancelled (iocore's 'close'). A Socket waiting in a paused behaviour's
@@ -250,18 +267,15 @@
 // the actor runtime's iocore Loop and waits in its poll; it is the one thread
 // that touches the Loop, as iocore asks. The actors' workers never wait on
 // I/O (they could not: an actor's behaviour runs to its 'await' and
-// returns). An 'await' on an operation hands it to the I/O thread through a
-// QUEUE: a list of jobs under a Mutex, which the I/O thread takes whole after
-// each poll, and a Waker that ends the poll at once. A socket's, UDP socket's
-// and file's operations are started on the Loop with a Target.Here: the answer
-// comes to the I/O thread's own poll, with the token that names the side, and
-// the I/O thread writes it into the side and tells the actor (RECORDS). The
-// other operations (a timer, a lookup, a connect) use a Target.Hook, iocore's
-// target for another runtime's code: when the operation's one answer comes, the
-// hook turns it into the operation's result and writes it into the reply the
-// 'await' is waiting for. Either way the reply goes to the actor's mailbox as
-// any reply does -- one push, and, if the actor was idle, its scheduling.
-// Nothing of the actor runs on the I/O thread.
+// returns). An 'await' on an operation hands its record to the I/O thread
+// through a QUEUE: records linked by their own link (and the jobs, a list of
+// their own) under a Mutex, which the I/O thread takes whole after each poll,
+// and a Waker that ends the poll at once. After each poll the I/O thread takes
+// the records the Loop has answered (lp.takeDone), each started again or
+// sprung (ONE RECORD PER OPERATION), then runs the jobs and starts the records
+// queued. Either way the reply goes to the actor's mailbox as any reply does
+// -- one push, and, if the actor was idle, its scheduling. Nothing of the
+// actor runs on the I/O thread.
 //
 // AN ACTOR'S LIFE. An operation in flight holds a count of the actor that
 // awaits it, in its reply's envelope, as a request to another actor does: the
@@ -270,19 +284,27 @@
 //
 // THE PROGRAM'S END. The package's finalizer, which finalAll() runs before
 // the actors package's, waits until no actor is queued or running (an actor
-// paused on I/O is neither), then ends the I/O: the I/O thread stops taking
-// jobs, and its Loop dies, which cancels every operation still in flight and
-// then closes every socket. Their answers are not delivered: each paused
-// behaviour is ABANDONED. Its reply's envelope is dropped, letting go of the
-// actor's count, and an actor with nothing else holding it dies; its pending
-// table then drops the records still parked, so every value a paused
-// behaviour held is finalized, in the order its 'await' would have had them
-// die, and the rest of the behaviour never runs. An operation awaited after
-// that is abandoned the same way at once. Then the actors package's own
-// finalizer waits for quiet again (a finalizer that ran may have sent a
-// message) and stops the workers. A program that wants its actors' awaited I/O
-// finished before it ends calls 'actors.waitUntilIdle()' last in 'main' (an
-// INTERIM call: the actors package's header, WAITING FOR IDLE).
+// paused on I/O is neither; one with an answer waiting in its mailbox, a lent
+// one among them, is queued, so its 'take' has run, and its record is
+// dissolved, before this goes on), then ends the I/O, in this order: the I/O
+// thread stops taking from its queues, and what is queued there and not yet
+// started is dissolved unstarted (each reply dropped unsent, each buffer home);
+// then its Loop dies, which cancels and drains every operation still in flight,
+// closes every socket, and dissolves every record it still holds, their
+// answers abandoned (a record away with its job, a child still running, is
+// dissolved when its job ends, the same way); only then is anything else of
+// aio's let go (its pool and the I/O thread's block are kept for the life of
+// the process). Each paused behaviour is ABANDONED: its reply's envelope is
+// dropped, letting go of the actor's count, and an actor with nothing else
+// holding it dies; its pending table then drops the records still parked, so
+// every value a paused behaviour held is finalized, in the order its 'await'
+// would have had them die, and the rest of the behaviour never runs. An
+// operation awaited after that is abandoned the same way at once, its record
+// dissolved where it is queued. Then the actors package's own finalizer waits
+// for quiet again (a finalizer that ran may have sent a message) and stops the
+// workers. A program that wants its actors' awaited I/O finished before it
+// ends calls 'actors.waitUntilIdle()' last in 'main' (an INTERIM call: the
+// actors package's header, WAITING FOR IDLE).
 //
 // A UDP SOCKET is a UdpSocket, a kind of its own beside Socket and File: a
 // stream operation on it (read, write, accept), or a datagram one on a Socket,
@@ -325,8 +347,8 @@
 // system that iocore does not hold in flight, so there is nothing to cancel
 // once it has started; the two operations on a file have theirs.
 //
-// SLEEPING. 'sleep(d)' and 'sleepUntil(at)' are iocore's timers ('after',
-// 'afterIn') awaited: the behaviour pauses, and the I/O thread's Loop answers
+// SLEEPING. 'sleep(d)' and 'sleepUntil(at)' are iocore's timers awaited (a
+// record of diag.kindTimer): the behaviour pauses, and the I/O thread's Loop answers
 // when the time comes. 'd' counts from the moment the I/O thread starts the
 // timer, a moment after the 'await'; 'at' is absolute, and one already past is
 // answered at once. The success holds nothing (Result[void, IoError]). The 'In'
@@ -335,8 +357,9 @@
 // or its group's, the tighter) is answered TimedOut at the deadline, one due
 // at or before it is Done at its time; the group's cancel answers Cancelled,
 // at once if the group is cancelled already. lim's deadline is given to the
-// timer as a group of its own (a child of lim's group, or a new one), since
-// iocore's timer takes a group alone. Dropped unawaited, a sleep does nothing.
+// timer as a group of its own (a child of lim's group, or a new one, which
+// allocates), since iocore's timer takes a group alone. Dropped unawaited, a
+// sleep does nothing.
 //
 // THE BLOCKING POOL'S WORK. 'resolve', 'stat' and 'run' are the three things
 // iocore's blocking pool (its THE BLOCKING POOL) does for work with no
@@ -349,9 +372,10 @@
 // at the deadline (past iocore's 1 ms grace) and the work goes on, its answer
 // dropped. A lane whose queue is full refuses a job at once (Failed 170,
 // ERROR_BUSY). The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
-// and 'run' the general lane (4 threads). Each of these takes a buffer
+// and 'run' the general lane (4 threads). 'resolve' and 'stat' take a buffer
 // (IoBuf(n), made for the call) for iocore's op to carry its answer in; it goes
-// home with the answer.
+// home with the answer. A run's request and its answer are in its record,
+// which the pool's thread works on while it is away.
 //
 // 'resolve(host, port)' is iocore's 'resolveOp' (getaddrinfo, the stream socket
 // type): 'host' is a name or an address as text, and every address found is a
@@ -394,8 +418,9 @@
 // pipes, and the pipes to be handles iocore's Loop holds (a new op in iocore).
 // A deadline or a cancel does not stop a child that is running: put a
 // 'timeout' in the Options for that. A child still running when the program
-// ends is left to the system (its pool thread is not waited for, as iocore says);
-// the memory of its answer is not freed.
+// ends is left to the system (its pool thread is not waited for, as iocore
+// says); its record is dissolved when the child ends, if the process is still
+// there.
 //
 // METHOD CHOICES (defaults, not rulings):
 //  - 'run' is the process package's synchronous 'run' on a thread of iocore's
@@ -404,36 +429,27 @@
 //    child, as that package's 'run' does; at most four children (the lane's
 //    threads) run at once, and a fifth waits queued (a cancel group takes it
 //    out), more than 1,024 queued are refused (ERROR_BUSY).
-//  - The answer of a run (the Output) is left by the pool thread in a block of
-//    its own, which the I/O thread's hook reads; whichever of the two comes
-//    last frees the block, by a small state word the two swap (the run's
-//    state below). A job that comes back unrun comes back with its buffer,
-//    which is how the hook knows it, so each run takes a one-byte buffer
-//    made for the call.
+//  - The answer of a run (the Output) is left by the pool thread in the run's
+//    record (its run part, an Option), which waits for its job in every case,
+//    so nothing else decides who frees what. The run part is held out of
+//    line, by an owner of its own (one allocation more per run), so that
+//    every other record stays small.
 //  - A start failure is an IoError with the system's number (Windows') on both
 //    systems; iocore has one function more for it, 'systemCode', which turns an
 //    errno into that number.
 //  - A read with no buffer ('read()') is two operations, a RecvReady and a Recv,
-//    advanced on the I/O thread when the first is answered to it (the loop
-//    forbids a hook to call back into the loop); the quiet time is 2 ms, the
+//    on one record started twice on the I/O thread; the quiet time is 2 ms, the
 //    room 4 KiB, and "calm" is "the socket's last such read was answered within
 //    the quiet time" (READS WITH NO BUFFER). None of these was ruled on.
-//  - A handle's operations are a RECORD's two sides, taken at the call that
-//    makes the operation, not at its 'await': an Awaitable made and held keeps
-//    its side busy, and the next operation on that side spills. The other
-//    way, taking it at the 'await', would let the buffer sit in the
-//    Awaitable, which is a context word and has no room for it.
-//  - The fallback is a spill block per operation (one allocation), not the
-//    general job path it was before: one path serves both, the answer is typed
-//    the same, and the cost of the fallback is one allocation where it was
-//    four. A single operation's cancel ('cancelRead', 'cancelWrite') reaches
-//    only an operation on a record's own side.
-//  - The record's table is the slots package's SlotTable, one thread's (the I/O
-//    thread's); its chunks are the C library's blocks, since a chunk is taken a
-//    few times in a table's life and never given back, which the iobuf
-//    package's per-thread block caches have nothing to serve.
-//  - Socket, UdpSocket and File declare themselves Sendable, a promise taken on
-//    trust, because they hold the record's address (RECORDS).
+//  - An operation's record is taken at the call that makes the operation, not
+//    at its 'await': the buffer is in the record from then on, and the
+//    Awaitable, a context word, names it.
+//  - The answer is made by the 'take' the reply is sprung with, which
+//    dissolves the record (ONE RECORD PER OPERATION), so that a lent answer
+//    needs no place of its own: on the awaiting actor's worker when it is
+//    lent, on the I/O thread when the slot holds it.
+//  - A handle's close is a record (opClose), as a cancel is; listen, bindUdp,
+//    openFile and localAddr stay jobs (one per handle).
 //  - 'stat' and 'resolve' make their buffer for the call, not
 //    one the caller passes; 'resolve' has the port as its second parameter
 //    with a default of 0, and gives a List, whole.
@@ -455,9 +471,8 @@ import thread;
 import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
-import slots use SlotTable, Slot;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpId, Target, Sink, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
 import path use Path;
 import process;
 import actors;
@@ -468,6 +483,9 @@ fn @initpure init() {
   io = Atomic[usize].of(0usize);
   ended = Atomic[bool].of(false);
   readQuiet = Atomic[i64].of(2000000i64);
+  poolAt = Atomic[usize].of(0usize);
+  cancelsAsked = Atomic[u64].of(0u64);
+  takenAway = Atomic[u64].of(0u64);
 }
 
 // A panic, reported at the line calling 'die'
@@ -476,58 +494,199 @@ fn die(msg: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Never {
 }
 
 // ---------------------------------------------------------------------------
+// The records: aio's pool, and what aio keeps in each (the package's header,
+// ONE RECORD PER OPERATION)
+// ---------------------------------------------------------------------------
+
+// What a record is doing, and so which typed answer it gives
+const opRecv = 1u32;          // read(buf): Result[IoBuf, IoError]
+const opRecvAny = 2u32;       // read(), read(room): the same, with a buffer the I/O thread takes
+const opAccept = 3u32;        // Result[Socket, IoError]
+const opSend = 4u32;          // write(buf): Result[usize, IoError]
+const opReadAt = 5u32;        // a file's read: Result[IoBuf, IoError]
+const opWriteAt = 6u32;       // a file's write: Result[usize, IoError]
+const opRecvFrom = 7u32;      // a datagram: Result[Datagram, IoError]
+const opSendTo = 8u32;        // Result[usize, IoError]
+const opConnect = 9u32;       // Result[Socket, IoError]
+const opSleep = 10u32;        // Result[void, IoError]
+const opResolve = 11u32;      // Result[List[SocketAddr], IoError]
+const opStat = 12u32;         // Result[FileStat, IoError]
+const opRun = 13u32;          // Result[process.Output, IoError]
+const opCancel = 14u32;       // cancelRead, cancelWrite: no answer
+const opClose = 15u32;        // a handle's close, its Socket, File or UdpSocket dropped: no answer
+
+// What aio keeps in a record with the operation, after iocore's OpCore: the
+// reply the awaiting behaviour's answer goes back in (put in by the 'await';
+// until then a Reply() that wants no answer), what the record is doing, a read
+// with no buffer's stage and policy state, and a run's request and answer
+struct Ask is Sendable {
+  reply: actors.Reply;
+  what: u32;
+  stage: u32;                   // a read with no buffer: stageReady ...; a sleep: sleepAt or sleepAfter
+  ours: bool;                   // a read with no buffer: its deadline now is the quiet time's, tighter than the caller's
+  write: bool;                  // a cancel's direction
+  since: i64;                   // a read with no buffer: when its stage was started (the steady clock)
+  arg: u64;                     // a read with no buffer: the room of the buffer it takes; a relative sleep's nanoseconds
+  limit: Instant;               // the caller's deadline (lim's), the whole of a read with no buffer
+  run: Option[Uni[RunPart]];    // a run's request, and its answer once a pool thread has run it: out of line
+}
+
+// A child process to run, and its answer: written by the pool's thread that
+// runs it, while the record is away (iocore's THE BLOCKING POOL)
+struct RunPart {
+  isLine: bool;
+  line: String;
+  args: List[String];
+  opts: process.Options;
+  dir: Path;
+  out: Option[Result[process.Output, IoError]];
+}
+
+// The process's pool of records: made by the first operation, never freed (an
+// Awaitable may be dropped, or a lent answer taken, on a worker after the I/O
+// thread has gone). An atomic held by a 'let' global, set in 'init'; the pool
+// itself is a block of libc's
+let poolAt: Atomic[usize];
+
+fn thePool() &OpPool[Ask] {
+  var at = poolAt.load();
+  if at == 0usize {
+    ioLock.lock();
+    at = makePool();
+    ioLock.unlock();
+  }
+  at as *OpPool[Ask] as &OpPool[Ask]
+}
+
+// The pool, made if it is not yet: ioLock is held (by thePool, or by startIo,
+// so that the I/O thread finds it made)
+fn makePool() usize {
+  var at = poolAt.load();
+  if at == 0usize {
+    let cell = libc.malloc(mem.sizeof[OpPool[Ask]]()) as *OpPool[Ask];
+    if cell as usize == 0usize {
+      die("aio: out of memory for the pool of records");
+    }
+    mem.writeRaw[OpPool[Ask]](cell, OpPool[Ask].make());
+    at = cell as usize;
+    poolAt.store(at);
+  }
+  at
+}
+
+// Counts for opStats: records cancelled by cancelRead and cancelWrite, and
+// answers taken (their records dissolved) on another thread than the I/O
+// thread's: the awaiting actor's worker, the answer lent. Atomics held by 'let'
+// globals, set in 'init'
+let cancelsAsked: Atomic[u64];
+let takenAway: Atomic[u64];
+
+// True on the I/O thread alone
+var @threadlocal onIo = false;
+
+// The record's buffer replaced by b, through a reference, so that the one it
+// held (if any) is dropped: home to its pool. (Not '(*p).buf = b': a store
+// through a raw pointer does not finalize the value it replaces -- the
+// manual's safe-pointers page -- and the buffer would never go home)
+fn setBuf(p: *OpCore, b: Option[IoBuf]) {
+  let c = p as &mut OpCore;
+  c.buf = b;
+}
+
+// A record taken for an operation on h (Handle.none() for one that names no
+// handle), what it is doing and the kind of iocore operation, limited by lim:
+// any thread
+fn takeRec(what: u32, kind: u32, h: Handle, lim: IoLimits) *OpRec[Ask] {
+  let p = thePool().take(Ask(actors.Reply(), what, 0u32, false, false, 0i64, 0u64, forever(), None));
+  let c = &mut (*p).core;
+  c.kind = kind;
+  c.handle = h;
+  let g, d = lim.(group, deadline);
+  c.group = g;
+  c.deadline = d;
+  (*p).ask.limit = d;
+  p
+}
+
+// Record p read out whole and its cell free, on any thread: the I/O thread's
+// give-backs are batched (iocore's dissolveHere), any other thread's under the
+// pool's lock
+fn dissolveAt(p: *u8) OpRec[Ask] {
+  let pl = thePool();
+  if onIo {
+    return pl.dissolveHere(p as *OpRec[Ask]);
+  }
+  pl.dissolve(p as *OpRec[Ask])
+}
+
+// The record as an Awaitable[R]: nothing is allocated; its context word is
+// the record
+fn recAwaitable[R](p: *OpRec[Ask]) actors.Awaitable[R] {
+  actors.Awaitable[R].of(p as *u8, &startRec, &dropRec)
+}
+
+// The seam starts the operation: the reply goes into the record, which goes
+// to the I/O thread by its own queue link
+fn startRec(ctx: *u8, rp: actors.Reply) {
+  let a = &mut (*(ctx as *OpRec[Ask])).ask;
+  a.reply = rp;
+  enqueueRec(ctx as *OpCore);
+}
+
+// An Awaitable dropped unawaited: its record dissolved here, on the caller's
+// thread, its buffer going home
+fn dropRec(ctx: *u8) {
+  let gone = dissolveAt(ctx);
+}
+
+// ---------------------------------------------------------------------------
 // The I/O thread and its queue
 // ---------------------------------------------------------------------------
 
 // A job's header, first in its block: the next job queued, and the functions
-// made for the job's type, which take the block
+// made for the job's type, which take the block. Jobs are what is one per
+// handle and synchronous on the I/O thread: listen, bindUdp, openFile,
+// localAddr
 struct JobHead {
   pub next: *JobHead;
   pub run: &fn(job: *u8, lp: &mut Loop);
   pub drop: &fn(job: *u8);
 }
 
-// A job: its header, then what it is. J has 'run(self: &mut, lp &mut Loop)'
+// A job: its header, then what it is. J has 'run(self, lp &mut Loop)'
 struct Job[J] {
   pub head: JobHead;
   pub body: J;
 }
 
-// The I/O thread, once started: its queue, under ioLock, and its loop's
-// waker, set before 'ready' and never changed. It lives as long as the
-// process, the waker with it: a thread that queued a job just before the end
-// may still be waking the loop after the thread has been joined
+// The I/O thread, once started: its two queues, under ioLock -- jobs, and
+// records linked by their own 'qnext' -- and its loop's waker, set before
+// 'ready' and never changed. It lives as long as the process, the waker with
+// it: a thread that queued something just before the end may still be waking
+// the loop after the thread has been joined
 struct IoThread {
   pub head: *JobHead;
   pub tail: *JobHead;
+  pub rhead: *OpCore;
+  pub rtail: *OpCore;
   pub waker: Waker;
   pub ready: Atomic[u32];       // 1 once the thread has put its waker here
   pub os: thread.Thread[u32];
-  // The rest is the I/O thread's, never touched by another (RECORDS): the
-  // table of records, one per handle; the operations on a spill block in
-  // flight, as a list; and counts
-  pub recs: SlotTable[Rec];
-  pub spills: *Spill;
-  pub fast: u64;                // operations started on a record's own side
-  pub spilled: u64;             // ...and on a spill block, the side being busy
 }
 
-// Guards the queue, 'io' and 'ended'
+// Guards the queues, 'io', 'ended' and the pool's making
 let ioLock: Mutex;
 
 // The I/O thread, or 0 before the first operation is awaited. Read and written
 // under ioLock by any thread; an atomic held by a 'let' global, set in 'init'
 let io: Atomic[usize];
 
-// The program is ending: no job is taken from now on (under ioLock). An atomic
-// held by a 'let' global, set in 'init'
+// The program is ending: nothing is taken from the queues from now on (under
+// ioLock). An atomic held by a 'let' global, set in 'init'
 let ended: Atomic[bool];
 
-// The I/O thread's Loop is dying: what it delivers is abandoned. Read and
-// written by the I/O thread alone, so each thread has its own copy
-var @threadlocal abandoning = false;
-
 fn nullJob() *JobHead {null}
+fn nullCore() *OpCore {null}
 
 // A job's block, its body moved in
 fn newJob[J](body: J) *u8 {
@@ -548,8 +707,8 @@ fn runJob[J](job: *u8, lp: &mut Loop) {
   body.run(lp);
 }
 
-// A job never run: its body dropped (an operation's reply among it,
-// abandoning what awaits it), its block freed
+// A job never run: its body dropped (its reply among it, abandoning what
+// awaits it), its block freed
 fn dropJob[J](job: *u8) {
   let p = job as *Job[J];
   let body = mem.readRaw[J](&(*p).body as *J);
@@ -565,7 +724,7 @@ fn dropHead(h: *JobHead) {
 // once the program is ending, the job is dropped instead
 fn enqueue(job: *u8) {
   let h = job as *JobHead;
-  (*h).next = nullJob();         // a record's job is used again and again: its link is not fresh
+  (*h).next = nullJob();
   ioLock.lock();
   if ended.load() {
     ioLock.unlock();
@@ -586,6 +745,32 @@ fn enqueue(job: *u8) {
   (*t).waker.wake();
 }
 
+// Queue a record for the I/O thread, by its own link: an operation to start,
+// a cancel or a close. Once the program is ending it is dissolved unstarted
+// instead, here: its reply dropped unsent (what awaits it abandoned), its
+// buffer home
+fn enqueueRec(p: *OpCore) {
+  (*p).qnext = nullCore();
+  ioLock.lock();
+  if ended.load() {
+    ioLock.unlock();
+    let gone = dissolveAt(p as *u8);
+    return;
+  }
+  if io.load() == 0usize {
+    startIo();
+  }
+  let t = io.load() as *IoThread;
+  if (*t).rtail as usize == 0usize {
+    (*t).rhead = p;
+  } else {
+    (*(*t).rtail).qnext = p;
+  }
+  (*t).rtail = p;
+  ioLock.unlock();
+  (*t).waker.wake();
+}
+
 // What the I/O thread is handed: its IoThread, where it puts its loop's waker
 struct IoArg {
   pub t: usize;
@@ -594,19 +779,7 @@ struct IoArg {
 // Start the I/O thread, under ioLock: its Loop is made on it, and its waker
 // is in place before this returns
 fn startIo() {
-  // What the records rely on: a value's owner word is the one before it, and
-  // each side's place holds the largest answer of its direction
-  var probe = blankAnsR();
-  if (&probe.v[0usize] as *u8 as usize) - (&probe as *AnsR as usize) != 8usize {
-    die("aio: an AnsR's value is not the word after its owner");
-  }
-  if mem.sizeof[SocketAddr]() > 32usize {
-    die("aio: a SocketAddr is larger than the place a send's destination waits in");
-  }
-  if mem.sizeof[Result[IoBuf, IoError]]() > 96usize || mem.sizeof[Result[Datagram, IoError]]() > 96usize
-      || mem.sizeof[Result[Socket, IoError]]() > 96usize || mem.sizeof[Result[usize, IoError]]() > 32usize {
-    die("aio: an answer is larger than the place the record keeps for it");
-  }
+  let pool = makePool();
   let t = libc.calloc(1usize, mem.sizeof[IoThread]()) as *IoThread;
   if t as usize == 0usize {
     die("aio: out of memory for the I/O thread");
@@ -619,62 +792,96 @@ fn startIo() {
   io.store(t as usize);
 }
 
-// The I/O thread: it waits in its Loop's poll, and after each, takes the
-// jobs queued and runs them -- each starts an operation on the Loop, whose
-// answer goes to its hook. Once the program is ending it drops what is
-// queued, and its Loop dies: every operation in flight is cancelled and
-// every socket closed, and what the Loop delivers then is abandoned
+// The I/O thread: it waits in its Loop's poll, and after each takes the
+// records the Loop has answered (each is answered, or begun again), and then
+// what is queued: jobs, which it runs, and records, which it starts. Once the
+// program is ending (THE PROGRAM'S END), what is queued is dissolved
+// unstarted, and only then does its Loop die, cancelling and draining every
+// operation in flight and dissolving the records it still holds, their
+// answers abandoned
 fn ioMain(arg: IoArg) u32 {
+  let me = arg.t as *IoThread;
+  let pool = thePool();
   {
-    let me = arg.t as *IoThread;
     var lp = Loop.mustMake();
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
-    mem.writeRaw[SlotTable[Rec]](&(*me).recs as *SlotTable[Rec], SlotTable[Rec].make(64u32));
     onIo = true;
     (*me).ready.store(1u32);
     sync.futexWake(&(*me).ready);
     var out = List[Completion].empty();
+    var got = List[*OpCore].empty();
     var more = true;
     while more {
       lp.poll(forever(), &mut out);
+      out.clear();
       ioLock.lock();
-      let t = io.load() as *IoThread;
-      var h = nullJob();
-      if t as usize != 0usize {
-        h = (*t).head;
-        (*t).head = nullJob();
-        (*t).tail = nullJob();
-      }
+      let h = (*me).head;
+      (*me).head = nullJob();
+      (*me).tail = nullJob();
+      let r = (*me).rhead;
+      (*me).rhead = nullCore();
+      (*me).rtail = nullCore();
       let stop = ended.load();
       ioLock.unlock();
-      // The answers that came to this thread itself: the records' operations
-      sidesDone(me, &mut lp, &mut out, stop);
-      while h as usize != 0usize {
-        let next = (*h).next;
-        if stop {
-          dropHead(h);
-        } else {
-          let f = (*h).run;
-          f(h as *u8, &mut lp);
+      if stop {
+        dropJobs(h);
+        dissolveUnstarted(r);
+        more = false;
+      } else {
+        lp.takeDone(&mut got);
+        var k = 0usize;
+        while k < got.len() {
+          doneRec(&mut lp, *got[k]);
+          k = k + 1usize;
         }
-        h = next;
+        got.clear();
+        runJobs(h, &mut lp);
+        startRecs(r, &mut lp);
       }
-      more = !stop;
+      pool.flushHere();
     }
-    // An operation still waiting is abandoned, as every awaited operation is:
-    // its reply is dropped, letting go of the actor that awaits it
-    dropSides(me);
-    abandoning = true;
   }
-  // The table is kept as long as the process unless no record is left in it:
-  // a Socket, File or UdpSocket dropped (or a spill block's answer released)
-  // after this finds its memory still there
-  let mine = arg.t as *IoThread;
-  if (*mine).recs.len() == 0usize {
-    mem.finalize[SlotTable[Rec]](&(*mine).recs as *SlotTable[Rec]);
-    mem.writeRaw[SlotTable[Rec]](&(*mine).recs as *SlotTable[Rec], SlotTable[Rec].make(64u32));
-  }
+  pool.flushHere();
   0u32
+}
+
+fn runJobs(first: *JobHead, lp: &mut Loop) {
+  var h = first;
+  while h as usize != 0usize {
+    let next = (*h).next;
+    let f = (*h).run;
+    f(h as *u8, lp);
+    h = next;
+  }
+}
+
+fn dropJobs(first: *JobHead) {
+  var h = first;
+  while h as usize != 0usize {
+    let next = (*h).next;
+    dropHead(h);
+    h = next;
+  }
+}
+
+fn startRecs(first: *OpCore, lp: &mut Loop) {
+  var p = first;
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    startOne(lp, p);
+    p = next;
+  }
+}
+
+// The records queued at the program's end: dissolved unstarted, each reply
+// dropped unsent (what awaits it abandoned), each buffer home
+fn dissolveUnstarted(first: *OpCore) {
+  var p = first;
+  while p as usize != 0usize {
+    let next = (*p).qnext;
+    let gone = dissolveAt(p as *u8);
+    p = next;
+  }
 }
 
 // The package's finalizer, run by finalAll() before the actors package's:
@@ -695,42 +902,8 @@ fn final() {
 }
 
 // ---------------------------------------------------------------------------
-// Operations: what an 'await' starts, and how each answer comes back
+// Starting a record, and what comes back
 // ---------------------------------------------------------------------------
-
-// The seam starts an operation: the reply its answer goes back in is written
-// into the job, which goes to the I/O thread (actors.Awaitable's closure)
-fn startJob[J](ctx: *u8, rp: actors.Reply) {
-  let p = ctx as *Job[J];
-  (*p).body.reply = rp;
-  enqueue(ctx);
-}
-
-// A job's block until the 'await' starts it: 'take' hands it on, and an
-// Awaitable that dies unawaited, its closure finalized, drops the job it still
-// holds (its body dropped, an operation's reply among it)
-struct JobHold is Move {
-  job: *u8;
-
-  fn take(self: &mut) *u8 {
-    let j = job;
-    job = null;
-    j
-  }
-
-  fn final(self: &uni) {
-    if job as usize != 0usize {
-      dropHead(job as *JobHead);
-    }
-  }
-}
-
-// The operation awaited: its job, made now, started by the 'await'
-fn awaitable[J, R](body: J) actors.Awaitable[R] {
-  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = JobHold(newJob[J](body))] {
-    startJob[J](held.take(), rp);
-  })
-}
 
 // What limits an awaited operation (the package's header, CANCEL AND
 // DEADLINES): a cancel group, one cancel of which ends it, and an absolute
@@ -760,68 +933,6 @@ pub fn isTimedOut(e: IoError) bool {e.isTimedOut()}
 // Whether a receive ended because the datagram was longer than the buffer's room
 pub fn isTruncated(e: IoError) bool {e.isTruncated()}
 
-// An iocore operation, awaited: the Op, what limits it, the reply its answer
-// goes back in, and the function that makes the answer an R
-struct OpJob[R] {
-  pub op: Op;
-  pub limits: IoLimits;
-  pub reply: actors.Reply;
-  pub answer: &fn(c: &mut Completion) R;
-
-  // Start the operation on the I/O thread's Loop, its answer to a hook that
-  // holds the reply, in its group if it has one
-  fn run(self, lp: &mut Loop) {
-    let rp, o, limits, answer = self.(reply, op, limits, answer);
-    let to = Target.Hook(0u64, Sink.make(waiting[R](rp, answer)));
-    submitLimited(lp, o, to, &limits);
-  }
-}
-
-// Start an operation on the I/O thread's Loop, in the group lim names if it
-// names one, bounded by its deadline if it has one
-fn submitLimited(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits) OpId {
-  submitLimitedBy(lp, o, to, lim, lim.deadline)
-}
-
-// The same with a deadline of the caller's choosing in place of lim's (the
-// tighter of the two, which the caller has found). The operation's OpId
-fn submitLimitedBy(lp: &mut Loop, o: Op, to: Target, lim: &IoLimits, deadline: Instant) OpId {
-  match lim.group {
-    case let Some(g) {lp.submitIn(o, to, g, deadline)}
-    else {
-      if deadline < forever() {
-        lp.submitBy(o, to, deadline)
-      } else {
-        lp.submit(o, to)
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Records: one per handle, a side for each direction (the package's header,
-// RECORDS)
-// ---------------------------------------------------------------------------
-
-// A record's life word: closed (its handle has been closed; no operation may
-// begin on it), and a busy bit for each side, set from the moment an operation
-// takes the side until the awaiting actor has taken the answer out of it. The
-// record is freed by whoever finds it closed with both sides idle
-const lifeClosed = 1u32;
-const lifeBusyRead = 2u32;
-const lifeBusyWrite = 4u32;
-const lifeBusy = 6u32;
-
-// What a side is doing: which operation, and so which typed answer
-const opRecv = 1u32;          // read(buf): Result[IoBuf, IoError]
-const opRecvAny = 2u32;       // read(), read(room): the same, with a buffer the I/O side takes
-const opAccept = 3u32;        // Result[Socket, IoError]
-const opSend = 4u32;          // write(buf): Result[usize, IoError]
-const opReadAt = 5u32;        // a file's read: Result[IoBuf, IoError]
-const opWriteAt = 6u32;       // a file's write: Result[usize, IoError]
-const opRecvFrom = 7u32;      // a datagram: Result[Datagram, IoError]
-const opSendTo = 8u32;        // Result[usize, IoError]
-
 // The room a read with no buffer of its own is given when it names none: the
 // pool's smallest block
 fn defaultRoom() usize {4096usize}
@@ -833,7 +944,11 @@ fn defaultRoom() usize {4096usize}
 // 'let' global, set in 'init')
 let readQuiet: Atomic[i64];
 
-fn quietNanos() i64 {readQuiet.load()}
+// The quiet time, in nanoseconds; a negative word is the time, less one,
+// negated, with the test's late path asked for (testLateQuiet)
+fn quietNanos() i64 {quietOf(readQuiet.load())}
+
+fn quietOf(v: i64) i64 {if v < 0i64 {0i64 - v - 1i64} else {v}}
 
 // Set how long a read with no buffer may hold one before giving it up (the
 // package's header, READS WITH NO BUFFER): zero makes every such read wait
@@ -849,727 +964,521 @@ pub fn setReadQuiet(d: Duration) {
 fn stageReady() u32 {0u32}
 fn stageStraight() u32 {1u32}
 fn stageTake() u32 {2u32}
+fn stageForced() u32 {3u32}         // stageStraight's, under the test's late path (testLateQuiet)
 
-// The place an answer is written in, before the awaiting actor takes it out:
-// the owning side's address first (the word before the value, which is how
-// 'releaseAns' finds its side from the value's address), then the value. The
-// read side's holds the largest answer of a read: a Datagram's Result; the
-// write side's a count's
-struct AnsR {
-  pub owner: *Side;
-  pub v: Array[u64, 12];
+// A sleep's time: absolute (the record's deadline) or relative (its 'arg',
+// nanoseconds from the moment the I/O thread starts it)
+const sleepAt = 0u32;
+const sleepAfter = 1u32;
+
+// The handle's hint word (iocore's lp.hint): its last read with no buffer
+// came quickly (READS WITH NO BUFFER)
+const hintCalm = 1u32;
+
+fn setCalm(lp: &mut Loop, h: Handle, calm: bool) {
+  let v = lp.hint(h);
+  lp.setHint(h, if calm {v | hintCalm} else {v & ~hintCalm});
 }
 
-struct AnsW {
-  pub owner: *Side;
-  pub v: Array[u64, 4];
-}
-
-fn blankAnsR() AnsR {AnsR(null, Array[u64, 12]() <- fill 0u64)}
-fn blankAnsW() AnsW {AnsW(null, Array[u64, 4]() <- fill 0u64)}
-
-// One direction of one handle: the operation now using it, whatever that
-// operation holds while it is in flight, and where its answer waits. It is a
-// job (its header first), so that the queue to the I/O thread takes it as it
-// is. Fields are written by whoever has taken the side (the busy bit), and by
-// the I/O thread while the operation is in flight, never by two at once
-struct Side {
-  pub head: JobHead;
-  pub rec: *Rec;                  // null for a spill block's
-  pub h: Handle;
-  pub reply: actors.Reply;
-  pub limits: IoLimits;
-  pub buf: IoBuf;                 // the buffer to send, or to read into: in flight it is iocore's
-  pub arg: u64;                   // a file operation's byte offset; a read with no buffer: the room of the one it takes
-  pub opid: OpId;                 // the iocore operation now in flight, kept for cancel
-  pub since: i64;                 // when the operation now outstanding was started (the steady clock)
-  pub ansp: *u8;                  // where its answer is written (the value after its AnsR's or AnsW's owner word)
-  pub what: u32;
-  pub stage: u32;                 // a read with no buffer: stageReady ...
-  pub write: bool;
-  pub ours: bool;                 // a read with no buffer: its deadline is quietNanos', tighter than the caller's
-}
-
-fn blankSide() Side {
-  Side(JobHead(nullJob(), &runSide, &dropSide), null, Handle.none(), actors.Reply(), IoLimits.none(),
-    IoBuf.empty(), 0u64, OpId.none(), 0i64, null, 0u32, 0u32, false, false)
-}
-
-// The record of a handle: made with it (on the I/O thread), freed when it is
-// closed and nothing is using it. It lives in a table of stable cells, found
-// by its slot and generation (the iocore operation's token) or by the address
-// a Socket, File or UdpSocket holds
-struct Rec {
-  pub life: Atomic[u32];
-  pub index: u32;
-  pub gen: u32;
-  pub calm: bool;                 // its last read with no buffer came quickly (READS WITH NO BUFFER)
-  pub rd: Side;
-  pub rdAns: AnsR;
-  pub wr: Side;
-  pub wrAns: AnsW;
-}
-
-fn blankRec() Rec {
-  Rec(Atomic[u32].of(0u32), 0u32, 0u32, false, blankSide(), blankAnsR(), blankSide(), blankAnsW())
-}
-
-// A side with no record, made for an operation when the record's own is busy,
-// or there is no record (a Socket.none()): the side, then its answer's place;
-// and, while the operation is in flight, the I/O thread's list of them
-struct Spill {
-  pub side: Side;
-  pub ans: AnsR;
-  pub prev: *Spill;
-  pub next: *Spill;
-}
-
-fn nullSide() *Side {null}
-fn nullRec() *Rec {null}
-
-// True on the I/O thread alone
-var @threadlocal onIo = false;
-
-fn tableOf(t: *IoThread) *SlotTable[Rec] {&(*t).recs as *SlotTable[Rec]}
-
-// A record for the handle just made, in the table: on the I/O thread
-fn newRec(t: *IoThread) *Rec {
-  let tb = tableOf(t) as &mut SlotTable[Rec];
-  let slot = tb.add(blankRec());
-  let r = tb.get(slot);
-  (*r).index = slot.index;
-  (*r).gen = slot.gen;
-  (*r).rd.rec = r;
-  (*r).wr.rec = r;
-  (*r).wr.write = true;
-  (*r).rd.ansp = &(*r).rdAns.v[0usize] as *u8;
-  (*r).wr.ansp = &(*r).wrAns.v[0usize] as *u8;
-  (*r).rdAns.owner = &(*r).rd as *Side;
-  (*r).wrAns.owner = &(*r).wr as *Side;
-  r
-}
-
-// A record freed: on the I/O thread. Whatever its sides still hold is let go
-fn freeRec(rec: *Rec) {
-  let t = io.load() as *IoThread;
-  let tb = tableOf(t) as &mut SlotTable[Rec];
-  tb.removeAt((*rec).index);
-}
-
-// The values the module's handles are made into, on the I/O thread
-fn newSocket(h: Handle) Socket {
-  if h.isNone() {
-    return Socket.none();
-  }
-  let t = io.load() as *IoThread;
-  Socket(h, newRec(t))
-}
-
-fn newFile(h: Handle) File {
-  if h.isNone() {
-    return File.none();
-  }
-  let t = io.load() as *IoThread;
-  File(h, newRec(t))
-}
-
-fn newUdp(h: Handle) UdpSocket {
-  if h.isNone() {
-    return UdpSocket.none();
-  }
-  let t = io.load() as *IoThread;
-  UdpSocket(h, newRec(t))
-}
-
-// The side an operation on this handle uses: the record's own for the
-// direction if it is free (taken now, by setting its busy bit), else a spill
-// block, made for the one operation (the package's header, RECORDS: the
-// fallback). The caller fills it, and the operation begins when the awaited
-// Awaitable is started
-fn beginSide(rec: *Rec, h: Handle, write: bool, what: u32) *Side {
-  if rec as usize != 0usize {
-    let bit = if write {lifeBusyWrite} else {lifeBusyRead};
-    var v = (*rec).life.load();
-    while (v & (lifeClosed | bit)) == 0u32 {
-      let seen, ok = (*rec).life.compareSwap(v, v | bit);
-      if ok {
-        var s = &(*rec).rd as *Side;
-        if write {
-          s = &(*rec).wr as *Side;
-        }
-        (*s).what = what;
-        (*s).h = h;
-        return s;
-      }
-      v = seen;
-    }
-  }
-  let blk = libc.malloc(mem.sizeof[Spill]()) as *Spill;
-  if blk as usize == 0usize {
-    die("aio: out of memory for an operation");
-  }
-  mem.writeRaw[Spill](blk, Spill(blankSide(), blankAnsR(), null, null));
-  let s = &(*blk).side as *Side;
-  (*blk).ans.owner = s;
-  (*s).ansp = &(*blk).ans.v[0usize] as *u8;
-  (*s).write = write;
-  (*s).what = what;
-  (*s).h = h;
-  s
-}
-
-// The side as an Awaitable[R]: nothing is allocated; its context word is the
-// side
-fn sideAwaitable[R](s: *Side) actors.Awaitable[R] {
-  actors.Awaitable[R].of(s as *u8, &startSide, &dropSide)
-}
-
-// The seam starts the operation: the reply its answer goes back in is written
-// into the side, which goes to the I/O thread as it is
-fn startSide(ctx: *u8, rp: actors.Reply) {
-  (*(ctx as *Side)).reply = rp;
-  enqueue(ctx);
-}
-
-// An Awaitable that dies unawaited, or a queue dropped at the program's end:
-// what the side holds is let go and the side given back
-fn dropSide(job: *u8) {
-  let s = job as *Side;
-  resetSide(s);
-  releaseSide(s);
-}
-
-// What a side holds is let go: its buffer goes home, its reply is dropped,
-// its limits forgotten
-fn resetSide(s: *Side) {
-  var b = IoBuf.empty();
-  b <-> (*s).buf;
-  var r = actors.Reply();
-  r <-> (*s).reply;
-  (*s).limits = IoLimits.none();
-  (*s).opid = OpId.none();
-}
-
-// The side is the actor's no more, answer taken or never made: its busy bit is
-// cleared, and the record freed if it is closed and the other side idle. A
-// spill block is freed. Any thread
-fn releaseSide(s: *Side) {
-  let rec = (*s).rec;
-  if rec as usize == 0usize {
-    mem.finalize[Side](s);
-    libc.free(s as *u8);
+// A record from the queue, on the I/O thread: a cancel or a close is done
+// here and dissolved; an operation is started on the Loop
+fn startOne(lp: &mut Loop, p: *OpCore) {
+  let rp = p as *OpRec[Ask];
+  let w = (*rp).ask.what;
+  if w == opCancel {
+    let n = lp.cancelHandle((*p).handle, (*rp).ask.write);
+    cancelsAsked.add(u64.from(n));
+    let gone = dissolveAt(p as *u8);
     return;
   }
-  let bit = if (*s).write {lifeBusyWrite} else {lifeBusyRead};
-  let old = (*rec).life.bitAnd(~bit);
-  if (old & lifeClosed) != 0u32 && (old & lifeBusy & ~bit) == 0u32 {
-    if onIo {
-      freeRec(rec);
+  if w == opClose {
+    lp.close((*p).handle);
+    let gone = dissolveAt(p as *u8);
+    return;
+  }
+  if w == opRecvAny {
+    if (lp.hint((*p).handle) & hintCalm) != 0u32 {
+      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      beginStage(lp, rp, stageStraight());
     } else {
-      // Both sides are idle, so the read side's job header is free to carry
-      // the record's reaping to the I/O thread
-      (*rec).rd.head.run = &runReap;
-      (*rec).rd.head.drop = &dropReap;
-      enqueue(&(*rec).rd as *u8);
+      beginStage(lp, rp, stageReady());
     }
+    return;
   }
+  if w == opSleep {
+    timeSleep(rp);
+  }
+  lp.start(p);
 }
 
-// The awaiting actor has taken the answer from where 'deliver' put it: the
-// word before the value names its side
-fn releaseAns(p: *u8) {
-  let s = *((p - 8usize) as **Side);
-  releaseSide(s);
-}
-
-// A record found closed and idle by another thread: freed here
-fn runReap(job: *u8, lp: &mut Loop) {
-  freeRec((*(job as *Side)).rec);
-}
-
-fn dropReap(job: *u8) {}
-
-// The token of a side's iocore operations: a record's side by its slot,
-// generation and direction (so that an answer for a record freed and reused
-// is known and dropped), a spill block's by its address
-fn tokenOf(s: *Side) u64 {
-  let rec = (*s).rec;
-  if rec as usize == 0usize {
-    return u64.from(s as usize) | 2u64;
-  }
-  let dir = if (*s).write {1u64} else {0u64};
-  (u64.from((*rec).gen) << 32u64) | (u64.from((*rec).index) << 2u64) | dir
-}
-
-// The side a token names, or null if it names none (token 0, or a record gone)
-fn sideOf(t: *IoThread, token: u64) *Side {
-  if token == 0u64 {
-    return nullSide();
-  }
-  let tag = token & 3u64;
-  if tag == 2u64 {
-    return usize.from(token & ~3u64) as *Side;
-  }
-  let tb = tableOf(t) as &mut SlotTable[Rec];
-  let rec = tb.get(Slot(u32.from((token >> 2u64) & 0x3FFFFFFFu64), u32.from(token >> 32u64)));
-  if rec as usize == 0usize {
-    return nullSide();
-  }
-  if tag == 1u64 {
-    return &(*rec).wr as *Side;
-  }
-  &(*rec).rd as *Side
-}
-
-// A spill block in flight is on the I/O thread's list (a Side is the first thing
-// in its Spill)
-fn linkSpill(t: *IoThread, side: *Side) {
-  let s = side as *Spill;
-  let head = (*t).spills;
-  (*s).prev = null;
-  (*s).next = head;
-  if head as usize != 0usize {
-    (*head).prev = s;
-  }
-  (*t).spills = s;
-}
-
-fn unlinkSpill(t: *IoThread, side: *Side) {
-  let s = side as *Spill;
-  let before = (*s).prev;
-  let after = (*s).next;
-  if before as usize != 0usize {
-    (*before).next = after;
-  } else {
-    (*t).spills = after;
-  }
-  if after as usize != 0usize {
-    (*after).prev = before;
-  }
-}
-
-// The queue hands the I/O thread a side whose operation is to begin
-fn runSide(job: *u8, lp: &mut Loop) {
-  let s = job as *Side;
-  let t = io.load() as *IoThread;
-  if (*s).rec as usize == 0usize {
-    linkSpill(t, s);
-    (*t).spilled = (*t).spilled + 1u64;
-  } else {
-    (*t).fast = (*t).fast + 1u64;
-  }
-  if (*s).what == opRecvAny {
-    var first = stageReady();
-    let rec = (*s).rec;
-    if rec as usize != 0usize && (*rec).calm {
-      first = stageStraight();
-    }
-    issueStage(lp, s, first);
-  } else {
-    issuePlain(lp, s);
-  }
-}
-
-fn takeBuf(s: *Side) IoBuf {
-  var b = IoBuf.empty();
-  b <-> (*s).buf;
-  b
-}
-
-// Start the side's operation, its answer to this thread, the iocore OpId kept
-fn issuePlain(lp: &mut Loop, s: *Side) {
-  let h = (*s).h;
-  let w = (*s).what;
-  let to = Target.Here(tokenOf(s));
-  var id = OpId.none();
-  if w == opRecv {
-    id = submitLimited(lp, Op.Recv(h, takeBuf(s)), to, &(*s).limits);
-  } else if w == opAccept {
-    id = submitLimited(lp, Op.Accept(h), to, &(*s).limits);
-  } else if w == opSend {
-    id = submitLimited(lp, Op.Send(h, takeBuf(s)), to, &(*s).limits);
-  } else if w == opReadAt {
-    id = submitLimited(lp, Op.ReadAt(h, (*s).arg, takeBuf(s)), to, &(*s).limits);
-  } else if w == opWriteAt {
-    id = submitLimited(lp, Op.WriteAt(h, (*s).arg, takeBuf(s)), to, &(*s).limits);
-  } else if w == opRecvFrom {
-    id = submitLimited(lp, Op.RecvFrom(h, takeBuf(s)), to, &(*s).limits);
-  } else {
-    // The destination was left in the place the answer will be written in
-    let dest = mem.readRaw[SocketAddr]((*s).ansp as *SocketAddr);
-    id = submitLimited(lp, Op.SendTo(h, dest, takeBuf(s)), to, &(*s).limits);
-  }
-  (*s).opid = id;
-}
-
-// Start the next operation of a read with no buffer, in the stage given. The
-// side keeps the OpId of the one outstanding, so a cancel reaches whichever
-// stage the read is in; the caller's deadline and group bound the whole read
-// (the side's limits), and a receive begun with a buffer carries a deadline
-// of the quiet time as well, when that is the earlier
-fn issueStage(lp: &mut Loop, s: *Side, stage: u32) {
-  (*s).stage = stage;
-  (*s).ours = false;
+// Start a read with no buffer in the stage given, on the same record: a
+// zero-byte receive (no buffer in the record), or a receive with the buffer
+// the record holds. The caller's deadline and group bound the whole read; a
+// receive begun at once with a buffer carries a deadline of the quiet time as
+// well, when that is the earlier ('ours')
+fn beginStage(lp: &mut Loop, rp: *OpRec[Ask], stage: u32) {
+  let a = &mut (*rp).ask;
+  let c = &mut (*rp).core;
   let now = Instant.now();
-  (*s).since = now.nanos();
-  let to = Target.Here(tokenOf(s));
-  let h = (*s).h;
-  var id = OpId.none();
+  a.stage = stage;
+  a.ours = false;
+  a.since = now.nanos();
+  c.deadline = a.limit;
   if stage == stageReady() {
-    id = submitLimited(lp, Op.RecvReady(h), to, &(*s).limits);
-  } else if stage == stageStraight() {
-    var until = (*s).limits.deadline;
-    let soon = now + Duration.fromNanos(quietNanos());
-    if soon < until {
-      until = soon;
-      (*s).ours = true;
-    }
-    id = submitLimitedBy(lp, Op.Recv(h, IoBuf(usize.from((*s).arg))), to, &(*s).limits, until);
+    c.kind = diag.kindRecvReady;
   } else {
-    id = submitLimited(lp, Op.Recv(h, IoBuf(usize.from((*s).arg))), to, &(*s).limits);
+    c.kind = diag.kindRecv;
+    if stage == stageStraight() {
+      let v = readQuiet.load();
+      let soon = now + Duration.fromNanos(quietOf(v));
+      if soon < a.limit {
+        c.deadline = soon;
+        a.ours = true;
+      }
+      if v < 0i64 {
+        a.stage = stageForced();
+      }
+    }
   }
-  (*s).opid = id;
+  lp.start(rp as *OpCore);
 }
 
-// Whether the socket's last read with no buffer came quickly: a hint, kept in
-// its record (a spill block has none: it starts without a buffer and keeps no
-// hint)
-fn isCalm(s: *Side) bool {
-  let rec = (*s).rec;
-  rec as usize != 0usize && (*rec).calm
-}
-
-fn setCalm(s: *Side, calm: bool) {
-  let rec = (*s).rec;
-  if rec as usize != 0usize {
-    (*rec).calm = calm;
+// A sleep's time and group, as it starts: due at its time (or 'arg' from now),
+// unless lim ends it first. lim's group is the timer's cancel group, and lim's
+// deadline narrows that group's (a group made for the purpose when there is
+// none): a timer due after the deadline answers TimedOut at the deadline, as
+// iocore's 'afterIn' does
+fn timeSleep(rp: *OpRec[Ask]) {
+  let c = &mut (*rp).core;
+  let limit = (*rp).ask.limit;
+  var due = c.deadline;
+  if (*rp).ask.stage == sleepAfter {
+    due = Instant.now() + Duration.fromNanos(i64.from((*rp).ask.arg));
   }
+  var narrowed: Option[CancelGroup] = None;
+  match c.group {
+    case let Some(g) {
+      if limit < forever() {narrowed = Some[CancelGroup](g.childUntil(limit));}
+    }
+    else {
+      if limit < due {narrowed = Some[CancelGroup](CancelGroup.until(limit));}
+    }
+  }
+  match narrowed {
+    case let Some(g) {c.group = Some[CancelGroup](g);}
+    else {}
+  }
+  c.deadline = due;
 }
 
-// An answer to one of the sides' operations, on the I/O thread
-fn sideDone(t: *IoThread, lp: &mut Loop, c: Completion, stop: bool) {
-  var done = c;
-  let s = sideOf(t, done.token);
-  if s as usize == 0usize {
+// A record the Loop has answered (lp.takeDone), on the I/O thread
+fn doneRec(lp: &mut Loop, p: *OpCore) {
+  let rp = p as *OpRec[Ask];
+  let w = (*rp).ask.what;
+  // A read with no buffer begun with one, ended by its own quiet deadline: not
+  // the caller's answer
+  let quiet = w == opRecvAny && (*rp).ask.ours
+    && ((*rp).ask.stage == stageStraight() || (*rp).ask.stage == stageForced());
+  if (p as &OpCore).isEarly() {
+    // The bad case: the kernel still holds the record. The actor is answered
+    // TimedOut now, by a value made here, and the record is left until the
+    // kernel gives it back -- unless it was the read's own quiet time, which
+    // answers nothing: the read goes on when the record is back
+    if !quiet {
+      answerTimedOut(rp);
+    }
     return;
   }
-  if stop {
-    abandonSide(t, s);
+  if (p as &OpCore).isLate() {
+    if quiet {
+      lateQuiet(lp, rp);
+      return;
+    }
+    // Answered early: dissolved now, its buffer home, the spent reply dropped
+    let gone = dissolveAt(p as *u8);
     return;
   }
-  if (*s).what == opRecvAny {
-    let stage = (*s).stage;
-    if stage == stageReady() && done.status == diag.outcomeDone {
-      // Bytes have come: take them, with a buffer made now. Came quickly or not,
-      // the socket's next read starts in the mode that suits
-      let waited = Instant.now().nanos() - (*s).since;
-      setCalm(s, waited < quietNanos());
-      issueStage(lp, s, stageTake());
+  if w == opRecvAny {
+    let stage = (*rp).ask.stage;
+    if stage == stageReady() && (*p).status == diag.outcomeDone {
+      // Bytes have come: a buffer is put in (over None), and the same record
+      // takes them. Came quickly or not, the socket's next read starts in the
+      // mode that suits
+      let waited = Instant.now().nanos() - (*rp).ask.since;
+      setCalm(lp, (*p).handle, waited < quietNanos());
+      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      beginStage(lp, rp, stageTake());
       return;
     }
     if stage == stageStraight() {
-      if done.status == diag.outcomeTimedOut && (*s).ours {
-        // Quiet: the buffer goes home (with the answer), and the read waits
-        // without one: the same side, its OpId replaced by the new operation's
-        setCalm(s, false);
-        issueStage(lp, s, stageReady());
+      if (*p).status == diag.outcomeTimedOut && (*rp).ask.ours {
+        // Quiet: the buffer, back with the answer, goes home (None over it),
+        // and the read waits without one, on the same record
+        setCalm(lp, (*p).handle, false);
+        setBuf(p, None);
+        beginStage(lp, rp, stageReady());
         return;
       }
-      if done.status == diag.outcomeDone {
-        setCalm(s, true);
+      if (*p).status == diag.outcomeDone {
+        setCalm(lp, (*p).handle, true);
       }
-    }
-  }
-  finish(t, s, &mut done);
-}
-
-// The operation is over: its typed answer is written in the side, and the
-// awaiting actor told where it is
-fn finish(t: *IoThread, s: *Side, c: &mut Completion) {
-  if (*s).rec as usize == 0usize {
-    unlinkSpill(t, s);
-  }
-  (*s).opid = OpId.none();
-  let w = (*s).what;
-  // What the answer does not hand on (a failed read's buffer, a sent buffer)
-  // goes home to its pool before the actor is told, so that the actor finds it
-  // home
-  if w == opRecv || w == opRecvAny || w == opReadAt {
-    let v = readAnswer(c);
-    letGo(c);
-    deliver[Result[IoBuf, IoError]](s, v);
-  } else if w == opAccept {
-    let v = socketAnswer(c);
-    letGo(c);
-    deliver[Result[Socket, IoError]](s, v);
-  } else if w == opRecvFrom {
-    let v = datagramAnswer(c);
-    letGo(c);
-    deliver[Result[Datagram, IoError]](s, v);
-  } else {
-    let v = writeAnswer(c);
-    letGo(c);
-    deliver[Result[usize, IoError]](s, v);
-  }
-}
-
-// The buffer an answer still holds goes home
-fn letGo(c: &mut Completion) {
-  var b = IoBuf.empty();
-  b <-> c.buf;
-}
-
-// The answer v written in the side's place for it, the reply told: the actor's
-// worker takes the value from there when it resumes and then releases the
-// side (actors.answerLent). The side is not touched after this call: the
-// answer may have been taken, and the side released, before it returns
-fn deliver[R](s: *Side, v: R) {
-  let p = (*s).ansp as *R;
-  mem.writeRaw[R](p, v);
-  (*s).limits = IoLimits.none();
-  var back = actors.Reply();
-  back <-> (*s).reply;
-  actors.answerLent[R](back, p, &takeAns[R]);
-}
-
-// The awaiting actor's worker takes the answer out of its place, into one of
-// its own, and the side is free again before the behaviour goes on
-fn takeAns[R](p: *u8, to: *u8) {
-  mem.writeRaw[R](to as *R, mem.readRaw[R](p as *R));
-  releaseAns(p);
-}
-
-// The loop is dying: this operation's answer is not delivered, and the actor
-// that awaits it is let go (its reply dropped)
-fn abandonSide(t: *IoThread, s: *Side) {
-  if (*s).rec as usize == 0usize {
-    unlinkSpill(t, s);
-  }
-  resetSide(s);
-  releaseSide(s);
-}
-
-// The answers that came to the I/O thread itself (nothing else here asks for
-// one): each is a side's
-fn sidesDone(t: *IoThread, lp: &mut Loop, out: &mut List[Completion], stop: bool) {
-  var more = true;
-  while more {
-    match out.pop() {
-      case var Some(c) {sideDone(t, lp, c, stop);}
-      else {more = false;}
-    }
-  }
-}
-
-// The I/O thread is ending: every operation still waiting is dropped, its
-// reply with it (letting go of the actor that awaits it)
-fn dropSides(t: *IoThread) {
-  var p = (*t).spills;
-  (*t).spills = null;
-  while p as usize != 0usize {
-    let next = (*p).next;
-    mem.finalize[Side](p as *Side);
-    libc.free(p as *u8);
-    p = next;
-  }
-  let tb = tableOf(t) as &mut SlotTable[Rec];
-  var i = 0u32;
-  while usize.from(i) < tb.bound() {
-    let r = tb.at(i);
-    if r as usize != 0usize {
-      resetSide(&(*r).rd as *Side);
-      resetSide(&(*r).wr as *Side);
-    }
-    i = i + 1u32;
-  }
-}
-
-// The count of a handle's in-flight read or write, ended on its own (CANCEL
-// AND DEADLINES, a handle's single operation): the record's slot and
-// generation, so that a record freed meanwhile is known
-struct CancelJob {
-  pub slot: u32;
-  pub gen: u32;
-  pub write: bool;
-
-  fn run(self: &mut, lp: &mut Loop) {
-    let t = io.load() as *IoThread;
-    let tb = tableOf(t) as &mut SlotTable[Rec];
-    let rec = tb.get(Slot(slot, gen));
-    if rec as usize != 0usize {
-      var s = &(*rec).rd as *Side;
-      if write {
-        s = &(*rec).wr as *Side;
-      }
-      if !(*s).opid.isNone() {
-        lp.cancel((*s).opid);
-      }
-    }
-  }
-}
-
-// Ask a record's read or write in flight to end, from any thread: nothing if
-// there is none, or it has not yet reached the I/O thread
-fn cancelSide(rec: *Rec, write: bool) {
-  if rec as usize == 0usize {
-    return;
-  }
-  enqueue(newJob[CancelJob](CancelJob((*rec).index, (*rec).gen, write)));
-}
-
-// What the records have done so far (opStats)
-pub struct OpStats {
-  pub fast: u64;           // operations begun on a record's own side: nothing allocated
-  pub spilled: u64;        // ...on a spill block, the side being busy (or no record): the fallback
-  pub records: u64;        // records now in the table: one for each Socket, File and UdpSocket open
-}
-
-// Counts of the operations begun on the records' own sides and on spill
-// blocks, and the records now open: zero before the first operation is awaited
-pub fn opStats() OpStats {
-  ioLock.lock();
-  let t = io.load() as *IoThread;
-  ioLock.unlock();
-  if t as usize == 0usize {
-    return OpStats(0u64, 0u64, 0u64);
-  }
-  OpStats((*t).fast, (*t).spilled, u64.from((*t).recs.len()))
-}
-
-// The hook an operation in flight holds: a closure that keeps the reply and
-// the function that makes the answer an R. It runs on the I/O thread with the
-// operation's one answer, whichever of the four it is: it makes its R and
-// writes it into the reply, which goes to the actor awaiting it. Once the
-// Loop is dying, the answer is dropped, and what awaits it abandoned (the
-// reply's envelope dropped with the hook). A hook that dies undelivered
-// abandons what awaits it the same way, the reply it holds dying with it
-fn waiting[R](rp: actors.Reply, answer: &fn(c: &mut Completion) R) Uni[fn(c: Completion) + Sendable] {
-  Uni[fn(c: Completion) + Sendable](fn(c: Completion) [var reply = rp, answer] {
-    if abandoning {
+    } else if stage == stageForced() {
+      // A test's (testLateQuiet): this receive taken through the late path, as
+      // if the kernel had held it past the grace and finished it then
+      lateQuiet(lp, rp);
       return;
     }
-    var done = c;
-    let v = answer(&mut done);
-    var back = actors.Reply();
-    back <-> reply;
-    actors.answerNow[R](back, v);
-  })
-}
-
-// Each operation's answer, from its Completion: Done is the success, and
-// anything else the error, Failed's the system's code, Cancelled's and
-// TimedOut's their own. A buffer the answer does not hand on dies with the
-// Completion, home to its pool
-
-fn endError(c: &Completion) IoError {
-  if c.status == diag.outcomeCancelled {return IoError.cancelled();}
-  if c.status == diag.outcomeTimedOut {return IoError.timedOut();}
-  IoError(c.code)
-}
-
-fn readAnswer(c: &mut Completion) Result[IoBuf, IoError] {
-  if c.status == diag.outcomeDone {
-    var b = IoBuf.empty();
-    b <-> c.buf;
-    return Ok[IoBuf, IoError](b);
   }
-  Error[IoBuf, IoError](endError(c))
+  answerRec(rp);
 }
 
-fn writeAnswer(c: &mut Completion) Result[usize, IoError] {
-  if c.status == diag.outcomeDone {
-    return Ok[usize, IoError](c.n);
+// The quiet read's record back from the kernel late (the bad case, the read's
+// own quiet deadline, which answered nobody). Its outcome is the kernel's
+// (iocore's RECORDS): a receive that finished after all, Done, is the read's
+// answer, its bytes kept (an end of the stream, Done(0), too); one that was
+// cancelled holds no bytes: its buffer goes home, and the read waits without
+// one, on the same record
+fn lateQuiet(lp: &mut Loop, rp: *OpRec[Ask]) {
+  let p = rp as *OpCore;
+  if (*p).status == diag.outcomeDone {
+    setCalm(lp, (*p).handle, true);
+    answerRec(rp);
+    return;
   }
-  Error[usize, IoError](endError(c))
+  setCalm(lp, (*p).handle, false);
+  setBuf(p, None);
+  beginStage(lp, rp, stageReady());
 }
 
-fn socketAnswer(c: &mut Completion) Result[Socket, IoError] {
-  if c.status == diag.outcomeDone {
-    return Ok[Socket, IoError](newSocket(c.handle));
+// TEST-ONLY, not for programs (public only because Cone has no test-only
+// visibility). While on, each read with no buffer begun with one is taken,
+// when it is answered, through the late path of the bad case (lateQuiet), as
+// if the kernel had held its receive past the grace of its quiet deadline and
+// finished it then. The bad case itself cannot be made to happen on purpose.
+// It costs a production read nothing: the switch is the sign of the quiet
+// time's word, which a read begun with a buffer reads anyway, and a read under
+// it has a stage of its own. setReadQuiet turns it off
+pub fn testLateQuiet(on: bool) {
+  let q = quietNanos();
+  readQuiet.store(if on {0i64 - q - 1i64} else {q});
+}
+
+// The operation is over: the reply is sprung in place, its record LENT to
+// 'take', which dissolves it and makes the answer from its pieces, straight
+// into the awaiting actor's place -- here, before the answer is pushed, when
+// the actor's slot holds the answer, or on the awaiting actor's worker as it
+// reaches the reply, when it is lent (actors.answerLentIn). The record is not
+// touched here after this. The Loop holds nothing of it (iocore's RECORDS, a
+// record let go), which is checked
+fn answerRec(rp: *OpRec[Ask]) {
+  if !(rp as *OpCore as &OpCore).isLetGo() {
+    die("aio: a record lent while its Loop still holds it");
   }
-  Error[Socket, IoError](endError(c))
+  let w = (*rp).ask.what;
+  let back = &mut (*rp).ask.reply;
+  if w == opRecv || w == opRecvAny || w == opReadAt {
+    actors.answerLentIn[Result[IoBuf, IoError]](back, rp as *Result[IoBuf, IoError], &takeRead);
+  } else if w == opAccept || w == opConnect {
+    actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
+  } else if w == opRecvFrom {
+    actors.answerLentIn[Result[Datagram, IoError]](back, rp as *Result[Datagram, IoError], &takeDatagram);
+  } else if w == opSleep {
+    actors.answerLentIn[Result[void, IoError]](back, rp as *Result[void, IoError], &takeSleep);
+  } else if w == opResolve {
+    actors.answerLentIn[Result[List[SocketAddr], IoError]](back, rp as *Result[List[SocketAddr], IoError], &takeResolve);
+  } else if w == opStat {
+    actors.answerLentIn[Result[FileStat, IoError]](back, rp as *Result[FileStat, IoError], &takeStat);
+  } else if w == opRun {
+    actors.answerLentIn[Result[process.Output, IoError]](back, rp as *Result[process.Output, IoError], &takeRun);
+  } else {
+    actors.answerLentIn[Result[usize, IoError]](back, rp as *Result[usize, IoError], &takeCount);
+  }
+}
+
+// The bad case's answer, TimedOut, made here with nothing from the record and
+// written by answerNowIn, the Reply left spent in the record, which waits for
+// the kernel (iocore's RECORDS, the one bad case)
+fn answerTimedOut(rp: *OpRec[Ask]) {
+  let w = (*rp).ask.what;
+  let back = &mut (*rp).ask.reply;
+  let e = IoError.timedOut();
+  if w == opRecv || w == opRecvAny || w == opReadAt {
+    actors.answerNowIn[Result[IoBuf, IoError]](back, Error[IoBuf, IoError](e));
+  } else if w == opAccept || w == opConnect {
+    actors.answerNowIn[Result[Socket, IoError]](back, Error[Socket, IoError](e));
+  } else if w == opRecvFrom {
+    actors.answerNowIn[Result[Datagram, IoError]](back, Error[Datagram, IoError](e));
+  } else if w == opSleep {
+    actors.answerNowIn[Result[void, IoError]](back, Error[void, IoError](e));
+  } else if w == opResolve {
+    actors.answerNowIn[Result[List[SocketAddr], IoError]](back, Error[List[SocketAddr], IoError](e));
+  } else if w == opStat {
+    actors.answerNowIn[Result[FileStat, IoError]](back, Error[FileStat, IoError](e));
+  } else if w == opRun {
+    actors.answerNowIn[Result[process.Output, IoError]](back, Error[process.Output, IoError](e));
+  } else {
+    actors.answerNowIn[Result[usize, IoError]](back, Error[usize, IoError](e));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The answers, made once, at the record's dissolution (each 'take')
+// ---------------------------------------------------------------------------
+
+// A lent record's dissolution, by its take: counted when it is on another
+// thread than the I/O thread's (opStats)
+fn dissolveTaken(p: *u8) OpRec[Ask] {
+  if !onIo {
+    takenAway.add(1u64);
+  }
+  dissolveAt(p)
+}
+
+// Done is the success, and anything else the error: Failed's the system's
+// code, Cancelled's and TimedOut's their own
+fn errorOf(status: u32, code: u32) IoError {
+  if status == diag.outcomeCancelled {return IoError.cancelled();}
+  if status == diag.outcomeTimedOut {return IoError.timedOut();}
+  IoError(code)
+}
+
+// The buffer the record held, or an empty one
+fn bufOf(buf: Option[IoBuf]) IoBuf {
+  match buf {
+    case var Some(b) {b}
+    else {IoBuf.empty()}
+  }
+}
+
+fn readResult(status: u32, code: u32, buf: Option[IoBuf]) Result[IoBuf, IoError] {
+  if status != diag.outcomeDone {
+    return Error[IoBuf, IoError](errorOf(status, code));
+  }
+  Ok[IoBuf, IoError](bufOf(buf))
+}
+
+// A read's: the buffer, the bytes that came appended. A failed read's buffer
+// goes home, with the rest of the record
+fn takeRead(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let code = core.code;
+  let buf = core.(buf);
+  mem.writeRaw[Result[IoBuf, IoError]](to as *Result[IoBuf, IoError], readResult(status, code, buf));
+}
+
+// Accept's and connect's: the new Socket
+fn takeSocket(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Error[Socket, IoError](errorOf(core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[Socket, IoError](newSocket(core.newHandle));
+  }
+  mem.writeRaw[Result[Socket, IoError]](to as *Result[Socket, IoError], v);
 }
 
 // WSAEMSGSIZE, the code iocore answers a datagram longer than the room with
 fn msgSizeCode() u32 {10040u32}
 
-// A receive's answer: the datagram, in its buffer, and who sent it. A datagram
-// cut to the room is the error Truncated, and its buffer, like a failed read's,
-// goes home to its pool
-fn datagramAnswer(c: &mut Completion) Result[Datagram, IoError] {
-  if c.status == diag.outcomeDone {
-    var b = IoBuf.empty();
-    b <-> c.buf;
-    return Ok[Datagram, IoError](Datagram(b, c.peer));
+fn datagramResult(status: u32, code: u32, from: SocketAddr, buf: Option[IoBuf]) Result[Datagram, IoError] {
+  if status == diag.outcomeDone {
+    return Ok[Datagram, IoError](Datagram(bufOf(buf), from));
   }
-  if c.status == diag.outcomeFailed && c.code == msgSizeCode() {
+  if status == diag.outcomeFailed && code == msgSizeCode() {
     return Error[Datagram, IoError](IoError.truncated());
   }
-  Error[Datagram, IoError](endError(c))
+  Error[Datagram, IoError](errorOf(status, code))
+}
+
+// A receive's: the datagram, in its buffer, and who sent it. A datagram cut to
+// the room is the error Truncated, and its buffer, like a failed read's, goes
+// home
+fn takeDatagram(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let code = core.code;
+  let from = core.peer();
+  let buf = core.(buf);
+  mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(status, code, from, buf));
+}
+
+// A write's: the count, all of the buffer, which goes home
+fn takeCount(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Error[usize, IoError](errorOf(core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[usize, IoError](core.n);
+  }
+  mem.writeRaw[Result[usize, IoError]](to as *Result[usize, IoError], v);
 }
 
 // A timer's: Done is the success, a Result with nothing in it
-fn sleepAnswer(c: &mut Completion) Result[void, IoError] {
-  if c.status == diag.outcomeDone {
-    return Ok[void, IoError](nil);
+fn takeSleep(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  var v = Error[void, IoError](errorOf(core.status, core.code));
+  if core.status == diag.outcomeDone {
+    v = Ok[void, IoError](nil);
   }
-  Error[void, IoError](endError(c))
+  mem.writeRaw[Result[void, IoError]](to as *Result[void, IoError], v);
+}
+
+fn resolveResult(status: u32, code: u32, buf: Option[IoBuf]) Result[List[SocketAddr], IoError] {
+  if status != diag.outcomeDone {
+    return Error[List[SocketAddr], IoError](errorOf(status, code));
+  }
+  let b = bufOf(buf);
+  Ok[List[SocketAddr], IoError](addressesIn(&b))
 }
 
 // A name looked up: the addresses, from the buffer the lookup filled
-fn resolveAnswer(c: &mut Completion) Result[List[SocketAddr], IoError] {
-  if c.status == diag.outcomeDone {
-    return Ok[List[SocketAddr], IoError](addressesIn(&c.buf));
+fn takeResolve(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let code = core.code;
+  let buf = core.(buf);
+  mem.writeRaw[Result[List[SocketAddr], IoError]](to as *Result[List[SocketAddr], IoError], resolveResult(status, code, buf));
+}
+
+fn statResult(status: u32, code: u32, buf: Option[IoBuf]) Result[FileStat, IoError] {
+  if status != diag.outcomeDone {
+    return Error[FileStat, IoError](errorOf(status, code));
   }
-  Error[List[SocketAddr], IoError](endError(c))
+  let b = bufOf(buf);
+  Ok[FileStat, IoError](fileStatIn(&b))
 }
 
 // A file's metadata, from the buffer the query filled
-fn statAnswer(c: &mut Completion) Result[FileStat, IoError] {
-  if c.status == diag.outcomeDone {
-    return Ok[FileStat, IoError](fileStatIn(&c.buf));
+fn takeStat(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let code = core.code;
+  let buf = core.(buf);
+  mem.writeRaw[Result[FileStat, IoError]](to as *Result[FileStat, IoError], statResult(status, code, buf));
+}
+
+// ERROR_OPERATION_ABORTED, what a run's answer says if the pool's thread left none
+fn abortedCode() u32 {errorOperationAborted}
+
+fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.Output, IoError] {
+  if status != diag.outcomeDone {
+    return Error[process.Output, IoError](errorOf(status, code));
   }
-  Error[FileStat, IoError](endError(c))
-}
-
-fn opAwaitable[R](op: Op, answer: &fn(c: &mut Completion) R, limits: IoLimits) actors.Awaitable[R] {
-  awaitable[OpJob[R], R](OpJob[R](op, limits, actors.Reply(), answer))
-}
-
-// A timer, started on the I/O thread's Loop: it answers Done at 'at' (or, if
-// 'relative', 'after' from the moment the I/O thread starts it, a moment after
-// the 'await'), unless lim ends it first. lim's group is the timer's cancel
-// group, and lim's deadline narrows that group's (a group made for the purpose
-// when there is none): a timer due after the deadline answers TimedOut at the
-// deadline, as iocore's 'afterIn' does
-struct SleepJob {
-  pub at: Instant;
-  pub after: Duration;
-  pub relative: bool;
-  pub limits: IoLimits;
-  pub reply: actors.Reply;
-
-  fn run(self, lp: &mut Loop) {
-    let at, after, relative, limits, rp = self.(at, after, relative, limits, reply);
-    let due = if relative {Instant.now() + after} else {at};
-    let to = Target.Hook(0u64, Sink.make(waiting[Result[void, IoError]](rp, &sleepAnswer)));
-    match limits.group {
-      case let Some(g) {
-        if limits.deadline < forever() {
-          lp.afterIn(due, to, g.childUntil(limits.deadline));
-        } else {
-          lp.afterIn(due, to, g);
-        }
-      }
-      else {
-        if limits.deadline < due {
-          lp.afterIn(due, to, CancelGroup.until(limits.deadline));
-        } else {
-          lp.after(due, to);
-        }
+  match run {
+    case var Some(owner) {
+      let part = *owner;
+      let out = part.(out);
+      match out {
+        case var Some(o) {o}
+        else {Error[process.Output, IoError](IoError(abortedCode()))}
       }
     }
+    else {Error[process.Output, IoError](IoError(abortedCode()))}
   }
+}
+
+// A run's: the Output the pool's thread left in the record, or the error
+fn takeRun(p: *u8, to: *u8) {
+  let rec = dissolveTaken(p);
+  let core, ask = rec.(core, ask);
+  let status = core.status;
+  let code = core.code;
+  let run = ask.(run);
+  mem.writeRaw[Result[process.Output, IoError]](to as *Result[process.Output, IoError], runAnswer(status, code, run));
+}
+
+// What the process package answered, as this package's Result: the Output, or
+// the IoError of the number the system gave (Windows' on every system)
+fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Output, IoError] {
+  match r {
+    case let Ok(o) {Ok[process.Output, IoError](o)}
+    case let Error(e) {Error[process.Output, IoError](IoError(systemCode(e.code)))}
+  }
+}
+
+// On a pool thread: the run's record is away, its run part this thread's
+// (iocore's THE BLOCKING POOL); 'arg' is the record. The program is run and
+// waited for, and its answer left in the record, which comes home with it
+fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
+  let rp = usize.from(arg) as *OpRec[Ask];
+  match &mut (*rp).ask.run {
+    case var &mut Some(owner) {
+      let part = &mut **owner;
+      var r: Result[process.Output, IoError];
+      if part.isLine {
+        r = runResult(process.runLine(part.line.view(), part.opts, &part.dir));
+      } else {
+        r = runResult(process.run(part.args.view(), part.opts, &part.dir));
+      }
+      part.out = Some[Result[process.Output, IoError]](r);
+      Outcome.Done(0usize)
+    }
+    else {Outcome.Failed(abortedCode())}
+  }
+}
+
+// What the records have done so far (opStats)
+pub struct OpStats {
+  pub inUse: u64;          // records taken and not yet dissolved: an operation each, made, in flight or answered and not taken
+  pub made: u64;           // records the pool has made (chunks of 64), free or taken
+  pub cancelsAsked: u64;   // operations cancelRead and cancelWrite have asked to end
+  pub takenAway: u64;      // answers taken, their records dissolved, on another thread than the I/O thread's
+  pub recordBytes: u64;    // the size of one record (iocore's OpCore and aio's part)
+}
+
+// The pool's counts, and the two above: zero before the first record is taken
+pub fn opStats() OpStats {
+  let at = poolAt.load();
+  if at == 0usize {
+    return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), u64.from(mem.sizeof[OpRec[Ask]]()));
+  }
+  let pl = at as *OpPool[Ask] as &OpPool[Ask];
+  OpStats(u64.from(pl.inUse()), u64.from(pl.size()), cancelsAsked.load(), takenAway.load(),
+    u64.from(mem.sizeof[OpRec[Ask]]()))
+}
+
+// ---------------------------------------------------------------------------
+// The jobs: what is one per handle and synchronous on the I/O thread
+// ---------------------------------------------------------------------------
+
+// The seam starts a job: the reply its answer goes back in is written into
+// the job, which goes to the I/O thread (actors.Awaitable's closure)
+fn startJob[J](ctx: *u8, rp: actors.Reply) {
+  let p = ctx as *Job[J];
+  (*p).body.reply = rp;
+  enqueue(ctx);
+}
+
+// A job's block until the 'await' starts it: 'take' hands it on, and an
+// Awaitable that dies unawaited, its closure finalized, drops the job it still
+// holds (its body dropped, its reply among it)
+struct JobHold is Move {
+  job: *u8;
+
+  fn take(self: &mut) *u8 {
+    let j = job;
+    job = null;
+    j
+  }
+
+  fn final(self: &uni) {
+    if job as usize != 0usize {
+      dropHead(job as *JobHead);
+    }
+  }
+}
+
+// The job awaited: its block, made now, started by the 'await'
+fn awaitable[J, R](body: J) actors.Awaitable[R] {
+  actors.Awaitable[R].make(fn(rp: actors.Reply) [var held = JobHold(newJob[J](body))] {
+    startJob[J](held.take(), rp);
+  })
 }
 
 // A listening socket, made on the I/O thread's Loop, which holds it
@@ -1615,125 +1524,6 @@ struct OpenFileJob {
   }
 }
 
-// A child process, run by a thread of iocore's blocking pool: the process
-// package's 'run' (or 'runLine'), which waits for it. The package's header,
-// METHOD CHOICES, tells how the pool thread and the I/O thread share the state below
-//
-// The state of a run, in a block of its own (libc's malloc): what it is to
-// run, and where its answer is left. 'state' says who frees the block (the
-// words below); 'out' is the pool thread's, until 'state' is runFinished
-pub struct RunState {
-  pub state: Atomic[u32];
-  pub isLine: bool;
-  pub line: String;
-  pub args: List[String];
-  pub opts: process.Options;
-  pub dir: Path;
-  pub out: Result[process.Output, IoError];
-}
-
-// 'state': a run not yet started by a pool thread; started; abandoned by the
-// answer (a deadline's, past the grace: the thread frees the block when it is
-// done); finished (the thread has left the answer in 'out')
-fn runPending() u32 {0u32}
-fn runStarted() u32 {1u32}
-fn runAbandoned() u32 {2u32}
-fn runFinished() u32 {3u32}
-
-// ERROR_OPERATION_ABORTED, what a run's answer says before the thread has left one
-fn abortedCode() u32 {errorOperationAborted}
-
-fn noOutput() Result[process.Output, IoError] {
-  Error[process.Output, IoError](IoError(abortedCode()))
-}
-
-fn freeRun(p: *RunState) {
-  mem.finalize[RunState](p);
-  libc.free(p as *u8);
-}
-
-// What the process package answered, as this package's Result: the Output, or
-// the IoError of the number the system gave (Windows' on every system)
-fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Output, IoError] {
-  match r {
-    case let Ok(o) {Ok[process.Output, IoError](o)}
-    case let Error(e) {Error[process.Output, IoError](IoError(systemCode(e.code)))}
-  }
-}
-
-// On a pool thread: run the program, wait for it, and leave the answer in the
-// block, which the arg names. A block the answer has abandoned already is
-// freed here, unrun; one it abandons while the program runs is freed on its end
-fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
-  let p = usize.from(arg) as *RunState;
-  let st = p as &mut RunState;
-  if st.state.swap(runStarted()) == runAbandoned() {
-    freeRun(p);
-    return Outcome.Failed(abortedCode());
-  }
-  var r: Result[process.Output, IoError];
-  if st.isLine {
-    r = runResult(process.runLine(st.line.view(), st.opts, &st.dir));
-  } else {
-    r = runResult(process.run(st.args.view(), st.opts, &st.dir));
-  }
-  st.out = r;
-  if st.state.swap(runFinished()) == runAbandoned() {
-    freeRun(p);
-    return Outcome.Failed(abortedCode());
-  }
-  Outcome.Done(0usize)
-}
-
-// A run's answer, on the I/O thread; the block is named by the token. Done:
-// the pool thread has left its answer, and the block is freed here. Anything
-// else: a job that never ran (taken out of its lane's queue by a cancel or a
-// deadline, or refused for want of room) comes back with its buffer, and the
-// block is freed here; one that did not (a deadline's prompt TimedOut, with no
-// buffer, while the program runs) leaves the block to the thread, unless the
-// thread has finished meanwhile
-fn runAnswer(c: &mut Completion) Result[process.Output, IoError] {
-  let p = usize.from(c.token) as *RunState;
-  if c.status == diag.outcomeDone {
-    var ans = noOutput();
-    ans <-> (*p).out;
-    freeRun(p);
-    return ans;
-  }
-  if c.buf.capacity() > 0usize {
-    freeRun(p);
-  } else if (*p).state.swap(runAbandoned()) == runFinished() {
-    freeRun(p);
-  }
-  Error[process.Output, IoError](endError(c))
-}
-
-// A child process to run, started on the I/O thread's Loop: its block made
-// there, so that a job dropped unawaited has made none. The job takes a buffer
-// of one byte, which it does not use: it tells the
-// answer whether the run was started (a job that comes back with it never ran)
-struct RunJob {
-  pub isLine: bool;
-  pub line: String;
-  pub args: List[String];
-  pub opts: process.Options;
-  pub dir: Path;
-  pub limits: IoLimits;
-  pub reply: actors.Reply;
-
-  fn run(self, lp: &mut Loop) {
-    let isLine, l, a, opts, dir, limits, rp = self.(isLine, line, args, opts, dir, limits, reply);
-    let st = libc.malloc(mem.sizeof[RunState]()) as *RunState;
-    if st as usize == 0usize {
-      die("aio: out of memory for a child process");
-    }
-    mem.writeRaw[RunState](st, RunState(Atomic[u32].of(runPending()), isLine, l, a, opts, dir.copy(), noOutput()));
-    let key = u64.from(st as usize);
-    let to = Target.Hook(key, Sink.make(waiting[Result[process.Output, IoError]](rp, &runAnswer)));
-    submitLimited(lp, Op.Call(Lane.general(), &runWork, key, IoBuf(1usize)), to, &limits);
-  }
-}
-
 // A socket's address, read on the I/O thread
 struct LocalAddrJob {
   pub h: Handle;
@@ -1745,23 +1535,47 @@ struct LocalAddrJob {
   }
 }
 
-// A socket closed, its Socket dropped: every operation in flight on it is
-// cancelled. Nothing awaits it
-struct CloseJob {
-  pub h: Handle;
-  pub rec: *Rec;
-
-  fn run(self: &mut, lp: &mut Loop) {
-    lp.close(h);
-    if rec as usize != 0usize {
-      // The record is freed now if no operation holds a side of it; else by
-      // whoever lets go of the last (releaseSide)
-      let old = (*rec).life.bitOr(lifeClosed);
-      if (old & lifeBusy) == 0u32 {
-        freeRec(rec);
-      }
-    }
+// The values the module's handles are made into
+fn newSocket(h: Handle) Socket {
+  if h.isNone() {
+    return Socket.none();
   }
+  Socket(h)
+}
+
+fn newFile(h: Handle) File {
+  if h.isNone() {
+    return File.none();
+  }
+  File(h)
+}
+
+fn newUdp(h: Handle) UdpSocket {
+  if h.isNone() {
+    return UdpSocket.none();
+  }
+  UdpSocket(h)
+}
+
+// A handle's read or write in flight, every one, asked to end (cancelRead,
+// cancelWrite): a small record queued, which the I/O thread turns into
+// iocore's cancelHandle. From any thread
+fn cancelSide(h: Handle, write: bool) {
+  if h.isNone() {
+    return;
+  }
+  let p = takeRec(opCancel, 0u32, h, IoLimits.none());
+  (*p).ask.write = write;
+  enqueueRec(p as *OpCore);
+}
+
+// A handle closed, its Socket, File or UdpSocket dropped: a small record
+// queued behind the operations queued before it. Nothing awaits it
+fn closeHandle(h: Handle) {
+  if h.isNone() {
+    return;
+  }
+  enqueueRec(takeRec(opClose, 0u32, h, IoLimits.none()) as *OpCore);
 }
 
 // ---------------------------------------------------------------------------
@@ -1772,18 +1586,17 @@ struct CloseJob {
 // moves, and dropping it closes the socket
 pub struct Socket is Move, Sendable {
   h: Handle;
-  rec: *Rec;                // its record (RECORDS): null for a Socket naming nothing
 
   // A Socket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() Socket {Socket(Handle.none(), nullRec())}
+  pub fn none() Socket {Socket(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
   // The iocore handle it names, on the I/O thread's Loop
   pub fn handle(self: &) Handle {h}
 
-  // The next connection on this listening socket (the listener's read side)
+  // The next connection on this listening socket
   pub fn accept(self: &) actors.Awaitable[Result[Socket, IoError]] {
     self.acceptIn(IoLimits.none())
   }
@@ -1791,9 +1604,7 @@ pub struct Socket is Move, Sendable {
   // The next connection, ended if lim says so (the package's header, CANCEL
   // AND DEADLINES)
   pub fn acceptIn(self: &, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
-    let s = beginSide(rec, h, false, opAccept);
-    (*s).limits = lim;
-    sideAwaitable[Result[Socket, IoError]](s)
+    recAwaitable[Result[Socket, IoError]](takeRec(opAccept, diag.kindAccept, h, lim))
   }
 
   // What arrives, appended to buf, which is moved in and comes back in the
@@ -1805,11 +1616,9 @@ pub struct Socket is Move, Sendable {
 
   // A read ended if lim says so; then the buffer goes home to its pool
   pub fn readBufIn overload readIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    let s = beginSide(rec, h, false, opRecv);
-    var b = buf;
-    b <-> (*s).buf;
-    (*s).limits = lim;
-    sideAwaitable[Result[IoBuf, IoError]](s)
+    let p = takeRec(opRecv, diag.kindRecv, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[IoBuf, IoError]](p)
   }
 
   // What arrives, in a buffer the I/O side takes: the caller holds none, and
@@ -1834,10 +1643,9 @@ pub struct Socket is Move, Sendable {
   }
 
   pub fn readRoomIn overload readIn(self: &, room: usize, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    let s = beginSide(rec, h, false, opRecvAny);
-    (*s).arg = u64.from(room);
-    (*s).limits = lim;
-    sideAwaitable[Result[IoBuf, IoError]](s)
+    let p = takeRec(opRecvAny, diag.kindRecvReady, h, lim);
+    (*p).ask.arg = u64.from(room);
+    recAwaitable[Result[IoBuf, IoError]](p)
   }
 
   // All of buf, which is moved in and goes home once sent: the count
@@ -1847,26 +1655,22 @@ pub struct Socket is Move, Sendable {
 
   // A write ended if lim says so, part of buf perhaps sent
   pub fn writeIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    let s = beginSide(rec, h, true, opSend);
-    var b = buf;
-    b <-> (*s).buf;
-    (*s).limits = lim;
-    sideAwaitable[Result[usize, IoError]](s)
+    let p = takeRec(opSend, diag.kindSend, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[usize, IoError]](p)
   }
 
-  // Ask the read (or accept) in flight on this socket to end: it is answered
-  // Cancelled, as a group's cancel answers it, with the buffer given back.
-  // Reaches the operation on the socket's own read side that has been started
-  // by its 'await'; none in flight, or one not yet started, is not affected,
-  // and a second read at once (the one that took a spill block, RECORDS)
-  // cannot be reached this way. From any thread, idempotent
+  // Ask every read (and accept) in flight on this socket to end (the package's
+  // header, ONE DIRECTION OF A HANDLE): each is answered Cancelled, as a
+  // group's cancel answers it, with its buffer given back. One made and not
+  // yet started by its 'await' is not affected. From any thread, idempotent
   pub fn cancelRead(self: &) {
-    cancelSide(rec, false);
+    cancelSide(h, false);
   }
 
-  // The same for the write in flight
+  // The same for every write in flight
   pub fn cancelWrite(self: &) {
-    cancelSide(rec, true);
+    cancelSide(h, true);
   }
 
   // The address the socket is bound to: a listening socket's port, where the
@@ -1876,9 +1680,7 @@ pub struct Socket is Move, Sendable {
   }
 
   fn final(self: &uni) {
-    if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h, rec)));
-    }
+    closeHandle(h);
   }
 }
 
@@ -1899,11 +1701,10 @@ pub struct Datagram {
 // dropping it closes the socket
 pub struct UdpSocket is Move, Sendable {
   h: Handle;
-  rec: *Rec;                // its record (RECORDS): null for a UdpSocket naming nothing
 
   // A UdpSocket naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() UdpSocket {UdpSocket(Handle.none(), nullRec())}
+  pub fn none() UdpSocket {UdpSocket(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1922,11 +1723,9 @@ pub struct UdpSocket is Move, Sendable {
 
   // A receive ended if lim says so; then the buffer goes home to its pool
   pub fn recvFromIn(self: &, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[Datagram, IoError]] {
-    let s = beginSide(rec, h, false, opRecvFrom);
-    var b = buf;
-    b <-> (*s).buf;
-    (*s).limits = lim;
-    sideAwaitable[Result[Datagram, IoError]](s)
+    let p = takeRec(opRecvFrom, diag.kindRecvFrom, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    recAwaitable[Result[Datagram, IoError]](p)
   }
 
   // All of buf as one datagram to addr, buf moved in and going home once sent:
@@ -1938,22 +1737,20 @@ pub struct UdpSocket is Move, Sendable {
 
   // A send ended if lim says so
   pub fn sendToIn(self: &, addr: SocketAddr, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    let s = beginSide(rec, h, true, opSendTo);
-    var b = buf;
-    b <-> (*s).buf;
-    mem.writeRaw[SocketAddr]((*s).ansp as *SocketAddr, addr);   // left in the answer's place until the send begins
-    (*s).limits = lim;
-    sideAwaitable[Result[usize, IoError]](s)
+    let p = takeRec(opSendTo, diag.kindSendTo, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    (*p).core.setPeer(addr);
+    recAwaitable[Result[usize, IoError]](p)
   }
 
-  // Ask the receive in flight on this socket to end, as Socket's cancelRead
+  // Ask every receive in flight on this socket to end, as Socket's cancelRead
   pub fn cancelRead(self: &) {
-    cancelSide(rec, false);
+    cancelSide(h, false);
   }
 
-  // The same for the send in flight
+  // The same for every send in flight
   pub fn cancelWrite(self: &) {
-    cancelSide(rec, true);
+    cancelSide(h, true);
   }
 
   // The address the socket is bound to: its port, where the system chose it
@@ -1962,9 +1759,7 @@ pub struct UdpSocket is Move, Sendable {
   }
 
   fn final(self: &uni) {
-    if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h, rec)));
-    }
+    closeHandle(h);
   }
 }
 
@@ -1976,11 +1771,10 @@ pub struct UdpSocket is Move, Sendable {
 // dropping it closes the file
 pub struct File is Move, Sendable {
   h: Handle;
-  rec: *Rec;                // its record (RECORDS): null for a File naming nothing
 
   // A File naming nothing, which closes nothing: to swap one out of a
   // Result, or into a field before one is there
-  pub fn none() File {File(Handle.none(), nullRec())}
+  pub fn none() File {File(Handle.none())}
 
   pub fn isNone(self: &) bool {h.isNone()}
 
@@ -1997,12 +1791,10 @@ pub struct File is Move, Sendable {
 
   // A read ended if lim says so; then the buffer goes home to its pool
   pub fn readAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
-    let s = beginSide(rec, h, false, opReadAt);
-    var b = buf;
-    b <-> (*s).buf;
-    (*s).arg = at;
-    (*s).limits = lim;
-    sideAwaitable[Result[IoBuf, IoError]](s)
+    let p = takeRec(opReadAt, diag.kindReadAt, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    (*p).core.at = at;
+    recAwaitable[Result[IoBuf, IoError]](p)
   }
 
   // All of buf, which is moved in and goes home once written, at byte offset
@@ -2013,30 +1805,25 @@ pub struct File is Move, Sendable {
 
   // A write ended if lim says so, part of buf perhaps written
   pub fn writeAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
-    let s = beginSide(rec, h, true, opWriteAt);
-    var b = buf;
-    b <-> (*s).buf;
-    (*s).arg = at;
-    (*s).limits = lim;
-    sideAwaitable[Result[usize, IoError]](s)
+    let p = takeRec(opWriteAt, diag.kindWriteAt, h, lim);
+    setBuf(p as *OpCore, Some[IoBuf](buf));
+    (*p).core.at = at;
+    recAwaitable[Result[usize, IoError]](p)
   }
 
-  // Ask the read in flight on this file's read side to end, as Socket's
-  // cancelRead (a file takes many reads at once; the others took spill blocks
-  // and are reached by a group or deadline only)
+  // Ask every read in flight on this file to end, as Socket's cancelRead (a
+  // file takes many reads at once: each is ended)
   pub fn cancelRead(self: &) {
-    cancelSide(rec, false);
+    cancelSide(h, false);
   }
 
-  // The same for the write
+  // The same for every write
   pub fn cancelWrite(self: &) {
-    cancelSide(rec, true);
+    cancelSide(h, true);
   }
 
   fn final(self: &uni) {
-    if !h.isNone() {
-      enqueue(newJob[CloseJob](CloseJob(h, rec)));
-    }
+    closeHandle(h);
   }
 }
 
@@ -2064,7 +1851,9 @@ pub fn connect(addr: SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
 
 // A TCP socket connected to addr, ended if lim says so
 pub fn connectIn(addr: SocketAddr, lim: IoLimits) actors.Awaitable[Result[Socket, IoError]] {
-  opAwaitable[Result[Socket, IoError]](Op.Connect(addr), &socketAnswer, lim)
+  let p = takeRec(opConnect, diag.kindConnect, Handle.none(), lim);
+  (*p).core.setPeer(addr);
+  recAwaitable[Result[Socket, IoError]](p)
 }
 
 // Pauses for d, counted from the 'await': Ok(nil) when it has passed
@@ -2074,7 +1863,11 @@ pub fn sleep(d: Duration) actors.Awaitable[Result[void, IoError]] {
 
 // A sleep ended if lim says so (the package's header, SLEEPING)
 pub fn sleepIn(d: Duration, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
-  awaitable[SleepJob, Result[void, IoError]](SleepJob(Instant.now(), d, true, lim, actors.Reply()))
+  let p = takeRec(opSleep, diag.kindTimer, Handle.none(), lim);
+  (*p).ask.stage = sleepAfter;
+  let ns = d.nanos();
+  (*p).ask.arg = if ns > 0i64 {u64.from(ns)} else {0u64};
+  recAwaitable[Result[void, IoError]](p)
 }
 
 // Pauses until the instant 'at' (one already past is Ok at once): Ok(nil)
@@ -2084,7 +1877,10 @@ pub fn sleepUntil(at: Instant) actors.Awaitable[Result[void, IoError]] {
 
 // A sleepUntil ended if lim says so (the package's header, SLEEPING)
 pub fn sleepUntilIn(at: Instant, lim: IoLimits) actors.Awaitable[Result[void, IoError]] {
-  awaitable[SleepJob, Result[void, IoError]](SleepJob(at, Duration.zero(), false, lim, actors.Reply()))
+  let p = takeRec(opSleep, diag.kindTimer, Handle.none(), lim);
+  (*p).ask.stage = sleepAt;
+  (*p).core.deadline = at;
+  recAwaitable[Result[void, IoError]](p)
 }
 
 // ---------------------------------------------------------------------------
@@ -2095,6 +1891,21 @@ pub fn sleepUntilIn(at: Instant, lim: IoLimits) actors.Awaitable[Result[void, Io
 // more than the answer needs
 fn roomFor(text: &Array[u8]) usize {
   if text.len > 4096usize {text.len} else {4096usize}
+}
+
+// An iocore Call (resolveOp's, statOp's) into the record: its buffer, lane,
+// work and argument
+fn fillCall(c: &mut OpCore, op: Op) {
+  match op {
+    case let Call(o) {
+      let buf, lane, work, arg = o.(buf, lane, work, arg);
+      c.buf = Some[IoBuf](buf);
+      c.lane = lane;
+      c.work = work;
+      c.at = arg;
+    }
+    else {}
+  }
 }
 
 // The addresses host names (a name, or an address as text), each with port,
@@ -2109,8 +1920,9 @@ pub fn resolve(host: &str, port: u16 = 0u16) actors.Awaitable[Result[List[Socket
 // A lookup ended if lim says so: a deadline past the grace answers TimedOut
 // while the lookup goes on
 pub fn resolveIn(host: &str, port: u16, lim: IoLimits) actors.Awaitable[Result[List[SocketAddr], IoError]] {
-  opAwaitable[Result[List[SocketAddr], IoError]](
-    resolveOp(host, port, IoBuf(roomFor(host))), &resolveAnswer, lim)
+  let p = takeRec(opResolve, diag.kindCall, Handle.none(), lim);
+  fillCall(&mut (*p).core, resolveOp(host, port, IoBuf(roomFor(host))));
+  recAwaitable[Result[List[SocketAddr], IoError]](p)
 }
 
 // A file's size, attributes and time of last write, by iocore's 'statOp' on
@@ -2122,8 +1934,9 @@ pub fn stat(path: &Path) actors.Awaitable[Result[FileStat, IoError]] {
 
 // A query ended if lim says so
 pub fn statIn(path: &Path, lim: IoLimits) actors.Awaitable[Result[FileStat, IoError]] {
-  opAwaitable[Result[FileStat, IoError]](
-    statOp(path, Lane.general(), IoBuf(roomFor(path.view()))), &statAnswer, lim)
+  let p = takeRec(opStat, diag.kindCall, Handle.none(), lim);
+  fillCall(&mut (*p).core, statOp(path, Lane.general(), IoBuf(roomFor(path.view()))));
+  recAwaitable[Result[FileStat, IoError]](p)
 }
 
 fn copyArgs(args: &Array[String]) List[String] {
@@ -2136,9 +1949,17 @@ fn copyArgs(args: &Array[String]) List[String] {
   copy
 }
 
+// A child process's run as a record: a Call on the general lane whose work
+// (runWork) is handed the record itself, its run part the request
 fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Options, dir: &Path, lim: IoLimits) actors.Awaitable[Result[process.Output, IoError]] {
-  awaitable[RunJob, Result[process.Output, IoError]](
-    RunJob(isLine, String.from(line), args, opts, dir.copy(), lim, actors.Reply()))
+  let p = takeRec(opRun, diag.kindCall, Handle.none(), lim);
+  let a = &mut (*p).ask;
+  a.run = Some[Uni[RunPart]](Uni[RunPart](RunPart(isLine, String.from(line), args, opts, dir.copy(), None)));
+  let c = &mut (*p).core;
+  c.lane = Lane.general();
+  c.work = &runWork;
+  c.at = u64.from(p as usize);
+  recAwaitable[Result[process.Output, IoError]](p)
 }
 
 // Runs args[0] with the rest as its arguments, in the folder dir (the current

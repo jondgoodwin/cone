@@ -94,6 +94,7 @@ pub struct OpCore {
   late: bool = false;                    // an early one the kernel (or the pool) has now given back
   own: bool = false;                     // the Loop's own (the old API's), not an asker's
   inGroup: bool = false;                 // on the Loop's grouped list
+  listed: bool = false;                  // on the Loop's done list, not yet handed over by takeDone
   side: u32 = onNone;                    // the list it is on while in flight
   timer: TimerId;                        // its deadline's (or grace's) timer, or a timer's own
   pub submitted: Instant = Instant();
@@ -155,8 +156,20 @@ pub struct OpCore {
   // package's header, RECORDS)
   pub fn isEarly(self: &) bool {early && !late}
 
-  // An early one given back: the asker dissolves it, its buffer going home
+  // An early one given back: the asker dissolves it, its buffer going home.
+  // Its outcome is the kernel's own when a receive, read or send finished
+  // after all (Done, its count, the bytes in its buffer); TimedOut otherwise
   pub fn isLate(self: &) bool {late}
+
+  // Whether the Loop holds nothing of it: answered (or never started), off
+  // every list of the Loop's -- its handle's in-flight list, the grouped list,
+  // the done list -- with no timer and no job away. What the asker relies on
+  // before it lends the record to another thread (the package's header,
+  // RECORDS: a record let go)
+  pub fn isLetGo(self: &) bool {
+    (state == stDone || state == stTaken) && side == onNone && !inGroup && !listed
+      && timer.isNone() && !isAway(self as *OpCore)
+  }
 
   // SendTo's destination, Connect's address
   pub fn setPeer(self: &mut, a: SocketAddr) {

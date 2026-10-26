@@ -1,12 +1,12 @@
 // Sockets closed with operations in flight, single operations cancelled, reads of
-// every kind (with a buffer, with none, a spill block's), many times over, on
-// four actors at once, and then what is left is counted: every record freed,
+// every kind (with a buffer, with none, two at once), many times over, on
+// four actors at once, and then what is left is counted: every record dissolved,
 // every buffer home. Each round makes a loopback pair and does one of:
 //
 //   0. a read with a buffer in flight, the socket dropped (closed): Cancelled;
 //   1. the same for a read with no buffer;
-//   2. two reads at once on one socket (the second takes a spill block), the
-//      socket dropped: both fail, neither is lost;
+//   2. two reads at once on one socket (two records), the socket dropped:
+//      both fail, neither is lost;
 //   3. a 1 MiB write in flight, the socket dropped: finished or Cancelled;
 //   4. a read in flight, ended by cancelRead, then the socket dropped;
 //   5. the peer writing as the reader's socket is dropped: the read is whole or
@@ -189,11 +189,11 @@ fn main() i32 {
   rx3.recv();
   // The sockets the actors dropped are closed on the I/O thread: give it time
   var waited = 0i64;
-  while aio.opStats().records > 0u64 && waited < 5000i64 {
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
     thread.sleep(Duration.fromMillis(10i64));
     waited = waited + 10i64;
   }
-  let left = aio.opStats().records;
+  let left = aio.opStats().inUse;
   let st0 = aio.opStats();
   finalAll();
   if skipped.load() > 0u64 {
@@ -202,8 +202,8 @@ fn main() i32 {
   }
   expectUInt(finished.load(), actorsN * roundsEach, "every round finished");
   expectUInt(wrong.load(), 0u64, "every operation ended as its round allows");
-  expectUInt(left, 0u64, "every record is freed");
-  expect(st0.spilled > 0u64, "the rounds with two reads took spill blocks");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expect(st0.cancelsAsked > 0u64, "the rounds' cancelRead asked their reads to end");
   let st = iobuf.stats();
   expectUInt(st.lent, 0u64, "every buffer is home");
   done()

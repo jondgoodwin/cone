@@ -58,7 +58,7 @@
 //     pool.flushHere() pool.at(i) pool.inUse() pool.size()    an asker's records  (RECORDS)
 //   OpRec[A] {core, ask}  OpCore: core.kind .handle .at .deadline .buf .bytes .group .lane .work
 //     .setPeer(a) .qnext; .status .n .code .newHandle .submitted .dequeued .peer() .outcome()
-//     .count() .isDone() .isEarly() .isLate() .id()
+//     .count() .isDone() .isEarly() .isLate() .isLetGo() .id()
 //   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
 //
@@ -383,7 +383,19 @@
 //   operation's buffer in the kernel). The record is on the done list
 //   answered TimedOut and 'isEarly()': the asker answers its own then, and
 //   LEAVES the record. When the kernel gives it back it is on the done list
-//   again, 'isLate()', and the asker dissolves it, the buffer going home.
+//   again, 'isLate()', and the asker dissolves it, the buffer going home. Its
+//   outcome then is what the kernel really did: a receive, read or send that
+//   finished after all is Done with its count, the bytes in its buffer (so an
+//   asker whose own deadline it was, having answered nobody, keeps them:
+//   aio's quiet read); anything else stays TimedOut.
+// - A record LET GO. A record handed over by takeDone, neither early nor late,
+//   is held by nothing of the loop's: it is off its handle's in-flight list
+//   (what 'cancelHandle' and a close walk), off the grouped list and the done
+//   list, its timer cancelled, no job away. A trust claim, which an asker may
+//   rely on to hand the record to another thread, which alone touches it from
+//   then on (aio's answer lent from its record, dissolved on the awaiting
+//   actor's worker); 'core.isLetGo()' checks it, and aio asks it at that point.
+//   An early record is not let go: the kernel and the loop still hold it.
 // - A loop that dies dissolves every asker's record it still holds into its
 //   pool, after cancelling and draining it: the record's asker part dies
 //   there, so an answer it owed is abandoned. Records the asker holds (taken
@@ -897,6 +909,10 @@ struct Port is Sendable {
   // job's post allocates nothing), under 'lock' too
   jobsHead: *OpCore;
   jobsTail: *OpCore;
+  // Linux: a wake asked since the loop last took its packets (a wake carries
+  // nothing, so it is this word and the eventfd's write, no packet: a wake
+  // allocates nothing)
+  wakes: Atomic[u32];
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self: &) &mut Port {
@@ -910,6 +926,16 @@ struct Port is Sendable {
     if isWindows() {
       PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32
     } else {
+      if key == keyWake {
+        // Before the write below, which the loop's drain reads before it
+        // takes this word
+        wakes.store(1u32);
+        if pending.swap(1u32) == 0u32 {
+          var one = 1u64;
+          sysWrite(fdOf(handle), &mut one as *u8, 8usize);
+        }
+        return true;
+      }
       let node = libc.malloc(mem.sizeof[Packet]()) as *Packet;
       if node as usize == 0usize {return false;}
       (*node).key = key;

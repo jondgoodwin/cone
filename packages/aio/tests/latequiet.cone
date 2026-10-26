@@ -1,0 +1,97 @@
+// The bad case of a read with no buffer (the package's header, READS WITH NO
+// BUFFER): a receive begun at once with a buffer, under the read's own quiet
+// deadline, that the kernel still held when the deadline's grace ran out, and
+// finished after all, WITH bytes. Those bytes are the read's answer: nobody
+// asked for that deadline (it is aio's quiet policy), so nothing may lose them.
+// The race cannot be made to happen on purpose, so the test forces the path:
+// 'aio.testLateQuiet(true)' takes such receives through the late path, as if
+// the kernel had held them past the grace and finished them then.
+//
+// Reader's socket is made calm by a first read; then "two" is read through the
+// forced late path, and "three" after it. What is checked: each read is whole
+// and the stream is in order, "one", "two", "three" (with the bytes dropped,
+// the second read would time out after its 5 s); every buffer is home.
+
+mod latequiet;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket, IoLimits;
+
+var seen: String;
+
+fn @initpure init() {
+  seen = String.from("");
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  match r {
+    case var Ok(ok) {ok}
+    else {Socket.none()}
+  }
+}
+
+fn text(s: &str) IoBuf {
+  var b = IoBuf(64usize);
+  b.append(s);
+  b
+}
+
+actor Reader {
+  pub async fn run(self, done: OneshotSender[u64]) {
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    let a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    let b = socketOf(await ls.accept());
+    // The quiet time 1 s, each read's own deadline 5 s: a read begun calm
+    // carries the quiet deadline, its own (READS WITH NO BUFFER)
+    aio.setReadQuiet(Duration.fromSeconds(1i64));
+    var k = 0u32;
+    while k < 3u32 {
+      let word = if k == 0u32 {"one"} else if k == 1u32 {"two"} else {"three"};
+      aio.testLateQuiet(k == 1u32);
+      let w = await a.write(text(word));
+      let r = await b.readIn(IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+      match r {
+        case let Ok(buf) {let got = String.fromBytes(buf.view()); seen.append(got.view());}
+        case let Error(e) {seen.append(if aio.isTimedOut(e) {"<timed out>"} else {"<failed>"});}
+      }
+      seen.append("|");
+      k = k + 1u32;
+    }
+    aio.setReadQuiet(Duration.fromMillis(2i64));
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let r = Reader();
+    r.run(tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "Reader said it was done");}
+    else {}
+  }
+  // Read before finalAll, which finalizes this module's globals: 'seen' among
+  // them, its text freed (read after, it is freed memory)
+  expectStr(seen.view(), "one|two|three|", "the bytes of the late receive are the read's answer, the stream in order");
+  finalAll();
+  let st = iobuf.stats();
+  expectUInt(st.lent, 0u64, "every buffer is home");
+  done()
+}
