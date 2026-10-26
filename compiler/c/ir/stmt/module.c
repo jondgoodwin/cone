@@ -1216,6 +1216,10 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     for (nodesFor(mod->nodes, cnt, nodesp))
         inodeTypeCheckAny(pstate, nodesp);
 
+    // A 'main' returning a Result is given the function the entry calls in its
+    // stead, which prints its error (propagate.h): added once the loop above is done
+    propagateMainResult(pstate, mod);
+
     // Last, once every global's type is settled: the module's 'init' and 'final',
     // and the 'drop' that finalizes its globals
     modLifecycle(mod);

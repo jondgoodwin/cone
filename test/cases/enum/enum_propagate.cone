@@ -1,0 +1,208 @@
+// '?' [Jon 26 Oct, error-handling issue 1]: on a Result it unwraps 'Ok' or returns the
+// 'Error' from the function, converted to the function's error type (issue 2); on an
+// Option it unwraps 'Some' or returns 'None'. The conversion is, in order: none when the
+// types are the same, the destination's 'overload from' taking the error, or the one
+// variant of the destination enum that holds the error's type (auto-wrap).
+//
+// '?' is a suffix of a term, as in Rust: '-a?' negates what 'a?' gives, 'f()?[2]'
+// indexes it. A member of what it gives is written '(r?).id': '?.' is held.
+//
+// The finalizer prints its number, so the output is the whole assertion: what an
+// early return drops (the locals before it, and not the value it returns), and when
+// the value '?' takes out is dropped.
+
+mod enum_propagate;
+
+import stdio use *;
+
+struct Fin {
+  pub id: i32;
+  fn final(self: &uni) {
+    printStr("fin");
+    printInt(i64.from(self.id));
+    printStr(" ");
+  }
+}
+
+struct IoErr { pub code: i32; }
+struct ParseErr { pub line: i32; }
+
+// Two ways in: IoErr is wrapped by its one variant, ParseErr converted by 'from'
+enum ConfigError {
+  Io(IoErr);
+  Parse(ParseErr);
+  fn fromParse overload from(e: ParseErr) ConfigError { Parse(e) }
+}
+
+enum Wrap[E] { Inner(E); }
+
+fn num(n: i64) { printInt(n); printStr(" "); }
+fn end() { printStr("|\n"); }
+
+fn readNum(n: i32) Result[i32, IoErr] {
+  if n < 0 { return Error(IoErr(n)); }
+  Ok(n * 2)
+}
+fn parseNum(n: i32) Result[i32, ParseErr] {
+  if n > 100 { return Error(ParseErr(n)); }
+  Ok(n + 1)
+}
+
+// The same error type: passed on as it is
+fn same(n: i32) Result[i32, IoErr] {
+  let v = readNum(n)?;
+  Ok(v + 1)
+}
+
+// Auto-wrap into 'Io', and 'from' into 'Parse'
+fn config(n: i32) Result[i32, ConfigError] {
+  let a = readNum(n)?;
+  let b = parseNum(a)?;
+  Ok(b)
+}
+
+// An Option in a function returning an Option
+fn tenfold(o: Option[i32]) Option[i32] {
+  let v = o?;
+  Some(v * 10)
+}
+
+// A suffix: '-a?' and 'b? * 2' take what each '?' gives
+fn arith(a: Option[i32], b: Option[i32]) Option[i32] {
+  Some(-a? + b? * 2)
+}
+
+fn triple(n: i32) Result[Array[i32, 3], IoErr] {
+  if n < 0 { Error(IoErr(n)) } else { Ok([n, n + 1, n + 2]) }
+}
+fn third(n: i32) Result[i32, ConfigError] {
+  Ok(triple(n)?[2])
+}
+
+// A value that moves: taken out on success, the early return dropping what was
+// made before it
+fn make(n: i32) Result[Fin, IoErr] {
+  if n < 0 { return Error(IoErr(n)); }
+  Ok(Fin(n))
+}
+fn take(n: i32) Result[i32, IoErr] {
+  let keep = Fin(100);
+  let f = make(n)?;
+  Ok(f.id + 1)
+}
+
+// A statement: what '?' gives is dropped at once
+fn stmt(n: i32) Result[i32, IoErr] {
+  make(n)?;
+  printStr("after ");
+  Ok(n)
+}
+
+// A member of what '?' gives, in a condition
+fn cond(n: i32) Result[i32, IoErr] {
+  if (make(n)?).id > 3 { Ok(1) } else { Ok(0) }
+}
+
+// What '?' gives is coerced to where it goes, as any value is
+fn widen(r: Result[i32, IoErr]) Result[i64, IoErr] {
+  let y: i64 = r?;
+  Ok(y * 2)
+}
+
+// In a generic: each instance is lowered for its own types
+fn gwrap[E](r: Result[i32, E]) Result[i32, Wrap[E]] {
+  Ok(r? + 1)
+}
+
+// A match on what '?' gives
+fn pick(o: Option[i32]) Option[i32] {
+  match o? { case 1 { Some(100) } else { Some(0) } }
+}
+
+// A closure with its return type written returns from itself
+fn viaClosure(n: Option[i32]) Option[i32] {
+  let f = fn(x: Option[i32]) Option[i32] { Some(x? * 3) };
+  f(n)
+}
+
+// A field of a borrowed struct, copied
+struct Holder { pub r: Option[i32]; }
+fn field(h: &Holder) Option[i32] {
+  Some(h.r? + 1)
+}
+
+// A value typed as one of the variants is a Result or an Option all the same
+fn variantTyped() Result[i32, IoErr] {
+  let r = Ok[i32, IoErr](5);
+  let v = r?;
+  Ok(v + 1)
+}
+fn emptyVariant(n: i32) Option[i32] {
+  let s = Some(n)?;
+  let none = None[i32]?;
+  Some(s + none)
+}
+
+fn showR(r: Result[i32, IoErr]) {
+  match r {
+    case let Ok(v) { printStr("ok "); num(i64.from(v)); }
+    case let Error(e) { printStr("err "); num(i64.from(e.code)); }
+  }
+}
+fn showC(r: Result[i32, ConfigError]) {
+  match r {
+    case let Ok(v) { printStr("ok "); num(i64.from(v)); }
+    case let Error(e) {
+      match e {
+        case let Io(io) { printStr("io "); num(i64.from(io.code)); }
+        case let Parse(p) { printStr("parse "); num(i64.from(p.line)); }
+      }
+    }
+  }
+}
+fn showO(o: Option[i32]) {
+  match o {
+    case let Some(v) { printStr("some "); num(i64.from(v)); }
+    case None { printStr("none "); }
+  }
+}
+
+fn main() {
+  // "ok 7 err -3 |"
+  showR(same(3)); showR(same(-3)); end();
+  // "ok 11 io -7 parse 120 |"
+  showC(config(5)); showC(config(-7)); showC(config(60)); end();
+  // "some 40 none |"
+  showO(tenfold(Some(4))); showO(tenfold(None[i32])); end();
+  // -3 + 4 * 2: "some 5 none none |"
+  showO(arith(Some(3), Some(4))); showO(arith(None[i32], Some(4))); showO(arith(Some(3), None[i32])); end();
+  // "ok 7 io -5 |"
+  showC(third(5)); showC(third(-5)); end();
+  // The value taken out dies after its id is read; keep dies at the return:
+  // "fin4 fin100 ok 5 fin100 err -1 |"
+  showR(take(4)); showR(take(-1)); end();
+  // "fin3 after ok 3 err -3 |"
+  showR(stmt(3)); showR(stmt(-3)); end();
+  // "fin5 ok 1 fin1 ok 0 err -2 |"
+  showR(cond(5)); showR(cond(1)); showR(cond(-2)); end();
+  // "42 |"
+  match widen(Ok(21)) { case let Ok(v) { num(v); } case let Error(e) { printStr("err "); } }
+  end();
+  // "ok 10 inner 9 |"
+  match gwrap(Ok[i32, IoErr](9)) { case let Ok(v) { printStr("ok "); num(i64.from(v)); } case let Error(w) { printStr("err "); } }
+  match gwrap(Error[i32, IoErr](IoErr(9))) {
+    case let Ok(v) { printStr("ok "); }
+    case let Error(w) { match w { case let Inner(e) { printStr("inner "); num(i64.from(e.code)); } } }
+  }
+  end();
+  // "some 100 some 0 none |"
+  showO(pick(Some(1))); showO(pick(Some(2))); showO(pick(None[i32])); end();
+  // "some 21 none |"
+  showO(viaClosure(Some(7))); showO(viaClosure(None[i32])); end();
+  // "some 42 none |"
+  let h = Holder(Some(41));
+  let e = Holder(None[i32]);
+  showO(field(&h)); showO(field(&e)); end();
+  // "ok 6 none |"
+  showR(variantTyped()); showO(emptyVariant(3)); end();
+}
