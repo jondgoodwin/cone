@@ -285,6 +285,38 @@
 // been tuned for speed past the shape of the algorithms.
 // XXH64 runs at 6.7 GB/s.
 //
+// COMPRESSING, on the same three files (the reference's level-3 frames
+// above, decoded), measured under about 74 per cent machine load (other
+// work running), each program pinned to the same core at high priority,
+// ours and the reference's taken in turn file by file; median of 5 runs in
+// MB/s of the input, and the size against the reference's at the same level
+// (libzstd 1.5.7, ZSTD_compress2 and ZSTD_compressStream2 through Python's
+// ctypes, the checksum on as ours; examples/compressbench.cone makes ours):
+//
+//                             one call     streamed     reference      size
+//                                                     one call  str.   vs ref
+//   Cone's packages'   L1       188          192        511    454   +2.9%
+//     sources          L2       181          175        447    396   +3.6%
+//     (17.7 MB)        L3       159          157        347    315   +1.5%
+//   conec.exe,         L1       130          129        493    430   +0.1%
+//     first 16 MB      L2       124          123        408    345   +0.4%
+//                      L3        85*          76        269    234   +0.4%
+//   pbrxrt.spv         L1       158          154        482    405   +4.8%
+//     (385 KB)         L2       152          145        387    320   +4.2%
+//                      L3       132          127        311    281   +0.2%
+//   (* runs from 72 to 110: not steady. The other rows' runs are within 10
+//   per cent of each other.)
+//
+// So it runs at 26 to 50 per cent of the reference's speed, and its frames
+// are 0.1 to 4.8 per cent larger. The likely causes of the time: input read
+// a byte at a time through the List (a 4- or 8-byte read is one slice and one
+// check, but each position still costs several), every literal copied a byte
+// at a time into the block's literals and again through the Huffman writer
+// one symbol a call, and the reference's two-positions-a-step loop not done.
+// Of the size: no table reused from the block before, a coarser FSE
+// normalization, and the fast matcher's simpler stepping. These are measured,
+// not chased.
+//
 // Its files are one module, and only this one, the root, imports:
 //
 //   zstd.cone          this overview
