@@ -1,0 +1,150 @@
+// A client connection whose connect fails: its failure reaches the program,
+// never dropped. The connection's one Closed says so (not clean, at Connect,
+// with the OS's error), and the request waiting on it is answered Failed,
+// unsent. Forced without using up the machine's ports.
+//
+// 1. To port 0: the OS refuses the connect before it starts (Windows:
+//    ConnectEx's own return, WSAEADDRNOTAVAIL).
+// 2. To a port nobody listens on: the connect fails at its completion
+//    (ERROR_CONNECTION_REFUSED), the path a connect takes when the machine's
+//    ephemeral ports are used up and it ends with the local address in use.
+// 3. And the driver goes on: a connection after them makes its request.
+
+mod connectfail;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr;
+import http use *;
+import httpconn use *;
+
+const tokServer = 1000u64;
+
+// What one connection and its one request were told
+struct Seen {
+  pub closes: u32;
+  pub clean: bool;
+  pub stage: Stage;
+  pub code: u32;
+  pub connected: bool;
+  pub finals: u32;
+  pub ending: EventKind;
+  pub unsent: bool;
+}
+
+fn blank() Seen {Seen(0u32, false, Stage.Closed, 0u32, false, 0u32, EventKind.Writable, false)}
+
+// A connect to port, its request; polled until both have ended, or 8 s
+fn attempt(drv: &mut Driver, lp: &mut Loop, port: u16) Seen {
+  var s = blank();
+  let c = drv.connect(lp, "127.0.0.1", port, Sink.Here(1u64));
+  drv.request(lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here(2u64));
+  var events = List[Event].empty();
+  let limit = Instant.now() + Duration.fromSeconds(8i64);
+  while s.finals == 0u32 && Instant.now() < limit {
+    drv.poll(lp, limit, &mut events);
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.Request {
+          drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+          var b = IoBuf(16usize);
+          b.append("ok");
+          drv.sendData(e.req, b);
+          drv.finish(e.req);
+        }
+      } else if e.token == 1u64 {
+        if e.kind == EventKind.Connected {s.connected = true;}
+        if e.kind == EventKind.Closed {
+          s.closes = s.closes + 1u32;
+          s.clean = e.clean;
+          s.stage = e.failure.stage;
+          s.code = e.failure.code;
+        }
+      } else if e.token == 2u64 {
+        if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
+        if e.isTerminal() {
+          s.finals = s.finals + 1u32;
+          s.ending = e.kind;
+          s.unsent = e.failure.unsent;
+        }
+      }
+    }
+    events.clear();
+  }
+  // Its Closed, if it failed, comes with the request's Failed or before it;
+  // one more short turn for anything after
+  drv.poll(lp, Instant.now() + Duration.fromMillis(20i64), &mut events);
+  var k = 0usize;
+  while k < events.len() {
+    if events[k].token == 1u64 && events[k].kind == EventKind.Closed {s.closes = s.closes + 1u32;}
+    k = k + 1usize;
+  }
+  events.clear();
+  if s.connected {drv.close(lp, c);}
+  s
+}
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+    var drv = Driver.make(Config.make());
+
+    // A port nobody listens on: one listened at, then closed
+    var dead = 0u16;
+    match lp.listen(SocketAddr.localhost(0u16)) {
+      case let Ok(h) {
+        match lp.localAddr(h) {
+          case let Ok(a) {dead = a.port();}
+          case let Error(e) {}
+        }
+        lp.close(h);
+      }
+      case let Error(e) {}
+    }
+    require(dead != 0u16, "a free port");
+
+    // 1. Port 0
+    let s1 = attempt(&mut drv, &mut lp, 0u16);
+    expect(!s1.connected, "1: port 0: never Connected");
+    expectUInt(u64.from(s1.closes), 1u64, "1: ...one Closed");
+    expect(!s1.clean && s1.stage == Stage.Connect && s1.code != 0u32, "1: ...not clean, at Connect, with the OS's error");
+    expectUInt(u64.from(s1.finals), 1u64, "1: ...its request answered once");
+    expect(s1.ending ==EventKind.Failed && s1.unsent, "1: ...Failed, unsent");
+
+    // 2. Nobody listening
+    let s2 = attempt(&mut drv, &mut lp, dead);
+    expect(!s2.connected, "2: nobody listening: never Connected");
+    expectUInt(u64.from(s2.closes), 1u64, "2: ...one Closed");
+    expect(!s2.clean && s2.stage == Stage.Connect && s2.code != 0u32, "2: ...not clean, at Connect, with the OS's error");
+    expectUInt(u64.from(s2.finals), 1u64, "2: ...its request answered once");
+    expect(s2.ending ==EventKind.Failed && s2.unsent, "2: ...Failed, unsent");
+
+    // 3. The driver goes on
+    var port = 0u16;
+    match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+      case let Ok(l) {
+        match drv.localAddr(&lp, l) {
+          case let Ok(a) {port = a.port();}
+          case let Error(e) {}
+        }
+      }
+      case let Error(e) {}
+    }
+    require(port != 0u16, "3: a listener");
+    let s3 = attempt(&mut drv, &mut lp, port);
+    expect(s3.connected && s3.ending ==EventKind.Done, "3: a connection after them: Connected, its request Done");
+
+    let st = drv.stats();
+    expectUInt(st.connects, 3u64, "three connects asked for");
+    expectUInt(st.connected, 1u64, "...one connected");
+    drv.abortAll(&mut lp);
+    var events = List[Event].empty();
+    drv.pump(&mut lp, &mut events);
+  }
+  done()
+}
