@@ -1,0 +1,219 @@
+// The ioerror package: what went wrong with I/O, the same on every system.
+// An IoErrorKind is Rust's io::ErrorKind, trimmed to what Windows and Linux
+// give Cone's I/O packages and named as Cone names; the system's own number
+// for a failure stays beside it, for diagnostics, in the error type of the
+// package that made it (iocore's IoError, fs's FsError, ...). Each system's
+// numbers are sorted into kinds here, by a table of its own:
+//
+//   mod show;
+//   import stdio use *;
+//   import ioerror use *;
+//
+//   fn main() {
+//     let k = osKind(if isWindows() {1225u32} else {111u32});   // a refused connection
+//     if k == IoErrorKind.ConnectionRefused {printStr(errorKindName(k));}
+//   }
+//
+//   IoErrorKind                  NotFound, PermissionDenied, ..., Cancelled, TimedOut, Truncated, Other
+//   errorKindName(k)             a kind's words, for a person
+//   osKind(code)                 the kind of the system's own error number: Windows' error number
+//                                (GetLastError's, Winsock's, an NTSTATUS turned into one) on
+//                                Windows; on Linux the errno, or a getaddrinfo failure's EAI_
+//                                number kept as a u32 (gaiNumber)
+//   errnoKind(e)                 the kind of a C library errno, on the system the program runs on
+//   gaiNumber(rc)  gaiOf(code)  gaiFloor   a getaddrinfo failure (below 0) as a u32 and back
+//
+// It is a leaf: it imports nothing, so a synchronous package (fs) and the
+// asynchronous ones (iocore and what is over it) share one set of kinds.
+//
+// How the numbers are sorted. Rust's sorting, with these of Cone's own, so
+// that one failure has one kind on both systems: the numbers a completion
+// port gives for what Winsock's own calls name otherwise are sorted as those
+// are (ERROR_CONNECTION_REFUSED as WSAECONNREFUSED; ERROR_NETNAME_DELETED, how
+// a completion reads a reset, as WSAECONNRESET; ERROR_CONNECTION_ABORTED,
+// ERROR_ADDRESS_ALREADY_ASSOCIATED); a handle that names nothing
+// (ERROR_INVALID_HANDLE, EBADF), a buffer with no room
+// (ERROR_INSUFFICIENT_BUFFER) and a path that is not UTF-8
+// (ERROR_NO_UNICODE_TRANSLATION) are InvalidInput; an operation aborted
+// (ERROR_OPERATION_ABORTED, ECANCELED) is Cancelled, as iocore's own cancel
+// is; a host name with no address (WSAHOST_NOT_FOUND, WSANO_DATA, EAI_NONAME,
+// EAI_NODATA) is NotFound. A number no kind names is Other.
+
+mod ioerror;
+
+// What went wrong, the same on every system. Three kinds are the I/O
+// runtime's own as well as the system's: Cancelled (a cancel ended it),
+// TimedOut (its deadline passed, or the system's own timeout) and Truncated
+// (a received datagram longer than the room that took it)
+pub enum IoErrorKind {
+  NotFound,             // no file, folder or host of that name
+  PermissionDenied,
+  AlreadyExists,
+  NotADirectory,
+  IsADirectory,
+  DirectoryNotEmpty,
+  ReadOnlyFilesystem,
+  StorageFull,          // the disk is full
+  FileTooLarge,
+  InvalidFilename,      // a name too long, or not a name the system takes
+  CrossesDevices,       // a rename from one device to another
+  ResourceBusy,         // in use, or a queue full (a lane's bound)
+  ConnectionRefused,
+  ConnectionReset,
+  ConnectionAborted,
+  NotConnected,
+  AddressInUse,
+  AddressNotAvailable,
+  HostUnreachable,
+  NetworkUnreachable,
+  NetworkDown,
+  BrokenPipe,           // a send on a connection the peer has closed
+  TimedOut,             // the deadline passed, or the system's own timeout
+  Cancelled,            // a cancel ended it, or the system aborted it
+  Truncated,            // a datagram cut to the room of the buffer that took it
+  InvalidInput,         // a handle that names nothing, a buffer with no room, a bad argument
+  OutOfMemory,
+  Unsupported,
+  Other
+}
+
+// A few words for a kind, for a person. (A free function: a method of a
+// fieldless enum cannot be called on a value of it, Error 1150)
+pub fn errorKindName(k: IoErrorKind) &str {
+  if k == IoErrorKind.NotFound {"not found"}
+  else if k == IoErrorKind.PermissionDenied {"permission denied"}
+  else if k == IoErrorKind.AlreadyExists {"already exists"}
+  else if k == IoErrorKind.NotADirectory {"not a directory"}
+  else if k == IoErrorKind.IsADirectory {"is a directory"}
+  else if k == IoErrorKind.DirectoryNotEmpty {"directory not empty"}
+  else if k == IoErrorKind.ReadOnlyFilesystem {"read-only filesystem"}
+  else if k == IoErrorKind.StorageFull {"storage full"}
+  else if k == IoErrorKind.FileTooLarge {"file too large"}
+  else if k == IoErrorKind.InvalidFilename {"invalid filename"}
+  else if k == IoErrorKind.CrossesDevices {"crosses devices"}
+  else if k == IoErrorKind.ResourceBusy {"resource busy"}
+  else if k == IoErrorKind.ConnectionRefused {"connection refused"}
+  else if k == IoErrorKind.ConnectionReset {"connection reset"}
+  else if k == IoErrorKind.ConnectionAborted {"connection aborted"}
+  else if k == IoErrorKind.NotConnected {"not connected"}
+  else if k == IoErrorKind.AddressInUse {"address in use"}
+  else if k == IoErrorKind.AddressNotAvailable {"address not available"}
+  else if k == IoErrorKind.HostUnreachable {"host unreachable"}
+  else if k == IoErrorKind.NetworkUnreachable {"network unreachable"}
+  else if k == IoErrorKind.NetworkDown {"network down"}
+  else if k == IoErrorKind.BrokenPipe {"broken pipe"}
+  else if k == IoErrorKind.TimedOut {"timed out"}
+  else if k == IoErrorKind.Cancelled {"cancelled"}
+  else if k == IoErrorKind.Truncated {"truncated"}
+  else if k == IoErrorKind.InvalidInput {"invalid input"}
+  else if k == IoErrorKind.OutOfMemory {"out of memory"}
+  else if k == IoErrorKind.Unsupported {"unsupported"}
+  else {"other"}
+}
+
+// The kind of the system's own error number, on the system the program runs on
+pub fn osKind(code: u32) IoErrorKind {
+  if isWindows() {winKind(code)} else {lxKind(code)}
+}
+
+// The kind of a Windows error number: Win32's (GetLastError's, or an NTSTATUS
+// turned into one, as a completion's is), Winsock's (WSAE...) and the name
+// service's (WSAHOST_NOT_FOUND, WSANO_DATA)
+fn winKind(code: u32) IoErrorKind {
+  if code == 2u32 || code == 3u32 {IoErrorKind.NotFound}                       // FILE_NOT_FOUND, PATH_NOT_FOUND
+  else if code == 11001u32 || code == 11004u32 {IoErrorKind.NotFound}          // WSAHOST_NOT_FOUND, WSANO_DATA
+  else if code == 5u32 || code == 10013u32 {IoErrorKind.PermissionDenied}      // ACCESS_DENIED, WSAEACCES
+  else if code == 80u32 || code == 183u32 {IoErrorKind.AlreadyExists}          // FILE_EXISTS, ALREADY_EXISTS
+  else if code == 267u32 {IoErrorKind.NotADirectory}                           // DIRECTORY
+  else if code == 145u32 {IoErrorKind.DirectoryNotEmpty}                       // DIR_NOT_EMPTY
+  else if code == 19u32 {IoErrorKind.ReadOnlyFilesystem}                       // WRITE_PROTECT
+  else if code == 39u32 || code == 112u32 {IoErrorKind.StorageFull}            // HANDLE_DISK_FULL, DISK_FULL
+  else if code == 223u32 {IoErrorKind.FileTooLarge}                            // FILE_TOO_LARGE
+  else if code == 123u32 || code == 206u32 {IoErrorKind.InvalidFilename}       // INVALID_NAME, FILENAME_EXCED_RANGE
+  else if code == 17u32 {IoErrorKind.CrossesDevices}                           // NOT_SAME_DEVICE
+  else if code == 170u32 {IoErrorKind.ResourceBusy}                            // BUSY
+  else if code == 1225u32 || code == 10061u32 {IoErrorKind.ConnectionRefused}  // CONNECTION_REFUSED, WSAECONNREFUSED
+  else if code == 64u32 || code == 10054u32 {IoErrorKind.ConnectionReset}      // NETNAME_DELETED, WSAECONNRESET
+  else if code == 1236u32 || code == 10053u32 {IoErrorKind.ConnectionAborted}  // CONNECTION_ABORTED, WSAECONNABORTED
+  else if code == 10057u32 {IoErrorKind.NotConnected}                          // WSAENOTCONN
+  else if code == 10048u32 || code == 1227u32 {IoErrorKind.AddressInUse}       // WSAEADDRINUSE, ADDRESS_ALREADY_ASSOCIATED
+  else if code == 10049u32 {IoErrorKind.AddressNotAvailable}                   // WSAEADDRNOTAVAIL
+  else if code == 1232u32 || code == 10065u32 {IoErrorKind.HostUnreachable}    // HOST_UNREACHABLE, WSAEHOSTUNREACH
+  else if code == 1231u32 || code == 10051u32 {IoErrorKind.NetworkUnreachable} // NETWORK_UNREACHABLE, WSAENETUNREACH
+  else if code == 10050u32 {IoErrorKind.NetworkDown}                           // WSAENETDOWN
+  else if code == 109u32 || code == 232u32 {IoErrorKind.BrokenPipe}            // BROKEN_PIPE, NO_DATA
+  else if code == 121u32 || code == 258u32 || code == 1460u32 || code == 10060u32 {IoErrorKind.TimedOut}  // SEM_TIMEOUT, WAIT_TIMEOUT, TIMEOUT, WSAETIMEDOUT
+  else if code == 995u32 {IoErrorKind.Cancelled}                               // OPERATION_ABORTED
+  else if code == 87u32 || code == 10022u32 {IoErrorKind.InvalidInput}         // INVALID_PARAMETER, WSAEINVAL
+  else if code == 6u32 || code == 122u32 || code == 1113u32 {IoErrorKind.InvalidInput}  // INVALID_HANDLE, INSUFFICIENT_BUFFER, NO_UNICODE_TRANSLATION
+  else if code == 8u32 || code == 14u32 {IoErrorKind.OutOfMemory}              // NOT_ENOUGH_MEMORY, OUTOFMEMORY
+  else if code == 50u32 || code == 120u32 {IoErrorKind.Unsupported}            // NOT_SUPPORTED, CALL_NOT_IMPLEMENTED
+  else {IoErrorKind.Other}
+}
+
+// The kind of a Linux error number: an errno by errnoKind, a getaddrinfo
+// failure NotFound when the name has no address (EAI_NONAME, EAI_NODATA),
+// else Other
+fn lxKind(code: u32) IoErrorKind {
+  if code >= gaiFloor {
+    let rc = gaiOf(code);
+    return if rc == eaiNoName || rc == eaiNoData {IoErrorKind.NotFound} else {IoErrorKind.Other};
+  }
+  if code > 0x7FFFu32 {return IoErrorKind.Other;}
+  errnoKind(i32.from(code))
+}
+
+// The kind of a C library error number (errno) on the system the program
+// runs on: Linux's, or Windows' C runtime's, whose numbers agree with
+// Linux's for files but for a few (its ENAMETOOLONG is 38, ENOSYS 40,
+// ENOTEMPTY 41 and ECANCELED 105: Linux's are 36, 38, 39 and 125)
+pub fn errnoKind(e: i32) IoErrorKind {
+  if e == 2i32 {IoErrorKind.NotFound}                              // ENOENT
+  else if e == 1i32 || e == 13i32 {IoErrorKind.PermissionDenied}   // EPERM, EACCES
+  else if e == 17i32 {IoErrorKind.AlreadyExists}                   // EEXIST
+  else if e == 20i32 {IoErrorKind.NotADirectory}                   // ENOTDIR
+  else if e == 21i32 {IoErrorKind.IsADirectory}                    // EISDIR
+  else if e == 30i32 {IoErrorKind.ReadOnlyFilesystem}              // EROFS
+  else if e == 28i32 {IoErrorKind.StorageFull}                     // ENOSPC
+  else if e == 27i32 {IoErrorKind.FileTooLarge}                    // EFBIG
+  else if e == 18i32 {IoErrorKind.CrossesDevices}                  // EXDEV
+  else if e == 16i32 {IoErrorKind.ResourceBusy}                    // EBUSY
+  else if e == 32i32 {IoErrorKind.BrokenPipe}                      // EPIPE
+  else if e == 22i32 || e == 9i32 {IoErrorKind.InvalidInput}       // EINVAL, EBADF
+  else if e == 12i32 {IoErrorKind.OutOfMemory}                     // ENOMEM
+  else if isWindows() {
+    if e == 38i32 {IoErrorKind.InvalidFilename}                    // ENAMETOOLONG
+    else if e == 41i32 {IoErrorKind.DirectoryNotEmpty}             // ENOTEMPTY
+    else if e == 40i32 {IoErrorKind.Unsupported}                   // ENOSYS
+    else if e == 105i32 {IoErrorKind.Cancelled}                    // ECANCELED
+    else {IoErrorKind.Other}
+  }
+  else if e == 36i32 {IoErrorKind.InvalidFilename}                 // ENAMETOOLONG
+  else if e == 39i32 {IoErrorKind.DirectoryNotEmpty}               // ENOTEMPTY
+  else if e == 38i32 {IoErrorKind.Unsupported}                     // ENOSYS
+  else if e == 125i32 {IoErrorKind.Cancelled}                      // ECANCELED
+  else if e == 111i32 {IoErrorKind.ConnectionRefused}              // ECONNREFUSED
+  else if e == 104i32 {IoErrorKind.ConnectionReset}                // ECONNRESET
+  else if e == 103i32 {IoErrorKind.ConnectionAborted}              // ECONNABORTED
+  else if e == 107i32 {IoErrorKind.NotConnected}                   // ENOTCONN
+  else if e == 98i32 {IoErrorKind.AddressInUse}                    // EADDRINUSE
+  else if e == 99i32 {IoErrorKind.AddressNotAvailable}             // EADDRNOTAVAIL
+  else if e == 113i32 {IoErrorKind.HostUnreachable}                // EHOSTUNREACH
+  else if e == 101i32 {IoErrorKind.NetworkUnreachable}             // ENETUNREACH
+  else if e == 100i32 {IoErrorKind.NetworkDown}                    // ENETDOWN
+  else if e == 110i32 {IoErrorKind.TimedOut}                       // ETIMEDOUT
+  else {IoErrorKind.Other}
+}
+
+// getaddrinfo's failures, EAI_ numbers, are below 0: kept in a u32 error
+// number as they are (two's complement), they are the numbers from
+// 'gaiFloor' up, where no errno is
+pub const gaiFloor = 0xFFFFFF00u32;
+const eaiNoName = 0i32 - 2i32;                      // EAI_NONAME
+const eaiNoData = 0i32 - 5i32;                      // EAI_NODATA
+
+// A getaddrinfo failure's EAI_ number (below 0) as a u32 error number
+pub fn gaiNumber(rc: i32) u32 {~u32.from(0i32 - rc) + 1u32}
+
+// The EAI_ number a u32 error number from 'gaiFloor' up holds
+pub fn gaiOf(code: u32) i32 {0i32 - i32.from(~code + 1u32)}

@@ -1,0 +1,117 @@
+// The disabled path evaluates nothing: every argument of emit, log, begin and
+// end has a side effect (it bumps a counter and notes its name), and while the
+// kind is off none of them runs, whichever of the three reasons it is off for:
+// no sink installed, its target's level below the kind's, or the sink not
+// wanting it. Once the kind is on, each runs exactly once, left to right.
+
+mod lazy;
+
+import testing use *;
+import trace use Level, Kind0, Kind1, Kind2, Kind3, Kind4;
+
+let k0: Kind0;
+let k1: Kind1[u64];
+let k2: Kind2[u64, u64];
+let k3: Kind3[u64, u64, u64];
+let k4: Kind4[u64, u64, u64, u64];
+let unwanted: Kind1[u64];
+
+fn @initpure init() {
+  k0 = Kind0.make("k0", "lazy", Level.Debug);
+  k1 = Kind1[u64].make("k1", "lazy", Level.Debug, "a");
+  k2 = Kind2[u64, u64].make("k2", "lazy", Level.Debug, "a", "b");
+  k3 = Kind3[u64, u64, u64].make("k3", "lazy", Level.Debug, "a", "b", "c");
+  k4 = Kind4[u64, u64, u64, u64].make("k4", "lazy", Level.Debug, "a", "b", "c", "d");
+  unwanted = Kind1[u64].make("unwanted", "lazy", Level.Debug, "a");
+}
+
+var evaluated = 0u64;
+var order = 0u64;              // each argument's number appended as a decimal digit
+
+// An argument with a visible side effect: counts, records its place, and is n
+fn arg(n: u64) u64 {
+  evaluated = evaluated + 1u64;
+  order = order * 10u64 + n;
+  n
+}
+
+fn text(n: u64) &str {
+  arg(n);
+  "message"
+}
+
+var recorded = 0u64;
+
+struct Counter is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {
+    k.name.len != 8usize       // every kind but "unwanted"
+  }
+  pub fn record(self: &, e: &trace.Event) {
+    recorded = recorded + 1u64;
+  }
+}
+
+// Every macro of most kinds, each argument a call of arg: 16 events and 34
+// arguments when all are on (a begin and its end are two events)
+fn emitAll() {
+  k0.emit();
+  k0.log(text(1u64));
+  let s0 = k0.begin();
+  k0.end(arg(0u64) + s0);
+  k1.emit(arg(1u64));
+  k1.log(arg(1u64), text(2u64));
+  k2.emit(arg(1u64), arg(2u64));
+  k2.log(arg(1u64), arg(2u64), text(3u64));
+  let s2 = k2.begin(arg(1u64), arg(2u64));
+  k2.end(s2 + arg(0u64));
+  k3.emit(arg(1u64), arg(2u64), arg(3u64));
+  k3.log(arg(1u64), arg(2u64), arg(3u64), text(4u64));
+  k4.emit(arg(1u64), arg(2u64), arg(3u64), arg(4u64));
+  k4.log(arg(1u64), arg(2u64), arg(3u64), arg(4u64), text(5u64));
+  let s4 = k4.begin(arg(1u64), arg(2u64), arg(3u64), arg(4u64));
+  k4.end(s4 + arg(0u64));
+}
+
+fn main() i32 {
+  // 1. No sink: every kind off
+  emitAll();
+  expectUInt(evaluated, 0u64, "no sink: no argument evaluated");
+  unwanted.emit(arg(9u64));
+  expectUInt(evaluated, 0u64, "no sink: not even a kind the sink would refuse");
+
+  // 2. A sink, the target's level below the kinds' (Debug)
+  expect(trace.install(Uni[Counter](0u64)), "the sink is installed");
+  trace.setLevel("lazy", Level.Info);
+  emitAll();
+  expectUInt(evaluated, 0u64, "target at Info: no Debug kind's argument evaluated");
+  expectUInt(recorded, 0u64, "target at Info: nothing recorded");
+
+  // 3. The level allows them, and the sink refuses one kind
+  trace.setLevel("lazy", Level.Debug);
+  unwanted.emit(arg(9u64));
+  unwanted.log(arg(9u64), text(9u64));
+  expectUInt(evaluated, 0u64, "the sink refused it: no argument evaluated");
+  expect(!unwanted.info.isOn(), "the refused kind is off");
+
+  // 4. On: each argument exactly once, left to right
+  emitAll();
+  expectUInt(evaluated, 34u64, "on: 34 arguments, each evaluated once");
+  expectUInt(recorded, 16u64, "on: 16 events recorded");
+  order = 0u64;
+  k4.log(arg(1u64), arg(2u64), arg(3u64), arg(4u64), text(5u64));
+  expectUInt(order, 12345u64, "the field values left to right, then the message");
+
+  // 5. Off again: nothing more
+  trace.setLevel("lazy", Level.Off);
+  evaluated = 0u64;
+  emitAll();
+  expectUInt(evaluated, 0u64, "off again: no argument evaluated");
+
+  // 6. An end given 0 (its begin was off) records nothing
+  trace.setLevel("lazy", Level.Debug);
+  let before = recorded;
+  k1.end(0u64);
+  expectUInt(recorded, before, "an end of id 0 records nothing");
+  done()
+}

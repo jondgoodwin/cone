@@ -1,0 +1,80 @@
+// A hosted service's Host is a Host[S], S the service's type, so a job whose
+// 'run' takes another type of service than the Host's does not compile: a job
+// posted or awaited with the wrong service, and a service that does not
+// comply with aio's trait Hosted. The right job compiles (the last two
+// behaviours), through a global Host[Right] declared before the service.
+
+mod concurrency_aio_host_wrong_service;
+
+import time use Instant;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+fn @initpure init() {
+  h = aio.host[Right](&makeRight);
+}
+
+fn makeRight() Right {Right(0u64)}
+
+let h: Host[Right];
+
+struct Right {
+  n: u64;
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct Wrong {
+  m: u64;
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct NotAService {
+  k: u64;
+}
+
+struct BumpRight {
+  pub fn run(self, lp: &mut Loop, s: &mut Right) {s.n = s.n + 1u64;}
+}
+
+struct BumpWrong {
+  pub fn run(self, lp: &mut Loop, s: &mut Wrong) {s.m = s.m + 1u64;}
+}
+
+struct AskRight {
+  pub fn run(self, lp: &mut Loop, s: &mut Right, rp: actors.Reply) {}
+}
+
+struct AskWrong {
+  pub fn run(self, lp: &mut Loop, s: &mut Wrong, rp: actors.Reply) {}
+}
+
+fn postWrong() {
+  h.post[BumpWrong](BumpWrong());          //~ ErrorWhereUnmet:4 "BumpWrong is not HostJob[Right]"
+}
+
+fn awaitWrong() actors.Awaitable[u64] {
+  h.awaitable[AskWrong, u64](AskWrong())   //~ ErrorWhereUnmet:4 "AskWrong is not HostReplyJob[Right]"
+}
+
+fn hostNotAService() {
+  let n = aio.host[NotAService](&makeNot);   //~ ErrorWhereUnmet:19 "NotAService is not Hosted"
+}
+
+fn makeNot() NotAService {NotAService(0u64)}
+
+fn postRight() {
+  h.post[BumpRight](BumpRight());
+}
+
+fn awaitRight() actors.Awaitable[u64] {
+  h.awaitable[AskRight, u64](AskRight())
+}
+
+fn main() {}

@@ -30,7 +30,7 @@
 //       imm sent = await conn.write(buf);          // pauses until all of it is sent
 //       match sent {
 //         case imm n Ok {...n bytes were sent...}
-//         case imm e Error {...e.code is Windows' error number...}
+//         case imm e Error {...e.kind() says what went wrong (IoErrorKind)...}
 //       }
 //     }                                           // conn closes here
 //   }
@@ -89,8 +89,8 @@
 //                           the same four, limited by lim                  (THE BLOCKING POOL'S WORK)
 //   aio.isCancelled(e)  aio.isTimedOut(e)  aio.isTruncated(e)
 //                           what an IoError says of how an operation ended
-//   Hosted (a trait)  aio.host[S](maker)  h.end()  aio.hostPost[S, J](h, job)
-//   aio.hostAwaitable[S, J, R](h, job)
+//   Hosted (a trait)  aio.host[S](maker)  h.end()  h.post[J](job)
+//   h.awaitable[J, R](job)  (h an aio.Host[S])
 //                           another package's service run ON the I/O thread, and its queue
 //                                                                (HOSTED SERVICES)
 //   Socket.none()  File.none()  UdpSocket.none()
@@ -169,12 +169,15 @@
 // operations.
 //
 // CANCEL AND DEADLINES. An operation is answered exactly once, as in iocore:
-// Done (the Result's success), Failed (its error, the system's code),
-// Cancelled or TimedOut. The last two are errors too, an IoError of a kind of
-// its own (iocore's IoErrorKind: Os for a failure of the system, Cancelled,
-// TimedOut), which 'isCancelled' and 'isTimedOut' read; their code is 0, and a
-// genuine system error is never mistaken for either. (A fourth kind,
-// Truncated, is a datagram cut to the room, UDP's.) The buffer a
+// Done (the Result's success), Failed (its error, of the kind the system's
+// number is: ioerror's IoErrorKind, ConnectionRefused, NotFound, ..., the same
+// on every system, and the number itself in 'code'), Cancelled or TimedOut.
+// The last two are errors too, of the kinds Cancelled and TimedOut, which
+// 'isCancelled' and 'isTimedOut' read; their code is 0. An operation the
+// system aborted (ERROR_OPERATION_ABORTED, ECANCELED) is Cancelled too, and
+// the system's own timeout (a connect that timed out) TimedOut, each with the
+// system's number. (Truncated is a datagram cut to the
+// room, UDP's.) The buffer a
 // read or a write was given goes home to its pool. What limits an operation is
 // a IoLimits, given to the 'In' form of the call: a cancel group (iocore's
 // CancelGroup, a value that is copied, sent to other actors or threads, and
@@ -303,20 +306,18 @@
 // plain data, in a global, made in its 'init' by 'aio.host[S](maker)': only
 // the host's block is made then. The first job queued for it attaches it to
 // the I/O thread (starting the thread if need be), which makes the service
-// with 'maker' before running that job. 'aio.hostPost[S, J](h, job)' queues a
+// with 'maker' before running that job. 'h.post[J](job)' queues a
 // job, any thread, and wakes the thread; J has 'run(self, lp &mut Loop, s &mut
-// S)'. 'aio.hostAwaitable[S, J, R](h, job)' is the same job as an Awaitable[R]:
+// S)'. 'h.awaitable[J, R](job)' is the same job as an Awaitable[R]:
 // the 'await' writes the reply beside the job when it queues it, and J's
 // 'run(self, lp &mut Loop, s &mut S, rp actors.Reply)' answers it (the job is
 // made whole, with no reply in it; nothing is allocated but the job's block;
 // dropped unawaited, the job is dropped). 'h.end()' ends the service now and waits
 // until it has (below). A job for a service that has ended, or queued once the
 // program is ending, is dropped unrun, its body finalized: what awaits it is
-// abandoned. The S of 'hostPost' and 'hostAwaitable' is checked against the
-// type the host was made for, at run time (a panic at the caller's line): a
-// Host is not Host[S] because a global of a generic instance whose type
-// argument's check reaches code using that global is refused today (the
-// compiler's, a gap; the typed form comes back when it is closed).
+// abandoned. A Host is a Host[S], S the service's type: a job whose 'run'
+// takes another type of service than S is refused by the compiler where it is
+// posted, so a job never reaches a service of another type.
 //
 // The seam does not assume a service is alone on its thread, or that there is
 // one thread: a service is handed the Loop it runs with at each call and
@@ -375,14 +376,14 @@
 // appended to the buffer's room, the answer a Datagram, its 'buf' the buffer
 // given (its length grown by the datagram's) and its 'from' the sender. A
 // datagram of no bytes is a datagram, not an end: the buffer's length does not
-// grow. A buffer with no room fails (122), as a read's does. A datagram longer
-// than the room fails with an IoError of the kind Truncated ('aio.isTruncated',
-// code 10040, WSAEMSGSIZE, on both systems): the rest of it is lost, the next
+// grow. A buffer with no room fails (InvalidInput), as a read's does. A
+// datagram longer than the room fails with an IoError of the kind Truncated
+// ('aio.isTruncated'; its code the system's, WSAEMSGSIZE or EMSGSIZE): the rest of it is lost, the next
 // one is whole, and the buffer, as a failed read's, goes home to its pool, the
 // bytes that fitted with it. 'sendTo' is iocore's SendTo: all of the buffer as
 // ONE datagram, the buffer going home; the count is its length; UDP promises no
 // delivery, so the answer says the system took the datagram. A datagram too
-// large for the network fails (10040, an Os error). One receive at a time per
+// large for the network fails (the same number, of the kind Other). One receive at a time per
 // socket is the supported use, as iocore says; datagrams that arrive while none
 // is outstanding wait in the socket's buffer, which the OS bounds.
 //
@@ -392,8 +393,8 @@
 // iocore's 'openFile' on the I/O thread (Access.Read an existing file;
 // Access.Create a new one, or an existing one emptied, to read and write;
 // Access.Update an existing one or a new one, its bytes kept, to read and
-// write) and answers the File, or the system's failure (ERROR_FILE_NOT_FOUND
-// for a name that is not there, on both systems). The path is copied, so the
+// write) and answers the File, or the system's failure (NotFound for a name
+// that is not there). The path is copied, so the
 // caller's Path is its own. 'readAt' and 'writeAt' are iocore's ReadAt and
 // WriteAt: at the byte offset given, with no cursor shared between operations,
 // so many may be in flight on one file at once. A read appends what is there
@@ -428,8 +429,8 @@
 // deadline (Cancelled, TimedOut, never run); one a thread has taken cannot be
 // stopped, and answers when it ends, except that a deadline answers TimedOut
 // at the deadline (past iocore's 1 ms grace) and the work goes on, its answer
-// dropped. A lane whose queue is full refuses a job at once (Failed 170,
-// ERROR_BUSY). The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
+// dropped. A lane whose queue is full refuses a job at once (ResourceBusy:
+// ERROR_BUSY, EBUSY). The pool's lanes: 'resolve' uses the DNS lane (2 threads), 'stat'
 // and 'run' the general lane (4 threads). 'resolve' and 'stat' take a buffer
 // (IoBuf(n), made for the call) for iocore's op to carry its answer in; it goes
 // home with the answer. A run's request and its answer are in its record,
@@ -438,17 +439,16 @@
 // 'resolve(host, port)' is iocore's 'resolveOp' (getaddrinfo, the stream socket
 // type): 'host' is a name or an address as text, and every address found is a
 // SocketAddr with 'port' (its default 0): IPv4 and IPv6 as the system gives
-// them, in its order. A name with no address fails with the system's number
-// (Winsock's, 11001 WSAHOST_NOT_FOUND for a name that is not there; on Linux
-// getaddrinfo's failure is given the Winsock number that names the same). The
-// list is not empty when the answer is Ok.
+// them, in its order. A name with no address fails NotFound (its code
+// Winsock's WSAHOST_NOT_FOUND, 11001, or getaddrinfo's EAI_NONAME); another
+// failure of the lookup is Other. The list is not empty when the answer is Ok.
 //
 // 'stat(path)' is iocore's 'statOp': the FileStat has the size in bytes, the
 // attributes (Windows' FILE_ATTRIBUTE_ bits, on Linux made from the mode: 0x10
 // a directory, 0x80 a plain file, 0x1 read-only) and the time of last write, a
 // Timestamp; 'isDir()' reads the bit. A path that is not there fails with
-// ERROR_FILE_NOT_FOUND (2) on both systems. The path is copied; a path that is
-// not UTF-8 fails (ERROR_NO_UNICODE_TRANSLATION, 1113). Folders and files are
+// NotFound. The path is copied; a path that is not UTF-8 fails on Windows
+// (InvalidInput: ERROR_NO_UNICODE_TRANSLATION, 1113). Folders and files are
 // told apart by the attributes; a symbolic link is followed on Linux, as 'stat'
 // does.
 //
@@ -492,9 +492,9 @@
 //    so nothing else decides who frees what. The run part is held out of
 //    line, by an owner of its own (one allocation more per run), so that
 //    every other record stays small.
-//  - A start failure is an IoError with the system's number (Windows') on both
-//    systems; iocore has one function more for it, 'systemCode', which turns an
-//    errno into that number.
+//  - A start failure is an IoError of the number the process package gives,
+//    the system's own (Windows' on Windows, the errno on Linux), its kind read
+//    from it as any IoError's is.
 //  - A read with no buffer ('read()') is two operations, a RecvReady and a Recv,
 //    on one record started twice on the I/O thread; the quiet time is 2 ms, the
 //    room 4 KiB, and "calm" is "the socket's last such read was answered within
@@ -539,7 +539,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, systemCode, errorOperationAborted;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError;
 import path use Path;
 import process;
 import actors;
@@ -1122,6 +1122,22 @@ pub trait Hosted {
   pub fn end(self: &mut, lp: &mut Loop);
 }
 
+// What a job for a hosted service of type S does there: a type complies by
+// having this method (with 'self' or 'self: &mut'), so a job whose 'run' takes
+// another type of service is refused where it is posted, naming the
+// requirement, not inside aio. Called on the I/O thread, with its Loop and the
+// service, after the Completions of the last poll were handed out and before
+// the services' turns
+pub trait HostJob[S] {
+  pub fn run(self: &mut, lp: &mut Loop, s: &mut S);
+}
+
+// The same for a job an actor awaits (Host.awaitable): it answers through 'rp',
+// the reply the 'await' wrote beside the job when it queued it
+pub trait HostReplyJob[S] {
+  pub fn run(self: &mut, lp: &mut Loop, s: &mut S, rp: actors.Reply);
+}
+
 // Where a hosted service is in its life: its block's 'state', under ioLock
 const hostNew = 0u32;         // no job has come for it: attached to no thread, not made
 const hostLive = 1u32;        // attached to its thread, which makes it before its first job runs
@@ -1141,7 +1157,6 @@ struct HostHead {
   pub endNow: bool;             // its thread's: Host.end had asked at its last look
   pub made: bool;               // its thread's: the service is in the block
   pub done: Atomic[u32];        // 1 once it has ended: what Host.end waits on
-  pub tag: usize;               // its service type's (hostTag), checked by hostPost and hostAwaitable
   pub makeFn: &fn(at: *u8);
   pub turnFn: &fn(at: *u8, lp: &mut Loop);
   pub completeFn: &fn(at: *u8, lp: &mut Loop, c: &mut Completion) bool;
@@ -1163,9 +1178,30 @@ struct HostBlock[S] {
 // plain data naming it, which a hosting package keeps in a global, made by
 // 'aio.host' with the function that makes the service. Nothing but its block
 // is made, and no thread started, until its first job is queued. Its methods
-// may be called from any thread
-pub struct Host {
+// may be called from any thread. S is the type of the service, which a job
+// queued here is run with
+pub struct Host[S: Hosted] {
   at: usize;                   // its block, which lives as long as the process
+
+  // A job for the service, queued: J has 'run(self, lp &mut Loop, s &mut S)',
+  // which the I/O thread calls with the service, after it has handed out the
+  // Completions of its last poll and before the services' turns. The thread
+  // is woken. Dropped unrun (its body finalized) if the service has ended or
+  // the program is ending. A J whose 'run' takes another service than S does
+  // not compile
+  pub fn post[J: HostJob[S]](self: &, body: J) {
+    enqueue(newHostJob[S, J](at as *HostHead, body));
+  }
+
+  // A job for the service that an actor awaits: the 'await' writes the reply
+  // beside the job as it queues it, and J's 'run(self, lp &mut Loop, s &mut S,
+  // rp actors.Reply)' answers it with an R. Nothing is allocated but the
+  // job's block; dropped unawaited, the job is dropped; dropped once started,
+  // unrun, its reply with it. A J whose 'run' takes another service than S
+  // does not compile
+  pub fn awaitable[J: HostReplyJob[S], R](self: &, body: J) actors.Awaitable[R] {
+    actors.Awaitable[R].of(newHostAwaitJob[S, J](at as *HostHead, body), &startHostJob[J], &dropJobAt)
+  }
 
   // The service ended now, on its thread, and this waits until it has: the
   // jobs queued for it are dropped unrun (each reply dropped, what awaits it
@@ -1205,46 +1241,8 @@ pub struct Host {
 // for it is queued (the package's header, HOSTED SERVICES). Its block is made
 // now (one small allocation, kept for the life of the process); nothing else
 // is, and no thread is started
-pub fn host[S: Hosted](maker: &fn() S) Host {
-  Host(newHostBlock[S](maker))
-}
-
-// A job for h's service, an S, queued: J has 'run(self, lp &mut Loop, s &mut
-// S)', which the I/O thread calls with the service, after it has handed out the
-// Completions of its last poll and before the services' turns. The thread is
-// woken. Dropped unrun (its body finalized) if the service has ended or the
-// program is ending. An S that is not the type h was made for is a panic at
-// the caller's line
-pub fn hostPost[S, J](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-  enqueue(newHostJob[S, J](hostBlockOf[S](h, file, line), body));
-}
-
-// A job for h's service, an S, that an actor awaits: the 'await' writes the
-// reply beside the job as it queues it, and J's 'run(self, lp &mut Loop, s
-// &mut S, rp actors.Reply)' answers it with an R. Nothing is allocated but the
-// job's block; dropped unawaited, the job is dropped; dropped once started,
-// unrun, its reply with it. An S that is not the type h was made for is a
-// panic at the caller's line
-pub fn hostAwaitable[S, J, R](h: Host, body: J, file: &Array[u8] = srcFile(), line: u32 = srcLine())
-    actors.Awaitable[R] {
-  actors.Awaitable[R].of(newHostAwaitJob[S, J](hostBlockOf[S](h, file, line), body), &startHostJob[J], &dropJobAt)
-}
-
-// h's block, checked to be a service of type S: its tag is S's (hostTag)
-fn hostBlockOf[S](h: Host, file: &Array[u8], line: u32) *HostHead {
-  let hh = h.at as *HostHead;
-  if (*hh).tag != hostTag[S]() {
-    die("aio: a job for a hosted service of another type than its Host's", file, line);
-  }
-  hh
-}
-
-// A number of S's own: the address of a static of this function's instance
-// for S, which no other instance shares. (Not the address of a function made
-// for S: functions whose code is the same are folded into one)
-fn hostTag[S]() usize {
-  static var mark = 0u8;
-  &mut mark as *u8 as usize
+pub fn host[S: Hosted](maker: &fn() S) Host[S] {
+  Host[S](newHostBlock[S](maker))
 }
 
 // A hosted service's block, the functions for S in its header; the service
@@ -1260,7 +1258,6 @@ fn newHostBlock[S](maker: &fn() S) usize {
   h.completeFn = &hostComplete[S];
   h.wakeAtFn = &hostWakeAt[S];
   h.endFn = &hostEnd[S];
-  h.tag = hostTag[S]();
   (*p).maker = maker;
   p as usize
 }
@@ -1786,13 +1783,10 @@ fn dissolveTaken(p: *u8) OpRec[Ask] {
   dissolveAt(p)
 }
 
-// Done is the success, and anything else the error: Failed's the system's
-// code, Cancelled's and TimedOut's their own
-fn errorOf(status: u32, code: u32) IoError {
-  if status == diag.outcomeCancelled {return IoError.cancelled();}
-  if status == diag.outcomeTimedOut {return IoError.timedOut();}
-  IoError(code)
-}
+// Done is the success, and anything else the error, as iocore reads it
+// (answerError): Failed's the system's number, of its kind (a datagram cut to
+// the room is Truncated), Cancelled's and TimedOut's their own
+fn errorOf(kind: u32, status: u32, code: u32) IoError {answerError(kind, status, code)}
 
 // The buffer the record held, or an empty one
 fn bufOf(buf: Option[IoBuf]) IoBuf {
@@ -1802,9 +1796,9 @@ fn bufOf(buf: Option[IoBuf]) IoBuf {
   }
 }
 
-fn readResult(status: u32, code: u32, buf: Option[IoBuf]) Result[IoBuf, IoError] {
+fn readResult(kind: u32, status: u32, code: u32, buf: Option[IoBuf]) Result[IoBuf, IoError] {
   if status != diag.outcomeDone {
-    return Error[IoBuf, IoError](errorOf(status, code));
+    return Error[IoBuf, IoError](errorOf(kind, status, code));
   }
   Ok[IoBuf, IoError](bufOf(buf))
 }
@@ -1814,34 +1808,29 @@ fn readResult(status: u32, code: u32, buf: Option[IoBuf]) Result[IoBuf, IoError]
 fn takeRead(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
+  let kind = core.kind;
   let status = core.status;
   let code = core.code;
   let buf = core.(buf);
-  mem.writeRaw[Result[IoBuf, IoError]](to as *Result[IoBuf, IoError], readResult(status, code, buf));
+  mem.writeRaw[Result[IoBuf, IoError]](to as *Result[IoBuf, IoError], readResult(kind, status, code, buf));
 }
 
 // Accept's and connect's: the new Socket
 fn takeSocket(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[Socket, IoError](errorOf(core.status, core.code));
+  var v = Error[Socket, IoError](errorOf(core.kind, core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[Socket, IoError](newSocket(core.newHandle));
   }
   mem.writeRaw[Result[Socket, IoError]](to as *Result[Socket, IoError], v);
 }
 
-// WSAEMSGSIZE, the code iocore answers a datagram longer than the room with
-fn msgSizeCode() u32 {10040u32}
-
-fn datagramResult(status: u32, code: u32, from: SocketAddr, buf: Option[IoBuf]) Result[Datagram, IoError] {
+fn datagramResult(kind: u32, status: u32, code: u32, from: SocketAddr, buf: Option[IoBuf]) Result[Datagram, IoError] {
   if status == diag.outcomeDone {
     return Ok[Datagram, IoError](Datagram(bufOf(buf), from));
   }
-  if status == diag.outcomeFailed && code == msgSizeCode() {
-    return Error[Datagram, IoError](IoError.truncated());
-  }
-  Error[Datagram, IoError](errorOf(status, code))
+  Error[Datagram, IoError](errorOf(kind, status, code))
 }
 
 // A receive's: the datagram, in its buffer, and who sent it. A datagram cut to
@@ -1850,18 +1839,19 @@ fn datagramResult(status: u32, code: u32, from: SocketAddr, buf: Option[IoBuf]) 
 fn takeDatagram(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
+  let kind = core.kind;
   let status = core.status;
   let code = core.code;
   let from = core.peer();
   let buf = core.(buf);
-  mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(status, code, from, buf));
+  mem.writeRaw[Result[Datagram, IoError]](to as *Result[Datagram, IoError], datagramResult(kind, status, code, from, buf));
 }
 
 // A write's: the count, all of the buffer, which goes home
 fn takeCount(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[usize, IoError](errorOf(core.status, core.code));
+  var v = Error[usize, IoError](errorOf(core.kind, core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[usize, IoError](core.n);
   }
@@ -1872,7 +1862,7 @@ fn takeCount(p: *u8, to: *u8) {
 fn takeSleep(p: *u8, to: *u8) {
   let rec = dissolveTaken(p);
   let core, ask = rec.(core, ask);
-  var v = Error[void, IoError](errorOf(core.status, core.code));
+  var v = Error[void, IoError](errorOf(core.kind, core.status, core.code));
   if core.status == diag.outcomeDone {
     v = Ok[void, IoError](nil);
   }
@@ -1881,7 +1871,7 @@ fn takeSleep(p: *u8, to: *u8) {
 
 fn resolveResult(status: u32, code: u32, buf: Option[IoBuf]) Result[List[SocketAddr], IoError] {
   if status != diag.outcomeDone {
-    return Error[List[SocketAddr], IoError](errorOf(status, code));
+    return Error[List[SocketAddr], IoError](errorOf(diag.kindCall, status, code));
   }
   let b = bufOf(buf);
   Ok[List[SocketAddr], IoError](addressesIn(&b))
@@ -1899,7 +1889,7 @@ fn takeResolve(p: *u8, to: *u8) {
 
 fn statResult(status: u32, code: u32, buf: Option[IoBuf]) Result[FileStat, IoError] {
   if status != diag.outcomeDone {
-    return Error[FileStat, IoError](errorOf(status, code));
+    return Error[FileStat, IoError](errorOf(diag.kindCall, status, code));
   }
   let b = bufOf(buf);
   Ok[FileStat, IoError](fileStatIn(&b))
@@ -1915,12 +1905,9 @@ fn takeStat(p: *u8, to: *u8) {
   mem.writeRaw[Result[FileStat, IoError]](to as *Result[FileStat, IoError], statResult(status, code, buf));
 }
 
-// ERROR_OPERATION_ABORTED, what a run's answer says if the pool's thread left none
-fn abortedCode() u32 {errorOperationAborted}
-
 fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.Output, IoError] {
   if status != diag.outcomeDone {
-    return Error[process.Output, IoError](errorOf(status, code));
+    return Error[process.Output, IoError](errorOf(diag.kindCall, status, code));
   }
   match run {
     case var Some(owner) {
@@ -1928,10 +1915,10 @@ fn runAnswer(status: u32, code: u32, run: Option[Uni[RunPart]]) Result[process.O
       let out = part.(out);
       match out {
         case var Some(o) {o}
-        else {Error[process.Output, IoError](IoError(abortedCode()))}
+        else {Error[process.Output, IoError](IoError.aborted())}
       }
     }
-    else {Error[process.Output, IoError](IoError(abortedCode()))}
+    else {Error[process.Output, IoError](IoError.aborted())}
   }
 }
 
@@ -1946,11 +1933,12 @@ fn takeRun(p: *u8, to: *u8) {
 }
 
 // What the process package answered, as this package's Result: the Output, or
-// the IoError of the number the system gave (Windows' on every system)
+// the IoError of the number the system gave (the process package's, the
+// system's own: Windows' on Windows, the errno on Linux)
 fn runResult(r: Result[process.Output, process.ProcessError]) Result[process.Output, IoError] {
   match r {
     case let Ok(o) {Ok[process.Output, IoError](o)}
-    case let Error(e) {Error[process.Output, IoError](IoError(systemCode(e.code)))}
+    case let Error(e) {Error[process.Output, IoError](IoError(e.code))}
   }
 }
 
@@ -1971,7 +1959,7 @@ fn runWork(arg: u64, buf: &mut IoBuf) Outcome {
       part.out = Some[Result[process.Output, IoError]](r);
       Outcome.Done(0usize)
     }
-    else {Outcome.Failed(abortedCode())}
+    else {Outcome.Failed(IoError.aborted().code)}
   }
 }
 
@@ -2143,7 +2131,7 @@ pub struct Socket is Move, Sendable {
 
   // What arrives, appended to buf, which is moved in and comes back in the
   // answer; at the clean end of the stream, buf comes back as it was. A buf
-  // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
+  // with no room fails (InvalidInput)
   pub fn readBuf overload read(self: &, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
     self.readBufIn(buf, IoLimits.none())
   }
@@ -2248,9 +2236,9 @@ pub struct UdpSocket is Move, Sendable {
   // The next datagram to arrive, appended to buf, which is moved in and comes
   // back in the answer with the sender's address. A datagram of no bytes is a
   // datagram (the buffer's length is unchanged). A datagram longer than buf's
-  // room is the error Truncated (code 10040, WSAEMSGSIZE), the rest of it lost,
-  // and the buffer goes home to its pool, as a failed read's does. A buf with
-  // no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
+  // room is the error Truncated, the rest of it lost, and the buffer goes
+  // home to its pool, as a failed read's does. A buf with no room fails
+  // (InvalidInput)
   pub fn recvFrom(self: &, buf: IoBuf) actors.Awaitable[Result[Datagram, IoError]] {
     self.recvFromIn(buf, IoLimits.none())
   }
@@ -2264,7 +2252,7 @@ pub struct UdpSocket is Move, Sendable {
 
   // All of buf as one datagram to addr, buf moved in and going home once sent:
   // the count, its length. UDP promises no delivery: the answer says the
-  // system took the datagram. One too large for the network fails (10040)
+  // system took the datagram. One too large for the network fails (Other)
   pub fn sendTo(self: &, addr: SocketAddr, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
     self.sendToIn(addr, buf, IoLimits.none())
   }
@@ -2317,8 +2305,7 @@ pub struct File is Move, Sendable {
 
   // What is in the file from byte offset 'at', appended to buf, which is moved
   // in and comes back in the answer; from the end of the file or past it, buf
-  // comes back as it was. A buf with no room fails (ERROR_INSUFFICIENT_BUFFER,
-  // 122)
+  // comes back as it was. A buf with no room fails (InvalidInput)
   pub fn readAt(self: &, at: u64, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
     self.readAtIn(at, buf, IoLimits.none())
   }
@@ -2460,8 +2447,7 @@ pub fn resolveIn(host: &str, port: u16, lim: IoLimits) actors.Awaitable[Result[L
 }
 
 // A file's size, attributes and time of last write, by iocore's 'statOp' on
-// the pool's general lane; a path that is not there fails with
-// ERROR_FILE_NOT_FOUND (2) on both systems
+// the pool's general lane; a path that is not there fails with NotFound
 pub fn stat(path: &Path) actors.Awaitable[Result[FileStat, IoError]] {
   statIn(path, IoLimits.none())
 }
@@ -2500,7 +2486,7 @@ fn runAwaitable(isLine: bool, line: &str, args: List[String], opts: process.Opti
 // one if empty), and waits for it to end, as the process package's 'run': the
 // Output holds its exit code and what it wrote to its standard output and
 // standard error, apart; a program that could not be started is the Error
-// (its system error number: ERROR_FILE_NOT_FOUND, 2, for none of that name).
+// (NotFound for none of that name; its code the system's number).
 // The behaviour pauses meanwhile, and a thread of the blocking pool waits for
 // the child (the package's header, CHILD PROCESSES). 'opts' is the process
 // package's Options: a 'timeout' stops the child and everything it started

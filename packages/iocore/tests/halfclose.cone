@@ -6,8 +6,8 @@
 //    and can still send back, which the first still receives. A send after
 //    the shutdown fails.
 // 3. reset: the peer's pending receive fails (the connection reset), not
-//    Done(0), with ERROR_NETNAME_DELETED (64), the NTSTATUS of a reset as
-//    a Windows error number.
+//    Done(0): ConnectionReset (ERROR_NETNAME_DELETED, 64, the NTSTATUS of a
+//    reset as a Windows error number; ECONNRESET on Linux).
 // 4. close with received bytes left unread: Windows resets the connection
 //    rather than finishing it, so the peer's receive fails the same way.
 // 5. close with nothing unread: the peer sees the end of the stream.
@@ -19,6 +19,7 @@ import collections use List;
 import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
+import ioerror use IoErrorKind;
 import diag;
 
 // Poll until the answer with token tok comes; its status, count and code
@@ -111,7 +112,7 @@ fn main() i32 {
       case let Ok(a) {expectUInt(u64.from(a.port()), u64.from(cport), "1: the server's peer is the client's port");}
       case let Error(e) {expect(false, "1: the server's peer");}
     }
-    expectUInt(u64.from(lp.shutdown(l)), u64.from(errorInvalidHandle), "1: a listener is no connected socket to shut");
+    expect(IoError(lp.shutdown(l)).kind() == IoErrorKind.InvalidInput, "1: a listener is no connected socket to shut");
 
     // 2. A half-close
     expect(send(&mut lp, c, "x", 10u64).status == diag.outcomeDone, "2: the client sends");
@@ -135,7 +136,7 @@ fn main() i32 {
     expect(!lp.reset(s), "3: ...and a second reset says false");
     let g4 = await1(&mut lp, 20u64);
     expect(g4.status == diag.outcomeFailed, "3: the peer's receive fails");
-    expectUInt(u64.from(g4.code), u64.from(errorNetnameDeleted), "3: ...ERROR_NETNAME_DELETED, as Windows says a reset");
+    expect(IoError(g4.code).kind() == IoErrorKind.ConnectionReset, "3: ...ConnectionReset");
     lp.close(c);
 
     // 4. close with unread bytes: a reset
