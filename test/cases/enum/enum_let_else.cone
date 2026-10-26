@@ -1,8 +1,9 @@
-// A binding that outlives an early exit, 'imm n Ok = r else {...};' [let-else]: the
-// variable is the binding of 'if imm n Ok = r', and the 'else' runs when the value is
-// another variant and must leave -- 'return', 'break', 'continue', or a call that does
-// not return. It takes what a binding takes (a copy of plain data, a move of an owner,
-// a reference into a borrowed value) and may be 'var'.
+// A binding that outlives an early exit, 'let Ok(n) = r else {...};' [let-else]: the
+// variable is the binding of 'if let Ok(n) = r', and the 'else' runs when the value is
+// another variant and must leave on every path -- 'return', 'break', 'continue', a call
+// that does not return, or an 'if' or 'match' each of whose paths does. It takes what a
+// binding takes (a copy of plain data, a move of an owner, a reference into a borrowed
+// value) and may be 'var'.
 //
 // The finalizer prints its number, so the output is the whole assertion: what is
 // finalized, and when. The expected lines are worked out by hand in the comments.
@@ -88,6 +89,52 @@ fn inLoop() {
   printStr("done ");
 }
 
+// An 'else' that leaves through an 'if' each of whose branches leaves.
+// None, true -> 1; None, false -> 2; Some(5) -> 5
+fn branches(o: Option[i32], c: bool) i32 {
+  let Some(n) = o else { if c { return 1; } else { return 2; } };
+  n
+}
+
+// Through a match with an 'else', and a match that covers its value, one arm a call
+// that does not return. None, 1 -> 10; None, 2 -> 20; Some(3) -> 3; None, true -> 30
+fn matched(o: Option[i32], k: i32) i32 {
+  let Some(n) = o else {
+    match k {
+      case 1 { return 10; }
+      else { return 20; }
+    }
+  };
+  n
+}
+fn covered(o: Option[i32], b: bool) i32 {
+  let Some(n) = o else {
+    match b {
+      case true { return 30; }
+      case false { panic("not reached"); }
+    }
+  };
+  n
+}
+
+// A payload that moves is not reached on a path out through an inner 'if': only the
+// binding finalizes it. Some(Fin(9)) -> "end fin9 |"; None, true -> "a |"; None, false -> "b |"
+fn movedBranches(o: Option[Fin], c: bool) {
+  let Some(f) = o else { if c { printStr("a "); return; } else { printStr("b "); return; } };
+  printStr("end ");
+}
+
+// One branch breaks, the other continues: 2 4 then done |
+fn breakOrContinue() {
+  var i = 0;
+  while i < 20 {
+    i += 1;
+    let Some(even) = evenOf(i) else { if i > 4 { break; } else { continue; } };
+    num(even);
+  }
+  printStr("done ");
+}
+
 fn main() i32 {
   num(plain(Ok[i32, i32](4))); end();
   num(plain(Error[i32, i32](9))); end();
@@ -97,5 +144,12 @@ fn main() i32 {
   mutated(Some[i32](4)); end();
   through(Ok[i32, i32](1)); end();
   inLoop(); end();
+  num(branches(None[i32], true)); num(branches(None[i32], false)); num(branches(Some[i32](5), true)); end();
+  num(matched(None[i32], 1)); num(matched(None[i32], 2)); num(matched(Some[i32](3), 2));
+  num(covered(None[i32], true)); num(covered(Some[i32](4), true)); end();
+  movedBranches(Some[Fin](Fin(9)), true); end();
+  movedBranches(None, true); end();
+  movedBranches(None, false); end();
+  breakOrContinue(); end();
   0i32
 }
