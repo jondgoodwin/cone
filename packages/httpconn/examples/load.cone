@@ -23,6 +23,11 @@
 // Every connection is on 127.0.0.1 (never 0.0.0.0, so the firewall is never
 // asked). Connections are opened a batch at a time, within the listener's
 // backlog.
+//
+// Each run leaves a few thousand of the machine's ephemeral ports in
+// TIME_WAIT (Windows: two minutes). Runs back to back can use them up; then
+// connects fail (Windows: ERROR_DUP_NAME, 52, the local address in use), and
+// each part says how many did and ends NOT DONE rather than reading as clean.
 
 mod load;
 
@@ -114,6 +119,40 @@ fn listenOn(drv: &mut Driver, lp: &mut Loop) u16 {
 // on each, one after another; time each
 // ---------------------------------------------------------------------------
 
+// The connects that failed, and the first one's error
+struct ConnectFails {
+  pub count: u64;
+  pub code: u32;
+
+  pub fn none() ConnectFails {ConnectFails(0u64, 0u32)}
+
+  // Counts e if it is a connection's Closed because its connect failed
+  pub fn see(self: &mut, e: &Event) bool {
+    if e.kind != EventKind.Closed || e.clean || e.failure.stage != Stage.Connect {return false;}
+    if count == 0u64 {code = e.failure.code;}
+    count = count + 1u64;
+    true
+  }
+
+  pub fn add(self: &mut, o: &ConnectFails) {
+    if count == 0u64 {code = o.code;}
+    count = count + o.count;
+  }
+
+  // ', N connects failed (Windows error C)', or nothing
+  pub fn print(self: &) {
+    if count == 0u64 {return;}
+    printStr(", ");
+    printUInt(count);
+    printStr(if count == 1u64 {" connect failed"} else {" connects failed"});
+    if code != 0u32 {
+      printStr(" (error ");
+      printUInt(u64.from(code));
+      printStr(")");
+    }
+  }
+}
+
 struct Run {
   pub conns: u64;
   pub perConn: u64;
@@ -121,10 +160,11 @@ struct Run {
   pub done: u64;
   pub bad: u64;
   pub took: Duration;
+  pub fails: ConnectFails;
 }
 
 fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64, serveHere: bool) Run {
-  var run = Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero());
+  var run = Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero(), ConnectFails.none());
   var cs = List[ConnId].empty();
   var made = List[u64].empty();
   var busy = List[bool].empty();
@@ -184,6 +224,7 @@ fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64,
       } else if e.token >= tokConn {
         if e.kind == EventKind.Connected {connected = connected + 1u64;}
         else if e.kind == EventKind.Closed && !started {
+          run.fails.see(e);
           run.bad = run.bad + 1u64;
           connected = connected + 1u64;
         }
@@ -219,6 +260,7 @@ fn report(label: &str, r: &Run) {
   printStr(" ms, ");
   if r.took.nanos() > 0i64 {printUInt(u64.from(i64.from(r.done) * 1000000000i64 / r.took.nanos()));}
   printStr(" requests/s");
+  r.fails.print();
   if r.bad > 0u64 {
     printStr(", ");
     printUInt(r.bad);
@@ -273,20 +315,25 @@ fn idleMemory(n: u64, readyIdle: bool) {
   var drv = Driver.make(cfg);
   let port = listenOn(&mut drv, &mut lp);
   // Warm: the tables and the pool's first blocks
+  var fails = ConnectFails.none();
   {
     var w = clients(&mut drv, &mut lp, port, 64u64, 1u64, true);
+    fails.add(&w.fails);
   }
   trim();
   let before = privateBytes();
   let heldBefore = stats().heldBytes - stats().idleBytes;
-  // n connections, one GET each, then left idle
+  // n connections, one GET each, then left idle. A connection is settled
+  // once it is Connected or Closed (its connect failed, or it broke): no
+  // more than 64 are opened beyond those
   var cs = List[ConnId].empty();
   var connected = 0u64;
+  var closed = 0u64;
   var dones = 0u64;
   var failed = 0u64;
   var events = List[Event].empty();
   while dones + failed < n {
-    if u64.from(cs.len()) < n && u64.from(cs.len()) < connected + 64u64 {
+    if u64.from(cs.len()) < n && u64.from(cs.len()) < connected + closed + 64u64 {
       let k = u64.from(cs.len());
       let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
       drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq + k));
@@ -301,6 +348,10 @@ fn idleMemory(n: u64, readyIdle: bool) {
       if e.token == tokServer && e.kind == EventKind.Request {answer(&mut drv, e);}
       else if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
       else if e.kind == EventKind.Connected {connected = connected + 1u64;}
+      else if e.token >= tokConn && e.token < tokReq && e.kind == EventKind.Closed {
+        fails.see(e);
+        closed = closed + 1u64;
+      }
       else if e.token >= tokReq && e.kind == EventKind.Done {dones = dones + 1u64;}
       else if e.token >= tokReq && e.isTerminal() {failed = failed + 1u64;}
     }
@@ -318,19 +369,30 @@ fn idleMemory(n: u64, readyIdle: bool) {
   printStr("idle connections, ");
   printStr(if readyIdle {"waiting by zero-byte receives (the default)"} else {"each holding a receive buffer"});
   printStr(": ");
-  printUInt(n);
+  // Each open connection is two of the driver's, its client's and its server's
+  let open = u64.from(drv.live()) / 2u64;
+  printUInt(open);
+  if open != n {
+    printStr(" of ");
+    printUInt(n);
+  }
   printStr(" open (");
   printUInt(u64.from(drv.live()));
   printStr(" driver connections, both ends; ");
   printUInt(failed);
-  printStr(" requests not Done)\n  private bytes +");
+  printStr(" requests not Done");
+  fails.print();
+  printStr(")");
+  if open != n || failed > 0u64 || fails.count > 0u64 {printStr(" NOT DONE");}
+  let per = if open > 0u64 {open} else {1u64};
+  printStr("\n  private bytes +");
   printUInt((after - before) / 1024u64);
   printStr(" KiB: ");
-  printUInt((after - before) / n);
+  printUInt((after - before) / per);
   printStr(" bytes a connection (both ends); pool buffers lent +");
   printUInt(u64.from(heldAfter - heldBefore) / 1024u64);
   printStr(" KiB: ");
-  printUInt(u64.from(heldAfter - heldBefore) / n);
+  printUInt(u64.from(heldAfter - heldBefore) / per);
   printStr(" bytes a connection\n");
   drv.abortAll(&mut lp);
   drv.pump(&mut lp, &mut events);

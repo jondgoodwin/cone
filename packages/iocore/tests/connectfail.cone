@@ -1,0 +1,105 @@
+// The connect and accept path's failures, each answered to whoever asked:
+// none is dropped, so nothing waits for an answer that never comes. Each is
+// forced without using up the machine's ports. (A Connect nobody answers,
+// Failed at its completion with ERROR_CONNECTION_REFUSED, is cancel's case 5.)
+//
+// 1. A Connect to port 0: the OS refuses it before it starts (Windows:
+//    ConnectEx's own return, WSAEADDRNOTAVAIL, not ERROR_IO_PENDING). Failed,
+//    with the OS's error, at the next poll.
+// 2. An Accept on a socket that is not a listener: Failed,
+//    ERROR_INVALID_HANDLE, never started.
+// 3. Listening at an address another listener holds: an error, and the
+//    handle table is as it was.
+// 4. And the loop goes on: a Connect and an Accept after them are Done.
+
+mod connectfail;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// At most 5 s for n answers
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn portOf(lp: &Loop, h: Handle) u16 {
+  match lp.localAddr(h) {
+    case let Ok(a) {return a.port();}
+    case let Error(e) {}
+  }
+  0u16
+}
+
+fn main() i32 {
+  {
+    var lp = Loop.mustMake();
+    var out = List[Completion].empty();
+    let listener = lp.mustListen(SocketAddr.localhost(0u16));
+    let port = portOf(&lp, listener);
+
+    // 1. Port 0
+    lp.submit(Op.Connect(SocketAddr.localhost(0u16)), Target.Here(1u64));
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "1: a Connect to port 0 is answered");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "1: ...Failed");
+    expect(out[0usize].code != 0u32, "1: ...with the OS's error");
+    expect(out[0usize].handle.isNone(), "1: ...and no handle");
+    out.clear();
+
+    // 2. Accept on a socket that is not a listener: a connected one
+    lp.submit(Op.Accept(listener), Target.Here(2u64));
+    lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(3u64));
+    waitFor(&mut lp, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "2: a connected pair");
+    var conn = Handle.none();
+    var acc = Handle.none();
+    var k = 0usize;
+    while k < out.len() {
+      if out[k].token == 3u64 {conn = out[k].handle;} else {acc = out[k].handle;}
+      k = k + 1usize;
+    }
+    out.clear();
+    require(lp.isOpen(conn) && lp.isOpen(acc), "2: both ends open");
+    lp.submit(Op.Accept(conn), Target.Here(4u64));
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "2: an Accept on a connected socket is answered");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "2: ...Failed");
+    expectUInt(u64.from(out[0usize].code), u64.from(errorInvalidHandle), "2: ...ERROR_INVALID_HANDLE");
+    out.clear();
+
+    // 3. An address another listener holds
+    match lp.listen(SocketAddr.localhost(port)) {
+      case let Ok(h) {expect(false, "3: listening where another listener is: an error");}
+      case let Error(e) {expect(e.code != 0u32, "3: listening where another listener is: an error");}
+    }
+    expect(lp.isOpen(listener), "3: the first listener still listens");
+
+    // 4. The loop goes on
+    lp.submit(Op.Accept(listener), Target.Here(5u64));
+    lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(6u64));
+    waitFor(&mut lp, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "4: an Accept and a Connect after them");
+    expect(out[0usize].isDone() && out[1usize].isDone(), "4: ...both Done");
+    k = 0usize;
+    while k < out.len() {
+      lp.close(out[k].handle);
+      k = k + 1usize;
+    }
+    out.clear();
+    lp.close(conn);
+    lp.close(acc);
+    lp.close(listener);
+
+    let c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered once");
+    expectUInt(c.inFlight, 0u64, "nothing in flight");
+  }
+  done()
+}
