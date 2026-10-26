@@ -1640,8 +1640,9 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
         StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->vtexp);
         Vtable *vtable = ((StructNode*)trait)->vtable;
-        if (vtable->llvmvtable == NULL)
-            genlVtable(gen, vtable);
+        // Built whole, implementers' globals included, which type generation
+        // may still hold back (genlVtable)
+        genlVtable(gen, vtable);
 
         LLVMValueRef vtablep = NULL;
         // A plain function: its code pointer is the data, and the vtable's one
@@ -2099,8 +2100,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
         StructNode *reftrait = (StructNode*)itypeGetTypeDcl(((RefNode*)exptype)->vtexp);
         Vtable *vtable = reftrait->vtable;
-        if (vtable->llvmvtable == NULL)
-            genlVtable(gen, vtable);
+        genlVtable(gen, vtable);
 
         INode **nodesp;
         uint32_t cnt;
