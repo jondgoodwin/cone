@@ -1,0 +1,429 @@
+// Extracting to a folder: the files that come out, what is refused and that refusing writes nothing
+// (every zip-slip shape: '..', absolute, drive letter, backslash forms, UNC, a link in the
+// destination; symbolic-link entries; encrypted entries), existing files, limits, and an entry that
+// goes bad half way.
+
+mod extracttest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import deflate;
+import fs;
+import path use Path;
+import process;
+
+fn load(name: &str) String {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) { s }
+    case let Error(e) {
+      expect(false, "a fixture is missing");
+      String.empty()
+    }
+  }
+}
+
+fn why(a: &str, e: &ZipError) String {
+  var s = String.from(a);
+  s.append(": ");
+  s.append(e.reason.view());
+  s
+}
+
+fn lorem() String {
+  var s = String.empty();
+  var n = 0i64;
+  while n < 300i64 {
+    s.append("line ");
+    s.appendInt(n);
+    s.append(": the quick brown fox jumps over the lazy dog\n");
+    n += 1i64;
+  }
+  s
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn texty(n: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var i = 0usize;
+  while out.len() < n {
+    let s = "row of text number ";
+    var k = 0usize;
+    while k < s.len() && out.len() < n { out.push(s[k]); k += 1usize; }
+    if out.len() < n { out.push(u8.from(48usize + i % 10usize)); }
+    i += 1usize;
+    if out.len() < n { out.push(10u8); }
+  }
+  out
+}
+
+// Extracts the archive in 'data' into 'dest'; the failure's kind, or None for success
+fn extractKind(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[ErrorKind] {
+  match Archive.open(data) {
+    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Ok(ar) {
+      match ar.extractAll(data, &Path.from(dest), opts) {
+        case let Ok(done) { None[ErrorKind] }
+        case let Error(e) { Some[ErrorKind](e.kind) }
+      }
+    }
+  }
+}
+
+fn isKind(got: Option[ErrorKind], want: ErrorKind) bool {
+  match got {
+    case let Some(k) { k == want }
+    case is None { false }
+  }
+}
+
+fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
+
+fn fileIs(p: &str, want: &Array[u8]) bool {
+  match fs.readFile(&Path.from(p)) {
+    case let Ok(s) { s.view() == want }
+    case let Error(e) { false }
+  }
+}
+
+fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+
+// A one-entry archive with that name
+fn archiveOf(name: &str) List[u8] {
+  var w = ZipWriter.make();
+  w.add(name, "evil\n", &EntryOptions.stored());
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Error(e) { List[u8].empty() }
+  }
+}
+
+fn main() i32 {
+  let safe = ExtractOptions.safe();
+
+  // ---------------- a whole archive ----------------
+  let basic = load("py-basic.zip");
+  clean("x-basic");
+  match Archive.open(basic.view()) {
+    case let Error(e) { expect(false, why("py-basic opens", &e).view()); }
+    case let Ok(ar) {
+      match ar.extractAll(basic.view(), &Path.from("x-basic/deeper/still"), &safe) {
+        case let Error(e) { expect(false, why("extractAll", &e).view()); }
+        case let Ok(got) {
+          expectUInt(u64.from(got.files), 5u64, "extractAll: five files");
+          expectUInt(u64.from(got.folders), 1u64, "extractAll: one folder");
+          expectUInt(got.bytes, 12u64 + 16090u64 + 0u64 + 2000u64 + 13u64, "extractAll: the bytes written");
+        }
+      }
+    }
+  }
+  let l = lorem();
+  expect(fileIs("x-basic/deeper/still/hello.txt", "Hello, zip!\n"), "extracted hello.txt");
+  expect(fileIs("x-basic/deeper/still/dir/sub/lorem.txt", l.view()), "extracted lorem.txt, folders made");
+  expect(fileIs("x-basic/deeper/still/dir/empty.txt", ""), "extracted the empty file");
+  expect(fileIs("x-basic/deeper/still/unicode/héllo-ß-日本.txt", "unicode name\n"), "extracted the UTF-8 name");
+  expect(fs.isDir(&Path.from("x-basic/deeper/still/emptydir")), "extracted the empty folder");
+  match fs.stat(&Path.from("x-basic/deeper/still/bin/pattern.bin")) {
+    case let Ok(info) { expectInt(info.size, 2000i64, "extracted pattern.bin has its size"); }
+    case let Error(e) { expect(false, "pattern.bin is there"); }
+  }
+
+  // Existing files: refused before anything is written; replaced with overwrite
+  fs.writeFile(&Path.from("x-basic/deeper/still/hello.txt"), "changed\n");
+  fs.removeFile(&Path.from("x-basic/deeper/still/dir/empty.txt"));
+  expect(isKind(extractKind(basic.view(), "x-basic/deeper/still", &safe), ErrorKind.Exists), "an existing file is Exists");
+  expect(!exists("x-basic/deeper/still/dir/empty.txt"), "and nothing was written (the removed file is still gone)");
+  expect(fileIs("x-basic/deeper/still/hello.txt", "changed\n"), "and the existing file is as it was");
+  var over = ExtractOptions.safe();
+  over.overwrite = true;
+  expect(extractKind(basic.view(), "x-basic/deeper/still", &over) is None, "with overwrite, extraction succeeds");
+  expect(fileIs("x-basic/deeper/still/hello.txt", "Hello, zip!\n"), "and the file is replaced");
+  expect(exists("x-basic/deeper/still/dir/empty.txt"), "and the missing one is back");
+  // A folder where a file goes is never replaced
+  clean("x-basic/deeper/still/hello.txt");
+  fs.makeDirAll(&Path.from("x-basic/deeper/still/hello.txt/inner"));
+  expect(isKind(extractKind(basic.view(), "x-basic/deeper/still", &over), ErrorKind.Exists), "a folder in a file's way is Exists");
+  // A file where a folder goes
+  clean("x-basic2");
+  fs.writeFile(&Path.from("x-basic2"), "a file\n");
+  expect(extractKind(basic.view(), "x-basic2", &safe) is Some, "a file where the destination should be is refused");
+  clean("x-basic2");
+
+  // The limit on the total
+  clean("x-limit");
+  var lim = ExtractOptions.safe();
+  lim.maxTotal = 16000u64;
+  expect(isKind(extractKind(basic.view(), "x-limit", &lim), ErrorKind.TooLarge), "a total over the limit is TooLarge");
+  expect(!exists("x-limit"), "and nothing was made");
+  lim.maxTotal = 18115u64;
+  expect(extractKind(basic.view(), "x-limit", &lim) is None, "a total at the limit is fine");
+  clean("x-limit");
+
+  // One entry
+  clean("x-one");
+  match Archive.open(basic.view()) {
+    case let Error(e) { expect(false, "extractOne: opens"); }
+    case let Ok(ar) {
+      match ar.extractOne(basic.view(), 1usize, &Path.from("x-one"), &safe) {
+        case let Ok(got) { expectUInt(u64.from(got.files), 1u64, "extractOne: one file"); expectUInt(got.bytes, 16090u64, "extractOne: its bytes"); }
+        case let Error(e) { expect(false, why("extractOne", &e).view()); }
+      }
+      expect(fileIs("x-one/dir/sub/lorem.txt", l.view()), "extractOne wrote the entry under its folders");
+      expect(!exists("x-one/hello.txt"), "extractOne wrote only that entry");
+      match ar.extractOne(basic.view(), 99usize, &Path.from("x-one"), &safe) {
+        case let Ok(got) { expect(false, "extractOne of a missing index succeeds"); }
+        case let Error(e) { expect(e.kind == ErrorKind.NotFound, "extractOne of a missing index is NotFound"); }
+      }
+    }
+  }
+  clean("x-one");
+
+  // ---------------- large entries come out in several pieces ----------------
+  {
+    var w = ZipWriter.make();
+    let big = texty(2621440usize);
+    let rnd = noise(1500000usize, 5u64);
+    w.add("big/deflated.txt", big.view(), &EntryOptions.deflated(1i32));
+    w.add("big/stored.bin", rnd.view(), &EntryOptions.stored());
+    match w.bytes() {
+      case let Error(e) { expect(false, "big: bytes"); }
+      case let Ok(arc) {
+        clean("x-big");
+        expect(extractKind(arc.view(), "x-big", &safe) is None, "big: extracts");
+        expect(fileIs("x-big/big/deflated.txt", big.view()), "big: a deflated entry over 2 MiB, in pieces");
+        expect(fileIs("x-big/big/stored.bin", rnd.view()), "big: a stored entry over 1 MiB, in pieces");
+        clean("x-big");
+      }
+    }
+  }
+
+  // ---------------- Windows PowerShell 5.1 names its entries with backslashes ----------------
+  {
+    let win = load("win-ps51.zip");
+    clean("x-win");
+    expect(extractKind(win.view(), "x-win", &safe) is None, "win-ps51: extracts");
+    expect(fileIs("x-win/dir/sub/lorem.txt", l.view()), "win-ps51: 'dir\\sub\\lorem.txt' lands in dir/sub");
+    expect(fileIs("x-win/hello.txt", "Hello, zip!\n"), "win-ps51: hello.txt");
+    clean("x-win");
+    let win7 = load("win-ps7.zip");
+    expect(extractKind(win7.view(), "x-win", &safe) is None, "win-ps7: extracts");
+    expect(fileIs("x-win/unicode/héllo-ß-日本.txt", "unicode name\n"), "win-ps7: the UTF-8 name");
+    clean("x-win");
+  }
+
+  // ---------------- zip slip: the fixture with every shape, and each shape alone ----------------
+  let slip = load("hand-slip.zip");
+  clean("x-slip");
+  expect(isKind(extractKind(slip.view(), "x-slip", &safe), ErrorKind.UnsafePath), "hand-slip: refused as UnsafePath");
+  expect(!exists("x-slip"), "hand-slip: the destination was not even made");
+  expect(!exists("evil1.txt"), "hand-slip: '../evil1.txt' was not written beside the destination");
+  expect(!exists("/abs2.txt"), "hand-slip: '/abs2.txt' was not written at the root");
+  expect(!exists("C:/drive3.txt"), "hand-slip: 'C:/drive3.txt' was not written");
+  expect(!exists("C:drive4.txt"), "hand-slip: 'C:drive4.txt' was not written");
+  expect(!exists("back5.txt"), "hand-slip: '..\\back5.txt' was not written");
+  expect(!exists("up6.txt"), "hand-slip: 'a/../../up6.txt' was not written");
+  expect(!exists("up7.txt"), "hand-slip: 'a/b/../../../up7.txt' was not written");
+  // The good entry of the archive was not written either: refusing is all or nothing
+  let shapes: Array[&str, 14] = ["../evil.txt", "..\\evil.txt", "/abs.txt", "\\abs.txt", "C:/drive.txt", "c:drive.txt",
+    "a/../../up.txt", "a/b/../../../up.txt", "\\\\server\\share\\x.txt", "..", "a/..", "dir/../../x", "x\x00y.txt", "a/b/../c.txt"];
+  var s = 0usize;
+  while s < 14usize {
+    let one = archiveOf(shapes[s]);
+    clean("x-shape");
+    let k = extractKind(one.view(), "x-shape", &safe);
+    var label = String.from("refused: ");
+    label.append(shapes[s]);
+    expect(isKind(k, ErrorKind.UnsafePath), label.view());
+    expect(!exists("x-shape"), "and nothing was made");
+    s += 1usize;
+  }
+  expect(!exists("evil.txt") && !exists("up.txt") && !exists("x.txt") && !exists("c.txt"), "no shape wrote beside the destination");
+  // Names that are fine, odd as they look
+  {
+    let okNames: Array[&str, 8] = ["./a.txt", "a//b.txt", "a/./c.txt", "a/..d", "..e/f", "...x", "COM10.txt", "CONX"];
+    var w = ZipWriter.make();
+    var i = 0usize;
+    while i < 8usize { w.add(okNames[i], "fine\n", &EntryOptions.stored()); i += 1usize; }
+    w.addDir("./", &EntryOptions.stored());
+    match w.bytes() {
+      case let Error(e) { expect(false, "ok names: bytes"); }
+      case let Ok(arc) {
+        clean("x-names");
+        expect(extractKind(arc.view(), "x-names", &safe) is None, "odd but safe names extract");
+        expect(fileIs("x-names/a.txt", "fine\n"), "'./a.txt' is a.txt");
+        expect(fileIs("x-names/a/b.txt", "fine\n"), "'a//b.txt' is a/b.txt");
+        expect(fileIs("x-names/a/c.txt", "fine\n"), "'a/./c.txt' is a/c.txt");
+        expect(fileIs("x-names/a/..d", "fine\n"), "'a/..d' is a name, not a parent");
+        expect(fileIs("x-names/..e/f", "fine\n"), "'..e/f' too");
+        expect(fileIs("x-names/...x", "fine\n"), "'...x' too");
+        expect(fileIs("x-names/COM10.txt", "fine\n"), "COM10 is no device");
+        expect(fileIs("x-names/CONX", "fine\n"), "CONX is no device");
+        clean("x-names");
+      }
+    }
+  }
+  // Names only Windows cannot have: refused there, extracted elsewhere
+  {
+    let winNames: Array[&str, 8] = ["CON.txt", "dir/aux", "lpt1.x.y", "dir/a:b.txt", "x<y.txt", "trail.", "sp ", "q?.txt"];
+    var i = 0usize;
+    var refusedHere = 0usize;
+    while i < 8usize {
+      let one = archiveOf(winNames[i]);
+      clean("x-win-names");
+      let k = extractKind(one.view(), "x-win-names", &safe);
+      if isKind(k, ErrorKind.UnsafePath) { refusedHere += 1usize; }
+      i += 1usize;
+    }
+    clean("x-win-names");
+    if isWindows() {
+      expectUInt(u64.from(refusedHere), 8u64, "on Windows, device names and unnamable characters are refused");
+    } else {
+      expectUInt(u64.from(refusedHere), 0u64, "elsewhere those names are fine");
+    }
+  }
+
+  // ---------------- symbolic-link entries, encrypted entries, methods not read ----------------
+  let sym = load("hand-symlink.zip");
+  clean("x-sym");
+  expect(isKind(extractKind(sym.view(), "x-sym", &safe), ErrorKind.SymlinkEntry), "a symlink entry is refused (SymlinkEntry)");
+  expect(!exists("x-sym"), "and the good entry before it was not written");
+  match Archive.open(sym.view()) {
+    case let Ok(ar) {
+      expect(ar.entry(1usize).isSymlink(), "the link entry is a symlink");
+      expect(!ar.entry(0usize).isSymlink(), "the file entry is not");
+      match ar.extractOne(sym.view(), 1usize, &Path.from("x-sym"), &safe) {
+        case let Ok(got) { expect(false, "extractOne of a symlink succeeds"); }
+        case let Error(e) { expect(e.kind == ErrorKind.SymlinkEntry, "extractOne of a symlink is SymlinkEntry"); }
+      }
+      expect(!exists("x-sym"), "extractOne of a symlink wrote nothing");
+    }
+    case let Error(e) { expect(false, "hand-symlink opens"); }
+  }
+  let enc = load("hand-encrypted.zip");
+  clean("x-enc");
+  expect(isKind(extractKind(enc.view(), "x-enc", &safe), ErrorKind.Encrypted), "an encrypted entry refuses the extraction (Encrypted)");
+  expect(!exists("x-enc"), "and the clear entry was not written");
+  let lz = load("hand-lzma.zip");
+  expect(isKind(extractKind(lz.view(), "x-enc", &safe), ErrorKind.Unsupported), "an LZMA entry refuses the extraction (Unsupported)");
+  expect(!exists("x-enc"), "and nothing was made");
+
+  // ---------------- two entries with one name ----------------
+  let dup = load("hand-dup.zip");
+  clean("x-dup");
+  expect(isKind(extractKind(dup.view(), "x-dup", &safe), ErrorKind.Exists), "two entries with one name are Exists");
+  expect(!exists("x-dup"), "and nothing was written");
+  expect(extractKind(dup.view(), "x-dup", &over) is None, "with overwrite, the later one wins");
+  expect(fileIs("x-dup/d.txt", "second\n"), "and it is the second");
+  match Archive.open(dup.view()) {
+    case let Ok(ar) {
+      match ar.find("d.txt") {
+        case let Some(i) { expectUInt(u64.from(i), 1u64, "find answers the last entry of a name"); }
+        case is None { expect(false, "find d.txt"); }
+      }
+    }
+    case let Error(e) { expect(false, "hand-dup opens"); }
+  }
+  clean("x-dup");
+
+  // ---------------- an entry that goes bad half way ----------------
+  {
+    var w = ZipWriter.make();
+    w.add("first.txt", "first\n", &EntryOptions.stored());
+    w.add("second.bin", noise(3000000usize, 7u64).view(), &EntryOptions.stored());
+    w.add("third.txt", "third\n", &EntryOptions.stored());
+    match w.bytes() {
+      case let Error(e) { expect(false, "bad: bytes"); }
+      case let Ok(arc) {
+        var b = arc;
+        // flip a byte in the last megabyte of the second entry's data: the CRC-32 fails at its end
+        match Archive.open(b.view()) {
+          case let Error(e) { expect(false, "bad: opens"); }
+          case let Ok(ar) {
+            let e = ar.entry(1usize);
+            let at = usize.from(e.offset) + 30usize + e.rawName.len() + 2900000usize;
+            b.set(at, *b[at] ^ 1u8);
+          }
+        }
+        clean("x-bad");
+        expect(isKind(extractKind(b.view(), "x-bad", &safe), ErrorKind.BadChecksum), "a bad CRC-32 ends the extraction with BadChecksum");
+        expect(fileIs("x-bad/first.txt", "first\n"), "the entry before it stays");
+        expect(!exists("x-bad/second.bin"), "the bad entry's file is removed");
+        expect(!exists("x-bad/third.txt"), "and the entries after it are not written");
+        clean("x-bad");
+      }
+    }
+  }
+
+  // ---------------- a link already in the destination is not written through ----------------
+  {
+    clean("lk-dest");
+    clean("lk-target");
+    fs.makeDirAll(&Path.from("lk-dest"));
+    fs.makeDirAll(&Path.from("lk-target"));
+    var args = List[String].empty();
+    let target = match fs.absolute(&Path.from("lk-target")) { case let Ok(p) { p } case let Error(e) { Path.from("lk-target") } };
+    let link = match fs.absolute(&Path.from("lk-dest/inside")) { case let Ok(p) { p } case let Error(e) { Path.from("lk-dest/inside") } };
+    if isWindows() {
+      // mklink wants backslashes
+      var wl = String.from(link.view());
+      wl.replaceByte('/', '\\');
+      var wt = String.from(target.view());
+      wt.replaceByte('/', '\\');
+      args.push(String.from("cmd"));
+      args.push(String.from("/c"));
+      args.push(String.from("mklink"));
+      args.push(String.from("/J"));
+      args.push(wl);
+      args.push(wt);
+    } else {
+      args.push(String.from("ln"));
+      args.push(String.from("-s"));
+      args.push(String.from(target.view()));
+      args.push(String.from(link.view()));
+    }
+    var made = false;
+    match process.run(args.view(), process.Options()) {
+      case let Ok(o) { made = o.success(); }
+      case let Error(e) { made = false; }
+    }
+    expect(made, "the test made a link in the destination");
+    let one = archiveOf("inside/evil.txt");
+    expect(isKind(extractKind(one.view(), "lk-dest", &safe), ErrorKind.UnsafePath), "a name through a link in the destination is refused");
+    expect(!exists("lk-target/evil.txt"), "and nothing was written through the link");
+    let two = archiveOf("inside");
+    over.overwrite = true;
+    expect(isKind(extractKind(two.view(), "lk-dest", &over), ErrorKind.Exists) || isKind(extractKind(two.view(), "lk-dest", &over), ErrorKind.UnsafePath),
+      "a file named like a linked folder is refused");
+    // Windows will not remove a junction with removeAll's file calls in some cases; its own tool does
+    if isWindows() {
+      var rm = List[String].empty();
+      rm.push(String.from("cmd"));
+      rm.push(String.from("/c"));
+      rm.push(String.from("rmdir"));
+      var wl = String.from(link.view());
+      wl.replaceByte('/', '\\');
+      rm.push(wl);
+      process.run(rm.view(), process.Options());
+    }
+    clean("lk-dest");
+    clean("lk-target");
+  }
+
+  clean("x-basic");
+  done()
+}

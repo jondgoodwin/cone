@@ -1,0 +1,303 @@
+// ======== Reading an archive: the end record, zip64, the central directory ========
+//
+// An archive is read from its end: the end-of-central-directory record (found by searching back past
+// the archive comment), the zip64 end record and its locator when a field of the first is saturated,
+// then the central directory, one record per entry. Only that directory is read here, so opening an
+// archive of many entries costs the size of the directory, not the size of the data; an entry's own
+// bytes are touched only when it is read ('reader.cone').
+
+// The record signatures (APPNOTE 4.3)
+const sigLocal = 0x04034B50u32;
+const sigCentral = 0x02014B50u32;
+const sigEnd = 0x06054B50u32;
+const sigEnd64 = 0x06064B50u32;
+const sigLocator64 = 0x07064B50u32;
+const sigDescriptor = 0x08074B50u32;
+
+// Where the central directory is, from the end records
+struct EndRecord {
+  // The offset the central directory ends at, before any prefix: the zip64 end record's, if there is
+  // one, else the plain end record's
+  limit: usize;
+  // How many entries, how big the directory is, and where it starts (as the archive says, before
+  // any prefix is added)
+  total: u64;
+  cdSize: u64;
+  cdOffset: u64;
+  zip64: bool;
+  // The end record's own place, and its comment
+  at: usize;
+  commentLen: usize;
+}
+
+// Looks for the end record from the last byte back, over the 65535 a comment can take. The one whose
+// comment runs exactly to the end of the file wins (a comment may hold bytes that look like a record);
+// failing that, the nearest one that fits (a few bytes after the comment are forgiven).
+fn findEnd(data: &Array[u8]) Result[EndRecord, ZipError] {
+  let len = data.len;
+  if len < 22usize {
+    return refusal[EndRecord](ErrorKind.NotZip, 0u64, "too short to be a zip file");
+  }
+  var p = len - 22usize;
+  let lowest = if len > 22usize + 65535usize { len - 22usize - 65535usize } else { 0usize };
+  var exact = false;
+  var exactAt = 0usize;
+  var near = false;
+  var nearAt = 0usize;
+  while true {
+    if le32(data, p) == sigEnd {
+      let clen = usize.from(le16(data, p + 20usize));
+      if p + 22usize + clen == len { exact = true; exactAt = p; break; }
+      if p + 22usize + clen < len && !near { near = true; nearAt = p; }
+    }
+    if p == lowest { break; }
+    p -= 1usize;
+  }
+  if !exact && !near {
+    if len >= 4usize && le32(data, 0usize) == sigLocal {
+      return refusal[EndRecord](ErrorKind.Truncated, u64.from(len), "the archive ends before its central directory (truncated?)");
+    }
+    return refusal[EndRecord](ErrorKind.NotZip, 0u64, "not a zip file: no end-of-central-directory record");
+  }
+  let at = if exact { exactAt } else { nearAt };
+  let diskNo = le16(data, at + 4usize);
+  let cdDisk = le16(data, at + 6usize);
+  let onDisk = le16(data, at + 8usize);
+  let total16 = le16(data, at + 10usize);
+  let cdSize32 = le32(data, at + 12usize);
+  let cdOff32 = le32(data, at + 16usize);
+  let commentLen = usize.from(le16(data, at + 20usize));
+  let saturated = diskNo == 0xFFFFu16 || cdDisk == 0xFFFFu16 || onDisk == 0xFFFFu16 || total16 == 0xFFFFu16
+    || cdSize32 == 0xFFFFFFFFu32 || cdOff32 == 0xFFFFFFFFu32;
+  // The zip64 locator sits just before the end record. A saturated field with none is taken as written
+  // (65535 entries is a plain archive's most).
+  if saturated && at >= 20usize && le32(data, at - 20usize) == sigLocator64 {
+    let recOff = le64(data, at - 12usize);
+    let disks = le32(data, at - 4usize);
+    var rec = 0usize;
+    var have = false;
+    if fits(recOff, 56u64, u64.from(len)) && le32(data, usize.from(recOff)) == sigEnd64 {
+      rec = usize.from(recOff);
+      have = true;
+    } else if at >= 76usize && le32(data, at - 76usize) == sigEnd64 {
+      // The offset is not where the record is: bytes were put before the archive. It lies just
+      // before its locator.
+      rec = at - 76usize;
+      have = true;
+    }
+    if !have {
+      return refusal[EndRecord](ErrorKind.Corrupt, u64.from(at), "the zip64 end record is not where its locator says");
+    }
+    if le32(data, rec + 16usize) != 0u32 || le32(data, rec + 20usize) != 0u32 || disks > 1u32 {
+      return refusal[EndRecord](ErrorKind.Unsupported, u64.from(rec), "an archive in several disks is not supported");
+    }
+    let onDisk64 = le64(data, rec + 24usize);
+    let total = le64(data, rec + 32usize);
+    if onDisk64 != total {
+      return refusal[EndRecord](ErrorKind.Unsupported, u64.from(rec), "an archive in several disks is not supported");
+    }
+    return Ok[EndRecord, ZipError](EndRecord(rec, total, le64(data, rec + 40usize), le64(data, rec + 48usize),
+      true, at, commentLen));
+  }
+  if diskNo != 0u16 || cdDisk != 0u16 || onDisk != total16 {
+    return refusal[EndRecord](ErrorKind.Unsupported, u64.from(at), "an archive in several disks is not supported");
+  }
+  Ok[EndRecord, ZipError](EndRecord(at, u64.from(total16), u64.from(cdSize32), u64.from(cdOff32), false, at, commentLen))
+}
+
+// One archive, as its central directory describes it. Made by 'Archive.open', which reads the
+// directory and nothing else; the archive's bytes stay the caller's, and are lent to each call that
+// reads an entry's data ('read', 'reader', 'extractAll').
+pub struct Archive {
+  pub entries: List[Entry];
+  // The archive comment, as text (UTF-8, else code page 437)
+  pub comment: String;
+  // Bytes in front of the archive (a self-extractor's program): offsets count past them
+  pub prefix: u64;
+  // The archive has zip64 end records
+  pub zip64: bool;
+  // Entry index by name; of two entries with one name, the later
+  index: Dict[String, usize];
+
+  // Reads the end records and the central directory of the zip file in 'data'
+  pub fn open(data: &Array[u8]) Result[Archive, ZipError] {
+    match findEnd(data) {
+      case let Error(e) { Error[Archive, ZipError](e) }
+      case let Ok(rec) { readDirectory(data, &rec) }
+    }
+  }
+
+  // How many entries
+  pub fn count(self: &) usize { entries.len() }
+
+  // The entry with that name, its index; the last one if several. The name is looked up as 'Entry.name'
+  // spells it; failing that, with its '/' written as '\' (Windows PowerShell 5.1's Compress-Archive
+  // names entries 'dir\file.txt').
+  pub fn find(self: &, name: &str) Option[usize] {
+    match index.get(name) {
+      case let Some(i) { return Some[usize](*i); }
+      case is None {}
+    }
+    var alt = String.from(name);
+    if alt.find("/") is None { return None[usize]; }
+    alt.replaceByte('/', '\\');
+    match index.get(alt.view()) {
+      case let Some(i) { Some[usize](*i) }
+      case is None { None[usize] }
+    }
+  }
+
+  // The entry at index 'i', which must be below 'count()'
+  pub fn entry(self: &, i: usize) &Entry { &entries.view()[i] }
+
+  // The whole data of entry 'i', checked against its CRC-32 and size. 'data' is the archive's bytes.
+  pub fn read(self: &, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
+    readEntry(self, data, i)
+  }
+
+  // The same, by name
+  pub fn readNamed(self: &, data: &Array[u8], name: &str) Result[List[u8], ZipError] {
+    match self.find(name) {
+      case let Some(i) { readEntry(self, data, i) }
+      case is None { refusal[List[u8]](ErrorKind.NotFound, 0u64, about("no entry named", name, "in the archive").view()) }
+    }
+  }
+
+  // A reader that delivers entry 'i's data a piece at a time (see EntryReader)
+  pub fn reader(self: &, data: &Array[u8], i: usize) Result[EntryReader, ZipError] {
+    openEntry(self, data, i)
+  }
+
+  // Extracts every entry under the folder 'dest' (made if need be), or none: every name, kind, method
+  // and the limits are checked first, and a name that would leave 'dest' ends it before a byte is
+  // written. See extract.cone.
+  pub fn extractAll(self: &, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+    extractEntries(self, data, dest, opts)
+  }
+
+  // Extracts the one entry 'i' under 'dest', with the same checks of it. Answers the bytes written.
+  pub fn extractOne(self: &, data: &Array[u8], i: usize, dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
+    extractIndex(self, data, i, dest, opts)
+  }
+}
+
+// Reads the central directory 'rec' describes
+fn readDirectory(data: &Array[u8], rec: &EndRecord) Result[Archive, ZipError] {
+  let limit = u64.from(rec.limit);
+  if rec.cdSize > limit || rec.cdOffset > limit - rec.cdSize {
+    return refusal[Archive](ErrorKind.Corrupt, limit, "the central directory is not inside the archive");
+  }
+  // Bytes before the archive proper shift every offset it holds
+  let prefix = limit - rec.cdSize - rec.cdOffset;
+  let start = prefix + rec.cdOffset;
+  let bound = start + rec.cdSize;
+  if rec.total > rec.cdSize / 46u64 {
+    return refusal[Archive](ErrorKind.Corrupt, start, "the central directory is too small for its entry count");
+  }
+  var entries = List[Entry].withCapacity(usize.from(rec.total));
+  var index = Dict[String, usize]();
+  let crcTable = deflate.Crc32.make();
+  var n = 0u64;
+  var q = start;
+  while n < rec.total {
+    if !fits(q, 46u64, bound) {
+      return refusal[Archive](ErrorKind.Corrupt, q, "the central directory ends inside an entry's record");
+    }
+    let at = usize.from(q);
+    if le32(data, at) != sigCentral {
+      return refusal[Archive](ErrorKind.Corrupt, q, "an entry's central directory record is not where it should be");
+    }
+    let madeBy = le16(data, at + 4usize);
+    let flags = le16(data, at + 8usize);
+    let method = le16(data, at + 10usize);
+    let time = le16(data, at + 12usize);
+    let date = le16(data, at + 14usize);
+    let crc = le32(data, at + 16usize);
+    let csize32 = le32(data, at + 20usize);
+    let size32 = le32(data, at + 24usize);
+    let nlen = usize.from(le16(data, at + 28usize));
+    let elen = usize.from(le16(data, at + 30usize));
+    let clen = usize.from(le16(data, at + 32usize));
+    let attrs = le32(data, at + 38usize);
+    let off32 = le32(data, at + 42usize);
+    if !fits(q + 46u64, u64.from(nlen + elen + clen), bound) {
+      return refusal[Archive](ErrorKind.Corrupt, q, "an entry's name, extra field or comment passes the end of the directory");
+    }
+    let nameAt = at + 46usize;
+    let extraAt = nameAt + nlen;
+    let commentAt = extraAt + elen;
+    let raw = &data[nameAt..<nameAt + nlen];
+    var csize = u64.from(csize32);
+    var size = u64.from(size32);
+    var off = u64.from(off32);
+    var modified = dosToUnix(date, time);
+    var exact = false;
+    var uniAt = 0usize;
+    var uniEnd = 0usize;
+    var uniCrc = 0u32;
+    var p = 0usize;
+    while p + 4usize <= elen {
+      let tag = le16(data, extraAt + p);
+      let sz = usize.from(le16(data, extraAt + p + 2usize));
+      let body = extraAt + p + 4usize;
+      if p + 4usize + sz > elen {
+        return refusal[Archive](ErrorKind.Corrupt, q, "an extra field passes the end of its entry's record");
+      }
+      if tag == 0x0001u16 {
+        // zip64: the fields whose 32-bit places hold 0xFFFFFFFF, in this order
+        var k = 0usize;
+        if size32 == 0xFFFFFFFFu32 {
+          if k + 8usize > sz { return refusal[Archive](ErrorKind.Corrupt, q, "a zip64 extra field is too short"); }
+          size = le64(data, body + k);
+          k += 8usize;
+        }
+        if csize32 == 0xFFFFFFFFu32 {
+          if k + 8usize > sz { return refusal[Archive](ErrorKind.Corrupt, q, "a zip64 extra field is too short"); }
+          csize = le64(data, body + k);
+          k += 8usize;
+        }
+        if off32 == 0xFFFFFFFFu32 {
+          if k + 8usize > sz { return refusal[Archive](ErrorKind.Corrupt, q, "a zip64 extra field is too short"); }
+          off = le64(data, body + k);
+          k += 8usize;
+        }
+      } else if tag == 0x5455u16 {
+        // extended timestamp: flags, then the modification time when bit 0 says so
+        if sz >= 5usize && (data[body] & 1u8) != 0u8 {
+          modified = i64.from(le32(data, body + 1usize));
+          exact = true;
+        }
+      } else if tag == 0x7075u16 {
+        // Info-ZIP Unicode path: version 1, the CRC-32 of the header's name, the UTF-8 name
+        if sz >= 5usize && data[body] == 1u8 {
+          uniCrc = le32(data, body + 1usize);
+          uniAt = body + 5usize;
+          uniEnd = body + sz;
+        }
+      }
+      p += 4usize + sz;
+    }
+    var name = String.empty();
+    var named = false;
+    if uniEnd > uniAt {
+      let utf = &data[uniAt..<uniEnd];
+      if crcTable.update(0u32, raw, 0usize, raw.len) == uniCrc && validUtf8(utf) {
+        name = String.fromBytes(utf);
+        named = true;
+      }
+    }
+    if !named { name = decodeText(raw); }
+    // Where the entry's local header is, once the prefix is counted: before the directory
+    if off > bound || prefix + off >= start {
+      return refusal[Archive](ErrorKind.Corrupt, q, about("the local header of", name.view(), "is not inside the archive").view());
+    }
+    index.insert(name.copy(), usize.from(n));
+    entries.push(Entry(name, copyBytes(raw), decodeText(&data[commentAt..<commentAt + clen]), method, flags, crc, csize,
+      size, prefix + off, madeBy, attrs, date, time, modified, exact));
+    q += 46u64 + u64.from(nlen + elen + clen);
+    n += 1u64;
+  }
+  let commentAt = rec.at + 22usize;
+  Ok[Archive, ZipError](Archive(entries, decodeText(&data[commentAt..<commentAt + rec.commentLen]), prefix,
+    rec.zip64, index))
+}
