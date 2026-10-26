@@ -1,0 +1,332 @@
+// A lossy, reordering network between a client and a server Connection in
+// memory: the test carries each end's payloads to the other through a link
+// that drops the server's first payloads (the handshake's), or every Nth
+// payload from the handshake on, or hands each batch over in reverse order,
+// or drops and reverses. ngtcp2 must recover: lost
+// packets are found by their acknowledgements' gaps or by the probe timeout
+// (the test moves its clock to the connections' wake times when nothing
+// moves) and sent again; reordered ones are put back in order. Checked, for
+// each link: the handshake, and three streams of 150 KB each way (the
+// server echoing), every byte in order, with its end, and no error. Which
+// payloads a link drops differs from run to run (an ECDSA signature's length
+// varies, and with it where the handshake's packets end), so the output
+// says only that some were dropped, never how many.
+
+mod network;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf;
+import tls;
+import quic;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Error(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty()
+}
+
+fn clientCtx() quic.Context {
+  var cfg = quic.Config.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  match quic.Context.client(cfg) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client's context could not be made")
+}
+
+fn serverCtx() quic.Context {
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(quic.Config.make(), &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+fn clientAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 50000u16)}
+fn serverAddr() quic.Addr {quic.Addr.v4(127u8, 0u8, 0u8, 1u8, 4433u16)}
+
+// One direction of the network: its first 'lead' payloads lost, then every
+// 'every'th (0: none), each batch reversed when 'reverse'
+struct Link {
+  lead: u32;
+  every: u32;
+  reverse: bool;
+  count: u32;
+  dropped: u32;
+  reordered: u32;           // batches of more than one handed over reversed
+
+  fn make(lead: u32, every: u32, reverse: bool) Link {Link(lead, every, reverse, 0u32, 0u32, 0u32)}
+}
+
+// Carry every payload one end has for the other through a link: whether any
+// was sent
+fn carry(from: &mut quic.Connection, to: &mut quic.Connection, link: &mut Link, now: Instant) bool {
+  var batch = List[IoBuf].empty();
+  while true {
+    let p = from.pollTransmit(now);
+    if p.len() == 0usize {break;}
+    batch.push(p);
+  }
+  let n = batch.len();
+  if link.reverse && n > 1usize {link.reordered = link.reordered + 1u32;}
+  var k = 0usize;
+  while k < n {
+    let i = if link.reverse {n - 1usize - k} else {k};
+    link.count = link.count + 1u32;
+    if link.count <= link.lead || (link.every > 0u32 && link.count % link.every == 0u32) {
+      link.dropped = link.dropped + 1u32;
+    } else {
+      to.handleInput(batch[i].view(), now);
+    }
+    k = k + 1usize;
+  }
+  n > 0usize
+}
+
+// What one end read on a stream
+struct In {
+  id: i64;
+  bytes: String;
+  fin: bool;
+}
+
+struct Side {
+  ins: List[In];
+  handshake: bool;
+  closed: bool;
+  echo: bool;
+
+  fn make(echo: bool) Side {Side(List[In].empty(), false, false, echo)}
+
+  fn at(self: &mut, id: i64) usize {
+    var k = 0usize;
+    while k < ins.len() {
+      if ins[k].id == id {return k;}
+      k = k + 1usize;
+    }
+    ins.push(In(id, String.empty(), false));
+    ins.len() - 1usize
+  }
+}
+
+fn drain(c: &mut quic.Connection, side: &mut Side) {
+  while true {
+    match c.pollEvent() {
+      case is Nothing {return;}
+      case is HandshakeDone {side.handshake = true;}
+      case is VerifyNeeded {c.verifyNow();}
+      case let PeerStream(p) {side.at(p.stream);}
+      case let Data(d) {
+        let k = side.at(d.stream);
+        side.ins[k].bytes.appendBytes(d.buf.view());
+        if d.fin {side.ins[k].fin = true;}
+        c.release(d.stream, d.buf.len());
+        if side.echo {
+          c.writeBytes(d.stream, d.buf.view());
+          if d.fin {c.finish(d.stream);}
+        }
+      }
+      case let Reset(x) {}
+      case let WriteStopped(x) {}
+      case let MoreStreams(m) {}
+      case let Closed(x) {side.closed = true;}
+    }
+  }
+}
+
+fn earliest(a: Option[Instant], b: Option[Instant]) Option[Instant] {
+  match a {
+    case let Some(x) {
+      match b {
+        case let Some(y) {return Some(if y < x {y} else {x});}
+        case is None[Instant] {return Some(x);}
+      }
+    }
+    case is None[Instant] {}
+  }
+  b
+}
+
+// Whether the work is done: the handshake, and 'streams' of the client's
+// streams read back whole, with their ends
+fn finished(cs: &Side, ss: &Side, streams: u32) bool {
+  if !cs.handshake || !ss.handshake {return false;}
+  var n = 0u32;
+  var k = 0usize;
+  while k < cs.ins.len() {
+    if cs.ins[k].fin {n = n + 1u32;}
+    k = k + 1usize;
+  }
+  n >= streams
+}
+
+// Carry payloads both ways until the work is done, moving the clock to the
+// next wake time whenever nothing moves (a probe timeout backs off, past
+// seconds when its probes are lost too), for at most 25 s of the test's
+// clock (the idle timeout is 30 s)
+fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mut Side, up: &mut Link,
+    down: &mut Link, now: &mut Instant, streams: u32) {
+  let limit = *now + Duration.fromSeconds(25i64);
+  var rounds = 0u32;
+  while rounds < 200000u32 && *now < limit && !finished(cs, ss, streams) {
+    rounds = rounds + 1u32;
+    var moved = carry(c, s, up, *now);
+    drain(s, ss);
+    if carry(s, c, down, *now) {moved = true;}
+    drain(c, cs);
+    if moved {
+      *now = *now + Duration.fromMillis(1i64);
+      continue;
+    }
+    var t = *now;
+    match earliest(c.wakeAt(), s.wakeAt()) {
+      case let Some(w) {t = w;}
+      case is None[Instant] {return;}
+    }
+    *now = if t > *now {t} else {*now + Duration.fromMillis(1i64)};
+  }
+}
+
+
+fn body(id: i64, n: usize) String {
+  var s = String.empty();
+  var k = 0u32;
+  while s.len() < n {
+    s.append("s");
+    s.appendInt(id);
+    s.append(":");
+    s.appendUInt(u64.from(k));
+    s.append(" ");
+    k = k + 1u32;
+  }
+  var out = String.empty();
+  out.appendBytes(&s.view()[0usize ..< n]);
+  out
+}
+
+fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
+
+fn someEachWay(a: u32, b: u32) &str {
+  if a > 0u32 && b > 0u32 {"some each way"} else if a + b == 0u32 {"none"} else {"one way only"}
+}
+
+fn run(label: &str, cctx: &quic.Context, sctx: &quic.Context, lead: u32, every: u32, reverse: bool) {
+  printStr("-- ");
+  printStr(label);
+  printStr("\n");
+  var now = Instant.fromNanos(1000000000i64);
+  var up = Link.make(0u32, every, reverse);
+  var down = Link.make(lead, every, reverse);
+  var cs = Side.make(false);
+  var ss = Side.make(true);
+  var c = mustClient(cctx, now);
+  let first = c.pollTransmit(now);
+  var s = mustAccept(sctx, first.view(), now);
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut up, &mut down, &mut now, 0u32);
+  printStr("handshake done: ");
+  printStr(yesNo(cs.handshake && ss.handshake));
+  printStr("\n");
+  var ids = List[i64].empty();
+  var k = 0u32;
+  while k < 3u32 {
+    match c.openBidi() {
+      case let Some(id) {
+        ids.push(id);
+        c.writeBytes(id, body(id, 153600usize).view());
+        c.finish(id);
+      }
+      case is None[i64] {}
+    }
+    k = k + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut up, &mut down, &mut now, 3u32);
+  var there = 0u32;
+  var back = 0u32;
+  k = 0u32;
+  while k < u32.from(ids.len()) {
+    let id = *ids[usize.from(k)];
+    let want = body(id, 153600usize);
+    let si = ss.at(id);
+    if ss.ins[si].bytes.view() == want.view() && ss.ins[si].fin {there = there + 1u32;}
+    let ci = cs.at(id);
+    if cs.ins[ci].bytes.view() == want.view() && cs.ins[ci].fin {back = back + 1u32;}
+    k = k + 1u32;
+  }
+  printStr("streams whole at the server, in order, with their ends: ");
+  printUInt(u64.from(there));
+  printStr("\nstreams whole back at the client: ");
+  printUInt(u64.from(back));
+  printStr("\npayloads the links dropped: ");
+  printStr(someEachWay(up.dropped, down.dropped));
+  printStr("\nbatches the links reversed: ");
+  printStr(someEachWay(up.reordered, down.reordered));
+  printStr("\n");
+  printStr("both connections open, no error: ");
+  var ok = !c.isClosed() && !s.isClosed();
+  match c.error() {
+    case let Some(e) {ok = false;}
+    case is None[quic.QuicError] {}
+  }
+  match s.error() {
+    case let Some(e) {ok = false;}
+    case is None[quic.QuicError] {}
+  }
+  printStr(yesNo(ok));
+  printStr("\n");
+}
+
+fn mustClient(cctx: &quic.Context, now: Instant) quic.Connection {
+  match quic.Connection.client(cctx, "localhost", &clientAddr(), &serverAddr(), now) {
+    case var Ok(c) {return c;}
+    case let Error(err) {
+      printStr(err.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client could not be made")
+}
+
+fn mustAccept(sctx: &quic.Context, first: &Array[u8], now: Instant) quic.Connection {
+  match quic.Connection.accept(sctx, first, &serverAddr(), &clientAddr(), now) {
+    case var Ok(s) {return s;}
+    case let Error(e) {
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server could not accept the client's first packet")
+}
+
+fn main() {
+  let cctx = clientCtx();
+  let sctx = serverCtx();
+  run("the server's first two payloads lost (its handshake's)", &cctx, &sctx, 2u32, 0u32, false);
+  run("every 8th payload lost, each way", &cctx, &sctx, 0u32, 8u32, false);
+  run("every batch reversed, each way", &cctx, &sctx, 0u32, 0u32, true);
+  run("every 8th lost and every batch reversed", &cctx, &sctx, 0u32, 8u32, true);
+}

@@ -553,8 +553,10 @@ pub struct FrameReader {
   // The next frame from input, consuming its bytes; NeedData when it has not
   // all arrived (nothing is consumed but what a refused frame leaves to
   // skip); Failed for a frame refused. The chain must be able to hold
-  // frameHeaderLen + maxFrameSize bytes
-  pub fn next(self: &mut, input: &mut Chain) Parsed {
+  // frameHeaderLen + maxFrameSize bytes. The lifetimes are named apart from
+  // the result's so a caller knows the frame borrows neither (its one
+  // reference, an error's detail, is static)
+  pub fn next(self: &'r mut, input: &'c mut Chain) Parsed {
     match failed {
       case let Some(e) {return Parsed.Failed(e);}
       case is None[FrameError] {}
@@ -730,7 +732,7 @@ pub struct FrameReader {
 
   // A whole DATA frame, its header consumed: the data copied into a buffer
   // of its own, the padding checked and dropped (section 6.1)
-  fn data(self: &mut, input: &mut Chain, h: FrameHeader) Parsed {
+  fn data(self: &'r mut, input: &'c mut Chain, h: FrameHeader) Parsed {
     var at = 0usize;
     var pad = 0usize;
     if h.has(flagPadded) {
@@ -749,7 +751,7 @@ pub struct FrameReader {
   // A stream error from the frame's header alone: the header consumed and
   // the payload skipped as it arrives. A DATA frame's length still counts
   // against the connection's window
-  fn refuse(self: &mut, input: &mut Chain, h: FrameHeader, code: ErrorCode, why: &'static str) Parsed {
+  fn refuse(self: &'r mut, input: &'c mut Chain, h: FrameHeader, code: ErrorCode, why: &'static str) Parsed {
     input.advance(frameHeaderLen);
     discard = h.length;
     let flow = if h.kind == typeData {h.length} else {0usize};
@@ -757,7 +759,7 @@ pub struct FrameReader {
   }
 
   // A connection error: reading ends, and every later call repeats it
-  fn fail(self: &mut, e: FrameError) Parsed {
+  fn fail(self: &'r mut, e: FrameError) Parsed {
     failed = Some[FrameError](e);
     Parsed.Failed(e)
   }

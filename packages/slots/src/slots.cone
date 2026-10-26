@@ -30,6 +30,7 @@
 //   t.slotAt(i)        the Slot of the live value in cell i (Slot.none() if free)
 //   t.remove(s)        finalize the value and free its cell: true; false if s was stale
 //   t.removeAt(i)      the same for whatever occupies cell i
+//   t.take(s)          move the value s names out, by value, freeing its cell: Some(v); None if s was stale
 //   t.len()            how many values are in the table
 //   t.bound()          how many cells there are, live or free: cells 0 up to bound() are the ones to walk
 //   t.isLive(i)        whether cell i holds a value
@@ -204,6 +205,22 @@ pub struct SlotTable[T] is Move {
     let c = self.cell(s.index);
     if (*c).live == 0u32 || (*c).gen != s.gen {return false;}
     self.removeAt(s.index)
+  }
+
+  // Move the value s names out of the table, by value, and free its cell:
+  // the value is the caller's now, so nothing is finalized; None, and
+  // nothing done, if s is stale or none
+  pub fn take(self: &mut, s: Slot) Option[T] {
+    if s.index >= count || s.gen == 0u32 {return None;}
+    let c = self.cell(s.index);
+    if (*c).live == 0u32 || (*c).gen != s.gen {return None;}
+    let v = mem.readRaw[T](&(*c).value as *T);
+    (*c).live = 0u32;
+    (*c).gen = nextGen((*c).gen);
+    (*c).next = free;
+    free = s.index;
+    live = live - 1u32;
+    Some[T](v)
   }
 
   fn final(self: &uni) {

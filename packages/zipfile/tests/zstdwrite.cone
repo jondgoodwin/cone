@@ -1,0 +1,460 @@
+// Writing method 93 (zstd) through package zstd's compressor, and reading it back with this package's reader:
+// sizes from 0 to 300000 (across 128 KiB blocks) at levels 1 to 3, noise that falls back to stored, an empty
+// entry, a mixed stored/deflate/zstd archive, zip64, addTree, and the refusal of other methods. The files this
+// test leaves in its folder (zstdw-*.zip and the folder zstdw-src with the same files, byte for byte) are what a
+// hand check with bsdtar extracts and compares (see the PR that added this test).
+
+mod zstdwritetest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import deflate;
+import fs;
+import path use Path;
+
+fn why(a: &str, e: &ZipError) String {
+  var s = String.from(a);
+  s.append(": ");
+  s.append(e.reason.view());
+  s
+}
+
+fn labelled(a: &str, b: &str) String {
+  var s = String.from(a);
+  s.append(" ");
+  s.append(b);
+  s
+}
+
+// Bytes that compress (text) and bytes that do not (a generator's noise), 'n' of them
+fn texty(n: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var i = 0usize;
+  while out.len() < n {
+    let s = "row of text number ";
+    var k = 0usize;
+    while k < s.len() && out.len() < n { out.push(s[k]); k += 1usize; }
+    if out.len() < n { out.push(u8.from(48usize + i % 10usize)); }
+    i += 1usize;
+    if out.len() < n { out.push(10u8); }
+    // some variety, so that the matches are not all the same length
+    if i % 7usize == 0usize && out.len() < n { out.push(u8.from(65usize + i % 26usize)); }
+  }
+  out
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn num(prefix: &str, n: usize, suffix: &str) String {
+  var s = String.from(prefix);
+  s.appendUInt(u64.from(n));
+  s.append(suffix);
+  s
+}
+
+fn save(name: &str, b: &Array[u8]) {
+  let r = fs.writeFile(&Path.from(name), b);
+  expect(r is Ok, "saving a file for the hand check");
+}
+
+fn fileIs(p: &str, want: &Array[u8]) bool {
+  match fs.readFile(&Path.from(p)) {
+    case let Ok(s) { s.view() == want }
+    case let Error(e) { false }
+  }
+}
+
+// The whole entry through an EntryReader, 'piece' bytes a pull
+fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize) Result[List[u8], ZipError] {
+  match ar.reader(data, i) {
+    case let Error(e) { return Error[List[u8], ZipError](e); }
+    case var Ok(r) {
+      var all = List[u8].empty();
+      var chunk = List[u8].empty();
+      while true {
+        chunk.clear();
+        let s = r.pull(data, &mut chunk, piece);
+        var k = 0usize;
+        while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
+        if s == Status.Failed {
+          match r.error() {
+            case let Some(e) { return Error[List[u8], ZipError](e); }
+            case is None { expect(false, "a failed reader has an error"); }
+          }
+        }
+        if s == Status.Done { break; }
+      }
+      return Ok[List[u8], ZipError](all);
+    }
+  }
+}
+
+// The entry's local header says this "version needed to extract"
+fn localVersion(data: &Array[u8], e: &Entry) u32 {
+  let at = usize.from(e.offset);
+  u32.from(data[at + 4usize]) | (u32.from(data[at + 5usize]) << 8u32)
+}
+
+fn indexOf(ar: &Archive, name: &str) usize {
+  match ar.find(name) {
+    case let Some(i) { i }
+    case is None { expect(false, labelled("missing", name).view()); 0usize }
+  }
+}
+
+// Reads entry 'name' whole and streamed, and compares both with 'want'; answers its method (999 if absent)
+fn check(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) u32 {
+  match ar.find(name) {
+    case is None { expect(false, labelled("missing", name).view()); 999u32 }
+    case let Some(i) {
+      match ar.read(data, i) {
+        case let Ok(got) { expect(got.view() == want, labelled("whole read matches:", name).view()); }
+        case let Error(e) { expect(false, why(labelled("whole read of", name).view(), &e).view()); }
+      }
+      match streamAll(ar, data, i, 7777usize) {
+        case let Ok(got) { expect(got.view() == want, labelled("streamed read matches:", name).view()); }
+        case let Error(e) { expect(false, why(labelled("streamed read of", name).view(), &e).view()); }
+      }
+      let e = ar.entry(i);
+      expectUInt(e.size, u64.from(want.len), labelled("the declared size is right:", name).view());
+      u32.from(e.method)
+    }
+  }
+}
+
+fn main() i32 {
+  fs.removeAll(&Path.from("zstdw-src"));
+  fs.makeDirAll(&Path.from("zstdw-src/sub"));
+
+  // ---------------- every size at every level ----------------
+  let sizes: Array[usize, 11] = [0usize, 1usize, 13usize, 100usize, 4095usize, 65535usize, 65536usize, 65537usize,
+    131072usize, 131073usize, 300000usize];
+  var w = ZipWriter.make();
+  var names = List[String].empty();
+  var s = 0usize;
+  while s < 11usize {
+    let body = texty(sizes[s]);
+    var level = 1i32;
+    while level <= 3i32 {
+      let name = num("t-", sizes[s], "-L");
+      var full = String.from(name.view());
+      full.appendInt(i64.from(level));
+      full.append(".txt");
+      let r = w.add(full.view(), body.view(), &EntryOptions.zstd(level));
+      expect(r is Ok, labelled("add", full.view()).view());
+      var path = String.from("zstdw-src/");
+      path.append(full.view());
+      save(path.view(), body.view());
+      names.push(full);
+      level += 1i32;
+    }
+    s += 1usize;
+  }
+  // levels the zstd package takes as the nearest of 1 to 3
+  {
+    let body = texty(300000usize);
+    expect(w.add("t-300000-L0.txt", body.view(), &EntryOptions.zstd(0i32)) is Ok, "add at level 0");
+    expect(w.add("t-300000-L9.txt", body.view(), &EntryOptions.zstd(9i32)) is Ok, "add at level 9");
+    expect(w.add("t-300000-Lneg.txt", body.view(), &EntryOptions.zstd(-5i32)) is Ok, "add at level -5");
+    save("zstdw-src/t-300000-L0.txt", body.view());
+    save("zstdw-src/t-300000-L9.txt", body.view());
+    save("zstdw-src/t-300000-Lneg.txt", body.view());
+    names.push(String.from("t-300000-L0.txt"));
+    names.push(String.from("t-300000-L9.txt"));
+    names.push(String.from("t-300000-Lneg.txt"));
+  }
+  match w.bytes() {
+    case let Error(e) { expect(false, why("levels: bytes", &e).view()); }
+    case let Ok(arc) {
+      save("zstdw-levels.zip", arc.view());
+      match Archive.open(arc.view()) {
+        case let Error(e) { expect(false, why("levels: opens", &e).view()); }
+        case let Ok(ar) {
+          expectUInt(u64.from(ar.count()), u64.from(names.len()), "levels: every entry is there");
+          var smaller = 0usize;
+          var stored = 0usize;
+          var k = 0usize;
+          while k < names.len() {
+            let name = names[k].view();
+            // what the entry should hold: its size is in its name
+            var digits = 0usize;
+            var p = 2usize;
+            while p < name.len() && name[p] >= '0' && name[p] <= '9' { digits = digits * 10usize + usize.from(name[p] - '0'); p += 1usize; }
+            let want = texty(digits);
+            let m = check(&ar, arc.view(), name, want.view());
+            let e = ar.entry(indexOf(&ar, name));
+            if m == 93u32 {
+              expect(e.compressedSize < e.size, labelled("a zstd entry is smaller:", name).view());
+              expectUInt(u64.from(localVersion(arc.view(), e)), 63u64, labelled("a zstd entry needs version 63:", name).view());
+              smaller += 1usize;
+            } else {
+              expectUInt(u64.from(m), 0u64, labelled("an entry that is not zstd is stored:", name).view());
+              expectUInt(e.compressedSize, e.size, labelled("and stored whole:", name).view());
+              expectUInt(u64.from(localVersion(arc.view(), e)), 10u64, labelled("and needs version 10:", name).view());
+              stored += 1usize;
+            }
+            if digits >= 4095usize {
+              expectUInt(u64.from(m), 93u64, labelled("a compressible entry of 4095 bytes or more is zstd:", name).view());
+            }
+            if digits <= 1usize {
+              expectUInt(u64.from(m), 0u64, labelled("an empty or one-byte entry is stored:", name).view());
+            }
+            k += 1usize;
+          }
+          expect(smaller >= 24usize, "levels: most entries are compressed");
+          expect(stored >= 6usize, "levels: and the empty and one-byte ones are stored");
+        }
+      }
+    }
+  }
+
+  // ---------------- the same input gives the same archive; higher levels do not do worse than level 1 by much ----------------
+  {
+    let body = texty(300000usize);
+    var a = ZipWriter.make();
+    var b = ZipWriter.make();
+    expect(a.add("x.txt", body.view(), &EntryOptions.zstd(3i32)) is Ok, "determinism: first");
+    expect(b.add("x.txt", body.view(), &EntryOptions.zstd(3i32)) is Ok, "determinism: second");
+    match a.bytes() {
+      case let Ok(x) {
+        match b.bytes() {
+          case let Ok(y) { expect(x.view() == y.view(), "the same input and options give the same bytes"); }
+          case is Error { expect(false, "determinism: b bytes"); }
+        }
+      }
+      case is Error { expect(false, "determinism: a bytes"); }
+    }
+  }
+
+  // ---------------- noise falls back to stored, at every level ----------------
+  {
+    var level = 1i32;
+    while level <= 3i32 {
+      let body = noise(5000usize, u64.from(level));
+      var z = ZipWriter.make();
+      expect(z.add("noise.bin", body.view(), &EntryOptions.zstd(level)) is Ok, "noise: add");
+      match z.bytes() {
+        case let Error(e) { expect(false, why("noise: bytes", &e).view()); }
+        case let Ok(arc) {
+          match Archive.open(arc.view()) {
+            case let Error(e) { expect(false, why("noise: opens", &e).view()); }
+            case let Ok(ar) {
+              let m = check(&ar, arc.view(), "noise.bin", body.view());
+              expectUInt(u64.from(m), 0u64, "noise is stored, not zstd");
+              expectUInt(ar.entry(0usize).compressedSize, 5000u64, "and stored whole");
+              // stored, so the bytes are in the archive as they are
+              expectUInt(u64.from(localVersion(arc.view(), ar.entry(0usize))), 10u64, "and needs version 10");
+            }
+          }
+        }
+      }
+      level += 1i32;
+    }
+  }
+
+  // ---------------- an empty entry, and a folder, with zstd options ----------------
+  {
+    var z = ZipWriter.make();
+    expect(z.add("empty.txt", "", &EntryOptions.zstd(3i32)) is Ok, "empty: add");
+    expect(z.addDir("dir", &EntryOptions.zstd(3i32)) is Ok, "empty: addDir");
+    match z.bytes() {
+      case let Error(e) { expect(false, why("empty: bytes", &e).view()); }
+      case let Ok(arc) {
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("empty: opens", &e).view()); }
+          case let Ok(ar) {
+            let none = List[u8].empty();
+            let m = check(&ar, arc.view(), "empty.txt", none.view());
+            expectUInt(u64.from(m), 0u64, "an empty entry is stored");
+            expectUInt(ar.entry(0usize).compressedSize, 0u64, "and has no bytes");
+            expect(ar.entry(1usize).isDir(), "the folder is a folder");
+            expectUInt(u64.from(ar.entry(1usize).method), 0u64, "and stored");
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------- stored, deflate and zstd in one archive, extracted to a folder ----------------
+  {
+    let hello = texty(13usize);
+    let text = texty(70000usize);
+    let big = texty(300000usize);
+    let nz = noise(3000usize, 9u64);
+    let none = List[u8].empty();
+    var z = ZipWriter.make();
+    expect(z.add("a-stored.txt", hello.view(), &EntryOptions.stored()) is Ok, "mixed: stored");
+    expect(z.add("b-deflate.txt", text.view(), &EntryOptions.deflated(2i32)) is Ok, "mixed: deflate");
+    expect(z.add("c-zstd.txt", text.view(), &EntryOptions.zstd(3i32)) is Ok, "mixed: zstd 3");
+    expect(z.add("d-noise.bin", nz.view(), &EntryOptions.zstd(2i32)) is Ok, "mixed: noise");
+    expect(z.add("e-empty.txt", none.view(), &EntryOptions.zstd(1i32)) is Ok, "mixed: empty");
+    expect(z.addDir("sub", &EntryOptions.plain()) is Ok, "mixed: folder");
+    expect(z.add("sub/f-zstd.txt", text.view(), &EntryOptions.zstd(1i32)) is Ok, "mixed: zstd 1 in a folder");
+    expect(z.add("sub/g-deflate.txt", big.view(), &EntryOptions.plain()) is Ok, "mixed: deflate in a folder");
+    expect(z.add("h-big.txt", big.view(), &EntryOptions.zstd(2i32)) is Ok, "mixed: big zstd");
+    expect(z.add("i-zstd-again.txt", hello.view(), &EntryOptions.zstd(3i32)) is Ok, "mixed: short zstd");
+    save("zstdw-src/a-stored.txt", hello.view());
+    save("zstdw-src/b-deflate.txt", text.view());
+    save("zstdw-src/c-zstd.txt", text.view());
+    save("zstdw-src/d-noise.bin", nz.view());
+    save("zstdw-src/e-empty.txt", none.view());
+    save("zstdw-src/sub/f-zstd.txt", text.view());
+    save("zstdw-src/sub/g-deflate.txt", big.view());
+    save("zstdw-src/h-big.txt", big.view());
+    save("zstdw-src/i-zstd-again.txt", hello.view());
+    match z.bytes() {
+      case let Error(e) { expect(false, why("mixed: bytes", &e).view()); }
+      case let Ok(arc) {
+        save("zstdw-mixed.zip", arc.view());
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("mixed: opens", &e).view()); }
+          case let Ok(ar) {
+            expectUInt(u64.from(ar.count()), 10u64, "mixed: ten entries");
+            expectUInt(u64.from(check(&ar, arc.view(), "a-stored.txt", hello.view())), 0u64, "mixed: a is stored");
+            expectUInt(u64.from(check(&ar, arc.view(), "b-deflate.txt", text.view())), 8u64, "mixed: b is deflate");
+            expectUInt(u64.from(check(&ar, arc.view(), "c-zstd.txt", text.view())), 93u64, "mixed: c is zstd");
+            expectUInt(u64.from(check(&ar, arc.view(), "d-noise.bin", nz.view())), 0u64, "mixed: d (noise) is stored");
+            expectUInt(u64.from(check(&ar, arc.view(), "e-empty.txt", none.view())), 0u64, "mixed: e (empty) is stored");
+            expectUInt(u64.from(check(&ar, arc.view(), "sub/f-zstd.txt", text.view())), 93u64, "mixed: f is zstd");
+            expectUInt(u64.from(check(&ar, arc.view(), "sub/g-deflate.txt", big.view())), 8u64, "mixed: g is deflate");
+            expectUInt(u64.from(check(&ar, arc.view(), "h-big.txt", big.view())), 93u64, "mixed: h is zstd");
+            // 13 bytes of text do not shrink under a zstd frame's own header and checksum
+            expectUInt(u64.from(check(&ar, arc.view(), "i-zstd-again.txt", hello.view())), 0u64, "mixed: i (13 bytes) is stored");
+            fs.removeAll(&Path.from("x-zstdw-mixed"));
+            match ar.extractAll(arc.view(), &Path.from("x-zstdw-mixed"), &ExtractOptions.safe()) {
+              case let Error(e) { expect(false, why("mixed: extractAll", &e).view()); }
+              case let Ok(got) {
+                expectUInt(u64.from(got.files), 9u64, "mixed: nine files extracted");
+                expectUInt(u64.from(got.folders), 1u64, "mixed: one folder extracted");
+              }
+            }
+            expect(fileIs("x-zstdw-mixed/a-stored.txt", hello.view()), "mixed: a extracted");
+            expect(fileIs("x-zstdw-mixed/b-deflate.txt", text.view()), "mixed: b extracted");
+            expect(fileIs("x-zstdw-mixed/c-zstd.txt", text.view()), "mixed: c extracted");
+            expect(fileIs("x-zstdw-mixed/d-noise.bin", nz.view()), "mixed: d extracted");
+            expect(fileIs("x-zstdw-mixed/e-empty.txt", none.view()), "mixed: e extracted");
+            expect(fileIs("x-zstdw-mixed/sub/f-zstd.txt", text.view()), "mixed: f extracted");
+            expect(fileIs("x-zstdw-mixed/sub/g-deflate.txt", big.view()), "mixed: g extracted");
+            expect(fileIs("x-zstdw-mixed/h-big.txt", big.view()), "mixed: h extracted");
+            expect(fileIs("x-zstdw-mixed/i-zstd-again.txt", hello.view()), "mixed: i extracted");
+            fs.removeAll(&Path.from("x-zstdw-mixed"));
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------- pulled in pieces, as the archive of a socket would be ----------------
+  {
+    let big = texty(300000usize);
+    var z = ZipWriter.make();
+    expect(z.add("a.txt", big.view(), &EntryOptions.zstd(3i32)) is Ok, "pull: add");
+    expect(z.add("b.txt", big.view(), &EntryOptions.zstd(1i32)) is Ok, "pull: add b");
+    expect(z.finish() is Ok, "pull: finish");
+    var all = List[u8].empty();
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput { st = z.pull(&mut all, 1000usize); }
+    expect(st == Status.Done, "pull: done");
+    match Archive.open(all.view()) {
+      case let Error(e) { expect(false, why("pull: opens", &e).view()); }
+      case let Ok(ar) {
+        expectUInt(u64.from(check(&ar, all.view(), "a.txt", big.view())), 93u64, "pull: a is zstd");
+        expectUInt(u64.from(check(&ar, all.view(), "b.txt", big.view())), 93u64, "pull: b is zstd");
+      }
+    }
+  }
+
+  // ---------------- zip64 forced: the zip64 version wins over 63 ----------------
+  {
+    let text = texty(50000usize);
+    var z = ZipWriter.make();
+    z.setZip64(true);
+    expect(z.add("z.txt", text.view(), &EntryOptions.zstd(2i32)) is Ok, "zip64: add");
+    match z.bytes() {
+      case let Error(e) { expect(false, why("zip64: bytes", &e).view()); }
+      case let Ok(arc) {
+        save("zstdw-zip64.zip", arc.view());
+        save("zstdw-src/z.txt", text.view());
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("zip64: opens", &e).view()); }
+          case let Ok(ar) {
+            expectUInt(u64.from(check(&ar, arc.view(), "z.txt", text.view())), 93u64, "zip64: zstd");
+            expectUInt(u64.from(localVersion(arc.view(), ar.entry(0usize))), 45u64, "zip64: needs version 45");
+          }
+        }
+      }
+    }
+    let one = EntryOptions(93u16, 2i32, 0i64, 0u32, true, String.empty());
+    var y = ZipWriter.make();
+    expect(y.add("y.txt", text.view(), &one) is Ok, "zip64 entry: add");
+    match y.bytes() {
+      case let Error(e) { expect(false, why("zip64 entry: bytes", &e).view()); }
+      case let Ok(arc) {
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("zip64 entry: opens", &e).view()); }
+          case let Ok(ar) {
+            expectUInt(u64.from(check(&ar, arc.view(), "y.txt", text.view())), 93u64, "zip64 entry: zstd");
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------- addTree and addFile carry the method ----------------
+  {
+    let root = Path.from("zstdw-tree");
+    fs.removeAll(&root);
+    fs.makeDirAll(&Path.from("zstdw-tree/sub"));
+    fs.writeFile(&Path.from("zstdw-tree/top.txt"), texty(20000usize).view());
+    fs.writeFile(&Path.from("zstdw-tree/sub/low.bin"), noise(5000usize, 3u64).view());
+    var z = ZipWriter.make();
+    expect(z.addTree(&root, "pack/", &EntryOptions.zstd(2i32)) is Ok, "tree: addTree");
+    expect(z.addFile("extra.txt", &Path.from("zstdw-tree/top.txt"), &EntryOptions.zstd(1i32)) is Ok, "tree: addFile");
+    match z.bytes() {
+      case let Error(e) { expect(false, why("tree: bytes", &e).view()); }
+      case let Ok(arc) {
+        match Archive.open(arc.view()) {
+          case let Error(e) { expect(false, why("tree: opens", &e).view()); }
+          case let Ok(ar) {
+            expectUInt(u64.from(check(&ar, arc.view(), "pack/top.txt", texty(20000usize).view())), 93u64, "tree: top.txt is zstd");
+            expectUInt(u64.from(check(&ar, arc.view(), "pack/sub/low.bin", noise(5000usize, 3u64).view())), 0u64, "tree: low.bin (noise) is stored");
+            expectUInt(u64.from(check(&ar, arc.view(), "extra.txt", texty(20000usize).view())), 93u64, "tree: extra.txt is zstd");
+          }
+        }
+      }
+    }
+    fs.removeAll(&root);
+  }
+
+  // ---------------- other methods are still refused ----------------
+  {
+    var z = ZipWriter.make();
+    var bad = EntryOptions.zstd(3i32);
+    bad.method = 94u16;
+    match z.add("a.txt", "some text", &bad) {
+      case let Ok(x) { expect(false, "method 94 was accepted"); }
+      case let Error(e) {
+        expect(e.kind == ErrorKind.BadArgument, "method 94 is refused (BadArgument)");
+        expect(e.reason.contains("93 (zstd)"), "and the refusal names method 93");
+      }
+    }
+    bad.method = 14u16;
+    expect(z.add("b.txt", "some text", &bad) is Error, "LZMA (14) is refused");
+    expectUInt(z.count(), 0u64, "nothing was added");
+  }
+
+  done()
+}

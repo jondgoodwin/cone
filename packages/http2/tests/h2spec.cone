@@ -1,0 +1,645 @@
+// h2spec's list for a server, followed as a checklist without h2spec (there
+// is no server to run it against yet; the list is from memory): each case a
+// fresh server core and a test client writing frames by hand, the answer
+// read off the wire. The frame-level cases of sections 4 and 6 are the
+// frame layer's tests (frames, frameerrors, framelimits); here, what needs
+// the connection:
+// - 3.5 the preface: the server's SETTINGS first; a wrong preface; a first
+//   frame not SETTINGS;
+// - 4.1 an unknown frame type ignored; 4.3 a block HPACK cannot decode;
+// - 5.1 stream states: idle (DATA, RST_STREAM, WINDOW_UPDATE), half-closed
+//   remote (DATA, HEADERS), closed (after RST_STREAM, after END_STREAM both
+//   ways); 5.1.1 an even id, a lower id; 5.3.1 a stream depending on
+//   itself; 5.4.1 GOAWAY then close;
+// - 6.1 DATA on a stream not open; 6.4 RST_STREAM on an idle stream; 6.5.3
+//   SETTINGS acknowledged; 6.7 PING answered, a PING ACK not; 6.9.2 the
+//   peer's SETTINGS_INITIAL_WINDOW_SIZE of 1;
+// - 8.1 a second HEADERS without END_STREAM; 8.1.1 a Content-Length the
+//   body disagrees with; 8.2.1 an upper-case name, a value with a space at
+//   its end; 8.2.2 connection-specific fields, TE other than trailers;
+//   8.3.1 pseudo-headers missing, empty, twice, unknown, a response's, in
+//   trailers, after a header field; CONNECT answered 501;
+// - 8.4 a PUSH_PROMISE to a client.
+
+mod h2spec;
+
+import testing use *;
+import stdio use *;
+import collections use List, String;
+import iobuf use IoBuf, Chain;
+import time use Instant, Duration;
+import http use *;
+import http2 use *;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn buf(b: &Array[u8]) IoBuf {
+  var x = IoBuf(if b.len > 0usize {b.len} else {1usize});
+  let n = x.append(b);
+  x
+}
+
+fn feed(to: &mut Connection, c: &mut Chain, now: Instant) usize {
+  var total = 0usize;
+  while c.len() > 0usize && !to.isClosed() {
+    var n = c.len();
+    let credit = to.readCredit();
+    if n > credit {n = credit;}
+    if n == 0usize {return total;}
+    var b = IoBuf(n);
+    let room = b.spare();
+    let k = c.copyOut(0usize, &mut room[0usize ..< n]);
+    b.setLen(k);
+    c.advance(k);
+    to.handleInput(b, now);
+    total = total + k;
+  }
+  total
+}
+
+// A server and the test client facing it
+struct Pair {
+  pub s: Connection;
+  pub w: FrameWriter;
+  pub r: FrameReader;
+  pub enc: HpackEncoder;
+  pub dec: HpackDecoder;
+  pub inbox: Chain;
+}
+
+// A server, given the preface and empty SETTINGS, its own output read
+fn open() Pair {
+  let fc = FrameConfig.make();
+  let hc = HpackConfig.make();
+  var x = Pair(Connection.server(Config.make(), at(0)), FrameWriter.make(&fc), FrameReader.client(fc),
+    HpackEncoder.make(&hc), HpackDecoder.make(hc), Chain.make(67108864usize));
+  x.s.handleInput(buf("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), at(0));
+  let w = x.w.settings(List[Setting].empty().view());
+  send(&mut x);
+  let h = heard(&mut x);
+  x
+}
+
+fn send(x: &mut Pair) {
+  var out = x.w.take();
+  let n = feed(&mut x.s, &mut out, at(1));
+}
+
+fn sendRaw(x: &mut Pair, kind: u8, flags: u8, stream: u32, payload: &'p Array[u8]) {
+  send(x);
+  var b = IoBuf(frameHeaderLen + payload.len);
+  FrameHeader(payload.len, kind, flags, stream).write(&mut b.spare()[0usize ..< frameHeaderLen]);
+  b.setLen(frameHeaderLen);
+  let n = b.append(payload);
+  var ch = Chain.make(67108864usize);
+  let over = ch.push(b);
+  let fed = feed(&mut x.s, &mut ch, at(1));
+}
+
+// A request's block: these fields, each "name=value"
+fn blockOf(x: &mut Pair, fields: &'f Array[&'s str]) List[u8] {
+  var f = List[HeaderField].empty();
+  var i = 0usize;
+  while i < fields.len {
+    let s = fields[i];
+    var k = 1usize;              // a pseudo-header's ':' is not the '='
+    while k < s.len() && s[k] != '=' {k = k + 1usize;}
+    var name = String.empty();
+    var value = String.empty();
+    var j = 0usize;
+    while j < s.len() {
+      if j < k {name.appendByte(s[j]);} else if j > k {value.appendByte(s[j]);}
+      j = j + 1usize;
+    }
+    f.push(HeaderField.make(name.view(), value.view()));
+    i = i + 1usize;
+  }
+  var out = List[u8].empty();
+  x.enc.encode(f.view(), &mut out);
+  out
+}
+
+fn getBlock(x: &mut Pair) List[u8] {
+  var f = List[&str].empty();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":authority=example.com");
+  f.push(":path=/");
+  blockOf(x, f.view())
+}
+
+fn heard(x: &mut Pair) String {
+  var out = x.s.pollTransmit(at(1));
+  while out.segments() > 0usize {
+    match out.popFront() {
+      case let Some(b) {
+        let over = x.inbox.push(b);
+      }
+      case is None[IoBuf] {}
+    }
+  }
+  var log = String.empty();
+  var going = true;
+  while going {
+    match x.r.next(&mut x.inbox) {
+      case is NeedData {going = false;}
+      case let Failed(f) {
+        log.append("ERR;");
+        going = false;
+      }
+      case let Got(g) {
+        match g.frame {
+          case let Data(d) {
+            log.append("DATA ");
+            log.appendUInt(u64.from(d.stream));
+            log.append(" ");
+            log.appendUInt(u64.from(d.data.len()));
+          }
+          case let Headers(h) {
+            log.append("HEADERS ");
+            log.appendUInt(u64.from(h.stream));
+            var fields = List[HeaderField].empty();
+            match x.dec.decode(h.block.view(), &mut fields) {
+              case let Ok(n) {
+                if fields.len() > 0usize {
+                  log.append(" ");
+                  log.append(fields[0usize].value.view());
+                }
+              }
+              case let Error(e) {log.append(" ?");}
+            }
+          }
+          case let RstStream(r) {
+            log.append("RST ");
+            log.appendUInt(u64.from(r.stream));
+            log.append(" ");
+            log.append(r.code.name());
+          }
+          case let Settings(s) {log.append(if s.ack {"SETTINGS ACK"} else {"SETTINGS"});}
+          case let Ping(p) {
+            log.append(if p.ack {"PING ACK "} else {"PING "});
+            log.appendUInt(p.data);
+          }
+          case let GoAway(g) {
+            log.append("GOAWAY ");
+            log.append(g.code.name());
+          }
+          case let WindowUpdate(w) {log.append("WU");}
+          else {log.append("OTHER");}
+        }
+        log.append(";");
+      }
+    }
+  }
+  log
+}
+
+fn has(log: &String, part: &str) bool {
+  let s = log.view();
+  let n = part.len();
+  if n > s.len() {return false;}
+  var i = 0usize;
+  while i + n <= s.len() {
+    var j = 0usize;
+    while j < n && s[i + j] == part[j] {j = j + 1usize;}
+    if j == n {return true;}
+    i = i + 1usize;
+  }
+  false
+}
+
+// The server ended the connection with this code
+fn connErr(x: &mut Pair, code: &str, label: &str) {
+  let h = heard(x);
+  var want = String.from("GOAWAY ");
+  want.append(code);
+  if !expect(has(&h, want.view()) && x.s.isClosed(), label) {
+    printStr("  heard: ");
+    printStr(h.view());
+    printStr("\n");
+  }
+}
+
+// The server reset one stream with this code, the connection going on
+fn streamErr(x: &mut Pair, id: u32, code: &str, label: &str) {
+  let h = heard(x);
+  var want = String.from("RST ");
+  want.appendUInt(u64.from(id));
+  want.append(" ");
+  want.append(code);
+  if !expect(has(&h, want.view()) && !x.s.isClosed(), label) {
+    printStr("  heard: ");
+    printStr(h.view());
+    printStr("\n");
+  }
+}
+
+// The program's events, as a count
+fn events(x: &mut Pair) usize {
+  var n = 0usize;
+  var going = true;
+  while going {
+    match x.s.pollEvent() {
+      case let NeedData(e) {going = false;}
+      case let Closed(e) {going = false;}
+      else {n = n + 1usize;}
+    }
+  }
+  n
+}
+
+// ---------------------------------------------------------------------------
+// 3.5, 4, 5.4
+// ---------------------------------------------------------------------------
+
+fn preface() {
+  var s = Connection.server(Config.make(), at(0));
+  var first = s.pollTransmit(at(0));
+  expect(first.len() >= frameHeaderLen && first.byteAt(3usize) == typeSettings, "3.5: the server's first frame is SETTINGS");
+  var s2 = Connection.server(Config.make(), at(0));
+  s2.handleInput(buf("GET / HTTP/1.1\r\nHost: x\r\n\r\n"), at(0));
+  expect(s2.isClosed(), "3.5: a wrong preface ends the connection");
+  var x = open();
+  let n = x.w.ping(1u64, false);
+  var y = Pair(Connection.server(Config.make(), at(0)), FrameWriter.make(&FrameConfig.make()),
+    FrameReader.client(FrameConfig.make()), HpackEncoder.make(&HpackConfig.make()),
+    HpackDecoder.make(HpackConfig.make()), Chain.make(1048576usize));
+  y.s.handleInput(buf("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), at(0));
+  let p = y.w.ping(1u64, false);
+  send(&mut y);
+  connErr(&mut y, "PROTOCOL_ERROR", "3.5: a first frame that is not SETTINGS: PROTOCOL_ERROR");
+}
+
+fn unknownAndHpack() {
+  var x = open();
+  sendRaw(&mut x, 0x20u8, 0xFFu8, 0u32, "abc");
+  let p = x.w.ping(7u64, false);
+  send(&mut x);
+  expect(has(&heard(&mut x), "PING ACK 7"), "4.1/5.5: an unknown frame type is ignored, the connection goes on");
+  var y = open();
+  sendRaw(&mut y, typeHeaders, flagEndHeaders | flagEndStream, 1u32, "\x80");
+  connErr(&mut y, "COMPRESSION_ERROR", "4.3: a field block HPACK cannot decode: COMPRESSION_ERROR");
+  expect(y.s.shouldClose(), "5.4.1: GOAWAY taken, the connection is to be closed");
+}
+
+// ---------------------------------------------------------------------------
+// 5.1 stream states and ids
+// ---------------------------------------------------------------------------
+
+fn idle() {
+  var x = open();
+  x.w.data(1u32, buf("hi"), false);
+  send(&mut x);
+  connErr(&mut x, "PROTOCOL_ERROR", "5.1 idle: DATA, PROTOCOL_ERROR");
+  var y = open();
+  let r = y.w.rstStream(1u32, ErrorCode.Cancel);
+  send(&mut y);
+  connErr(&mut y, "PROTOCOL_ERROR", "5.1 idle, 6.4: RST_STREAM, PROTOCOL_ERROR");
+  var z = open();
+  let w = z.w.windowUpdate(1u32, 10u32);
+  send(&mut z);
+  connErr(&mut z, "PROTOCOL_ERROR", "5.1 idle: WINDOW_UPDATE, PROTOCOL_ERROR");
+  var q = open();
+  let pr = q.w.priority(5u32, PrioritySpec(false, 0u32, 10u8));
+  let pg = q.w.ping(3u64, false);
+  send(&mut q);
+  expect(has(&heard(&mut q), "PING ACK 3") && !q.s.isClosed(), "5.1 idle: PRIORITY is allowed");
+}
+
+fn halfClosedRemote() {
+  var x = open();
+  let b = getBlock(&mut x);
+  x.w.headers(1u32, b.view(), true);
+  x.w.data(1u32, buf("late"), false);
+  send(&mut x);
+  streamErr(&mut x, 1u32, "STREAM_CLOSED", "5.1 half-closed (remote): DATA, STREAM_CLOSED");
+  var y = open();
+  let b2 = getBlock(&mut y);
+  y.w.headers(1u32, b2.view(), true);
+  let b3 = getBlock(&mut y);
+  y.w.headers(1u32, b3.view(), true);
+  send(&mut y);
+  streamErr(&mut y, 1u32, "STREAM_CLOSED", "5.1 half-closed (remote): HEADERS, STREAM_CLOSED");
+}
+
+fn closed() {
+  // After the peer's RST_STREAM
+  var x = open();
+  let b = getBlock(&mut x);
+  x.w.headers(1u32, b.view(), false);
+  let r = x.w.rstStream(1u32, ErrorCode.Cancel);
+  send(&mut x);
+  let e = events(&mut x);
+  x.w.data(1u32, buf("late"), false);
+  send(&mut x);
+  streamErr(&mut x, 1u32, "STREAM_CLOSED", "5.1 closed: DATA after RST_STREAM, STREAM_CLOSED");
+  // After END_STREAM both ways
+  var y = open();
+  let b2 = getBlock(&mut y);
+  y.w.headers(1u32, b2.view(), true);
+  send(&mut y);
+  let e2 = events(&mut y);
+  y.s.sendResponse(1u32, ResponseHead.make(200u16), BodyLength.empty());
+  let h = heard(&mut y);
+  y.w.data(1u32, buf("late"), false);
+  send(&mut y);
+  streamErr(&mut y, 1u32, "STREAM_CLOSED", "5.1 closed: DATA after END_STREAM both ways, STREAM_CLOSED");
+  var z = open();
+  let b3 = getBlock(&mut z);
+  z.w.headers(1u32, b3.view(), true);
+  send(&mut z);
+  let e3 = events(&mut z);
+  z.s.sendResponse(1u32, ResponseHead.make(200u16), BodyLength.empty());
+  let h3 = heard(&mut z);
+  let b4 = getBlock(&mut z);
+  z.w.headers(1u32, b4.view(), true);
+  send(&mut z);
+  streamErr(&mut z, 1u32, "STREAM_CLOSED", "5.1 closed: HEADERS after END_STREAM both ways, STREAM_CLOSED");
+  // After this end's own RST_STREAM, frames in flight are ignored
+  var q = open();
+  let b5 = getBlock(&mut q);
+  q.w.headers(1u32, b5.view(), false);
+  send(&mut q);
+  let e5 = events(&mut q);
+  q.s.cancel(1u32);
+  let h5 = heard(&mut q);
+  q.w.data(1u32, buf("in flight"), false);
+  let pg = q.w.ping(9u64, false);
+  send(&mut q);
+  let h6 = heard(&mut q);
+  expect(!has(&h6, "RST") && has(&h6, "PING ACK 9"), "5.1 closed: frames after our own RST_STREAM are ignored (section 5.4.2)");
+}
+
+fn ids() {
+  var x = open();
+  let b = getBlock(&mut x);
+  x.w.headers(2u32, b.view(), true);
+  send(&mut x);
+  connErr(&mut x, "PROTOCOL_ERROR", "5.1.1: an even stream id from a client, PROTOCOL_ERROR");
+  var y = open();
+  let b2 = getBlock(&mut y);
+  y.w.headers(5u32, b2.view(), true);
+  let b3 = getBlock(&mut y);
+  y.w.headers(3u32, b3.view(), true);
+  send(&mut y);
+  connErr(&mut y, "PROTOCOL_ERROR", "5.1.1: an id below one already used, PROTOCOL_ERROR");
+}
+
+fn selfDependency() {
+  var x = open();
+  let b = getBlock(&mut x);
+  x.w.headers(1u32, b.view(), true, Some[PrioritySpec](PrioritySpec(false, 1u32, 15u8)));
+  send(&mut x);
+  streamErr(&mut x, 1u32, "PROTOCOL_ERROR", "5.3.1: HEADERS depending on its own stream, PROTOCOL_ERROR");
+  let b2 = getBlock(&mut x);
+  x.w.headers(3u32, b2.view(), true);
+  send(&mut x);
+  expect(events(&mut x) == 2usize, "and the connection goes on: its HPACK table in step");
+  var y = open();
+  let p = y.w.priority(1u32, PrioritySpec(false, 1u32, 15u8));
+  send(&mut y);
+  streamErr(&mut y, 1u32, "PROTOCOL_ERROR", "5.3.1: PRIORITY depending on its own stream, PROTOCOL_ERROR");
+}
+
+// ---------------------------------------------------------------------------
+// 6
+// ---------------------------------------------------------------------------
+
+fn control() {
+  var x = open();
+  let w = x.w.settings(List[Setting].empty().view());
+  send(&mut x);
+  expect(has(&heard(&mut x), "SETTINGS ACK"), "6.5.3: SETTINGS acknowledged");
+  let p = x.w.ping(0x1122334455667788u64, false);
+  send(&mut x);
+  expect(has(&heard(&mut x), "PING ACK 1234605616436508552"), "6.7: PING answered with its data");
+  let p2 = x.w.ping(5u64, true);
+  send(&mut x);
+  expect(!has(&heard(&mut x), "PING"), "6.7: a PING ACK is not answered");
+  var v = List[Setting].empty();
+  v.push(Setting(0x99u16, 1u32));
+  let w2 = x.w.settings(v.view());
+  send(&mut x);
+  expect(has(&heard(&mut x), "SETTINGS ACK") && !x.s.isClosed(), "6.5.2: an unknown setting is ignored");
+}
+
+fn smallWindow() {
+  var x = open();
+  var v = List[Setting].empty();
+  v.push(Setting(settingInitialWindowSize, 1u32));
+  let w = x.w.settings(v.view());
+  let b = getBlock(&mut x);
+  x.w.headers(1u32, b.view(), true);
+  send(&mut x);
+  let e = events(&mut x);
+  x.s.sendResponse(1u32, ResponseHead.make(200u16), BodyLength.sized(5u64));
+  let d = x.s.sendData(1u32, buf("hello"));
+  x.s.finish(1u32);
+  let h = heard(&mut x);
+  expect(has(&h, "DATA 1 1;") && !has(&h, "DATA 1 4"), "6.9.2: a SETTINGS_INITIAL_WINDOW_SIZE of 1, DATA of 1 byte");
+}
+
+// ---------------------------------------------------------------------------
+// 8: messages
+// ---------------------------------------------------------------------------
+
+// A request of these fields: the server resets it PROTOCOL_ERROR, and the
+// program never sees it
+fn malformed(fields: &'f Array[&'s str], label: &str) {
+  var x = open();
+  let b = blockOf(&mut x, fields);
+  x.w.headers(1u32, b.view(), true);
+  send(&mut x);
+  streamErr(&mut x, 1u32, "PROTOCOL_ERROR", label);
+  expect(events(&mut x) == 0usize, "the program never sees it");
+}
+
+fn messages() {
+  var f = List[&str].empty();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push("X-Upper=1");
+  malformed(f.view(), "8.2.1: an upper-case field name");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push("x-space=1 ");
+  malformed(f.view(), "8.2.1: a value ending in a space");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push("connection=keep-alive");
+  malformed(f.view(), "8.2.2: Connection");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push("te=gzip");
+  malformed(f.view(), "8.2.2: TE other than trailers");
+  f.clear();
+  f.push(":scheme=https");
+  f.push(":path=/");
+  malformed(f.view(), "8.3.1: no :method");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":path=/");
+  malformed(f.view(), "8.3.1: no :scheme");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=");
+  f.push(":path=/");
+  malformed(f.view(), "8.3.1: an empty :scheme");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  malformed(f.view(), "8.3.1: no :path");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=");
+  malformed(f.view(), "8.3.1: an empty :path");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  malformed(f.view(), "8.3: :method twice");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push(":foo=bar");
+  malformed(f.view(), "8.3: an unknown pseudo-header");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push(":status=200");
+  malformed(f.view(), "8.3: a response's pseudo-header in a request");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push("x-a=1");
+  f.push(":path=/");
+  malformed(f.view(), "8.3: a pseudo-header after a header field");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":path=/");
+  f.push(":protocol=websocket");
+  malformed(f.view(), "8.3, RFC 8441: extended CONNECT, refused");
+
+  // Trailers that do not end the stream, or hold a pseudo-header
+  var x = open();
+  let b = getBlock(&mut x);
+  x.w.headers(1u32, b.view(), false);
+  let t = getBlock(&mut x);
+  x.w.headers(1u32, t.view(), false);
+  send(&mut x);
+  streamErr(&mut x, 1u32, "PROTOCOL_ERROR", "8.1: a second HEADERS without END_STREAM");
+  var y = open();
+  let b2 = getBlock(&mut y);
+  y.w.headers(1u32, b2.view(), false);
+  var tf = List[&str].empty();
+  tf.push(":path=/x");
+  let t2 = blockOf(&mut y, tf.view());
+  y.w.headers(1u32, t2.view(), true);
+  send(&mut y);
+  streamErr(&mut y, 1u32, "PROTOCOL_ERROR", "8.1: a pseudo-header in trailers");
+
+  // Content-Length
+  var z = open();
+  var cf = List[&str].empty();
+  cf.push(":method=POST");
+  cf.push(":scheme=https");
+  cf.push(":path=/");
+  cf.push("content-length=10");
+  let b3 = blockOf(&mut z, cf.view());
+  z.w.headers(1u32, b3.view(), false);
+  z.w.data(1u32, buf("12345"), true);
+  send(&mut z);
+  streamErr(&mut z, 1u32, "PROTOCOL_ERROR", "8.1.1: a body shorter than its Content-Length");
+  var q = open();
+  let b4 = blockOf(&mut q, cf.view());
+  q.w.headers(1u32, b4.view(), false);
+  q.w.data(1u32, buf("123456"), false);
+  q.w.data(1u32, buf("123456"), false);
+  send(&mut q);
+  streamErr(&mut q, 1u32, "PROTOCOL_ERROR", "8.1.1: a body longer than its Content-Length");
+
+  // CONNECT, answered 501 by the core itself
+  var c = open();
+  var kf = List[&str].empty();
+  kf.push(":method=CONNECT");
+  kf.push(":authority=example.com:443");
+  let b5 = blockOf(&mut c, kf.view());
+  c.w.headers(1u32, b5.view(), false);
+  send(&mut c);
+  let h = heard(&mut c);
+  expect(has(&h, "HEADERS 1 501;RST 1 NO_ERROR"), "CONNECT: answered 501, its tunnel stopped (as http1)");
+  expect(events(&mut c) == 0usize, "the program never sees it");
+
+  // Host moved into the authority; the two disagreeing refused
+  var hst = open();
+  var hf = List[&str].empty();
+  hf.push(":method=GET");
+  hf.push(":scheme=https");
+  hf.push(":path=/");
+  hf.push("host=example.org");
+  let b6 = blockOf(&mut hst, hf.view());
+  hst.w.headers(1u32, b6.view(), true);
+  send(&mut hst);
+  var authority = String.empty();
+  match hst.s.pollEvent() {
+    case let Request(r) {authority.append(r.head.authority.view());}
+    else {}
+  }
+  expectStr(authority.view(), "example.org", "8.3.1: with no :authority, Host is the authority");
+  hf.push(":authority=example.com");
+  f.clear();
+  f.push(":method=GET");
+  f.push(":scheme=https");
+  f.push(":authority=example.com");
+  f.push(":path=/");
+  f.push("host=example.org");
+  malformed(f.view(), "8.3.1: a Host that differs from :authority");
+}
+
+fn push() {
+  var c = Connection.client(Config.make(), at(0));
+  var fc = FrameConfig.make();
+  var w = FrameWriter.make(&fc);
+  let s = w.settings(List[Setting].empty().view());
+  var out = w.take();
+  let n = feed(&mut c, &mut out, at(0));
+  var h = RequestHead.make("GET", "/", "example.com");
+  h.scheme = String.from("https");
+  let id = c.sendRequest(h, BodyLength.empty());
+  var enc = HpackEncoder.make(&HpackConfig.make());
+  var blk = List[u8].empty();
+  var f = List[HeaderField].empty();
+  f.push(HeaderField.make(":method", "GET"));
+  enc.encode(f.view(), &mut blk);
+  w.pushPromise(1u32, 2u32, blk.view());
+  var out2 = w.take();
+  let n2 = feed(&mut c, &mut out2, at(1));
+  expect(c.isClosed(), "8.4: a PUSH_PROMISE to a client with push off ends the connection (PROTOCOL_ERROR)");
+}
+
+fn main() i32 {
+  preface();
+  unknownAndHpack();
+  idle();
+  halfClosedRemote();
+  closed();
+  ids();
+  selfDependency();
+  control();
+  smallWindow();
+  messages();
+  push();
+  done()
+}
