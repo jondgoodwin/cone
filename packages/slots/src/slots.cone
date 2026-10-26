@@ -18,6 +18,10 @@
 //   fn demo() {
 //     var t = SlotTable[Conn].make(64u32);
 //     imm a = t.add(Conn(7i64, true));          // a Slot
+//     match t.borrowMut(a) {                     // Some(&mut Conn), or None if a's value is gone
+//       case let Some(c) {c.open = false;}       // no add, remove or take while c is used
+//       else {}
+//     }
 //     let p = t.get(a);                          // *Conn, or null if a's value is gone
 //     imm same = t.at(a.index);                  // by index alone, for a token that carries no generation
 //     t.remove(a);                               // the value is finalized, a stops reaching it
@@ -25,6 +29,10 @@
 //   }
 //
 //   t.add(v)           move v in: its Slot
+//   t.borrow(s)        Some(&T) of the value s names, None if s is stale or none
+//   t.borrowMut(s)     Some(&mut T) of it, the same
+//   t.borrowAt(i)      Some(&T) of the live value in cell i, None if the cell is free or past the table
+//   t.borrowMutAt(i)   Some(&mut T) of it, the same
 //   t.get(s)           *T of the value s names, null if s is stale or none
 //   t.at(i)            *T of the live value in cell i, null if the cell is free or past the table
 //   t.slotAt(i)        the Slot of the live value in cell i (Slot.none() if free)
@@ -34,6 +42,17 @@
 //   t.len()            how many values are in the table
 //   t.bound()          how many cells there are, live or free: cells 0 up to bound() are the ones to walk
 //   t.isLive(i)        whether cell i holds a value
+//
+// BORROWS OR POINTERS. The borrow methods are the checked way to reach a value:
+// a borrow from one is a borrow of the table, so while it is still to be used
+// the compiler refuses an add, remove, removeAt or take (the table is
+// shape-changing, which the compiler finds from its methods; a read-only
+// borrow of a local table freezes it outright). A mutable borrow is an alias
+// loan, as every '&mut' is: several may be held at once, of one value or of
+// many, and the table may be read and its values written in place meanwhile.
+// get and at give the value's address as a raw pointer, outside the borrow
+// checker, for a party that must hold it past the borrow (the kernel, another
+// thread, a message), under the rule below.
 //
 // ONE THREAD AT A TIME. A table does no locking: the thread that owns it adds,
 // removes and looks values up; a value's address may be handed to others (that
@@ -174,6 +193,39 @@ pub struct SlotTable[T] is Move {
     let c = self.cell(i);
     if (*c).live == 0u32 {return nullOf[T]();}
     &(*c).value as *T
+  }
+
+  // Some borrow of the value s names, or None if it is gone (or s names
+  // nothing). The borrow is of the table: while it is still to be used, the
+  // table may be read but not added to, removed from or taken from
+  pub fn borrow(self: &, s: Slot) Option[&T] {
+    let p = self.get(s);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  // Some mutable borrow of the value s names, or None. An alias loan of the
+  // table: while it is still to be used, the table may be read, borrowed again
+  // and written in place, but not added to, removed from or taken from
+  pub fn borrowMut(self: &mut, s: Slot) Option[&mut T] {
+    let p = self.get(s);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
+  }
+
+  // Some borrow of the live value in cell i, or None: borrow by index alone
+  pub fn borrowAt(self: &, i: u32) Option[&T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&T](p as &T)
+  }
+
+  // Some mutable borrow of the live value in cell i, or None: borrowMut by
+  // index alone
+  pub fn borrowMutAt(self: &mut, i: u32) Option[&mut T] {
+    let p = self.at(i);
+    if p as usize == 0usize {return None;}
+    Some[&mut T](p as &mut T)
   }
 
   // The Slot of the live value in cell i, or Slot.none()

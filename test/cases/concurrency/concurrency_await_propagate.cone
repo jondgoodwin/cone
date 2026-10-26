@@ -1,0 +1,52 @@
+// 'await x?' is '(await x)?' [Jon 26 Oct, error-handling issue 1]: prefix 'await'
+// binds tighter than the suffix '?', so the '?' takes the Result the wait gives, and
+// returns its error from the behaviour, which answers its awaiting caller with it.
+// Were it 'await (x?)', the '?' would be given the operation, an actors.Awaitable,
+// and refused. Prober.go awaits calc twice: once its operation answers Ok, once Error.
+
+mod concurrency_await_propagate;
+
+import stdio use *;
+import actors;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// An operation answering v as soon as it is started
+fn now[R](v: R) actors.Awaitable[R] {
+  actors.Awaitable[R].make(fn(rp: actors.Reply) [v] {
+    actors.answerNow[R](rp, v);
+  })
+}
+
+fn pick(n: u32) Result[u64, u32] {
+  if n == 1u32 { Ok(5u64) } else { Error(13u32) }
+}
+
+actor Prober {
+  pub async fn go(self) {
+    match await selfactor.calc(1u32) {
+      case let Ok(v) { say("go ok", v); }
+      case let Error(e) { say("go error", u64.from(e)); }
+    }
+    match await selfactor.calc(2u32) {
+      case let Ok(v) { say("go ok", v); }
+      case let Error(e) { say("go error", u64.from(e)); }
+    }
+  }
+
+  pub async fn calc(self, n: u32) Result[u64, u32] {
+    let v = await now[Result[u64, u32]](pick(n))?;
+    say("calc after", v);
+    Ok(v + 1u64)
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let p = Prober();
+    p.go();
+  }
+  finalAll();
+  say("end", 0u64);
+}
