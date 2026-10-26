@@ -575,7 +575,7 @@ LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
-// Generate a vtable type
+// Generate a vtable: its type, and its implementers' globals once no type is being generated
 void genlVtable(GenState *gen, Vtable *vtable);
 // A callable trait's vtable for a plain function, whose one slot is a stub calling it
 LLVMValueRef genlFnStubVtable(GenState *gen, Vtable *vtable);
