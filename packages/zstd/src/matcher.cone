@@ -1,0 +1,309 @@
+// ======== Finding matches: the sequences of a block ========
+//
+// A block's content becomes sequences (RFC 8878 section 3.1.1.3.2): so many
+// literals, then a match of so many bytes from so far back. Two matchers,
+// both the reference's shape (zstd's lib/compress/zstd_fast.c and
+// zstd_double_fast.c) without their unrolling:
+//
+//   fast (level 1)          one hash table of the 6 bytes at a position;
+//                           one candidate a position
+//   double fast (2 and 3)   a table of the 8 bytes at a position and one of
+//                           the 5 bytes; the long candidate is tried first,
+//                           then the short one (and then the long one a byte
+//                           on, which may be better)
+//
+// Both try the last offset used one byte on before they hash (a "repeat"),
+// stretch a match backward over the literals before it, enter two
+// positions inside it in the tables, and after a match try the
+// second-to-last offset at once. A position no match starts at is skipped
+// faster the longer the run of literals (one more byte for every 128, or
+// 256, of them). A table holds positions in the input buffer, not checked
+// against anything: a candidate is taken only when its bytes match, it
+// comes before the position, and it is within the window, so a stale or
+// empty (0) entry costs a comparison, never a wrong match.
+//
+// The input is read through '&List[u8]', a byte at a time or in the small
+// helpers below, not through one slice held for the whole block: the borrow
+// checker (error 1339) refuses a slice of one List held across a call that
+// pushes to another, as it cannot tell the two Lists apart.
+
+// The three repeat offsets, as the decoder keeps them
+struct Reps {
+  r1: u32;
+  r2: u32;
+  r3: u32;
+}
+
+// A block's sequences: its literals in a row, and for each sequence the
+// literals before it, the match length and the offset code ("Offset_Value":
+// 1 to 3 a repeat, the offset plus 3 otherwise)
+struct Seqs {
+  lits: List[u8];
+  ll: List[u32];
+  ml: List[u32];
+  off: List[u32];
+
+  fn empty() Seqs { Seqs(List[u8].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty()) }
+
+  fn clear(self: &mut) {
+    lits.clear();
+    ll.clear();
+    ml.clear();
+    off.clear();
+  }
+}
+
+// Records a sequence: the 'll' literals at src[anchor], then a match of 'ml'
+// bytes 'off' back. The offset is coded as the decoder will read it (a
+// repeat where one fits, by RFC 8878 section 3.1.1.5, which shifts the
+// repeats by one when there are no literals) and the repeats are moved
+// exactly as the decoder will move them.
+fn emit(src: &List[u8], anchor: usize, ll: usize, off: u32, ml: usize, reps: &mut Reps, seqs: &mut Seqs) {
+  seqs.lits.reserve(ll);
+  var i = 0usize;
+  while i < ll {
+    seqs.lits.push(*src[anchor + i]);
+    i += 1usize;
+  }
+  var code = 0u32;
+  if ll > 0usize {
+    if off == reps.r1 {
+      code = 1u32;
+    } else if off == reps.r2 {
+      code = 2u32;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    } else if off == reps.r3 {
+      code = 3u32;
+      reps.r3 = reps.r2;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    } else {
+      code = off + 3u32;
+      reps.r3 = reps.r2;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    }
+  } else {
+    if off == reps.r2 {
+      code = 1u32;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    } else if off == reps.r3 {
+      code = 2u32;
+      reps.r3 = reps.r2;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    } else if reps.r1 > 1u32 && off == reps.r1 - 1u32 {
+      code = 3u32;
+      reps.r3 = reps.r2;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    } else {
+      code = off + 3u32;
+      reps.r3 = reps.r2;
+      reps.r2 = reps.r1;
+      reps.r1 = off;
+    }
+  }
+  seqs.ll.push(u32.from(ll));
+  seqs.ml.push(u32.from(ml));
+  seqs.off.push(code);
+}
+
+// The literals after the last sequence
+fn emitRest(src: &List[u8], anchor: usize, end: usize, seqs: &mut Seqs) {
+  seqs.lits.reserve(end - anchor);
+  var i = anchor;
+  while i < end {
+    seqs.lits.push(*src[i]);
+    i += 1usize;
+  }
+}
+
+// The 4 and 8 bytes at src[p], least significant first. One slice of
+// exactly that many bytes is one bounds check, and its byte loads then fold
+// into one load.
+fn rd32(src: &List[u8], p: usize) u32 { word32(src.view(), p) }
+fn rd64(src: &List[u8], p: usize) u64 { word64(src.view(), p) }
+
+fn word32(b: &Array[u8], p: usize) u32 {
+  let s = &b[p..<p + 4usize];
+  u32.from(s[0usize]) | (u32.from(s[1usize]) << 8u32) | (u32.from(s[2usize]) << 16u32) | (u32.from(s[3usize]) << 24u32)
+}
+
+fn word64(b: &Array[u8], p: usize) u64 {
+  let s = &b[p..<p + 8usize];
+  u64.from(s[0usize]) | (u64.from(s[1usize]) << 8u64) | (u64.from(s[2usize]) << 16u64)
+    | (u64.from(s[3usize]) << 24u64) | (u64.from(s[4usize]) << 32u64) | (u64.from(s[5usize]) << 40u64)
+    | (u64.from(s[6usize]) << 48u64) | (u64.from(s[7usize]) << 56u64)
+}
+
+// How many bytes from src[a] equal those from src[c] (c < a), not reaching 'end'
+fn matchLen(src: &List[u8], a: usize, c: usize, end: usize) usize {
+  let b = src.view();
+  var k = 0usize;
+  while a + k + 8usize <= end {
+    let x = word64(b, a + k) ^ word64(b, c + k);
+    if x != 0u64 { return k + usize.from(x.trailingZeros() >> 3u32); }
+    k += 8usize;
+  }
+  while a + k < end && b[a + k] == b[c + k] { k += 1usize; }
+  k
+}
+
+// The hashes of the 5, 6, 7 and 8 bytes at src[p], 'shift' being 64 less
+// the table's log (the reference's multipliers)
+fn hash5(src: &List[u8], p: usize, shift: u64) usize {
+  usize.from(((rd64(src, p) << 24u64) * 889523592379u64) >> shift)
+}
+fn hash8(src: &List[u8], p: usize, shift: u64) usize {
+  usize.from((rd64(src, p) * 0xCF1BBCDCB7A56463u64) >> shift)
+}
+// 6 or 7 bytes, by 'mls'
+fn hashFast(src: &List[u8], p: usize, mls: u32, shift: u64) usize {
+  if mls == 7u32 { return usize.from(((rd64(src, p) << 8u64) * 58295818150454627u64) >> shift); }
+  usize.from(((rd64(src, p) << 16u64) * 227718039650203u64) >> shift)
+}
+
+// Whether a match of offset 'r' (a repeat) can start at p: it reaches no
+// further back than the buffer and the window
+fn repFits(p: usize, r: u32, window: usize) bool {
+  let ru = usize.from(r);
+  ru <= p && ru <= window
+}
+
+// The fast matcher over src[start, end): sequences into 'seqs', the repeats
+// moved in 'reps'. 'table' is 2^log entries, by the 'mls' (6 or 7) bytes at
+// a position.
+fn matchFast(src: &List[u8], start: usize, end: usize, window: usize, log: u32, mls: u32, table: &mut List[u32],
+    reps: &mut Reps, seqs: &mut Seqs) {
+  let shift = 64u64 - u64.from(log);
+  var ip = start;
+  var anchor = start;
+  while ip + 9usize <= end {
+    // The last offset, one byte on
+    let r = reps.r1;
+    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
+      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
+      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
+      ip = ip + 1usize + ml;
+      anchor = ip;
+    } else {
+      let h = hashFast(src, ip, mls, shift);
+      let cand = usize.from(*table[h]);
+      table.set(h, u32.from(ip));
+      if cand < ip && ip - cand <= window && rd32(src, cand) == rd32(src, ip) {
+        var ml = 4usize + matchLen(src, ip + 4usize, cand + 4usize, end);
+        var s = ip;
+        var c = cand;
+        while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+          s -= 1usize;
+          c -= 1usize;
+          ml += 1usize;
+        }
+        emit(src, anchor, s - anchor, u32.from(ip - cand), ml, reps, seqs);
+        let at = ip;
+        ip = s + ml;
+        anchor = ip;
+        if ip + 8usize <= end {
+          table.set(hashFast(src, at + 2usize, mls, shift), u32.from(at + 2usize));
+          table.set(hashFast(src, ip - 2usize, mls, shift), u32.from(ip - 2usize));
+        }
+      } else {
+        ip += ((ip - anchor) >> 7usize) + 1usize;
+        continue;
+      }
+    }
+    // The second-to-last offset, at once
+    while ip + 8usize <= end && repFits(ip, reps.r2, window)
+        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
+      let r2 = reps.r2;
+      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
+      table.set(hashFast(src, ip, mls, shift), u32.from(ip));
+      emit(src, anchor, 0usize, r2, ml, reps, seqs);
+      ip += ml;
+      anchor = ip;
+    }
+  }
+  emitRest(src, anchor, end, seqs);
+}
+
+// The double-fast matcher over src[start, end): 'longT' (2^longLog entries)
+// by the 8 bytes at a position, 'shortT' (2^shortLog) by the 5
+fn matchDouble(src: &List[u8], start: usize, end: usize, window: usize, longLog: u32, shortLog: u32,
+    longT: &mut List[u32], shortT: &mut List[u32], reps: &mut Reps, seqs: &mut Seqs) {
+  let shiftL = 64u64 - u64.from(longLog);
+  let shiftS = 64u64 - u64.from(shortLog);
+  var ip = start;
+  var anchor = start;
+  while ip + 9usize <= end {
+    let hl = hash8(src, ip, shiftL);
+    let hs = hash5(src, ip, shiftS);
+    let candL = usize.from(*longT[hl]);
+    let candS = usize.from(*shortT[hs]);
+    longT.set(hl, u32.from(ip));
+    shortT.set(hs, u32.from(ip));
+    let r = reps.r1;
+    if repFits(ip + 1usize, r, window) && rd32(src, ip + 1usize) == rd32(src, ip + 1usize - usize.from(r)) {
+      // The last offset, one byte on
+      let ml = 4usize + matchLen(src, ip + 5usize, ip + 5usize - usize.from(r), end);
+      emit(src, anchor, ip + 1usize - anchor, r, ml, reps, seqs);
+      ip = ip + 1usize + ml;
+      anchor = ip;
+    } else {
+      var ml = 0usize;
+      var s = ip;
+      var c = 0usize;
+      if candL < ip && ip - candL <= window && rd64(src, candL) == rd64(src, ip) {
+        ml = 8usize + matchLen(src, ip + 8usize, candL + 8usize, end);
+        c = candL;
+      } else if candS < ip && ip - candS <= window && rd32(src, candS) == rd32(src, ip) {
+        // A short match: the long one a byte on may be better
+        let next = ip + 1usize;
+        let hl1 = hash8(src, next, shiftL);
+        let candL1 = usize.from(*longT[hl1]);
+        longT.set(hl1, u32.from(next));
+        if candL1 < next && next - candL1 <= window && rd64(src, candL1) == rd64(src, next) {
+          ml = 8usize + matchLen(src, next + 8usize, candL1 + 8usize, end);
+          s = next;
+          c = candL1;
+        } else {
+          ml = 4usize + matchLen(src, ip + 4usize, candS + 4usize, end);
+          c = candS;
+        }
+      } else {
+        ip += ((ip - anchor) >> 8usize) + 1usize;
+        continue;
+      }
+      let off = u32.from(s - c);
+      while s > anchor && c > 0usize && *src[s - 1usize] == *src[c - 1usize] {
+        s -= 1usize;
+        c -= 1usize;
+        ml += 1usize;
+      }
+      emit(src, anchor, s - anchor, off, ml, reps, seqs);
+      let at = ip;
+      ip = s + ml;
+      anchor = ip;
+      if ip + 8usize <= end {
+        longT.set(hash8(src, at + 2usize, shiftL), u32.from(at + 2usize));
+        longT.set(hash8(src, ip - 2usize, shiftL), u32.from(ip - 2usize));
+        shortT.set(hash5(src, at + 2usize, shiftS), u32.from(at + 2usize));
+        shortT.set(hash5(src, ip - 1usize, shiftS), u32.from(ip - 1usize));
+      }
+    }
+    // The second-to-last offset, at once
+    while ip + 8usize <= end && repFits(ip, reps.r2, window)
+        && rd32(src, ip) == rd32(src, ip - usize.from(reps.r2)) {
+      let r2 = reps.r2;
+      let ml = 4usize + matchLen(src, ip + 4usize, ip + 4usize - usize.from(r2), end);
+      shortT.set(hash5(src, ip, shiftS), u32.from(ip));
+      longT.set(hash8(src, ip, shiftL), u32.from(ip));
+      emit(src, anchor, 0usize, r2, ml, reps, seqs);
+      ip += ml;
+      anchor = ip;
+    }
+  }
+  emitRest(src, anchor, end, seqs);
+}

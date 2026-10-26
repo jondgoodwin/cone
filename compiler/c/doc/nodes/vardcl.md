@@ -184,7 +184,10 @@ nothing.
 1. Check the permission — must be a type.
 2. Check the declared type. **A non-type here abandons the rest of the
    function**, so such a declaration gets exactly one diagnostic and neither the
-   literal nor the size rule runs.
+   literal nor the size rule runs. Steps 1 and 2 are held as a layout in flight,
+   so a members queue the type's first layout fills is worked only once the
+   instance is on the node: a method it holds may read this global
+   ([type check](../phases/type-check.md), "Layout before members").
 3. A **parameter** (`scope == 1`) whose type is a borrowed reference takes a
    copy of it carrying the caller band, scope 1 (`iexpScopedBorrowType`): the
    declared type is shared and carries none, and without it a parameter's

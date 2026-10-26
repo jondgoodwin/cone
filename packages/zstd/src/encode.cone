@@ -1,0 +1,573 @@
+// ======== Encoding: the bit writer, FSE tables and Huffman codes ========
+//
+// The writing side of fse.cone and huffman.cone. An entropy-coded bitstream
+// is written FORWARD, least significant bit first, and closed with a 1 bit
+// (RFC 8878 section 4.1), so the decoder can read it backward from its end;
+// what the decoder must read first is therefore written last. A table
+// description (FSE normalized counts) is written forward and read forward.
+//
+// The FSE encoder is the reference's (Yann Collet's FSE, as zstd's
+// lib/compress/fse_compress.c builds it): a state is a number in [size,
+// 2 * size); encoding a symbol writes the state's low bits and moves to the
+// state that the decoder, reading those bits back, leaves for the one before.
+
+// -------- the bit writer --------
+
+// Bits not yet written: 'n' of them (fewer than 32 between calls) in the low
+// bits of 'acc'. The bytes go to the List each call is given.
+struct BitOut {
+  acc: u64;
+  n: u32;
+
+  fn make() BitOut { BitOut(0u64, 0u32) }
+
+  // The low 'bits' (0 to 32) bits of v
+  fn put(self: &mut, out: &mut List[u8], v: u64, bits: u32) {
+    acc = acc | ((v & ((1u64 << u64.from(bits)) - 1u64)) << u64.from(n));
+    n = n + bits;
+    if n >= 32u32 {
+      out.push(u8.from(acc & 255u64));
+      out.push(u8.from((acc >> 8u64) & 255u64));
+      out.push(u8.from((acc >> 16u64) & 255u64));
+      out.push(u8.from((acc >> 24u64) & 255u64));
+      acc = acc >> 32u64;
+      n = n - 32u32;
+    }
+  }
+
+  // The bits held, padded with zeros to a whole byte
+  fn flushAll(self: &mut, out: &mut List[u8]) {
+    while n > 0u32 {
+      out.push(u8.from(acc & 255u64));
+      acc = acc >> 8u64;
+      n = if n > 8u32 {n - 8u32} else {0u32};
+    }
+    acc = 0u64;
+  }
+
+  // Ends an entropy-coded bitstream: the closing 1 bit, then the padding
+  fn close(self: &mut, out: &mut List[u8]) {
+    self.put(out, 1u64, 1u32);
+    self.flushAll(out);
+  }
+}
+
+// -------- FSE --------
+
+// log2(x) for x from 1 to 2^16, in 1/256 bits, the part after the point taken
+// as linear: a cost estimate, within 0.09 bits
+fn log2x256(x: u32) u32 {
+  let hb = highBit(x);
+  hb * 256u32 + (((x << 8u32) >> hb) - 256u32)
+}
+
+// The accuracy log for 'total' symbols whose largest is 'maxSym' (at least 1):
+// the reference's FSE_optimalTableLog, at most 'maxLog'
+fn fseTableLog(maxLog: u32, total: u32, maxSym: usize) u32 {
+  var log = maxLog;
+  let srcBits = if total > 1u32 {highBit(total - 1u32)} else {0u32};
+  if srcBits < 2u32 { log = 0u32; }
+  else if srcBits - 2u32 < log { log = srcBits - 2u32; }
+  let bySize = highBit(total) + 1u32;
+  let bySym = highBit(u32.from(maxSym)) + 2u32;
+  let minBits = if bySize < bySym {bySize} else {bySym};
+  if minBits > log { log = minBits; }
+  if log < 5u32 { log = 5u32; }
+  if log > maxLog { log = maxLog; }
+  log
+}
+
+// Normalized counts of 'count' (symbols 0 to maxSym, at least two of them
+// present, 'total' in all) summing to 2^log: each count scaled and rounded,
+// every symbol present given at least 1, and the difference to 2^log given
+// to (or taken one at a time from) the largest
+fn normalize(count: &Array[u32], maxSym: usize, total: u32, log: u32, norm: &mut List[i16]) {
+  norm.clear();
+  let size = 1u64 << u64.from(log);
+  var sum = 0i64;
+  var s = 0usize;
+  while s <= maxSym {
+    let c = u64.from(count[s]);
+    var p = 0i64;
+    if c > 0u64 {
+      p = i64.from((c * size + u64.from(total) / 2u64) / u64.from(total));
+      if p == 0i64 { p = 1i64; }
+    }
+    norm.push(i16.from(p));
+    sum = sum + p;
+    s += 1usize;
+  }
+  var diff = i64.from(size) - sum;
+  while diff != 0i64 {
+    var big = 0usize;
+    s = 1usize;
+    while s <= maxSym {
+      if *norm[s] > *norm[big] { big = s; }
+      s += 1usize;
+    }
+    if diff > 0i64 {
+      norm.set(big, *norm[big] + i16.from(diff));
+      diff = 0i64;
+    } else {
+      norm.set(big, *norm[big] - 1i16);
+      diff = diff + 1i64;
+    }
+  }
+}
+
+// Appends the FSE table description of 'norm' at accuracy 'log' (RFC 8878
+// section 4.1.1; the reference's FSE_writeNCount): what readNCount reads
+fn writeNCount(out: &mut List[u8], norm: &Array[i16], log: u32) {
+  var bw = BitOut.make();
+  bw.put(out, u64.from(log - 5u32), 4u32);
+  let size = 1i32 << i32.from(log);
+  var remaining = size + 1i32;
+  var threshold = size;
+  var nbBits = log + 1u32;
+  var sym = 0usize;
+  var prev0 = false;
+  while sym < norm.len && remaining > 1i32 {
+    if prev0 {
+      // A run of zeros: 2-bit repeat counts, 3 meaning "3, and another follows"
+      var start = sym;
+      while sym < norm.len && norm[sym] == 0i16 { sym += 1usize; }
+      while sym >= start + 3usize {
+        bw.put(out, 3u64, 2u32);
+        start += 3usize;
+      }
+      bw.put(out, u64.from(sym - start), 2u32);
+    }
+    var count = i32.from(norm[sym]);
+    sym += 1usize;
+    let max = (2i32 * threshold - 1i32) - remaining;
+    remaining -= if count < 0i32 {-count} else {count};
+    count += 1i32;
+    if count >= threshold { count += max; }
+    bw.put(out, u64.from(count), if count < max {nbBits - 1u32} else {nbBits});
+    prev0 = count == 1i32;
+    while remaining < threshold {
+      nbBits -= 1u32;
+      threshold = threshold >> 1i32;
+    }
+  }
+  bw.flushAll(out);
+}
+
+// An FSE encoding table (the reference's FSE_buildCTable): 'states' gives,
+// symbol by symbol in the order of the decoding table, the states to move
+// to; 'deltaBits' and 'deltaFind' say, for each symbol, how many bits a
+// state writes and where its next states start. 'rle' is the table of one
+// symbol that always repeats: no state, no bits.
+struct FseEnc {
+  log: u32;
+  rle: bool;
+  states: List[u16];
+  deltaBits: List[u32];
+  deltaFind: List[i32];
+  // Scratch for building: each state's symbol, each symbol's next slot
+  spread: List[u8];
+  cumul: List[u32];
+
+  fn empty() FseEnc {
+    FseEnc(0u32, false, List[u16].empty(), List[u32].empty(), List[i32].empty(), List[u8].empty(),
+      List[u32].empty())
+  }
+
+  // The table of a distribution (counts of -1 are "less than 1"), spread as
+  // the decoder's FseTable.build spreads it
+  fn build(self: &mut, norm: &Array[i16], log: u32) {
+    rle = false;
+    self.log = log;
+    let size = 1u32 << log;
+    let mask = size - 1u32;
+    spread.clear();
+    spread.resize(usize.from(size), 0u8);
+    states.clear();
+    states.resize(usize.from(size), 0u16);
+    cumul.clear();
+    cumul.push(0u32);
+    var high = size - 1u32;
+    var s = 0usize;
+    while s < norm.len {
+      let c = norm[s];
+      if c == -1i16 {
+        cumul.push(*cumul[s] + 1u32);
+        spread.set(usize.from(high), u8.from(s));
+        high -= 1u32;
+      } else {
+        cumul.push(*cumul[s] + u32.from(c));
+      }
+      s += 1usize;
+    }
+    let step = (size >> 1u32) + (size >> 3u32) + 3u32;
+    var position = 0u32;
+    s = 0usize;
+    while s < norm.len {
+      var k = 0i16;
+      while k < norm[s] {
+        spread.set(usize.from(position), u8.from(s));
+        position = (position + step) & mask;
+        while position > high { position = (position + step) & mask; }
+        k += 1i16;
+      }
+      s += 1usize;
+    }
+    var u = 0u32;
+    while u < size {
+      let sym = usize.from(*spread[usize.from(u)]);
+      let at = *cumul[sym];
+      states.set(usize.from(at), u16.from(size + u));
+      cumul.set(sym, at + 1u32);
+      u += 1u32;
+    }
+    deltaBits.clear();
+    deltaFind.clear();
+    var total = 0i32;
+    s = 0usize;
+    while s < norm.len {
+      let c = norm[s];
+      if c == 0i16 {
+        deltaBits.push(((log + 1u32) << 16u32) - size);
+        deltaFind.push(0i32);
+      } else if c == -1i16 || c == 1i16 {
+        deltaBits.push((log << 16u32) - size);
+        deltaFind.push(total - 1i32);
+        total += 1i32;
+      } else {
+        let cu = u32.from(c);
+        let maxBitsOut = log - highBit(cu - 1u32);
+        let minStatePlus = cu << maxBitsOut;
+        deltaBits.push((maxBitsOut << 16u32) - minStatePlus);
+        deltaFind.push(total - i32.from(c));
+        total += i32.from(c);
+      }
+      s += 1usize;
+    }
+  }
+
+  // The table of one symbol that always repeats
+  fn setRle(self: &mut) {
+    rle = true;
+    log = 0u32;
+  }
+
+  // The first state, for the last symbol encoded (the first decoded): no
+  // bits are written for it (the reference's FSE_initCState2)
+  fn first(self: &, sym: usize) u32 {
+    if rle { return 0u32; }
+    let db = *deltaBits[sym];
+    let nb = (db + 32768u32) >> 16u32;
+    let v = (nb << 16u32) - db;
+    u32.from(*states[usize.from(i64.from(v >> nb) + i64.from(*deltaFind[sym]))])
+  }
+
+  // Encodes 'sym' from 'state': writes the state's low bits and answers the
+  // state to go on from
+  fn encode(self: &, bw: &mut BitOut, out: &mut List[u8], state: u32, sym: usize) u32 {
+    if rle { return 0u32; }
+    let nb = (state + *deltaBits[sym]) >> 16u32;
+    bw.put(out, u64.from(state), nb);
+    u32.from(*states[usize.from(i64.from(state >> nb) + i64.from(*deltaFind[sym]))])
+  }
+
+  // The final state, which the decoder reads first
+  fn flush(self: &, bw: &mut BitOut, out: &mut List[u8], state: u32) {
+    if !rle { bw.put(out, u64.from(state), log); }
+  }
+}
+
+// -------- Huffman --------
+
+// A Huffman code for literals, as RFC 8878 section 4.2 describes one: the
+// lengths by Huffman's merge of the two lightest (limited to 11 bits by
+// halving the counts until they fit), the codes canonical in the order the
+// decoder's table puts them (longest first, then by symbol)
+struct HufEnc {
+  count: List[u32];
+  lens: List[u8];
+  codes: List[u32];
+  maxSym: usize;
+  tableLog: u32;
+  // Scratch: the counts being merged, the symbols by count, the merge tree
+  freq: List[u32];
+  order: List[u16];
+  weight: List[u64];
+  parent: List[u32];
+  depth: List[u8];
+  rankStart: List[u32];
+  // The tree description: the weights, and their FSE coding
+  wts: List[u8];
+  wcount: List[u32];
+  wnorm: List[i16];
+  wfse: FseEnc;
+
+  fn empty() HufEnc {
+    HufEnc(List[u32].empty(), List[u8].empty(), List[u32].empty(), 0usize, 0u32, List[u32].empty(),
+      List[u16].empty(), List[u64].empty(), List[u32].empty(), List[u8].empty(), List[u32].empty(),
+      List[u8].empty(), List[u32].empty(), List[i16].empty(), FseEnc.empty())
+  }
+
+  // Counts the bytes of 'lits'; answers how many distinct ones there are
+  fn histogram(self: &mut, litList: &List[u8]) usize {
+    count.clear();
+    count.resize(256usize, 0u32);
+    let lits = litList.view();
+    let c = count.viewMut();
+    var i = 0usize;
+    while i < lits.len {
+      let b = usize.from(lits[i]);
+      c[b] = c[b] + 1u32;
+      i += 1usize;
+    }
+    var distinct = 0usize;
+    maxSym = 0usize;
+    var s = 0usize;
+    while s < 256usize {
+      if *count[s] > 0u32 {
+        distinct += 1usize;
+        maxSym = s;
+      }
+      s += 1usize;
+    }
+    distinct
+  }
+
+  // The code for the counts (two or more symbols present): lengths of at
+  // most 'maxBits', then the canonical codes
+  fn build(self: &mut, maxBits: u32) {
+    freq.clear();
+    var s = 0usize;
+    while s <= maxSym { freq.push(*count[s]); s += 1usize; }
+    while true {
+      let longest = self.lengths();
+      if longest <= maxBits { break; }
+      // Too deep: halve the counts (a symbol present stays present) and merge again
+      s = 0usize;
+      while s <= maxSym {
+        let f = *freq[s];
+        if f > 0u32 { freq.set(s, (f + 1u32) / 2u32); }
+        s += 1usize;
+      }
+    }
+    self.assignCodes();
+  }
+
+  // Huffman's lengths for 'freq', by the two-queue merge: the leaves sorted
+  // by count, the merged nodes made in order of weight. Answers the longest.
+  fn lengths(self: &mut) u32 {
+    order.clear();
+    var s = 0usize;
+    while s <= maxSym {
+      let f = *freq[s];
+      if f > 0u32 {
+        // Insertion: by count, then by symbol
+        order.push(u16.from(s));
+        var k = order.len() - 1usize;
+        while k > 0usize && *freq[usize.from(*order[k - 1usize])] > f {
+          order.set(k, *order[k - 1usize]);
+          k -= 1usize;
+        }
+        order.set(k, u16.from(s));
+      }
+      s += 1usize;
+    }
+    let m = order.len();
+    weight.clear();
+    parent.clear();
+    var i = 0usize;
+    while i < m {
+      weight.push(u64.from(*freq[usize.from(*order[i])]));
+      parent.push(0u32);
+      i += 1usize;
+    }
+    // Merge: 'leaf' is the next leaf, 'node' the next merged node, both lightest first
+    var leaf = 0usize;
+    var node = m;
+    var made = m;
+    while made < 2usize * m - 1usize {
+      var pick = 0usize;
+      var sum = 0u64;
+      var k = 0;
+      while k < 2 {
+        if leaf < m && (node >= made || *weight[leaf] <= *weight[node]) {
+          pick = leaf;
+          leaf += 1usize;
+        } else {
+          pick = node;
+          node += 1usize;
+        }
+        sum = sum + *weight[pick];
+        parent.set(pick, u32.from(made));
+        k += 1;
+      }
+      weight.push(sum);
+      parent.push(0u32);
+      made += 1usize;
+    }
+    // Depths from the root (the last node made) down
+    depth.clear();
+    depth.resize(made, 0u8);
+    var longest = 0u32;
+    var d = made - 1usize;
+    while d > 0usize {
+      d -= 1usize;
+      let dp = *depth[usize.from(*parent[d])] + 1u8;
+      depth.set(d, dp);
+    }
+    lens.clear();
+    lens.resize(maxSym + 1usize, 0u8);
+    i = 0usize;
+    while i < m {
+      let dp = *depth[i];
+      lens.set(usize.from(*order[i]), dp);
+      if u32.from(dp) > longest { longest = u32.from(dp); }
+      i += 1usize;
+    }
+    longest
+  }
+
+  // The canonical codes, as the decoder's table lays them out: a symbol of
+  // weight w (tableLog + 1 - its length) takes 2^(w - 1) entries, weight 1
+  // first, each weight's symbols in order; its code is where its entries
+  // start, shifted down by (w - 1)
+  fn assignCodes(self: &mut) {
+    tableLog = 0u32;
+    var s = 0usize;
+    while s <= maxSym {
+      if u32.from(*lens[s]) > tableLog { tableLog = u32.from(*lens[s]); }
+      s += 1usize;
+    }
+    rankStart.clear();
+    rankStart.resize(usize.from(tableLog) + 2usize, 0u32);
+    s = 0usize;
+    while s <= maxSym {
+      let l = u32.from(*lens[s]);
+      if l > 0u32 {
+        let w = usize.from(tableLog + 1u32 - l);
+        rankStart.set(w, *rankStart[w] + (1u32 << (tableLog - l)));
+      }
+      s += 1usize;
+    }
+    var at = 0u32;
+    var w = 1usize;
+    while w <= usize.from(tableLog) {
+      let c = *rankStart[w];
+      rankStart.set(w, at);
+      at = at + c;
+      w += 1usize;
+    }
+    codes.clear();
+    codes.resize(256usize, 0u32);
+    s = 0usize;
+    while s <= maxSym {
+      let l = u32.from(*lens[s]);
+      if l > 0u32 {
+        let wt = tableLog + 1u32 - l;
+        let start = *rankStart[usize.from(wt)];
+        codes.set(s, start >> (wt - 1u32));
+        rankStart.set(usize.from(wt), start + (1u32 << (wt - 1u32)));
+      }
+      s += 1usize;
+    }
+  }
+
+  // Appends the tree description (RFC 8878 section 4.2.1.1): the weights of
+  // symbols 0 to maxSym - 1 (the last one's is implied), FSE-coded when that
+  // is smaller, else 4 bits each. false when it cannot be described: more
+  // than 128 weights that FSE does not shrink.
+  fn writeTree(self: &mut, out: &mut List[u8]) bool {
+    let n = maxSym;
+    wts.clear();
+    var s = 0usize;
+    while s < n {
+      let l = u32.from(*lens[s]);
+      wts.push(if l == 0u32 {0u8} else {u8.from(tableLog + 1u32 - l)});
+      s += 1usize;
+    }
+    let direct = 1usize + (n + 1usize) / 2usize;
+    let mark = out.len();
+    if n >= 2usize && self.fseWeights(out) {
+      let size = out.len() - mark - 1usize;
+      if size < 128usize && (n > 128usize || 1usize + size < direct) {
+        out.set(mark, u8.from(size));
+        return true;
+      }
+      out.truncate(mark);
+    }
+    if n > 128usize { return false; }
+    out.push(u8.from(127usize + n));
+    var i = 0usize;
+    while i < n {
+      let hi = *wts[i];
+      let lo = if i + 1usize < n {*wts[i + 1usize]} else {0u8};
+      out.push((hi << 4u8) | lo);
+      i += 2usize;
+    }
+    true
+  }
+
+  // The weights FSE-coded (the reference's HUF_compressWeights): a header
+  // byte (filled in by the caller), the table description, then the weights
+  // by two states taking turns, as HufTable.read decodes them. false when
+  // FSE does not apply: one weight value only, or each value once.
+  fn fseWeights(self: &mut, out: &mut List[u8]) bool {
+    let n = wts.len();
+    wcount.clear();
+    wcount.resize(usize.from(tableLog) + 1usize, 0u32);
+    var i = 0usize;
+    var maxW = 0usize;
+    while i < n {
+      let w = usize.from(*wts[i]);
+      wcount.set(w, *wcount[w] + 1u32);
+      if w > maxW { maxW = w; }
+      i += 1usize;
+    }
+    var maxCount = 0u32;
+    i = 0usize;
+    while i <= maxW {
+      if *wcount[i] > maxCount { maxCount = *wcount[i]; }
+      i += 1usize;
+    }
+    if maxCount == u32.from(n) || maxCount == 1u32 { return false; }
+    let log = fseTableLog(6u32, u32.from(n), maxW);
+    normalize(wcount.view(), maxW, u32.from(n), log, &mut wnorm);
+    out.push(0u8);
+    writeNCount(out, wnorm.view(), log);
+    wfse.build(wnorm.view(), log);
+    // Even indexes on state 1, odd on state 2; the last two start them
+    var bw = BitOut.make();
+    var s1 = 0u32;
+    var s2 = 0u32;
+    var k = n;
+    var first1 = true;
+    var first2 = true;
+    while k > 0usize {
+      k -= 1usize;
+      let w = usize.from(*wts[k]);
+      if k % 2usize == 0usize {
+        s1 = if first1 {wfse.first(w)} else {wfse.encode(&mut bw, out, s1, w)};
+        first1 = false;
+      } else {
+        s2 = if first2 {wfse.first(w)} else {wfse.encode(&mut bw, out, s2, w)};
+        first2 = false;
+      }
+    }
+    wfse.flush(&mut bw, out, s2);
+    wfse.flush(&mut bw, out, s1);
+    bw.close(out);
+    true
+  }
+
+  // Appends one Huffman stream of lits[from, to): the last literal first,
+  // so the decoder, reading backward, meets the first one first
+  fn encodeStream(self: &, lits: &List[u8], from: usize, to: usize, out: &mut List[u8]) {
+    var bw = BitOut.make();
+    var i = to;
+    while i > from {
+      i -= 1usize;
+      let b = usize.from(*lits[i]);
+      bw.put(out, u64.from(*codes[b]), u32.from(*lens[b]));
+    }
+    bw.close(out);
+  }
+}

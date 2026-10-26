@@ -1,0 +1,154 @@
+// Symbolic links to FILES in the destination, and symbolic links to nowhere. links.cone has the folder links
+// (a directory junction on Windows needs no rights); a file symbolic link on Windows needs administrator
+// rights or Developer Mode, so this test makes one and, when the system will not, skips with the reason
+// ('congo test' reports it as skipped). On Linux it always runs.
+//
+// What is checked: an entry named like a link to a file that is there is refused, and the file it leads
+// to is not written; so is an entry named like a link whose target is not there, with or without
+// 'overwrite' (that is the case 'fs.stat' cannot see: the file looks absent, and writing would make the
+// target); the target is not made; refusing writes nothing, the entries before the bad one included;
+// a name below a symbolic link to a folder that is gone is refused too; the links are left as they were.
+
+mod symlinkstest;
+
+import testing use *;
+import collections use *;
+import zipfile use *;
+import libc;
+import fs;
+import path use Path;
+
+fn exists(p: &str) bool { fs.exists(&Path.from(p)) }
+
+fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+
+fn absolute(p: &str) Path {
+  match fs.absolute(&Path.from(p)) {
+    case let Ok(a) { a }
+    case let Error(e) { Path.from(p) }
+  }
+}
+
+// A symbolic link at 'link' to 'target' (a folder if 'folder'), both paths quoted since a path may hold a space
+fn symlink(link: &Path, target: &Path, folder: bool) bool {
+  var command = String.empty();
+  if isWindows() {
+    var paths = String.from(link.view());
+    paths.append("\" \"");
+    paths.append(target.view());
+    paths.replaceByte('/', '\\');
+    command.append("mklink ");
+    if folder { command.append("/D "); }
+    command.append("\"");
+    command.append(paths.view());
+    command.append("\" >nul 2>nul");
+  } else {
+    command.append("ln -s '");
+    command.append(target.view());
+    command.append("' '");
+    command.append(link.view());
+    command.append("'");
+  }
+  libc.system(command.cstr()) == 0i32
+}
+
+fn addNamed(w: &mut ZipWriter, name: &str) {
+  if name.len() == 0usize { return; }
+  w.add(name, "evil\n", &EntryOptions.stored());
+}
+
+fn archiveOf(a: &str, b: &str, c: &str) List[u8] {
+  var w = ZipWriter.make();
+  addNamed(&mut w, a);
+  addNamed(&mut w, b);
+  addNamed(&mut w, c);
+  match w.bytes() {
+    case let Ok(x) { x }
+    case let Error(e) { List[u8].empty() }
+  }
+}
+
+fn kindOf(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[ErrorKind] {
+  match Archive.open(data) {
+    case let Error(e) { Some[ErrorKind](e.kind) }
+    case let Ok(ar) {
+      match ar.extractAll(data, &Path.from(dest), opts) {
+        case let Ok(done) { None[ErrorKind] }
+        case let Error(e) { Some[ErrorKind](e.kind) }
+      }
+    }
+  }
+}
+
+fn isKind(got: Option[ErrorKind], want: ErrorKind) bool {
+  match got {
+    case let Some(k) { k == want }
+    case is None { false }
+  }
+}
+
+fn contentIs(p: &str, want: &Array[u8]) bool {
+  match fs.readFile(&Path.from(p)) {
+    case let Ok(s) { s.view() == want }
+    case let Error(e) { false }
+  }
+}
+
+fn main() i32 {
+  let safe = ExtractOptions.safe();
+  var over = ExtractOptions.safe();
+  over.overwrite = true;
+
+  clean("lk3-dest");
+  clean("lk3-other");
+  clean("lk3-gone");
+  clean("lk3-nodir");
+  fs.makeDirAll(&Path.from("lk3-dest"));
+  fs.makeDirAll(&Path.from("lk3-other"));
+  fs.writeFile(&Path.from("lk3-other/live.txt"), "keep\n");
+  let dangling = absolute("lk3-dest/out.txt");
+  let gone = absolute("lk3-gone/out.txt");
+  if !symlink(&dangling, &gone, false) {
+    clean("lk3-dest");
+    clean("lk3-other");
+    return skip("this system will not make a symbolic link here (Windows lets only an administrator or Developer Mode)");
+  }
+  let live = absolute("lk3-dest/live.txt");
+  let liveTarget = absolute("lk3-other/live.txt");
+  require(symlink(&live, &liveTarget, false), "made a symbolic link to a file that is there");
+  let folderLink = absolute("lk3-dest/dl");
+  let nodir = absolute("lk3-nodir");
+  require(symlink(&folderLink, &nodir, true), "made a symbolic link to a folder that is not there");
+
+  expect(fs.isLink(&dangling) && fs.isLink(&live) && fs.isLink(&folderLink), "the three are links");
+
+  // ---------------- a link to a file that is there ----------------
+  let liveEntry = archiveOf("live.txt", "", "");
+  expect(isKind(kindOf(liveEntry.view(), "lk3-dest", &safe), ErrorKind.UnsafePath), "a file named like a link to a file is refused");
+  expect(isKind(kindOf(liveEntry.view(), "lk3-dest", &over), ErrorKind.UnsafePath), "and with overwrite too");
+  expect(contentIs("lk3-other/live.txt", "keep\n"), "and the file it leads to was not written");
+
+  // ---------------- a link to a file that is not there ----------------
+  let danglingEntry = archiveOf("out.txt", "", "");
+  expect(isKind(kindOf(danglingEntry.view(), "lk3-dest", &safe), ErrorKind.UnsafePath), "a file named like a link to nowhere is refused");
+  expect(!exists("lk3-gone"), "and the target's folder was not made");
+  expect(isKind(kindOf(danglingEntry.view(), "lk3-dest", &over), ErrorKind.UnsafePath), "with overwrite too");
+  expect(!exists("lk3-gone"), "and still not");
+  expect(fs.isLink(&dangling), "the link was left as it was");
+
+  // Refusing is all or nothing
+  let withGood = archiveOf("good.txt", "out.txt", "also-good.txt");
+  expect(isKind(kindOf(withGood.view(), "lk3-dest", &safe), ErrorKind.UnsafePath), "good entries and a link to nowhere: refused");
+  expect(!exists("lk3-dest/good.txt") && !exists("lk3-dest/also-good.txt"), "and the good entries were not written");
+
+  // ---------------- a link to a folder that is not there ----------------
+  expect(isKind(kindOf(archiveOf("dl/x.txt", "", "").view(), "lk3-dest", &safe), ErrorKind.UnsafePath),
+    "a name below a symbolic link to a missing folder is refused");
+  expect(!exists("lk3-nodir"), "and the folder was not made");
+
+  // ---------------- clean up (a link goes by removing the link) ----------------
+  clean("lk3-dest");
+  expect(contentIs("lk3-other/live.txt", "keep\n"), "removing the links left their targets alone");
+  clean("lk3-other");
+  done()
+}

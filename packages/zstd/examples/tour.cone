@@ -1,6 +1,7 @@
 // A zstd frame (66 bytes, made by 'zstd -19' of the text below) decompressed
 // in one call, then the same bytes fed the way a socket would hand them over:
-// five at a time, the output taken eight bytes at a time.
+// five at a time, the output taken eight bytes at a time. Then the text
+// compressed again, in one call and by a Compressor fed ten bytes at a time.
 //
 //   congo run examples/tour.cone
 
@@ -57,5 +58,33 @@ fn main() i32 {
   printStr("\n");
   printInt(i64.from(pulls));
   printStr(" pulls\n");
+
+  // And back the other way: the text compressed in one call, then by a
+  // Compressor fed ten bytes at a time; both frames hold the same block
+  let text: &Array[u8] = out.view();
+  let once = zstd.compress(text, 3);
+  var c = zstd.Compressor.make(3);
+  var packed = List[u8].empty();
+  pos = 0usize;
+  while pos < text.len {
+    let n = if text.len - pos < 10usize {text.len - pos} else {10usize};
+    c.feed(&text[pos..<pos + n]);
+    pos += n;
+    if pos == text.len { c.finish(); }
+    var st: zstd.Status = zstd.Status.MoreOutput;
+    while st == zstd.Status.MoreOutput {
+      st = c.pull(&mut packed, 16usize);
+    }
+  }
+  printInt(i64.from(text.len));
+  printStr(" bytes compressed at level 3: ");
+  printInt(i64.from(once.len()));
+  printStr(" in one call, ");
+  printInt(i64.from(packed.len()));
+  printStr(" streamed\n");
+  match zstd.decompress(packed.view(), 0usize) {
+    case let Ok(back) { printStr(String.fromBytes(back.view()).view()); printStr("\n"); }
+    case let Error(e) { printStr(e.reason.view()); return 1i32; }
+  }
   0i32
 }

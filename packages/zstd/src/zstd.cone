@@ -1,18 +1,19 @@
-// The zstd package: Zstandard (RFC 8878) decompression, with its xxHash64,
-// streaming in bounded pieces and in one call. Written in Cone, with no C
-// library and no call of the OS's. Compression is not here yet.
+// The zstd package: Zstandard (RFC 8878) decompression and compression (at
+// levels 1 to 3), with its xxHash64, streaming in bounded pieces both ways
+// and in one call. Written in Cone, with no C library and no call of the
+// OS's.
 //
-//   mod unpack;
+//   mod squeeze;
 //   import stdio use *;
 //   import zstd;
 //
 //   fn main() i32 {
-//     imm packed = ...;                                  // a .zst file's bytes
-//     match zstd.decompress(packed.view(), 0usize) {     // every frame, joined
-//       case imm ok Ok { printInt(i64.from(ok.len())); }
-//       case imm e Error { printStr(e.reason.view()); return 1i32; }
+//     let packed = zstd.compress("the quick brown fox", 3);   // one zstd frame
+//     match zstd.decompress(packed.view(), 0usize) {         // every frame, joined
+//       case let Ok(text) { printInt(i64.from(text.len())); }  // 19
+//       case let Error(e) { printStr(e.reason.view()); return 1i32; }
 //     }
-//     0i32;
+//     0i32
 //   }
 //
 // It reads as package deflate does: a value that holds a stream's whole
@@ -21,8 +22,10 @@
 // WHAT IS HERE
 //
 //   ONE CALL         the data in memory, the answer out
+//     compress(data, level) List[u8]       one frame, with the content size and checksum
 //     decompress(data, expected) Result[List[u8], ZstdError]
 //     decompressWithDictionary(data, dictionary, expected) Result[List[u8], ZstdError]
+//   'level' is 1, 2 or 3 (below 1 acts as 1, above 3 as 3).
 //   'expected' is the output size if known (0 if not): it reserves room and is
 //   also the most output allowed (0 allows 1 GiB), so a stream that claims to be
 //   small and is not is refused as TooLarge. Every frame in 'data' is decoded
@@ -37,9 +40,12 @@
 //       setLimit(bytes), setMaxWindow(bytes), setDictionary(&content),
 //       setMultiFrame(bool), error(), frameCount(), totalIn(), totalOut(),
 //       isDone(), takeRest()
+//     Compressor.make(level)
+//       feed, finish, pull as above; totalIn(), totalOut(), isDone()
 //     Status: NeedInput (use up what you have: feed more or finish), MoreOutput
-//     (pull again), Done, Failed ('error()' says why).
-//     'examples/tour.cone' feeds five bytes at a time and takes eight out.
+//     (pull again), Done, Failed (a Decompressor only; 'error()' says why).
+//     'examples/tour.cone' feeds five bytes at a time and takes eight out, and
+//     compresses a text in pieces.
 //
 //   CHECKSUM
 //     xxh64(data, seed) u64, Xxh64 (make(seed), update(data, from, to),
@@ -65,6 +71,20 @@
 // offsets, as the RFC moves them (a literal length of 0 shifting them by one).
 // The window, and a raw-content dictionary.
 //
+// WHAT IS WRITTEN: one frame a stream. Its header: the magic number, the
+// descriptor (content checksum always on, no dictionary ID), single segment
+// when the content size is known and no larger than the level's window (else
+// the window descriptor), the content size when known, in 1, 2, 4 or 8
+// bytes. Blocks of 128 KiB, the last shorter: RLE (one byte value; never the
+// frame's first block), compressed, or raw, whichever is smallest. Literals:
+// raw, RLE, or Huffman-coded in 1 stream (under 256 literals) or 4, the tree
+// by 4-bit weights or FSE-coded weights, with headers of every size.
+// Sequences: the 1-, 2- and 3-byte counts; for each of literal lengths,
+// offsets and match lengths the predefined, RLE or FSE-coded table; the three
+// repeat offsets used wherever one fits, as the RFC moves them. Then the
+// checksum. Never written: skippable frames, dictionaries, "treeless"
+// literals and the "repeat" table mode (each block's tables are its own).
+//
 // STREAMING, IN A SENTENCE EACH
 //
 //   A Decompressor decodes one unit at a time: a magic number, a frame
@@ -78,6 +98,18 @@
 //   Decompressor's own memory is the input not yet used, the window (all of
 //   the frame's output while it is no longer than the window), one block, and
 //   as much again as the window before it lets the old output go.
+//
+//   A Compressor writes a block once 128 KiB and one byte more are in, or the
+//   input is finished, so every block but the last is full and the last is
+//   known to be last; a block's bytes depend only on the data, never on how it
+//   was cut or pulled (a test cuts it three ways at every size and shape and
+//   compares). The frame header goes out with the first block and carries the
+//   content size if 'finish' came before that: always for 128 KiB or less, and
+//   whenever the whole input was fed before the first pull (as 'compress'
+//   does). The Compressor's own memory is the input not yet compressed, the
+//   window behind it (and as much again before it lets the old input go), its
+//   hash tables (64 KiB at level 1, 256 KiB at 2, 768 KiB at 3; smaller for a
+//   small input whose size is known) and the output not yet pulled.
 //
 // METHOD CHOICES. These are defaults a later design may revisit. Each says what
 // was chosen and what was left out.
@@ -141,7 +173,51 @@
 //   borrow checker (error 1339) refuses a slice of one field of the
 //   Decompressor alongside '&mut' to the others, which change shape, as it
 //   cannot tell the fields apart; a '&List[u8]' lends no elements across the
-//   call.
+//   call. The compressor's matchers and literal writer read their input the
+//   same way, for the same reason (a slice of the input held while a List of
+//   sequences grows is refused), taking an 8-byte slice only inside a helper.
+//
+// Compressing:
+//
+// - The levels are the reference's: its matcher and its parameters at each
+//   level, as libzstd 1.5.7's ZSTD_getCParams answers for an input of unknown
+//   size (and any over 256 KiB). Level 1: the fast matcher, a 2^19 window, a
+//   2^14 table of the 7 bytes at a position. Level 2: the fast matcher, 2^20,
+//   a 2^16 table of 6 bytes. Level 3: the double-fast matcher, 2^21, a 2^17
+//   table of 8 bytes and a 2^16 table of 5. The matchers are the shape of
+//   zstd's zstd_fast.c and zstd_double_fast.c (matcher.cone says what they
+//   do) without their unrolling: the reference looks at two positions a
+//   step and prefetches. A hash-chain matcher (the reference's levels 5 and
+//   up) was left for the higher levels.
+// - Each block's literals and sequences are coded on their own, the cheapest
+//   way by an estimate of the bits (cblock.cone): no table is carried from
+//   the block before (the reference reuses the last Huffman tree and FSE
+//   tables when cheaper), so a raw block costs nothing to the next one but
+//   the repeat offsets, which are put back. The reference's gain from reuse
+//   is the tables' descriptions, tens of bytes a block.
+// - FSE counts are normalized by rounding each to the table and giving the
+//   difference to (or taking it one at a time from) the most frequent; no
+//   "less than 1" counts are written (the reference's FSE_normalizeCount
+//   uses them and a finer rounding). The accuracy is the reference's
+//   FSE_optimalTableLog. Huffman lengths are Huffman's merge of the two
+//   lightest (two queues), limited to 11 bits by halving the counts until
+//   they fit (the reference's HUF_setMaxHeight moves lengths instead).
+// - A block is compressed only if that saves 1/64 of it and 2 bytes, literals
+//   are Huffman-coded only if that saves 1/64 of them and 2 bytes, and fewer
+//   than 64 literals are written raw: the reference's thresholds at these
+//   levels. A block of one byte value is RLE, but not as the frame's first
+//   (as the reference does, for the sake of some older decoders).
+// - The content checksum is always written, as the zstd tool does (the
+//   library's default is off); there is no setting to leave it out.
+// - The hash tables hold positions in the input buffer and are made with the
+//   first block, smaller for a small input of known size (the reference's
+//   ZSTD_adjustCParams: a table's log at most one more than the size's). When
+//   the buffer drops input the window no longer reaches, every position moves
+//   down with it; one that falls off becomes 0, a candidate that is checked
+//   like any other. A match is taken only when its bytes compare equal and it
+//   is within the window, so no table entry can make a wrong one.
+// - Levels below 1 act as 1, above 3 as 3 (the reference has negative levels
+//   and up to 22: later).
 //
 // TESTS. Made by the reference, libzstd 1.5.7 as Git for Windows installs it
 // (C:\Program Files\Git\mingw64\bin\libzstd.dll, SHA-256
@@ -156,14 +232,35 @@
 // malformed one with the right kind split at every offset, flip every bit of
 // some frames, and check xxHash64 against the reference's own.
 //
+// The compressor's tests: tests/roundtrip.cone compresses five shapes of data
+// at 19 sizes around a block's edges, at every level, in one call and fed
+// in pieces of 1, 997 and 65536 bytes, and decodes every frame with this
+// package's decoder, in one call and streamed; the streamed frames must hold
+// the one-call frame's blocks; matches at the window's far edge are taken
+// and one byte past it are not, as the input buffer slides. The reference
+// checks the same writer: tests/data/crosscheck.py makes a seeded corpus
+// (text, random bytes, runs, binary records, inputs made to force every
+// block, literal and sequence mode, matches at each level's window edge, 5 MB
+// of mixed data) and has examples/crosscheck.cone compress it at levels 1 to
+// 3, in one call and streamed two ways; libzstd 1.5.7 decodes each of the 336
+// frames to its input byte for byte, and so does this package's decoder. It
+// also makes two of roundtrip.cone's inputs, whose frames' XXH64 that test
+// pins. The script is run by hand when the compressor changes (congo test
+// runs no Python).
+//
 // OTHER COPIES. The repository was searched (Cone sources in packages/,
 // samples/, tools/, compiler/) for another zstd, FSE, Huffman-literal or
-// xxHash decoder: there is none.
+// xxHash decoder: there is none. For the encoder: no other FSE encoder; the
+// one Huffman length builder is deflate's (private to it, the same merge
+// done by repeated search, limited to 15 bits); http2's HPACK code is a fixed
+// table. This package does not import deflate for it.
 //
-// NOT HERE: compression (the next pull request: levels 1 to 3); zstd's own
-// dictionary format and dictionary training; the legacy formats before
-// RFC 8878 (zstd 0.x); reading from a file or a socket (the caller feeds it);
-// multithreaded decoding.
+// NOT HERE: levels above 3 (lazy, hash-chain and optimal matchers) and the
+// negative levels; long-distance matching; compressing with a dictionary;
+// writing "treeless" literals and repeated tables; zstd's own dictionary
+// format and dictionary training; the legacy formats before RFC 8878 (zstd
+// 0.x); reading from a file or a socket (the caller feeds it); multithreaded
+// decoding or compression.
 //
 // SPEED, best of 5 runs on a loaded 13th-gen Core i7-13700HX, release build,
 // in MB/s of the decompressed bytes, next to the reference library
@@ -188,6 +285,38 @@
 // been tuned for speed past the shape of the algorithms.
 // XXH64 runs at 6.7 GB/s.
 //
+// COMPRESSING, on the same three files (the reference's level-3 frames
+// above, decoded), measured under about 74 per cent machine load (other
+// work running), each program pinned to the same core at high priority,
+// ours and the reference's taken in turn file by file; median of 5 runs in
+// MB/s of the input, and the size against the reference's at the same level
+// (libzstd 1.5.7, ZSTD_compress2 and ZSTD_compressStream2 through Python's
+// ctypes, the checksum on as ours; examples/compressbench.cone makes ours):
+//
+//                             one call     streamed     reference      size
+//                                                     one call  str.   vs ref
+//   Cone's packages'   L1       188          192        511    454   +2.9%
+//     sources          L2       181          175        447    396   +3.6%
+//     (17.7 MB)        L3       159          157        347    315   +1.5%
+//   conec.exe,         L1       130          129        493    430   +0.1%
+//     first 16 MB      L2       124          123        408    345   +0.4%
+//                      L3        85*          76        269    234   +0.4%
+//   pbrxrt.spv         L1       158          154        482    405   +4.8%
+//     (385 KB)         L2       152          145        387    320   +4.2%
+//                      L3       132          127        311    281   +0.2%
+//   (* runs from 72 to 110: not steady. The other rows' runs are within 10
+//   per cent of each other.)
+//
+// So it runs at 26 to 50 per cent of the reference's speed, and its frames
+// are 0.1 to 4.8 per cent larger. The likely causes of the time: input read
+// a byte at a time through the List (a 4- or 8-byte read is one slice and one
+// check, but each position still costs several), every literal copied a byte
+// at a time into the block's literals and again through the Huffman writer
+// one symbol a call, and the reference's two-positions-a-step loop not done.
+// Of the size: no table reused from the block before, a coarser FSE
+// normalization, and the fast matcher's simpler stepping. These are measured,
+// not chased.
+//
 // Its files are one module, and only this one, the root, imports:
 //
 //   zstd.cone          this overview
@@ -199,6 +328,11 @@
 //   block.cone         a compressed block: literals, sequences, their tables
 //   decompressor.cone  Decompressor: frames, blocks, the window, streaming
 //   decompress.cone    decompress, decompressWithDictionary
+//   encode.cone        the bit writer, FSE tables and counts, Huffman codes
+//   matcher.cone       the fast and double-fast matchers: a block's sequences
+//   cblock.cone        a compressed block: literals, sequences, their tables
+//   compressor.cone    Compressor: the frame, blocks, the window, streaming
+//   compress.cone      compress
 
 mod zstd;
 
