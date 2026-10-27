@@ -182,20 +182,20 @@ pub struct Connection is Move {
   // its first packet ready to transmit
   pub fn client(ctx: &Context, host: &str, localAddr: &Addr, remoteAddr: &Addr,
       now: Instant) Result[Connection, QuicError] {
-    if ctx.isServer() {return Error[Connection, QuicError](QuicError.make(0i32, "a client needs a client's Context"));}
+    if ctx.isServer() {return Err[Connection, QuicError](QuicError.make(0i32, "a client needs a client's Context"));}
     let cfg = ctx.config();
     let b = boxMake();
     let ssl = SSL_new(ctx.ctx);
     if ssl as usize == 0usize {
       boxFree(b);
-      return Error[Connection, QuicError](tlsError("SSL_new failed"));
+      return Err[Connection, QuicError](tlsError("SSL_new failed"));
     }
     var ossl = null as *u8;
     if ngtcp2_crypto_ossl_ctx_new(&mut ossl, ssl) != 0i32 || ngtcp2_crypto_ossl_configure_client_session(ssl) != 0i32 {
       SSL_free(ssl);
       if ossl as usize != 0usize {ngtcp2_crypto_ossl_ctx_del(ossl);}
       boxFree(b);
-      return Error[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
+      return Err[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
     }
     (*(b as *Box)).ssl = ssl;
     SSL_set_ex_data(ssl, appDataSlot, b);
@@ -221,7 +221,7 @@ pub struct Connection is Move {
       ngtcp2_crypto_ossl_ctx_del(ossl);
       libc.free(ps);
       boxFree(b);
-      return Error[Connection, QuicError](QuicError.make(rv, "the client connection could not be made"));
+      return Err[Connection, QuicError](QuicError.make(rv, "the client connection could not be made"));
     }
     (*(b as *Box)).conn = conn;
     ngtcp2_conn_set_tls_native_handle(conn, ossl);
@@ -233,12 +233,12 @@ pub struct Connection is Move {
   // is refused
   pub fn accept(ctx: &Context, packet: &Array[u8], localAddr: &Addr, remoteAddr: &Addr,
       now: Instant) Result[Connection, QuicError] {
-    if !ctx.isServer() {return Error[Connection, QuicError](QuicError.make(0i32, "a server needs a server's Context"));}
-    if packet.len == 0usize {return Error[Connection, QuicError](QuicError.make(0i32, "an empty packet"));}
+    if !ctx.isServer() {return Err[Connection, QuicError](QuicError.make(0i32, "a server needs a server's Context"));}
+    if packet.len == 0usize {return Err[Connection, QuicError](QuicError.make(0i32, "an empty packet"));}
     let cfg = ctx.config();
     var hd = PktHd(Cid.none(), Cid.none(), 0i64, null, 0usize, 0usize, 0usize, 0u32, 0u8, 0u8);
     let arv = ngtcp2_accept(&mut hd, &packet[0usize] as *u8, packet.len);
-    if arv != 0i32 {return Error[Connection, QuicError](QuicError.make(arv, "the packet is not a client's first"));}
+    if arv != 0i32 {return Err[Connection, QuicError](QuicError.make(arv, "the packet is not a client's first"));}
     let b = boxMake();
     let wire = ctx.alpn.view();
     let a = libc.malloc(wire.len);
@@ -248,14 +248,14 @@ pub struct Connection is Move {
     let ssl = SSL_new(ctx.ctx);
     if ssl as usize == 0usize {
       boxFree(b);
-      return Error[Connection, QuicError](tlsError("SSL_new failed"));
+      return Err[Connection, QuicError](tlsError("SSL_new failed"));
     }
     var ossl = null as *u8;
     if ngtcp2_crypto_ossl_ctx_new(&mut ossl, ssl) != 0i32 || ngtcp2_crypto_ossl_configure_server_session(ssl) != 0i32 {
       SSL_free(ssl);
       if ossl as usize != 0usize {ngtcp2_crypto_ossl_ctx_del(ossl);}
       boxFree(b);
-      return Error[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
+      return Err[Connection, QuicError](tlsError("the crypto helper could not take the SSL object"));
     }
     (*(b as *Box)).ssl = ssl;
     SSL_set_ex_data(ssl, appDataSlot, b);
@@ -276,7 +276,7 @@ pub struct Connection is Move {
       ngtcp2_crypto_ossl_ctx_del(ossl);
       libc.free(ps);
       boxFree(b);
-      return Error[Connection, QuicError](QuicError.make(rv, "the server connection could not be made"));
+      return Err[Connection, QuicError](QuicError.make(rv, "the server connection could not be made"));
     }
     (*(b as *Box)).conn = conn;
     ngtcp2_conn_set_tls_native_handle(conn, ossl);

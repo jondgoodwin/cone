@@ -236,7 +236,7 @@ pub struct Parakeet {
     let opened = openSafetensors(modelPath);
     var file = match opened {
       case var Ok(f) { f }
-      case let Error(e) { return Error[Parakeet, String](describe("speechtotext: ", e.view(), "")); }
+      case let Err(e) { return Err[Parakeet, String](describe("speechtotext: ", e.view(), "")); }
     };
     // the vocabulary
     var vocab = List[String].empty();
@@ -246,10 +246,10 @@ pub struct Parakeet {
         var i = 0usize;
         while i < lines.len() { vocab.push(lines[i].copy()); i = i + 1usize; }
       }
-      case let Error(e) { return Error[Parakeet, String](describe("speechtotext: the vocabulary: ", e.message().view(), "")); }
+      case let Err(e) { return Err[Parakeet, String](describe("speechtotext: the vocabulary: ", e.message().view(), "")); }
     }
     if vocab.len() != 1024usize {
-      return Error[Parakeet, String](String.from("speechtotext: the vocabulary does not have 1024 pieces"));
+      return Err[Parakeet, String](String.from("speechtotext: the vocabulary does not have 1024 pieces"));
     }
     Parakeet.placed(device, file, vocab)
   }
@@ -264,7 +264,7 @@ pub struct Parakeet {
     match st.floats(bytes, "mel.fb") { case var Some(w) { fb = w; } case is None {} }
     var frontend: Frontend = match Frontend.make(window.view(), fb.view()) {
       case var Some(f) { f }
-      case is None { return Error[Parakeet, String](String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257")); }
+      case is None { return Err[Parakeet, String](String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257")); }
     };
     // the matrices, placed in buffers; everything else into 'small'
     var specs = List[Spec].empty();
@@ -281,14 +281,14 @@ pub struct Parakeet {
           let name = ti.name.view();
           if name == "dec.embed" {
             if ti.dtype != ST_F32 || ti.shape.len() != 2usize || ti.rows() != N_TOKENS || ti.cols() != PRED {
-              return Error[Parakeet, String](String.from("speechtotext: dec.embed is not an F32 matrix of 1025 x 640"));
+              return Err[Parakeet, String](String.from("speechtotext: dec.embed is not an F32 matrix of 1025 x 640"));
             }
             embedBegin = ti.begin;
             haveEmbed = true;
           } else if name == "mel.window" || name == "mel.fb" {
           } else if isMatrix(name) {
             if ti.shape.len() != 2usize || (ti.dtype != ST_F32 && ti.dtype != ST_F16) {
-              return Error[Parakeet, String](describe("speechtotext: tensor ", name, " is not an F32 or F16 matrix"));
+              return Err[Parakeet, String](describe("speechtotext: tensor ", name, " is not an F32 or F16 matrix"));
             }
             var q = QTYPE_F32;
             if ti.dtype == ST_F16 { q = QTYPE_F16; }
@@ -296,7 +296,7 @@ pub struct Parakeet {
             specNames.push(ti.name.copy());
           } else {
             if ti.dtype != ST_F32 {
-              return Error[Parakeet, String](describe("speechtotext: tensor ", name, " must be F32 (a small tensor)"));
+              return Err[Parakeet, String](describe("speechtotext: tensor ", name, " must be F32 (a small tensor)"));
             }
             smallNames.push(ti.name.copy());
             smallOffs.push(smallWords.len());
@@ -309,7 +309,7 @@ pub struct Parakeet {
       }
       t = t + 1usize;
     }
-    if !haveEmbed { return Error[Parakeet, String](String.from("speechtotext: the model has no dec.embed")); }
+    if !haveEmbed { return Err[Parakeet, String](String.from("speechtotext: the model has no dec.embed")); }
     // plan the weight buffers
     var sizes = List[u64].empty();
     {
@@ -336,7 +336,7 @@ pub struct Parakeet {
     var b = 0usize;
     while b < sizes.len() {
       let buf = device.createBuffer(alignUp(*sizes[b], 4u64), BUFFER_USAGE);
-      if !buf.isValid() { return Error[Parakeet, String](String.from("speechtotext: the GPU could not make a weights buffer (out of memory?)")); }
+      if !buf.isValid() { return Err[Parakeet, String](String.from("speechtotext: the GPU could not make a weights buffer (out of memory?)")); }
       weightBytes = weightBytes + alignUp(*sizes[b], 4u64);
       resident.push(buf);
       b = b + 1usize;
@@ -362,12 +362,12 @@ pub struct Parakeet {
     while k < 8usize { addZeroed(device, &mut resident, PRED); k = k + 1usize; }
     var r = 0usize;
     while r < resident.len() {
-      if !resident[r].isValid() { return Error[Parakeet, String](String.from("speechtotext: the GPU could not make a buffer (out of memory?)")); }
+      if !resident[r].isValid() { return Err[Parakeet, String](String.from("speechtotext: the GPU could not make a buffer (out of memory?)")); }
       r = r + 1usize;
     }
     let kernels = Kernels.make(device);
     let sk = SpeechKernels.make(device);
-    if !kernels.isValid() || !sk.isValid() { return Error[Parakeet, String](String.from("speechtotext: the kernels could not be made on this device")); }
+    if !kernels.isValid() || !sk.isValid() { return Err[Parakeet, String](String.from("speechtotext: the kernels could not be made on this device")); }
 
     // the references
     var err = String.empty();
@@ -429,12 +429,12 @@ pub struct Parakeet {
     let jointOutBias = smallRef(&smallNames, &smallOffs, "", "joint.out.bias", &mut err);
     let lstmBias0 = smallRef(&smallNames, &smallOffs, "", "dec.lstm0.bias", &mut err);
     let lstmBias1 = smallRef(&smallNames, &smallOffs, "", "dec.lstm1.bias", &mut err);
-    if err.len() > 0usize { return Error[Parakeet, String](err); }
+    if err.len() > 0usize { return Err[Parakeet, String](err); }
     // shapes the kernels assume
     if layers[0usize].ff1a.rows != D_FF || layers[0usize].ff1a.cols != D_MODEL || subOut.rows != D_MODEL || subOut.cols != SUB_CH * SUB_F
       || jointOut.rows != N_TOKENS + N_DUR || jointOut.cols != PRED || lstmIh0.rows != 4usize * PRED
       || jointEnc.rows != PRED || jointEnc.cols != D_MODEL {
-      return Error[Parakeet, String](String.from("speechtotext: the model's tensors do not have the shapes of parakeet-tdt-0.6b-v2"));
+      return Err[Parakeet, String](String.from("speechtotext: the model's tensors do not have the shapes of parakeet-tdt-0.6b-v2"));
     }
     let nres = resident.len();
     let timings = Timings(0i64, 0i64, 0i64, 0u64, 0u64, 0i64);
@@ -457,7 +457,7 @@ pub struct Parakeet {
   pub fn transcribe(self: &mut, device: &mut Device, samples: &Array[f32]) Result[Transcript, String] {
     match self.run(device, samples, false) {
       case var Ok(r) { Ok[Transcript, String](r.(transcript)) }
-      case let Error(e) { Error[Transcript, String](e.copy()) }
+      case let Err(e) { Err[Transcript, String](e.copy()) }
     }
   }
 
@@ -476,11 +476,11 @@ pub struct Parakeet {
     if feats.frames >= 2usize {
       match encode(self, device, &feats.data, feats.frames, trace) {
         case var Ok(e) { frames, enc = e.(frames, trace); }
-        case let Error(m) { return Error[Run, String](m.copy()); }
+        case let Err(m) { return Err[Run, String](m.copy()); }
       }
       t2 = Instant.now();
       match decodeGreedy(self, device, frames, &mut steps, trace, &mut tokens, &mut times) {
-        case let Some(m) { return Error[Run, String](m.copy()); }
+        case let Some(m) { return Err[Run, String](m.copy()); }
         case is None {}
       }
     }

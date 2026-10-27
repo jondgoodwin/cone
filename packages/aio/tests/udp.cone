@@ -6,7 +6,7 @@
 //    a Datagram holding those bytes and the sender, a's address.
 // 2. An empty datagram is a datagram, not an end: Done, length 0, the sender named.
 // 3. Truncation: a datagram of 40 bytes to a receive whose buffer has 6 bytes of
-//    room fails, an Error of kind Truncated (aio.isTruncated; its code the
+//    room fails, an Err of kind Truncated (aio.isTruncated; its code the
 //    system's number for a datagram too long, WSAEMSGSIZE or EMSGSIZE), and
 //    the buffer goes home to its pool: the pool's lent count is 0 at the end.
 //    The next datagram is whole.
@@ -107,7 +107,7 @@ actor Peer {
     let sent = await a.sendTo(to, m);
     match sent {
       case let Ok(n) {got.sent.store(u64.from(n));}
-      case let Error(e) {got.sent.store(1000000u64 + u64.from(e.code));}
+      case let Err(e) {got.sent.store(1000000u64 + u64.from(e.code));}
     }
     var r = await b.recvFrom(IoBuf(4096usize));
     match &mut r {
@@ -137,7 +137,7 @@ actor Peer {
     small.setLen(small.capacity() - 6usize);
     let cut = await b.recvFrom(small);
     match cut {
-      case let Error(e) {
+      case let Err(e) {
         if aio.isTruncated(e) && e.kind() == IoErrorKind.Truncated {got.cut.store(1u64);}
         if e.code == IoError.truncated().code {got.cutCode.store(1u64);}
         if !aio.isCancelled(e) && !aio.isTimedOut(e) {got.osKind.store(1u64);}
@@ -154,12 +154,12 @@ actor Peer {
     // 4. No room, and a deadline already past
     let none = await b.recvFrom(IoBuf.empty());
     match none {
-      case let Error(e) {if e.kind() == IoErrorKind.InvalidInput {got.noRoom.store(1u64);}}
+      case let Err(e) {if e.kind() == IoErrorKind.InvalidInput {got.noRoom.store(1u64);}}
       else {}
     }
     let timed = await b.recvFromIn(IoBuf(4096usize), IoLimits.until(Instant.fromNanos(1i64)));
     match timed {
-      case let Error(e) {if aio.isTimedOut(e) {got.late.store(1u64);}}
+      case let Err(e) {if aio.isTimedOut(e) {got.late.store(1u64);}}
       else {}
     }
     var d = done;

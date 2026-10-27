@@ -243,7 +243,7 @@ static int parseUsingSeen = 0;
 // 'case let Ok(avg)', 'if let Some(n) = x', 'let Tea(t) = d else {...};', and 'var' for a name that may
 // change. The 'let' or 'var' is in front of the whole pattern, so the line alone says the name in the
 // parentheses is a new binding; without it a call-shaped pattern is a value, compared by equality. The
-// variant may be written as a reference ('let &mut Error(e)') or through its enum or module
+// variant may be written as a reference ('let &mut Err(e)') or through its enum or module
 // ('Shape.Circle(c)', 'Some[i32](n)'). It is read as the type expression it looks like (a call) and
 // taken apart here: the parentheses hold exactly one name, and a pattern does not nest.
 

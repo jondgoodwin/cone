@@ -54,7 +54,7 @@ pub struct Context is Move {
   pub fn client(cfg: Config) Result[Context, QuicError] {
     helperReady();
     let ctx = newCtx(TLS_client_method());
-    if ctx as usize == 0usize {return Error[Context, QuicError](tlsError("SSL_CTX_new failed"));}
+    if ctx as usize == 0usize {return Err[Context, QuicError](tlsError("SSL_CTX_new failed"));}
     let kind = cfg.verify.kind;
     if kind == tls.VerifyKind.Insecure {
       SSL_CTX_set_verify(ctx, verifyNone, null);
@@ -63,7 +63,7 @@ pub struct Context is Move {
       SSL_CTX_set_verify(ctx, verifyPeer, null);
       if loadRoots(ctx, cfg.verify.rootsPem()) == 0u32 {
         SSL_CTX_free(ctx);
-        return Error[Context, QuicError](tlsError("the root bundle holds no certificate"));
+        return Err[Context, QuicError](tlsError("the root bundle holds no certificate"));
       }
     } else {
       // The OS's verifier and pinning: OpenSSL hands the chain to
@@ -75,7 +75,7 @@ pub struct Context is Move {
     let wire = alpnWire(cfg.alpn.view());
     if wire.len() == 0usize {
       SSL_CTX_free(ctx);
-      return Error[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
+      return Err[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
     }
     let w = wire.view();
     SSL_CTX_set_alpn_protos(ctx, &w[0usize] as *u8, u32.from(w.len));
@@ -89,29 +89,29 @@ pub struct Context is Move {
   pub fn server(cfg: Config, certFile: &Path, keyFile: &Path) Result[Context, QuicError] {
     helperReady();
     let ctx = newCtx(TLS_server_method());
-    if ctx as usize == 0usize {return Error[Context, QuicError](tlsError("SSL_CTX_new failed"));}
+    if ctx as usize == 0usize {return Err[Context, QuicError](tlsError("SSL_CTX_new failed"));}
     var cert = String.from(certFile.view());
     if SSL_CTX_use_certificate_chain_file(ctx, cert.cstr()) != 1i32 {
       SSL_CTX_free(ctx);
       var what = String.from("the certificate chain could not be loaded from ");
       what.append(certFile.view());
-      return Error[Context, QuicError](tlsError(what.view()));
+      return Err[Context, QuicError](tlsError(what.view()));
     }
     var key = String.from(keyFile.view());
     if SSL_CTX_use_PrivateKey_file(ctx, key.cstr(), filetypePem) != 1i32 {
       SSL_CTX_free(ctx);
       var what = String.from("the private key could not be loaded from ");
       what.append(keyFile.view());
-      return Error[Context, QuicError](tlsError(what.view()));
+      return Err[Context, QuicError](tlsError(what.view()));
     }
     if SSL_CTX_check_private_key(ctx) != 1i32 {
       SSL_CTX_free(ctx);
-      return Error[Context, QuicError](tlsError("the private key is not the certificate's"));
+      return Err[Context, QuicError](tlsError("the private key is not the certificate's"));
     }
     let wire = alpnWire(cfg.alpn.view());
     if wire.len() == 0usize {
       SSL_CTX_free(ctx);
-      return Error[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
+      return Err[Context, QuicError](QuicError.make(0i32, "the ALPN protocol must be 1 to 255 bytes"));
     }
     // No 0-RTT: no early data taken, and no tickets to resume with
     SSL_CTX_set_max_early_data(ctx, 0u32);

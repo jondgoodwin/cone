@@ -53,7 +53,7 @@ fn readBack(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8], label:
     case let Some(i) {
       match ar.read(data, i) {
         case let Ok(got) { expect(got.view() == want, label); }
-        case let Error(e) { expect(false, why(label, &e).view()); }
+        case let Err(e) { expect(false, why(label, &e).view()); }
       }
     }
     case is None { expect(false, label); }
@@ -104,12 +104,12 @@ fn main() i32 {
   expect(w.add("plain.txt", "default time and mode\n", &EntryOptions.plain()) is Ok, "add: defaults");
   expectUInt(w.count(), 36u64, "the writer counts its entries");
   match w.bytes() {
-    case let Error(e) { expect(false, why("bytes", &e).view()); }
+    case let Err(e) { expect(false, why("bytes", &e).view()); }
     case let Ok(arc) {
       expect(w.isFinished(), "bytes finishes");
       save("all.zip", arc.view());
       match Archive.open(arc.view()) {
-        case let Error(e) { expect(false, why("the written archive opens", &e).view()); }
+        case let Err(e) { expect(false, why("the written archive opens", &e).view()); }
         case let Ok(ar) {
           expectUInt(u64.from(ar.count()), 36u64, "round trip: 36 entries");
           expectStr(ar.comment.view(), "a comment, with ünicode", "round trip: the archive comment");
@@ -169,7 +169,7 @@ fn main() i32 {
     t.modified = 1793018096i64;   // 2026-10-26 12:34:56
     expect(tw.add("t.txt", "t", &t) is Ok, "add with a time");
     match tw.bytes() {
-      case let Error(e) { expect(false, "times: bytes"); }
+      case let Err(e) { expect(false, "times: bytes"); }
       case let Ok(b) {
         match Archive.open(b.view()) {
           case let Ok(ar) {
@@ -177,7 +177,7 @@ fn main() i32 {
             expectUInt(u64.from(ar.entry(0usize).dosTime), u64.from((12u32 << 11u32) | (34u32 << 5u32) | 28u32), "DOS time of 12:34:56");
             expectInt(ar.entry(0usize).modified, 1793018096i64, "and read back");
           }
-          case let Error(e) { expect(false, "times: opens"); }
+          case let Err(e) { expect(false, "times: opens"); }
         }
       }
     }
@@ -204,7 +204,7 @@ fn main() i32 {
       expect(st == Status.Done, "pieces: Done after the end is pulled");
       expect(x.pull(&mut got, 10usize) == Status.Done, "pieces: and stays Done");
       match Archive.open(got.view()) {
-        case let Error(e) { expect(false, why("pieces: the archive opens", &e).view()); }
+        case let Err(e) { expect(false, why("pieces: the archive opens", &e).view()); }
         case let Ok(ar) {
           expectUInt(u64.from(ar.count()), 2u64, "pieces: two entries");
           readBack(&ar, got.view(), "one.txt", body.view(), "pieces: one.txt");
@@ -224,11 +224,11 @@ fn main() i32 {
     expect(z.add("b.bin", noise(3000usize, 9u64).view(), &EntryOptions.stored()) is Ok, "zip64: add b");
     expect(z.addDir("d", &EntryOptions.plain()) is Ok, "zip64: add a folder");
     match z.bytes() {
-      case let Error(e) { expect(false, "zip64: bytes"); }
+      case let Err(e) { expect(false, "zip64: bytes"); }
       case let Ok(arc) {
         save("zip64.zip", arc.view());
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("zip64: opens", &e).view()); }
+          case let Err(e) { expect(false, why("zip64: opens", &e).view()); }
           case let Ok(ar) {
             expect(ar.zip64, "zip64: the zip64 end records are seen");
             expectUInt(u64.from(ar.count()), 3u64, "zip64: three entries");
@@ -250,11 +250,11 @@ fn main() i32 {
     expect(z.add("wide.txt", body.view(), &o2) is Ok, "zip64 entry: add");
     expect(z.add("narrow.txt", "n\n", &EntryOptions.plain()) is Ok, "zip64 entry: add the other");
     match z.bytes() {
-      case let Error(e) { expect(false, "zip64 entry: bytes"); }
+      case let Err(e) { expect(false, "zip64 entry: bytes"); }
       case let Ok(arc) {
         save("zip64entry.zip", arc.view());
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("zip64 entry: opens", &e).view()); }
+          case let Err(e) { expect(false, why("zip64 entry: opens", &e).view()); }
           case let Ok(ar) {
             expect(!ar.zip64, "zip64 entry: no zip64 end records, since none is needed");
             readBack(&ar, arc.view(), "wide.txt", body.view(), "zip64 entry: wide.txt");
@@ -278,11 +278,11 @@ fn main() i32 {
     }
     expect(allOk, "many: 70000 entries are added");
     match z.bytes() {
-      case let Error(e) { expect(false, "many: bytes"); }
+      case let Err(e) { expect(false, "many: bytes"); }
       case let Ok(arc) {
         save("many.zip", arc.view());
         match Archive.open(arc.view()) {
-          case let Error(e) { expect(false, why("many: opens", &e).view()); }
+          case let Err(e) { expect(false, why("many: opens", &e).view()); }
           case let Ok(ar) {
             expect(ar.zip64, "many: zip64 end records for 70000 entries");
             expectUInt(u64.from(ar.count()), 70000u64, "many: all 70000 entries");
@@ -300,32 +300,32 @@ fn main() i32 {
     var z = ZipWriter.make();
     expect(z.add("a.txt", "a", &EntryOptions.plain()) is Ok, "refusals: first add");
     let dup = z.add("a.txt", "b", &EntryOptions.plain());
-    expect(dup is Error, "a duplicate name is refused");
+    expect(dup is Err, "a duplicate name is refused");
     match dup {
-      case let Error(e) { expect(e.kind == ErrorKind.BadArgument, "a duplicate name is BadArgument"); }
+      case let Err(e) { expect(e.kind == ErrorKind.BadArgument, "a duplicate name is BadArgument"); }
       case is Ok {}
     }
-    expect(z.add("", "x", &EntryOptions.plain()) is Error, "an empty name is refused");
+    expect(z.add("", "x", &EntryOptions.plain()) is Err, "an empty name is refused");
     var long = String.empty();
     var k = 0usize;
     while k < 65536usize { long.append("x"); k += 1usize; }
-    expect(z.add(long.view(), "x", &EntryOptions.plain()) is Error, "a name over 65535 bytes is refused");
+    expect(z.add(long.view(), "x", &EntryOptions.plain()) is Err, "a name over 65535 bytes is refused");
     var bad = EntryOptions.plain();
     bad.method = 12u16;
-    expect(z.add("b.txt", "x", &bad) is Error, "a method other than 0, 8 and 93 is refused");
+    expect(z.add("b.txt", "x", &bad) is Err, "a method other than 0, 8 and 93 is refused");
     expect(!z.setComment(long.view()), "a comment over 65535 bytes is refused");
     expect(z.finish() is Ok, "refusals: finish");
-    expect(z.finish() is Error, "finishing twice is refused");
-    expect(z.add("c.txt", "x", &EntryOptions.plain()) is Error, "adding after finish is refused");
+    expect(z.finish() is Err, "finishing twice is refused");
+    expect(z.add("c.txt", "x", &EntryOptions.plain()) is Err, "adding after finish is refused");
     expect(!z.setComment("late"), "a comment after finish is refused");
     match z.bytes() {
       case let Ok(arc) {
         match Archive.open(arc.view()) {
           case let Ok(ar) { expectUInt(u64.from(ar.count()), 1u64, "refusals: only the good entry is in"); }
-          case let Error(e) { expect(false, "refusals: opens"); }
+          case let Err(e) { expect(false, "refusals: opens"); }
         }
       }
-      case let Error(e) { expect(false, "refusals: bytes after finish"); }
+      case let Err(e) { expect(false, "refusals: bytes after finish"); }
     }
   }
 
@@ -345,10 +345,10 @@ fn main() i32 {
     let saved = z.saveTo(&Path.from("tree.zip"));
     expect(saved is Ok, "saveTo");
     match fs.readFile(&Path.from("tree.zip")) {
-      case let Error(e) { expect(false, "the saved file reads"); }
+      case let Err(e) { expect(false, "the saved file reads"); }
       case let Ok(file) {
         match Archive.open(file.view()) {
-          case let Error(e) { expect(false, why("tree.zip opens", &e).view()); }
+          case let Err(e) { expect(false, why("tree.zip opens", &e).view()); }
           case let Ok(ar) {
             expectUInt(u64.from(ar.count()), 7u64, "addTree: folders and files, then the extra");
             expectStr(ar.entry(0usize).name.view(), "pack/empty/", "addTree: name order, folders first by name");

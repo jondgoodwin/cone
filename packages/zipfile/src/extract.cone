@@ -126,7 +126,7 @@ fn ioFault(e: &fs.FsError) ZipError {
 fn checkEntry(ar: &Archive, data: &Array[u8], i: usize) Result[String, ZipError] {
   let e = ar.entry(i);
   let clean = match safeName(e.name.view()) {
-    case let Error(err) { return Error[String, ZipError](err); }
+    case let Err(err) { return Err[String, ZipError](err); }
     case let Ok(s) { s }
   };
   if e.isSymlink() {
@@ -137,7 +137,7 @@ fn checkEntry(ar: &Archive, data: &Array[u8], i: usize) Result[String, ZipError]
     return refusal[String](ErrorKind.UnsafePath, e.offset, about("the entry", e.name.view(), "names no file").view());
   }
   match locate(ar, data, i) {
-    case let Error(err) { return Error[String, ZipError](err); }
+    case let Err(err) { return Err[String, ZipError](err); }
     case is Ok {}
   }
   Ok[String, ZipError](clean)
@@ -203,12 +203,12 @@ fn restoreOne(e: &Entry, path: &Path, folder: bool, opts: &ExtractOptions) bool 
   var ok = true;
   if opts.restoreTimes {
     let t = time.Timestamp.fromUnixSeconds(e.modified);
-    if fs.utime(path, t, t) is Error { ok = false; }
+    if fs.utime(path, t, t) is Err { ok = false; }
   }
   let mode = e.unixMode();
   // On Windows a folder's read-only attribute asks nothing of anyone and gets in the way of removing it
   if opts.restoreMode && mode != 0u32 && !(folder && isWindows()) {
-    if fs.chmod(path, mode & permissionBits) is Error { ok = false; }
+    if fs.chmod(path, mode & permissionBits) is Err { ok = false; }
   }
   ok
 }
@@ -226,7 +226,7 @@ fn writeOne(ar: &Archive, data: &Array[u8], i: usize, clean: &str, base: &Path, 
   let walk = if clean.len() == 0usize { base.copy() } else { base.join(clean) };
   if e.isDir() {
     match fs.makeDirAll(&walk) {
-      case let Error(fe) { return Some[ZipError](ioFault(&fe)); }
+      case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
       case is Ok {}
     }
     got.folders += 1usize;
@@ -239,7 +239,7 @@ fn writeOne(ar: &Archive, data: &Array[u8], i: usize, clean: &str, base: &Path, 
   // 'walk' is the file's own path; its folder is made, then it is written
   let up = walk.parent();
   match fs.makeDirAll(&up) {
-    case let Error(fe) { return Some[ZipError](ioFault(&fe)); }
+    case let Err(fe) { return Some[ZipError](ioFault(&fe)); }
     case is Ok {}
   }
   if fs.exists(&walk) {
@@ -274,7 +274,7 @@ fn restoreFolders(ar: &Archive, opts: &ExtractOptions, pending: &mut List[Pendin
 // A failure removes the file.
 fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Extracted) Option[ZipError] {
   match ar.reader(data, i) {
-    case let Error(e) { return Some[ZipError](e); }
+    case let Err(e) { return Some[ZipError](e); }
     case var Ok(r) {
       var piece = List[u8].empty();
       var first = true;
@@ -292,7 +292,7 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
         // last piece that fails removes the file
         let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
         match wrote {
-          case let Error(fe) {
+          case let Err(fe) {
             fs.removeFile(path);
             return Some[ZipError](ioFault(&fe));
           }
@@ -312,13 +312,13 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
 fn baseOf(dest: &Path) Result[Path, ZipError] {
   match fs.absolute(dest) {
     case let Ok(p) { Ok[Path, ZipError](p) }
-    case let Error(fe) { Error[Path, ZipError](ioFault(&fe)) }
+    case let Err(fe) { Err[Path, ZipError](ioFault(&fe)) }
   }
 }
 
 fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
   let base = match baseOf(dest) {
-    case let Error(e) { return Error[Extracted, ZipError](e); }
+    case let Err(e) { return Err[Extracted, ZipError](e); }
     case let Ok(p) { p }
   };
   // First every entry is looked at, and nothing is written
@@ -330,12 +330,12 @@ fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOpt
   while i < ar.count() {
     let e = ar.entry(i);
     match checkEntry(ar, data, i) {
-      case let Error(err) { return Error[Extracted, ZipError](err); }
+      case let Err(err) { return Err[Extracted, ZipError](err); }
       case let Ok(clean) {
         // A link on the entry's way, seen now, refuses the extraction with nothing written (it is looked
         // for again as each entry is written)
         match linkOnWay(&base, clean.view(), &mut looked) {
-          case let Some(f) { return Error[Extracted, ZipError](f); }
+          case let Some(f) { return Err[Extracted, ZipError](f); }
           case is None {}
         }
         if !e.isDir() {
@@ -361,7 +361,7 @@ fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOpt
     i += 1usize;
   }
   match fs.makeDirAll(&base) {
-    case let Error(fe) { return Error[Extracted, ZipError](ioFault(&fe)); }
+    case let Err(fe) { return Err[Extracted, ZipError](ioFault(&fe)); }
     case is Ok {}
   }
   var verified = Set[String]();
@@ -370,7 +370,7 @@ fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOpt
   i = 0usize;
   while i < ar.count() {
     match writeOne(ar, data, i, plan[i].view(), &base, opts, &mut verified, &mut pending, &mut got) {
-      case let Some(f) { return Error[Extracted, ZipError](f); }
+      case let Some(f) { return Err[Extracted, ZipError](f); }
       case is None {}
     }
     i += 1usize;
@@ -384,12 +384,12 @@ fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &Ex
     return refusal[Extracted](ErrorKind.NotFound, 0u64, "there is no entry with that index");
   }
   let base = match baseOf(dest) {
-    case let Error(e) { return Error[Extracted, ZipError](e); }
+    case let Err(e) { return Err[Extracted, ZipError](e); }
     case let Ok(p) { p }
   };
   let e = ar.entry(i);
   let clean = match checkEntry(ar, data, i) {
-    case let Error(err) { return Error[Extracted, ZipError](err); }
+    case let Err(err) { return Err[Extracted, ZipError](err); }
     case let Ok(s) { s }
   };
   if opts.maxTotal > 0u64 && !e.isDir() && e.size > opts.maxTotal {
@@ -397,20 +397,20 @@ fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &Ex
   }
   var verified = Set[String]();
   match linkOnWay(&base, clean.view(), &mut verified) {
-    case let Some(f) { return Error[Extracted, ZipError](f); }
+    case let Some(f) { return Err[Extracted, ZipError](f); }
     case is None {}
   }
   if !e.isDir() && !opts.overwrite && fs.exists(&base.join(clean.view())) {
     return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", base.join(clean.view()).view(), "is already there").view());
   }
   match fs.makeDirAll(&base) {
-    case let Error(fe) { return Error[Extracted, ZipError](ioFault(&fe)); }
+    case let Err(fe) { return Err[Extracted, ZipError](ioFault(&fe)); }
     case is Ok {}
   }
   var pending = List[Pending].empty();
   var got = Extracted(0usize, 0usize, 0u64, 0usize);
   match writeOne(ar, data, i, clean.view(), &base, opts, &mut verified, &mut pending, &mut got) {
-    case let Some(f) { return Error[Extracted, ZipError](f); }
+    case let Some(f) { return Err[Extracted, ZipError](f); }
     case is None {}
   }
   restoreFolders(ar, opts, &mut pending, &mut got);

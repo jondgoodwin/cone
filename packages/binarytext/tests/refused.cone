@@ -25,7 +25,7 @@ fn kindName(k: &binarytext.DecodeErrorKind) &str {
 fn isRefusal(res: Result[List[u8], binarytext.DecodeError], kind: &str, offset: usize, byte: u8, label: &str) {
   match res {
     case is Ok { expectStr("<decoded>", kind, label); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), kind, label);
       expectUInt(u64.from(e.offset), u64.from(offset), label);
       expectUInt(u64.from(e.byte), u64.from(byte), label);
@@ -41,7 +41,7 @@ fn isRefusal(res: Result[List[u8], binarytext.DecodeError], kind: &str, offset: 
 fn isBytes(res: Result[List[u8], binarytext.DecodeError], want: &str, label: &str) {
   match res {
     case let Ok(bytes) { expectStr(bytes.view(), want, label); }
-    case let Error(e) {
+    case let Err(e) {
       let m = e.message();
       expectStr(m.view(), "<decoded>", label);
     }
@@ -55,7 +55,7 @@ fn isHex(res: Result[List[u8], binarytext.DecodeError], wantHex: &str, label: &s
       let h = binarytext.encodeHex(bytes.view());
       expectStr(h.view(), wantHex, label);
     }
-    case let Error(e) {
+    case let Err(e) {
       let m = e.message();
       expectStr(m.view(), "<decoded>", label);
     }
@@ -188,10 +188,10 @@ fn main() i32 {
   let fmt = binarytext.Base64Format.standard();
   var dec = binarytext.Base64Decoder.forFormat(&fmt);
   var out = List[u8].empty();
-  match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "first chunk"); } case is Error { expect(false, "first chunk"); } }
+  match dec.update("Zm9vYm", &mut out) { case is Ok { expect(true, "first chunk"); } case is Err { expect(false, "first chunk"); } }
   match dec.update("F!", &mut out) {
     case is Ok { expect(false, "a bad byte in the second chunk was accepted"); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), "BadCharacter", "second chunk");
       expectUInt(u64.from(e.offset), 7u64, "offset 7 of the stream, 1 of the chunk");
       expectUInt(u64.from(e.byte), 33u64, "the byte");
@@ -201,30 +201,30 @@ fn main() i32 {
   // Once failed, it stays failed
   match dec.update("Zm9v", &mut out) {
     case is Ok { expect(false, "a failed decoder went on"); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), "BadCharacter", "same fault again");
       expectUInt(u64.from(e.offset), 7u64, "same offset again");
     }
   }
   match dec.finish(&mut out) {
     case is Ok { expect(false, "a failed decoder finished"); }
-    case let Error(e) { expectUInt(u64.from(e.offset), 7u64, "finish repeats the fault"); }
+    case let Err(e) { expectUInt(u64.from(e.offset), 7u64, "finish repeats the fault"); }
   }
   expectStr(out.view(), "foo", "nothing more was written");
   // reset forgets it
   dec.reset();
   out.clear();
-  match dec.update("Zm9v", &mut out) { case is Ok { expect(true, "after reset"); } case is Error { expect(false, "after reset"); } }
-  match dec.finish(&mut out) { case is Ok { expect(true, "after reset, finish"); } case is Error { expect(false, "after reset, finish"); } }
+  match dec.update("Zm9v", &mut out) { case is Ok { expect(true, "after reset"); } case is Err { expect(false, "after reset"); } }
+  match dec.finish(&mut out) { case is Ok { expect(true, "after reset, finish"); } case is Err { expect(false, "after reset, finish"); } }
   expectStr(out.view(), "foo", "decoded after reset");
 
   // Padding split across chunks, and a fault in it
   dec.reset();
   out.clear();
-  match dec.update("Zg=", &mut out) { case is Ok { expect(true, "padding begins"); } case is Error { expect(false, "padding begins"); } }
+  match dec.update("Zg=", &mut out) { case is Ok { expect(true, "padding begins"); } case is Err { expect(false, "padding begins"); } }
   match dec.update("=Z", &mut out) {
     case is Ok { expect(false, "a digit after the padding was accepted"); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), "BadPadding", "after the padding, across chunks");
       expectUInt(u64.from(e.offset), 4u64, "offset 4");
     }
@@ -232,21 +232,21 @@ fn main() i32 {
   // A hex decoder, the same
   var hd = binarytext.HexDecoder.strict();
   out.clear();
-  match hd.update("ab", &mut out) { case is Ok { expect(true, "hex first chunk"); } case is Error { expect(false, "hex first chunk"); } }
-  match hd.update("c", &mut out) { case is Ok { expect(true, "hex half pair"); } case is Error { expect(false, "hex half pair"); } }
+  match hd.update("ab", &mut out) { case is Ok { expect(true, "hex first chunk"); } case is Err { expect(false, "hex first chunk"); } }
+  match hd.update("c", &mut out) { case is Ok { expect(true, "hex half pair"); } case is Err { expect(false, "hex half pair"); } }
   match hd.finish(&mut out) {
     case is Ok { expect(false, "a half pair at the end was accepted"); }
-    case let Error(e) {
+    case let Err(e) {
       expectStr(kindName(&e.kind), "BadLength", "hex end");
       expectUInt(u64.from(e.offset), 3u64, "hex end offset");
     }
   }
   hd.reset();
   out.clear();
-  match hd.update("ab", &mut out) { case is Ok { } case is Error { expect(false, "hex after reset"); } }
+  match hd.update("ab", &mut out) { case is Ok { } case is Err { expect(false, "hex after reset"); } }
   match hd.update("c-", &mut out) {
     case is Ok { expect(false, "hex bad byte accepted"); }
-    case let Error(e) {
+    case let Err(e) {
       expectUInt(u64.from(e.offset), 3u64, "hex offset across chunks");
       expectUInt(u64.from(e.byte), 45u64, "hex byte");
     }
@@ -257,27 +257,27 @@ fn main() i32 {
   acc.push(1u8); acc.push(2u8); acc.push(3u8);
   match binarytext.decodeBase64Into("Zm9vYmFy", &fmt, &mut acc) {
     case let Ok(k) { expectUInt(u64.from(k), 6u64, "appended 6 bytes"); }
-    case is Error { expect(false, "decode into"); }
+    case is Err { expect(false, "decode into"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "after the append");
   match binarytext.decodeBase64Into("Zm9vYmF!", &fmt, &mut acc) {
     case is Ok { expect(false, "decode into a bad text"); }
-    case let Error(e) { expectUInt(u64.from(e.offset), 7u64, "fault offset"); }
+    case let Err(e) { expectUInt(u64.from(e.offset), 7u64, "fault offset"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "a fault leaves the list as it was");
   match binarytext.decodeBase64Into("Zm9vYg", &fmt, &mut acc) {
     case is Ok { expect(false, "decode into a text missing padding"); }
-    case is Error { expect(true, "refused at finish"); }
+    case is Err { expect(true, "refused at finish"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "a fault at the end leaves the list as it was");
   match binarytext.decodeHexInto("6162zz", &mut acc) {
     case is Ok { expect(false, "hex into a bad text"); }
-    case is Error { expect(true, "hex refused"); }
+    case is Err { expect(true, "hex refused"); }
   }
   expectUInt(u64.from(acc.len()), 9u64, "a hex fault leaves the list as it was");
   match binarytext.decodeHexInto("6162", &mut acc) {
     case let Ok(k) { expectUInt(u64.from(k), 2u64, "hex appended 2 bytes"); }
-    case is Error { expect(false, "hex into"); }
+    case is Err { expect(false, "hex into"); }
   }
   expectUInt(u64.from(acc.len()), 11u64, "after the hex append");
 

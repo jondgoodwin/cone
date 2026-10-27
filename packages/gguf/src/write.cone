@@ -111,14 +111,14 @@ pub struct Writer {
   pub fn addTensor(self: &mut, name: &str, kind: TensorType, dims: &Array[u64], data: List[u8]) Result[usize, GgufError] {
     let geo = geometry(&kind, dims);
     if geo.fault != 0u32 {
-      return Error[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
+      return Err[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
     }
     if u64.from(data.len()) != geo.bytes {
-      return Error[usize, GgufError](badInput("the tensor's bytes are not the number its type and dimensions need"));
+      return Err[usize, GgufError](badInput("the tensor's bytes are not the number its type and dimensions need"));
     }
     each p in tensors {
       if p.name.view() == name {
-        return Error[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
+        return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
       }
     }
     var d = List[u64].withCapacity(dims.len);
@@ -136,14 +136,14 @@ pub struct Writer {
   pub fn addValues(self: &mut, name: &str, kind: TensorType, dims: &Array[u64], values: &Array[f32]) Result[usize, GgufError] {
     let geo = geometry(&kind, dims);
     if geo.fault != 0u32 {
-      return Error[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
+      return Err[usize, GgufError](GgufError.make(ErrorKind.BadDimensions, 0u64, faultText(geo.fault)));
     }
     if u64.from(values.len) != geo.elements {
-      return Error[usize, GgufError](badInput("the number of values is not the tensor's element count"));
+      return Err[usize, GgufError](badInput("the number of values is not the tensor's element count"));
     }
     var bytes = List[u8].empty();
     match quantize(&kind, values, &mut bytes) {
-      case let Error(e) {return Error[usize, GgufError](e);}
+      case let Err(e) {return Err[usize, GgufError](e);}
       case is Ok {}
     }
     self.addTensor(name, kind, dims, bytes)
@@ -158,13 +158,13 @@ pub struct Writer {
         match e.value.asU64() {
           case let Some(a) { alignment = a; }
           case is None {
-            return Error[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
+            return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
           }
         }
       }
     }
     if alignment == 0u64 || (alignment & (alignment - 1u64)) != 0u64 || alignment > maxAlignment() {
-      return Error[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
+      return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not a power of two up to 2^31"));
     }
 
     var out = List[u8].empty();
@@ -179,7 +179,7 @@ pub struct Writer {
       putStr(&mut out, e.key.view());
       putLe32(&mut out, e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
-        case let Some(err) {return Error[List[u8], GgufError](err);}
+        case let Some(err) {return Err[List[u8], GgufError](err);}
         case is None {}
       }
     }

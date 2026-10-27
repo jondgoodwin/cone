@@ -594,7 +594,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    or `!=`, is checked after the other operand and wanted as its type, so `None == x`
    types the `None` as `x == None` does.
 
-   **A variant of a non-generic enum given to a generic** (`Error(Fault.SoldOut)`,
+   **A variant of a non-generic enum given to a generic** (`Err(Fault.SoldOut)`,
    `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
    `fnCallArgIsCtor` is true for it too, so long as no function call is among its
    values (a call would change the order narrowing sees). It names no type parameter of

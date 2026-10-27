@@ -3896,7 +3896,7 @@ static INode *fnCallOperandNumber(INode *operand) {
 // the order a call's arguments are checked in is what narrowing sees
 // (narrowCallMade).
 // A variant of a non-generic enum, 'Fault.SoldOut' or 'Fault.Short(3)', is one
-// too when no call is among its values: given to a generic ('Error(Fault.SoldOut)')
+// too when no call is among its values: given to a generic ('Err(Fault.SoldOut)')
 // it names no type parameter of its own, so where it goes may say it is the enum,
 // 'Fault', which it is then coerced to as a variant passed to an enum parameter is.
 static int fnCallArgIsCtor(INode *arg) {
