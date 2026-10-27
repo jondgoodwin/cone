@@ -2563,6 +2563,12 @@ static StructNode *genericTemplateOf(StructNode *inst) {
     return NULL;
 }
 
+StructNode *genericTypeTemplate(StructNode *inst) {
+    if (inst == NULL || inst->tag != StructTag || inst->instnode == NULL)
+        return NULL;
+    return genericTemplateOf(inst);
+}
+
 // Report a member absent because its condition 'cond' is false at 'args'
 static void genericAbsentMsg(INode *errnode, char *what, Name *name, char *typename,
         INode *cond, Nodes *parms, Nodes *args) {

@@ -318,6 +318,18 @@ static int structIsEnumFinal(StructNode *base, FnDclNode *meth) {
     return (base->flags & EnumType) && meth->namesym == finalName && meth->value != NULL;
 }
 
+// Does the generic type a receiver's type call names ('Opt' in 'self: &Opt[T]')
+// make the method's owner: the generic enum itself, or the instance of it the
+// owner is? Any instance counts, so a receiver naming another one is still read
+// as over the enum, and refused as not its type (fnDclTypeCheck).
+static int structNamesGenericEnum(NameUseNode *genuse, INode *owner) {
+    INode *generic = nameUseGetDcl(genuse);
+    if (generic == NULL || generic->tag != StructTag || !(generic->flags & EnumType)
+        || ((StructNode*)generic)->genericinfo == NULL || owner == NULL || owner->tag != StructTag)
+        return 0;
+    return owner == generic || (INode*)genericTypeTemplate((StructNode*)owner) == generic;
+}
+
 // Is this a method of an enum, with a body, whose receiver NAMES THE ENUM? That
 // method is one function over the whole enum: 'fn describe(self: &Lamp)', or
 // '&mut Lamp', or by value 'self Lamp'. It is not copied into the variants, its
@@ -328,14 +340,15 @@ static int structIsEnumFinal(StructNode *base, FnDclNode *meth) {
 //
 // Read from the parameter as written, which name resolution has bound by the
 // time any caller asks: a use of 'Self' is the variant a copy is made for, and
-// any other name for the enum is the enum.
+// any other name for the enum is the enum. A generic method is no exception: its
+// own type parameters do not change what its receiver names.
 int structIsWholeEnumMethod(INode *meth) {
     if (meth == NULL || meth->tag != FnDclTag || !(meth->flags & FlagMethFld))
         return 0;
     FnDclNode *fn = (FnDclNode*)meth;
     // An include file declares such a method 'extern', with no body: it is one
     // function, defined in one place
-    if ((fn->value == NULL && !(fn->flags & FlagExtern)) || fn->genericinfo || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
+    if ((fn->value == NULL && !(fn->flags & FlagExtern)) || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
         return 0;
     Nodes *parms = ((FnSigNode*)fn->vtype)->parms;
     if (parms == NULL || parms->used == 0)
@@ -346,13 +359,26 @@ int structIsWholeEnumMethod(INode *meth) {
     INode *type = ((VarDclNode*)self)->vtype;
     while (type && type->tag == RefTag)
         type = ((RefNode*)type)->vtexp;
+    // A generic enum's receiver is written with its type arguments, 'self: &Opt[T]',
+    // and stays that call until the signature is checked, when it becomes a use of
+    // the instance. It names the enum when the call names the generic enum the
+    // method's owner is, or is an instance of.
+    if (type && type->tag == FnCallTag && isNameUseNode(((FnCallNode*)type)->objfn))
+        return structNamesGenericEnum((NameUseNode*)((FnCallNode*)type)->objfn, inodeGetOwner(meth));
     if (type == NULL || !isNameUseNode(type) || ((NameUseNode*)type)->namesym == selfTypeName)
         return 0;
     INode *dcl = nameUseGetDcl((NameUseNode*)type);
     if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & EnumType))
         return 0;
     INode *owner = inodeGetOwner(meth);
-    return owner == dcl;
+    if (owner == dcl)
+        return 1;
+    // Once checked, a receiver naming another instance of the owner's generic
+    // enum ('self: &Opt[i32]' in 'Opt[bool]') is still one over the enum, as it was
+    // while it was a call, so the answer does not change; fnDclTypeCheck refuses it
+    StructNode *generic = genericTypeTemplate((StructNode*)dcl);
+    return generic != NULL && owner != NULL && owner->tag == StructTag
+        && genericTypeTemplate((StructNode*)owner) == generic;
 }
 
 // Is this a method with a body whose receiver, 'self', is taken by value? Read
