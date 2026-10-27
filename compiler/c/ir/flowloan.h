@@ -175,6 +175,12 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how);
 // bound makes global
 void loanNotGlobal(INode *node, uint32_t loan, Name *tparm);
 
+// Report a loan that is not global put, at 'node', into a place whose type
+// holds only ''static' borrows: the field 'field' of the struct 'strname'
+// (with the spelling for a struct holding a borrow that ends), or, where
+// 'field' is NULL, a variable or what a reference points at
+void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field);
+
 // Report, at 'node', a loan held inside a value stored or returned where a
 // virtual reference's bound says what it points at holds lasts 'bound'
 void loanNotBound(INode *node, uint32_t loan, Name *bound);

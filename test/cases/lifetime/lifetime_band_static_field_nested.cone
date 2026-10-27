@@ -1,0 +1,67 @@
+// A struct holding only ''static' borrows, nested in an Option, in an enum's
+// variant or in another struct, holds only ''static' borrows too, and carries
+// no loan at a call: a local's borrow given to the inner field is refused
+// where it goes in, at any depth. A variant's own ''static' field likewise.
+//
+// Verdict: refuse: ErrorEscape at each borrow given to the field.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a ''static'
+// field holds only a global borrow).
+// Master ce306fc05: all accepted.
+
+mod lifetime_band_static_field_nested;
+
+struct H {
+  pub r: &'static i64;
+}
+
+struct W {
+  pub h: H;
+  pub n: i64;
+}
+
+enum E {
+  struct A { pub h: H; }
+  struct B { pub r: &'static i64; }
+}
+
+let D: i64 = 1;
+var G: H;
+
+fn @initpure init() {
+  G = H(&D);
+}
+
+fn keepOption(o: Option[H]) {}
+fn keepEnum(e: E) {}
+fn keepWrapped(w: W) {
+  G = w.h;
+}
+
+fn inOption() {
+  let v = 5i64;
+  keepOption(Some(H(&v)));          //~ ErrorEscape "The field 'r' holds only ''static' borrows"
+}
+
+fn inVariant() {
+  let v = 5i64;
+  keepEnum(E.A(H(&v)));             //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn variantField() {
+  let v = 5i64;
+  keepEnum(E.B(&v));                //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn inStruct() {
+  let v = 5i64;
+  keepWrapped(W(H(&v), 3));         //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn inStructNamed() {
+  let v = 5i64;
+  keepWrapped(W(n: 3, h: H(r: &v)));  //~ ErrorEscape "carries a borrow of 'v'"
+}
+
+fn main() {
+  inOption();
+}

@@ -2079,7 +2079,7 @@ int flowGpuRefuses(INode *node) {
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;
-static uint32_t flowGateByTrigger[6] = { 0, 0, 0, 0, 0, 0 };
+static uint32_t flowGateByTrigger[7] = { 0, 0, 0, 0, 0, 0, 0 };
 
 // Is this type (a declaration) a bare borrowed reference?
 static int flowGateIsBorrowRef(INode *typedcl) {
@@ -2223,6 +2223,19 @@ void flowGateBoxedAsk(FlowState *fstate, INode *cast) {
         fstate->gate |= FlowGateBoxed;
 }
 
+// A value carrying a borrow given to a field whose type holds only ''static'
+// borrows: the loan walk checks that every borrow it holds is global
+// (pwStaticOnly)
+void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val) {
+    StructNode *strnode = (StructNode *)itypeGetTypeDcl(((IExpNode *)lit)->vtype);
+    if (strnode == NULL || strnode->tag != StructTag || i >= strnode->fields.used)
+        return;
+    INode *fieldtype = ((IExpNode *)nodelistGet(&strnode->fields, i))->vtype;
+    if (itypeCarriesBorrow(((IExpNode *)val)->vtype) && itypeCarriesBorrow(fieldtype)
+            && !itypeCarriesEndingBorrow(fieldtype))
+        fstate->gate |= FlowGateStatic;
+}
+
 // A method called on a value that may change shape (a list, a string, a struct
 // holding one: shapeinfer.h), returning a borrow, whose receiver is reached
 // through a reference (or is one): another name for the value may change it
@@ -2333,14 +2346,15 @@ void flowGateCount(FlowState *fstate) {
     ++flowGateFns;
     if (fstate->gate)
         ++flowGateGated;
-    for (int bit = 0; bit < 6; ++bit) {
+    for (int bit = 0; bit < 7; ++bit) {
         if (fstate->gate & (1 << bit))
             ++flowGateByTrigger[bit];
     }
 }
 
 void flowGatePrint() {
-    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u, shape %u)\n\n",
+    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u, shape %u, static %u)\n\n",
         flowGateGated, flowGateFns, flowGateByTrigger[0], flowGateByTrigger[1],
-        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4], flowGateByTrigger[5]);
+        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4], flowGateByTrigger[5],
+        flowGateByTrigger[6]);
 }

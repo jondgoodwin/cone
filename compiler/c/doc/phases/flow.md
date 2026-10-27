@@ -201,6 +201,7 @@ one bit per trigger:
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
+| `FlowGateStatic` | `typeLitFlow` (`flowGateStatic`, `flowGateStaticAsk`) | a struct or variant literal giving a value carrying a borrow to a field whose type holds borrows but only `'static` ones, whose loans the loan walk checks are global (`pwStaticOnly`, section 6, "Named lifetimes"): `stash(H(&v))` holds nothing in a local, returns nothing, and is otherwise no trigger |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
 an owning reference, pointer, array, tuple or struct (an enum's variants
@@ -233,14 +234,15 @@ of line in `flow.c`. Asked through calls that resolved each type first, the same
 triggers cost flow 25–30% on code holding no borrow; inline, about 4%. An
 ordinary compile stops asking once any bit is set; `-V 2` asks every trigger to
 the end, so that it can count each, and prints
-`Flow gate: G of N functions (holder …, result …, store …, in-call …, boxed …, shape …)`
+`Flow gate: G of N functions (holder …, result …, store …, in-call …, boxed …, shape …, static …)`
 (`flowGatePrint`). The loan walk holds loans in every local whose type carries
 a borrow, which the holder trigger is for; puts what a call may store through
 a `&mut X` argument, or a struct holding one, into the local it reaches, the
 store trigger's; checks
 a call's arguments against each other, the in-call trigger's; checks what
-a function returns, the result trigger's; and checks what a value made an
-owning virtual reference holds, the boxed trigger's.
+a function returns, the result trigger's; checks what a value made an
+owning virtual reference holds, the boxed trigger's; and checks what a
+`'static` field is given, the static trigger's.
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
@@ -1091,10 +1093,25 @@ question a signature is asked of what a type holds -- what the result may
 carry, what a parameter lends beyond its own reference, what may be stored
 where it points -- reads `itypeCarriesEndingBorrow`, which passes a
 `'static` borrow as it passes a key or a function's (`lifeGather`,
-`lifeHeld`, `lifeParmStores`, `lifeRenamed`). Whether a value a body makes
-holds loans is still `itypeCarriesBorrow`: a `&'static` field is not checked
-where it is given a value, so `H(&v)` of a local holds `v`'s loan, refused
-as any is if it escapes. Unnamed signatures too: the result of a call whose
+`lifeHeld`, `lifeParmStores`, `lifeRenamed`). That holds only because a
+place whose type holds borrows but only `'static` ones takes only a global's
+borrow wherever it is given a value, as a `'static` parameter does
+(`pwStaticOnly`): each field of a struct or variant literal (`H(&v)`,
+`Some(h)`, at any depth, since each level is a literal of its own), each
+store (`h.r = &v`, through a reference, by a swap; `pwStoreEscapes`) and each
+local's initializer. A value carrying a loan that is not global
+(`loanNotGlobalIn`: a caller loan, or one of the function's own storage) is
+refused at the value put in (`ErrorEscape`, `loanNotGlobalStatic`, which
+gives the spelling for a struct holding a borrow that ends,
+`struct H['a] { r: &'a ...; }`), and the loans refused are dropped from what
+it carries, so no enclosing literal or later store reports them again. A
+type reaching a raw pointer by value or through an owning reference is not
+asked whole (`pwReachesPtr`): a pointer's loans are its own, of what it was
+made from; its `'static` fields are asked where each is given a value. A
+function whose only such literal hands its value straight to a call holds
+nothing else that gates it, so the literal is a trigger
+(`FlowGateStatic`). Whether a value a body makes holds loans is still
+`itypeCarriesBorrow`. Unnamed signatures too: the result of a call whose
 type holds a borrow but none that ends carries of its arguments, the
 receiver included, only the loans rooted at a global (`pwCall`'s
 `globalonly`, `pwArgCarriesTo`, `loanOfGlobal`), so a global stays frozen
@@ -2099,6 +2116,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorCallEscape` | `pwCallStores` (the loan walk) | a `&mut` or `&uni` argument, a receiver included, or a writable borrow one reaches, points at a place that may outlive the function and can hold a borrow, and another argument carries a borrow of the function's own storage, or one the caller lent of a lifetime not held there |
 | `ErrorCallEscape` | `loanEscape`, from `pwCallStores` | another argument carries a loan of the function's own storage, and a `&mut X` argument, or a writable borrow reached from one or held by a struct argument, reaches a place that may outlive the function |
 | `ErrorEscape` | `loanApart`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where a parameter points, carries a caller loan of a lifetime flowing to none the result, or what that parameter points at (the field, for a struct declaring lifetimes), holds (named lifetimes) |
+| `ErrorEscape` | `loanNotGlobalStatic`, from `pwStaticOnly` | a value given to a place whose type holds borrows but only `'static` ones (a literal's field, a store, a local's initializer) carries a loan that is not global |
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
@@ -2223,6 +2241,7 @@ droppable noted as holding nothing is never finalized.
 | | `pathSetLoansAs`, `pathSetUnsure`, `pathSetThrough`, `LoanFar`, `loanOf`, `loanThrough` | near and far loans: a set's loans made all far or all near, or both where it is not known which, or read through a reference; a loan's id from a set's entry; whether a loan borrows through its root |
 | | `pathSetRemake`, `pathSetSlots`, `pathSetUntagged`, `pwSlotStep`, `pwPlaceSlots`, `pwStoreTagged`, `pwCallMoves`, `pwUntagHolder`, `loanTag` | slots: a set's entries remade; the loans of some slots; tags dropped; a field of a struct declaring lifetimes as a place's first step; what a read or a borrow of it carries; a store's tag; a call that may move borrows between slots, after which a holder's tags are dropped |
 | | `pwPlaceOutlives`, `pwStoreEscapes` | whether a place stored into may outlive the function; the store refused when it may and the value carries a local loan, or when it is rooted at a global and the value carries a caller loan |
+| | `pwStaticOnly`, `pwStoreStatic`, `pwReachesPtr` | a place whose type holds only `'static` borrows given a value carrying a loan that is not global, refused and the loans dropped; a store's field and struct named; a type reaching a raw pointer, not asked whole |
 | | `pwNamedSig`, `pwArgCarries`, `pwArgCarriesTo`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs`, `pwBoundHolds` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry, only a global's loans into a value holding only `'static` borrows; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument, or one a `'static` bound governs; what a bounded virtual reference holds, returned or stored |
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
@@ -2236,7 +2255,7 @@ droppable noted as holding nothing is never finalized.
 | | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
 | `ir/flowloan.c` | `loanMake`, `loanCaller`, `loanHeldBy` | a borrow's loan, a parameter's caller loan, and who may hold it |
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
-| | `loanCallerApart`, `loanStoredApart`, `loanStoredStatic`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or, unnamed, one stored where a parameter points at a value holding only `'static` borrows; a loan that is not global, or one rooted at a global; and their reports |
+| | `loanCallerApart`, `loanStoredApart`, `loanStoredStatic`, `loanNotGlobalIn`, `loanOfGlobal`, `loanApart`, `loanNotGlobal`, `loanNotGlobalStatic` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or, unnamed, one stored where a parameter points at a value holding only `'static` borrows; a loan that is not global, or one rooted at a global; and their reports, a `'static` field's among them |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
@@ -2278,7 +2297,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
 | | `flowLoopBegin`, `flowLoopJump`, `flowLoopEnd` | a frame for each loop being walked: what each `break` and `continue` to it wrote; where the loop ends, the head's state (entry, continues, body's end) joined, then the breaks over it (§3, "What ends a path") |
 | | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
-| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
+| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateStaticAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow`, `itypeCarriesEndingBorrow` | may a value of this type hold a borrowed reference; one of a lifetime that ends, not `'static`; a struct's answers remembered in `StructNode.carriesborrow` and `carriesending` |
 | | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach |

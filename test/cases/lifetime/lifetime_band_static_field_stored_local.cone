@@ -1,0 +1,60 @@
+// A ''static' field takes only a global's borrow, wherever it is changed:
+// into a local holder, through a local '&mut' to one, by a swap. The holder
+// goes on to a by-value parameter that keeps it in a global, which a local's
+// borrow would not outlive. A borrow the caller lent, stored into a local's
+// field, is refused the same way.
+//
+// Verdict: refuse: ErrorEscape at each store.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a ''static'
+// field holds only a global borrow).
+// Master ce306fc05: all accepted.
+
+mod lifetime_band_static_field_stored_local;
+
+struct H {
+  pub r: &'static i64;
+}
+
+let D: i64 = 1;
+var G: H;
+
+fn @initpure init() {
+  G = H(&D);
+}
+
+fn stash(h: H) {
+  G = h;
+}
+
+fn store() {
+  let v = 5i64;
+  var h = H(&D);
+  h.r = &v;                         //~ ErrorEscape "The field 'r' holds only ''static' borrows"
+  stash(h);
+}
+
+fn storeThrough() {
+  let v = 5i64;
+  var h = H(&D);
+  let hp = &mut h;
+  hp.r = &v;                        //~ ErrorEscape "declares a lifetime for it: 'struct H['a] { r: &'a ...; }'"
+  stash(h);
+}
+
+fn storeSwap() {
+  let v = 5i64;
+  var h = H(&D);
+  var q = &v;
+  h.r <-> q;                        //~ ErrorEscape "carries a borrow of 'v'"
+  stash(h);
+}
+
+fn storeCaller(p: &i64) {
+  var h = H(&D);
+  h.r = &*p;                        //~ ErrorEscape "the borrow the caller lent through 'p'"
+  stash(h);
+}
+
+fn main() {
+  store();
+}
