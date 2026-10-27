@@ -2175,10 +2175,19 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             && iexpGetTypeDcl(obj)->tag != RefTag
             && fnCallLowerTraitMethod(pstate, callnode, owner))
             return 1;
+        // The refusal names the two receivers that do work on a value: a
+        // reference, dispatched on the tag, and for an enum one naming it, which
+        // is one function over the whole enum
         if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
-            errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
-                "`%s` runs the variant's own, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the method with a reference receiver, which dispatches on the tag.",
-                &methsym->namestr, &((StructNode*)owner)->namesym->namestr);
+            Name *ownername = ((StructNode*)owner)->namesym;
+            if (owner->flags & EnumType)
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too), or 'self: %s', one function over the whole enum.",
+                    &methsym->namestr, &ownername->namestr, &ownername->namestr);
+            else
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too).",
+                    &methsym->namestr, &ownername->namestr);
             callnode->vtype = errorType;
             return 1;
         }
