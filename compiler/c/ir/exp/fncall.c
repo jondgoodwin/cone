@@ -1728,6 +1728,7 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
 
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
 static void fnCallReadThroughRefs(FnCallNode *node);
+int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype);
 
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
@@ -2154,18 +2155,26 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
 
     // An enum's method belongs to its variants: each has a clone of it, and the
     // enum's own is never generated. Called through a reference, the tag selects
-    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum --
-    // which only a method taking 'self' by value can be -- the tag would have to
-    // select it too, and dispatch on a value is not built, so it is refused here
-    // rather than left as a call to a function that does not exist. An intrinsic,
-    // such as a payload-free enum's '==', is no function and is not refused. On a
-    // variant's value the receiver's type is the variant, whose clone is selected.
-    // A method whose receiver names the enum ('self: &Lamp') is one function over
-    // the whole enum and is called as it is: nothing is read from the tag.
+    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum for a
+    // reference receiver ('self: &'), the value was borrowed for it
+    // (fnCallBorrowReceiver), so the call is the one through that borrow,
+    // '(&k).name()', and is dispatched the same way. Called on a value for a
+    // method taking 'self' by value, the tag would have to select it too, and
+    // dispatch on a value is not built, so it is refused here rather than left as
+    // a call to a function that does not exist. An intrinsic, such as a
+    // payload-free enum's '==', is no function and is not refused. On a variant's
+    // value the receiver's type is the variant, whose clone is selected. A method
+    // whose receiver names the enum ('self: &Lamp') is one function over the
+    // whole enum and is called as it is: nothing is read from the tag.
     if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
         && !structIsWholeEnumMethod((INode*)selected)
         && (selected->value == NULL || selected->value->tag != IntrinsicTag)) {
         INode *owner = inodeGetOwner((INode*)selected);
+        if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)
+            && callnode->objfn != obj && iexpGetTypeDcl(callnode->objfn)->tag == RefTag
+            && iexpGetTypeDcl(obj)->tag != RefTag
+            && fnCallLowerTraitMethod(pstate, callnode, owner))
+            return 1;
         if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
             errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
                 "`%s` runs the variant's own, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the method with a reference receiver, which dispatches on the tag.",

@@ -2242,10 +2242,12 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   "Layout before members").
 - **An enum's method is never generated for the enum, unless its receiver names
   it.** Each variant has a clone, and a call through a reference to the enum
-  dispatches on the tag. A call on a value typed as the enum — possible only for a
-  by-value `self` — would need the same dispatch on a value, which is not built,
-  so `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than
-  leave a call to a function that does not exist. The same absence is why a
+  dispatches on the tag. A call on a value typed as the enum for a reference
+  `self` borrows the value and dispatches through the borrow the same way
+  (`fnCallLowerMethod` hands it to `fnCallLowerTraitMethod`). For a by-value
+  `self` it would need the same dispatch on a value, which is not built, so
+  `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than leave a
+  call to a function that does not exist. The same absence is why a
   virtual reference to another trait is built from the variant's vtable and never
   from one for the enum. **The exception is a method whose written receiver names
   the enum** (`self: &Lamp`, `&mut Lamp`, `self: Lamp`; `structIsWholeEnumMethod`,
