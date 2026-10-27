@@ -46,6 +46,8 @@
 //   actors.Future[T]                a behaviour's value kept, to 'await' later
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
+//   actors.parkBlocks()             the record blocks and per-thread keeps the runtime has
+//                                   taken from the allocator and given back (RECORD BLOCKS KEPT)
 //   actors.liveSegments()           how many mailbox segments are not yet freed
 //   actors.messageAllocs()          how many allocations the runtime has made
 //                                   for messages (THE MAILBOX, below)
@@ -2273,6 +2275,10 @@ pub const traceKindEnd = 4u32;          // a message's run ends
 let traceMask: Atomic[u32];
 let traceSink: Atomic[usize];     // the sink, a function address, or 0
 let traceIds: Atomic[u64];        // send ids made off the workers
+let blocksTaken: Atomic[u64];     // record blocks taken from the allocator (RECORD BLOCKS KEPT)
+let blocksGiven: Atomic[u64];     // record blocks given back to the allocator
+let keepsMade: Atomic[u64];       // per-thread keeps made
+let keepsFreed: Atomic[u64];      // per-thread keeps freed
 let traceActors: Atomic[u32];     // actors made so far (their tid)
 
 // Whether layer L's records are wanted: one relaxed load and a bit test
@@ -2897,6 +2903,7 @@ pub struct Pending is GcTraceElements {
         let drop = (*recordType(block)).finalize;
         drop(block + recordHead);
         libc.free(block);
+        blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
         count = count - 1usize;
       }
       i = i + 1usize;
@@ -3047,6 +3054,7 @@ fn keepOf() *BlockKeep {
       die("actors: out of memory for a continuation");
     }
     blockKept = k as usize;
+    keepsMade.addOrdered(1u64, MemOrder.Relaxed);
   }
   k
 }
@@ -3068,6 +3076,7 @@ fn takeBlock(total: usize) *u8 {
       }
     }
   }
+  blocksTaken.addOrdered(1u64, MemOrder.Relaxed);
   libc.malloc(total)
 }
 
@@ -3083,7 +3092,26 @@ fn giveBlock(block: *u8) {
       return;
     }
   }
+  blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
   libc.free(block);
+}
+
+// What the record blocks have cost the allocator: blocks it was asked for, and
+// blocks it was given back (by an actor's death, or a full keep), and the
+// per-thread keeps made and freed. For tests and for finding leaks, as
+// liveFutures is for futures. After finalAll() each pair is equal: every
+// block and every keep has been given back (a block still in a keep when it
+// is freed is given back then)
+pub struct ParkBlocks {
+  pub taken: u64;
+  pub given: u64;
+  pub keepsMade: u64;
+  pub keepsFreed: u64;
+}
+
+pub fn parkBlocks() ParkBlocks {
+  ParkBlocks(blocksTaken.loadOrdered(MemOrder.Acquire), blocksGiven.loadOrdered(MemOrder.Acquire),
+    keepsMade.loadOrdered(MemOrder.Acquire), keepsFreed.loadOrdered(MemOrder.Acquire))
 }
 
 // What an 'await' in a behaviour may wait for besides another actor's reply:
@@ -3994,6 +4022,10 @@ fn @initpure init() {
   traceMask = Atomic[u32].of(0u32);
   traceSink = Atomic[usize].of(0usize);
   traceIds = Atomic[u64].of(0u64);
+  blocksTaken = Atomic[u64].of(0u64);
+  blocksGiven = Atomic[u64].of(0u64);
+  keepsMade = Atomic[u64].of(0u64);
+  keepsFreed = Atomic[u64].of(0u64);
   traceActors = Atomic[u32].of(0u32);
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
