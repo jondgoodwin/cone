@@ -114,7 +114,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:break|continue|return)\b/
         }, {
             token: "keyword.control.cone",
-            regex: /\b(?:if|elif|else|match|case|where|with|using|as|inline)\b/
+            regex: /\b(?:if|elif|else|match|case|where|with|using|as|inline|try)\b/
         }, {
             token: "keyword.control.loop.cone",
             regex: /\b(?:while|each|in|by)\b/

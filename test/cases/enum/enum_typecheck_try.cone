@@ -1,0 +1,63 @@
+// What a 'try' block refuses [Jon 26 Oct, error-handling issue 3]: with no type
+// to be wanted as, '?'s whose errors differ, or no '?' at all, leave its type
+// unknown, and the message asks for it; an Option's '?' beside a Result's, or one
+// against a wanted type of the other kind, is a mix, and the message names 'okOr'
+// and 'ok()'. An error the wanted Result's error cannot take, and one two of its
+// variants hold, are refused as a function's '?' refuses them, naming the try
+// block. Each is reported once: what uses the refused block says nothing more.
+// enum_parse_try holds '?.', reserved inside a try block as anywhere.
+
+mod enum_typecheck_try;
+
+struct IoErr { pub code: i32; }
+struct ParseErr { pub line: i32; }
+struct Other { pub n: i32; }
+enum ConfigError {
+  Io(IoErr);
+  Parse(ParseErr);
+}
+enum Twice {
+  A(IoErr);
+  B(IoErr);
+}
+
+fn readNum(n: i32) Result[i32, IoErr] { Ok(n) }
+fn parseNum(n: i32) Result[i32, ParseErr] { Ok(n) }
+fn other(n: i32) Result[i32, Other] { Ok(n) }
+fn opt(n: i32) Option[i32] { Some(n) }
+
+fn differingErrors() {
+  let a = try { readNum(1)? + parseNum(2)? };     //~ ErrorTryType:11 "IoErr (at 30:27) and ParseErr (at 30:42)"
+  _ = a;
+}
+
+fn noQuestion() {
+  let b = try { 5 };                              //~ ErrorTryType:11 "has no '?'"
+  _ = b;
+}
+
+fn mixed() {
+  let c = try { readNum(1)? + opt(2)? };          //~ ErrorTryMix:27 "'okOr(error)', or a Result an Option with 'ok()'"
+  _ = c;
+}
+
+fn againstContext() {
+  let d: Option[i32] = try { readNum(1)? };       //~ ErrorTryMix:40 "in a try block giving Option[i32]"
+  _ = d;
+}
+
+fn noConversion() {
+  let e: Result[i32, ConfigError] = try { other(1)? };   //~ ErrorQuesConvert:51 "to a try block giving Result[i32, ConfigError]"
+  _ = e;
+}
+
+// A '?' refused inside leaves the kind unknown, which says nothing more
+fn refusedInside() {
+  let h = try { 5? };                             //~ ErrorQuesOperand:18 "'?' takes a Result or an Option, and this is"
+  _ = h;
+}
+
+fn twoVariants() {
+  let g: Result[i32, Twice] = try { readNum(1)? };       //~ ErrorQuesAmbiguous:47 "(A and B)"
+  _ = g;
+}

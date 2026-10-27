@@ -126,6 +126,8 @@ typedef struct ParseState {
     int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
     int awaitoperand;       // Non-zero as the operand of 'await' is begun: its suffixes stop before a '?', which
                             // applies to what the wait gives, 'await x?' being '(await x)?' (parsePrefix)
+    int trydepth;           // How many 'try' blocks of the body being read enclose what is read: a '?' there leaves
+                            // the innermost, not the function (parseTry). A function or closure in one starts at none
     // The struct being read: where its type parameters are written, between its
     // '[' and ']', which a generator method copies (parsegen.c); NULL where none
     char *tparms, *tparmsend;

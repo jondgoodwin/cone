@@ -746,6 +746,8 @@ enum ErrorCode {
     ErrorQuesConvert = 1530,    // `x?` on a Result whose error type the function's error type cannot take: they are not the same, the destination declares no `from` taking it, and no variant of the destination holds it. Pointed at the '?'
     ErrorQuesAmbiguous = 1531,  // `x?` on a Result whose error the function's error enum could wrap in two or more variants that each hold that type, and no `from` takes it: which is meant is the programmer's to say, with an `overload from`. The message names two of them. Pointed at the '?'
     ErrorMainResult = 1532,     // A `main` returning `Result[T, E]` whose `E` has no `message()` method for the program to print the error with when `main` fails. Pointed at the return type
+    ErrorTryType = 1536,        // A `try` block wanted as no Result or Option whose type cannot be read off it: its `?`s fail with different error types, or it has no `?`, so neither the error type nor the kind is known. The message asks for the type, `let r: Result[i32, E] = try {...}`. Pointed at the `try`
+    ErrorTryMix = 1537,         // A `?` in a `try` block taking an Option where another `?` of the block, or the type the block is wanted as, is a Result, or the reverse. The message names `okOr(error)` and `ok()`, which convert one into the other. Pointed at the '?'
 
     // Warnings
     WarnCode = 3000,

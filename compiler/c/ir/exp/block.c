@@ -331,6 +331,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
         propagateLower(pstate, blk);
     }
+    // A 'try' block: its last value is held, and the '?'s in it leave it
+    // (propagate.h), so its type is known once all but its last statement, the
+    // success wrapped, are checked
+    if (blk->flags & FlagTry)
+        propagateTryEnter(pstate, blk, expectType);
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
     if (blk->flags & FlagLoop) {
@@ -364,6 +369,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             // last statement is special-handled below
         }
     }
+
+    // A try block's last statement, the success, and its breaks, the failures,
+    // are checked against the type it gives
+    if (blk->flags & FlagTry)
+        expectType = propagateTryFinish(pstate, blk);
 
     // Handle final statement differently for loop block vs. regular block
     if (blk->flags & FlagLoop) {
