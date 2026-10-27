@@ -1,0 +1,83 @@
+// A statement that throws a value away is warned, WarnDiscard, when the value is a
+// Result, an Option, a value of a type declared '@mustUse' (a struct, an enum, a
+// generic struct), or the answer of an awaited operation [Jon 26 Oct,
+// error-handling issue 6]. It is a warning: the program compiles. Each shape that
+// drops one is here, and enum_discard_silent holds what stays quiet: '_ = f();',
+// a value used, and the values that are fine to drop.
+//
+// Where the dropped value comes from does not matter: a function, a method (a
+// receiver is no different from an argument), a generic function whose T became a
+// Result (the warning names the instance, Result[i32, i32], for that is what the
+// statement drops), a 'try' block, a variant of a '@mustUse' enum. The block's
+// last line is a statement too, and so is a line inside a loop and an 'if' arm.
+// (A bare construction, 'Token(2);' or 'Some(9);', is not warned: it makes a
+// value and does nothing else, which is not a call that dropped its answer.)
+
+mod enum_discard_warn;
+
+import stdio use *;
+
+struct @mustUse Token { pub n: i32; }
+enum @mustUse Flag { pub struct On; pub struct Off; }
+struct @mustUse Wrap[T] { pub v: T; }
+struct Plain { pub n: i32; }
+
+struct Bag {
+  pub n: i32;
+  pub fn fail(self: &, k: i32) Result[i32, i32] { if k > 0 { Ok(k) } else { Err(0 - k) } }
+  pub fn find(self: &, k: i32) Option[i32] { if k == n { Some(k) } else { None } }
+  pub fn token(self: &) Token { Token(n) }
+}
+
+fn res(n: i32) Result[i32, i32] { if n > 0 { Ok(n) } else { Err(0 - n) } }
+fn opt(n: i32) Option[i32] { if n > 0 { Some(n) } else { None } }
+fn unit(n: i32) Result[void, i32] { if n > 0 { Ok(nil) } else { Err(0 - n) } }
+fn tok() Token { Token(1) }
+fn flag() Flag { Flag.On }
+fn wrap() Wrap[i32] { Wrap[i32](3) }
+fn id[T](x: T) T { x }
+
+fn last() {
+  res(1);                                 //~ WarnDiscard "The Result[i32, i32] this call gives is thrown away"
+}
+
+fn lastOpt() {
+  opt(2);                                 //~ WarnDiscard "The Option[i32] this call gives is thrown away"
+}
+
+fn inLoop() {
+  var i = 0;
+  while i < 2 {
+    res(i);                               //~ WarnDiscard "A failure among what it may hold goes unread"
+    i = i + 1;
+  }
+}
+
+fn inIf(c: bool) {
+  if c {
+    opt(3);                               //~ WarnDiscard "Whether it holds a value goes unread"
+  } else {
+    res(4);                               //~ WarnDiscard "this call gives is thrown away"
+  }
+}
+
+fn main() {
+  let bag = Bag(5);
+  res(1);                                 //~ WarnDiscard "The Result[i32, i32] this call gives is thrown away"
+  opt(1);                                 //~ WarnDiscard "The Option[i32] this call gives is thrown away"
+  unit(1);                                //~ WarnDiscard "The Result[void, i32] this call gives is thrown away"
+  bag.fail(1);                          //~ WarnDiscard "The Result[i32, i32] this call gives is thrown away"
+  bag.find(5);                            //~ WarnDiscard "The Option[i32] this call gives is thrown away"
+  id(res(3));                             //~ WarnDiscard "The Result[i32, i32] this call gives is thrown away"
+  id(opt(3));                             //~ WarnDiscard "The Option[i32] this call gives is thrown away"
+  try { res(1)? + res(2)? };              //~ WarnDiscard "The Result[i32, i32] this block gives is thrown away"
+  tok();                                  //~ WarnDiscard "The Token this call gives is thrown away. It is marked @mustUse"
+  flag();                                 //~ WarnDiscard "The Flag this call gives is thrown away. It is marked @mustUse"
+  wrap();                                 //~ WarnDiscard "The Wrap[i32] this call gives is thrown away"
+  bag.token();                            //~ WarnDiscard "The Token this call gives is thrown away"
+  last();
+  lastOpt();
+  inLoop();
+  inIf(true);
+  printStr("done");
+}

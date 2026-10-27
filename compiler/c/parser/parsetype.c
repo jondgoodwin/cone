@@ -843,6 +843,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // Handle attributes
+    int mustuse = 0;
     while (1) {
         if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
@@ -857,6 +858,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             if (!isenum)
                 errorMsgLex(ErrorBadUnsized, "'@unsized' declines an enum's padding. Only an enum pads its variants.");
             strflags &= ~SameSize;
+            lexNextToken();
+        }
+        else if (lex->toktype == MustUseToken) {
+            // A statement that drops a value of this type is warned (discard.h)
+            mustuse = 1;
             lexNextToken();
         }
         else if (lex->toktype == CAttrToken) {
@@ -894,6 +900,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;
+    strnode->mustuse = (uint8_t)mustuse;
     parse->typenode = (INsTypeNode *)strnode;
     if (named)
         lexNextToken();

@@ -161,6 +161,7 @@ enum TokenTypes {
     TraitToken,    // 'trait'
     OpaqueToken,   // '@opaque'
     UnsizedToken,  // '@unsized'
+    MustUseToken,  // '@mustUse'
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
     IntrinsicAttrToken, // '@intrinsic': after 'fn' in core, a function whose meaning the compiler supplies

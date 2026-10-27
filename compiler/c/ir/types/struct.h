@@ -60,6 +60,7 @@ typedef struct StructNode {
     uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
+    uint8_t mustuse;        // Declared '@mustUse': a statement that drops a value of it is warned (discard.h)
     uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
     struct GenericLateWhere *latewhere;  // An instance's members whose 'where' waits on an argument's layout, not yet decided (genericLateWhere); NULL once they are, and for every other type

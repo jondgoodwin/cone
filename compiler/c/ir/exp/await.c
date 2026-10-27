@@ -152,9 +152,9 @@ static int awaitDemandRuntime(TypeCheckState *pstate, AwaitNode *node) {
 // declare: an I/O operation's is a Result, success or the system's failure,
 // as a synchronous call that can fail answers. Nothing is added by 'await'
 // itself. That result should be used: an 'await' on an operation whose value
-// is unwanted -- a statement of its own -- is warned (WarnAwaitUnused), and
-// compiles, the answer dropped
-static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
+// is unwanted -- a statement of its own -- is warned by the block that drops
+// it (WarnDiscard, discardCheck), and compiles, the answer dropped
+static void awaitOperation(TypeCheckState *pstate, AwaitNode *node) {
     INode *result = actorAwaitableResult(((IExpNode *)node->exp)->vtype);
     if (result == NULL)
         return;
@@ -164,14 +164,6 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
     }
     node->awaitable = itypeGetTypeDcl(((IExpNode *)node->exp)->vtype);
     node->vtype = result;
-    INode *expected = expectType && expectType != noCareType ? itypeGetTypeDcl(expectType) : NULL;
-    if (expectType == noCareType || (expected && expected->tag == VoidTag)) {
-        char rname[256] = "";
-        itypeSpellCat(rname, sizeof(rname), result, 0);
-        errorMsgNode((INode *)node, WarnAwaitUnused,
-            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'let r = await ...', and match on it.",
-            rname);
-    }
 }
 
 // What is awaited is a behaviour of an actor -- a call of a handle's method
@@ -292,7 +284,7 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     node->vtype = ((IExpNode *)node->exp)->vtype;
     awaitMessage(pstate, node);
     if (node->message == NULL)
-        awaitOperation(pstate, node, expectType);
+        awaitOperation(pstate, node);
     if (node->message == NULL && node->awaitable == NULL)
         awaitFuture(pstate, node);
 }

@@ -105,6 +105,7 @@ add_executable(conec
 	compiler/c/ir/exp/each.c
 	compiler/c/ir/exp/pareach.c
 	compiler/c/ir/exp/propagate.c
+	compiler/c/ir/exp/discard.c
 	compiler/c/ir/exp/fncall.c
 	compiler/c/ir/exp/if.c
 	compiler/c/ir/exp/literal.c

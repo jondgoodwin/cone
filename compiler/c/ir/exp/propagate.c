@@ -50,6 +50,12 @@ static enum PropagateKind propagateKindOf(INode *type) {
     return PropagateNone;
 }
 
+// "Result" or "Option" where this type is core's, or NULL
+char *propagateCoreName(INode *type) {
+    enum PropagateKind kind = propagateKindOf(type);
+    return kind == PropagateResult ? "Result" : kind == PropagateOption ? "Option" : NULL;
+}
+
 // The variant of this name among an enum's variants, or NULL
 static StructNode *propagateVariant(INode *enumdcl, Name *name) {
     if (enumdcl->tag != StructTag || ((StructNode*)enumdcl)->derived == NULL)
@@ -91,7 +97,7 @@ static void propagateSpellCat(char *buf, size_t size, INode *type, int depth) {
 }
 
 // The type as the reader writes it, for a message
-static char *propagateSpell(char *buf, size_t size, INode *type) {
+char *propagateSpell(char *buf, size_t size, INode *type) {
     buf[0] = '\0';
     propagateSpellCat(buf, size, type, 0);
     return buf;

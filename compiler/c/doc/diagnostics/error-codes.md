@@ -714,18 +714,16 @@ reference held in such a place, used where one that may writes is wanted
 (`car.owner.birthday()` through a `car: &Car` holding `owner: &mut Person`), and a
 write through it is `ErrorNoMut`.
 
-`await` has five error codes and a warning. Where it may not stand -- anywhere
+`await` has five error codes. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a
 borrow or a place written to its left in the same statement, which the rest of
 the statement uses after the seam, that a call or a temporary made rather than
 a plain path is `ErrorAwaitLeftCall`, also a rule, its message naming the fix
-(bind it to a local first); an `await` on an operation (an `actors.Awaitable`,
-an I/O operation) whose answer nothing uses, a statement of its own, is the
-warning `WarnAwaitUnused` (3005): the answer is a result saying whether the
-operation worked, and the program compiles with it dropped. It was the error
-1280, `ErrorAwaitUnused`, now a hole: a thrown-away result is to be warned on
-any statement, not refused, and this is the `await` part of that. An `await`
+(bind it to a local first). An `await` on an operation (an `actors.Awaitable`,
+an I/O operation) whose answer nothing uses, a statement of its own, is
+warned by the rule for every dropped value, `WarnDiscard` (below); 1280 and 3005
+are holds. An `await`
 on anything but a behaviour's reply, a future or an operation, which waits for
 no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
 seam's continuation would carry, which is how the seam's rules are pinned on a
@@ -807,6 +805,23 @@ the reverse, is `ErrorTryMix`, at the `?`, naming `okOr` and `ok()`. A `?` in a 
 whose error the block's error type cannot take, or two of its variants hold, is
 `ErrorQuesConvert` or `ErrorQuesAmbiguous`, as in a function, the message naming the try
 block.
+
+A dropped value is the one warning that is about use rather than form (`WarnDiscard`,
+`discardCheck`, `ir/exp/discard.c`). It is raised at a statement whose value is a
+core `Result` or `Option` (a variant of either too), a value of a struct, enum or
+variant declared `@mustUse` (an enum's marking covers its variants; an instance of a
+marked generic struct is marked), or the answer of an `await` on an operation (any
+type but `void`). The statement is a call, an `await`, a block (a `try`, a loop with a
+`break` value) or an `if`; `_ = f();` is an assignment and so none of them, which is
+how the reader says the drop is meant. Two places ask: `blockStmtTypeCheck` for every
+statement but the last, and `blockTypeCheck` for the last when the block's parser flag
+`FlagTailSemi` says it ends in `;` (the parser makes no empty statement of that `;`;
+a last line without it is the block's value, and `ErrorTailOpen` refuses one that
+nothing uses). A generic's body is checked once for each instance, so a site warns
+once (`discardAlreadySaid`), naming the first instance that reached it. A bare
+construction (`Some(9);`, `Token(2);`) is not a call that dropped an answer and is not
+warned. It never fails a build: the suite's `compile` and `run` scenarios do fail on
+any warning, which is how a new one is noticed.
 
 ## The one code with no scenario
 

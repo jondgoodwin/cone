@@ -43,6 +43,13 @@
 // return type is not written, a generator (ErrorQuesReturn, the last at parse).
 void propagateLower(TypeCheckState *pstate, BlockNode *blk);
 
+// "Result" or "Option" where this type is an instance of core's, else NULL
+char *propagateCoreName(INode *type);
+
+// The type as the reader writes it, an instance with its type arguments, for a
+// message: 'Result[i32, ConfigError]'
+char *propagateSpell(char *buf, size_t size, INode *type);
+
 // 'try { a? + b? }': a '?' inside leaves the block, not the function, and the
 // block's value is the first failure, or its last value wrapped as the success
 // ('Ok', 'Some'). The parser marks the block FlagTry (parseTry). blockTypeCheck

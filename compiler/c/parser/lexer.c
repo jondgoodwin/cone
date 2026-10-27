@@ -119,6 +119,7 @@ void keywordInit() {
     keyAdd("trait", TraitToken);
     keyAdd("@opaque", OpaqueToken);
     keyAdd("@unsized", UnsizedToken);
+    keyAdd("@mustUse", MustUseToken);
     keyAdd("@c", CAttrToken);
     keyAdd("@initpure", InitPureToken);
     keyAdd("@intrinsic", IntrinsicAttrToken);
@@ -1074,6 +1075,7 @@ int lexScanIdent(char *srcp) {
                 // absent. An attribute is an instruction about representation
                 // or linkage that no code asks about; a fact other code may ask
                 // about is a trait, which is what move-ness became [Jon 26 Sep].
+                // ('@mustUse' asks only the compiler's diagnostics.)
                 else if (*srcbeg == '@') {
                     if (strcmp(&lex->val.ident->namestr, "@samesize") == 0)
                         errorMsgLex(ErrorUnkAttr,

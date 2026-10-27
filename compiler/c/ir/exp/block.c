@@ -211,7 +211,8 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
 //    All breaks must resolve to either the expected type or the same inferred supertype
 //    Coercion is performed on breaks as needed to accomplish this, or errors result
-// Type check a block's statement, its value unwanted. One declaring a local
+// Type check a block's statement, its value unwanted (and warned where it is one
+// that should not be dropped unseen, discardCheck). One declaring a local
 // may extend a temporary its initializer borrows into a hidden local
 // (varDclExtendBegin); 'hoists' gathers, for each such statement, its hidden
 // locals in order and then the statement, for blockHoist.
@@ -237,6 +238,7 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
     }
     if (owner == NULL) {
         inodeTypeCheck(pstate, stmtp, noCareType);
+        discardCheck(*stmtp);
         narrowStmtEnd(svstmt);
         return;
     }
@@ -244,6 +246,7 @@ static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **ho
     INode *stmt = *stmtp;
     varDclExtendBegin(pstate, &ext, owner);
     inodeTypeCheck(pstate, stmtp, noCareType);
+    discardCheck(*stmtp);
     narrowStmtEnd(svstmt);
     Nodes *hoisted = varDclExtendEnd(pstate, &ext);
     if (hoisted == NULL)
@@ -403,6 +406,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
                 returnJoinFn(pstate, retnode);
             }
             else {
+                // The block's last line ends in ';' (the parser makes no empty
+                // statement of it): its value is dropped
+                if (blk->flags & FlagTailSemi)
+                    discardCheck(*laststmtp);
                 lastexp = laststmtp;
                 match = iexpMultiCheckedCoerceInfer(expectType, &inferredType, lastexp, match);
             }

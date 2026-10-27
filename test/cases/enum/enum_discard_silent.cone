@@ -1,0 +1,76 @@
+// What WarnDiscard leaves quiet (enum_discard_warn holds what it warns). A run
+// scenario takes no warning at all, so this program compiling is the assertion:
+//  - '_ = f();' says the drop is meant, for a Result, an Option and a '@mustUse'
+//    struct, enum and generic struct, and for a generic call whose T is one;
+//  - a value used: bound, matched, passed on, returned, tried with '?';
+//  - a value that is fine to drop: a number, a struct nobody marked, a reference a
+//    method hands back for chaining (like 'list.push(x)' in other languages), and
+//    a call that returns nothing;
+//  - a reference to a Result is no Result;
+//  - a try block bound to a name.
+
+mod enum_discard_silent;
+
+import stdio use *;
+
+struct @mustUse Token { pub n: i32; }
+enum @mustUse Flag { pub struct On; pub struct Off; }
+struct @mustUse Wrap[T] { pub v: T; }
+struct Plain { pub n: i32; }
+
+struct Chain {
+  pub total: i32;
+  pub fn add(self: &mut, k: i32) &mut Chain { total = total + k; self }
+  pub fn bump(self: &mut) { total = total + 1; }
+  pub fn peek(self: &) &Result[i32, i32] { &r }
+  r: Result[i32, i32];
+}
+
+fn res(n: i32) Result[i32, i32] { if n > 0 { Ok(n) } else { Err(0 - n) } }
+fn opt(n: i32) Option[i32] { if n > 0 { Some(n) } else { None } }
+fn tok() Token { Token(1) }
+fn flag() Flag { Flag.On }
+fn wrap() Wrap[i32] { Wrap[i32](3) }
+fn plain() Plain { Plain(4) }
+fn number() i32 { 7 }
+fn id[T](x: T) T { x }
+
+fn passes() Result[i32, i32] {
+  let a = res(1)?;
+  res(a)
+}
+
+fn main() {
+  var c = Chain(0, Ok(1));
+  _ = res(1);
+  _ = res(0);
+  _ = opt(1);
+  _ = tok();
+  _ = flag();
+  _ = wrap();
+  _ = id(res(3));
+  _ = id(opt(3));
+  _ = try { res(1)? + res(2)? };
+  plain();
+  number();
+  id(5);
+  c.add(1).add(2);
+  c.bump();
+  c.peek();
+  let r = res(2);
+  let o = opt(0);
+  let t = tok();
+  let b = try { res(3)? + 1 };
+  _ = passes();
+  match r {
+    case let Ok(v) { printInt(i64.from(v)); }
+    else { printStr("err"); }
+  }
+  match o {
+    case let Some(v) { printInt(i64.from(v)); }
+    else { printStr(" none"); }
+  }
+  printInt(i64.from(t.n));
+  if b is Ok { printStr(" ok"); }
+  printInt(i64.from(c.total));
+}
