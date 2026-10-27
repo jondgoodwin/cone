@@ -799,6 +799,15 @@ are: a different value, a different function, a conversion to declare, and a cho
 make. A `main` returning a Result whose error type has no `message()` giving text is
 `ErrorMainResult`, at the return type (`propagateMainResult`).
 
+A `try` block adds two (`propagateTryFinish`, `propagateTrySite`): one wanted as no Result
+or Option whose type cannot be read off it, its `?`s failing with different error types
+or no `?` in it at all, is `ErrorTryType`, at the `try`, the message asking for the type;
+a `?` taking an Option where the block's other `?`s or its wanted type are a Result, or
+the reverse, is `ErrorTryMix`, at the `?`, naming `okOr` and `ok()`. A `?` in a try block
+whose error the block's error type cannot take, or two of its variants hold, is
+`ErrorQuesConvert` or `ErrorQuesAmbiguous`, as in a function, the message naming the try
+block.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

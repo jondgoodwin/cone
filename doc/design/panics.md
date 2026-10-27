@@ -3,7 +3,8 @@
 A panic is the program saying that something which must not happen has: an
 index past the end, memory exhausted, an invariant broken. It is a bug report,
 not error handling — a failure a program expects and recovers from is an
-`Option` or a `Result` (and, unbuilt, `throw`; `safe-panics.html`). This note
+`Option` or a `Result` (`safe-panics.html`), passed on with `?` and caught by
+`match` or a `try` block, never thrown. This note
 follows panics through the language, core, the compiler and the C runtime.
 
 ## Principles
@@ -112,8 +113,6 @@ Everything above is built. Not built:
   test-build check and a `requires` statement as the always-on one; Jon's
   ruling of 27 Sep made `assert` the always-on check and `assertDebug` the
   debug-only one, and left `requires`/`ensures` for contracts, not built.
-- **`?` on a `None`**, which the manual says panics, is not built, and nor are
-  `throw` and `catch`.
 
 ## What lives elsewhere
 

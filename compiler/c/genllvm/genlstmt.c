@@ -168,7 +168,9 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // Create separate blocks only when needed. 
     // isLoop requires blkbeg and blkend. isPhiBlk only blkend when phi values must converge for break/returns
     int isLoop = blk->flags & FlagLoop;
-    int isPhiBlk = isLoop || (blk->breaks && blk->breaks->used > 1); 
+    // A try block's own last value is one more path to its end, beside its breaks
+    int isTry = (blk->flags & FlagTry) != 0;
+    int isPhiBlk = isLoop || (blk->breaks && blk->breaks->used > (uint32_t)(isTry ? 0 : 1));
 
     LLVMBasicBlockRef blockbeg = NULL;
     LLVMBasicBlockRef blockend = NULL;
@@ -196,8 +198,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         // different conditions, so a void block built a phi over an uninitialized
         // count and emitted one with no incoming entries.
         if (blk->vtype->tag != VoidTag && blk->vtype->tag != UnknownTag) {
-            blkstate->phis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
-            blkstate->blocksFrom = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
+            blkstate->phis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * (blk->breaks->used + isTry));
+            blkstate->blocksFrom = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * (blk->breaks->used + isTry));
             blkstate->slot = genlMergeSlot(gen, blk->vtype);
         }
         else {
@@ -319,6 +321,17 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     int ended = genlPathEnded(gen);
     if (isLoop && !ended)
         LLVMBuildBr(gen->builder, blockbeg);
+
+    // A try block's success reaches its end as its failures' breaks do
+    if (isPhiBlk && isTry && !ended) {
+        if (lastval && blkstate->phis) {
+            blkstate->phis[blkstate->phiCnt] = lastval;
+            blkstate->blocksFrom[blkstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
+            if (blkstate->slot)
+                LLVMBuildStore(gen->builder, lastval, blkstate->slot);
+        }
+        LLVMBuildBr(gen->builder, blockend);
+    }
 
     if (isPhiBlk) {
         LLVMPositionBuilderAtEnd(gen->builder, blockend);

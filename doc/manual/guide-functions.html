@@ -154,7 +154,7 @@ fn doubledAverage(total: i32, count: i32) Result[i32, &amp;str] {
 </pre>
 	<p>It works on an <a href="guide-enums.html#option">Option</a> too: on <span class="pre">Some</span> its value is
 		what the Some holds, and on <span class="pre">None</span> it returns <span class="pre">None</span>. Either way the
-		function it is in must return the same kind, a Result for a Result and an Option for an Option, and anything
+		function it is in (unless a <a href="#try">try block</a> catches it) must return the same kind, a Result for a Result and an Option for an Option, and anything
 		else is an error the compiler reports at the <span class="pre">?</span>: a failure is never passed on to
 		somewhere that cannot hold it. (To change one kind into the other, or to state that a value cannot be a
 		failure, see <a href="guide-enums.html#helpers">Working with an Option or a Result</a>.)</p>
@@ -186,6 +186,44 @@ fn load(name: &amp;str) Result[Config, ConfigError] {
 </pre>
 	<p>An error that neither converts is reported at the <span class="pre">?</span>, and so is one that two variants
 		hold with no <span class="pre">from</span> to say which.</p>
+
+	<h3 id="try">Catching failures in a block: try</h3>
+	<p>Sometimes a function wants to run several steps that can fail and deal with the first failure itself, rather
+		than pass it to its caller. A <span class="pre">try</span> block catches the <span class="pre">?</span>s inside
+		it: a failure leaves the block, not the function, and is the block's value. When nothing fails, the block's last
+		value is wrapped as the success, an <span class="pre">Ok</span> (or a <span class="pre">Some</span>). The steps
+		after the first failure do not run:</p>
+<pre>
+fn report(a: i32, b: i32, count: i32) {
+  let sum = try { average(a, count)? + average(b, count)? };
+  match sum {
+    case let Ok(s) { print &lt;- "sum: ", s, "\n"; }
+    case let Err(why) { print &lt;- "no sum: ", why, "\n"; }   // when count is 0
+  }
+}
+</pre>
+	<p>The block's type is read off it. When every <span class="pre">?</span> in it takes an Option, it gives an
+		Option; when every one takes a Result with the same error type, it gives that Result, here
+		<span class="pre">Result[i32, &amp;str]</span>. When the errors differ, say which Result the block gives, and
+		each <span class="pre">?</span> converts its error to that one, as it does when it passes one on:</p>
+<pre>
+let config: Result[Config, ConfigError] = try {
+  let text = readFile(name)?;    // an IoError becomes Io(e)
+  Config(number(text)?)          // a NumberError becomes ConfigError.from(e)
+};
+</pre>
+	<p>The type can also come from where the value goes: a function's parameter, or what the function returns, in
+		<span class="pre">return try { ... }</span>. With no type to go on, the compiler asks for one, as it does for a
+		block with no <span class="pre">?</span> at all, which only wraps its value. The <span class="pre">?</span>s of
+		one block take all Results or all Options: <span class="pre">okOr(error)</span> makes an Option a Result, and
+		<span class="pre">ok()</span> makes a Result an Option (<a href="guide-enums.html#helpers">Working with an Option
+		or a Result</a>). A block whose last line ends in <span class="pre">;</span> has no value to wrap, and succeeds
+		with <span class="pre">Ok(nil)</span>, a <span class="pre">Result[void, E]</span>.</p>
+	<p>Only <span class="pre">?</span> is caught. A <span class="pre">return</span> in a try block still returns from
+		the function, and <span class="pre">break</span> and <span class="pre">continue</span> still act on the loop
+		around it. A <span class="pre">?</span> in a try block nested inside another is caught by the inner one, and one
+		in a <a href="#closures-tour">closure</a> written inside a try block returns from the closure, as it would
+		anywhere.</p>
 
 	<h3 id="letelse">Dealing with a failure and going on: let-else</h3>
 	<p>A function that deals with a failure itself, rather than passing it on, can bind the answer for the rest of the

@@ -156,6 +156,10 @@ void keywordInit() {
     // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
     // reference, None when memory runs out
     keyAdd("trynew", TrynewToken);
+    // A block whose '?' leaves the block with the failure, not the function,
+    // and whose value is that failure or its own last value wrapped,
+    // 'try { a? + b? }' (ir/exp/propagate.h)
+    keyAdd("try", TryToken);
     // In an actor's behaviour, wait for what is awaited: the behaviour is cut
     // there, a seam where it returns to the actor's dispatcher
     keyAdd("await", AwaitToken);

@@ -12,7 +12,9 @@ commit c0cbdae76).
 - `pending-subtype-pairs.html` (removed 16 Oct): the old Type safety page's subtype pairs, folded into
   `mod-subtyping.html` and `safe-types.html#coercion` once "Practical Subtyping" settled
   what counts as subtyping; three pairs had their direction corrected (permissions, raw pointers).
-- `to-design-notes.html`: designed but not built (exceptions and the `?` and `||` operators, the `=` method,
-  property setters, the Option operators, two-way yield, queued methods, region declarations, and more).
+- `to-design-notes.html`: designed but not built (the `=` method, property setters, two-way yield, queued methods,
+  region declarations, and more). The exceptions design (`throws`, `throw`, `catch`) and the first Option and
+  Result operators left 27 Oct: Jon ruled out throw and catch for Result, and `?` and `try` blocks are built
+  (`guide-functions.html#propagate`, `#try`).
 - `to-congo.md`: the tool side of packages (manifest, commands, session, link tables, the `.conebuild` format) for a
   separate Congo document.

@@ -2029,6 +2029,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.library = 0;
     parse.genoperand = 0;
     parse.awaitoperand = 0;
+    parse.trydepth = 0;
     parse.tparms = parse.tparmsend = NULL;
     INode **nodesp;
     uint32_t cnt;
@@ -2118,6 +2119,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.library = desc != NULL && desc->library;
     parse.genoperand = 0;
     parse.awaitoperand = 0;
+    parse.trydepth = 0;
     parse.tparms = parse.tparmsend = NULL;
 
     // Create module node and set up for parsing main source file.

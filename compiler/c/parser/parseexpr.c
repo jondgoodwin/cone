@@ -142,14 +142,17 @@ static INode *parseClosureArrowBody(ParseState *parse) {
     int svinlist = parse->inlist;
     GenCtx *svgenctx = parse->genctx;
     int svgenoperand = parse->genoperand;
+    int svtrydepth = parse->trydepth;
     parse->genctx = NULL;
     parse->genoperand = 0;
+    parse->trydepth = 0;
     // One expression, which may be a change ('n => total += n'): a comma
     // after it belongs to the list the closure is written in
     INode *body = parseAssignFrom(parse, parseSimpleExpr(parse));
     parse->inlist = svinlist;
     parse->genctx = svgenctx;
     parse->genoperand = svgenoperand;
+    parse->trydepth = svtrydepth;
     if (body == NULL)
         body = (INode*)newNilLitNode();
     if (body->tag == BlockTag)
@@ -277,15 +280,36 @@ static INode *parseClosureFn(ParseState *parse) {
     // Its body is its own: a generator's seams and the code around do not reach into it
     GenCtx *svgenctx = parse->genctx;
     int svgenoperand = parse->genoperand;
+    int svtrydepth = parse->trydepth;
     parse->genctx = NULL;
     parse->genoperand = 0;
+    parse->trydepth = 0;
     clo->body = parseExprBlock(parse, 0);
     // A closure that writes its return type is judged as a function is. Without it the type is
     // read off the body (or the place it is given to), and the last line may go either way
     parseTailCheck(clo->body, clo->sig->retwritten ? TailUsed : TailFree);
     parse->genctx = svgenctx;
     parse->genoperand = svgenoperand;
+    parse->trydepth = svtrydepth;
     return (INode*)clo;
+}
+
+// 'try { ... }', with the lexer on 'try': a block whose '?' leaves the block with
+// the failure, not the function, and whose value is that failure or the block's
+// own last value wrapped (propagate.h). It is the block, marked FlagTry, its
+// 'breaks' ready for the '?' inside, which type check aims at it. Its last line is
+// read off the body, as a closure's return is: a value without ';', none with one
+// (parseTailCheckBlock).
+static INode *parseTry(ParseState *parse) {
+    INode *at = (INode*)newNilLitNode();    // positioned on 'try'
+    lexNextToken();
+    ++parse->trydepth;
+    BlockNode *blk = (BlockNode*)parseExprBlock(parse, 0);
+    --parse->trydepth;
+    inodeLexCopy((INode*)blk, at);
+    blk->flags |= FlagTry;
+    blk->breaks = newNodes(2);
+    return (INode*)blk;
 }
 
 // Parse a term: literal, identifier, etc.
@@ -416,10 +440,12 @@ INode *parseTerm(ParseState *parse) {
     case EachToken:
     case LifetimeToken:
     case LCurlyToken:
+    case TryToken:
     {
         INode *node;
         ++parse->genoperand;
         switch (lex->toktype) {
+        case TryToken: node = parseTry(parse); break;
         case IfToken: node = parseIf(parse); break;
         case MatchToken: node = parseMatch(parse); break;
         case WhileToken: node = parseWhile(parse, NULL, 0); break;
@@ -811,8 +837,9 @@ static INode *parsePropagate(ParseState *parse, INode *node) {
     BlockNode *blk = newBlockNode();
     blk->flags |= FlagPropagate;
     // A generator hands its caller items through 'yield', and its 'return' ends
-    // the walk: it has no Result or Option of its own for a '?' to return
-    if (parse->genctx)
+    // the walk: it has no Result or Option of its own for a '?' to return. A
+    // '?' in a 'try' block leaves the block instead
+    if (parse->genctx && parse->trydepth == 0)
         errorMsgLex(ErrorQuesReturn,
             "'?' returns a failure from the function it is in, and a generator returns nothing but its items, through 'yield'. Use 'match' or let-else here.");
     VarDclNode *held = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, node);

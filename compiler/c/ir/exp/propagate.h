@@ -43,6 +43,37 @@
 // return type is not written, a generator (ErrorQuesReturn, the last at parse).
 void propagateLower(TypeCheckState *pstate, BlockNode *blk);
 
+// 'try { a? + b? }': a '?' inside leaves the block, not the function, and the
+// block's value is the first failure, or its last value wrapped as the success
+// ('Ok', 'Some'). The parser marks the block FlagTry (parseTry). blockTypeCheck
+// calls propagateTryEnter before its statements and propagateTryFinish after
+// all but the last, checking the last and the breaks against the type the
+// latter answers. Enter holds the last value in a hidden variable,
+//
+//   try { stmts; last }   =>   { stmts; let -tryval = last; Ok(-tryval) }
+//
+// the 'Ok(...)' a placeholder until Finish knows the block's type (a body ending
+// in ';' or a declaration succeeds with nil, 'Ok(nil)'; one ending in a jump has
+// no success). A '?' met while the innermost try block being checked is of the
+// function being checked (a closure's '?' is the closure's) is built as above
+// with the failure's arm ending in 'break Err(conv(-err))' (or 'break None'),
+// aimed at the try block. Its value is built by Finish, so the try block is a
+// block with a value and breaks, as a labelled loop is.
+//
+// The block's type: the context's, when the block is wanted as a Result or an
+// Option ('let r: Result[i32, E] = try {...}', an argument, a 'return'); else
+// read off it: all '?'s on Options give 'Option[T]', all on Results with one
+// error type E give 'Result[T, E]', T being the last value's type. Each '?''s
+// error converts to the block's as a function's '?' converts it (overload from,
+// the sole variant holding it), ErrorQuesConvert or ErrorQuesAmbiguous naming
+// the try block. Refused: an Option's '?' with a Result's in one block, or one
+// against a context of the other kind (ErrorTryMix, naming 'okOr' and 'ok()');
+// with no context, '?'s whose errors differ, or no '?' at all, which leaves the
+// kind unknown (ErrorTryType, asking for the type). 'return', 'break' and
+// 'continue' inside act on the function and its loops, as anywhere.
+void propagateTryEnter(TypeCheckState *pstate, BlockNode *blk, INode *expectType);
+INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk);
+
 // A 'main' returning a Result: an error prints and the process exits with
 // failure. Once a module's declarations are checked (modTypeCheck), its 'main'
 // that returns a Result[T, E] is given a function the program's entry calls in
