@@ -669,6 +669,11 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         snprintf(buf + used, size - used, "%s", sig);
         return;
     }
+    // 'void' is a type argument as any other ('Result[void, E]') and names itself
+    if (dcl->tag == VoidTag) {
+        snprintf(buf + used, size - used, "void");
+        return;
+    }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
 }
 

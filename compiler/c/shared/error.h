@@ -520,7 +520,7 @@ enum ErrorCode {
 
     ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
 
-    // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnAwaitUnused
+    // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnDiscard
 
     // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
     ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
@@ -755,7 +755,8 @@ enum ErrorCode {
     // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
     WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
     WarnLoop = 3004,       // Infinite loop with no break
-    WarnAwaitUnused = 3005, // The result an awaited operation (actors.Awaitable: an I/O operation) answers with, a failure among what it may say, is thrown away
+    // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
+    WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
 
     // Uncounted
     Uncounted = 9000,

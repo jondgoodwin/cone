@@ -44,6 +44,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->holdsbarrier = HoldsTracedUnknown;
     snode->threadbound = CarriesBorrowUnknown;
     snode->callmut = 0;
+    snode->mustuse = 0;
     snode->callsig = NULL;
     snode->latewhere = NULL;
     return snode;
