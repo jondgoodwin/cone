@@ -2242,10 +2242,12 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   "Layout before members").
 - **An enum's method is never generated for the enum, unless its receiver names
   it.** Each variant has a clone, and a call through a reference to the enum
-  dispatches on the tag. A call on a value typed as the enum — possible only for a
-  by-value `self` — would need the same dispatch on a value, which is not built,
-  so `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than
-  leave a call to a function that does not exist. The same absence is why a
+  dispatches on the tag. A call on a value typed as the enum for a reference
+  `self` borrows the value and dispatches through the borrow the same way
+  (`fnCallLowerMethod` hands it to `fnCallLowerTraitMethod`). For a by-value
+  `self` it would need the same dispatch on a value, which is not built, so
+  `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than leave a
+  call to a function that does not exist. The same absence is why a
   virtual reference to another trait is built from the variant's vtable and never
   from one for the enum. **The exception is a method whose written receiver names
   the enum** (`self: &Lamp`, `&mut Lamp`, `self: Lamp`; `structIsWholeEnumMethod`,
@@ -2261,9 +2263,17 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   variant reaches it by `fnCallLowerMethodOn` finding it in the variant's enum
   when the variant has no method of that name, the receiver widened to the enum by
   the ordinary candidate test, so a variant's own method of the same name is the
-  one a variant-typed value calls. A generic enum's (`self: &Box[T]`) is not built:
-  the receiver is not a plain name, so it stays a per-variant method and is
-  refused as before (`ErrorInvType`).
+  one a variant-typed value calls. A generic enum's receiver is a call,
+  `self: &Box[T]`, until the signature is checked, and a use of the instance after:
+  `structIsWholeEnumMethod` reads the call by the generic it names
+  (`structNamesGenericEnum`: the owner, or the generic the owner is an instance
+  of, `genericTypeTemplate`), and a checked use naming another instance of the
+  same generic as whole-enum too, so the answer does not change between the
+  variants' copies being made and the body being checked; `fnDclTypeCheck` then
+  refuses a receiver naming another instance (`ErrorInvType`). A generic method
+  (`map[U]`) is read the same way: its own type parameters do not change what its
+  receiver names, so it is not copied into the variants, and a variant's value
+  reaches it in the enum.
   **A by-value receiver that names no enum is the other half**
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own

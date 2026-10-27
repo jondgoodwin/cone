@@ -194,6 +194,10 @@ struct ClosureCap *genericClosureNotShareableCap(INode *type, int mutrule);
 // 'errnode', naming the clause, and return 1. Otherwise return 0.
 int genericReportAbsent(INode *errnode, INode *typedcl, Name *name);
 
+// The generic type (or generic variant) whose instance 'inst' is, or NULL
+// where 'inst' is no generic type's instance
+StructNode *genericTypeTemplate(StructNode *inst);
+
 // Decide now the members of instance 'instance' whose 'where' waited on an
 // argument's layout (StructNode.latewhere), where every argument can be laid
 // out: called wherever the instance's members are read, so that a member its
