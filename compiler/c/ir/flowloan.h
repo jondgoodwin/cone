@@ -139,6 +139,13 @@ uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
     VarDclNode **through);
 
+// The same for a function naming no lifetimes: a caller loan among 'stored'
+// going where a reference holding 'refholds' points, at what a parameter lent
+// that holds no borrow but ''static' ones (itypeCarriesEndingBorrow), which
+// takes no borrow the caller lent. Returns 0, or the loan, with that
+// parameter as 'through'.
+uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
+
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0
 uint32_t loanNotGlobalIn(PathSet *set);
@@ -189,6 +196,11 @@ uint32_t loanAt(INode *site);
 // whose own loans come along with it -- neither a caller loan nor one of this
 // function's own storage (loanNotGlobalIn's test)?
 int loanIsGlobal(uint32_t loan);
+
+// Is a loan rooted at a global (or a static): of its storage, or of what a
+// reference held in one points at? A reborrow through any other reference is
+// not: it is what a ''static' borrow cannot be (pwCall's 'globalonly').
+int loanOfGlobal(uint32_t loan);
 
 // Does a holder holding 'holds' hold a borrow that is not global? The loan to
 // name in a message, the borrow it was given where that can be told, or 0

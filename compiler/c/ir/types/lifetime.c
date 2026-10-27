@@ -308,7 +308,7 @@ static void lifeGatherUse(NameUseNode *use, int anon, LifeSet *set) {
     LifeUse *lifeuse = use->lifeuse;
     // A bounded type argument, renamed: every borrow it holds is of one name
     if (lifeuse && lifeuse->held) {
-        if (itypeCarriesBorrow(dcl))
+        if (itypeCarriesEndingBorrow(dcl))
             lifeSetAdd(set, anon ? NULL : lifeuse->held);
         return;
     }
@@ -319,12 +319,12 @@ static void lifeGatherUse(NameUseNode *use, int anon, LifeSet *set) {
     }
     StructNode *strnode = (StructNode *)dcl;
     if (strnode->lifeparms) {
-        if (itypeCarriesBorrow(dcl)) {
+        if (itypeCarriesEndingBorrow(dcl)) {
             for (uint32_t k = 0; k < strnode->lifeparms->count; ++k)
                 lifeSetAdd(set, anon ? NULL : lifeSlotName((INode *)use, k));
         }
     }
-    else if (!(lifeuse && lifeuse->typeargs) && itypeCarriesBorrow(dcl))
+    else if (!(lifeuse && lifeuse->typeargs) && itypeCarriesEndingBorrow(dcl))
         lifeSetAdd(set, NULL);
     if (lifeuse && lifeuse->typeargs) {
         INode **nodesp;
@@ -381,9 +381,10 @@ static void lifeGather(INode *type, int anon, LifeSet *set) {
         return;
     }
     // A struct reached as a declaration, not through a use, names nothing: any
-    // borrow it holds is unnamed. So does any other type holding one.
+    // borrow it holds is unnamed. So does any other type holding one. A
+    // ''static' borrow, at any depth, holds no lifetime that ends.
     default:
-        if (itypeCarriesBorrow(type))
+        if (itypeCarriesEndingBorrow(type))
             lifeSetAdd(set, NULL);
         return;
     }
@@ -451,9 +452,9 @@ INode *lifeHeld(INode *parmtype) {
         if (lifeIsFnBorrow((RefNode *)typedcl))
             return NULL;
         INode *pointee = ((RefNode *)typedcl)->vtexp;
-        return itypeCarriesBorrow(pointee) ? pointee : NULL;
+        return itypeCarriesEndingBorrow(pointee) ? pointee : NULL;
     }
-    return itypeCarriesBorrow(parmtype) ? parmtype : NULL;
+    return itypeCarriesEndingBorrow(parmtype) ? parmtype : NULL;
 }
 
 int lifeIsOwnBorrow(INode *parmtype) {
@@ -1053,7 +1054,7 @@ INode *lifeRenamed(INode *type, Name *to) {
         if (!isTypeNode(type))
             return type;
         INode *dcl = itypeGetTypeDcl(type);
-        if (dcl == NULL || !itypeCarriesBorrow(dcl))
+        if (dcl == NULL || !itypeCarriesEndingBorrow(dcl))
             return lifeErased(type);
         NameUseNode *use = (NameUseNode *)type;
         LifeUse *old = use->lifeuse;
@@ -1270,7 +1271,7 @@ int lifePartOutlives(FnSigNode *sig, INode *parm, uint32_t part, Name *bound) {
 static int lifeParmStores(INode *parmtype) {
     RefNode *ref = (RefNode *)itypeGetTypeDcl(parmtype);
     return (ref->tag == RefTag || ref->tag == ArrayRefTag) && itypeGetTypeDcl(ref->region) == borrowRef
-        && (permGetFlags(ref->perm) & MayWrite) && itypeCarriesBorrow(ref->vtexp);
+        && (permGetFlags(ref->perm) & MayWrite) && itypeCarriesEndingBorrow(ref->vtexp);
 }
 
 // The parts a caller lends through a parameter, as LifePart values, into

@@ -365,6 +365,10 @@ static int loanVarIsGlobal(VarDclNode *var) {
     return var->scope == 0 || (var->flags & FlagStatic);
 }
 
+int loanOfGlobal(uint32_t id) {
+    return loans[id].kind != LoanCaller && loanVarIsGlobal(pathVars[loans[id].place.var].var);
+}
+
 int loanIsLocal(uint32_t id) {
     Loan *loan = &loans[id];
     return loan->kind != LoanCaller && !loan->place.deref
@@ -482,6 +486,30 @@ static INode *loanCallerPlace(uint32_t id) {
     if (held == NULL)
         return lifePointee(parmtype);
     return loans[id].part == LifePartHeld ? lifePointee(held) : held;
+}
+
+uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
+    if (refholds == NULL || stored == NULL)
+        return 0;
+    uint32_t n = refholds == &pathSetAll ? nloans : refholds->cnt;
+    for (uint32_t i = refholds == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = refholds == &pathSetAll ? i : refholds->ids[i];
+        if ((id & LoanFar) && !beyond)
+            continue;
+        id = loanOf(id);
+        INode *place = loans[id].kind == LoanCaller ? loanCallerPlace(id) : NULL;
+        if (place == NULL || !itypeCarriesBorrow(place) || itypeCarriesEndingBorrow(place))
+            continue;
+        uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
+        for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
+            uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
+            if (loans[sid].kind == LoanCaller) {
+                *through = loanParm(id);
+                return sid;
+            }
+        }
+    }
+    return 0;
 }
 
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,

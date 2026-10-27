@@ -1,0 +1,90 @@
+// A value whose type holds a ''static' borrow, and no other (a struct with
+// a '&'static str' field, an 'Option' of one, a struct with a '&'static i64'
+// field), returned from a function naming no lifetimes and taking two
+// references, carries no borrow of its arguments: a ''static' borrow lends
+// nothing of the caller's, so it is kept past the locals it was asked about.
+// The same through a generic function whose 'Option[T]' result has 'T' a
+// struct holding one. And one stored where a '&mut' parameter points, which
+// outlives the local it was asked about.
+//
+// Verdict: accept; prints "bad 3", "short 4", "generic 5", "global 9" and
+// "bad 7".
+// Basis: mem-lifetimes.html, "The global lifetime: 'static" (a ''static'
+// borrow is global; mem-borrowing.html: it "can last as long as it likes").
+// Master c85d9fa99: refused, Error 1168 at each local's end and Error 1064 at
+// the store in 'keep' (each result taken to borrow both arguments, as an
+// unannotated signature's result does). lifetime_band_static_holder_result_ending is the same shape with
+// borrows that end, still refused.
+
+mod lifetime_band_static_holder_result;
+
+import stdio use *;
+
+struct Fault {
+  code: u32;
+  detail: &'static str;
+}
+
+struct Pinned {
+  at: &'static i64;
+}
+
+var @threadlocal G: i64 = 9;
+
+fn check(a: &i64, b: &i64) Fault {
+  Fault(u32.from(*a + *b), "bad")
+}
+
+fn maybe(a: &i64, b: &i64) Option[Fault] {
+  if *a < *b { Some[Fault](Fault(u32.from(*b), "short")) } else { None[Fault] }
+}
+
+fn wrap[T](a: &i64, b: &i64, v: T) Option[T] {
+  Some[T](v)
+}
+
+fn pin(a: &i64, b: &i64) Pinned {
+  Pinned(&G)
+}
+
+// Stored where a parameter points, which outlives the local 'x'
+fn keep(out: &mut Fault, a: &i64) {
+  let x = 6i64;
+  *out = check(a, &x);
+}
+
+fn show(f: Fault) {
+  printStr(f.detail);
+  printStr(" ");
+  printInt(i64.from(f.code));
+  printStr("\n");
+}
+
+fn main() {
+  var f = Fault(0u32, "");
+  var m = None[Fault];
+  var w = None[Fault];
+  var p = Pinned(&G);
+  {
+    let x = 1i64;
+    let y = 2i64;
+    f = check(&x, &y);
+    m = maybe(&x, &4i64);
+    w = wrap[Fault](&x, &y, Fault(5u32, "generic"));
+    p = pin(&x, &y);
+  }
+  show(f);
+  match m {
+    case let Some(e) {show(e);}
+    else {printStr("none\n");}
+  }
+  match w {
+    case let Some(e) {show(e);}
+    else {printStr("none\n");}
+  }
+  printStr("global ");
+  printInt(*p.at);
+  printStr("\n");
+  keep(&mut f, &1i64);
+  show(f);
+}

@@ -45,8 +45,12 @@ INode *itypeGetDerefTypeDcl(INode *node) {
 // not yet type checked. A "no" that depended on it is not remembered.
 static int itypeCarriesProvisional = 0;
 
-static int itypeStructCarriesBorrow(StructNode *type) {
-    switch (type->carriesborrow) {
+static int itypeCarriesAt(INode *type, int ending);
+
+// 'ending' asks itypeCarriesEndingBorrow's question, remembered apart
+static int itypeStructCarriesBorrow(StructNode *type, int ending) {
+    uint8_t *memo = ending ? &type->carriesending : &type->carriesborrow;
+    switch (*memo) {
     case CarriesBorrowYes:
         return 1;
     case CarriesBorrowNo:
@@ -61,13 +65,13 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     }
     int svprovisional = itypeCarriesProvisional;
     itypeCarriesProvisional = 0;
-    type->carriesborrow = CarriesBorrowAsking;
+    *memo = CarriesBorrowAsking;
 
     int carries = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
-        if (itypeCarriesBorrow(((IExpNode *)*nodesp)->vtype)) {
+        if (itypeCarriesAt(((IExpNode *)*nodesp)->vtype, ending)) {
             carries = 1;
             break;
         }
@@ -77,7 +81,7 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     // only through a reference, which answers for itself.
     if (!carries && type->derived) {
         for (nodesFor(type->derived, cnt, nodesp)) {
-            if (itypeCarriesBorrow(*nodesp)) {
+            if (itypeCarriesAt(*nodesp, ending)) {
                 carries = 1;
                 break;
             }
@@ -89,56 +93,74 @@ static int itypeStructCarriesBorrow(StructNode *type) {
     if (!(type->flags & TypeChecked))
         itypeCarriesProvisional = 1;
     if (carries && (type->flags & TypeChecked))
-        type->carriesborrow = CarriesBorrowYes;
+        *memo = CarriesBorrowYes;
     else if (!carries && !itypeCarriesProvisional)
-        type->carriesborrow = CarriesBorrowNo;
+        *memo = CarriesBorrowNo;
     else
-        type->carriesborrow = CarriesBorrowUnknown;
+        *memo = CarriesBorrowUnknown;
     itypeCarriesProvisional |= svprovisional;
     return carries;
 }
 
-// May a value of this type hold a borrowed reference?
-int itypeCarriesBorrow(INode *type) {
+static int itypeCarriesAt(INode *type, int ending) {
     if (type == NULL)
         return 0;
     switch (type->tag) {
     // A name, or an alias, answers for the type it stands for. One that names
     // no type -- a generic's parameter in its template -- answers nothing.
     case NameUseTag:
-        return isTypeNode(type) ? itypeCarriesBorrow(itypeGetTypeDcl(type)) : 0;
+        return isTypeNode(type) ? itypeCarriesAt(itypeGetTypeDcl(type), ending) : 0;
     case AliasDclTag:
-        return itypeCarriesBorrow(((AliasDclNode *)type)->target);
+        return itypeCarriesAt(((AliasDclNode *)type)->target, ending);
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
         // A borrowed reference to a function is global: a function is never
         // a local, so its borrow can neither dangle nor hold anything frozen.
         // A key is no borrow: its invariant lifetime ends nowhere, and what it
-        // names lives in its arena.
-        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
-            return !lifeIsInvariant(((RefNode *)type)->lifename)
-                && !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
-                && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag == FnSigTag);
-        return itypeCarriesBorrow(((RefNode *)type)->vtexp);
+        // names lives in its arena. A ''static' borrow's lifetime ends nowhere
+        // either: asked of a lifetime that ends, it answers for what it points
+        // at only, as an owning reference does.
+        if (itypeGetTypeDcl(ref->region) == borrowRef) {
+            if (ending && ref->lifename == staticLifeName)
+                return itypeCarriesAt(ref->vtexp, ending);
+            return !lifeIsInvariant(ref->lifename)
+                && !(type->tag == RefTag && isTypeNode(ref->vtexp)
+                && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag);
+        }
+        return itypeCarriesAt(ref->vtexp, ending);
+    }
     case PtrTag:
-        return itypeCarriesBorrow(((StarNode *)type)->vtexp);
+        return itypeCarriesAt(((StarNode *)type)->vtexp, ending);
     case ArrayTag:
-        return itypeCarriesBorrow(arrayElemType(type));
+        return itypeCarriesAt(arrayElemType(type), ending);
     case TTupleTag: {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
-            if (itypeCarriesBorrow(*nodesp))
+            if (itypeCarriesAt(*nodesp, ending))
                 return 1;
         }
         return 0;
     }
     case StructTag:
-        return itypeStructCarriesBorrow((StructNode *)type);
+        return itypeStructCarriesBorrow((StructNode *)type, ending);
     default:
         return 0;
     }
+}
+
+// May a value of this type hold a borrowed reference?
+int itypeCarriesBorrow(INode *type) {
+    return itypeCarriesAt(type, 0);
+}
+
+// May a value of this type hold a borrow of a lifetime that ends: one that is
+// not ''static'?
+int itypeCarriesEndingBorrow(INode *type) {
+    return itypeCarriesAt(type, 1);
 }
 
 // Can a borrowed reference whose referent is 'want' be stored somewhere in a

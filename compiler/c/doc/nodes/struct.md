@@ -542,6 +542,7 @@ their `typecheck` scenarios pin them.
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
 | `lifeparms` | the lifetimes it declares in its brackets, apart from its type parameters (`LifeParms`, `ir/types/lifetime.h`), or the one its fields name where its brackets declare none; NULL for a struct naming none. Settled at the end of its parse (`lifeStructDeclare`), which also gives an enum's variants their enum's. **Shared, never cloned**: a lifetime is never instanced, so every instance of a generic struct reads the template's. A field's slots are its own (`FieldDclNode.lifeslots`, `lifeFieldSlots`), each instance's field asked afresh |
 | `carriesborrow` | `itypeCarriesBorrow`'s answer to whether a value of the type may hold a borrowed reference: `CarriesBorrowUnknown` until asked, `CarriesBorrowAsking` while its own fields and variants are being asked (a cycle through an owning reference or pointer that reaches it again adds nothing), then `CarriesBorrowYes` or `CarriesBorrowNo`. It is remembered only once the struct is type checked, and a "no" that leaned on a struct still being asked is not remembered. `newStructNode` sets it unknown, and so does `cloneStructNode`: an instance's fields are its own question |
+| `carriesending` | `itypeCarriesEndingBorrow`'s answer, kept the same way: whether a value of the type may hold a borrow of a lifetime that ends, a `'static` borrow passed as a key is. What a signature says a value may carry asks this (`lifeGather`, `lifeHeld`) |
 
 **What tells the three apart:**
 

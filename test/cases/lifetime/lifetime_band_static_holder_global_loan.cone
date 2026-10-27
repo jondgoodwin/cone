@@ -1,0 +1,36 @@
+// A value holding only ''static' borrows, handed back by a function naming
+// no lifetimes, still carries the loans of a global its arguments carried: a
+// ''static' borrow lends nothing of the caller's, but a global's loan keeps
+// the global from being changed while the borrow is used.
+//
+// Verdict: refuse: ErrorFrozen at 'G = 2', 'h' still holding a borrow of 'G'.
+// Basis: mem-lifetimes.html, "The global lifetime: 'static"; a borrowed
+// source may not be changed while the borrow is used (mem-borrowing.html).
+// Master c85d9fa99: refused the same.
+
+mod lifetime_band_static_holder_global_loan;
+
+struct H {
+  r: &'static i64;
+}
+
+var @threadlocal G: i64 = 1;
+
+fn mk(x: &'static i64) H {
+  H(x)
+}
+
+fn rewrap(h: H, n: &i64) H {
+  h
+}
+
+fn held() i64 {
+  let n = 2i64;
+  let h = rewrap(mk(&G), &n);
+  G = 2;                    //~ ErrorFrozen "'G' is borrowed"
+  *h.r
+}
+
+fn main() {
+  held();
+}
