@@ -25,12 +25,10 @@ mod floatproof;
 import stdio use *;
 import collections use *;
 import json;
+import libc;
 
 extern fn strtod(s: *u8, end: *u8) f64;
 extern fn strtof(s: *u8, end: *u8) f32;
-extern fn fopen(name: *u8, mode: *u8) *u8;
-extern fn fwrite(p: *u8, size: usize, count: usize, f: *u8) usize;
-extern fn fclose(f: *u8) i32;
 
 struct Stats {
   f64s: u64;
@@ -40,7 +38,7 @@ struct Stats {
   jsonDiffer: u64;     // json's digits differ
   tooLong: u64;        // over 24 bytes
   shown: u64;
-  lines: *u8;          // the file of 'bits text' lines, or null
+  lines: *libc.FILE;   // the file of 'bits text' lines, or null
   lineCount: u64;
 }
 
@@ -104,7 +102,8 @@ fn sigOf(t: &Array[u8]) Sig {
     k = k + 1usize;
   }
   sig.n = end - lead;
-  sig.x = point - 1i64 - i64.from(lead) + e;
+  // Zero has no digits and no exponent, however it is written ("0", "0.0")
+  sig.x = if sig.n == 0usize {0i64} else {point - 1i64 - i64.from(lead) + e};
   sig
 }
 
@@ -195,7 +194,7 @@ fn check64(st: &mut Stats, bits: u64) {
     line <- ft.text();
     line <- "\n";
     let lb: &Array[u8] = line.view();
-    fwrite(lb as *u8, 1usize, lb.len, st.lines);
+    libc.fwrite(lb as *u8, 1usize, lb.len, st.lines);
     st.lineCount = st.lineCount + 1u64;
   }
   let back = strtod(&mut c.b as *u8, null);
@@ -290,7 +289,7 @@ fn main(argc: i32, argv: **u8) i32 {
   let count = if argc > 1i32 {argNumber(*(argv + 1usize))} else {4000000u64};
   let f32Step = if argc > 2i32 {argNumber(*(argv + 2usize))} else {1u64};
   if argc > 3i32 {
-    st.lines = fopen(*(argv + 3usize), &"wb\0" as *u8);
+    st.lines = libc.fopen(cstr.fromPtr(*(argv + 3usize)), "wb");
   }
 
   // The edges
@@ -362,7 +361,7 @@ fn main(argc: i32, argv: **u8) i32 {
     b32 = b32 + f32Step;
   }
 
-  if st.lines != null {fclose(st.lines);}
+  if st.lines != null {libc.fclose(st.lines);}
   print <- "f64 checked ", st.f64s, ", f32 checked ", st.f32s, "\n";
   print <- "round trip failures ", st.roundTrip, ", not shortest ", st.notShortest,
     ", json differs ", st.jsonDiffer, ", over 24 bytes ", st.tooLong, "\n";
