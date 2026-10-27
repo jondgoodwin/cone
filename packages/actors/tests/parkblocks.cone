@@ -1,0 +1,109 @@
+// The record blocks a parked continuation takes, and the keeps that hold them
+// (RECORD BLOCKS KEPT in the package's header), counted by parkBlocks(): the
+// blocks the runtime took from the allocator and gave back, and the per-thread
+// keeps it made and freed. Three workers. Two things park:
+//
+// - eight askers each await a squarer 500 times, from the workers at once:
+//   each await parks and its reply gives the block back, to the keep of the
+//   worker that ran it, so the keeps of three workers are made and filled;
+// - a behaviour awaits an operation that drops its envelope unanswered, so
+//   it stays parked, and its actor dies with the record parked: the pending
+//   table gives that block back itself.
+//
+// After finalAll() the workers have stopped, and what was taken has been
+// given back and every keep freed. (A keep that outlives its worker, or that
+// the stop does not free for the thread that stopped the runtime, shows as
+// keeps made and not freed, and as a block taken and not given back: a leak
+// the leak checker finds on a worker that exits.)
+
+mod parkblocks;
+
+import testing use *;
+import actors;
+
+const askers = 8u64;
+const rounds = 500u64;
+
+let total: Atomic[u64];
+
+fn @initpure init() {
+  total = Atomic[u64].of(0u64);
+}
+
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.Reply) { })
+}
+
+actor Squarer {
+  pub async fn sq(self, n: u64) u64 {n * n}
+}
+
+actor Asker {
+  sq: Squarer;
+  fn init(self: &new, sq: Squarer) {
+    *self = Self(sq: sq);
+  }
+
+  pub async fn storm(self, base: u64) {
+    var i = 0u64;
+    while i < rounds {
+      let s = await sq.sq(base + i);
+      total.add(s);
+      i = i + 1u64;
+    }
+  }
+}
+
+actor Stuck {
+  pub async fn count(self) u64 {
+    let n = await never();
+    n
+  }
+}
+
+fn expectedSum() u64 {
+  var t = 0u64;
+  var a = 0u64;
+  while a < askers {
+    var i = 0u64;
+    while i < rounds {
+      let n = a * 1000u64 + i;
+      t = t + n * n;
+      i = i + 1u64;
+    }
+    a = a + 1u64;
+  }
+  t
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 3u32));
+  let before = actors.parkBlocks();
+  expectUInt(before.taken, 0u64, "no block taken before the first actor");
+  expectUInt(before.keepsMade, 0u64, "no keep made before the first actor");
+  {
+    let sq = Squarer();
+    var list: Array[Asker, 8] = [Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq), Asker(sq)];
+    var a = 0u64;
+    while a < askers {
+      list[usize.from(a)].storm(a * 1000u64);
+      a = a + 1u64;
+    }
+    actors.waitQuiet();
+    expectUInt(total.load(), expectedSum(), "every await came back with its value");
+    {
+      let s = Stuck();
+      let f = s.count();
+      actors.waitQuiet();
+    }                           // Stuck dies with its record parked
+    actors.waitQuiet();
+  }
+  finalAll();
+  let after = actors.parkBlocks();
+  expect(after.taken > 0u64, "blocks were taken for the parked continuations");
+  expect(after.keepsMade >= 1u64, "at least one keep was made");
+  expectUInt(after.given, after.taken, "every block taken was given back");
+  expectUInt(after.keepsFreed, after.keepsMade, "every keep made was freed");
+  done()
+}
