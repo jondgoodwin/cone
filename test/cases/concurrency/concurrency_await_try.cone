@@ -1,0 +1,50 @@
+// 'await x?' in a 'try' block [Jon 26 Oct, error-handling issues 1 and 3]: the '?'
+// takes the Result the wait gives, '(await x)?', and its failure leaves the try block,
+// not the behaviour, which goes on to match the block's value. The second wait
+// answers Err, so what follows it in the block does not run; the first answered Ok,
+// and the behaviour resumed after it inside the block.
+
+mod concurrency_await_try;
+
+import stdio use *;
+import actors;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// An operation answering v as soon as it is started
+fn now[R](v: R) actors.Awaitable[R] {
+  actors.Awaitable[R].make(fn(rp: actors.Reply) [v] {
+    actors.answerNow[R](rp, v);
+  })
+}
+
+fn pick(n: u32) Result[u64, u32] {
+  if n == 1u32 { Ok(5u64) } else { Err(13u32) }
+}
+
+actor Waiter {
+  pub async fn go(self) {
+    let r = try {
+      let v = await now[Result[u64, u32]](pick(1u32))?;
+      say("after first", v);
+      let w = await now[Result[u64, u32]](pick(2u32))?;
+      say("never", w);
+      v + w
+    };
+    match r {
+      case let Ok(v) { say("ok", v); }
+      case let Err(e) { say("err", u64.from(e)); }
+    }
+    say("go goes on", 0u64);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let p = Waiter();
+    p.go();
+  }
+  finalAll();
+  say("end", 0u64);
+}

@@ -382,6 +382,11 @@ enum NodeTags {
 // only type check knows, so type check builds the rest (propagateLower) once the
 // variable is checked, and clears the flag.
 #define FlagPropagate 0x0400        // Block: a '?' whose test and early return type check has yet to build
+// A 'try' block (parseTry): a '?' inside leaves it, not the function, by a 'break'
+// aimed at it carrying the failure, and its last value is wrapped as the success
+// (propagate.h). Kept through generation, where the block's own value joins its
+// breaks' at its end.
+#define FlagTry       0x0800        // Block: a 'try' block
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain

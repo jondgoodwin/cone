@@ -1718,6 +1718,10 @@ static void parseTailCheckBlock(BlockNode *blk, int used, int viaelse) {
     if ((blk->flags & FlagLoopElse) && !viaelse)
         return;
     uint32_t n = blk->stmts->used;
+    // A 'try' block's last line is its success, read off the body as a closure's
+    // return is: a value without ';', nothing with one. Wherever the block stands
+    if (blk->flags & FlagTry)
+        used = TailFree;
     if (blk->flags & FlagLoop) {
         if (blk->elseblk)
             parseTailCheckBlock(blk->elseblk, used, 1);
@@ -2969,13 +2973,16 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         GenCtx *genctx = isgen ? parseGenBegin(parse, fnnode) : NULL;
         GenCtx *svgenctx = parse->genctx;
         int svgenoperand = parse->genoperand;
+        int svtrydepth = parse->trydepth;
         parse->genctx = genctx;
         parse->genoperand = 0;
+        parse->trydepth = 0;
         fnnode->value = parseExprBlock(parse, 0);
         // The body's value is used when the signature writes a return type
         parseTailCheck(fnnode->value, ((FnSigNode*)fnnode->vtype)->retwritten ? TailUsed : TailUnused);
         parse->genctx = svgenctx;
         parse->genoperand = svgenoperand;
+        parse->trydepth = svtrydepth;
         bodyendp = lex->prevend;
         if (genctx && errors == errorsAtSig) {
             // The declarations the generator stands for are read from text of

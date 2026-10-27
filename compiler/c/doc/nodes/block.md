@@ -6,7 +6,8 @@ a numeric range, by type check once it knows the source.
 **At a glance.** Built by `parseExprBlock`. Name resolution pushes a scope,
 binds a lifetime label, enforces jump placement, and repairs `each`'s
 `continue`. Type check builds the loop of an `each` over a source that is not
-a range (`FlagEach`) and the test and return of a `?` (`FlagPropagate`), then
+a range (`FlagEach`) and the test and return of a `?` (`FlagPropagate`), wraps a
+`try` block's success and aims its `?`s at it (`FlagTry`), then
 folds the block's value paths into one type. Flow
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
@@ -34,6 +35,7 @@ caused, were measured.*
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
 | `FlagPropagate` | the block `x?` is parsed to (`parsePropagate`), holding `x` in a hidden variable, its only statement: `blockTypeCheck` checks that variable, then builds the test and the early return after it (`propagateLower`, `ir/exp/propagate.h`) and clears the flag |
+| `FlagTry` | a `try` block (`parseTry`), its `breaks` made by the parser. `blockTypeCheck` holds its last value in a hidden variable and wraps it as the success, and the `?`s inside leave it by `break`s aimed at it (`propagateTryEnter`, `propagateTryFinish`, `ir/exp/propagate.h`). **Kept** through generation, where the block's own value joins its breaks' phi |
 | `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
 | `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
@@ -162,6 +164,28 @@ an Option), with every name bound to its declaration. The arm that returns gives
 the `if` no value, so the block's value is what `Ok` holds; `ifExhaustCheck`
 makes the last test the `else`. Where `?` is refused, the block ends in an error
 node typed as what `Ok` holds, so nothing that uses it reports again.
+
+**`FlagTry`: a `try` block catches its `?`s.** Before its statements,
+`propagateTryEnter` takes the type expected of it, when that is a Result or an
+Option, as its type, moves its last expression into a hidden variable
+(`let -tryval = last`, typed as the success that type holds) and appends a
+placeholder as the last statement (a body ending in `;` or a declaration gets
+the placeholder alone, a nil success; one ending in a jump gets none), and
+pushes the block on a stack of try blocks keyed by the function being checked.
+A `?` checked while the top of that stack is of the same function (a closure's
+`?` is the closure's) ends its failure's arm in a `break` aimed at the block
+(`FlagBreakAimed`, joined to `breaks` by `breakTypeCheck`) with a stand-in
+value. Once every statement but the last is checked, `propagateTryFinish` pops
+the block and knows its type: the context's, or `Result[T, E]` / `Option[T]`
+instantiated from the first `?`'s operand with `T` the hidden variable's type
+(void for a nil success). It gives each break its value, `Err(conv(-err))` or
+`None`, converting as `?` in a function does, and the placeholder becomes
+`Ok(-tryval)` (or `Some`, or `Ok(nil)`). The last statement and the breaks are
+then checked against that type, as any block's are against the type expected of
+it, so the block's type is that type even where its value is thrown away. A type
+it cannot have (`ErrorTryType`) makes every path an error node and the type the
+error type. `break` and `continue` written in the body are untouched: name
+resolution binds them to loops, and a try block is none.
 
 **`FlagEach`: the loop is built here, from the source's type.** Before any
 statement is checked, `blockTypeCheck` checks the block's first statement, the
@@ -556,9 +580,11 @@ borrow of one going out is the loan walk's to check.
 
 ## Generation
 
-**Basic blocks are created only when needed**: `isPhiBlk = isLoop || breaks > 1`.
+**Basic blocks are created only when needed**: `isPhiBlk = isLoop || breaks > 1`,
+or, for a `try` block, any break: its own last value is one more path to its end.
 A regular block with at most one break emits its statements straight into the
-current block. A loop gets `loopbeg` and `loopend` and a back-edge; a phi block
+current block. A `try` block's path that reaches its end adds its last value to
+the phi (or the slot) and branches to `blockend`, as a break does. A loop gets `loopbeg` and `loopend` and a back-edge; a phi block
 gets `blockend` and a `GenBlockState` on a fixed 256-deep stack.
 
 **A phi is built only where the block converges on a value**, and one condition

@@ -46,7 +46,9 @@ claim that these rule rather than describe.**
    And `x?`: whether `x` is a Result or an Option, and what the function returns,
    say what its test and early return are, so the parser builds a block marked
    `FlagPropagate` holding `x` in a hidden variable, which type check finishes
-   (`propagateLower`, `ir/exp/propagate.h`).
+   (`propagateLower`, `ir/exp/propagate.h`). A `try` block is that too: its type
+   is what is wanted of it or what its `?`s take, so the parser marks the block
+   `FlagTry` (`parseTry`) and type check wraps its success and aims its `?`s at it.
    A header `if`, a trailing `if` on `break`, `continue` and `return`, and a
    loop's `else` are desugared here too, into `continue`, an `if` arm and the
    loop's exit ([Block](../nodes/block.md), "Parse").
@@ -747,7 +749,16 @@ Everywhere but there, `?` is a suffix like `[]`, Rust's precedence:
 not a suffix where a type is read (`ParseState.intype`), whose `?` is an
 Option's prefix sugar, and `?.` never reaches it (the lexer holds it, above).
 `?` in a generator's body is refused here (`ErrorQuesReturn`): a generator's
-`return` ends its walk and it has no Result or Option of its own.
+`return` ends its walk and it has no Result or Option of its own. Inside a `try`
+block it is not: the block takes the failure. `ParseState.trydepth` counts the
+try blocks of the body being read, and a function or closure body read inside
+one starts again at none.
+`try` is a keyword and begins a term (`parseTry`): the block after it, marked
+`FlagTry` with its `breaks` made, positioned on the word. It counts as an
+operand block for a generator's `yield` (`genoperand`), as a `{...}` term does.
+Its last line is judged `TailFree` wherever the block stands
+(`parseTailCheckBlock`): with no `;` it is the success, with one the success is
+nil, as a closure's last line is read when its return type is not written.
 `await` builds an `AwaitNode` and nothing more; where it may stand is type check's
 (`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
 ([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
@@ -1203,7 +1214,7 @@ numbers.
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
 | | `parseSuffix`, `parseSuffixUntil`, `parsePropagate`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`, `?` (the block marked `FlagPropagate`); named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
-| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
+| | `parseTerm`, `parseNameUse`, `parseArrayLit`, `parseTry` | literals, parens, blocks-as-expressions (a `try` block among them, marked `FlagTry`), names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
 | | `parseTypeReq` | a type the grammar requires: after `as`, an alias's `=`, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |

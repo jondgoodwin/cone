@@ -159,8 +159,9 @@ enum PropagateConv {
 };
 
 // Decide how 'from' becomes 'to' (propagate.h), reporting where it cannot.
-// '*wrap' is the variant that wraps it, for ConvWrap.
-static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode **wrap, INode *lexnode, INode *rettype) {
+// '*wrap' is the variant that wraps it, for ConvWrap. 'rettype' is what the
+// function returns, or what the try block gives when 'intry'.
+static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode **wrap, INode *lexnode, INode *rettype, int intry) {
     *wrap = NULL;
     // (a coercion that converts by a method or borrows is no error's own: a
     // borrow of it would not outlive the function)
@@ -216,7 +217,8 @@ static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode *
     }
     char retname[200];
     errorMsgNode(lexnode, ErrorQuesConvert,
-        "'?' returns this error, %s, from a function returning %s, whose error %s cannot take it: declare an 'overload from' on %s that takes %s, or a variant of %s that holds it.",
+        intry ? "'?' gives this error, %s, to a try block giving %s, whose error %s cannot take it: declare an 'overload from' on %s that takes %s, or a variant of %s that holds it."
+            : "'?' returns this error, %s, from a function returning %s, whose error %s cannot take it: declare an 'overload from' on %s that takes %s, or a variant of %s that holds it.",
         propagateSpell(fromname, sizeof(fromname), from), propagateSpell(retname, sizeof(retname), rettype),
         propagateSpell(toname, sizeof(toname), to), toname, fromname, toname);
     return ConvRefused;
@@ -241,6 +243,293 @@ static INode *propagateConvert(enum PropagateConv kind, INode *value, INode *to,
     }
 }
 
+// The 'if' that ends the '?''s block: the value's arm, giving what the success
+// holds, which is the block's value, then the failure's arm, built by the caller
+static void propagateArms(BlockNode *blk, VarDclNode *held, enum PropagateKind kind, CastNode *failtest, BlockNode *failarm,
+    uint16_t armscope) {
+    INode *lexnode = (INode*)blk;
+    CastNode *oktest, *okbind;
+    propagateTest(held, kind == PropagateResult ? okName : someName, lexnode, &oktest, &okbind);
+    VarDclNode *ok = propagateVar(kind == PropagateResult ? "-ok" : "-some", (INode*)okbind, armscope, lexnode);
+    BlockNode *okarm = newBlockNode();
+    inodeLexCopy((INode*)okarm, lexnode);
+    nodesAdd(&okarm->stmts, (INode*)ok);
+    nodesAdd(&okarm->stmts, propagateUse(ok, lexnode));
+
+    IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, lexnode);
+    nodesAdd(&ifnode->condblk, (INode*)oktest);
+    nodesAdd(&ifnode->condblk, (INode*)okarm);
+    nodesAdd(&ifnode->condblk, (INode*)failtest);
+    nodesAdd(&ifnode->condblk, (INode*)failarm);
+    nodesAdd(&blk->stmts, (INode*)ifnode);
+}
+
+// ---- 'try' blocks -----------------------------------------------------------
+
+// A '?' a try block took: the 'break' its failure leaves by, whose value is
+// built once the block's type is known (propagateTryFinish)
+typedef struct PropagateSite {
+    BreakRetNode *brk;
+    VarDclNode *err;        // the error a Result's '?' was given; NULL for an Option's
+    INode *from;            // its type
+    INode *lexnode;         // the '?'
+} PropagateSite;
+
+// A try block being checked, innermost first
+typedef struct PropagateTry {
+    BlockNode *blk;
+    FnDclNode *fn;              // the function it is in: a closure's '?' is the closure's
+    INode *ctx;                 // the Result or Option it is wanted as, or NULL
+    enum PropagateKind kind;    // what its '?'s take: the context's kind, else the first '?''s
+    INode *kindq;               // that first '?' (NULL where the context said)
+    INode *sample;              // its operand's type, an instance of core's Result or Option
+    INode *err, *errq;          // with no context: the first Result's error type, and its '?'
+    INode *differ, *differq;    // a later '?' whose error type is another
+    VarDclNode *val;            // the hidden variable holding the last value, or NULL
+    int lastjumps;              // the body ends in a jump: no success to wrap
+    int refused;                // a '?' in it was refused (reported) before its kind was known
+    PropagateSite *sites;
+    uint32_t nsites, maxsites;
+    struct PropagateTry *outer;
+} PropagateTry;
+
+static PropagateTry *propagateTryTop = NULL;
+
+// The column a node stands at, for a message naming another place
+static uint32_t propagateColumn(INode *node) {
+    return (uint32_t)(node->srcp - node->linep) + 1;
+}
+
+void propagateTryEnter(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
+    PropagateTry *trys = memAllocBlk(sizeof(PropagateTry));
+    memset(trys, 0, sizeof(PropagateTry));
+    trys->blk = blk;
+    trys->fn = pstate->fn;
+    if (blk->breaks == NULL)
+        blk->breaks = newNodes(2);
+
+    // The context, when it is a Result or an Option, is the block's type
+    INode *want = expectType != unknownType && expectType != noCareType && expectType != errorType
+        && isTypeNode(expectType) ? itypeGetTypeDcl(expectType) : NULL;
+    INode *succtype = NULL;
+    if (want != NULL && propagateKindOf(want) != PropagateNone) {
+        trys->ctx = expectType;
+        trys->kind = propagateKindOf(want);
+        succtype = propagateHeld(propagateVariant(want, trys->kind == PropagateResult ? okName : someName));
+    }
+
+    // The last value is held in a hidden variable, '-tryval', so that the block's
+    // type can be read off it before the success is wrapped; a placeholder stands
+    // where the wrapped success will. A body ending in ';' or a declaration
+    // succeeds with nil; one ending in a jump has no success to wrap.
+    INode **lastp = blk->stmts->used > 0 ? &nodesLast(blk->stmts) : NULL;
+    INode *last = lastp ? *lastp : NULL;
+    if (last != NULL && (last->tag == ReturnTag || last->tag == BreakTag || last->tag == ContinueTag))
+        trys->lastjumps = 1;
+    else {
+        if (last != NULL && isExpOrMacroNode(last) && !(blk->flags & FlagTailSemi)) {
+            VarDclNode *val = propagateVar("-tryval", last, pstate->scope, last);
+            if (succtype != NULL)
+                val->vtype = succtype;
+            *lastp = (INode*)val;
+            trys->val = val;
+        }
+        INode *placeholder = (INode*)newNilLitNode();
+        inodeLexCopy(placeholder, last ? last : (INode*)blk);
+        nodesAdd(&blk->stmts, placeholder);
+    }
+    trys->outer = propagateTryTop;
+    propagateTryTop = trys;
+}
+
+// A '?' in a try block of this function: the failure leaves the block by a
+// 'break' aimed at it, whose value propagateTryFinish builds
+static void propagateTrySite(BlockNode *blk, VarDclNode *held, INode *type, enum PropagateKind kind,
+    PropagateTry *trys, uint16_t armscope) {
+    INode *lexnode = (INode*)blk;
+    char tname[200];
+    if (trys->kind != PropagateNone && trys->kind != kind) {
+        char *these = kind == PropagateResult ? "a Result" : "an Option";
+        if (trys->ctx != NULL)
+            errorMsgNode(lexnode, ErrorTryMix,
+                "'?' takes %s here, in a try block giving %s: a try block's '?'s take what it gives. Make an Option a Result with 'okOr(error)', or a Result an Option with 'ok()'.",
+                these, propagateSpell(tname, sizeof(tname), trys->ctx));
+        else
+            errorMsgNode(lexnode, ErrorTryMix,
+                "'?' takes %s here, and the '?' at %u:%u of this try block takes %s: a try block's '?'s take all Results or all Options. Make an Option a Result with 'okOr(error)', or a Result an Option with 'ok()'.",
+                these, trys->kindq->linenbr, propagateColumn(trys->kindq), kind == PropagateResult ? "an Option" : "a Result");
+        propagateFail(blk, type);
+        return;
+    }
+    if (trys->kind == PropagateNone) {
+        trys->kind = kind;
+        trys->kindq = lexnode;
+    }
+    if (trys->sample == NULL)
+        trys->sample = type;
+
+    Name *failname = kind == PropagateResult ? errorVariantName : noneName;
+    BlockNode *failarm = newBlockNode();
+    inodeLexCopy((INode*)failarm, lexnode);
+    CastNode *failtest;
+    VarDclNode *err = NULL;
+    INode *from = NULL;
+    if (kind == PropagateResult) {
+        from = propagateHeld(propagateVariant(type, failname));
+        if (from == NULL) {
+            propagateFail(blk, type);
+            return;
+        }
+        if (trys->ctx == NULL) {
+            if (trys->err == NULL) {
+                trys->err = from;
+                trys->errq = lexnode;
+            }
+            else if (trys->differ == NULL && !itypeIsSame(trys->err, from)) {
+                trys->differ = from;
+                trys->differq = lexnode;
+            }
+        }
+        CastNode *failbind;
+        propagateTest(held, failname, lexnode, &failtest, &failbind);
+        err = propagateVar("-err", (INode*)failbind, armscope, lexnode);
+        nodesAdd(&failarm->stmts, (INode*)err);
+    }
+    else
+        propagateTest(held, failname, lexnode, &failtest, NULL);
+
+    // (its value a stand-in until the block's type is known)
+    BreakRetNode *brk = newBreakNode();
+    inodeLexCopy((INode*)brk, lexnode);
+    brk->block = trys->blk;
+    brk->flags |= FlagBreakAimed;
+    brk->exp = (INode*)newNilLitNode();
+    inodeLexCopy(brk->exp, lexnode);
+    nodesAdd(&failarm->stmts, (INode*)brk);
+
+    if (trys->nsites == trys->maxsites) {
+        uint32_t max = trys->maxsites ? trys->maxsites * 2 : 4;
+        PropagateSite *sites = memAllocBlk(sizeof(PropagateSite) * max);
+        if (trys->nsites)
+            memcpy(sites, trys->sites, sizeof(PropagateSite) * trys->nsites);
+        trys->sites = sites;
+        trys->maxsites = max;
+    }
+    PropagateSite *site = &trys->sites[trys->nsites++];
+    site->brk = brk;
+    site->err = err;
+    site->from = from;
+    site->lexnode = lexnode;
+
+    propagateArms(blk, held, kind, failtest, failarm, armscope);
+}
+
+// 'Result[succ, err]' or 'Option[succ]', of the generic 'sample' is an instance of
+static INode *propagateInstance(TypeCheckState *pstate, INode *sample, INode *succ, INode *err, INode *lexnode) {
+    Nodes *args = itypeInstanceTypeArgs(sample);
+    if (args != NULL && itypeIsSame(nodesGet(args, 0), succ)
+        && (err == NULL || (args->used > 1 && itypeIsSame(nodesGet(args, 1), err))))
+        return sample;
+    INode *inst = sample->instnode;
+    INode *generic = inst != NULL && inst->tag == FnCallTag && isNameUseNode(((FnCallNode*)inst)->objfn)
+        ? nameUseGetDcl((NameUseNode*)((FnCallNode*)inst)->objfn) : NULL;
+    if (generic == NULL)
+        return NULL;
+    FnCallNode *call = newFnCallNode(newNameUseFromDclNode(generic, lexnode), 2);
+    inodeLexCopy((INode*)call, lexnode);
+    call->flags |= FlagIndex;
+    nodesAdd(&call->args, succ);
+    if (err != NULL)
+        nodesAdd(&call->args, err);
+    INode *type = (INode*)call;
+    if (!itypeTypeCheck(pstate, &type))
+        return NULL;
+    return type;
+}
+
+// The try block's type could not be had (reported): every path out of it gives
+// an error's value, so that nothing that uses it says more
+static INode *propagateTryRefused(PropagateTry *trys) {
+    for (uint32_t i = 0; i < trys->nsites; ++i)
+        trys->sites[i].brk->exp = newErrorNode(trys->sites[i].lexnode);
+    if (!trys->lastjumps)
+        nodesLast(trys->blk->stmts) = newErrorNode(nodesLast(trys->blk->stmts));
+    return errorType;
+}
+
+INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk) {
+    PropagateTry *trys = propagateTryTop;
+    propagateTryTop = trys->outer;
+    INode *lexnode = (INode*)blk;
+    char ename[200], dname[200];
+
+    // The block's type: the context's, else read off its '?'s and its last value
+    INode *rtype = trys->ctx;
+    if (rtype == NULL) {
+        if (trys->kind == PropagateNone) {
+            if (trys->refused)
+                return propagateTryRefused(trys);
+            errorMsgNode(lexnode, ErrorTryType,
+                "This try block has no '?', so whether it gives a Result or an Option is not known: say which, as in 'let r: Result[i32, MyError] = try {...}'.");
+            return propagateTryRefused(trys);
+        }
+        if (trys->differ != NULL) {
+            // (named in the order they are written)
+            int swap = trys->differq->srcp < trys->errq->srcp;
+            INode *one = swap ? trys->differq : trys->errq, *two = swap ? trys->errq : trys->differq;
+            errorMsgNode(lexnode, ErrorTryType,
+                "The '?'s of this try block fail with different errors, %s (at %u:%u) and %s (at %u:%u), so the Result it gives is not known: say which, as in 'let r: Result[i32, MyError] = try {...}', and each '?' converts its error to that one.",
+                propagateSpell(ename, sizeof(ename), swap ? trys->differ : trys->err), one->linenbr, propagateColumn(one),
+                propagateSpell(dname, sizeof(dname), swap ? trys->err : trys->differ), two->linenbr, propagateColumn(two));
+            return propagateTryRefused(trys);
+        }
+        INode *succ = trys->val ? trys->val->vtype : (INode*)newVoidNode();
+        if (succ == NULL || succ == unknownType || succ == errorType || isTypeNode(succ) == 0)
+            return propagateTryRefused(trys);
+        rtype = propagateInstance(pstate, trys->sample, succ, trys->kind == PropagateResult ? trys->err : NULL, lexnode);
+        if (rtype == NULL)
+            return propagateTryRefused(trys);
+    }
+    INode *rdcl = itypeGetTypeDcl(rtype);
+    int isresult = trys->kind == PropagateResult;
+    StructNode *okv = propagateVariant(rdcl, isresult ? okName : someName);
+    StructNode *failv = propagateVariant(rdcl, isresult ? errorVariantName : noneName);
+    INode *to = isresult ? propagateHeld(failv) : NULL;
+    if (okv == NULL || failv == NULL || (isresult && to == NULL))
+        return propagateTryRefused(trys);
+
+    // Each failure, its error converted as a function's '?' converts it
+    for (uint32_t i = 0; i < trys->nsites; ++i) {
+        PropagateSite *site = &trys->sites[i];
+        INode *value = NULL;
+        if (site->err != NULL) {
+            StructNode *wrap;
+            enum PropagateConv conv = propagateConvKind(site->from, to, &wrap, site->lexnode, rtype, 1);
+            if (conv == ConvRefused) {
+                site->brk->exp = newErrorNode(site->lexnode);
+                continue;
+            }
+            value = propagateConvert(conv, propagateUse(site->err, site->lexnode), to, wrap, site->lexnode);
+        }
+        site->brk->exp = propagateConstruct(failv, value, site->lexnode);
+    }
+
+    // The success, wrapped
+    if (!trys->lastjumps) {
+        INode **lastp = &nodesLast(blk->stmts);
+        INode *succval;
+        if (trys->val != NULL)
+            succval = propagateUse(trys->val, (INode*)trys->val);
+        else {
+            succval = (INode*)newNilLitNode();
+            inodeLexCopy(succval, *lastp);
+        }
+        *lastp = propagateConstruct(okv, succval, *lastp);
+    }
+    return rtype;
+}
+
 void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
     blk->flags &= 0xFFFF - FlagPropagate;
     INode *lexnode = (INode*)blk;
@@ -249,12 +538,19 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
 
     // What '?' was given: reported already when it has no type
     INode *value = held->value;
+    // (a try block this is in has had a '?' refused, which explains its kind
+    // being unknown, if it is: propagateTryFinish says no more)
+    PropagateTry *trys = propagateTryTop != NULL && propagateTryTop->fn == pstate->fn ? propagateTryTop : NULL;
     if (value == NULL || inodeIsError(value) || !isExpNode(value)) {
+        if (trys)
+            trys->refused = 1;
         propagateFail(blk, NULL);
         return;
     }
     INode *type = iexpGetTypeDcl(value);
     if (type == errorType || type == unknownType) {
+        if (trys)
+            trys->refused = 1;
         propagateFail(blk, NULL);
         return;
     }
@@ -275,12 +571,21 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
             "'?' takes a Result or an Option, and this is %s.%s", propagateSpell(tname, sizeof(tname), type),
             (type->tag == RefTag && propagateKindOf(itypeGetTypeDcl(((RefNode*)type)->vtexp)) != PropagateNone)
                 ? " A reference to one is not: '?' takes the value, so match on the reference instead." : "");
+        if (trys)
+            trys->refused = 1;
         propagateFail(blk, type);
         return;
     }
     char *kindname = kind == PropagateResult ? "Result" : "Option";
 
-    // Where the failure goes: the function this is in returns one of the same kind
+    // Where the failure goes: the innermost try block of this function, which
+    // takes it whatever the function returns
+    if (trys != NULL) {
+        propagateTrySite(blk, held, type, kind, trys, armscope);
+        return;
+    }
+
+    // Else the function this is in, which returns one of the same kind
     FnDclNode *fn = pstate->fn;
     if (fn == NULL || fn->vtype == NULL || fn->vtype->tag != FnSigTag) {
         errorMsgNode(lexnode, ErrorQuesReturn,
@@ -309,7 +614,6 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
     }
 
     // The failure's arm, and how its error is converted
-    Name *okname = kind == PropagateResult ? okName : someName;
     Name *failname = kind == PropagateResult ? errorVariantName : noneName;
     StructNode *retfail = propagateVariant(retdcl, failname);
     if (retfail == NULL) {
@@ -328,7 +632,7 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
             return;
         }
         StructNode *wrap;
-        enum PropagateConv conv = propagateConvKind(from, to, &wrap, lexnode, rettype);
+        enum PropagateConv conv = propagateConvKind(from, to, &wrap, lexnode, rettype, 0);
         if (conv == ConvRefused) {
             propagateFail(blk, type);
             return;
@@ -344,23 +648,7 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
     BreakRetNode *ret = newReturnNodeExp(propagateConstruct(retfail, failvalue, lexnode));
     inodeLexCopy((INode*)ret, lexnode);
     nodesAdd(&failarm->stmts, (INode*)ret);
-
-    // The value's arm: what the success holds, which is the block's value
-    CastNode *oktest, *okbind;
-    propagateTest(held, okname, lexnode, &oktest, &okbind);
-    VarDclNode *ok = propagateVar(kind == PropagateResult ? "-ok" : "-some", (INode*)okbind, armscope, lexnode);
-    BlockNode *okarm = newBlockNode();
-    inodeLexCopy((INode*)okarm, lexnode);
-    nodesAdd(&okarm->stmts, (INode*)ok);
-    nodesAdd(&okarm->stmts, propagateUse(ok, lexnode));
-
-    IfNode *ifnode = newIfNode();
-    inodeLexCopy((INode*)ifnode, lexnode);
-    nodesAdd(&ifnode->condblk, (INode*)oktest);
-    nodesAdd(&ifnode->condblk, (INode*)okarm);
-    nodesAdd(&ifnode->condblk, (INode*)failtest);
-    nodesAdd(&ifnode->condblk, (INode*)failarm);
-    nodesAdd(&blk->stmts, (INode*)ifnode);
+    propagateArms(blk, held, kind, failtest, failarm, armscope);
 }
 
 // ---- 'main' returning a Result ----------------------------------------------
