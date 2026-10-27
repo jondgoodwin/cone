@@ -1,0 +1,954 @@
+// HTTP/2 through the Driver: a client Driver against a server Driver over
+// real loopback sockets on one Loop, each scene played twice -- over TLS,
+// where ALPN chooses h2, and in cleartext by prior knowledge
+// (h2PriorKnowledge) -- and then ALPN falling back to http/1.1.
+//
+// 1. many: 50 GETs at once on one connection (one connect, one accept), every
+//    body byte checked, each a stream of its own, the response saying HTTP/2;
+//    then the client's close ends both sides cleanly.
+// 2. slowReader: three 1 MiB downloads at once with a stream window of
+//    65535, one never released, and a fourth to a channel of room for one
+//    that is never read: the two released finish while the slow one stops
+//    at exactly its window and the channel's holds; released and read, both
+//    finish.
+// 3. resetMidBody: the server resets one stream after 256 KiB (the client's
+//    request Failed: Reset, CANCEL), the client cancels another mid-body (the
+//    server's Failed: Reset), and a third, beside them, is whole; the
+//    connection goes on.
+// 4. goAway: the server allows 2 streams; with 2 held in flight and 4 in the
+//    client's queue, the server closes (GOAWAY): the 4 are refused (Refused,
+//    unsent, safe to retry) and so is a new request, the 2 in flight are
+//    answered, and both sides close cleanly.
+// 5. streamLimit: the server allows 3 streams, the client queues 4 more
+//    (h2MaxWaiting): of 10 asked at once, 3 are refused at once (Limit), and
+//    the 7 go through never more than 3 at a time.
+// 6. upload: three POSTs of 300,000 bytes at once, each sent as Writable
+//    says (past the server's stream window, so its credit must come back),
+//    every byte checked at the server.
+// 7. idle: a server whose h2IdleTimeout is 200 ms shuts an idle connection
+//    down (GOAWAY), and both sides close cleanly, no sooner.
+// 8. ALPN fallback: a server accepting only http/1.1, and a client offering
+//    only http/1.1, both end in HTTP/1.1.
+
+mod h2;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import sync use Sender, Receiver, Channel;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import httpconn use *;
+import tls;
+
+const tokSrv = 100u64;
+const tokCli = 1u64;
+const tokReq = 1000u64;
+const mib = 1048576u64;
+
+// ---------------------------------------------------------------------------
+// TLS: the tls package's test certificates
+// ---------------------------------------------------------------------------
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String.empty();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn names(h2: bool) List[String] {
+  var l = List[String].empty();
+  if h2 {l.push(String.from("h2"));}
+  l.push(String.from("http/1.1"));
+  l
+}
+
+struct TlsMaker {
+  server: tls.Server;
+
+  pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream())}
+}
+
+// ---------------------------------------------------------------------------
+// The two sides
+// ---------------------------------------------------------------------------
+
+// A request the server is answering: a body of 'left' more bytes, held
+// unanswered while 'hold', reset once 'resetAt' bytes have gone
+struct Out {
+  pub req: ReqId;
+  pub left: u64;
+  pub sent: u64;
+  pub hold: bool;
+  pub resetAt: u64;
+  pub finished: bool;
+  pub got: u64;           // request body bytes read
+  pub afterBody: bool;    // a POST's: answered once its body is read whole
+}
+
+struct Srv {
+  pub outs: List[Out];
+  pub conn: ConnId;
+  pub accepted: u64;
+  pub requests: u64;
+  pub live: u64;          // requests read, not yet ended
+  pub maxLive: u64;
+  pub dones: u64;
+  pub failed: u64;
+  pub resets: u64;        // ...of them, the client's reset
+  pub cancelled: u64;
+  pub closed: u64;
+  pub clean: u64;
+  pub streams: List[u32];
+  pub http2: u64;         // requests whose head said HTTP/2
+  pub upBytes: u64;       // request body bytes read, all requests
+  pub upBad: u64;         // ...not the pattern
+}
+
+// What a client's request got
+struct Got {
+  pub req: ReqId;
+  pub size: u64;
+  pub release: bool;      // its body's credit given back as it comes
+  pub status: u16;
+  pub version: Version;
+  pub stream: u32;
+  pub bytes: u64;
+  pub bad: u64;           // body bytes not the pattern
+  pub unreleased: u64;
+  pub ends: u64;
+  pub finals: u64;
+  pub last: EventKind;
+  pub kind: ErrorKind;
+  pub code: u64;
+  pub stage: Stage;
+  pub safe: bool;
+  pub unsent: bool;
+  pub upLeft: u64;        // request body bytes still to send
+  pub upSent: u64;
+}
+
+struct Cli {
+  pub gots: List[Got];
+  pub conn: ConnId;
+  pub connected: u64;
+  pub closed: u64;
+  pub clean: u64;
+}
+
+struct World {
+  pub lp: Loop;
+  pub srv: Driver;
+  pub cli: Driver;
+  pub sv: Srv;
+  pub cl: Cli;
+}
+
+// The byte at offset i of every body
+fn pat(i: u64) u8 {u8.from((i * 7u64 + 3u64) % 251u64)}
+
+// A body buffer: n bytes of the pattern from offset 'from'
+fn fill(from: u64, n: usize) IoBuf {
+  var b = IoBuf(n);
+  let room = b.whole();
+  var k = 0usize;
+  while k < n {
+    room[k] = pat(from + u64.from(k));
+    k = k + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+// A decimal number in s from 'at', and where it ended
+fn numAt(s: &Array[u8], at: usize, end: &mut usize) u64 {
+  var v = 0u64;
+  var k = at;
+  while k < s.len && s[k] >= '0' && s[k] <= '9' {
+    v = v * 10u64 + u64.from(s[k] - '0');
+    k = k + 1usize;
+  }
+  *end = k;
+  v
+}
+
+// Whether s starts with p
+fn starts(s: &Array[u8], p: &Array[u8]) bool {
+  if s.len < p.len {return false;}
+  var k = 0usize;
+  while k < p.len {
+    if s[k] != p[k] {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// A server and a client, the client connected to it: TLS (the server's ALPN
+// list, the client's offer) or cleartext (prior knowledge on both)
+fn world(secure: bool, srvCfg: Config, cliCfg: Config, srvH2: bool, cliH2: bool) World {
+  var lp = Loop.mustMake();
+  var srv = Driver.make(srvCfg);
+  var cli = Driver.make(cliCfg);
+  var listener = ListenerId.none();
+  if secure {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    var scfg = tls.ServerConfig.make(&certFile, &keyFile);
+    scfg.alpn = names(srvH2);
+    match tls.Server.make(scfg) {
+      case let Ok(s) {
+        match srv.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s)), Sink.Here(tokSrv)) {
+          case let Ok(r) {listener = r;}
+          case let Err(e) {}
+        }
+      }
+      case let Err(e) {}
+    }
+  } else {
+    match srv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokSrv)) {
+      case let Ok(r) {listener = r;}
+      case let Err(e) {}
+    }
+  }
+  var port = 0u16;
+  match srv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  var conn = ConnId.none();
+  if secure {
+    var ccfg = tls.ClientConfig.make();
+    ccfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+    ccfg.offline = true;
+    ccfg.alpn = names(cliH2);
+    match tls.Client.make(ccfg) {
+      case let Ok(c) {
+        conn = cli.connectWith(&mut lp, "127.0.0.1", port, Uni[tls.Stream](c.stream("localhost")), Sink.Here(tokCli));
+      }
+      case let Err(e) {}
+    }
+  } else {
+    conn = cli.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokCli));
+  }
+  require(!conn.isNone(), "the client connects");
+  World(lp, srv, cli,
+    Srv(List[Out].empty(), ConnId.none(), 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      List[u32].empty(), 0u64, 0u64, 0u64),
+    Cli(List[Got].empty(), conn, 0u64, 0u64, 0u64))
+}
+
+fn h2Config() Config {
+  var c = Config.make();
+  c.h2PriorKnowledge = true;
+  c
+}
+
+// One turn of the loop: both drivers pumped, the loop polled briefly, each
+// completion handed to whichever driver owns it, both pumped again
+fn turn(w: &mut World, sev: &uni List[Event], cev: &uni List[Event]) {
+  var n = w.srv.pump(&mut w.lp, sev);
+  n = n + w.cli.pump(&mut w.lp, cev);
+  var until = Instant.now() + Duration.fromMillis(5i64);
+  let a = w.srv.wakeAt();
+  if a < until {until = a;}
+  let b = w.cli.wakeAt();
+  if b < until {until = b;}
+  if n > 0usize {until = Instant();}
+  var comps = List[Completion].empty();
+  let got = w.lp.poll(until, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !w.srv.complete(&mut w.lp, c) {
+      let mine = w.cli.complete(&mut w.lp, c);
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  let m = w.srv.pump(&mut w.lp, sev) + w.cli.pump(&mut w.lp, cev);
+}
+
+// The server's events: requests read and answered by their target --
+// '/n/SIZE', '/hold/SIZE' (answered once the test says), '/reset/SIZE/AT'
+// (reset once AT bytes have gone)
+fn serve(w: &mut World, events: &uni List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Accepted {
+      w.sv.accepted = w.sv.accepted + 1u64;
+      w.sv.conn = e.conn;
+    } else if e.kind == EventKind.Request {
+      w.sv.requests = w.sv.requests + 1u64;
+      w.sv.live = w.sv.live + 1u64;
+      if w.sv.live > w.sv.maxLive {w.sv.maxLive = w.sv.live;}
+      w.sv.streams.push(e.stream);
+      if e.request.version == Version.Http2 {w.sv.http2 = w.sv.http2 + 1u64;}
+      let t = e.request.target.view();
+      var end = 0usize;
+      var size = 0u64;
+      var hold = false;
+      var resetAt = 0u64;
+      if starts(t, "/n/") {size = numAt(t, 3usize, &mut end);}
+      else if starts(t, "/hold/") {
+        size = numAt(t, 6usize, &mut end);
+        hold = true;
+      } else if starts(t, "/reset/") {
+        size = numAt(t, 7usize, &mut end);
+        resetAt = numAt(t, end + 1usize, &mut end);
+      }
+      let post = e.request.method == Method.Post;
+      w.sv.outs.push(Out(e.req, size, 0u64, hold || post, resetAt, false, 0u64, post));
+      if !hold && !post {w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));}
+    } else if e.kind == EventKind.End {
+      // A POST is answered once its body is whole
+      var j = 0usize;
+      while j < w.sv.outs.len() {
+        if w.sv.outs[j].req == e.req && w.sv.outs[j].afterBody {
+          w.sv.outs[j].hold = false;
+          w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(w.sv.outs[j].left));
+        }
+        j = j + 1usize;
+      }
+    } else if e.kind == EventKind.Data {
+      let v = e.buf.view();
+      var at = 0u64;
+      var j = 0usize;
+      while j < w.sv.outs.len() {
+        if w.sv.outs[j].req == e.req {
+          at = w.sv.outs[j].got;
+          w.sv.outs[j].got = at + u64.from(v.len);
+        }
+        j = j + 1usize;
+      }
+      var k2 = 0usize;
+      while k2 < v.len {
+        if v[k2] != pat(at + u64.from(k2)) {w.sv.upBad = w.sv.upBad + 1u64;}
+        k2 = k2 + 1usize;
+      }
+      w.sv.upBytes = w.sv.upBytes + u64.from(v.len);
+      w.srv.release(e.req, v.len);
+    } else if e.isTerminal() {
+      if w.sv.live > 0u64 {w.sv.live = w.sv.live - 1u64;}
+      if e.kind == EventKind.Done {w.sv.dones = w.sv.dones + 1u64;}
+      else if e.kind == EventKind.Cancelled {w.sv.cancelled = w.sv.cancelled + 1u64;}
+      else {
+        w.sv.failed = w.sv.failed + 1u64;
+        if e.failure.error.kind == ErrorKind.Reset {w.sv.resets = w.sv.resets + 1u64;}
+      }
+      dropOut(&mut w.sv.outs, e.req);
+    } else if e.kind == EventKind.Closed {
+      w.sv.closed = w.sv.closed + 1u64;
+      if e.clean {w.sv.clean = w.sv.clean + 1u64;}
+    }
+  }
+  events.clear();
+  sendBodies(w);
+}
+
+fn dropOut(outs: &mut List[Out], req: ReqId) {
+  var k = 0usize;
+  while k < outs.len() {
+    if outs[k].req == req {
+      let last = outs.len() - 1usize;
+      outs.swap(k, last);
+      let gone = outs.pop();
+      return;
+    }
+    k = k + 1usize;
+  }
+}
+
+// Body bytes for every answer under way, while the driver takes them
+fn sendBodies(w: &mut World) {
+  var j = 0usize;
+  while j < w.sv.outs.len() {
+    let i = j;
+    j = j + 1usize;
+    if w.sv.outs[i].hold || w.sv.outs[i].finished {continue;}
+    // Copied out: the driver's calls may reach any list
+    let req = w.sv.outs[i].req;
+    let resetAt = w.sv.outs[i].resetAt;
+    var left = w.sv.outs[i].left;
+    var sent = w.sv.outs[i].sent;
+    var finished = false;
+    if resetAt > 0u64 && sent >= resetAt {
+      // Reset a step after its bytes were handed over, so some have gone
+      finished = true;
+      w.srv.cancel(&mut w.lp, req);
+    }
+    while left > 0u64 && !finished && !(resetAt > 0u64 && sent >= resetAt) {
+      let n = if left < 16384u64 {left} else {16384u64};
+      var taken = true;
+      match w.srv.sendData(req, fill(sent, usize.from(n))) {
+        case let Some(back) {taken = false;}
+        else {}
+      }
+      if !taken {break;}
+      sent = sent + n;
+      left = left - n;
+    }
+    if left == 0u64 && !finished {
+      finished = true;
+      w.srv.finish(req);
+    }
+    w.sv.outs[i].left = left;
+    w.sv.outs[i].sent = sent;
+    w.sv.outs[i].finished = finished;
+  }
+}
+
+// The held answers go
+fn releaseHolds(w: &mut World) {
+  var j = 0usize;
+  while j < w.sv.outs.len() {
+    let o = &mut w.sv.outs[j];
+    if o.hold && !o.afterBody {
+      o.hold = false;
+      w.srv.respond(o.req, ResponseHead.make(200u16), BodyLength.sized(o.left));
+    }
+    j = j + 1usize;
+  }
+  sendBodies(w);
+}
+
+// One event of the client's
+fn take(w: &mut World, e: &mut Event) {
+  if e.token == tokCli {
+    if e.kind == EventKind.Connected {w.cl.connected = w.cl.connected + 1u64;}
+    else if e.kind == EventKind.Closed {
+      w.cl.closed = w.cl.closed + 1u64;
+      if e.clean {w.cl.clean = w.cl.clean + 1u64;}
+    }
+    return;
+  }
+  let g = &mut w.cl.gots[usize.from(e.token - tokReq)];
+  if e.kind == EventKind.Response {
+    g.status = e.response.status;
+    g.version = e.response.version;
+    g.stream = e.stream;
+  } else if e.kind == EventKind.Data {
+    let v = e.buf.view();
+    var k = 0usize;
+    while k < v.len {
+      if v[k] != pat(g.bytes + u64.from(k)) {g.bad = g.bad + 1u64;}
+      k = k + 1usize;
+    }
+    g.bytes = g.bytes + u64.from(v.len);
+    if g.release {w.cli.release(e.req, v.len);}
+    else {g.unreleased = g.unreleased + u64.from(v.len);}
+  } else if e.kind == EventKind.End {
+    g.ends = g.ends + 1u64;
+  } else if e.kind == EventKind.Writable {
+    upload(w, usize.from(e.token - tokReq));
+  } else if e.isTerminal() {
+    g.finals = g.finals + 1u64;
+    g.last = e.kind;
+    g.kind = e.failure.error.kind;
+    match &e.failure.error.code {
+      case let &Some(c) {g.code = *c;}
+      else {}
+    }
+    g.stage = e.failure.stage;
+    g.safe = e.failure.error.isRetrySafe();
+    g.unsent = e.failure.unsent;
+  }
+}
+
+fn takeAll(w: &mut World, events: &uni List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    take(w, &mut events[k]);
+    k = k + 1usize;
+  }
+  events.clear();
+}
+
+// One step: a turn, then both sides act on what came
+fn step(w: &mut World, sev: &uni List[Event], cev: &uni List[Event]) {
+  turn(w, sev, cev);
+  serve(w, sev);
+  takeAll(w, cev);
+}
+
+// A GET of target, its events to this thread (or to tx)
+fn ask(w: &mut World, target: &str, size: u64, release: bool) usize {
+  let k = w.cl.gots.len();
+  w.cl.gots.push(Got(ReqId.none(), size, release, 0u16, Version.Http11, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64,
+    EventKind.Closed, ErrorKind.Closed, 0u64, Stage.Closed, false, false, 0u64, 0u64));
+  let req = w.cli.request(&mut w.lp, w.cl.conn, RequestHead.get(target, "localhost"), BodyLength.empty(),
+    Sink.Here(tokReq + u64.from(k)));
+  w.cl.gots[k].req = req;
+  k
+}
+
+fn askChan(w: &mut World, target: &str, size: u64, tx: Sender[Event]) usize {
+  let k = w.cl.gots.len();
+  w.cl.gots.push(Got(ReqId.none(), size, true, 0u16, Version.Http11, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64,
+    EventKind.Closed, ErrorKind.Closed, 0u64, Stage.Closed, false, false, 0u64, 0u64));
+  let req = w.cli.request(&mut w.lp, w.cl.conn, RequestHead.get(target, "localhost"), BodyLength.empty(),
+    Sink.Chan(tokReq + u64.from(k), tx));
+  w.cl.gots[k].req = req;
+  k
+}
+
+// A POST of 'up' body bytes, sent as Writable says, answered with 'size'
+fn askPost(w: &mut World, target: &str, up: u64, size: u64) usize {
+  let k = w.cl.gots.len();
+  w.cl.gots.push(Got(ReqId.none(), size, true, 0u16, Version.Http11, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64,
+    EventKind.Closed, ErrorKind.Closed, 0u64, Stage.Closed, false, false, up, 0u64));
+  let req = w.cli.request(&mut w.lp, w.cl.conn, RequestHead.make("POST", target, "localhost"), BodyLength.sized(up),
+    Sink.Here(tokReq + u64.from(k)));
+  w.cl.gots[k].req = req;
+  k
+}
+
+// Request k's body, while the driver takes it; finished once whole
+fn upload(w: &mut World, k: usize) {
+  let req = w.cl.gots[k].req;
+  var left = w.cl.gots[k].upLeft;
+  var sent = w.cl.gots[k].upSent;
+  if left == 0u64 {return;}
+  while left > 0u64 {
+    let n = if left < 16384u64 {left} else {16384u64};
+    var taken = true;
+    match w.cli.sendData(req, fill(sent, usize.from(n))) {
+      case let Some(back) {taken = false;}
+      else {}
+    }
+    if !taken {break;}
+    sent = sent + n;
+    left = left - n;
+  }
+  if left == 0u64 {w.cli.finish(req);}
+  w.cl.gots[k].upLeft = left;
+  w.cl.gots[k].upSent = sent;
+}
+
+fn target(kind: &str, size: u64) String {
+  var t = String.from(kind);
+  t.appendUInt(size);
+  t
+}
+
+// Whether every request from 'from' on has its final answer
+fn allFinal(w: &World, from: usize) bool {
+  var k = from;
+  while k < w.cl.gots.len() {
+    if w.cl.gots[k].finals == 0u64 {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// A check's label with its scene's name: 'tls many: ...'
+fn lab(scene: &String, what: &str) String {
+  var s = scene.copy();
+  s.append(": ");
+  s.append(what);
+  s
+}
+
+fn sceneName(secure: bool, name: &str) String {
+  var s = String.from(if secure {"tls "} else {"cleartext "});
+  s.append(name);
+  s
+}
+
+// A first request, whole, so both ends have each other's SETTINGS
+fn warm(w: &mut World, sev: &uni List[Event], cev: &uni List[Event], scene: &String) {
+  let k = ask(w, "/n/10", 10u64, true);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while w.cl.gots[k].finals == 0u64 && Instant.now() < giveUp {step(w, sev, cev);}
+  requireUInt(w.cl.gots[k].finals, 1u64, lab(scene, "the first request ends").view());
+  expect(w.cl.gots[k].last == EventKind.Done, lab(scene, "...Done").view());
+}
+
+// Both drivers stop; every buffer back in the pool
+fn finish(w: &mut World, sev: &uni List[Event], cev: &uni List[Event], scene: &String) {
+  w.srv.abortAll(&mut w.lp);
+  w.cli.abortAll(&mut w.lp);
+  let giveUp = Instant.now() + Duration.fromSeconds(5i64);
+  while (w.srv.held() > 0usize || w.cli.held() > 0usize) && Instant.now() < giveUp {step(w, sev, cev);}
+  step(w, sev, cev);
+}
+
+// ---------------------------------------------------------------------------
+// The scenes
+// ---------------------------------------------------------------------------
+
+fn many(secure: bool) {
+  let scene = sceneName(secure, "many");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  expect(w.cli.protocol(w.cl.conn) is Some, lab(&scene, "the protocol is chosen").view());
+  match w.cli.protocol(w.cl.conn) {
+    case let Some(v) {expect(v == Version.Http2, lab(&scene, "the client's connection speaks HTTP/2").view());}
+    else {}
+  }
+  var k = 0u64;
+  while k < 50u64 {
+    let size = k * 1300u64;
+    ask(&mut w, target("/n/", size).view(), size, true);
+    k = k + 1u64;
+  }
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while !allFinal(&w, 1usize) && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  require(allFinal(&w, 1usize), lab(&scene, "all 50 end in time").view());
+  var dones = 0u64;
+  var bytesOk = 0u64;
+  var bad = 0u64;
+  var h2 = 0u64;
+  var oneEnd = 0u64;
+  var j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.last == EventKind.Done && g.status == 200u16 {dones = dones + 1u64;}
+    if g.bytes == g.size {bytesOk = bytesOk + 1u64;}
+    bad = bad + g.bad;
+    if g.version == Version.Http2 && g.stream != 0u32 {h2 = h2 + 1u64;}
+    if g.ends == 1u64 && g.finals == 1u64 {oneEnd = oneEnd + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(dones, 50u64, lab(&scene, "50 Done, 200").view());
+  expectUInt(bytesOk, 50u64, lab(&scene, "every body whole").view());
+  expectUInt(bad, 0u64, lab(&scene, "every byte right").view());
+  expectUInt(h2, 50u64, lab(&scene, "each an HTTP/2 response on a stream").view());
+  expectUInt(oneEnd, 50u64, lab(&scene, "one End, one final answer each").view());
+  expectUInt(w.sv.accepted, 1u64, lab(&scene, "one connection accepted").view());
+  expectUInt(w.cli.stats().connects, 1u64, lab(&scene, "one connect").view());
+  expectUInt(w.sv.requests, 51u64, lab(&scene, "51 requests read on it").view());
+  expectUInt(w.sv.http2, 51u64, lab(&scene, "...each HTTP/2").view());
+  expectUInt(w.sv.dones, 51u64, lab(&scene, "...each answered Done").view());
+  var distinct = true;
+  var a = 0usize;
+  while a < w.sv.streams.len() {
+    if (*w.sv.streams[a] & 1u32) != 1u32 {distinct = false;}
+    var b = a + 1usize;
+    while b < w.sv.streams.len() {
+      if *w.sv.streams[a] == *w.sv.streams[b] {distinct = false;}
+      b = b + 1usize;
+    }
+    a = a + 1usize;
+  }
+  expect(distinct, lab(&scene, "each request its own odd stream").view());
+  expect(w.cli.isIdle(w.cl.conn), lab(&scene, "the connection takes more").view());
+  // The client closes: GOAWAY, then both ends close cleanly
+  w.cli.close(&mut w.lp, w.cl.conn);
+  let giveUp2 = Instant.now() + Duration.fromSeconds(10i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < giveUp2 {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(w.cl.closed, 1u64, lab(&scene, "the client's connection: one Closed").view());
+  expectUInt(w.cl.clean, 1u64, lab(&scene, "...clean").view());
+  expectUInt(w.sv.closed, 1u64, lab(&scene, "the server's: one Closed").view());
+  expectUInt(w.sv.clean, 1u64, lab(&scene, "...clean").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn slowReader(secure: bool) {
+  let scene = sceneName(secure, "slowReader");
+  var ccfg = h2Config();
+  ccfg.h2.initialWindowSize = 65535u32;
+  var w = world(secure, h2Config(), ccfg, true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  var tx: Sender[Event];
+  var rx: Receiver[Event];
+  tx, rx = Channel[Event].bounded(1u64);
+  let a = ask(&mut w, target("/n/", mib).view(), mib, true);
+  let b = ask(&mut w, target("/n/", mib).view(), mib, true);
+  let slow = ask(&mut w, target("/n/", mib).view(), mib, false);
+  let ch = askChan(&mut w, target("/n/", mib).view(), mib, tx);
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while (w.cl.gots[a].finals == 0u64 || w.cl.gots[b].finals == 0u64) && Instant.now() < giveUp {
+    step(&mut w, &uni sev, &uni cev);
+  }
+  // A little longer: nothing more moves for the two stalled
+  var n = 0u32;
+  while n < 40u32 {
+    step(&mut w, &uni sev, &uni cev);
+    n = n + 1u32;
+  }
+  expect(w.cl.gots[a].last == EventKind.Done && w.cl.gots[a].bytes == mib, lab(&scene, "a released download finishes beside the slow ones").view());
+  expect(w.cl.gots[b].last == EventKind.Done && w.cl.gots[b].bytes == mib, lab(&scene, "...and another").view());
+  expectUInt(w.cl.gots[slow].bytes, 65535u64, lab(&scene, "the unreleased one stops at exactly its stream window").view());
+  expectUInt(w.cl.gots[slow].finals, 0u64, lab(&scene, "...still under way").view());
+  expectUInt(w.cl.gots[ch].finals, 0u64, lab(&scene, "the unread channel's request: still under way").view());
+  expect(w.cli.held() > 0usize, lab(&scene, "...its events held for the full channel").view());
+  // Released and read, both finish
+  let owed = w.cl.gots[slow].unreleased;
+  w.cl.gots[slow].release = true;
+  w.cl.gots[slow].unreleased = 0u64;
+  w.cli.release(w.cl.gots[slow].req, usize.from(owed));
+  let giveUp2 = Instant.now() + Duration.fromSeconds(20i64);
+  while !allFinal(&w, 1usize) && Instant.now() < giveUp2 {
+    step(&mut w, &uni sev, &uni cev);
+    while true {
+      match rx.tryRecv() {
+        case var Some(e) {take(&mut w, &mut e);}
+        else {break;}
+      }
+    }
+  }
+  expect(w.cl.gots[slow].last == EventKind.Done && w.cl.gots[slow].bytes == mib, lab(&scene, "released, the slow one finishes").view());
+  expect(w.cl.gots[ch].last == EventKind.Done && w.cl.gots[ch].bytes == mib, lab(&scene, "read, the channel's finishes").view());
+  expectUInt(w.cl.gots[slow].bad + w.cl.gots[ch].bad + w.cl.gots[a].bad + w.cl.gots[b].bad, 0u64, lab(&scene, "every byte right").view());
+  expectUInt(w.sv.accepted, 1u64, lab(&scene, "all on one connection").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn resetMidBody(secure: bool) {
+  let scene = sceneName(secure, "resetMidBody");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  var t = String.from("/reset/");
+  t.appendUInt(mib);
+  t.append("/262144");
+  let byServer = ask(&mut w, t.view(), mib, true);
+  let whole = ask(&mut w, target("/n/", mib).view(), mib, true);
+  let byClient = ask(&mut w, target("/n/", mib).view(), mib, true);
+  var cancelled = false;
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while !allFinal(&w, 1usize) && Instant.now() < giveUp {
+    step(&mut w, &uni sev, &uni cev);
+    if !cancelled && w.cl.gots[byClient].bytes >= 100000u64 {
+      cancelled = true;
+      w.cli.cancel(&mut w.lp, w.cl.gots[byClient].req);
+    }
+  }
+  require(allFinal(&w, 1usize), lab(&scene, "all three end in time").view());
+  let s = &mut w.cl.gots[byServer];
+  expect(s.last == EventKind.Failed, lab(&scene, "the stream the server reset: Failed").view());
+  expect(s.kind == ErrorKind.Reset, lab(&scene, "...Reset").view());
+  expectUInt(s.code, 8u64, lab(&scene, "...with CANCEL's code").view());
+  expect(s.stage == Stage.Http && !s.safe, lab(&scene, "...at Stage.Http, not safe to retry").view());
+  expect(s.bytes >= 1u64 && s.bytes <= 262144u64, lab(&scene, "...after part of its body").view());
+  expect(w.cl.gots[whole].last == EventKind.Done && w.cl.gots[whole].bytes == mib, lab(&scene, "the one beside it is whole").view());
+  expect(w.cl.gots[byClient].last == EventKind.Cancelled, lab(&scene, "the client's cancel: Cancelled").view());
+  // The server hears of the client's reset
+  let giveUp2 = Instant.now() + Duration.fromSeconds(5i64);
+  while w.sv.resets == 0u64 && Instant.now() < giveUp2 {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(w.sv.resets, 1u64, lab(&scene, "the server's request for it: Failed, Reset").view());
+  expectUInt(w.sv.cancelled, 1u64, lab(&scene, "the server's own reset: Cancelled").view());
+  // The connection goes on
+  let again = ask(&mut w, "/n/100", 100u64, true);
+  let giveUp3 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.cl.gots[again].finals == 0u64 && Instant.now() < giveUp3 {step(&mut w, &uni sev, &uni cev);}
+  expect(w.cl.gots[again].last == EventKind.Done, lab(&scene, "a request after them is answered").view());
+  expectUInt(w.sv.accepted, 1u64, lab(&scene, "on the same connection").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn goAway(secure: bool) {
+  let scene = sceneName(secure, "goAway");
+  var scfg = h2Config();
+  scfg.h2.maxConcurrentStreams = 2u32;
+  var w = world(secure, scfg, h2Config(), true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  var k = 0u32;
+  while k < 6u32 {
+    ask(&mut w, "/hold/5000", 5000u64, true);
+    k = k + 1u32;
+  }
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while w.sv.live < 2u64 && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  var n = 0u32;
+  while n < 10u32 {
+    step(&mut w, &uni sev, &uni cev);
+    n = n + 1u32;
+  }
+  expectUInt(w.sv.live, 2u64, lab(&scene, "two in flight, the peer's limit").view());
+  expect(!w.cli.isIdle(w.cl.conn), lab(&scene, "the connection takes no more now").view());
+  // The server goes away
+  w.srv.close(&mut w.lp, w.sv.conn);
+  let giveUp2 = Instant.now() + Duration.fromSeconds(10i64);
+  var refused = 0u64;
+  while refused < 4u64 && Instant.now() < giveUp2 {
+    step(&mut w, &uni sev, &uni cev);
+    refused = 0u64;
+    var j = 1usize;
+    while j < w.cl.gots.len() {
+      if w.cl.gots[j].finals > 0u64 {refused = refused + 1u64;}
+      j = j + 1usize;
+    }
+  }
+  var ok = 0u64;
+  var j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.finals > 0u64 && g.last == EventKind.Failed && g.kind == ErrorKind.Refused && g.safe && g.unsent {ok = ok + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(ok, 4u64, lab(&scene, "the four queued: Failed, Refused, unsent, safe to retry").view());
+  let late = ask(&mut w, "/n/10", 10u64, true);
+  step(&mut w, &uni sev, &uni cev);
+  expect(w.cl.gots[late].last == EventKind.Failed && w.cl.gots[late].kind == ErrorKind.Refused && w.cl.gots[late].safe,
+    lab(&scene, "a request after GOAWAY: refused at once").view());
+  // The two in flight are answered
+  releaseHolds(&mut w);
+  let giveUp3 = Instant.now() + Duration.fromSeconds(10i64);
+  while (!allFinal(&w, 1usize) || w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < giveUp3 {
+    step(&mut w, &uni sev, &uni cev);
+  }
+  var done = 0u64;
+  j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.last == EventKind.Done && g.bytes == 5000u64 {done = done + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(done, 2u64, lab(&scene, "the two in flight: Done, whole").view());
+  expectUInt(w.cl.closed, 1u64, lab(&scene, "the client's connection closes").view());
+  expectUInt(w.cl.clean, 1u64, lab(&scene, "...cleanly").view());
+  expectUInt(w.sv.closed, 1u64, lab(&scene, "the server's closes").view());
+  expectUInt(w.sv.clean, 1u64, lab(&scene, "...cleanly").view());
+  expectUInt(w.sv.requests, 3u64, lab(&scene, "the server read three: the first and the two").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn streamLimit(secure: bool) {
+  let scene = sceneName(secure, "streamLimit");
+  var scfg = h2Config();
+  scfg.h2.maxConcurrentStreams = 3u32;
+  var ccfg = h2Config();
+  ccfg.h2MaxWaiting = 4u32;
+  var w = world(secure, scfg, ccfg, true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  var k = 0u32;
+  while k < 10u32 {
+    ask(&mut w, "/hold/3000", 3000u64, true);
+    k = k + 1u32;
+  }
+  // Answered at once, before any turn: the three past the bound
+  step(&mut w, &uni sev, &uni cev);
+  var limited = 0u64;
+  var j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.finals > 0u64 && g.last == EventKind.Failed && g.stage == Stage.Limit && g.unsent {limited = limited + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(limited, 3u64, lab(&scene, "three past 3 + 4: Failed at once, Limit, unsent").view());
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while !allFinal(&w, 1usize) && Instant.now() < giveUp {
+    step(&mut w, &uni sev, &uni cev);
+    // Answered three at a time, and the last on its own
+    if w.sv.live == 3u64 || w.sv.requests == 8u64 {releaseHolds(&mut w);}
+  }
+  var done = 0u64;
+  j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.last == EventKind.Done && g.bytes == 3000u64 {done = done + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(done, 7u64, lab(&scene, "the seven: Done, whole").view());
+  expectUInt(w.sv.maxLive, 3u64, lab(&scene, "never more than 3 at once at the server").view());
+  expectUInt(w.sv.failed, 0u64, lab(&scene, "none refused by the server").view());
+  expectUInt(w.sv.accepted, 1u64, lab(&scene, "all on one connection").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn upload3(secure: bool) {
+  let scene = sceneName(secure, "upload");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  var k = 0u32;
+  while k < 3u32 {
+    askPost(&mut w, "/n/100", 300000u64, 100u64);
+    k = k + 1u32;
+  }
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while !allFinal(&w, 1usize) && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  require(allFinal(&w, 1usize), lab(&scene, "all three end in time").view());
+  var ok = 0u64;
+  var j = 1usize;
+  while j < w.cl.gots.len() {
+    let g = &mut w.cl.gots[j];
+    if g.last == EventKind.Done && g.upLeft == 0u64 && g.upSent == 300000u64 && g.bytes == 100u64 {ok = ok + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(ok, 3u64, lab(&scene, "three POSTs sent whole, answered, Done").view());
+  expectUInt(w.sv.upBytes, 900000u64, lab(&scene, "the server read every byte").view());
+  expectUInt(w.sv.upBad, 0u64, lab(&scene, "...each right").view());
+  expectUInt(w.sv.dones, 4u64, lab(&scene, "...and its answers Done").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn idle(secure: bool) {
+  let scene = sceneName(secure, "idle");
+  var scfg = h2Config();
+  scfg.h2IdleTimeout = Duration.fromMillis(200i64);
+  var w = world(secure, scfg, h2Config(), true, true);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  let t0 = Instant.now();
+  let giveUp = t0 + Duration.fromSeconds(10i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  let took = Instant.now() - t0;
+  expectUInt(w.sv.closed + w.sv.clean, 2u64, lab(&scene, "the idle server's connection closes, cleanly").view());
+  expectUInt(w.cl.closed + w.cl.clean, 2u64, lab(&scene, "...and the client's").view());
+  expect(took >= Duration.fromMillis(150i64), lab(&scene, "...not before its idle timeout").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn fallback(srvH2: bool, cliH2: bool, what: &str) {
+  let scene = sceneName(true, what);
+  var w = world(true, Config.make(), Config.make(), srvH2, cliH2);
+  var sev = List[Event].empty();
+  var cev = List[Event].empty();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  match w.cli.protocol(w.cl.conn) {
+    case let Some(v) {expect(v == Version.Http11, lab(&scene, "HTTP/1.1 chosen").view());}
+    else {expect(false, lab(&scene, "a protocol chosen").view());}
+  }
+  expect(w.cl.gots[0usize].version == Version.Http11 && w.cl.gots[0usize].stream == 0u32, lab(&scene, "the response says HTTP/1.1, no stream").view());
+  expectUInt(w.sv.http2, 0u64, lab(&scene, "the server read HTTP/1.1").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+fn main() i32 {
+  var secure = true;
+  var round = 0u32;
+  while round < 2u32 {
+    many(secure);
+    slowReader(secure);
+    resetMidBody(secure);
+    goAway(secure);
+    streamLimit(secure);
+    upload3(secure);
+    idle(secure);
+    secure = false;
+    round = round + 1u32;
+  }
+  fallback(false, true, "fallback, a server without h2");
+  fallback(true, false, "fallback, a client not offering h2");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

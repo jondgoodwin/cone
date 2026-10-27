@@ -413,6 +413,17 @@ pub struct Connection is Move {
     if q >= cfg.writeWatermark {0usize} else {cfg.writeWatermark - q}
   }
 
+  // Whether a stream's sending is over: its last frame (END_STREAM, or its
+  // RST_STREAM) is among the frames written, so the next pollTransmit gives
+  // it if an earlier one has not; true too of a stream no longer in the
+  // table. A driver that has taken pollTransmit's chain since knows the
+  // stream's bytes are in its hands
+  pub fn sendEnded(self: &, stream: u32) bool {
+    let slot = self.slotOf(stream);
+    if slot.isNone() {return true;}
+    (*streams.get(slot)).sendDone
+  }
+
   // ------------------------------------------------------------- sending
 
   // Whether a request may be sent now: a client, open, not going away, with
@@ -697,7 +708,7 @@ pub struct Connection is Move {
   // counted against the connection's window all the same
   fn onFrameError(self: &mut, e: FrameError) {
     if e.isConnectionError() {
-      self.connError(e.code, e.detail);
+      self.connError(e.code, e.detail.view());
       return;
     }
     if e.flowLength > 0usize {
@@ -707,7 +718,7 @@ pub struct Connection is Move {
         return;
       }
     }
-    self.streamError(e.stream, e.code, e.detail);
+    self.streamError(e.stream, e.code, e.detail.view());
   }
 
   // The connection's receive window takes n bytes of DATA (section 6.9.1),
@@ -833,7 +844,7 @@ pub struct Connection is Move {
       }
       match frameError {
         case let Some(fe) {
-          self.streamError(id, fe.code, fe.detail);
+          self.streamError(id, fe.code, fe.detail.view());
           return;
         }
         case is None[FrameError] {}
@@ -872,7 +883,7 @@ pub struct Connection is Move {
     }
     match frameError {
       case let Some(fe) {
-        self.streamError(id, fe.code, fe.detail);
+        self.streamError(id, fe.code, fe.detail.view());
         return;
       }
       case is None[FrameError] {}

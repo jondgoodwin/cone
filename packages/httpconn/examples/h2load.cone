@@ -1,0 +1,134 @@
+// HTTP/2 beside HTTP/1.1 through the driver, over loopback, timed: an
+// informative number, not a gate. Run it with
+//
+//   congo run --release packages/httpconn/examples/h2load.cone
+//
+// Every request is a GET answered 200 with 64 bytes; the server and the
+// client share one thread, one Loop and one Driver (cleartext, HTTP/2 by
+// prior knowledge). Each line runs for two seconds and gives the requests a
+// second:
+//
+// 1. One connection, one request at a time: HTTP/1.1, then HTTP/2.
+// 2. 100 requests in flight: HTTP/1.1 on 100 connections, then HTTP/2 on
+//    one connection (100 streams).
+
+mod h2load;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 0x10000000u64;
+const tokConn = 0x20000000u64;
+const tokReq = 0x30000000u64;
+
+fn body() &Array[u8] {"0123456789012345678901234567890123456789012345678901234567890123"}
+
+// Requests a second: 'conns' connections, 'inFlight' requests kept going
+// on each, for 'secs' seconds
+fn run(h2: bool, conns: u64, inFlight: u64, secs: i64) f64 {
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
+  cfg.h2PriorKnowledge = h2;
+  cfg.maxWaiting = 4u32;
+  var drv = Driver.make(cfg);
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Err(e) {}
+  }
+  var port = 0u16;
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  var cs = List[ConnId].empty();
+  var k = 0u64;
+  while k < conns {
+    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k)));
+    k = k + 1u64;
+  }
+  // Each connection's requests, kept 'inFlight' deep
+  var live = List[u64].empty();
+  k = 0u64;
+  while k < conns {
+    live.push(0u64);
+    k = k + 1u64;
+  }
+  var events = List[Event].empty();
+  var done = 0u64;
+  var failed = 0u64;
+  var started = false;
+  var t0 = Instant.now();
+  var stop = t0 + Duration.fromSeconds(secs + 5i64);
+  while Instant.now() < stop {
+    k = 0u64;
+    while k < conns {
+      while live[usize.from(k)] < inFlight {
+        let conn = *cs[usize.from(k)];
+        drv.request(&mut lp, conn, RequestHead.get("/", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq + k));
+        live[usize.from(k)] = live[usize.from(k)] + 1u64;
+      }
+      k = k + 1u64;
+    }
+    drv.poll(&mut lp, forever(), &uni events);
+    var j = 0usize;
+    while j < events.len() {
+      let e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.End {
+          drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+          var b = IoBuf(64usize);
+          b.append(body());
+          drv.sendData(e.req, b);
+          drv.finish(e.req);
+        }
+      } else if e.token >= tokReq {
+        if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
+        else if e.isTerminal() {
+          let c = usize.from(e.token - tokReq);
+          live[c] = live[c] - 1u64;
+          if e.kind == EventKind.Done {
+            done = done + 1u64;
+            // Timing starts once every connection has answered one
+            if !started && done >= conns {
+              started = true;
+              done = 0u64;
+              t0 = Instant.now();
+              stop = t0 + Duration.fromSeconds(secs);
+            }
+          } else {
+            failed = failed + 1u64;
+          }
+        }
+      }
+    }
+    events.clear();
+  }
+  let took = Instant.now() - t0;
+  drv.abortAll(&mut lp);
+  if failed > 0u64 {
+    printStr("  (");
+    printUInt(failed);
+    printStr(" failed)\n");
+  }
+  f64.from(done) / (f64.from(took.nanos()) / 1000000000.0)
+}
+
+fn line(what: &str, rate: f64) {
+  printStr(what);
+  printUInt(u64.from(rate));
+  printStr(" requests a second\n");
+}
+
+fn main() {
+  line("1 connection, 1 at a time, HTTP/1.1:   ", run(false, 1u64, 1u64, 2i64));
+  line("1 connection, 1 at a time, HTTP/2:     ", run(true, 1u64, 1u64, 2i64));
+  line("100 in flight, HTTP/1.1, 100 conns:    ", run(false, 100u64, 1u64, 2i64));
+  line("100 in flight, HTTP/2, 1 conn:         ", run(true, 1u64, 100u64, 2i64));
+}

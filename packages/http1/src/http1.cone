@@ -18,7 +18,7 @@
 //   mut conn = Connection.client(Config.make(), Instant.now());
 //   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
 //   while true {                                     // the driver's loop:
-//     send(conn.pollTransmit(now));                  // bytes to send, until empty
+//     send(conn.pollTransmit(now));                  // a Chain: one gather write
 //     if conn.readCredit() >= 65536usize { recv(...) }  // read only with credit
 //     conn.handleInput(arrived, now);                // bytes that came (empty: the end)
 //     match conn.pollEvent() {                       // what that means
@@ -35,8 +35,7 @@
 //   Connection.client(config, now)  Connection.server(config, now)
 //   c.handleInput(buf, now)      bytes that arrived; an empty buffer is the  (THE FOUR CALLS)
 //                                end of the peer's stream
-//   c.pollTransmit(now)          the next bytes to send: an IoBuf, empty when none
-//   c.pollTransmitAll(now)       every byte ready to send: a Chain, empty when none
+//   c.pollTransmit(now)          every byte ready to send: a Chain, empty when none
 //   c.pollTimeout()              Some Instant the driver must wake at, or None
 //   c.handleTimeout(now)         the driver woke: deadlines due are acted on
 //   c.pollEvent()                the next Event
@@ -54,16 +53,16 @@
 //   Event: NeedData Paused Request Response Interim Data End Failed Closed (EVENTS)
 //
 // THE FOUR CALLS. Every protocol core of this runtime has the same outside
-// (quinn's, quiche's, ngtcp2's shape), so the HTTP/2 and HTTP/3 cores to
-// come drop in under the same driver: 'handleInput(bytes, now)' feeds what
-// arrived; 'pollTransmit(now)' gives what to send next; 'pollTimeout()'
-// gives the one deadline to wake at, and 'handleTimeout(now)' says it came;
-// 'pollEvent()' gives what happened. Bytes come in as IoBufs, moved in: the
-// buffer a receive completed with, kept in an iobuf Chain, parsed across its
-// segments where they lie. Bytes go out as IoBufs too, moved to the driver
-// to send: one at a time by 'pollTransmit', or all that are ready at once by
-// 'pollTransmitAll', a Chain of the same buffers in the same order, for a
-// driver that sends them in one gather write (iocore's SendChain). The core
+// (quinn's, quiche's, ngtcp2's shape), so http2's core drops in under the
+// same driver (httpconn's): 'handleInput(bytes, now)' feeds what arrived;
+// 'pollTransmit(now)' gives what to send next; 'pollTimeout()' gives the one
+// deadline to wake at, and 'handleTimeout(now)' says it came; 'pollEvent()'
+// gives what happened. Bytes come in as IoBufs, moved in: the buffer a
+// receive completed with, kept in an iobuf Chain, parsed across its segments
+// where they lie. Bytes go out as IoBufs too, moved to the driver to send:
+// 'pollTransmit' gives all that are ready at once, a Chain of the buffers
+// they lie in, in order, which the driver sends in one gather write
+// (iocore's SendChain), as http2's 'pollTransmit' gives its frames. The core
 // knows the time only from the calls that bring it.
 //
 // EVENTS. 'pollEvent' gives one Event each call, until it says to stop:
@@ -387,23 +386,10 @@ pub struct Connection is Move {
     }
   }
 
-  // The next bytes to send, moved out: an empty IoBuf when there are none
-  pub fn pollTransmit(self: &mut, at: Instant) IoBuf {
-    self.transmitting(at);
-    match out.popFront() {
-      case var Some(b) {
-        bytesOut = bytesOut + u64.from(b.len());
-        b
-      }
-      else {IoBuf.empty()}
-    }
-  }
-
   // Every byte ready to send, moved out at once as a Chain of the buffers
-  // they lie in, in order (what pollTransmit would give, call after call,
-  // until empty): an empty Chain when there are none. For a driver that
-  // sends several buffers in one gather write
-  pub fn pollTransmitAll(self: &mut, at: Instant) Chain {
+  // they lie in, in order: an empty Chain when there are none. A driver
+  // sends it in one gather write, as it sends http2's
+  pub fn pollTransmit(self: &mut, at: Instant) Chain {
     self.transmitting(at);
     // The queue is taken whole: empty is what it is next
     var all = Chain.make(noBound);
