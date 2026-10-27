@@ -33,19 +33,22 @@ fn pump(c: &mut Connection, s: &mut Connection) {
   var moved = true;
   while moved {
     moved = false;
-    while s.readCredit() > 0usize {
-      var b = c.pollTransmit(at());
-      if b.len() == 0usize {break;}
-      s.handleInput(b, at());
-      moved = true;
-    }
-    while c.readCredit() > 0usize {
-      var b = s.pollTransmit(at());
-      if b.len() == 0usize {break;}
-      c.handleInput(b, at());
-      moved = true;
+    if pass(c, s) {moved = true;}
+    if pass(s, c) {moved = true;}
+  }
+}
+
+// What one side has to send, handed to the other: whether there was any
+fn pass(from: &mut Connection, to: &mut Connection) bool {
+  var ch = from.pollTransmit(at());
+  let any = !ch.isEmpty();
+  while true {
+    match ch.popFront() {
+      case var Some(b) {to.handleInput(b, at());}
+      else {break;}
     }
   }
+  any
 }
 
 fn smallExchanges(n: u64, date: &Array[u8]) Duration {

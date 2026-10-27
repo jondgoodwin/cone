@@ -1,0 +1,211 @@
+// A connection's protocol core. Every connection has HTTP/1.1's in place
+// ('core', an http1.Connection, called directly); one whose protocol is
+// chosen as HTTP/2 also has HTTP/2's ('h2', boxed: an HTTP/1.1 connection
+// carries one pointer for it) and its 'isH2' set. The choice is made once
+// per connection, and every place the two cores differ branches on 'isH2'
+// once: the HTTP/1.1 path calls http1 directly, with nothing dispatched per
+// call and its events routed by connection as before. A trait over both
+// cores would not do: their events and requests differ (HTTP/2 names a
+// stream in each), and the driver needs each core's own.
+
+// The calls both cores take, each choosing its core by 'isH2'. HTTP/1.1 has
+// one exchange at a time, so it ignores the stream a call names
+
+fn coreInput(c: &mut Conn, buf: IoBuf, now: Instant) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.handleInput(buf, now);}
+      else {}
+    }
+  } else {
+    c.core.handleInput(buf, now);
+  }
+}
+
+fn coreTransmit(c: &mut Conn, now: Instant) Chain {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {return h.pollTransmit(now);}
+      else {}
+    }
+  }
+  c.core.pollTransmit(now)
+}
+
+fn coreTimeout(c: &Conn) Option[Instant] {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.pollTimeout();}
+      else {}
+    }
+  }
+  c.core.pollTimeout()
+}
+
+fn coreHandleTimeout(c: &mut Conn, now: Instant) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.handleTimeout(now);}
+      else {}
+    }
+  } else {
+    c.core.handleTimeout(now);
+  }
+}
+
+fn coreCredit(c: &Conn) usize {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.readCredit();}
+      else {}
+    }
+  }
+  c.core.readCredit()
+}
+
+fn coreClosed(c: &Conn) bool {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.isClosed();}
+      else {}
+    }
+  }
+  c.core.isClosed()
+}
+
+fn coreShouldClose(c: &Conn) bool {
+  if c.isH2 {
+    match &c.h2 {
+      case let &Some(h) {return h.shouldClose();}
+      else {}
+    }
+  }
+  c.core.shouldClose()
+}
+
+fn coreAbort(c: &mut Conn) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.abort();}
+      else {}
+    }
+  }
+  c.core.abort();
+}
+
+fn coreRelease(c: &mut Conn, stream: u32, n: usize) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.release(stream, n);}
+      else {}
+    }
+  } else {
+    c.core.release(n);
+  }
+}
+
+fn coreRespond(c: &mut Conn, stream: u32, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    var hd = head;
+    stripForH2(&mut hd.headers);
+    match &mut c.h2 {
+      case var &mut Some(h) {h.sendResponse(stream, hd, body, file, line);}
+      else {}
+    }
+  } else {
+    c.core.sendResponse(head, body, file, line);
+  }
+}
+
+fn coreInterim(c: &mut Conn, stream: u32, head: ResponseHead, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    var hd = head;
+    stripForH2(&mut hd.headers);
+    match &mut c.h2 {
+      case var &mut Some(h) {h.sendInterim(stream, hd, file, line);}
+      else {}
+    }
+  } else {
+    c.core.sendInterim(head, file, line);
+  }
+}
+
+fn coreSendData(c: &mut Conn, stream: u32, buf: IoBuf, file: &Array[u8], line: u32) Option[IoBuf] {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {return h.sendData(stream, buf, file, line);}
+      else {return None;}
+    }
+  }
+  c.core.sendData(buf, file, line)
+}
+
+fn coreFinish(c: &mut Conn, stream: u32, trailers: Headers, file: &Array[u8], line: u32) {
+  if c.isH2 {
+    match &mut c.h2 {
+      case var &mut Some(h) {h.finishWith(stream, trailers, file, line);}
+      else {}
+    }
+  } else {
+    c.core.finishWith(trailers, file, line);
+  }
+}
+
+// HTTP/2 alone
+
+// How many more streams the peer allows now
+fn room2(c: &Conn) usize {
+  match &c.h2 {
+    case let &Some(h) {
+      let open = h.openLocalStreams();
+      let max = h.peerMaxConcurrentStreams();
+      if !h.canSendRequest() || open >= max {0usize} else {usize.from(max - open)}
+    }
+    else {0usize}
+  }
+}
+
+fn writeRoom2(c: &Conn, stream: u32) usize {
+  match &c.h2 {
+    case let &Some(h) {h.writeRoom(stream)}
+    else {0usize}
+  }
+}
+
+fn sendEnded2(c: &Conn, stream: u32) bool {
+  match &c.h2 {
+    case let &Some(h) {h.sendEnded(stream)}
+    else {true}
+  }
+}
+
+fn cancel2(c: &mut Conn, stream: u32) {
+  match &mut c.h2 {
+    case var &mut Some(h) {h.cancel(stream);}
+    else {}
+  }
+}
+
+fn goAway2(c: &mut Conn) {
+  match &mut c.h2 {
+    case var &mut Some(h) {h.shutdown();}
+    else {}
+  }
+}
+
+// What HTTP/2 does not carry, taken out of a head going on an HTTP/2
+// connection: the connection-specific fields (RFC 9113, section 8.2.2), which
+// a program writing for either version may have set for HTTP/1.1
+fn stripForH2(h: &mut Headers) {
+  var gone = h.remove("Connection");
+  gone = gone + h.remove("Keep-Alive");
+  gone = gone + h.remove("Proxy-Connection");
+  gone = gone + h.remove("Transfer-Encoding");
+  gone = gone + h.remove("Upgrade");
+  var te = false;
+  match h.get("TE") {
+    case let Some(v) {te = !eqIgnoreCase(v, "trailers");}
+    else {}
+  }
+  if te {gone = gone + h.remove("TE");}
+}

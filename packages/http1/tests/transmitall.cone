@@ -1,13 +1,12 @@
-// pollTransmitAll: every byte ready to send at once, as a Chain of the
-// buffers they lie in, the same bytes in the same order pollTransmit gives
-// one buffer at a time. Each scene is played twice, drained each way, and the
-// two must send the same bytes at the same points:
+// pollTransmit: every byte ready to send at once, as a Chain of the buffers
+// they lie in, in order (one gather write's worth, as http2's pollTransmit
+// gives its frames); a second call with nothing new gives an empty Chain.
 //
 // 1. A server's sized response with a body of three whole buffers (each
 //    larger than the core copies beside the head): several segments at once,
-//    then nothing.
-// 2. A chunked response, its framing gathered in small writes after whole
-//    buffers.
+//    the body's buffers moved whole and in order, then nothing.
+// 2. A chunked response, its framing gathered in small writes between the
+//    whole buffers, ending with the last chunk.
 // 3. A client's request with 'Expect: 100-continue': its head goes, its body
 //    is held (not in the chain) until expectTimeout passes, then goes.
 
@@ -30,29 +29,24 @@ fn feed(c: &mut Connection, text: &Array[u8], at: Instant) {
   }
 }
 
-// What the connection has to send now, drained one way or the other; 'segs'
-// counts the buffers it came in
-fn drain(c: &mut Connection, at: Instant, all: bool, segs: &mut usize) String {
+// What the connection has to send now, in one call; 'segs' counts the
+// buffers it came in, 'whole' those that were a body buffer moved whole
+// (a chunked body's framing may be written into its spare room after it)
+fn drain(c: &mut Connection, at: Instant, segs: &mut usize, whole: &mut usize) String {
   var s = String.empty();
-  if all {
-    var ch = c.pollTransmitAll(at);
-    *segs = *segs + ch.segments();
-    while true {
-      match ch.popFront() {
-        case var Some(b) {s.appendBytes(b.view());}
-        else {break;}
+  var ch = c.pollTransmit(at);
+  *segs = *segs + ch.segments();
+  while true {
+    match ch.popFront() {
+      case var Some(b) {
+        if b.len() >= 20000usize {*whole = *whole + 1usize;}
+        s.appendBytes(b.view());
       }
-    }
-    let again = c.pollTransmitAll(at);
-    if again.len() != 0usize {s.append("[MORE]");}
-  } else {
-    while true {
-      let b = c.pollTransmit(at);
-      if b.len() == 0usize {break;}
-      *segs = *segs + 1usize;
-      s.appendBytes(b.view());
+      else {break;}
     }
   }
+  let again = c.pollTransmit(at);
+  if again.len() != 0usize {s.append("[MORE]");}
   s
 }
 
@@ -69,8 +63,45 @@ fn bodyBuf(i: usize, n: usize) IoBuf {
   b
 }
 
+// The three body buffers' bytes, one after another
+fn bodyText() String {
+  var s = String.empty();
+  var i = 0usize;
+  while i < 3usize {
+    let b = bodyBuf(i, 20000usize);
+    s.appendBytes(b.view());
+    i = i + 1usize;
+  }
+  s
+}
+
+// Whether pat is in s at i
+fn at(s: &Array[u8], i: usize, pat: &Array[u8]) bool {
+  if i + pat.len > s.len {return false;}
+  var k = 0usize;
+  while k < pat.len {
+    if s[i + k] != pat[k] {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// How many times pat is in s
+fn count(s: &Array[u8], pat: &Array[u8]) usize {
+  var n = 0usize;
+  var i = 0usize;
+  while i + pat.len <= s.len {
+    if at(s, i, pat) {n = n + 1usize;}
+    i = i + 1usize;
+  }
+  n
+}
+
+// Whether s ends with pat
+fn ends(s: &Array[u8], pat: &Array[u8]) bool {s.len >= pat.len && at(s, s.len - pat.len, pat)}
+
 // Scene 1 or 2: a server answers a GET with three body buffers
-fn serve(sized: bool, all: bool, segs: &mut usize) String {
+fn serve(sized: bool, segs: &mut usize, whole: &mut usize) String {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.server(Config.make(), t);
   feed(&mut c, "GET / HTTP/1.1\r\nHost: h\r\n\r\n", t);
@@ -90,7 +121,7 @@ fn serve(sized: bool, all: bool, segs: &mut usize) String {
     i = i + 1usize;
   }
   c.finish();
-  var s = drain(&mut c, t, all, segs);
+  var s = drain(&mut c, t, segs, whole);
   expectUInt(u64.from(c.queued()), 0u64, "nothing left queued");
   expectUInt(c.bytesSent(), u64.from(s.len()), "bytesSent counts what went");
   s
@@ -98,7 +129,7 @@ fn serve(sized: bool, all: bool, segs: &mut usize) String {
 
 // Scene 3: a PUT with Expect: 100-continue, its body held until the expect
 // timeout. The bytes sent at each point, with '|' between the points
-fn expectBody(all: bool, segs: &mut usize) String {
+fn expectBody(segs: &mut usize, whole: &mut usize) String {
   let t = Instant.fromNanos(1000000000i64);
   var c = Connection.client(Config.make(), t);
   var h = RequestHead.get("/f", "h");
@@ -108,37 +139,39 @@ fn expectBody(all: bool, segs: &mut usize) String {
   _ = c.sendData(bodyBuf(0usize, 3usize));
   _ = c.sendData(bodyBuf(1usize, 3usize));
   c.finish();
-  var s = drain(&mut c, t, all, segs);
+  var s = drain(&mut c, t, segs, whole);
   s.append("|");
   let later = t + Duration.fromSeconds(2i64);
   c.handleTimeout(later);
-  let rest = drain(&mut c, later, all, segs);
+  let rest = drain(&mut c, later, segs, whole);
   s.appendBytes(rest.view());
   s
 }
 
 fn main() i32 {
-  var one = 0usize;
-  var many = 0usize;
-  let a = serve(true, false, &mut one);
-  let b = serve(true, true, &mut many);
+  let body = bodyText();
+  var segs = 0usize;
+  var whole = 0usize;
+  let a = serve(true, &mut segs, &mut whole);
   expect(a.len() > 60000usize, "a sized response with its 60,000-byte body");
-  expectStr(b.view(), a.view(), "sized: the same bytes either way");
-  expectUInt(u64.from(many), u64.from(one), "...in the same buffers");
-  expect(many > 1usize, "...several of them, in one chain");
+  expect(ends(a.view(), body.view()), "sized: the body last, in order");
+  expect(count(a.view(), "Content-Length: 60000\r\n") == 1usize, "sized: its Content-Length");
+  expectUInt(u64.from(whole), 3u64, "sized: the three body buffers moved whole");
+  expect(segs > 3usize, "...after the head, all in one chain");
 
-  one = 0usize;
-  many = 0usize;
-  let ca = serve(false, false, &mut one);
-  let cb = serve(false, true, &mut many);
-  expectStr(cb.view(), ca.view(), "chunked: the same bytes either way");
-  expectUInt(u64.from(many), u64.from(one), "...in the same buffers");
+  segs = 0usize;
+  whole = 0usize;
+  let ca = serve(false, &mut segs, &mut whole);
+  expectUInt(u64.from(count(ca.view(), "\r\n4e20\r\n")), 3u64, "chunked: three chunk lines of 20000");
+  expect(count(ca.view(), "\r\n0\r\n\r\n") == 1usize && ends(ca.view(), "\r\n0\r\n\r\n"), "chunked: the last chunk ends it");
+  expectUInt(u64.from(whole), 3u64, "chunked: the three body buffers moved whole");
+  expect(segs > 3usize, "...with the framing between them, in one chain");
 
-  one = 0usize;
-  many = 0usize;
-  let ea = expectBody(false, &mut one);
-  let eb = expectBody(true, &mut many);
-  expectStr(eb.view(), ea.view(), "Expect: the same bytes at the same points");
-  expect(ea.view()[ea.len() - 1usize] != 124u8, "the body went after the timeout");
+  segs = 0usize;
+  whole = 0usize;
+  let ea = expectBody(&mut segs, &mut whole);
+  let bar = count(ea.view(), "|");
+  expectUInt(u64.from(bar), 1u64, "Expect: two points");
+  expect(ends(ea.view(), "|abchij"), "Expect: the body went after the timeout, and only then");
   done()
 }
