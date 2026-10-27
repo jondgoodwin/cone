@@ -3,10 +3,18 @@
 // Stuck's 'count' awaits an operation that drops its envelope unanswered, so
 // 'count' stays parked; when Stuck's last handle goes, Stuck dies, its parked
 // record is dropped, and with it the future's producer's reference, which
-// abandons the future. main waits until all is quiet (actors.waitQuiet), so
-// the future is abandoned before it is handed to Asker, whose 'await' finds
-// it so. (A behaviour parked on the future when it is abandoned is ended
-// quietly instead: concurrency_future_abandoned_parked.)
+// abandons the future. Stuck is made and asked inside 'ask', so its one
+// handle goes when 'ask' returns: passing a handle copies it (one more
+// owner, counted), so a handle passed to a function that drops it would
+// leave the caller's own until the end of the caller's block, after the
+// future is handed over. main then waits until all is quiet
+// (actors.waitQuiet), so the future is abandoned before it is handed to
+// Asker, whose 'await' finds it so. main waits again before its block ends,
+// so that Asker's 'await' runs while anything main still holds is held: were
+// Stuck still alive then, the 'await' would park and the program end quietly
+// every time, not only when Asker happened to run first. (A behaviour parked
+// on the future when it is abandoned is ended quietly instead:
+// concurrency_future_abandoned_parked.)
 
 mod concurrency_future_abandoned;
 
@@ -36,14 +44,16 @@ fn main() {
   initAll();
   {
     let a = Asker();
-    let s = Stuck();
-    let f = s.count();
-    gone(s);
+    let f = ask();
     actors.waitQuiet();
     a.collect(f);
+    actors.waitQuiet();
   }
   finalAll();
 }
 
-// Stuck's last handle goes here
-fn gone(s: Stuck) {}
+// Stuck's future of its count: Stuck's one handle goes when this returns
+fn ask() actors.Future[u64] {
+  let s = Stuck();
+  s.count()
+}
