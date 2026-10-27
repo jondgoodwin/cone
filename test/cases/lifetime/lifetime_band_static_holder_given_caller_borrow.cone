@@ -3,10 +3,14 @@
 // lent into one: not in a result of such a type, nor where a '&mut'
 // parameter to such a type points. Its callers take the value to carry no
 // argument's loans (lifetime_band_static_holder_result), which only this
-// keeps true. A local's borrow in one is tracked where it is made
-// ('built', accepted), as in any value.
+// keeps true. Nor may a local's borrow go into one ('built'), though it would
+// not escape: a ''static' field takes only a global's borrow
+// (lifetime_band_static_field_given_local). '&v' is not a '&'static i64': the
+// message gives the spelling for a struct holding a local's borrow,
+// 'struct H['a] { r: &'a i64; }'.
 //
-// Verdict: refuse: ErrorEscape at each return and store of a caller's borrow.
+// Verdict: refuse: ErrorEscape at each return and store of a caller's borrow,
+// and at the local's borrow given to the ''static' field.
 // Basis: mem-lifetimes.html, "The global lifetime: 'static" (a borrow the
 // caller lent may not be returned as ''static').
 // Master c85d9fa99: all four accepted (the result and what 'h' points at
@@ -40,7 +44,7 @@ fn putField(h: &mut H, b: &Box) {
 
 fn built() i64 {
   let v = 5i64;
-  let h = H(&v);
+  let h = H(&v);            //~ ErrorEscape "A struct that holds a borrow of a local or of what a caller lent declares a lifetime for it: 'struct H['a] { r: &'a ...; }'"
   *h.r
 }
 

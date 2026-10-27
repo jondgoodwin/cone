@@ -1184,6 +1184,38 @@ void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
             why, srcname, loanWhere(&loans[loan], where, sizeof(where)), loanCaptureAdvice(loan, advice, sizeof(advice)));
 }
 
+void loanNotGlobalStatic(INode *node, uint32_t loan, Name *strname, Name *field) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char what[200];
+    char hint[300];
+    hint[0] = '\0';
+    if (field) {
+        snprintf(what, sizeof(what), "The field '%s' holds only ''static' borrows", &field->namestr);
+        // The spelling for a struct holding a borrow that ends: a lifetime
+        // it declares, which a value of it is held to
+        snprintf(hint, sizeof(hint),
+            " A struct that holds a borrow of a local or of what a caller lent declares a lifetime for it: 'struct %s['a] { %s: &'a ...; }'.",
+            strname ? &strname->namestr : "H", &field->namestr);
+    }
+    else
+        snprintf(what, sizeof(what), "This place's type holds only ''static' borrows");
+    if (loans[loan].kind == LoanCaller) {
+        errorMsgNode(node, ErrorEscape,
+            "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries the borrow the caller lent through '%s'.%s",
+            what, &loanParm(loan)->namesym->namestr, hint);
+        return;
+    }
+    char srcname[128];
+    char where[160];
+    char advice[400];
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    errorMsgNode(node, ErrorEscape,
+        "%s, so what is put in it must be global (a borrow of a global or a literal, or one already ''static'), but this value carries a borrow of '%s' (made %s).%s%s",
+        what, srcname, loanWhere(&loans[loan], where, sizeof(where)), hint, loanCaptureAdvice(loan, advice, sizeof(advice)));
+}
+
 void loanNotBound(INode *node, uint32_t loan, Name *bound) {
     if (mapGet(node, 0, 1))
         return;

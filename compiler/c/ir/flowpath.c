@@ -1478,16 +1478,117 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t la
         loanApart(node, apart, through, how);
 }
 
+// Does a value of this type hold a raw pointer, by value or through an owning
+// reference (not through a borrowed one, whose loans are its own)? 'depth'
+// bounds a type reaching itself through an owning reference.
+static int pwReachesPtr(INode *type, int depth) {
+    if (type == NULL || depth > 8)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? pwReachesPtr(itypeGetTypeDcl(type), depth) : 0;
+    case AliasDclTag:
+        return pwReachesPtr(((AliasDclNode *)type)->target, depth);
+    case PtrTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef ? 0
+            : pwReachesPtr(((RefNode *)type)->vtexp, depth + 1);
+    case ArrayTag:
+        return pwReachesPtr(arrayElemType(type), depth);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwReachesPtr(*nodesp, depth))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (pwReachesPtr(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (pwReachesPtr(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A value carrying 'holds' put at 'node' into a place of type 'type' (the
+// field 'field', where it is one): where that type holds borrows but only
+// ''static' ones (a '&'static' field, a struct or an Option holding one), the
+// value may carry only loans rooted at a global. A ''static' borrow lends
+// nothing (itypeCarriesEndingBorrow): what a signature says such a value
+// carries, and so every place it may go after, takes it to hold no borrow
+// that ends, which holds only if every place that builds or changes one
+// gives it none. Returns 'holds' without what was refused, so a construction
+// around it, or a store of it, does not report it again.
+//
+// A raw pointer reached by value is no ''static' borrow: the loans its value
+// carries are its own, of whatever it was made from, so a type reaching one
+// is not asked (pwReachesPtr); its ''static' fields are, where each is given
+// a value.
+static PathSet *pwStaticOnly(INode *node, INode *type, Name *strname, Name *field, PathSet *holds) {
+    if (!pathLoans || holds == NULL || !itypeCarriesBorrow(type) || itypeCarriesEndingBorrow(type)
+            || pwReachesPtr(type, 0))
+        return holds;
+    uint32_t loan = loanNotGlobalIn(holds);
+    if (!loan)
+        return holds;
+    loanNotGlobalStatic(node, loan, strname, field);
+    if (holds == &pathSetAll)
+        return holds;
+    PathSet *kept = holds;
+    for (uint32_t k = 0; k < holds->cnt; ++k) {
+        if (!loanIsGlobal(loanOf(holds->ids[k])))
+            kept = pathSetWithout(kept, holds->ids[k]);
+    }
+    return kept;
+}
+
+// pwStaticOnly for a store at 'lval', naming the field it ends at, and the
+// struct it is a field of, where it is one
+static PathSet *pwStoreStatic(INode *lval, PathSet *holds) {
+    Name *field = NULL;
+    Name *strname = NULL;
+    if (lval->tag == FldAccessTag && ((FnCallNode *)lval)->methfld->tag != ULitTag) {
+        field = ((NameUseNode *)((FnCallNode *)lval)->methfld)->namesym;
+        INode *owner = iexpGetTypeDcl(((FnCallNode *)lval)->objfn);
+        if (owner && (owner->tag == RefTag || owner->tag == VirtRefTag))
+            owner = itypeGetTypeDcl(((RefNode *)owner)->vtexp);
+        if (owner && owner->tag == StructTag)
+            strname = ((StructNode *)owner)->namesym;
+    }
+    return pwStaticOnly(lval, ((IExpNode *)lval)->vtype, strname, field, holds);
+}
+
 // A value carrying 'holds' is stored at 'lval', the place 'pl': where that
 // place may outlive the function, the value may carry no borrow of the
 // function's own storage; where it is rooted at a global, which outlives
 // every caller too, no borrow the caller lent (a caller loan: what a
 // borrowed parameter points at, or what it holds, read through '*x' or
-// carried inside a value); and where it is reached through a reference, no
-// borrow of a lifetime that place does not hold
-static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) {
+// carried inside a value); where it is reached through a reference, no
+// borrow of a lifetime that place does not hold; and where its type holds
+// only ''static' borrows, only a global's (pwStaticOnly, reported only where
+// none of those was: each report is once a node). Returns 'holds' without
+// what pwStaticOnly refused.
+static PathSet *pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) {
     if (!pathLoans)
-        return;
+        return holds;
     uint32_t local = loanLocalIn(holds);
     VarDclNode *root = pathVars[pl->var].var;
     uint32_t caller;
@@ -1507,6 +1608,7 @@ static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) 
         if (lval->tag == DerefTag)
             pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
     }
+    return pwStoreStatic(lval, holds);
 }
 
 // What a value carrying 'holds' adds to the root of the place 'pl' it is
@@ -2443,7 +2545,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         // was not live before, so what its old value was pending on is dropped.
         uint32_t index = pathVar(var);
         Place pl = { index, 0, 0 };
-        pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
+        holds = pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathLoans && loanShapeCount())
             pwShapeStore(*lvalp, &pl);
@@ -2475,6 +2577,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     Place pl;
     PathSet *base;
     if (!pwPlace(lvalp, &pl, &base)) {
+        pwStoreStatic(*lvalp, holds);
         if (pathLoans && loanShapeCount())
             pwShapeStore(*lvalp, NULL);
         return;
@@ -2485,7 +2588,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     // Part of a local's own value: its old value is released if the local holds one
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
-    pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
+    holds = pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
@@ -2597,10 +2700,10 @@ static void pwSwap(SwapNode *node) {
     for (int i = 0; i < 2; ++i) {
         if (!found[i])
             continue;
-        pwStoreEscapes(*sides[i], &places[i], holds[1 - i], NULL);
+        PathSet *stored = pwStoreEscapes(*sides[i], &places[i], holds[1 - i], NULL);
         if (!whole[i]) {
             int level = pwPlaceLevel(&places[i]);
-            pwStoreInto(places[i].var, level, level, pwStoreTagged(&places[i], holds[1 - i]));
+            pwStoreInto(places[i].var, level, level, pwStoreTagged(&places[i], stored));
         }
     }
     // Two holders exchange what they hold, and what each is pending on goes
@@ -2641,7 +2744,7 @@ static void pwVarDcl(VarDclNode *var) {
         if (var->namesym == tempName && var->value->tag == BorrowTag)
             holds = pwBorrow(var->value, 1);
         else
-            holds = pwValue(&var->value, 1);
+            holds = pwStaticOnly(var->value, var->vtype, NULL, NULL, pwValue(&var->value, 1));
         pathVars[index].initing = 0;
     }
     if (pathVars[index].holder)
@@ -3488,6 +3591,9 @@ static PathSet *pwValue(INode **nodep, int move) {
         uint32_t mark = loanFlightMark();
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((FnCallNode *)node)->args;
         StructNode *slotted = node->tag == TypeLitTag ? lifeSlotted(((IExpNode *)node)->vtype) : NULL;
+        StructNode *litstruct = node->tag == TypeLitTag ? (StructNode *)itypeGetTypeDcl(((IExpNode *)node)->vtype) : NULL;
+        if (litstruct && litstruct->tag != StructTag)
+            litstruct = NULL;
         uint32_t localorder[8];
         uint32_t *order = pwOrder(elems, localorder);
         uint32_t nelems = elems ? elems->used : 0;
@@ -3496,6 +3602,11 @@ static PathSet *pwValue(INode **nodep, int move) {
             INode **nodesp = &nodesGet(elems, fieldi);
             INode **valp = (*nodesp)->tag == NamedValTag ? &((NamedValNode *)*nodesp)->val : nodesp;
             PathSet *carried = pwValue(valp, node->tag == TypeLitTag || move);
+            // A field holding only ''static' borrows is given only a global's
+            if (litstruct && fieldi < litstruct->fields.used) {
+                FieldDclNode *field = (FieldDclNode *)nodelistGet(&litstruct->fields, fieldi);
+                carried = pwStaticOnly(*valp, field->vtype, litstruct->namesym, field->namesym, carried);
+            }
             loanFlightPushOf(carried, 0, *valp);
             uint32_t tag = 0;
             if (slotted && fieldi < slotted->fields.used)

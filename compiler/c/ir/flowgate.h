@@ -162,4 +162,12 @@ static inline void flowGateBoxed(FlowState *fstate, INode *cast) {
         flowGateBoxedAsk(fstate, cast);
 }
 
+// Gate trigger: the value of a struct or variant literal's field at 'i',
+// which may hold a borrow given to a field holding only ''static' ones: a
+// value that is no reference nor a struct that may hold one is dismissed
+static inline void flowGateStatic(FlowState *fstate, INode *lit, uint32_t i, INode *val) {
+    if (flowGateOpen(fstate, FlowGateStatic) && !flowGateCarriesNone(((IExpNode *)val)->vtype))
+        flowGateStaticAsk(fstate, lit, i, val);
+}
+
 #endif
