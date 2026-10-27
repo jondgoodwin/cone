@@ -60,6 +60,14 @@ INode *itypeGetDerefTypeDcl(INode *node);
 // Remembered per struct once the struct is type checked.
 int itypeCarriesBorrow(INode *type);
 
+// May a value of this type hold a borrow of a lifetime that ends: one not
+// ''static' (nor a key or a function's, which itypeCarriesBorrow passes too)?
+// A ''static' borrow lends nothing of any caller's, so what a signature lets a
+// value of the type carry from, or be given through, a parameter asks this
+// (lifetime.h), while a value a body makes keeps whatever loans flow into it
+// (itypeCarriesBorrow). Remembered per struct apart from that answer.
+int itypeCarriesEndingBorrow(INode *type);
+
 // Can a borrowed reference to 'want' (a type declaration) be stored somewhere
 // in a value of this type: does it hold a borrowed reference to that type, or
 // to a trait?

@@ -251,6 +251,27 @@ fn caller() i64 {
 	<p><span class="pre">'static</span> may be written on a parameter's own reference or in the result, but not inside
 		a parameter's type: <span class="pre">fn read(slot: &amp;mut &amp;'static R)</span> is refused (<i>Error 1232</i>),
 		since what a caller passes there is not checked to be global.</p>
+	<p>A struct's field may be written <span class="pre">'static</span> too. A value whose type holds no borrow but
+		<span class="pre">'static</span> ones, at any depth (a struct with a <span class="pre">&amp;'static str</span>
+		field, an <span class="pre">Option</span> of one), borrows nothing of a caller's or of a local, so a call
+		returning one ties it to none of its arguments, though the signature names no lifetime, and a
+		<span class="pre">&amp;mut</span> to one takes no borrow its call is handed. The function is held to the same:
+		it may not return a borrow its caller lent in such a value, nor store one where a parameter points at one:</p>
+<pre>
+struct Fault { code: u32; detail: &amp;'static str; }
+
+fn check(a: &amp;i64, b: &amp;i64) Fault { Fault(1u32, "bad") }
+fn wrap(s: &amp;str) Fault {
+  Fault(1u32, s)            // Error 1064: Returned value carries the borrow the caller lent through
+}                           //   's', whose lifetime the result's type does not name
+fn caller() Fault {
+  let x = 1i64;
+  check(&amp;x, &amp;x)            // Ok: the Fault borrows neither
+}
+</pre>
+	<p>A borrow of a global the arguments carried is still carried, so the global is not changed while the value is
+		used. A <span class="pre">'static</span> field is not checked where it is given a value: one given a
+		local's borrow holds it, refused as any borrow is if it outlives the local.</p>
 
 	<h3 id="traitimpl">Implementing a trait</h3>
 	<p>A trait's implementation may promise more than the trait does: a result of <span class="pre">'static</span> or

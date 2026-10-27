@@ -1465,14 +1465,15 @@ static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
 // in it ('how',
 // LoanEscapeStore or LoanEscapeCall); 'beyond' when it may land past where
 // the reference points; 'landing' the slots of the field of a struct
-// declaring lifetimes it lands in, 0 where that is not known. Asked only
-// where the function names lifetimes: unnamed, every borrow in its signature
-// shares one.
+// declaring lifetimes it lands in, 0 where that is not known. Where the
+// function names no lifetimes, every borrow in its signature shares one, and
+// only what a parameter points at holding no borrow but ''static' ones takes
+// none the caller lent (loanStoredStatic): a caller hands it only a global's
+// loans (pwCallStores).
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how) {
-    if (!pwSig->lifenamed)
-        return;
     VarDclNode *through;
-    uint32_t apart = loanStoredApart(pwSig, stored, refholds, beyond, landing, &through);
+    uint32_t apart = pwSig->lifenamed ? loanStoredApart(pwSig, stored, refholds, beyond, landing, &through)
+        : loanStoredStatic(stored, refholds, beyond, &through);
     if (apart)
         loanApart(node, apart, through, how);
 }
@@ -1562,6 +1563,23 @@ static PathSet *pwArgCarries(FnSigNode *sig, uint32_t i, INode *wanted, PathSet 
     default:
         return NULL;
     }
+}
+
+// pwArgCarries, where 'globalonly' says the value it goes into holds no
+// borrow but ''static' ones (itypeCarriesEndingBorrow): a ''static' borrow
+// lends nothing of the caller's, of a local or of what a reference points at,
+// whatever the signature names, so only the loans rooted at a global go there
+// (loanOfGlobal)
+static PathSet *pwArgCarriesTo(FnSigNode *sig, uint32_t i, INode *wanted, PathSet *carried, int globalonly) {
+    PathSet *set = pwArgCarries(sig, i, wanted, carried);
+    if (!globalonly || set == NULL || set == &pathSetAll)
+        return set;
+    PathSet *kept = set;
+    for (uint32_t k = 0; k < set->cnt; ++k) {
+        if (!loanOfGlobal(loanOf(set->ids[k])))
+            kept = pathSetWithout(kept, set->ids[k]);
+    }
+    return kept;
 }
 
 // Clear the tags of what a holder holds, and of what each holder its
@@ -1700,6 +1718,11 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
         INode *pointee = sig && at < sig->parms->used
             ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
+        // What a writable borrow points at, where it holds no borrow but
+        // ''static' ones and no writable borrow leads further, takes only a
+        // global's loans: the callee may store nothing else there
+        // (loanStoredStatic)
+        int globalonly = isref && depth == 1 && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL)
@@ -1714,7 +1737,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
-            others = pathSetUnion(others, pwArgCarries(sig, i, pointee, carried));
+            others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
         if (others == NULL)
             continue;
@@ -2265,6 +2288,9 @@ static PathSet *pwCall(FnCallNode *call) {
     FnDclNode *meth = pwMethod(call);
     FnSigNode *sig = pwNamedSig(call);
     int carries = pwCarries(call->vtype);
+    // A result holding only ''static' borrows carries no argument's loan but
+    // a global's, the receiver's own loan included
+    int globalonly = carries && !itypeCarriesEndingBorrow(call->vtype);
     INode *rettype = sig ? sig->rettype : NULL;
     uint32_t mark = loanFlightMark();
     PathSet *result = NULL;
@@ -2325,7 +2351,7 @@ static PathSet *pwCall(FnCallNode *call) {
             carried = pwValue(argsp, 1);
         loanFlightPushOf(carried, 0, *argsp);
         if (carries)
-            result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
+            result = pathSetUnion(result, pwArgCarriesTo(sig, argi, rettype, carried, globalonly));
         argsets[argi] = carried;
     }
     if (pathLoans && (sig || lifeStaticBoundSeen)) {
@@ -2367,7 +2393,7 @@ static PathSet *pwCall(FnCallNode *call) {
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
     if (meth) {
-        PathSet *fromrecv = pwArgCarries(sig, 0, rettype, recvholds);
+        PathSet *fromrecv = pwArgCarriesTo(sig, 0, rettype, recvholds, globalonly);
         // A container that changes shape (a list, a string, a struct holding
         // one: shapeinfer.h) may move its elements when it changes. A borrow or
         // cursor its method returns carries the receiver's loan, and that loan
@@ -2394,7 +2420,7 @@ static PathSet *pwCall(FnCallNode *call) {
     // through another name is asked of every call made meanwhile
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
         if (lentloan[i] && argsets[i] != &pathSetAll
-                && pathSetHasLoan(pwArgCarries(sig, i, rettype, argsets[i]), lentloan[i]))
+                && pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i]))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }
     // What the result's borrows point at may be anything its arguments reach
@@ -2746,6 +2772,12 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 if (local)
                     loanEscape(ret->exp, local, LoanEscapeReturn);
                 else if (pwSig->lifenamed && (apart = loanCallerApart(pwSig, carried, pwSig->rettype)))
+                    loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
+                // A result holding no borrow but ''static' ones holds none
+                // the caller lent, named or not: a caller takes it to carry
+                // only a global's loans (pwCall)
+                else if (!pwSig->lifenamed && itypeCarriesBorrow(pwSig->rettype)
+                        && !itypeCarriesEndingBorrow(pwSig->rettype) && (apart = loanNotGlobalIn(carried)))
                     loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
                 else
                     pwBoundHolds(ret->exp, pwSig->rettype, carried);
