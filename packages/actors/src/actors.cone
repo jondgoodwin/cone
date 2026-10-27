@@ -2275,10 +2275,6 @@ pub const traceKindEnd = 4u32;          // a message's run ends
 let traceMask: Atomic[u32];
 let traceSink: Atomic[usize];     // the sink, a function address, or 0
 let traceIds: Atomic[u64];        // send ids made off the workers
-let blocksTaken: Atomic[u64];     // record blocks taken from the allocator (RECORD BLOCKS KEPT)
-let blocksGiven: Atomic[u64];     // record blocks given back to the allocator
-let keepsMade: Atomic[u64];       // per-thread keeps made
-let keepsFreed: Atomic[u64];      // per-thread keeps freed
 let traceActors: Atomic[u32];     // actors made so far (their tid)
 
 // Whether layer L's records are wanted: one relaxed load and a bit test
@@ -3033,10 +3029,19 @@ pub fn recordFree(record: *u8) {
 // one of them instead of asking the allocator. A block is the C library's, so
 // one given back on a thread other than the one that took it is kept by the
 // thread that gives it, and a block the pending table drops with its actor is
-// freed as before. The blocks kept when a thread ends are not freed (a worker
-// lives as long as the process).
+// freed as before. A keep is the thread's own, in a thread-local, so it goes
+// when the thread does: a worker frees its kept blocks and its keep as it
+// ends (keepRelease), and so does the thread that stops the runtime
+// (stopWorkers). Any other thread that parks a continuation and ends with
+// blocks in its keep leaves them: there is no hook at a thread's end to free
+// them. parkBlocks() counts the blocks and keeps taken and given back.
 const blockKeep = 8usize;
 const blockKeepBytes = 1024usize;
+
+let blocksTaken: Atomic[u64];     // record blocks taken from the allocator
+let blocksGiven: Atomic[u64];     // record blocks given back to the allocator
+let keepsMade: Atomic[u64];       // per-thread keeps made
+let keepsFreed: Atomic[u64];      // per-thread keeps freed
 
 struct BlockKeep {
   pub n: usize;
@@ -3057,6 +3062,24 @@ fn keepOf() *BlockKeep {
     keepsMade.addOrdered(1u64, MemOrder.Relaxed);
   }
   k
+}
+
+// This thread's keep given back: the blocks it holds, then the keep itself.
+// The next park on this thread makes a new one
+fn keepRelease() {
+  let k = blockKept as *BlockKeep;
+  if k as usize == 0usize {
+    return;
+  }
+  var i = 0usize;
+  while i < (*k).n {
+    libc.free((*k).blocks[i]);
+    blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
+    i = i + 1usize;
+  }
+  libc.free(k as *u8);
+  blockKept = 0usize;
+  keepsFreed.addOrdered(1u64, MemOrder.Relaxed);
 }
 
 // A block of 'total' bytes: a kept one of that size, else the allocator's
@@ -3914,6 +3937,7 @@ fn workerMain(arg: WorkerArg) u32 {
       break;
     }
   }
+  keepRelease();
   me = 0usize;
   0u32
 }
@@ -4212,6 +4236,7 @@ fn stopWorkers() {
     t.join();
     i = i + 1u32;
   }
+  keepRelease();
   running.store(0usize);
   libc.free((*s).parked as *u8);
   libc.free((*s).threads as *u8);
