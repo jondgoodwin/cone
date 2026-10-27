@@ -2494,3 +2494,49 @@ pub struct Hasher {
     Hasher.read4(p) | (Hasher.read4(p + 4usize) << 32u64)
   }
 }
+
+// A float as text: the shortest text that reads back as the same float, the
+// fewest significant digits that a correctly rounded reader (C's strtod, or
+// strtof for an f32) turns back into the same bits, and of those the nearest
+// to the float's exact value. It is written as Python's repr writes a float:
+// fixed notation when the decimal exponent X of the digits (d.ddd * 10^X) is
+// from -4 to 15, with ".0" after an integer, so the text is a float's ("1.0",
+// "0.1", "-0.0", "0.0001", "123456789012345.0"); otherwise the exponent form, a
+// sign and at least two digits ("1e+16", "1.5e-05", "5e-324",
+// "1.7976931348623157e+308"); and "inf", "-inf", "nan" (every NaN). The same
+// text on every OS, at most 24 bytes. A String's '<-' of an f64 and a trace
+// message's write it. The digits are conestd's (floatfmt.cone, Ryu's method).
+//
+//   FloatText(0.1).text()              "0.1"
+//   FloatText.ofF32(0.1f32).text()     "0.1", the shortest that reads back as that f32
+//
+// An f32 given to 'FloatText(x)' is widened to the f64 of the same value, whose
+// shortest text is longer ("0.10000000149011612"): an f32 has 'ofF32'. (Two
+// inits, one taking an f64 and one an f32, could not be told apart: an f32
+// argument is accepted by both, and a call must have exactly one that accepts.)
+pub struct FloatText {
+  len: usize;
+  bytes: Array[u8, 24];
+
+  pub fn init(self: &new, x: f64) inline {
+    var b = Array[u8, 24]() <- fill 0u8;
+    let n = floatShortest(&mut b as *u8, x);
+    *self = FloatText(len: n, bytes: b);
+  }
+
+  pub fn ofF32(x: f32) FloatText inline {
+    var b = Array[u8, 24]() <- fill 0u8;
+    let n = floatShortest32(&mut b as *u8, x);
+    FloatText(len: n, bytes: b)
+  }
+
+  // The text
+  pub fn text(self: &) &str inline {
+    mem.sliceFromParts[u8](&bytes as *u8, len) as &str
+  }
+}
+
+extern {
+  fn @c("cone_floatShortest") floatShortest(buf: *u8, x: f64) usize;
+  fn @c("cone_floatShortest32") floatShortest32(buf: *u8, x: f32) usize;
+}

@@ -1,0 +1,64 @@
+// The speed of core's FloatText, in nanoseconds a value, on three mixes:
+// random bit patterns of finite f64s, small integers, and short decimals
+// (k / 1000). The reference point is C's "%.17g" with strtod back, timed on
+// the same mixes (the PR body gives both).
+//
+//   congo run --release examples/floatbench.cone      (in packages/json)
+
+mod floatbench;
+
+import stdio use *;
+import collections use *;
+import trace;
+
+const n = 1000000usize;
+
+// xorshift64*
+struct Rng {
+  s: u64;
+  fn next(self: &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64
+  }
+}
+
+fn run(name: &str, vals: &Array[f64]) {
+  var lens = 0usize;
+  let t0 = trace.ticks();
+  var i = 0usize;
+  while i < vals.len {
+    lens = lens + FloatText(vals[i]).text().len();
+    i = i + 1usize;
+  }
+  let t1 = trace.ticks();
+  let ns = f64.from(t1 - t0) * 1e9 / f64.from(trace.clockFrequency()) / f64.from(vals.len);
+  print <- name, " ", FloatText(ns).text(), " ns/value (", lens, " bytes)\n";
+}
+
+fn main() {
+  var list = List[f64](n) <- fill 0.0;
+  let vals = list.viewMut();
+  var rng = Rng(0x9E3779B97F4A7C15u64);
+  var i = 0usize;
+  while i < n {
+    var v = rng.next();
+    while ((v >> 52u64) & 0x7FFu64) == 0x7FFu64 {v = rng.next();}
+    vals[i] = v as f64;
+    i = i + 1usize;
+  }
+  run("random bits", vals);
+  i = 0usize;
+  while i < n {
+    vals[i] = f64.from(i % 100000usize);
+    i = i + 1usize;
+  }
+  run("small ints ", vals);
+  i = 0usize;
+  while i < n {
+    vals[i] = f64.from(i % 100000usize) / 1000.0;
+    i = i + 1usize;
+  }
+  run("k/1000     ", vals);
+}
