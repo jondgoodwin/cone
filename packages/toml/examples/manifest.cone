@@ -21,7 +21,7 @@ fn describe(text: &Array[u8]) Result[String, String] {
   var doc = toml.Document();
   match toml.parse(text) {
     case var Ok(ok) { doc <-> ok; }
-    case let Error(e) { return Error[String, String](e.message()); }
+    case let Err(e) { return Err[String, String](e.message()); }
   }
   // Only Congo's tables, each table only Congo's keys
   let names = doc.names();
@@ -31,32 +31,32 @@ fn describe(text: &Array[u8]) Result[String, String] {
       var m = String.from("[");
       m.append(names[i].view());
       m.append("] is not part of a Congo manifest");
-      return Error[String, String](m);
+      return Err[String, String](m);
     }
     i = i + 1usize;
   }
   if !doc.has("package") {
-    return Error[String, String](String.from("the manifest needs a [package] table"));
+    return Err[String, String](String.from("the manifest needs a [package] table"));
   }
   let pkg = doc["package"];
   var out = String.empty();
   match pkg.getString("name") {
     case let Some(n) { out.append(n.view()); }
-    case is None { return Error[String, String](String.from("[package] name must be a string")); }
+    case is None { return Err[String, String](String.from("[package] name must be a string")); }
   }
   match pkg.getString("version") {
     case let Some(v) {
       out.append(" ");
       out.append(v.view());
     }
-    case is None { return Error[String, String](String.from("[package] version must be a string")); }
+    case is None { return Err[String, String](String.from("[package] version must be a string")); }
   }
   match pkg.getString("output") {
     case let Some(o) {
       out.append(", a ");
       out.append(o.view());
     }
-    case is None { return Error[String, String](String.from("[package] output must be a string")); }
+    case is None { return Err[String, String](String.from("[package] output must be a string")); }
   }
   if doc.has("link") {
     match doc["link"].getStrings("libraries") {
@@ -65,7 +65,7 @@ fn describe(text: &Array[u8]) Result[String, String] {
         let shown = String.join(l.view(), ", ");
         out.append(shown.view());
       }
-      case is None { return Error[String, String](String.from("[link] libraries must be a list of strings")); }
+      case is None { return Err[String, String](String.from("[link] libraries must be a list of strings")); }
     }
   }
   Ok[String, String](out)
@@ -74,7 +74,7 @@ fn describe(text: &Array[u8]) Result[String, String] {
 fn show(text: &Array[u8]) {
   match describe(text) {
     case let Ok(ok) { printStr(ok.view()); }
-    case let Error(e) {
+    case let Err(e) {
       printStr("congo.toml: ");
       printStr(e.view());
     }

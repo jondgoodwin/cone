@@ -116,7 +116,7 @@ fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f6
   var vocabPath = pathOf(MODELS, "parakeet-tdt-0.6b-v2.vocab.txt", "");
   var p: Parakeet = match Parakeet.open(device, &modelPath, &vocabPath) {
     case var Ok(m) { m }
-    case let Error(m) { expect(false, label); expectStr(m.view(), "", "why the model did not open"); return 0usize; }
+    case let Err(m) { expect(false, label); expectStr(m.view(), "", "why the model did not open"); return 0usize; }
   };
   let ids = clips();
   var same = 0usize;
@@ -127,13 +127,13 @@ fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f6
     let wavPath = path4(MODELS, "librispeech-clips\\", id, ".wav");
     let refPath = path4(MODELS, "reference\\", id, ".ref.safetensors");
     let txtPath = path4(MODELS, "reference\\", id, ".nemo.txt");
-    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Error { continue; } };
-    var rf = match openSafetensors(&refPath) { case var Ok(f) { f } case is Error { continue; } };
-    let nemoText = match fs.readFile(&txtPath) { case let Ok(t) { trimmed(t.view()) } case is Error { continue; } };
-    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Error { expect(false, "the clip decodes"); continue; } };
+    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Err { continue; } };
+    var rf = match openSafetensors(&refPath) { case var Ok(f) { f } case is Err { continue; } };
+    let nemoText = match fs.readFile(&txtPath) { case let Ok(t) { trimmed(t.view()) } case is Err { continue; } };
+    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Err { expect(false, "the clip decodes"); continue; } };
     let r = match p.run(device, sound.samples.view(), true) {
       case var Ok(r) { r }
-      case let Error(m) { expect(false, id); expectStr(m.view(), "", "why the run failed"); continue; }
+      case let Err(m) { expect(false, id); expectStr(m.view(), "", "why the run failed"); continue; }
     };
     if r.transcript.text.view() == nemoText.view() { same = same + 1usize; }
     expectStr(r.transcript.text.view(), nemoText.view(), id);
@@ -211,33 +211,33 @@ fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f6
   few.resize(100usize, 0.0f32);
   match p.transcribe(device, few.view()) {
     case let Ok(r) { expectStr(r.text.view(), "", "100 samples transcribe to nothing"); expectUInt(u64.from(r.encFrames), 0u64, "...in no frames"); }
-    case let Error(m) { expect(false, "100 samples are not an error"); expectStr(m.view(), "", "why"); }
+    case let Err(m) { expect(false, "100 samples are not an error"); expectStr(m.view(), "", "why"); }
   }
   var nothing = List[f32].empty();
   match p.transcribe(device, nothing.view()) {
     case let Ok(r) { expectStr(r.text.view(), "", "no samples transcribe to nothing"); }
-    case is Error { expect(false, "no samples are not an error"); }
+    case is Err { expect(false, "no samples are not an error"); }
   }
   var quiet = List[f32].empty();
   quiet.resize(48000usize, 0.0f32);
   match p.transcribe(device, quiet.view()) {
     case let Ok(r) { expectUInt(u64.from(r.encFrames), 38u64, "3 s of silence are 38 encoder frames"); }
-    case is Error { expect(false, "silence is not an error"); }
+    case is Err { expect(false, "silence is not an error"); }
   }
   p.limitFrames(10usize);
   match p.transcribe(device, quiet.view()) {
     case is Ok { expect(false, "audio past the limit is refused"); }
-    case is Error { expect(true, "audio past the limit is refused"); }
+    case is Err { expect(true, "audio past the limit is refused"); }
   }
   p.limitFrames(5000usize);
-  var again = match fs.mapFile(&path4(MODELS, "librispeech-clips\\", "7176-92135-0019", ".wav")) { case var Ok(f) { f } case is Error { return same; } };
-  let snd = match decodeWav(again.view()) { case var Ok(s) { s } case is Error { return same; } };
+  var again = match fs.mapFile(&path4(MODELS, "librispeech-clips\\", "7176-92135-0019", ".wav")) { case var Ok(f) { f } case is Err { return same; } };
+  let snd = match decodeWav(again.view()) { case var Ok(s) { s } case is Err { return same; } };
   var texts = List[String].empty();
   var rep = 0usize;
   while rep < 3usize {
     match p.transcribe(device, snd.samples.view()) {
       case let Ok(r) { texts.push(r.text.copy()); }
-      case is Error { expect(false, "a repeated run works"); }
+      case is Err { expect(false, "a repeated run works"); }
     }
     rep = rep + 1usize;
   }
@@ -275,18 +275,18 @@ fn main() i32 {
     var missing = pathOf(MODELS, "no-such-model.safetensors", "");
     match Parakeet.open(&mut device, &missing, &vocabPath) {
       case is Ok { expect(false, "a missing model file is refused"); }
-      case is Error { expect(true, "a missing model file is refused"); }
+      case is Err { expect(true, "a missing model file is refused"); }
     }
     let shortVocab = Path.from("short-vocab.txt");
     match fs.writeFile(&shortVocab, "<unk>\n▁the\n") {
       case is Ok {
         match Parakeet.open(&mut device, &f16Path, &shortVocab) {
           case is Ok { expect(false, "a vocabulary that is not 1024 pieces is refused"); }
-          case is Error { expect(true, "a vocabulary that is not 1024 pieces is refused"); }
+          case is Err { expect(true, "a vocabulary that is not 1024 pieces is refused"); }
         }
         fs.removeFile(&shortVocab);
       }
-      case is Error { expect(false, "the short vocabulary is written"); }
+      case is Err { expect(false, "the short vocabulary is written"); }
     }
     // a well-formed safetensors file that has none of the model's tensors
     var tiny = List[u8].empty();
@@ -302,11 +302,11 @@ fn main() i32 {
       case is Ok {
         match Parakeet.open(&mut device, &tinyPath, &vocabPath) {
           case is Ok { expect(false, "a file without the model's tensors is refused"); }
-          case is Error { expect(true, "a file without the model's tensors is refused"); }
+          case is Err { expect(true, "a file without the model's tensors is refused"); }
         }
         fs.removeFile(&tinyPath);
       }
-      case is Error { expect(false, "the tiny model is written"); }
+      case is Err { expect(false, "the tiny model is written"); }
     }
   }
   var w32 = Worst(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);

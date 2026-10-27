@@ -198,21 +198,21 @@ pub fn encodeInteger(out: &mut List[u8], flags: u8, prefixBits: u32, value: u64)
 // maxInteger (which also bounds how many continuation bytes are read, so a
 // run of 0x80 bytes cannot go on)
 pub fn decodeInteger(src: &Array[u8], pos: &mut usize, prefixBits: u32) Result[u64, &str] {
-  if *pos >= src.len {return Error[u64, &str]("an integer is cut off by the block's end");}
+  if *pos >= src.len {return Err[u64, &str]("an integer is cut off by the block's end");}
   let max = (1u64 << u64.from(prefixBits)) - 1u64;
   var v = u64.from(src[*pos]) & max;
   *pos = *pos + 1usize;
   if v < max {return Ok[u64, &str](v);}
   var shift = 0u64;
   while true {
-    if *pos >= src.len {return Error[u64, &str]("an integer is cut off by the block's end");}
+    if *pos >= src.len {return Err[u64, &str]("an integer is cut off by the block's end");}
     let b = src[*pos];
     *pos = *pos + 1usize;
     v = v + (u64.from(b & 0x7Fu8) << shift);
-    if v > maxInteger {return Error[u64, &str]("an integer is too large");}
+    if v > maxInteger {return Err[u64, &str]("an integer is too large");}
     if (b & 0x80u8) == 0u8 {return Ok[u64, &str](v);}
     shift = shift + 7u64;
-    if shift > 28u64 {return Error[u64, &str]("an integer is too large");}
+    if shift > 28u64 {return Err[u64, &str]("an integer is too large");}
   }
   Ok[u64, &str](v)
 }
@@ -262,7 +262,7 @@ pub fn decodeString(src: &Array[u8], pos: &mut usize, limit: usize, out: &mut Li
   var len = 0usize;
   match decodeInteger(src, pos, 7u32) {
     case let Ok(v) {len = usize.from(v);}
-    case let Error(e) {
+    case let Err(e) {
       *why = e;
       return StringStatus.Malformed;
     }
@@ -599,7 +599,7 @@ pub struct HpackDecoder {
         var n = 0usize;
         match decodeInteger(block, &mut pos, 5u32) {
           case let Ok(v) {n = usize.from(v);}
-          case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+          case let Err(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
         }
         if n > allowed {return self.refuse(out, start, HpackErrorKind.Malformed, "a table size update past SETTINGS_HEADER_TABLE_SIZE");}
         table.setMaxSize(n);
@@ -613,7 +613,7 @@ pub struct HpackDecoder {
         var index = 0usize;
         match decodeInteger(block, &mut pos, 7u32) {
           case let Ok(v) {index = usize.from(v);}
-          case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+          case let Err(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
         }
         if index == 0usize {return self.refuse(out, start, HpackErrorKind.Malformed, "an index of 0");}
         if index > staticTableLen + table.len() {return self.refuse(out, start, HpackErrorKind.Malformed, "an index past the tables' ends");}
@@ -637,7 +637,7 @@ pub struct HpackDecoder {
       var nameIndex = 0usize;
       match decodeInteger(block, &mut pos, if incremental {6u32} else {4u32}) {
         case let Ok(v) {nameIndex = usize.from(v);}
-        case let Error(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
+        case let Err(e) {return self.refuse(out, start, HpackErrorKind.Malformed, e);}
       }
       name.clear();
       value.clear();
@@ -670,7 +670,7 @@ pub struct HpackDecoder {
     }
     if over {
       out.truncate(start);
-      return Error[usize, HpackError](HpackError.make(HpackErrorKind.TooLarge, "the header list is past maxHeaderListSize"));
+      return Err[usize, HpackError](HpackError.make(HpackErrorKind.TooLarge, "the header list is past maxHeaderListSize"));
     }
     Ok[usize, HpackError](total)
   }
@@ -686,7 +686,7 @@ pub struct HpackDecoder {
   fn refuse(self: &mut, out: &mut List[HeaderField], start: usize, kind: HpackErrorKind, why: &str) Result[usize, HpackError] {
     out.truncate(start);
     failed = true;
-    Error[usize, HpackError](HpackError.make(kind, why))
+    Err[usize, HpackError](HpackError.make(kind, why))
   }
 
   fn abandon(self: &mut, out: &mut List[HeaderField], start: usize) Result[usize, HpackError] {

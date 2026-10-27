@@ -70,20 +70,20 @@ fn unrefClient(rec: &mut ClientRec, lp: &mut Loop) {
 fn endOf[T](s: &StreamRec) Result[Option[T], FetchError] {
   let k = s.outcome;
   if s.limited {
-    return Error[Option[T], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
+    return Err[Option[T], FetchError](FetchError.failed(httpclient.Failure.make(httpclient.Stage.Limit, 0u32,
       ErrorKind.TooLarge, "an event is longer than the reader's limit")));
   }
   if k == httpclient.EventKind.Done {
     Ok[Option[T], FetchError](None)
   } else if k == httpclient.EventKind.Failed {
     match &s.failure {
-      case let &Some(f) {Error[Option[T], FetchError](FetchError.failed(f.copy()))}
-      else {Error[Option[T], FetchError](FetchError.cancelled())}
+      case let &Some(f) {Err[Option[T], FetchError](FetchError.failed(f.copy()))}
+      else {Err[Option[T], FetchError](FetchError.cancelled())}
     }
   } else if k == httpclient.EventKind.TimedOut {
-    Error[Option[T], FetchError](FetchError.timedOut())
+    Err[Option[T], FetchError](FetchError.timedOut())
   } else {
-    Error[Option[T], FetchError](FetchError.cancelled())
+    Err[Option[T], FetchError](FetchError.cancelled())
   }
 }
 
@@ -175,9 +175,9 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
         else if k == httpclient.EventKind.TimedOut {FetchError.timedOut()}
         else {FetchError.cancelled()};
       if s.asEvents {
-        answerKept[Result[EventStream, FetchError]](&mut s.openReply, Error[EventStream, FetchError](err));
+        answerKept[Result[EventStream, FetchError]](&mut s.openReply, Err[EventStream, FetchError](err));
       } else {
-        answerKept[Result[BodyStream, FetchError]](&mut s.openReply, Error[BodyStream, FetchError](err));
+        answerKept[Result[BodyStream, FetchError]](&mut s.openReply, Err[BodyStream, FetchError](err));
       }
     }
     serveRead(rec, s);
@@ -201,9 +201,9 @@ struct StreamOpenJob {
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
       if asEvents {
-        actors.answerNow[Result[EventStream, FetchError]](rp, Error[EventStream, FetchError](FetchError.cancelled()));
+        actors.answerNow[Result[EventStream, FetchError]](rp, Err[EventStream, FetchError](FetchError.cancelled()));
       } else {
-        actors.answerNow[Result[BodyStream, FetchError]](rp, Error[BodyStream, FetchError](FetchError.cancelled()));
+        actors.answerNow[Result[BodyStream, FetchError]](rp, Err[BodyStream, FetchError](FetchError.cancelled()));
       }
       return;
     }
@@ -233,10 +233,10 @@ struct StreamReadJob {
       // No such stream; or one read at a time: a second is refused
       if asEvents {
         actors.answerNow[Result[Option[sse.Event], FetchError]](rp,
-          Error[Option[sse.Event], FetchError](FetchError.cancelled()));
+          Err[Option[sse.Event], FetchError](FetchError.cancelled()));
       } else {
         actors.answerNow[Result[Option[String], FetchError]](rp,
-          Error[Option[String], FetchError](FetchError.cancelled()));
+          Err[Option[String], FetchError](FetchError.cancelled()));
       }
       return;
     }

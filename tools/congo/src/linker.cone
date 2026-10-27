@@ -12,7 +12,7 @@ fn findConec(repo: &Path) Result[Path, String] {
     let p = given.normalize();
     if !fs.isFile(&p) {
       let place = native(&p);
-      return Error[Path, String](cat("CONEC names ", place.view(), ", which does not exist"));
+      return Err[Path, String](cat("CONEC names ", place.view(), ", which does not exist"));
     }
     return Ok[Path, String](p);
   }
@@ -25,7 +25,7 @@ fn findConec(repo: &Path) Result[Path, String] {
   let onPath = which("conec", pathList.view());
   if !onPath.isEmpty() { return Ok[Path, String](onPath); }
   let place = native(&build);
-  Error[Path, String](cat("no conec: set CONEC to the compiler, build it at ", place.view(), ", or put conec on PATH"))
+  Err[Path, String](cat("no conec: set CONEC to the compiler, build it at ", place.view(), ", or put conec on PATH"))
 }
 
 // A stale conec fails good sources in ways that look like a language
@@ -35,13 +35,13 @@ fn warnIfStale(repo: &Path, conec: &Path) {
   var stamp = time.Timestamp();
   match fs.stat(conec) {
     case let Ok(s) { stamp = s.modified; }
-    case is Error { return; }
+    case is Err { return; }
   }
   let sources = repo.join("compiler/c");
   var entries = List[fs.DirEntry].empty();
   match fs.walk(&sources) {
     case var Ok(ok) { entries <-> ok; }
-    case is Error { return; }
+    case is Err { return; }
   }
   var i = 0usize;
   while i < entries.len() {
@@ -61,7 +61,7 @@ fn warnIfStale(repo: &Path, conec: &Path) {
             return;
           }
         }
-        case is Error {}
+        case is Err {}
       }
     }
     i = i + 1usize;
@@ -82,7 +82,7 @@ fn findConestd(conec: &Path) Result[Path, String] {
   }
   if !fs.isFile(&lib) {
     let place = native(&lib);
-    return Error[Path, String](cat("no conestd library at ", place.view(), "; build it with conec, or set CONESTD"));
+    return Err[Path, String](cat("no conestd library at ", place.view(), "; build it with conec, or set CONESTD"));
   }
   Ok[Path, String](lib)
 }
@@ -125,7 +125,7 @@ fn findVcvars() Path {
           if fs.exists(&candidate) { return candidate; }
         }
       }
-      case is Error {}
+      case is Err {}
     }
   }
   let editions = splitText("Community Professional Enterprise BuildTools", ' ');
@@ -153,7 +153,7 @@ fn isMsvcLinker(tool: &Path) bool {
       both <- err.view();
       both.contains("Microsoft")
     }
-    case is Error { false }
+    case is Err { false }
   }
 }
 
@@ -238,7 +238,7 @@ struct Vcvars {
 // already lists, behind its own folders.
 fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   let vcvars = findVcvars();
-  if vcvars.isEmpty() { return Error[Vcvars, String](String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
+  if vcvars.isEmpty() { return Err[Vcvars, String](String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
   let vcvarsText = native(&vcvars);
   // The line as written, not quoted again: cmd would not recognise the
   // batch path. The marker divides what vcvars64.bat prints, in the
@@ -255,7 +255,7 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
       err = consoleText(ok.stderr.view());
       code = ok.exitCode;
     }
-    case let Error(e) {
+    case let Err(e) {
       fail(e.message());
     }
   }
@@ -276,7 +276,7 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
     case is None { printed = consoleText(raw); }
   }
   if code != 0u32 || variables.isEmpty() {
-    return Error[Vcvars, String](cat(vcvarsText.view(), " failed:\n", printed.view(), err.view()));
+    return Err[Vcvars, String](cat(vcvarsText.view(), " failed:\n", printed.view(), err.view()));
   }
   // Each variable set printed, in any spelling of its name, where its value
   // is not what it already is
@@ -376,9 +376,9 @@ fn findLinker(conestd: &Path) Result[Linker, String] {
       changes.restore();
       Ok[Linker, String](linker)
     }
-    case let Error(e) {
+    case let Err(e) {
       changes.restore();
-      Error[Linker, String](e.copy())
+      Err[Linker, String](e.copy())
     }
   }
 }
@@ -403,13 +403,13 @@ fn linkerIn(changes: &mut EnvChanges) Result[Path, String] {
   if vcvarsNeeded {
     match runVcvars(changes) {
       case var Ok(ok) { ran <-> ok; }
-      case let Error(e) { return Error[Path, String](e.copy()); }
+      case let Err(e) { return Err[Path, String](e.copy()); }
     }
   }
   let pathList = envOr("PATH", "");
   let tool = which("link.exe", pathList.view());
   if tool.isEmpty() || !isMsvcLinker(&tool) {
-    return Error[Path, String](noLinker(&tool, pathList.view(), &ran));
+    return Err[Path, String](noLinker(&tool, pathList.view(), &ran));
   }
   Ok[Path, String](tool)
 }

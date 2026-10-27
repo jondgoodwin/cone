@@ -95,7 +95,7 @@ fn readText(file: &Path) Result[String, String] {
       text.replaceByte('\r', '\n');
       Ok[String, String](text)
     }
-    case let Error(e) { Error[String, String](fsMessage(&e)) }
+    case let Err(e) { Err[String, String](fsMessage(&e)) }
   }
 }
 
@@ -104,10 +104,10 @@ fn readToml(file: &Path) Result[toml.Document, String] {
   var text = String.empty();
   match readText(file) {
     case var Ok(ok) { text <-> ok; }
-    case var Error(e) {
+    case var Err(e) {
       var m = String.empty();
       m <-> e;
-      return Error[toml.Document, String](m);
+      return Err[toml.Document, String](m);
     }
   }
   match toml.parse(text.view()) {
@@ -116,13 +116,13 @@ fn readToml(file: &Path) Result[toml.Document, String] {
       doc <-> ok;
       Ok[toml.Document, String](doc)
     }
-    case let Error(e) { Error[toml.Document, String](e.message()) }
+    case let Err(e) { Err[toml.Document, String](e.message()) }
   }
 }
 
 fn manifestError(file: &Path, m: String) Result[Package, String] {
   let place = native(file);
-  Error[Package, String](cat(place.view(), ": ", m.view()))
+  Err[Package, String](cat(place.view(), ": ", m.view()))
 }
 
 // The system Congo runs on, as a [link] section is named: windows, linux or
@@ -306,7 +306,7 @@ fn readManifest(file: &Path) Result[Package, String] {
   var doc = toml.Document();
   match readToml(file) {
     case var Ok(ok) { doc <-> ok; }
-    case let Error(e) {
+    case let Err(e) {
       return manifestError(file, cat("cannot read the manifest: ", e.view()));
     }
   }
@@ -381,12 +381,12 @@ fn readManifest(file: &Path) Result[Package, String] {
     return manifestError(file, String.from("[package] output must be \"executable\" or \"library\""));
   }
   let wrongTargets = readTargets(file, table, &mut pkg);
-  if !wrongTargets.isEmpty() { return Error[Package, String](wrongTargets); }
+  if !wrongTargets.isEmpty() { return Err[Package, String](wrongTargets); }
   if doc.root.has("link") {
     return manifestError(file, String.from("[link] must be a table, with libraries, paths and runtime"));
   }
   let wrongLink = readLink(file, &doc, &mut pkg);
-  if !wrongLink.isEmpty() { return Error[Package, String](wrongLink); }
+  if !wrongLink.isEmpty() { return Err[Package, String](wrongLink); }
   let folder = file.parent();
   pkg.root = resolved(&folder);
   let srcName = cat(pkg.name.view(), ".cone");
@@ -436,7 +436,7 @@ fn registryFolders(repo: &Path) List[Path] {
     var doc = toml.Document();
     match readToml(&config) {
       case var Ok(ok) { doc <-> ok; }
-      case let Error(e) {
+      case let Err(e) {
         fail(cat(place.view(), ": cannot read the machine config: ", e.view()));
       }
     }
@@ -535,7 +535,7 @@ fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
       var entries = List[fs.DirEntry].empty();
       match fs.readDir(&folder) {
         case var Ok(ok) { entries <-> ok; }
-        case let Error(e) {
+        case let Err(e) {
           fail(fsMessage(&e));
         }
       }
@@ -553,7 +553,7 @@ fn readRegistry(folders: List[Path], indexes: &List[String]) Registry {
                 reg.byName.insert(name, reg.packages.len() - 1usize);
               }
             }
-            case let Error(e) {
+            case let Err(e) {
               warn(cat("warning: skipped: ", e.view()));
             }
           }

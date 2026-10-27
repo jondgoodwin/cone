@@ -340,21 +340,21 @@ pub struct Driver {
   pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[ConnId, Failure] {
     st.connects = st.connects + 1u64;
     if conns.len() >= usize.from(maxConnections) {
-      return Error[ConnId, Failure](Failure.make(Stage.Limit, 0u32, ErrorKind.Refused, "maxConnections reached"));
+      return Err[ConnId, Failure](Failure.make(Stage.Limit, 0u32, ErrorKind.Refused, "maxConnections reached"));
     }
     var remoteQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
     match quicAddr(&addr) {
       case let Some(a) {remoteQ = a;}
       case is None[quic.Addr] {
-        return Error[ConnId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "only IPv4 addresses (quic's Addr)"));
+        return Err[ConnId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "only IPv4 addresses (quic's Addr)"));
       }
     }
     let bindAt = if addr.isLoopback() {SocketAddr.localhost(0u16)} else {SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16)};
     var handle = Handle.none();
     match lp.bindUdp(bindAt) {
       case let Ok(h) {handle = h;}
-      case let Error(e) {
-        return Error[ConnId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the connection's UDP socket could not be bound"));
+      case let Err(e) {
+        return Err[ConnId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the connection's UDP socket could not be bound"));
       }
     }
     var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
@@ -365,7 +365,7 @@ pub struct Driver {
           case is None[quic.Addr] {}
         }
       }
-      case let Error(e) {}
+      case let Err(e) {}
     }
     let now = Instant.now();
     match self.newClient(serverName, &localQ, &remoteQ, now) {
@@ -387,11 +387,11 @@ pub struct Driver {
         self.markDirty(s.index);
         return Ok[ConnId, Failure](ConnId(s.index, s.gen));
       }
-      case let Error(e) {
+      case let Err(e) {
         lp.close(handle);
         var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, e.message().view());
         f.unsent = true;
-        return Error[ConnId, Failure](f);
+        return Err[ConnId, Failure](f);
       }
     }
   }
@@ -401,7 +401,7 @@ pub struct Driver {
       now: Instant) Result[quic.Connection, quic.QuicError] {
     match &client {
       case let Ok(ctx) {return quic.Connection.client(ctx, serverName, localQ, remoteQ, now);}
-      case let Error(e) {return Error[quic.Connection, quic.QuicError](e.copy());}
+      case let Err(e) {return Err[quic.Connection, quic.QuicError](e.copy());}
     }
   }
 
@@ -409,7 +409,7 @@ pub struct Driver {
   fn clientUdp(self: &) usize {
     match &client {
       case let Ok(ctx) {return ctx.config().maxUdpPayload;}
-      case let Error(e) {}
+      case let Err(e) {}
     }
     quic.defaultMaxUdpPayload
   }
@@ -419,13 +419,13 @@ pub struct Driver {
   // maxRequestStreams is taken from its maxStreamsBidi): its id, or why not
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, ctx: quic.Context, token: u64) Result[ListenerId, Failure] {
     if !ctx.isServer() {
-      return Error[ListenerId, Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, "listen takes a server's Context"));
+      return Err[ListenerId, Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, "listen takes a server's Context"));
     }
     var handle = Handle.none();
     match lp.bindUdp(addr) {
       case let Ok(h) {handle = h;}
-      case let Error(e) {
-        return Error[ListenerId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the UDP socket could not be bound"));
+      case let Err(e) {
+        return Err[ListenerId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the UDP socket could not be bound"));
       }
     }
     var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
@@ -436,7 +436,7 @@ pub struct Driver {
           case is None[quic.Addr] {}
         }
       }
-      case let Error(e) {}
+      case let Err(e) {}
     }
     var hc = h3cfg;
     hc.maxRequestStreams = usize.from(ctx.config().maxStreamsBidi);
@@ -453,7 +453,7 @@ pub struct Driver {
   // A listener's address (its port, when it was bound to port 0)
   pub fn localAddr(self: &, lp: &Loop, l: ListenerId) Result[SocketAddr, IoError] {
     let p = listeners.get(Slot(l.index, l.gen));
-    if p as usize == 0usize {return Error[SocketAddr, IoError](IoError(6u32));}
+    if p as usize == 0usize {return Err[SocketAddr, IoError](IoError(6u32));}
     lp.localAddr((*p).handle)
   }
 
@@ -1438,7 +1438,7 @@ pub struct Driver {
         self.refreshIds(s.index);
         self.markDirty(s.index);
       }
-      case let Error(e) {st.refused = st.refused + 1u64;}
+      case let Err(e) {st.refused = st.refused + 1u64;}
     }
   }
 

@@ -247,7 +247,7 @@ void nametblInit() {
     noneName = nametblFind("None", 4);
     resultName = nametblFind("Result", 6);
     okName = nametblFind("Ok", 2);
-    errorVariantName = nametblFind("Error", 5);
+    errorVariantName = nametblFind("Err", 3);
     messageName = nametblFind("message", 7);
 
     allocMethodName = nametblFind("alloc", 5);

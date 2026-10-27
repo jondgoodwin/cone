@@ -135,7 +135,7 @@ pub struct HexDecoder {
   // completes. Answers how many bytes it appended, or the first fault (bytes
   // appended before it stay)
   pub fn update(self: &mut, chunk: &Array[u8], out: &mut List[u8]) Result[usize, DecodeError] {
-    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    if self.failed { return Err[usize, DecodeError](self.failure()); }
     let start = out.len();
     var i = 0usize;
     while i < chunk.len {
@@ -146,7 +146,7 @@ pub struct HexDecoder {
       if self.skipWhitespace && isSpace(c) { continue; }
       let v = nibbleValue(c);
       if v < 0i32 {
-        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not a hex digit"));
+        return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not a hex digit"));
       }
       if self.hasHigh {
         out.push(u8.from(self.high * 16u32 + u32.from(v)));
@@ -163,9 +163,9 @@ pub struct HexDecoder {
   // the decoder for the next text (a failure stays until 'reset()'). Answers
   // how many bytes it appended, always 0 on success
   pub fn finish(self: &mut, out: &mut List[u8]) Result[usize, DecodeError] {
-    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    if self.failed { return Err[usize, DecodeError](self.failure()); }
     if self.hasHigh {
-      return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadLength, self.offset, 0u8,
+      return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadLength, self.offset, 0u8,
         "the text ends after half a byte: hex needs an even number of digits"));
     }
     self.reset();
@@ -178,16 +178,16 @@ pub struct HexDecoder {
 fn decodeHexAs(text: &Array[u8], dec: &mut HexDecoder, out: &mut List[u8]) Result[usize, DecodeError] {
   let start = out.len();
   match dec.update(text, out) {
-    case let Error(e) {
+    case let Err(e) {
       out.truncate(start);
-      return Error[usize, DecodeError](e.copy());
+      return Err[usize, DecodeError](e.copy());
     }
     case is Ok { }
   }
   match dec.finish(out) {
-    case let Error(e) {
+    case let Err(e) {
       out.truncate(start);
-      return Error[usize, DecodeError](e.copy());
+      return Err[usize, DecodeError](e.copy());
     }
     case is Ok { }
   }
@@ -207,7 +207,7 @@ pub fn decodeHex(text: &Array[u8]) Result[List[u8], DecodeError] {
   var out = List[u8].withCapacity(text.len / 2usize + 1usize);
   var d = HexDecoder.strict();
   match decodeHexAs(text, &mut d, &mut out) {
-    case let Error(e) { return Error[List[u8], DecodeError](e.copy()); }
+    case let Err(e) { return Err[List[u8], DecodeError](e.copy()); }
     case is Ok { }
   }
   Ok[List[u8], DecodeError](out)
@@ -218,7 +218,7 @@ pub fn decodeHexSkippingWhitespace(text: &Array[u8]) Result[List[u8], DecodeErro
   var out = List[u8].withCapacity(text.len / 2usize + 1usize);
   var d = HexDecoder.skippingWhitespace();
   match decodeHexAs(text, &mut d, &mut out) {
-    case let Error(e) { return Error[List[u8], DecodeError](e.copy()); }
+    case let Err(e) { return Err[List[u8], DecodeError](e.copy()); }
     case is Ok { }
   }
   Ok[List[u8], DecodeError](out)

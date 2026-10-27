@@ -20,7 +20,7 @@
 //
 //   { let -held = x;
 //     if -held is Ok { let -ok = [Ok]-held; -ok }
-//     else if -held is Error { let -err = [Error]-held; return Error(conv(-err)) } }
+//     else if -held is Err { let -err = [Err]-held; return Err(conv(-err)) } }
 //
 // and on an Option, in a function returning an Option, the same with 'Some' and
 // 'None', whose arm is 'return None'. It is the match the reader would write, so
@@ -50,7 +50,7 @@ void propagateLower(TypeCheckState *pstate, BlockNode *blk);
 //
 //   fn -mainresult(params) i32 {
 //     let -held = main(params);
-//     if -held is Error { let -err = [Error]-held; let -msg = -err.message();
+//     if -held is Err { let -err = [Err]-held; let -msg = -err.message();
 //                         -mainError(-msg.view()); return 1 }
 //     return 0 }
 //
