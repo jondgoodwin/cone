@@ -1,4 +1,6 @@
-// floatfmt: a float as text, the way C's '%g' writes it, in Cone.
+// floatfmt: a float as text, in Cone, two ways: as C's '%g' writes it (what
+// printFloat writes, first below), and as the shortest text that reads back
+// as the same float (core's FloatText, after it).
 //
 // 'printFloat' and 'eprintFloat' write six significant digits, correctly
 // rounded from the number's exact value (a tie going to the even digit),
@@ -283,4 +285,334 @@ fn floatText(out: &mut Text, x: f64) {
       k = k + 1usize;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The shortest text that reads back as the same float
+//
+// 'cone_floatShortest' (an f64) and 'cone_floatShortest32' (an f32), which
+// core's FloatText declares, write the fewest significant digits that a
+// correctly rounded reader (C's strtod, and strtof for an f32) turns back into
+// the same bits, and of those the digits nearest the float's exact value (a
+// tie going to the even digit).
+//
+// The digits are Ryu's (Ulf Adams, "Ryu: fast float-to-string conversion",
+// PLDI 2018), with no big numbers: the float v = m2 * 2^e2 and the halfway
+// points to its two neighbours, the ends of the interval of numbers that read
+// back as v, are each scaled by 10^-q with one multiply of a 64-bit integer
+// by a 125-bit power of five (floattables.cone) and cut to integers vr, vp and
+// vm, for a q that leaves them a few digits longer than the answer. Digits are
+// then dropped from the right while vp and vm still differ above them, and vr
+// rounded at the last one dropped. Whether a cut lost anything matters only
+// when the ends are exact (an even mantissa reads its halfway points back as
+// itself) or for the tie in rounding vr; those are known exactly from how many
+// times 2 and 5 divide the scaled integers. An f32 goes through the same steps,
+// its mantissa and exponent being an f64's of fewer bits.
+//
+// The text is Python's repr of a float: fixed notation when the decimal
+// exponent X of the digits (d.ddd * 10^X) is from -4 to 15, with ".0" after
+// an integer ("1.0", "0.1", "123456789012345.0", "0.0001"), so the text is
+// always a float's and never an integer's; otherwise the exponent form, as
+// floatText writes it ("1e+16", "1.5e-05", "5e-324"). Zero is "0.0" or "-0.0",
+// an infinity "inf" or "-inf", and every NaN "nan". At most 24 bytes.
+
+// The high 64 bits of the 128-bit product a * b
+fn mulHigh(a: u64, b: u64) u64 {
+  core.mem.mulFold(a, b) ^ (a * b)
+}
+
+// (m * (hi * 2^64 + lo)) >> j, for j from 64 to 127, which fits 64 bits
+fn mulShift(m: u64, lo: u64, hi: u64, j: i64) u64 {
+  let low = m * hi;
+  let sum = low + mulHigh(m, lo);
+  let high = mulHigh(m, hi) + (if sum < low {1u64} else {0u64});
+  let d = u64.from(j - 64i64);
+  (high << (64u64 - d)) | (sum >> d)
+}
+
+// The bits of 5^e: floor(e * log2(5)) + 1, for e from 0 to 3528
+fn pow5Bits(e: i64) i64 {((e * 1217359i64) >> 19i64) + 1i64}
+
+// floor(e * log10(2)), for e from 0 to 1650
+fn log10Pow2(e: i64) i64 {(e * 78913i64) >> 18i64}
+
+// floor(e * log10(5)), for e from 0 to 2620
+fn log10Pow5(e: i64) i64 {(e * 732923i64) >> 20i64}
+
+// Whether 5^p divides v, which is not zero
+fn multipleOfPow5(v: u64, p: i64) bool {
+  var n = v;
+  var count = 0i64;
+  while n % 5u64 == 0u64 {
+    n = n / 5u64;
+    count = count + 1i64;
+  }
+  count >= p
+}
+
+// The digits found, as an integer and the power of ten of its last digit
+struct Shortest {
+  digits: u64;
+  exp10: i64;
+}
+
+// The shortest digits of m2 * 2^e2. 'lowerCloser' when the float is a power of
+// two above the least normal, whose lower neighbour is half as far away
+fn shortestDigits(m2: u64, e2in: i64, lowerCloser: bool) Shortest {
+  // Two bits more, so the halfway points are integers: v is mv * 2^e2, its
+  // upper end (mv + 2) * 2^e2, and its lower end (mv - 1 - mmShift) * 2^e2
+  let e2 = e2in - 2i64;
+  let mv = 4u64 * m2;
+  let mmShift = if lowerCloser {0u64} else {1u64};
+  let even = (m2 & 1u64) == 0u64;
+  var vr = 0u64;
+  var vp = 0u64;
+  var vm = 0u64;
+  var e10 = 0i64;
+  var vmTrailingZeros = false;
+  var vrTrailingZeros = false;
+
+  if e2 >= 0i64 {
+    // Divided by 10^q, as a multiply by 2^k / 5^q and a shift by e2 - q - k
+    let q = log10Pow2(e2) - (if e2 > 3i64 {1i64} else {0i64});
+    e10 = q;
+    let k = 125i64 + pow5Bits(q) - 1i64;
+    let i = q + k - e2;
+    let lo = pow5InvSplit[usize.from(2i64 * q)];
+    let hi = pow5InvSplit[usize.from(2i64 * q + 1i64)];
+    vr = mulShift(mv, lo, hi, i);
+    vp = mulShift(mv + 2u64, lo, hi, i);
+    vm = mulShift(mv - 1u64 - mmShift, lo, hi, i);
+    // Exact only when 5^q divides the scaled integer, possible for q to 21
+    if q <= 21i64 {
+      if mv % 5u64 == 0u64 {
+        vrTrailingZeros = multipleOfPow5(mv, q);
+      }
+      else if even {
+        vmTrailingZeros = multipleOfPow5(mv - 1u64 - mmShift, q);
+      }
+      else if multipleOfPow5(mv + 2u64, q) {
+        vp = vp - 1u64;
+      }
+    }
+  }
+  else {
+    // Multiplied by 10^q, as a multiply by 5^(-e2-q) and a shift by q
+    let q = log10Pow5(0i64 - e2) - (if 0i64 - e2 > 1i64 {1i64} else {0i64});
+    e10 = q + e2;
+    let i = 0i64 - e2 - q;
+    let k = pow5Bits(i) - 125i64;
+    let j = q - k;
+    let lo = pow5Split[usize.from(2i64 * i)];
+    let hi = pow5Split[usize.from(2i64 * i + 1i64)];
+    vr = mulShift(mv, lo, hi, j);
+    vp = mulShift(mv + 2u64, lo, hi, j);
+    vm = mulShift(mv - 1u64 - mmShift, lo, hi, j);
+    // Exact when 2^q divides the integer
+    if q <= 1i64 {
+      vrTrailingZeros = true;
+      if even {
+        vmTrailingZeros = mmShift == 1u64;
+      }
+      else {
+        vp = vp - 1u64;
+      }
+    }
+    else if q < 63i64 {
+      vrTrailingZeros = (mv & ((1u64 << u64.from(q)) - 1u64)) == 0u64;
+    }
+  }
+
+  // Drop digits while the ends still differ above them
+  var removed = 0i64;
+  var output = 0u64;
+  if vmTrailingZeros || vrTrailingZeros {
+    // An end may be exact, or a tie in rounding vr: follow what was dropped
+    var lastRemoved = 0u64;
+    while vp / 10u64 > vm / 10u64 {
+      vmTrailingZeros = vmTrailingZeros && vm % 10u64 == 0u64;
+      vrTrailingZeros = vrTrailingZeros && lastRemoved == 0u64;
+      lastRemoved = vr % 10u64;
+      vr = vr / 10u64;
+      vp = vp / 10u64;
+      vm = vm / 10u64;
+      removed = removed + 1i64;
+    }
+    if vmTrailingZeros {
+      while vm % 10u64 == 0u64 {
+        vrTrailingZeros = vrTrailingZeros && lastRemoved == 0u64;
+        lastRemoved = vr % 10u64;
+        vr = vr / 10u64;
+        vp = vp / 10u64;
+        vm = vm / 10u64;
+        removed = removed + 1i64;
+      }
+    }
+    // Exactly half: to the even digit
+    if vrTrailingZeros && lastRemoved == 5u64 && vr % 2u64 == 0u64 {
+      lastRemoved = 4u64;
+    }
+    let up = (vr == vm && (!even || !vmTrailingZeros)) || lastRemoved >= 5u64;
+    output = vr + (if up {1u64} else {0u64});
+  }
+  else {
+    // Neither: no tie, and the lower end is not readable as v
+    var roundUp = false;
+    if vp / 100u64 > vm / 100u64 {
+      roundUp = vr % 100u64 >= 50u64;
+      vr = vr / 100u64;
+      vp = vp / 100u64;
+      vm = vm / 100u64;
+      removed = removed + 2i64;
+    }
+    while vp / 10u64 > vm / 10u64 {
+      roundUp = vr % 10u64 >= 5u64;
+      vr = vr / 10u64;
+      vp = vp / 10u64;
+      vm = vm / 10u64;
+      removed = removed + 1i64;
+    }
+    output = vr + (if vr == vm || roundUp {1u64} else {0u64});
+  }
+  Shortest(output, e10 + removed)
+}
+
+// Bytes written at a raw pointer
+struct RawOut {
+  p: *u8;
+  n: usize;
+
+  fn byte(self: &mut, b: u8) {
+    p[n] = b;
+    n = n + 1usize;
+  }
+}
+
+// The digits as Python's repr writes them (above)
+fn shortestText(o: &mut RawOut, sd: Shortest) {
+  // The digits, most significant first, and X, the power of ten of the first
+  var d = Array[u8, 20]() <- fill 0u8;
+  var count = 0usize;
+  var rest = sd.digits;
+  while rest > 0u64 {
+    d[count] = u8.from(rest % 10u64) + '0';
+    count = count + 1usize;
+    rest = rest / 10u64;
+  }
+  var a = 0usize;
+  var b = count - 1usize;
+  while a < b {
+    let t = d[a];
+    d[a] = d[b];
+    d[b] = t;
+    a = a + 1usize;
+    b = b - 1usize;
+  }
+  // Trailing zeros are not digits (Ryu leaves them where v is a whole number)
+  var exp10 = sd.exp10;
+  while count > 1usize && d[count - 1usize] == '0' {
+    count = count - 1usize;
+    exp10 = exp10 + 1i64;
+  }
+  let x = exp10 + i64.from(count) - 1i64;
+
+  if x < -4i64 || x >= 16i64 {
+    o.byte(d[0]);
+    if count > 1usize {
+      o.byte('.');
+      var k = 1usize;
+      while k < count {
+        o.byte(d[k]);
+        k = k + 1usize;
+      }
+    }
+    o.byte('e');
+    var mag = x;
+    if x < 0i64 {
+      o.byte('-');
+      mag = 0i64 - x;
+    }
+    else {
+      o.byte('+');
+    }
+    if mag >= 100i64 {o.byte(u8.from(mag / 100i64) + '0');}
+    o.byte(u8.from((mag / 10i64) % 10i64) + '0');
+    o.byte(u8.from(mag % 10i64) + '0');
+  }
+  else if x >= 0i64 {
+    let whole = usize.from(x) + 1usize;
+    var k = 0usize;
+    while k < whole {
+      o.byte(if k < count {d[k]} else {'0'});
+      k = k + 1usize;
+    }
+    o.byte('.');
+    if count > whole {
+      while k < count {
+        o.byte(d[k]);
+        k = k + 1usize;
+      }
+    }
+    else {
+      o.byte('0');
+    }
+  }
+  else {
+    o.byte('0');
+    o.byte('.');
+    var zeros = usize.from(0i64 - x) - 1usize;
+    while zeros > 0usize {
+      o.byte('0');
+      zeros = zeros - 1usize;
+    }
+    var k = 0usize;
+    while k < count {
+      o.byte(d[k]);
+      k = k + 1usize;
+    }
+  }
+}
+
+// The text of a float given by its parts: its sign, its biased exponent and
+// fraction, the fraction's width in bits, the biased exponent of an infinity,
+// and what is taken from the biased exponent to give the power of two of the
+// mantissa's last bit; answers the number of bytes written at 'buf'
+fn shortestOf(buf: *u8, negative: bool, biased: u64, fraction: u64, fracBits: u64, maxBiased: u64, bias: i64) usize {
+  var o = RawOut(buf, 0usize);
+  if biased == maxBiased {
+    if fraction != 0u64 {
+      o.byte('n'); o.byte('a'); o.byte('n');
+      return o.n;
+    }
+    if negative {o.byte('-');}
+    o.byte('i'); o.byte('n'); o.byte('f');
+    return o.n;
+  }
+  if negative {o.byte('-');}
+  if biased == 0u64 && fraction == 0u64 {
+    o.byte('0'); o.byte('.'); o.byte('0');
+    return o.n;
+  }
+  let m2 = if biased == 0u64 {fraction} else {fraction | (1u64 << fracBits)};
+  let e2 = (if biased == 0u64 {1i64} else {i64.from(biased)}) - bias;
+  shortestText(&mut o, shortestDigits(m2, e2, fraction == 0u64 && biased > 1u64));
+  o.n
+}
+
+// The shortest text of an f64 (above), at most 24 bytes, written at buf;
+// answers its length
+pub fn cone_floatShortest(buf: *u8, x: f64) usize {
+  var v = x;
+  let bits = *(&mut v as *u64);
+  shortestOf(buf, (bits >> 63u64) != 0u64, (bits >> 52u64) & 0x7FFu64,
+    bits & 0xFFFFFFFFFFFFFu64, 52u64, 0x7FFu64, 1075i64)
+}
+
+// The shortest text of an f32 that reads back as the same f32 (strtof), at
+// most 24 bytes, written at buf; answers its length
+pub fn cone_floatShortest32(buf: *u8, x: f32) usize {
+  var v = x;
+  let bits = u64.from(*(&mut v as *u32));
+  shortestOf(buf, (bits >> 31u64) != 0u64, (bits >> 23u64) & 0xFFu64,
+    bits & 0x7FFFFFu64, 23u64, 0xFFu64, 150i64)
 }
