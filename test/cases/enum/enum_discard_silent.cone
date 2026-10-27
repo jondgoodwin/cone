@@ -1,17 +1,20 @@
 // What WarnDiscard leaves quiet (enum_discard_warn holds what it warns). A run
 // scenario takes no warning at all, so this program compiling is the assertion:
-//  - '_ = f();' says the drop is meant, for a Result, an Option and a '@mustUse'
-//    struct, enum and generic struct, and for a generic call whose T is one;
+//  - '_ = f();' says the drop is meant, for a Result and a '@mustUse' struct, enum
+//    and generic struct, and for a generic call whose T is one;
 //  - a value used: bound, matched, passed on, returned, tried with '?';
-//  - a value that is fine to drop: a number, a struct nobody marked, a reference a
-//    method hands back for chaining (like 'list.push(x)' in other languages), and
-//    a call that returns nothing;
+//  - a value that is fine to drop: an Option (a list's 'pop', a dict's 'insert' or
+//    'remove', a plain function's: whether it found something is not a failure
+//    unread, Rust's line [Jon 27 Oct]), a number, a struct nobody marked, a
+//    reference a method hands back for chaining (like 'list.push(x)' in other
+//    languages), and a call that returns nothing;
 //  - a reference to a Result is no Result;
 //  - a try block bound to a name.
 
 mod enum_discard_silent;
 
 import stdio use *;
+import collections use *;
 
 struct @mustUse Token { pub n: i32; }
 enum @mustUse Flag { pub struct On; pub struct Off; }
@@ -44,13 +47,24 @@ fn main() {
   var c = Chain(0, Ok(1));
   _ = res(1);
   _ = res(0);
-  _ = opt(1);
   _ = tok();
   _ = flag();
   _ = wrap();
   _ = id(res(3));
-  _ = id(opt(3));
   _ = try { res(1)? + res(2)? };
+  opt(1);                                 // an Option is not warned
+  opt(0);
+  id(opt(3));
+  var l = List[i64]();
+  l.push(1i64);
+  l.pop();                                // a list's pop
+  l.pop();                                // and from an empty one
+  var d = Dict[i64, i64]();
+  d.insert(1i64, 10i64);                  // a dict's insert, remove, and its `<-`
+  d.insert(1i64, 20i64);
+  let gone = 1i64;
+  d.remove(&gone);
+  d <- 2i64: 30i64;
   plain();
   number();
   id(5);

@@ -756,7 +756,7 @@ enum ErrorCode {
     WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
     WarnLoop = 3004,       // Infinite loop with no break
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
-    WarnDiscard = 3006,    // A statement throws a value away that is a Result, an Option, a value of a type declared @mustUse, or the answer of an awaited operation; `_ = f();` says the drop is meant
+    WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
 
     // Uncounted
     Uncounted = 9000,

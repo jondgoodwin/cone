@@ -12,11 +12,11 @@
 // fine to drop -- 'list.push(x)' hands the list back for chaining -- but a
 // failure nobody reads is how errors go missing, so WarnDiscard is raised when
 // the dropped value is
-// - a Result or an Option (core's), whatever the generic argument, and where a
-//   generic's T became one (the statement is what the reader wrote, and what it
-//   drops is the instance's type);
 // - a value of a struct, enum or variant declared '@mustUse', or of a variant
-//   of an enum so declared;
+//   of an enum so declared. Core's Result is one, whatever its generic
+//   arguments, and where a generic's T became one (the statement is what the
+//   reader wrote, and what it drops is the instance's type). An Option is not:
+//   a pop, an insert or a remove that finds nothing is not a failure unread;
 // - the answer of an 'await' on an operation (an actors.Awaitable: an I/O
 //   operation), whatever type that is, which says whether it worked.
 // The reader says the drop is deliberate with '_ = f();', which is an

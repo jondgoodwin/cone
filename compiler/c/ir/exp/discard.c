@@ -12,17 +12,24 @@
 #include <string.h>
 
 // Why dropping a value of this type is worth saying, for a type its declaration
-// marks '@mustUse'. NULL where it is not marked. A variant is judged by its own declaration and its enum's: '@mustUse' on
-// an enum covers its variants, which are what a value of it is built as.
+// marks '@mustUse' (core's Result is one). NULL where it is not marked. A variant
+// is judged by its own declaration and its enum's: '@mustUse' on an enum covers
+// its variants, which are what a value of it is built as.
 // Only a value counts; a reference to a Result is no Result
 static char *discardReason(INode *type) {
     if (type == NULL || type->tag != StructTag)
         return NULL;
     StructNode *snode = (StructNode*)type;
     StructNode *base = !(snode->flags & EnumType) && (snode->flags & HasTagField) ? structBaseTraitDcl(snode) : NULL;
-    if (snode->mustuse || (base != NULL && base->mustuse))
-        return "It is marked @mustUse: dropping one unseen is a mistake.";
-    return NULL;
+    if (!snode->mustuse && !(base != NULL && base->mustuse))
+        return NULL;
+    // The marking is what asks; core's Result only has its own words for it
+    char *core = propagateCoreName(type);
+    if (core == NULL && base != NULL)
+        core = propagateCoreName((INode*)base);
+    if (core != NULL && core[0] == 'R')
+        return "A failure among what it may hold goes unread.";
+    return "It is marked @mustUse: dropping one unseen is a mistake.";
 }
 
 // Statements this one's value would have
@@ -73,18 +80,8 @@ void discardCheck(INode *stmt) {
             return;
         reason = "An operation's answer says whether it worked, a failure among what it may say, so a failure here goes unread.";
     }
-    else {
-        INode *base = type->tag == StructTag && !(type->flags & EnumType) && (type->flags & HasTagField)
-            ? (INode*)structBaseTraitDcl((StructNode*)type) : NULL;
-        char *core = propagateCoreName(type);
-        if (core == NULL && base != NULL)
-            core = propagateCoreName(base);
-        if (core != NULL)
-            reason = core[0] == 'R' ? "A failure among what it may hold goes unread."
-                                    : "Whether it holds a value goes unread.";
-        else
-            reason = discardReason(type);
-    }
+    else
+        reason = discardReason(type);
     if (reason == NULL || discardAlreadySaid(stmt))
         return;
 

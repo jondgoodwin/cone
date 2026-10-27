@@ -807,11 +807,13 @@ whose error the block's error type cannot take, or two of its variants hold, is
 block.
 
 A dropped value is the one warning that is about use rather than form (`WarnDiscard`,
-`discardCheck`, `ir/exp/discard.c`). It is raised at a statement whose value is a
-core `Result` or `Option` (a variant of either too), a value of a struct, enum or
-variant declared `@mustUse` (an enum's marking covers its variants; an instance of a
-marked generic struct is marked), or the answer of an `await` on an operation (any
-type but `void`). The statement is a call, an `await`, a block (a `try`, a loop with a
+`discardCheck`, `ir/exp/discard.c`). It is raised at a statement whose value is of a
+struct, enum or variant declared `@mustUse` (an enum's marking covers its variants; an
+instance of a marked generic struct is marked), or is the answer of an `await` on an
+operation (any type but `void`). Core's `Result` is marked in `core.cone`, so it warns
+through the attribute, with its own words for a failure unread; an `Option` is not
+marked, because a `pop`, `insert` or `remove` that finds nothing is not a failure
+unread. The statement is a call, an `await`, a block (a `try`, a loop with a
 `break` value) or an `if`; `_ = f();` is an assignment and so none of them, which is
 how the reader says the drop is meant. Two places ask: `blockStmtTypeCheck` for every
 statement but the last, and `blockTypeCheck` for the last when the block's parser flag
@@ -819,7 +821,7 @@ statement but the last, and `blockTypeCheck` for the last when the block's parse
 a last line without it is the block's value, and `ErrorTailOpen` refuses one that
 nothing uses). A generic's body is checked once for each instance, so a site warns
 once (`discardAlreadySaid`), naming the first instance that reached it. A bare
-construction (`Some(9);`, `Token(2);`) is not a call that dropped an answer and is not
+construction (`Ok(9);`, `Token(2);`) is not a call that dropped an answer and is not
 warned. It never fails a build: the suite's `compile` and `run` scenarios do fail on
 any warning, which is how a new one is noticed.
 
