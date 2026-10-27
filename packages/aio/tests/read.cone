@@ -8,8 +8,8 @@
 // greeting, then the clean end of the stream, where its buffer comes back as
 // it was. Each answer is the operation's Result, success or the system's
 // failure, and two failures arrive as the Result's error: a read handed a
-// buffer with no room (ERROR_INSUFFICIENT_BUFFER, 122) and a second listen on
-// the port the first holds (WSAEADDRINUSE, 10048).
+// buffer with no room (InvalidInput) and a second listen on the port the
+// first holds (AddressInUse).
 //
 // What each 'await' found is kept in Got, checked by main once Server says
 // it is done. Server's seams carry what it holds in their records (the
@@ -22,6 +22,7 @@ import testing use *;
 import sync use Oneshot, OneshotSender, OneshotReceiver;
 import iobuf use IoBuf;
 import iocore use SocketAddr, IoError;
+import ioerror use IoErrorKind;
 import actors;
 import aio use Socket;
 
@@ -65,9 +66,10 @@ fn same(a: &Array[u8], b: &Array[u8]) bool {
   true
 }
 
-fn codeOf[T](r: Result[T, IoError]) u64 {
+// 1 for a failure of kind k, else 0
+fn isKind[T](r: Result[T, IoError], k: IoErrorKind) u64 {
   match r {
-    case let Error(e) {u64.from(e.code)}
+    case let Err(e) {if e.kind() == k {1u64} else {0u64}}
     else {0u64}
   }
 }
@@ -82,7 +84,7 @@ actor Client {
     let w = await s.write(b);
     match w {
       case let Ok(n) {got.written.store(u64.from(n));}
-      case let Error(e) {got.written.store(1000000u64 + u64.from(e.code));}
+      case let Err(e) {got.written.store(1000000u64 + u64.from(e.code));}
     }
   }
 }
@@ -100,12 +102,12 @@ actor Server {
     }
     got.port.store(u64.from(port));
     let again = await aio.listen(SocketAddr.localhost(port));
-    got.inUse.store(codeOf[Socket](again));
+    got.inUse.store(isKind[Socket](again, IoErrorKind.AddressInUse));
     client.dial(port);
     let ac = await ls.accept();
     let conn = socketOf(ac);
     let none = await conn.read(IoBuf.empty());
-    got.noRoom.store(codeOf[IoBuf](none));
+    got.noRoom.store(isKind[IoBuf](none, IoErrorKind.InvalidInput));
     var r = await conn.read(IoBuf(4096usize));
     match &mut r {
       case var &mut Ok(ok) {
@@ -146,8 +148,8 @@ fn main() i32 {
   }
   finalAll();
   expect(got.port.load() != 0u64, "the system chose a port, which localAddr told");
-  expectUInt(got.inUse.load(), 10048u64, "a second listen on the port fails: WSAEADDRINUSE");
-  expectUInt(got.noRoom.load(), 122u64, "a read with no room fails: ERROR_INSUFFICIENT_BUFFER");
+  expectUInt(got.inUse.load(), 1u64, "a second listen on the port fails: AddressInUse");
+  expectUInt(got.noRoom.load(), 1u64, "a read with no room fails: InvalidInput");
   expectUInt(got.written.load(), 12u64, "the write answered its count");
   expectUInt(got.read.load(), 12u64, "the read appended what arrived");
   expectUInt(got.text.load(), 1u64, "and it was the greeting");

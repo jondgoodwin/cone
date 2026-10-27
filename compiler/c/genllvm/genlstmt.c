@@ -29,6 +29,57 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
         return LLVMAppendBasicBlockInContext(gen->context, gen->fn, name);
 }
 
+// A jump the program wrote has just emitted its terminator. Whatever is
+// generated after it -- the rest of an expression the jump was inside, a
+// branch's jump to its 'if''s end, a loop's jump back to its start, a block's
+// releases -- would land after that terminator in the same basic block, where
+// LLVM takes the last one as the block's terminator and the jump is lost. So
+// generation goes on in a fresh block no path reaches, where it is harmless,
+// and the constructs that would only add dead code there ask genlPathEnded and
+// stop. genlSettleUnreached settles each such block once the module is made.
+void genlEndPath(GenState *gen) {
+    // Unnamed: a name would take a number from the function's own count of
+    // the names it has made unique, renaming every value named after it
+    // although the block is deleted
+    LLVMBasicBlockRef blk = genlInsertBlock(gen, "");
+    LLVMPositionBuilderAtEnd(gen->builder, blk);
+    gen->unreached = blk;
+    if (gen->unreachedcnt == gen->unreachedmax) {
+        uint32_t newmax = gen->unreachedmax ? gen->unreachedmax * 2 : 64;
+        LLVMBasicBlockRef *blks = (LLVMBasicBlockRef *)memAllocBlk(newmax * sizeof(LLVMBasicBlockRef));
+        if (gen->unreachedcnt)
+            memcpy(blks, gen->unreachedblks, gen->unreachedcnt * sizeof(LLVMBasicBlockRef));
+        gen->unreachedblks = blks;
+        gen->unreachedmax = newmax;
+    }
+    gen->unreachedblks[gen->unreachedcnt++] = blk;
+}
+
+// The builder is at the block genlEndPath made last, so no path reaches what is
+// generated now. Generation that moves on to a block a path reaches -- an
+// 'if''s end, a loop's end -- is on a live path again.
+int genlPathEnded(GenState *gen) {
+    return gen->unreached != NULL && LLVMGetInsertBlock(gen->builder) == gen->unreached;
+}
+
+// No path reaches a block genlEndPath made, nor anything branches to it, so
+// one nothing was emitted into is deleted, and one that dead code was emitted
+// into but that no terminator ends is ended by 'unreachable'
+void genlSettleUnreached(GenState *gen) {
+    for (uint32_t i = 0; i < gen->unreachedcnt; ++i) {
+        LLVMBasicBlockRef blk = gen->unreachedblks[i];
+        LLVMValueRef last = LLVMGetLastInstruction(blk);
+        if (last == NULL && LLVMGetFirstUse(LLVMBasicBlockAsValue(blk)) == NULL)
+            LLVMDeleteBasicBlock(blk);
+        else if (last == NULL || !LLVMIsATerminatorInst(last)) {
+            LLVMPositionBuilderAtEnd(gen->builder, blk);
+            LLVMBuildUnreachable(gen->builder);
+        }
+    }
+    gen->unreachedcnt = 0;
+    gen->unreached = NULL;
+}
+
 // Find the loop state in loop stack whose lifetime matches
 GenBlockState *genFindBlockState(GenState *gen, BlockNode *block) {
     uint32_t cnt = gen->blockstackcnt;
@@ -49,7 +100,10 @@ static int genlNeverJump(GenState *gen, INode *exp) {
     if (!fnCallIsNever(exp) && !(exp->tag == IfTag && ifAllPathsJump((IfNode *)exp)))
         return 0;
     genlExpr(gen, exp);
-    LLVMBuildUnreachable(gen->builder);
+    if (!genlPathEnded(gen)) {
+        LLVMBuildUnreachable(gen->builder);
+        genlEndPath(gen);
+    }
     return 1;
 }
 
@@ -59,9 +113,12 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
         return;
     GenBlockState *blockstate = genFindBlockState(gen, block);
     LLVMValueRef brkval = NULL;
-    // Generate the value for its effects either way
+    // Generate the value for its effects either way. A value that itself
+    // jumped away ('break {return 7;}') leaves the jump nothing to do.
     if (exp->tag != NilLitTag)
         brkval = genlExpr(gen, exp);
+    if (genlPathEnded(gen))
+        return;
     // The temporaries made since the block began, then its scopes' locals
     genlTempsJump(gen, blockstate->tempmark);
     genlDealiasNodes(gen, dealias);
@@ -75,6 +132,7 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
             LLVMBuildStore(gen->builder, brkval, blockstate->slot);
     }
     LLVMBuildBr(gen->builder, blockstate->blockend);
+    genlEndPath(gen);
 }
 
 // Generate a return statement
@@ -89,6 +147,8 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
     if (genlNeverJump(gen, retnode->exp))
         return;
     LLVMValueRef retval = genlExpr(gen, retnode->exp);
+    if (genlPathEnded(gen))
+        return;
     genlTempsJump(gen, gen->tempbase);
     genlDealiasNodes(gen, retnode->dealias);
     if (gen->exitzero)
@@ -96,6 +156,7 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
     // A generator's body ends here: it hands back None from now on
     genlGenReturn(gen);
     genlFnDclReturn(gen, gen->fndcl, retval);
+    genlEndPath(gen);
 }
 
 // Generate a block "return" retnode
@@ -152,11 +213,6 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     LLVMValueRef lastval = NULL; // Should never be used by caller
-    // A break or continue terminates the LLVM basic block, so whatever follows it in
-    // the statement list is unreachable and must not be emitted -- an instruction
-    // after a terminator is invalid IR. It is reachable in an 'each' loop block,
-    // whose synthesized step sits behind the jump the reader wrote last.
-    int terminated = 0;
     // An operator's rewrite keeps every statement's temporaries to its end
     // (FlagKeepTemps)
     int keeptemps = blk->flags & FlagKeepTemps;
@@ -188,21 +244,19 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         // finalizes them before it leaves (genlBreak, genlReturn), and nothing
         // follows it to finalize them again.
         uint32_t tempmark = keeptemps ? blocktempmark : gen->tempcnt;
-        int jumped = 0;
         switch ((*nodesp)->tag) {
         case ContinueTag: {
             GenBlockState *target = genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block);
             genlTempsJump(gen, target->tempmark);
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, target->blockbeg);
-            terminated = 1;
+            genlEndPath(gen);
             break;
         }
 
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode*)*nodesp;
             genlBreak(gen, brknode->block, brknode->exp, brknode->dealias);
-            terminated = 1;
             break;
         }
 
@@ -213,43 +267,57 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
                 if (node->block->breaks->used > 1) {
                     // Add to phi
                     genlBreak(gen, node->block, node->exp, node->dealias);
-                    jumped = 1;
                 }
                 else {
                     // Just one?  Handle return like BlockRet
                     if (node->exp->tag != NilLitTag)
                         lastval = genlExpr(gen, node->exp);
-                    genlTempsEnd(gen, tempmark);
-                    genlDealiasNodes(gen, node->dealias);
+                    if (!genlPathEnded(gen)) {
+                        genlTempsEnd(gen, tempmark);
+                        genlDealiasNodes(gen, node->dealias);
+                    }
                 }
                 break;
             }
 
             genlReturn(gen, (BreakRetNode*)*nodesp);
-            jumped = 1;
             break;
         }
         case BlockRetTag:
         {
+            // A value that jumped away -- a block ending in a 'return' -- has
+            // released, as it left, what this block's end would
             BreakRetNode *node = (BreakRetNode*)*nodesp;
             if (node->exp->tag != NilLitTag && node->exp != outlined)
                 lastval = genlExpr(gen, node->exp);
-            genlTempsEnd(gen, tempmark);
-            genlDealiasNodes(gen, node->dealias);
+            if (!genlPathEnded(gen)) {
+                genlTempsEnd(gen, tempmark);
+                genlDealiasNodes(gen, node->dealias);
+            }
             break;
         }
         default:
             lastval = genlExpr(gen, *nodesp);
         }
-        if (terminated || jumped)
+        // A jump -- the statement itself, or one inside it however deeply,
+        // such as the 'return' ending a plain block in an 'if''s branch -- has
+        // ended the path. It finalized the temporaries as it left, and nothing
+        // after it in this list is reached: generated, it would only be dead
+        // code (genlEndPath). Something does follow a jump in an 'each' loop
+        // block, whose synthesized step sits behind the jump the reader wrote last.
+        if (genlPathEnded(gen)) {
             gen->tempcnt = tempmark;
-        else if (!keeptemps || cnt == 1)
-            genlTempsEnd(gen, tempmark);
-        if (terminated)
             break;
+        }
+        if (!keeptemps || cnt == 1)
+            genlTempsEnd(gen, tempmark);
     }
 
-    if (isLoop && !terminated)
+    // Whether the block's path ended is what the LLVM block the builder is at
+    // says, not which statement came last: a jump inside a statement ends it
+    // as surely as one that is the statement
+    int ended = genlPathEnded(gen);
+    if (isLoop && !ended)
         LLVMBuildBr(gen->builder, blockbeg);
 
     if (isPhiBlk) {
@@ -266,5 +334,10 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         return LLVMGetUndef(gen->emptyStructType);
 
     }
+    // A block whose path ended has no value, but what it is part of may go on
+    // being generated, where no path reaches, and be handed one
+    if (ended && lastval == NULL)
+        return blk->vtype->tag != VoidTag && blk->vtype->tag != UnknownTag
+            ? LLVMGetUndef(genlType(gen, blk->vtype)) : LLVMGetUndef(gen->emptyStructType);
     return lastval;
 }

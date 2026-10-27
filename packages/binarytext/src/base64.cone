@@ -330,7 +330,7 @@ pub struct Base64Decoder {
   // how many bytes it appended, or the first fault (bytes appended before it
   // stay)
   pub fn update(self: &mut, chunk: &Array[u8], out: &mut List[u8]) Result[usize, DecodeError] {
-    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    if self.failed { return Err[usize, DecodeError](self.failure()); }
     let start = out.len();
     var i = 0usize;
     while i < chunk.len {
@@ -341,21 +341,21 @@ pub struct Base64Decoder {
       if self.skipWhitespace && isSpace(c) { continue; }
       if c == '=' {
         if !self.padded && !self.optionalPadding {
-          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding, which this format does not use"));
+          return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding, which this format does not use"));
         }
         if self.sealed {
           if self.padLeft == 0u32 {
-            return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is more padding than the text needs"));
+            return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is more padding than the text needs"));
           }
           self.padLeft = self.padLeft - 1u32;
           continue;
         }
         if self.count < 2u32 {
-          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding where no padding can be"));
+          return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "is padding where no padding can be"));
         }
         let owed = 3u32 - self.count;
         match self.flushPartial(out) {
-          case let Some(e) { return Error[usize, DecodeError](e.copy()); }
+          case let Some(e) { return Err[usize, DecodeError](e.copy()); }
           case is None { }
         }
         self.sealed = true;
@@ -364,13 +364,13 @@ pub struct Base64Decoder {
       }
       if self.sealed {
         if self.padLeft > 0u32 {
-          return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes where more padding is owed"));
+          return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes where more padding is owed"));
         }
-        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes after the padding that ends the text"));
+        return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, at, c, "comes after the padding that ends the text"));
       }
       let v = sextetValue(c, self.urlSafe);
       if v < 0i32 {
-        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not in the alphabet"));
+        return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadCharacter, at, c, "is not in the alphabet"));
       }
       self.acc = (self.acc << 6u32) | u32.from(v);
       self.count = self.count + 1u32;
@@ -391,21 +391,21 @@ pub struct Base64Decoder {
   // bytes, and readies the decoder for the next text (a failure stays until
   // 'reset()'). Answers how many bytes it appended
   pub fn finish(self: &mut, out: &mut List[u8]) Result[usize, DecodeError] {
-    if self.failed { return Error[usize, DecodeError](self.failure()); }
+    if self.failed { return Err[usize, DecodeError](self.failure()); }
     let start = out.len();
     if self.sealed {
       if self.padLeft > 0u32 {
-        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends with padding still owed"));
+        return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends with padding still owed"));
       }
     } else if self.count == 1u32 {
-      return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadLength, self.offset, 0u8,
+      return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadLength, self.offset, 0u8,
         "the text ends after a single digit of a group, which cannot make a byte"));
     } else if self.count > 0u32 {
       if self.padded && !self.optionalPadding {
-        return Error[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends without its padding"));
+        return Err[usize, DecodeError](self.fail(DecodeErrorKind.BadPadding, self.offset, 0u8, "the text ends without its padding"));
       }
       match self.flushPartial(out) {
-        case let Some(e) { return Error[usize, DecodeError](e.copy()); }
+        case let Some(e) { return Err[usize, DecodeError](e.copy()); }
         case is None { }
       }
     }
@@ -423,16 +423,16 @@ pub fn decodeBase64Into(text: &Array[u8], fmt: &Base64Format, out: &mut List[u8]
   let start = out.len();
   var d = Base64Decoder.forFormat(fmt);
   match d.update(text, out) {
-    case let Error(e) {
+    case let Err(e) {
       out.truncate(start);
-      return Error[usize, DecodeError](e.copy());
+      return Err[usize, DecodeError](e.copy());
     }
     case is Ok { }
   }
   match d.finish(out) {
-    case let Error(e) {
+    case let Err(e) {
       out.truncate(start);
-      return Error[usize, DecodeError](e.copy());
+      return Err[usize, DecodeError](e.copy());
     }
     case is Ok { }
   }
@@ -443,7 +443,7 @@ pub fn decodeBase64Into(text: &Array[u8], fmt: &Base64Format, out: &mut List[u8]
 pub fn decodeBase64With(text: &Array[u8], fmt: &Base64Format) Result[List[u8], DecodeError] {
   var out = List[u8].withCapacity(text.len / 4usize * 3usize + 3usize);
   match decodeBase64Into(text, fmt, &mut out) {
-    case let Error(e) { return Error[List[u8], DecodeError](e.copy()); }
+    case let Err(e) { return Err[List[u8], DecodeError](e.copy()); }
     case is Ok { }
   }
   Ok[List[u8], DecodeError](out)

@@ -1,0 +1,91 @@
+// A method declared with a reference receiver ('self: &', '&mut') on an enum is
+// each variant's own, dispatched on the tag when called through a reference to
+// the enum, '(&k).name()'. Called on a VALUE of the enum,
+// the value is borrowed for the receiver as for any method taking a reference,
+// and the call is that one through the borrow: dispatched the same way. A
+// fieldless enum whose method answers a '&'static str' (ioerror's IoErrorKind
+// shape), called on a local, a parameter, a field and a temporary; an enum with
+// payloads, '&' and '&mut', the mutation seen afterwards; a generic enum. A
+// by-value receiver on a value is still refused (enum_typecheck_value_dispatch).
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_method_value_dispatch;
+
+import stdio use *;
+
+enum Kind {
+  NotFound;
+  Refused;
+  Other;
+  pub fn name(self: &) &'static str {
+    if *self == Kind.NotFound {"not found"}
+    else if *self == Kind.Refused {"refused"}
+    else {"other"}
+  }
+}
+
+struct Failure {
+  pub kind: Kind;
+  pub code: i32;
+}
+
+fn kindOf(k: Kind) &str { k.name() }
+fn mkKind() Kind { Kind.Other }
+
+enum Shape {
+  pub fn area(self: &) i32;
+  pub fn grow(self: &mut);
+  pub struct Circle {
+    pub r: i32;
+    pub fn area(self: &) i32 { 3 * r * r }
+    pub fn grow(self: &mut) { r = r + 1; }
+  }
+  pub struct Square {
+    pub s: i32;
+    pub fn area(self: &) i32 { s * s }
+    pub fn grow(self: &mut) { s = s * 2; }
+  }
+}
+
+struct Holder {
+  pub sh: Shape;
+}
+
+fn areaOf(s: Shape) i32 { s.area() }
+fn mkShape(n: i32) Shape { Shape.Square(s: n) }
+
+enum Maybe[T] {
+  Nothing;
+  Just(T);
+  pub fn label(self: &) &'static str { "maybe" }
+}
+
+fn main() {
+  // A fieldless enum
+  var k: Kind = Kind.NotFound;
+  print <- "local ", k.name(), "\n";
+  print <- "through a reference ", (&k).name(), "\n";
+  k = Kind.Refused;
+  print <- "local again ", k.name(), "\n";
+  print <- "parameter ", kindOf(Kind.Other), "\n";
+  let f = Failure(Kind.Refused, 7);
+  print <- "field ", f.kind.name(), "\n";
+  print <- "temporary ", mkKind().name(), "\n";
+
+  // An enum with payloads
+  var s: Shape = Shape.Circle(r: 2);
+  print <- "area ", s.area(), "\n";
+  s.grow();
+  print <- "area after grow ", s.area(), "\n";
+  print <- "parameter area ", areaOf(Shape.Square(s: 3)), "\n";
+  var h = Holder(Shape.Square(s: 4));
+  print <- "field area ", h.sh.area(), "\n";
+  h.sh.grow();
+  print <- "field area after grow ", h.sh.area(), "\n";
+  print <- "temporary area ", mkShape(5).area(), "\n";
+
+  // A generic enum
+  var m: Maybe[i32] = Maybe.Just[i32](3);
+  print <- "generic ", m.label(), "\n";
+}

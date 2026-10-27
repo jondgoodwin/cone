@@ -46,6 +46,8 @@
 //   actors.Future[T]                a behaviour's value kept, to 'await' later
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
+//   actors.parkBlocks()             the record blocks and per-thread keeps the runtime has
+//                                   taken from the allocator and given back (RECORD BLOCKS KEPT)
 //   actors.liveSegments()           how many mailbox segments are not yet freed
 //   actors.messageAllocs()          how many allocations the runtime has made
 //                                   for messages (THE MAILBOX, below)
@@ -2897,6 +2899,7 @@ pub struct Pending is GcTraceElements {
         let drop = (*recordType(block)).finalize;
         drop(block + recordHead);
         libc.free(block);
+        blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
         count = count - 1usize;
       }
       i = i + 1usize;
@@ -3026,10 +3029,19 @@ pub fn recordFree(record: *u8) {
 // one of them instead of asking the allocator. A block is the C library's, so
 // one given back on a thread other than the one that took it is kept by the
 // thread that gives it, and a block the pending table drops with its actor is
-// freed as before. The blocks kept when a thread ends are not freed (a worker
-// lives as long as the process).
+// freed as before. A keep is the thread's own, in a thread-local, so it goes
+// when the thread does: a worker frees its kept blocks and its keep as it
+// ends (keepRelease), and so does the thread that stops the runtime
+// (stopWorkers). Any other thread that parks a continuation and ends with
+// blocks in its keep leaves them: there is no hook at a thread's end to free
+// them. parkBlocks() counts the blocks and keeps taken and given back.
 const blockKeep = 8usize;
 const blockKeepBytes = 1024usize;
+
+let blocksTaken: Atomic[u64];     // record blocks taken from the allocator
+let blocksGiven: Atomic[u64];     // record blocks given back to the allocator
+let keepsMade: Atomic[u64];       // per-thread keeps made
+let keepsFreed: Atomic[u64];      // per-thread keeps freed
 
 struct BlockKeep {
   pub n: usize;
@@ -3047,8 +3059,27 @@ fn keepOf() *BlockKeep {
       die("actors: out of memory for a continuation");
     }
     blockKept = k as usize;
+    keepsMade.addOrdered(1u64, MemOrder.Relaxed);
   }
   k
+}
+
+// This thread's keep given back: the blocks it holds, then the keep itself.
+// The next park on this thread makes a new one
+fn keepRelease() {
+  let k = blockKept as *BlockKeep;
+  if k as usize == 0usize {
+    return;
+  }
+  var i = 0usize;
+  while i < (*k).n {
+    libc.free((*k).blocks[i]);
+    blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
+    i = i + 1usize;
+  }
+  libc.free(k as *u8);
+  blockKept = 0usize;
+  keepsFreed.addOrdered(1u64, MemOrder.Relaxed);
 }
 
 // A block of 'total' bytes: a kept one of that size, else the allocator's
@@ -3068,6 +3099,7 @@ fn takeBlock(total: usize) *u8 {
       }
     }
   }
+  blocksTaken.addOrdered(1u64, MemOrder.Relaxed);
   libc.malloc(total)
 }
 
@@ -3083,7 +3115,26 @@ fn giveBlock(block: *u8) {
       return;
     }
   }
+  blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
   libc.free(block);
+}
+
+// What the record blocks have cost the allocator: blocks it was asked for, and
+// blocks it was given back (by an actor's death, or a full keep), and the
+// per-thread keeps made and freed. For tests and for finding leaks, as
+// liveFutures is for futures. After finalAll() each pair is equal: every
+// block and every keep has been given back (a block still in a keep when it
+// is freed is given back then)
+pub struct ParkBlocks {
+  pub taken: u64;
+  pub given: u64;
+  pub keepsMade: u64;
+  pub keepsFreed: u64;
+}
+
+pub fn parkBlocks() ParkBlocks {
+  ParkBlocks(blocksTaken.loadOrdered(MemOrder.Acquire), blocksGiven.loadOrdered(MemOrder.Acquire),
+    keepsMade.loadOrdered(MemOrder.Acquire), keepsFreed.loadOrdered(MemOrder.Acquire))
 }
 
 // What an 'await' in a behaviour may wait for besides another actor's reply:
@@ -3886,6 +3937,7 @@ fn workerMain(arg: WorkerArg) u32 {
       break;
     }
   }
+  keepRelease();
   me = 0usize;
   0u32
 }
@@ -3994,6 +4046,10 @@ fn @initpure init() {
   traceMask = Atomic[u32].of(0u32);
   traceSink = Atomic[usize].of(0usize);
   traceIds = Atomic[u64].of(0u64);
+  blocksTaken = Atomic[u64].of(0u64);
+  blocksGiven = Atomic[u64].of(0u64);
+  keepsMade = Atomic[u64].of(0u64);
+  keepsFreed = Atomic[u64].of(0u64);
   traceActors = Atomic[u32].of(0u32);
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
@@ -4180,6 +4236,7 @@ fn stopWorkers() {
     t.join();
     i = i + 1u32;
   }
+  keepRelease();
   running.store(0usize);
   libc.free((*s).parked as *u8);
   libc.free((*s).threads as *u8);

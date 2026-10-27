@@ -61,6 +61,7 @@ extern Name *finalName; // "final": a type's finalizer method, and a module's ow
 // so it collides with no method a variant declares and no name reaches it.
 extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
+extern Name *lazyName;   // "lazy": before a macro parameter's type, it marks the parameter substituted whole (a contextual word)
 extern Name *yieldsName; // "yields": after a function's parameters, it makes the function a generator (a contextual word)
 extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 
@@ -142,6 +143,13 @@ extern Name *parallelName; // "parallel"
 extern Name *splitName;    // "split"
 extern Name *someName;     // "Some"
 extern Name *noneName;     // "None"
+// What '?' asks of the value it is given and of the function it is in
+// (propagate.c): core's Result and its two variants, matched by name; and the
+// method a 'main' that returns a Result prints its error with
+extern Name *resultName;   // "Result"
+extern Name *okName;       // "Ok"
+extern Name *errorVariantName; // "Err", Result's failure
+extern Name *messageName;  // "message"
 
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait

@@ -272,15 +272,15 @@ pub fn encodeRequiredInsertCount(ric: u64, maxEntries: u64) u64 {
 pub fn decodeRequiredInsertCount(encoded: u64, maxEntries: u64, insertCount: u64) Result[u64, &str] {
   if encoded == 0u64 {return Ok[u64, &str](0u64);}
   let full = 2u64 * maxEntries;
-  if encoded > full {return Error[u64, &str]("an encoded Required Insert Count past twice the table's entries");}
+  if encoded > full {return Err[u64, &str]("an encoded Required Insert Count past twice the table's entries");}
   let maxValue = insertCount + maxEntries;
   let maxWrapped = (maxValue / full) * full;
   var ric = maxWrapped + encoded - 1u64;
   if ric > maxValue {
-    if ric <= full {return Error[u64, &str]("a Required Insert Count past what the table can reach");}
+    if ric <= full {return Err[u64, &str]("a Required Insert Count past what the table can reach");}
     ric = ric - full;
   }
-  if ric == 0u64 {return Error[u64, &str]("a Required Insert Count of 0 encoded as nonzero");}
+  if ric == 0u64 {return Err[u64, &str]("a Required Insert Count of 0 encoded as nonzero");}
   Ok[u64, &str](ric)
 }
 
@@ -292,7 +292,7 @@ pub fn readPrefix(section: &Array[u8], pos: &mut usize, ric: &mut u64, base: &mu
   if decodeInteger(section, pos, 8u32, &mut enc) != WireStatus.Done {return "a section's prefix is cut off or past 62 bits";}
   match decodeRequiredInsertCount(enc, maxEntries, insertCount) {
     case let Ok(r) {*ric = r;}
-    case let Error(e) {return e;}
+    case let Err(e) {return e;}
   }
   if *pos >= section.len {return "a section's prefix is cut off";}
   let negative = (section[*pos] & 0x80u8) != 0u8;
@@ -768,7 +768,7 @@ pub struct QpackEncoder {
   // instruction cut off waits for the rest). Ok with the Known Received
   // Count, or why the stream is broken: a connection error
   pub fn decoderInput(self: &mut, bytes: &Array[u8]) Result[u64, QpackError] {
-    if failed {return Error[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, "an earlier instruction failed"));}
+    if failed {return Err[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, "an earlier instruction failed"));}
     var i = 0usize;
     while i < bytes.len {
       pending.push(bytes[i]);
@@ -831,7 +831,7 @@ pub struct QpackEncoder {
 
   fn fail(self: &mut, why: &str) Result[u64, QpackError] {
     failed = true;
-    Error[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, why))
+    Err[u64, QpackError](QpackError.make(QpackErrorKind.DecoderStream, why))
   }
 }
 
@@ -916,29 +916,29 @@ pub struct QpackDecoder {
   // or why not (see the package's header, QPACK ERRORS). On an error, out is
   // as it was. A section behind a blocked one on the same stream waits too
   pub fn decode(self: &mut, streamId: u64, section: &Array[u8], out: &mut List[HeaderField]) Result[Decoded, QpackError] {
-    if failed {return Error[Decoded, QpackError](self.lost());}
+    if failed {return Err[Decoded, QpackError](self.lost());}
     var pos = 0usize;
     var ric = 0u64;
     var base = 0u64;
     let why = readPrefix(section, &mut pos, &mut ric, &mut base, u64.from(cfg.maxTableCapacity / entryOverhead), table.insertCount());
-    if why.len() > 0usize {return Error[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, why));}
+    if why.len() > 0usize {return Err[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, why));}
     let behind = self.waitingBefore(streamId, waiting.len());
     if ric > table.insertCount() || behind {
       if !behind && self.blockedStreams() >= cfg.blockedStreams {
-        return Error[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, "more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS"));
+        return Err[Decoded, QpackError](self.fail(QpackErrorKind.Decompression, "more blocked streams than SETTINGS_QPACK_BLOCKED_STREAMS"));
       }
       // Every field line is a byte or more, and decodes to 32 bytes or more,
       // or to at least a quarter of its string bytes: a section this long
       // cannot fit
       if section.len / 4usize > cfg.maxFieldSectionSize {
-        return Error[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "a blocked section too long to fit maxFieldSectionSize"));
+        return Err[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "a blocked section too long to fit maxFieldSectionSize"));
       }
       // What blocked sections may hold in all: as many as may block, each
       // the most one may be. Only sections behind another on its stream can
       // reach it, which an HTTP/3 layer that stops reading a blocked stream
       // never sends
       if waitingBytes + section.len > cfg.blockedStreams * 4usize * cfg.maxFieldSectionSize {
-        return Error[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "blocked sections past blockedStreams x 4 x maxFieldSectionSize bytes"));
+        return Err[Decoded, QpackError](QpackError.make(QpackErrorKind.TooLarge, "blocked sections past blockedStreams x 4 x maxFieldSectionSize bytes"));
       }
       var kept = List[u8].withCapacity(section.len);
       var i = 0usize;
@@ -952,7 +952,7 @@ pub struct QpackDecoder {
     }
     match self.lines(streamId, section, pos, ric, base, out) {
       case let Ok(size) {return Ok[Decoded, QpackError](Decoded.Done(size));}
-      case let Error(e) {return Error[Decoded, QpackError](e);}
+      case let Err(e) {return Err[Decoded, QpackError](e);}
     }
   }
 
@@ -992,7 +992,7 @@ pub struct QpackDecoder {
     }
     match taken {
       case let Some(w) {Unblocked(w.streamId, self.lines(w.streamId, w.bytes.view(), w.lines, w.ric, w.base, out))}
-      case is None[Waiting] {Unblocked(0u64, Error[usize, QpackError](QpackError.make(QpackErrorKind.Decompression, "no such section")))}
+      case is None[Waiting] {Unblocked(0u64, Err[usize, QpackError](QpackError.make(QpackErrorKind.Decompression, "no such section")))}
     }
   }
 
@@ -1023,7 +1023,7 @@ pub struct QpackDecoder {
   // a connection error. Blocked sections the inserts free come from
   // pollUnblocked
   pub fn encoderInput(self: &mut, bytes: &Array[u8]) Result[u64, QpackError] {
-    if failed {return Error[u64, QpackError](self.lost());}
+    if failed {return Err[u64, QpackError](self.lost());}
     var i = 0usize;
     while i < bytes.len {
       pending.push(bytes[i]);
@@ -1034,13 +1034,13 @@ pub struct QpackDecoder {
       var end = pos;
       let st = self.measure(pending.view(), &mut end);
       if st == WireStatus.Short {break;}
-      if st == WireStatus.TooLong {return Error[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an entry larger than the table's capacity"));}
-      if st == WireStatus.Malformed {return Error[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an integer past 62 bits"));}
+      if st == WireStatus.TooLong {return Err[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an entry larger than the table's capacity"));}
+      if st == WireStatus.Malformed {return Err[u64, QpackError](self.fail(QpackErrorKind.EncoderStream, "an integer past 62 bits"));}
       let why = self.apply(pos);
       if why.len() > 0usize {
         let e = QpackError.make(QpackErrorKind.EncoderStream, why);
         failed = true;
-        return Error[u64, QpackError](e);
+        return Err[u64, QpackError](e);
       }
       pos = end;
     }
@@ -1254,12 +1254,12 @@ pub struct QpackDecoder {
   fn tooLarge(self: &mut, streamId: u64, ric: u64, out: &mut List[HeaderField], start: usize) Result[usize, QpackError] {
     out.truncate(start);
     self.acknowledge(streamId, ric);
-    Error[usize, QpackError](QpackError.make(QpackErrorKind.TooLarge, "the field section is past maxFieldSectionSize"))
+    Err[usize, QpackError](QpackError.make(QpackErrorKind.TooLarge, "the field section is past maxFieldSectionSize"))
   }
 
   fn malformed(self: &mut, out: &mut List[HeaderField], start: usize, why: &str) Result[usize, QpackError] {
     out.truncate(start);
-    Error[usize, QpackError](self.fail(QpackErrorKind.Decompression, why))
+    Err[usize, QpackError](self.fail(QpackErrorKind.Decompression, why))
   }
 
   fn fail(self: &mut, kind: QpackErrorKind, why: &str) QpackError {

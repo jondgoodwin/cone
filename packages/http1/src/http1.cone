@@ -138,7 +138,11 @@
 // 'maxChunkDigits' (16) its hexadecimal digits; 'maxBuffered' (256 KiB) the
 // input held; 'bodyWindow' (256 KiB) body bytes out unreleased;
 // 'writeWatermark' (256 KiB) bytes queued to send ('maxBuffered' holds a
-// whole head of the role's, or making the connection panics). Timeouts are Durations,
+// whole head of the role's, or making the connection panics). A head is
+// gathered in a buffer from the buffer pool taken at its first byte, 4 KiB,
+// and doubled only as the head needs, up to its bound: a connection awaiting
+// a head holds none, and a head bound is a ceiling, not what each
+// connection holds. Timeouts are Durations,
 // each turned into an absolute Instant when it starts: 'headTimeout' (30 s)
 // from the moment a head is awaited (a client: its request handed over
 // whole; a server: the request's first byte) to its last byte;
@@ -271,6 +275,7 @@ enum WriteState {
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by the watermark instead
 const tailSize = 4096usize;               // a buffer small writes gather in, when the last queued has no room
+const headStart = 4096usize;              // a head's first buffer; it doubles as the head needs, up to its bound
 const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
 const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
 
@@ -814,19 +819,42 @@ pub struct Connection is Move {
   }
 
   // Copy what arrived into headBuf and check it, up to the blank line that
-  // ends a head: the head's length then, or 0 (not all here yet, or failed)
+  // ends a head: the head's length then, or 0 (not all here yet, or failed).
+  // headBuf is taken once a head's first byte is here, headStart bytes, and
+  // grows to twice its size, up to the head's bound, only while the input
+  // holds more of the head than it does: a connection awaiting a head holds
+  // no buffer, and a short head a small one
   fn gatherHead(self: &mut) usize {
     let most = if clientRole {cfg.maxResponseHeadBytes} else {cfg.maxHeadBytes};
-    if headBuf.capacity() == 0usize {
-      headBuf = IoBuf(most);
-      headScan = 0usize;
+    if headBuf.capacity() == 0usize {headScan = 0usize;}
+    while true {
+      let have = headBuf.len();
+      if input.len() > have && have < most {
+        if headBuf.room() == 0usize {
+          // Grow: the head's bytes are still in the input, so the new buffer
+          // is filled from its start
+          let want = if headBuf.capacity() == 0usize {headStart} else {headBuf.capacity() * 2usize};
+          headBuf = IoBuf(if want < most {want} else {most});
+          let n = input.copyOut(0usize, headBuf.spare());
+          headBuf.setLen(n);
+        } else {
+          let n = input.copyOut(have, headBuf.spare());
+          headBuf.setLen(have + n);
+        }
+      }
+      let len = self.scanHead(most);
+      if len > 0usize || failed {return len;}
+      // Not ended in what the buffer holds: look again only if it is full
+      // and the input holds more
+      if headBuf.room() > 0usize || input.len() <= headBuf.len() {return 0usize;}
     }
-    let have = headBuf.len();
-    if input.len() > have && have < most {
-      let room = headBuf.spare();
-      let n = input.copyOut(have, room);
-      headBuf.setLen(have + n);
-    }
+    0usize
+  }
+
+  // Check headBuf from headScan for the blank line ending a head: the head's
+  // length, or 0 (not there yet, or failed: a malformed line, or the head
+  // passed most)
+  fn scanHead(self: &mut, most: usize) usize {
     let v = headBuf.view();
     let lim = if v.len < most {v.len} else {most};
     var i = headScan;
@@ -903,7 +931,7 @@ pub struct Connection is Move {
         let body = self.startBody(framing.mode, framing.n);
         Event.Request(head, body)
       }
-      case var Error(e) {
+      case var Err(e) {
         self.failWith(e);
         self.failedEvent()
       }
@@ -920,7 +948,7 @@ pub struct Connection is Move {
         let head, framing = r.(head, framing);
         self.finalOrInterim(head, framing)
       }
-      case var Error(e) {
+      case var Err(e) {
         self.failWith(e);
         self.failedEvent()
       }
@@ -1096,7 +1124,7 @@ pub struct Connection is Move {
     };
     let size = match read {
       case var Ok(v) {v}
-      case var Error(e) {
+      case var Err(e) {
         self.failWith(e);
         return false;
       }
@@ -1135,7 +1163,7 @@ pub struct Connection is Move {
     self.consumeHead(len);
     match read {
       case var Ok(f) {self.endMessage(f.(headers))}
-      case var Error(e) {
+      case var Err(e) {
         self.failWith(e);
         self.failedEvent()
       }

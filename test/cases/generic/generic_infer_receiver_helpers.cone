@@ -1,0 +1,61 @@
+// Core's Option and Result helpers that are generic over more than their enum's
+// own parameters -- flatten, map, andThen, filter, okOr, mapError -- each called
+// with no type arguments and nothing expected of its value: what the call does
+// not say is inferred from the receiver, as from any argument
+// (generic_infer_receiver). 'flatten' says its U only through 'self', so it is the
+// case that needed the receiver. Each is called on a variant's value (widened to
+// the enum, enum_method_receiver_generic), on a value typed as the enum, and
+// through a reference, which is dereferenced to the by-value 'self'.
+//
+// Each printed value was checked by hand against the source.
+
+mod generic_infer_receiver_helpers;
+
+import stdio use *;
+
+fn someNested(n: i32) Option[Option[i32]] { Some[Option[i32]](Some[i32](n)) }
+fn okNested(n: i32) Result[Result[i32, i32], i32] { Ok[Result[i32, i32], i32](Ok[i32, i32](n)) }
+
+fn main() {
+  // Option.flatten: U from 'self: Option[Option[U]]' alone
+  let nested = Some[Option[i32]](Some[i32](17));
+  let flat = nested.flatten();
+  print <- "flatten ", flat.unwrap(), "\n";
+  let innerNone = Some[Option[i32]](None[i32]);
+  let flatNone = innerNone.flatten();
+  print <- "flatten inner none ", flatNone is None, "\n";
+  let typed = someNested(18);
+  let viaRef = &typed;
+  let flatRef = viaRef.flatten();
+  print <- "flatten through a reference ", flatRef.unwrap(), "\n";
+
+  // Option.map, andThen, filter, okOr
+  let mapped = Some[i32](3).map(fn(x: i32) i64 { x * 10 });
+  print <- "map ", mapped.unwrap(), "\n";
+  let chained = typed.andThen(fn(o: Option[i32]) Option[i32] { o });
+  print <- "andThen ", chained.unwrap(), "\n";
+  let kept = Some[i32](6).filter(fn(x: &i32) bool { *x > 5 });
+  print <- "filter ", kept.unwrap(), "\n";
+  let ok = Some[i32](8).okOr(-1);
+  print <- "okOr some ", ok.unwrap(), "\n";
+  let none = None[i32];
+  let er = none.okOr(-1);
+  print <- "okOr none ", er.error().unwrap(), "\n";
+
+  // Result.flatten, map, mapError, andThen
+  let okok = okNested(5);
+  let rflat = okok.flatten();
+  print <- "result flatten ", rflat.unwrap(), "\n";
+  let okerr = Ok[Result[i32, i32], i32](Err[i32, i32](6));
+  let rflatErr = okerr.flatten();
+  print <- "result flatten inner error ", rflatErr.error().unwrap(), "\n";
+  let outer = Err[Result[i32, i32], i32](7);
+  let rflatOuter = (&outer).flatten();
+  print <- "result flatten outer error through a reference ", rflatOuter.error().unwrap(), "\n";
+  let rmapped = Ok[i32, i32](4).map(fn(x: i32) i64 { x * 10 });
+  print <- "result map ", rmapped.unwrap(), "\n";
+  let emapped = Err[i32, i32](4).mapError(fn(x: i32) bool { x == 4 });
+  print <- "mapError ", emapped.error().unwrap(), "\n";
+  let rchained = Ok[i32, i32](9).andThen(fn(x: i32) Result[i64, i32] { Ok[i64, i32](x * 10) });
+  print <- "result andThen ", rchained.unwrap(), "\n";
+}

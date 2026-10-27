@@ -6,7 +6,8 @@ a numeric range, by type check once it knows the source.
 **At a glance.** Built by `parseExprBlock`. Name resolution pushes a scope,
 binds a lifetime label, enforces jump placement, and repairs `each`'s
 `continue`. Type check builds the loop of an `each` over a source that is not
-a range (`FlagEach`), then folds the block's value paths into one type. Flow
+a range (`FlagEach`) and the test and return of a `?` (`FlagPropagate`), then
+folds the block's value paths into one type. Flow
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
@@ -32,6 +33,7 @@ caused, were measured.*
 | `FlagTailSemi`, `FlagTailOpen` | `FlagTailSemi`: the block ends in a `;` after an expression or a statement that ends in a block, so its last statement is an empty one (a `;` delimits statements, and an empty statement has no value). `FlagTailOpen`: the last statement is an expression with no `;` before the `}`. Whether that is right depends on whether the block's value is used ([Parse](../phases/parse.md), "Blocks and statement ends") |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
+| `FlagPropagate` | the block `x?` is parsed to (`parsePropagate`), holding `x` in a hidden variable, its only statement: `blockTypeCheck` checks that variable, then builds the test and the early return after it (`propagateLower`, `ir/exp/propagate.h`) and clears the flag |
 | `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
 | `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
@@ -150,6 +152,16 @@ known. (The step names the loop's counter by a pre-resolved use, so the copy
 needs no hooked name.)
 
 ## Type check
+
+**`FlagPropagate`: a `?` is built here, from what it is given.** As for
+`FlagEach` below, `blockTypeCheck` checks the first statement, the hidden
+variable holding `x`, and `propagateLower` appends the match the reader would
+have written: `if -held is Ok { let -ok = [Ok]-held; -ok } else if -held is
+Err { let -err = [Err]-held; return Err(conv(-err)) }` (Some and None for
+an Option), with every name bound to its declaration. The arm that returns gives
+the `if` no value, so the block's value is what `Ok` holds; `ifExhaustCheck`
+makes the last test the `else`. Where `?` is refused, the block ends in an error
+node typed as what `Ok` holds, so nothing that uses it reports again.
 
 **`FlagEach`: the loop is built here, from the source's type.** Before any
 statement is checked, `blockTypeCheck` checks the block's first statement, the

@@ -1,10 +1,11 @@
 // What the parser has to say about a type parameter list and a macro
 // declaration: the list has to close, it has to declare something, a macro's
-// parameter may carry no annotation, and the macro has to be named.
+// value parameter is typed and its type parameter is not, 'self' is bare, and
+// the macro has to be named.
 //
-// parseGenericParms is shared by 'fn', 'struct' and 'macro', so one unclosed
-// list is written on a macro and one on a function, to establish that the same
-// rule reaches both. It reports at the token that should have been the closing
+// A macro's lists follow the rules a generic's does, so one unclosed list is
+// written on a macro and one on a function, to establish that the same rule
+// reaches both. It reports at the token that should have been the closing
 // bracket, which is the block's opening brace here.
 //
 // The missing macro name comes last on purpose. Recovery from it leaves the
@@ -13,7 +14,7 @@
 
 mod generic_parse;
 
-macro badMacroParms[a, b {   //~ ErrorBadTok:26 "square bracket"
+macro badMacroParms[a: i32, b {   //~ ErrorBadTok:31 "square bracket"
   a
 }
 
@@ -31,24 +32,76 @@ macro emptyMacroParms[] {    //~ ErrorNoGenParms:25 "at least one parameter"
   1i32
 }
 
-// What follows a parameter's name is its annotation. On a generic function or
-// type it is read, and what it names decides what it means (a trait constrains
-// the parameter: generic_constraint, generic_nameres_where). A macro's
-// parameter takes none yet -- '[a i32]' would be a typed macro parameter -- and
-// reading the two names as two parameters is what the parser once did, which
-// turned the declaration into an arity complaint about its uses. It is refused
-// here instead, at the second name, and the declaration keeps parsing.
-macro typedMacroParm[a i32] {  //~ ErrorGenParmConstr:24 "constraint or a type"
+// What follows a parameter's name is its annotation, after a ':'. On a generic
+// function or type it is read, and what it names decides what it means (a trait
+// constrains the parameter: generic_constraint, generic_nameres_where). On a
+// macro's value parameter it is the parameter's type, 'a: i32'. Written without
+// the ':', the type would read as a second parameter, which is what the parser
+// once did, turning the declaration into an arity complaint about its uses. It
+// is refused here instead, at the second name, and the declaration keeps parsing.
+macro typedMacroParm[a i32] {  //~ ErrorBadTok:24 "Expected ':'"
   a
 }
 
 // Once per parameter: recovery resumes at the comma, so the second parameter's
-// annotation is reported too rather than swallowed with the first. The list is
+// type is reported too rather than swallowed with the first. The list is
 // written across two lines because two diagnostics sharing a line, a code and a
 // quoted substring are what bless cannot place (test-suite.md, R4.4).
-macro eachParmReported[a i32,     //~ ErrorGenParmConstr:26 "constraint or a type"
-                       b Float] {  //~ ErrorGenParmConstr:26 "constraint or a type"
+macro eachParmReported[a i32,     //~ ErrorBadTok:26 "Expected ':'"
+                       b Float] {  //~ ErrorBadTok:26 "Expected ':'"
   a
+}
+
+// A macro's value parameter is always typed: 'a: T', or 'a: lazy T' for one
+// substituted whole. Each untyped one is reported, at its name.
+macro untypedParm[a] {         //~ ErrorMacroParmType:19 "is typed"
+  a
+}
+
+macro oneUntyped[a: i32,
+                 b] {          //~ ErrorMacroParmType:18 "is typed"
+  a
+}
+
+// 'lazy' marks the parameter; the type still follows it
+macro lazyAlone[a: lazy] {     //~ ErrorNoType "after 'lazy'"
+  a
+}
+
+// Two bracket lists: the type parameters, then the value parameters. A type
+// parameter is a name alone: a constraint on one is not built.
+macro boundedTypeParm[T: Ordered][a: T] {   //~ ErrorGenParmConstr:26 "not built"
+  a
+}
+
+// The type parameter list declares something; the value list after it may be
+// empty, 'macro three[T][]'
+macro emptyTypeParms[][a: i32] {   //~ ErrorNoGenParms:23 "at least one parameter"
+  a
+}
+
+// 'self' is bare only as a macro method's receiver: first, in a macro declared
+// in a type. A module's macro has no receiver, so there it is an untyped parameter.
+macro selfAtModule[self] {     //~ ErrorMacroParmType:20 "declared in a type"
+  1i32
+}
+
+// The receiver is the expression as it is: 'self' takes no type and no 'lazy'.
+// Anywhere but first it is no receiver, and is typed as any other parameter.
+struct Receiver {
+  n: i32;
+
+  macro typedSelf[self: &Receiver] {      //~ ErrorMacroSelfType:25 "written bare"
+    self.n
+  }
+
+  macro lazySelf[self: lazy Receiver] {   //~ ErrorMacroSelfType:29 "written bare"
+    self.n
+  }
+
+  macro selfSecond[a: i32, self] {        //~ ErrorMacroParmType:28 "declared in a type"
+    a
+  }
 }
 
 // A macro declared in a type shares the type's one namespace with its fields

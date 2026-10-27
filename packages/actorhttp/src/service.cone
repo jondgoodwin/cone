@@ -276,7 +276,7 @@ struct Service {
       c.closed = true;
       if c.connecting {
         c.connecting = false;
-        answerConn(c, Error[Conn, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
+        answerConn(c, Err[Conn, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure))));
       }
       if c.dropped {self.freeConn(slot);}
     }
@@ -320,16 +320,16 @@ struct Service {
         case var Some(over) {
           let reply, var resp, tooBig = over.(reply, resp, tooBig);
           resp.timing = timing;
-          var v: Result[httpclient.Response, FetchError] = Error[httpclient.Response, FetchError](FetchError.cancelled());
+          var v: Result[httpclient.Response, FetchError] = Err[httpclient.Response, FetchError](FetchError.cancelled());
           if k == httpconn.EventKind.Done {
             resp.outcome = httpclient.EventKind.Done;
             v = Ok[httpclient.Response, FetchError](resp);
           } else if k == httpconn.EventKind.Failed {
-            v = Error[httpclient.Response, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure)));
+            v = Err[httpclient.Response, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure)));
           } else if k == httpconn.EventKind.TimedOut {
-            v = Error[httpclient.Response, FetchError](FetchError.timedOut());
+            v = Err[httpclient.Response, FetchError](FetchError.timedOut());
           } else if tooBig {
-            v = Error[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
+            v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
           }
           actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
         }
@@ -426,15 +426,15 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
         let reply, var resp, tooBig = over.(reply, resp, tooBig);
         resp.outcome = k;
         resp.timing = e.timing;
-        var v: Result[httpclient.Response, FetchError] = Error[httpclient.Response, FetchError](FetchError.cancelled());
+        var v: Result[httpclient.Response, FetchError] = Err[httpclient.Response, FetchError](FetchError.cancelled());
         if k == httpclient.EventKind.Done {
           v = Ok[httpclient.Response, FetchError](resp);
         } else if k == httpclient.EventKind.Failed {
-          v = Error[httpclient.Response, FetchError](FetchError.failed(e.failure.copy()));
+          v = Err[httpclient.Response, FetchError](FetchError.failed(e.failure.copy()));
         } else if k == httpclient.EventKind.TimedOut {
-          v = Error[httpclient.Response, FetchError](FetchError.timedOut());
+          v = Err[httpclient.Response, FetchError](FetchError.timedOut());
         } else if tooBig {
-          v = Error[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
+          v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
         }
         actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
       }
@@ -488,7 +488,7 @@ struct FetchJob {
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
       actors.answerNow[Result[httpclient.Response, FetchError]](rp,
-        Error[httpclient.Response, FetchError](FetchError.cancelled()));
+        Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
     let rec = sv.clientAt(k) as &mut ClientRec;
@@ -526,9 +526,9 @@ struct ConnectJob {
       case let Ok(t) {
         c.conn = sv.drv.connectWith(lp, name.view(), port, Uni[tls.Stream](t.stream(name.view())), sink);
       }
-      case let Error(x) {
+      case let Err(x) {
         c.connecting = false;
-        answerConn(c, Error[Conn, FetchError](FetchError.failed(
+        answerConn(c, Err[Conn, FetchError](FetchError.failed(
           httpclient.Failure.make(httpclient.Stage.Tls, x.osError, ErrorKind.Unsupported, x.message().view()))));
         sv.freeConn(slot);
       }
@@ -549,7 +549,7 @@ struct ExchangeJob {
     let id, head, body, group, deadline = self.(id, head, body, group, deadline);
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {
-      actors.answerNow[Result[httpclient.Response, FetchError]](rp, Error[httpclient.Response, FetchError](FetchError.failed(
+      actors.answerNow[Result[httpclient.Response, FetchError]](rp, Err[httpclient.Response, FetchError](FetchError.failed(
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }

@@ -60,10 +60,11 @@
 	stmt ::= if_stmt | letelse_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | par_each_stmt | return_stmt | yield_stmt | exp_stmt | ';'
 	if_stmt ::= 'if' logic_exp block ( 'else' 'if' logic_exp block )* ( 'else' block )?
 	letelse_stmt ::= dcl_word variant_pat '=' exp 'else' block ';'
-		/* binds a variant of the value or leaves: the block must end in 'return', 'break', 'continue' or a call that does not return.
+		/* binds a variant of the value or leaves: every path through the block must leave, by ending in 'return', 'break', 'continue',
+		   a call that does not return, or an 'if' with an 'else' or a 'match' each of whose blocks leaves.
 		   A function's pattern may take the place of variant_pat: 'let rest using prefix("GET ") = line else {...};' */
 	variant_pat ::= type '(' ident_token ')'
-		/* the type names only the variant ('Some', 'Shape.Circle', 'Option[i32]', '&amp;mut Error'), and the one name in the parentheses takes what the variant holds.
+		/* the type names only the variant ('Some', 'Shape.Circle', 'Option[i32]', '&amp;mut Err'), and the one name in the parentheses takes what the variant holds.
 		   The 'let' or 'var' in front of it (dcl_word) is in front of the whole pattern, and 'var' lets the arm change the name. A pattern does not nest.
 		   It follows 'let' or 'var' in an 'if', an 'else if' and a case, 'case let Ok(avg) {...}'; a case's pattern with no 'let' or 'var' is a value alone */
 	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
@@ -250,9 +251,10 @@
 	mult_exp ::= as_exp (('*'|'/'|'%') as_exp)*
 	as_exp ::= prefix_exp ('as' type)*
 		/* 'into' is retired: a value converts with 'f32.from(x)', and a reference narrows to a variant by a match or a bound 'if' */
-	prefix_exp ::= ('-'|'~'|'*'|'++'|'--'|'await') prefix_exp | '.' (property | fieldlist) suffix* | addr | plus_alloc | suffix_exp
+	prefix_exp ::= ('-'|'~'|'*'|'++'|'--') prefix_exp | 'await' prefix_exp ('?' suffix*)? | '.' (property | fieldlist) suffix* | addr | plus_alloc | suffix_exp
 		/* a prefix applies to the whole suffixed term after it: '-x[1]' negates the element. '.' with nothing before it is 'this.'.
-		   'await' only in an actor's behaviour; built on a behaviour of an actor that returns a value */
+		   'await' only in an actor's behaviour; built on a behaviour of an actor that returns a value. A '?' after its operand
+		   (a term with no prefix of its own) applies to what the wait gives, 'await x?' being '(await x)?', and so do the suffixes after it */
 	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | prefix_exp)
 		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
 	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp
@@ -260,7 +262,7 @@
 		   It stays only as a match pattern's owning reference type, '+Rc-mut Circle', whose spelling
 		   is an open design question */
 	suffix_exp ::= term suffix*
-	suffix ::= '++'|'--'| ('.' (property | fieldlist)) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
+	suffix ::= '++'|'--'|'?'| ('.' (property | fieldlist)) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' ((contents_exp (',' contents_exp)*) | (simple_exp? ('..=' | '..&lt;') simple_exp | simple_exp? '..'))? ']')
 		/* square brackets hold type arguments, an index, or a range of indexes, '&amp;s[a..=b]', which makes a slice
 		   (no start is 0; no end is the array's end: 'a..' alone runs to it, while '..=' and '..&lt;' must say where they end,
 		   and a '..' before an end, 'a..b' or '..b', is refused: with no end there is nothing to include or leave out,

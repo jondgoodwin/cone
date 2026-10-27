@@ -19,6 +19,7 @@ import collections use List;
 import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
+import ioerror use IoErrorKind;
 import diag;
 
 // At most 5 s for n answers
@@ -32,7 +33,7 @@ fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
 fn portOf(lp: &Loop, h: Handle) u16 {
   match lp.localAddr(h) {
     case let Ok(a) {return a.port();}
-    case let Error(e) {}
+    case let Err(e) {}
   }
   0u16
 }
@@ -71,13 +72,13 @@ fn main() i32 {
     waitFor(&mut lp, &mut out, 1usize);
     requireUInt(u64.from(out.len()), 1u64, "2: an Accept on a connected socket is answered");
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "2: ...Failed");
-    expectUInt(u64.from(out[0usize].code), u64.from(errorInvalidHandle), "2: ...ERROR_INVALID_HANDLE");
+    expect(out[0usize].error().kind() == IoErrorKind.InvalidInput, "2: ...InvalidInput (ERROR_INVALID_HANDLE, EBADF)");
     out.clear();
 
     // 3. An address another listener holds
     match lp.listen(SocketAddr.localhost(port)) {
       case let Ok(h) {expect(false, "3: listening where another listener is: an error");}
-      case let Error(e) {expect(e.code != 0u32, "3: listening where another listener is: an error");}
+      case let Err(e) {expect(e.code != 0u32, "3: listening where another listener is: an error");}
     }
     expect(lp.isOpen(listener), "3: the first listener still listens");
 

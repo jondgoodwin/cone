@@ -124,6 +124,8 @@ typedef struct ParseState {
     GenCtx *genctx;
     int library;            // The package is being compiled as a library, whose include file declares what it exports
     int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
+    int awaitoperand;       // Non-zero as the operand of 'await' is begun: its suffixes stop before a '?', which
+                            // applies to what the wait gives, 'await x?' being '(await x)?' (parsePrefix)
     // The struct being read: where its type parameters are written, between its
     // '[' and ']', which a generator method copies (parsegen.c); NULL where none
     char *tparms, *tparmsend;
@@ -215,8 +217,8 @@ void parseSkipDclBody();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse);
+// Parse a macro declaration; 'member' when it is declared in a type
+MacroDclNode *parseMacro(ParseState *parse, int member);
 // Parse a list of generic variables and add to the genericnode; a struct's
 // lifetimes among them go to '*lifes' (NULL refuses them), and a type
 // parameter's lifetime bounds, '[T + 'a]', to '*bounds' (NULL refuses them)

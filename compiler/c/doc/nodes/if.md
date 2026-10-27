@@ -114,9 +114,15 @@ enclosing block: the hidden variable that holds a value that is not a place (nam
 `IfNode` flagged `FlagIfLetElse` whose condition is the `is` test, whose block is empty
 and whose `else` is the one written, then the arm's hidden variable (`-arm2`) if the value
 is a place, and the declared variable with the pattern's conversion as its value. Type
-check refuses an `else` that does not jump (`ifBlockJumps`, `ErrorLetElse`); because it
-jumps, the `if`'s path out is the test holding, so the narrowing after it
-([narrow](narrow.md)) is the variant. The hidden names are recognized as a match's own
+check refuses an `else` that can go on (`ifBlockFallsOut`, `ErrorLetElse`): every path
+through it must leave, by ending in a jump (`ifBlockJumps`) or in an `if` or `match` with
+an `else` each of whose blocks leaves, through any plain block a `match` or a bound `if`
+is wrapped in, or written (`else { { return 7; } }`); the error is put at the spot a path
+goes on (an `if` with no `else`, a last statement, a loop, an empty block) and says which.
+Because the `else` leaves, the
+`if`'s path out is the test holding, so the narrowing after it ([narrow](narrow.md)) is the
+variant: an `else` that leaves only through an inner `if` is no path out either, and keeps
+the narrowing kills it made, as a branch that continues a loop does. The hidden names are recognized as a match's own
 (`nameIsMatchHolder`) wherever flow asks whether a variable is one.
 
 **A function's pattern, `using`, is the call of that function with the matched value put in

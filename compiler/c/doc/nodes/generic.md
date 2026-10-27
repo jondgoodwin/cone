@@ -142,8 +142,11 @@ brands").
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
 is what makes the casts in the three `*NameRes` functions safe. `annot` is what
 was written after the parameter's name, each `+`-joined name, or NULL. `valtype`
-is the integer type of a **value parameter**, `[N: usize]` (below), NULL for a
-type parameter.
+is the type of a **value parameter**, NULL for a type parameter: on a generic the
+integer type of `[N: usize]` (below), a compile-time number; on a macro the type
+written after the `:`, `[a: T]`, a run-time value — one bracket slot, two
+meanings, accepted as such [Jon 26 Oct]. A macro's value parameter written
+`a: lazy T` carries `FlagLazy`; a macro method's `self` has no `valtype`.
 
 **Why the annotation is one slot, of no fixed meaning.** `[T: ___]` is where a
 parameter will be annotated with more than a constraint: a type, making a value
@@ -154,18 +157,25 @@ the parser reads whatever names are there into `annot` without deciding, and
 what each **resolves to** decides what it means: a trait is a constraint; an
 integer type makes a value parameter (`valtype`); anything else is a kind
 parameter, refused at name resolution as not built (`ErrorGenParmConstr`). A
-macro's parameter and a generic module's are refused in the parser, as before,
-since neither kind of declaration takes a constraint yet.
+generic module's parameter is refused in the parser, as before, since that
+declaration takes no constraint yet. A macro reads its own brackets
+(`parseMacro`, below): a value parameter's annotation is its type.
 
-**`MacroDclNode`** carries `namesym`, `parms`, `body`, and a `memonodes` that is
-**dead** — macros are never memoized; every expansion is a fresh clone. Declared
+**`MacroDclNode`** carries `namesym`, `typeparms`, `parms`, `body`, and a
+`memonodes` that is **dead** — macros are never memoized; every expansion is a
+fresh clone. `typeparms` are the macro's type parameters, `macro m[T][a: T]`,
+NULL when only one bracket list is written; `parms` are its value parameters,
+each typed (`valtype`, `FlagLazy`) but a method's `self`. Declared
 inside a type it is a member of that type, listed in the type's `nodelist` and
 bound in its `namespace` beside the methods, and it carries `FlagMethFld` when
-its first parameter is `self` — the same rule that makes a `fn` a method.
+its first value parameter is `self` — the same rule that makes a `fn` a method.
 `cloneMacroDclNode` copies it along with the instance's methods when a generic
 type is instantiated, hooking each parameter to its own copy first so that the
 body's uses of them are copied as uses rather than substituted, while the
-enclosing type's parameters *are* substituted.
+enclosing type's parameters *are* substituted — in the body and in each value
+parameter's type, so `macro put[self, x: T]` in `Cell[T]` takes an `x: i64` in
+`Cell[i64]`. The macro's type parameters are hooked first, so a value
+parameter's type naming one names the copy's.
 
 **`CloneState`** carries `instnode` (stamped into every cloned node, and what
 `errorMsgNode` walks to print the instantiation trace), `selftype`, and `scope`.
@@ -197,14 +207,31 @@ bound and not a (retired) plus-term type. It keeps the text it was written as
 (`FnSigNode.spelled`) for messages. The node is a `FnSigNode` in `annot` or as
 the `typ` of the clause's `IsNode`, where a trait's name would be.
 
-**A macro and a generic module take none.** There the comma is required, and a
-second name straight after the first is refused with `ErrorGenParmConstr`,
-reported at that second name: `[a i32]` would be a typed macro parameter, and
-read as two parameters it would become an arity complaint about the macro's
-uses. Recovery skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so
-a whole `+`-combined annotation costs one diagnostic and each parameter carrying
-one is reported (a signature's own parentheses are skipped whole). The parameter survives; whatever followed its name is dropped.
+**A generic module takes none.** There the comma is required, and a second
+name straight after the first is refused with `ErrorGenParmConstr`, reported at
+that second name. Recovery skips to the next `,` or `]`, stopping at `;`, `{`,
+`}` or EOF, so a whole `+`-combined annotation costs one diagnostic and each
+parameter carrying one is reported (a signature's own parentheses are skipped
+whole). The parameter survives; whatever followed its name is dropped.
 Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
+
+**A macro reads its brackets itself** (`parseMacro`, `parseMacroParmList`): one
+list is its value parameters, `macro m[a: i32, b: lazy T]`; two are its type
+parameters and then its value parameters, `macro m[T][a: T]`, the second list
+possibly empty, `macro three[T][]`. Each entry is a name and, after a `:`, a type
+(`parseTypeReq`, with `inlist` set so a comma after a function reference's
+return type ends the parameter), `lazy` before the type setting `FlagLazy` —
+a contextual word, read only there, so a module or a name called `lazy` stays
+legal. What an entry may be is decided once the list it is in is known: a type
+parameter is a name alone (a constraint on one is `ErrorGenParmConstr`, not
+built); a value parameter is typed (`ErrorMacroParmType`), except `self`
+first in a macro declared in a type (`member`), which is the receiver
+expression as it is and takes no type and no `lazy` (`ErrorMacroSelfType`).
+`[a i32]`, the type without its `:`, is `ErrorBadTok` at the second name, the
+parameter taken as typed so that it is not reported again; recovery is the
+module list's, except that a list left open at a `{` ends the parameter
+silently, the missing `]` reported once. An empty first list is
+`ErrorNoGenParms`.
 
 **`parseWhere`** reads the `where` clause, which stands just before the block:
 after a function's signature (and `inline`), and after a type's name, type
@@ -507,7 +534,8 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    **An unsuffixed number literal passed for a bare type parameter** (`v: T`;
    a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
-   wanted. `genericInferFnParms` runs in three steps: every other argument, then
+   wanted. `genericInferFnParms` runs in three steps: the receiver, if one is
+   given, and every other argument, then
    the bounds (`genericInferFromBounds`), then the literals. A literal meets a
    slot already given by taking it, where `iexpMatches` accepts it as that type
    (the call's own check then converts it and judges its range,
@@ -566,7 +594,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    or `!=`, is checked after the other operand and wanted as its type, so `None == x`
    types the `None` as `x == None` does.
 
-   **A variant of a non-generic enum given to a generic** (`Error(Fault.SoldOut)`,
+   **A variant of a non-generic enum given to a generic** (`Err(Fault.SoldOut)`,
    `Ok(Drink.Tea)`, `Some(Fault.Short(3))`) is held back the same way:
    `fnCallArgIsCtor` is true for it too, so long as no function call is among its
    values (a call would change the order narrowing sees). It names no type parameter of
@@ -580,8 +608,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
 only from the receiver's type ([fncall](fncall.md), "Selecting a candidate"):
-`genericMethodInstance` infers from the arguments after `self`, or takes the
-written type arguments, and memoizes as a call does. A method's instance is
+`genericMethodInstance` infers from the receiver, matched against `self` as the
+call will borrow or dereference it (`genericInferReceiver`), and the arguments
+after `self`, or takes the written type arguments, and memoizes as a call does.
+A method named bare inside its type's braces has no receiver written, and
+infers from its arguments alone. A method's instance is
 type checked with its owner as the walk's type, whatever type the call is in,
 as a method reached by demand is. A generic method copied with its type — into
 a generic type's instance, or a trait's default into an implementer — is still
@@ -893,16 +924,36 @@ array or an instance of a generic holding one in its elements or arguments),
 when whether its
 values move is not yet known: `struct Node { kids: List[Node]; }` makes
 `List[Node]` inside Node's own layout, and `T is Copy` would be answered for a
-Node that has not yet found it moves. Then `genericAbsentMembers` does not
-decide the members with a clause (`late`, handed on as `CloneState.late`):
-`cloneStructNode` copies them and reports each beside its copy
-(`CloneState.latepairs`), and `genericClone` queues `genericLateWhere` as a
-check that reads layouts (`structDeferCheck`), which runs once no layout is in
-flight and before any member is checked. It lays out an argument no layout has
-reached, evaluates the clauses, and takes the members that fail out of the
-instance (`structRetireMember`: its member list, its namespace, its overload
-set). Nothing else reads those members in between, since members wait for the
-layouts to finish. The `is` entries are not deferred: they are the layout. A call on the instance
+Node that has not yet found it moves. Then `genericAbsentMembers` decides a
+member's clauses only as far as no type is asked what it is
+(`genericMemberWhereNow`): a clause naming a type, `K is String` or `K is
+Uni[str]`, reads no layout and is answered at once, so the member is left out or
+kept as at any other time. A clause naming a trait or a signature waits
+(`WhereLate`), unless the rest of its `||` or `&&` decides it. A member with one
+that waits is not decided (`late`, handed on as `CloneState.late`):
+`cloneStructNode` copies it and reports it beside its copy
+(`CloneState.latepairs`), and `genericClone` points the instance at what waits
+(`StructNode.latewhere`) and queues `genericLateWhere` as a check that reads
+layouts (`structDeferCheck`), which runs once no layout is in flight and before
+any member is checked. It lays out an argument no layout has reached, evaluates
+the clauses, and takes the members that fail out of the instance
+(`structRetireMember`: its member list, its namespace, its overload set).
+
+**Members are read before the queue gets there.** A body can be checked inside
+a layout in flight: deciding a bound a type fits structurally checks its methods
+(`genericDemandMatch`), and that happens wherever the instance is made — a
+field's type, a signature, a global's declared type, each held as a layout in
+flight. `g: Host[Svc]` with `S: Hosted` checks Svc's `turn` there, and a call
+in it on `Cells[Req]`, made while Req was not yet laid out, would select a
+member `V is Copy` leaves out, and check its body at Req
+(`generic_global_where_member`, `generic_field_where_member`). So a read of an
+instance's members decides them first (`genericLateWhereNow`, from
+`iNsTypeFindFnField`, `structMatches` and `genericTypeIsHow`): it lays out each
+argument no layout has reached, as the queue would, and decides them when no
+argument is still unsettled, the instance no longer pointing at what waited, so
+the queued check finds nothing to do. An argument in flight cannot be answered
+yet, and an instance's own members are not changed while it is laid out; then
+they stay undecided until the queue. The `is` entries are not deferred: they are the layout. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
@@ -941,12 +992,23 @@ unwound, without reporting again: each level the refusal returns through would
 otherwise start its next expansion down to the limit again, and one that
 expands twice a level would report the limit an exponential number of times.
 
-**Macros differ from generics in three ways**: arguments are never checked for
-being types, never type checked before substitution, and never memoized. That is
-what makes `twice[bump()]` call `bump()` twice, and what lets a macro parameter
-be used in type position. It is also what lets an argument go unevaluated: core's
-`assertDebug[cond]` puts `cond` inside `if isDebugBuild() {...}`, so a release
-build never runs it.
+**Macros differ from generics in three ways**: value arguments are never type
+checked before substitution, and never memoized, and the type arguments are
+given at the use — `m[i32](x)`, `x.m[i32](y)`, or `three[i64]` where the macro
+has no value parameters — and checked only for being types (`macroTypeArgsFit`:
+none given to a macro with type parameters, or some to one without, is
+`ErrorMacroTypeArgs`; the wrong number `ErrorArgCount`; a value `ErrorNotType`).
+Brackets after the macro's name fill its first list: its type parameters where
+it declares them, its value parameters where it does not (`twice[x]`, as
+before). `macroExpand` substitutes the type arguments and the value arguments
+together, the type parameters first. Inferring the type arguments, checking each
+value argument against its parameter's type, and binding a plain (not `lazy`)
+parameter so that it is evaluated once, are checked at expansion `[planned]`:
+today every value parameter is substituted whole, and `FlagLazy` is read by
+nothing. That is what makes `twice[bump()]`, its parameter `lazy`, call `bump()`
+twice. It is also what lets an argument go unevaluated: core's
+`assertDebug[cond: lazy bool]` puts `cond` inside `if isDebugBuild() {...}`, so a
+release build never runs it.
 
 **`srcFile()` and `srcLine()` in a macro's body answer where it is used.**
 `macroExpand` sets `CloneState.srcsite` to the use before cloning the body, and
@@ -967,7 +1029,11 @@ until substituted, so the receiver is the only thing checked ahead of the
 lookup. The receiver is inserted at the front of the argument list and
 `macroExpand` substitutes it for `self` like any other argument: a body naming
 `self` twice evaluates the receiver twice. The call is written with parentheses
-or as the bare member (`x.name`); `x.name[i]` indexes what the member names.
+or as the bare member (`x.name`); `x.name[i]` indexes what the member names,
+except where the macro declares type parameters and what is in the brackets
+are types: `x.name[i32](args)` is then its use, given them, as a generic
+method's is (`fnCallMethodTypeArgs`, for a macro declared in the receiver's type
+itself; one folded in from a field is not reached that way).
 Three things follow the method it stands in for. A bare `name` or `name(args)`
 inside a method of the type is rewritten to `self.name…` from the enclosing
 method's parameter 0, and where no method encloses it — a static function of the

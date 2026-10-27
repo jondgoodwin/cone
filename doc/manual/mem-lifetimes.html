@@ -251,6 +251,38 @@ fn caller() i64 {
 	<p><span class="pre">'static</span> may be written on a parameter's own reference or in the result, but not inside
 		a parameter's type: <span class="pre">fn read(slot: &amp;mut &amp;'static R)</span> is refused (<i>Error 1232</i>),
 		since what a caller passes there is not checked to be global.</p>
+	<p>A struct's field may be written <span class="pre">'static</span> too. A value whose type holds no borrow but
+		<span class="pre">'static</span> ones, at any depth (a struct with a <span class="pre">&amp;'static str</span>
+		field, an <span class="pre">Option</span> of one), borrows nothing of a caller's or of a local, so a call
+		returning one ties it to none of its arguments, though the signature names no lifetime, and a
+		<span class="pre">&amp;mut</span> to one takes no borrow its call is handed. That holds because a
+		<span class="pre">'static</span> field, like a <span class="pre">'static</span> parameter, takes only a global
+		borrow (of a global variable, of a literal, or one already <span class="pre">'static</span>) wherever it is
+		given a value: where the value is built (<span class="pre">Fault(1u32, s)</span>, a variant or an
+		<span class="pre">Option</span> holding one, at any depth) and where the field is stored into
+		(<span class="pre">f.detail = s</span>, through a reference too), in a function's body as in its
+		signature, though the value never leaves the function:</p>
+<pre>
+struct Fault { code: u32; detail: &amp;'static str; }
+
+fn check(a: &amp;i64, b: &amp;i64) Fault { Fault(1u32, "bad") }
+fn wrap(s: &amp;str) Fault {
+  Fault(1u32, s)            // Error 1064: The field 'detail' holds only 'static borrows, so what is put
+}                           //   in it must be global, ... the borrow the caller lent through 's'
+fn caller() Fault {
+  let x = 1i64;
+  check(&amp;x, &amp;x)            // Ok: the Fault borrows neither
+}
+struct Pin { at: &amp;'static i64; }
+fn mine() i64 {
+  let v = 1i64;
+  let p = Pin(&amp;v);          // Error 1064: ... carries a borrow of 'v'
+  *p.at
+}
+</pre>
+	<p>A struct that holds a local's borrow, or one a caller lent, declares a lifetime for it instead, as the message
+		says: <span class="pre">struct Pin['a] { at: &amp;'a i64; }</span>. A borrow of a global the arguments carried
+		is still carried, so the global is not changed while the value is used.</p>
 
 	<h3 id="traitimpl">Implementing a trait</h3>
 	<p>A trait's implementation may promise more than the trait does: a result of <span class="pre">'static</span> or

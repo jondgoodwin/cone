@@ -17,7 +17,7 @@ fn load(name: &str) String {
   p.append(name);
   match fs.readFile(&Path.from(p.view())) {
     case let Ok(s) { s }
-    case let Error(e) {
+    case let Err(e) {
       expect(false, "a fixture is missing");
       String.empty()
     }
@@ -68,7 +68,7 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
     case let Some(i) {
       match ar.read(data, i) {
         case let Ok(got) { expect(got.view() == want, label.view()); }
-        case let Error(e) { expect(false, why(label.view(), &e).view()); }
+        case let Err(e) { expect(false, why(label.view(), &e).view()); }
       }
     }
     case is None { expect(false, labelled("missing", name).view()); }
@@ -78,7 +78,7 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
 // The whole entry through an EntryReader, 'piece' bytes a pull
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut usize) Result[List[u8], ZipError] {
   match ar.reader(data, i) {
-    case let Error(e) { return Error[List[u8], ZipError](e); }
+    case let Err(e) { return Err[List[u8], ZipError](e); }
     case var Ok(r) {
       var all = List[u8].empty();
       var chunk = List[u8].empty();
@@ -91,7 +91,7 @@ fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut
         while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
         if s == Status.Failed {
           match r.error() {
-            case let Some(e) { return Error[List[u8], ZipError](e); }
+            case let Some(e) { return Err[List[u8], ZipError](e); }
             case is None { expect(false, "a failed reader has an error"); }
           }
         }
@@ -117,7 +117,7 @@ fn main() i32 {
   // ---------------- the ordinary archive (Python's zipfile) ----------------
   let basic = load("py-basic.zip");
   match Archive.open(basic.view()) {
-    case let Error(e) { expect(false, why("py-basic opens", &e).view()); }
+    case let Err(e) { expect(false, why("py-basic opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 6u64, "py-basic: six entries");
       expectStr(ar.comment.view(), "fixture archive", "py-basic: archive comment");
@@ -155,7 +155,7 @@ fn main() i32 {
             let expectPulls = (16090usize + sizes[k] - 1usize) / sizes[k];
             expect(pulls >= expectPulls, "streamed lorem.txt: at least size/piece pulls");
           }
-          case let Error(e) { expect(false, why("streamed lorem.txt", &e).view()); }
+          case let Err(e) { expect(false, why("streamed lorem.txt", &e).view()); }
         }
         k += 1usize;
       }
@@ -166,12 +166,12 @@ fn main() i32 {
           expect(got.view() == p.view(), "streamed pattern.bin (stored), 100 bytes a pull");
           expectUInt(u64.from(pulls2), 20u64, "streamed pattern.bin: 20 pulls of 100");
         }
-        case let Error(e) { expect(false, why("streamed pattern.bin", &e).view()); }
+        case let Err(e) { expect(false, why("streamed pattern.bin", &e).view()); }
       }
       var pulls3 = 0usize;
       match streamAll(&ar, basic.view(), 2usize, 10usize, &mut pulls3) {
         case let Ok(got) { expectInt(i64.from(got.len()), 0i64, "streamed empty entry: no bytes"); }
-        case let Error(e) { expect(false, why("streamed empty entry", &e).view()); }
+        case let Err(e) { expect(false, why("streamed empty entry", &e).view()); }
       }
 
       // A reader that has finished stays Done; one asked for 0 bytes still moves
@@ -185,17 +185,17 @@ fn main() i32 {
           expectStr(r.name(), "hello.txt", "reader name");
           expect(r.pull(basic.view(), &mut chunk, 5usize) == Status.Done, "a finished reader stays Done");
         }
-        case let Error(e) { expect(false, "reader opens"); }
+        case let Err(e) { expect(false, "reader opens"); }
       }
 
       // readNamed, and a missing name
       match ar.readNamed(basic.view(), "hello.txt") {
         case let Ok(got) { expect(got.view() == "Hello, zip!\n", "readNamed"); }
-        case let Error(e) { expect(false, "readNamed fails"); }
+        case let Err(e) { expect(false, "readNamed fails"); }
       }
       match ar.readNamed(basic.view(), "nope.txt") {
         case let Ok(got) { expect(false, "readNamed of a missing name succeeds"); }
-        case let Error(e) { expect(e.kind == ErrorKind.NotFound, "readNamed of a missing name is NotFound"); }
+        case let Err(e) { expect(e.kind == ErrorKind.NotFound, "readNamed of a missing name is NotFound"); }
       }
     }
   }
@@ -207,7 +207,7 @@ fn main() i32 {
     var k = 0usize;
     while k < basic.len() { copy.push(basic[k]); k += 1usize; }
     match Archive.open(copy.view()) {
-      case let Error(e) { expect(false, "random access: open"); }
+      case let Err(e) { expect(false, "random access: open"); }
       case let Ok(ar) {
         // wipe the data of lorem.txt (entry 1) and pattern.bin (entry 3), leaving headers alone
         var wiped = 0usize;
@@ -225,11 +225,11 @@ fn main() i32 {
         expectData(&ar, copy.view(), "unicode/héllo-ß-日本.txt", "unicode name\n");
         match ar.readNamed(copy.view(), "dir/sub/lorem.txt") {
           case let Ok(got) { expect(false, "random access: the wiped entry reads"); }
-          case let Error(e) { expect(e.kind == ErrorKind.BadData || e.kind == ErrorKind.BadChecksum, "random access: the wiped deflated entry is refused"); }
+          case let Err(e) { expect(e.kind == ErrorKind.BadData || e.kind == ErrorKind.BadChecksum, "random access: the wiped deflated entry is refused"); }
         }
         match ar.readNamed(copy.view(), "bin/pattern.bin") {
           case let Ok(got) { expect(false, "random access: the wiped stored entry reads"); }
-          case let Error(e) { expect(e.kind == ErrorKind.BadChecksum, "random access: the wiped stored entry fails its CRC-32"); }
+          case let Err(e) { expect(e.kind == ErrorKind.BadChecksum, "random access: the wiped stored entry fails its CRC-32"); }
         }
       }
     }
@@ -238,7 +238,7 @@ fn main() i32 {
   // ---------------- data descriptors (flag bit 3): sizes and CRC come after the data ----------------
   let stream = load("py-stream.zip");
   match Archive.open(stream.view()) {
-    case let Error(e) { expect(false, why("py-stream opens", &e).view()); }
+    case let Err(e) { expect(false, why("py-stream opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 6u64, "py-stream: six entries");
       expect((ar.entry(0usize).flags & 8u16) != 0u16, "py-stream: entries use data descriptors");
@@ -247,7 +247,7 @@ fn main() i32 {
       var pulls = 0usize;
       match streamAll(&ar, stream.view(), 1usize, 333usize, &mut pulls) {
         case let Ok(got) { let l = lorem(); expect(got.view() == l.view(), "py-stream: streamed lorem.txt"); }
-        case let Error(e) { expect(false, why("py-stream: streamed lorem.txt", &e).view()); }
+        case let Err(e) { expect(false, why("py-stream: streamed lorem.txt", &e).view()); }
       }
     }
   }
@@ -256,7 +256,7 @@ fn main() i32 {
   // Python's: an entry written with force_zip64 (zip64 extra in the local header)
   let z64local = load("py-zip64-local.zip");
   match Archive.open(z64local.view()) {
-    case let Error(e) { expect(false, why("py-zip64-local opens", &e).view()); }
+    case let Err(e) { expect(false, why("py-zip64-local opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 2u64, "py-zip64-local: two entries");
       let l = lorem();
@@ -267,7 +267,7 @@ fn main() i32 {
   // Built by hand: zip64 central extras, the zip64 end record and its locator, every field saturated
   let hand64 = load("hand-zip64.zip");
   match Archive.open(hand64.view()) {
-    case let Error(e) { expect(false, why("hand-zip64 opens", &e).view()); }
+    case let Err(e) { expect(false, why("hand-zip64 opens", &e).view()); }
     case let Ok(ar) {
       expect(ar.zip64, "hand-zip64: zip64 end records seen");
       expectUInt(u64.from(ar.count()), 2u64, "hand-zip64: two entries");
@@ -284,7 +284,7 @@ fn main() i32 {
   // A zip64 extra that holds the offset alone
   let off64 = load("hand-zip64-offset.zip");
   match Archive.open(off64.view()) {
-    case let Error(e) { expect(false, why("hand-zip64-offset opens", &e).view()); }
+    case let Err(e) { expect(false, why("hand-zip64-offset opens", &e).view()); }
     case let Ok(ar) {
       expect(!ar.zip64, "hand-zip64-offset: no zip64 end records");
       expectUInt(ar.entry(1usize).size, 21u64, "hand-zip64-offset: the size stays in its place");
@@ -300,7 +300,7 @@ fn main() i32 {
     let file = if w == 0usize { load("win-ps51.zip") } else { load("win-ps7.zip") };
     let tag = if w == 0usize { "win-ps51" } else { "win-ps7" };
     match Archive.open(file.view()) {
-      case let Error(e) { expect(false, why(labelled(tag, "opens").view(), &e).view()); }
+      case let Err(e) { expect(false, why(labelled(tag, "opens").view(), &e).view()); }
       case let Ok(ar) {
         expectUInt(u64.from(ar.count()), 4u64, labelled(tag, "four entries").view());
         // Windows writes the DOS time in local time; the year is what can be checked everywhere
@@ -314,7 +314,7 @@ fn main() i32 {
   // ---------------- Windows' tar (bsdtar -a): data descriptors, extended timestamps, Unix modes ----------------
   let wtar = load("win-tar.zip");
   match Archive.open(wtar.view()) {
-    case let Error(e) { expect(false, why("win-tar opens", &e).view()); }
+    case let Err(e) { expect(false, why("win-tar opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(u64.from(ar.count()), 6u64, "win-tar: six entries");
       expect((ar.entry(0usize).flags & 8u16) != 0u16, "win-tar: data descriptors");
@@ -330,7 +330,7 @@ fn main() i32 {
       var pulls = 0usize;
       match streamAll(&ar, wtar.view(), 4usize, 1000usize, &mut pulls) {
         case let Ok(got) { expect(got.view() == wl.view(), "win-tar: streamed lorem.txt"); }
-        case let Error(e) { expect(false, why("win-tar: streamed lorem.txt", &e).view()); }
+        case let Err(e) { expect(false, why("win-tar: streamed lorem.txt", &e).view()); }
       }
     }
   }
@@ -338,7 +338,7 @@ fn main() i32 {
   // ---------------- names in code page 437, and unflagged UTF-8 ----------------
   let cp = load("hand-cp437.zip");
   match Archive.open(cp.view()) {
-    case let Error(e) { expect(false, why("hand-cp437 opens", &e).view()); }
+    case let Err(e) { expect(false, why("hand-cp437 opens", &e).view()); }
     case let Ok(ar) {
       expectStr(ar.entry(0usize).name.view(), "café-ü.txt", "hand-cp437: a code page 437 name is read as such");
       expectInt(i64.from(ar.entry(0usize).rawName.len()), 10i64, "hand-cp437: the raw name keeps its bytes");
@@ -352,7 +352,7 @@ fn main() i32 {
   // ---------------- bytes before the archive (a self-extractor) ----------------
   let pre = load("hand-prefix.zip");
   match Archive.open(pre.view()) {
-    case let Error(e) { expect(false, why("hand-prefix opens", &e).view()); }
+    case let Err(e) { expect(false, why("hand-prefix opens", &e).view()); }
     case let Ok(ar) {
       expectUInt(ar.prefix, 102u64, "hand-prefix: 102 bytes in front");
       expectUInt(ar.entry(0usize).offset, 102u64, "hand-prefix: offsets count past the prefix");
@@ -365,7 +365,7 @@ fn main() i32 {
     0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
   match Archive.open(&emptyZip) {
     case let Ok(ar) { expectUInt(u64.from(ar.count()), 0u64, "an empty archive has no entries"); }
-    case let Error(e) { expect(false, why("an empty archive opens", &e).view()); }
+    case let Err(e) { expect(false, why("an empty archive opens", &e).view()); }
   }
 
   // ---------------- times: an extended timestamp is exact ----------------

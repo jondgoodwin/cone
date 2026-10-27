@@ -428,7 +428,8 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     // after a value it is an index, and one is, 'counts[Lamp.Red]'
     if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
         INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
-        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL)) {
+        if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL
+                || (calleedcl->tag == MacroDclTag && ((MacroDclNode*)calleedcl)->typeparms != NULL))) {
             for (nodesFor(node->args, cnt, argsp)) {
                 if ((*argsp)->tag == NameUseTag)
                     (*argsp)->flags &= ~FlagValueTermName;
@@ -1727,6 +1728,7 @@ static INode *fnCallSliceBodyOf(TypeCheckState *pstate, FnCallNode *callnode) {
 
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype);
 static void fnCallReadThroughRefs(FnCallNode *node);
+int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype);
 
 // A method called on an array, a reference to one or a slice, lowered against
 // core's 'Array[T]' for its element type. Answers 0, changing nothing, where
@@ -2153,22 +2155,39 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
 
     // An enum's method belongs to its variants: each has a clone of it, and the
     // enum's own is never generated. Called through a reference, the tag selects
-    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum --
-    // which only a method taking 'self' by value can be -- the tag would have to
-    // select it too, and dispatch on a value is not built, so it is refused here
-    // rather than left as a call to a function that does not exist. An intrinsic,
-    // such as a payload-free enum's '==', is no function and is not refused. On a
-    // variant's value the receiver's type is the variant, whose clone is selected.
-    // A method whose receiver names the enum ('self: &Lamp') is one function over
-    // the whole enum and is called as it is: nothing is read from the tag.
+    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum for a
+    // reference receiver ('self: &'), the value was borrowed for it
+    // (fnCallBorrowReceiver), so the call is the one through that borrow,
+    // '(&k).name()', and is dispatched the same way. Called on a value for a
+    // method taking 'self' by value, the tag would have to select it too, and
+    // dispatch on a value is not built, so it is refused here rather than left as
+    // a call to a function that does not exist. An intrinsic, such as a
+    // payload-free enum's '==', is no function and is not refused. On a variant's
+    // value the receiver's type is the variant, whose clone is selected. A method
+    // whose receiver names the enum ('self: &Lamp') is one function over the
+    // whole enum and is called as it is: nothing is read from the tag.
     if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
         && !structIsWholeEnumMethod((INode*)selected)
         && (selected->value == NULL || selected->value->tag != IntrinsicTag)) {
         INode *owner = inodeGetOwner((INode*)selected);
+        if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)
+            && callnode->objfn != obj && iexpGetTypeDcl(callnode->objfn)->tag == RefTag
+            && iexpGetTypeDcl(obj)->tag != RefTag
+            && fnCallLowerTraitMethod(pstate, callnode, owner))
+            return 1;
+        // The refusal names the two receivers that do work on a value: a
+        // reference, dispatched on the tag, and for an enum one naming it, which
+        // is one function over the whole enum
         if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
-            errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
-                "`%s` runs the variant's own, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the method with a reference receiver, which dispatches on the tag.",
-                &methsym->namestr, &((StructNode*)owner)->namesym->namestr);
+            Name *ownername = ((StructNode*)owner)->namesym;
+            if (owner->flags & EnumType)
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too), or 'self: %s', one function over the whole enum.",
+                    &methsym->namestr, &ownername->namestr, &ownername->namestr);
+            else
+                errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                    "`%s` takes 'self' by value, so each variant runs its own copy, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the receiver 'self: &', which is dispatched on the tag (on a value too).",
+                    &methsym->namestr, &ownername->namestr);
             callnode->vtype = errorType;
             return 1;
         }
@@ -3159,6 +3178,20 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         member->flags |= FlagRcvChecked;
         return 0;
     }
+    // 'x.m[i32](y)': a macro method given its type arguments, declared in the
+    // receiver's type itself (one folded in from a field is not reached this way)
+    if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)
+        && iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym) == found) {
+        Nodes *macrotypeargs = index->args;
+        inodeLexCopy((INode*)node, (INode*)member);
+        node->objfn = member->objfn;
+        node->methfld = (INode*)methfld;
+        if (node == index)
+            node->args = NULL;
+        node->flags &= ~FlagIndex;
+        macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, macrotypeargs);
+        return 1;
+    }
     if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
         || ((FnDclNode*)found)->genericinfo == NULL) {
         errorMsgNode(nodesGet(index->args, 0), ErrorNotTyped,
@@ -3863,7 +3896,7 @@ static INode *fnCallOperandNumber(INode *operand) {
 // the order a call's arguments are checked in is what narrowing sees
 // (narrowCallMade).
 // A variant of a non-generic enum, 'Fault.SoldOut' or 'Fault.Short(3)', is one
-// too when no call is among its values: given to a generic ('Error(Fault.SoldOut)')
+// too when no call is among its values: given to a generic ('Err(Fault.SoldOut)')
 // it names no type parameter of its own, so where it goes may say it is the enum,
 // 'Fault', which it is then coerced to as a variant passed to an enum parameter is.
 static int fnCallArgIsCtor(INode *arg) {
@@ -4137,6 +4170,15 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         macroCallTypeCheck(pstate, nodep);
         return;
     }
+    // 'm[i32](x)': a macro given its type arguments in brackets, then its
+    // value arguments in parentheses
+    if (node->methfld == NULL && !(node->flags & (FlagIndex | FlagOperator)) && node->objfn->tag == FnCallTag
+        && (node->objfn->flags & FlagIndex) && !(node->objfn->flags & FlagRange)
+        && ((FnCallNode*)node->objfn)->methfld == NULL
+        && nameUseNames(((FnCallNode*)node->objfn)->objfn, MacroDclTag)) {
+        macroCallTypeArgsTypeCheck(pstate, nodep);
+        return;
+    }
 
     // '<-' given a list of entries, entries other than plain values, or the
     // contents of a construction becomes the applications they stand for
@@ -4249,7 +4291,7 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                     // folded through as its self, as a folded method runs with it
                     if (folded)
                         structFoldReceiver(pstate, (StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
-                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found, NULL);
                     return;
                 }
                 // One method, not generic: its parameters after 'self' are

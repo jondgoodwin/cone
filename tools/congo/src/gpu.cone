@@ -47,7 +47,7 @@ fn checkGpuMarks(plan: &Plan, reg: &Registry, u: usize) Result[void, String] {
   }
   var what = String.from(reg.packages[plan.units[u].pkg].name.view());
   if folder { what <- "'s gpu/ folder"; }
-  Error[void, String](cat(what.view(), " is compiled for the GPU, and so is every package it imports, each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in its congo.toml; these are not:\n",
+  Err[void, String](cat(what.view(), " is compiled for the GPU, and so is every package it imports, each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in its congo.toml; these are not:\n",
     listed.view()))
 }
 
@@ -164,7 +164,7 @@ fn gpuSearchFolders(plan: &Plan, reg: &Registry, u: usize, all: &List[usize], co
       var m = cat(unitName, "'s GPU build compiles ", pkg.name.view(), " from its source, which conec finds by its name on its package search path (",
         listed.view(), "): there it ");
       m <- there.view(), ", not ", srcPlace.view(), hint.view();
-      return Error[List[Path], String](m);
+      return Err[List[Path], String](m);
     }
     i = i + 1usize;
   }
@@ -262,7 +262,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   var folders = List[Path].empty();
   match gpuSearchFolders(plan, &s.reg, u, &packages, core, &lead) {
     case var Ok(ok) { folders <-> ok; }
-    case let Error(e) { return Error[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.copy()); }
   }
   let gpuRoot = s.out.join("gpu");
   let work = gpuRoot.join(name.view());
@@ -296,7 +296,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   }
   match fs.writeFile(&source, text.view()) {
     case is Ok {}
-    case let Error(e) { fail(fsMessage(&e)); }
+    case let Err(e) { fail(fsMessage(&e)); }
   }
   let spvName = cat(name.view(), ".spv");
   let spv = s.out.join(spvName.view());
@@ -320,15 +320,15 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   rest.push(native(&source));
   if !runConec(&s.conec, &s.defines, rest) {
     let sourcePlace = native(&source);
-    return Error[Path, String](cat("could not compile ", name.view(), " for the GPU (", sourcePlace.view(), ")"));
+    return Err[Path, String](cat("could not compile ", name.view(), " for the GPU (", sourcePlace.view(), ")"));
   }
   if !fs.isFile(&written) {
     let place = native(&written);
-    return Error[Path, String](cat("conec wrote no SPIR-V module at ", place.view()));
+    return Err[Path, String](cat("conec wrote no SPIR-V module at ", place.view()));
   }
   match fs.rename(&written, &spv) {
     case is Ok {}
-    case let Error(e) { fail(fsMessage(&e)); }
+    case let Err(e) { fail(fsMessage(&e)); }
   }
   Ok[Path, String](spv)
 }
@@ -337,7 +337,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
 fn removeIfThere(file: &Path) {
   match fs.removeFile(file) {
     case is Ok {}
-    case let Error(e) {
+    case let Err(e) {
       if !e.notFound() {
         fail(fsMessage(&e));
       }
@@ -369,7 +369,7 @@ fn validateKernels(spv: &Path) Validation {
       said <- err.view();
       code = ok.exitCode;
     }
-    case let Error(e) { fail(e.message()); }
+    case let Err(e) { fail(e.message()); }
   }
   Validation(true, code == 0u32, said)
 }

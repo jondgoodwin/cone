@@ -1,0 +1,151 @@
+// Many client connections at once under the buffer pool's DEFAULT bound
+// (64 MiB): 1,200 kept-alive connections on one Loop and one Driver, both
+// ends in this process, each making one GET. The server holds every request
+// until all 1,200 have arrived, so every client is awaiting its response's
+// head at the same moment; then it answers them all. A client gathers a head
+// in a buffer that starts at 4 KiB and grows only as the head needs, so
+// 1,200 waiting clients stay far inside the bound (each gathering the 64 KiB
+// a head may reach would be 75 MiB, past it). Checked: every connect
+// succeeds, every request reaches the server before any is answered, every
+// one ends Done, and the bound is the default.
+//
+// On Linux the soft descriptor limit is raised to the hard one first: the
+// 2,400 sockets are more than the default 1,024.
+
+mod manyconns;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+struct RLimit {
+  pub soft: u64;
+  pub hard: u64;
+}
+
+extern {
+  fn @c("getrlimit") getLimit(resource: i32, limit: *RLimit) i32;
+  fn @c("setrlimit") setLimit(resource: i32, limit: *RLimit) i32;
+}
+
+const limitFiles = 7i32;              // RLIMIT_NOFILE
+const conns = 1200u64;
+const tokServer = 0x10000000u64;      // the server's sink
+const tokConn = 0x20000000u64;        // a client connection's: + its number
+const tokReq = 0x30000000u64;         // a request's: + its connection's number
+
+fn raiseFileLimit() {
+  if isWindows() {return;}
+  var l = RLimit(0u64, 0u64);
+  if getLimit(limitFiles, &mut l as *RLimit) == 0i32 && l.soft < l.hard {
+    l.soft = l.hard;
+    setLimit(limitFiles, &mut l as *RLimit);
+  }
+}
+
+fn answer(drv: &mut Driver, req: ReqId) {
+  drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+  var b = IoBuf(64usize);
+  b.setLen(64usize);
+  drv.sendData(req, b);
+  drv.finish(req);
+}
+
+fn main() i32 {
+  raiseFileLimit();
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var port = 0u16;
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {
+      match drv.localAddr(&lp, r) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+
+  var cs = List[ConnId].empty();
+  var held = List[ReqId].empty();
+  var connected = 0u64;
+  var connectFails = 0u64;
+  var requested = false;
+  var answered = false;
+  var heldAtOnce = 0u64;
+  var dones = 0u64;
+  var bad = 0u64;
+  var events = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(60i64);
+  while dones + bad < conns && Instant.now() < giveUp {
+    // The connections, 64 at a time beyond those settled
+    if u64.from(cs.len()) < conns && u64.from(cs.len()) < connected + connectFails + 64u64 {
+      let k = u64.from(cs.len());
+      cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k)));
+      continue;
+    }
+    // One GET on each, once all are connected
+    if !requested && connected + connectFails == conns {
+      requested = true;
+      var k = 0usize;
+      while k < cs.len() {
+        drv.request(&mut lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+          Sink.Here(tokReq + u64.from(k)));
+        k = k + 1usize;
+      }
+    }
+    drv.poll(&mut lp, giveUp, &uni events);
+    var j = 0usize;
+    while j < events.len() {
+      let e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.Request {held.push(e.req);}
+      } else if e.token >= tokReq {
+        if e.kind == EventKind.Data {
+          drv.release(e.req, e.buf.len());
+        } else if e.kind == EventKind.Done {
+          dones = dones + 1u64;
+        } else if e.isTerminal() {
+          bad = bad + 1u64;
+        }
+      } else if e.token >= tokConn {
+        if e.kind == EventKind.Connected {connected = connected + 1u64;}
+        else if e.kind == EventKind.Closed && !requested {connectFails = connectFails + 1u64;}
+      }
+    }
+    events.clear();
+    // Every request in: answer them all
+    if !answered && u64.from(held.len()) == connected && connected + connectFails == conns {
+      answered = true;
+      heldAtOnce = u64.from(held.len());
+      var k = 0usize;
+      while k < held.len() {
+        answer(&mut drv, *held[k]);
+        k = k + 1usize;
+      }
+    }
+  }
+  expectUInt(u64.from(stats().maxBytes), 67108864u64, "the buffer pool's bound is its default, 64 MiB");
+  expectUInt(connectFails, 0u64, "every connect succeeds");
+  expectUInt(heldAtOnce, conns, "all 1,200 requests reach the server before any is answered");
+  expectUInt(dones, conns, "every request ends Done");
+  expectUInt(bad, 0u64, "none fails");
+
+  var k = 0usize;
+  while k < cs.len() {
+    drv.close(&mut lp, *cs[k]);
+    k = k + 1usize;
+  }
+  let until = Instant.now() + Duration.fromSeconds(10i64);
+  while drv.live() > 0u32 && Instant.now() < until {
+    drv.poll(&mut lp, until, &uni events);
+    events.clear();
+  }
+  done()
+}

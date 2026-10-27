@@ -1,0 +1,216 @@
+<html>
+  <head>
+	  <title>Logging and Tracing - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Logging and Tracing</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built: sinks (a buffered binary file, Event Tracing for Windows, text
+		on the console) are packages of their own, still to come, as are the packages' own instrumentation, metrics,
+		and tools that read what a sink wrote. The <span class="pre">actors</span> package does not yet emit through
+		<span class="pre">trace</span> or register its context.</i></p>
+
+	<p>The <span class="pre">trace</span> package is the one facade a package logs and traces through. A package
+		that does work worth seeing declares its <b>kinds</b> of event once, and emits them where the work happens;
+		while nothing wants an event, emitting it costs one load and a compare, and its arguments are never
+		evaluated. A program decides what is wanted: it installs a <b>sink</b>, which records events somewhere, and
+		says which <b>targets</b> it wants at which <b>level</b>, in code or from the
+		<span class="pre">CONE_TRACE</span> environment variable, with no rebuild. Logging and tracing are one
+		pipeline: a log message is an event with a level and a text. The package imports only
+		<span class="pre">core</span>; its source's header comment is the full account.</p>
+
+	<h2 id="example">An example</h2>
+	<p>A package that fetches things declares three kinds, and a program prints what it is given:</p>
+<pre>
+mod fetcher;
+import stdio use *;
+import trace use Level, Kind1, Kind2, Nanos;
+
+// The kinds a package declares: once, as globals, made in its init
+let fetched: Kind2[u64, Nanos];
+let refused: Kind1[i64];
+let request: Kind1[&amp;str];
+
+fn @initpure init() {
+  fetched = Kind2[u64, Nanos].make("fetched", "fetcher", Level.Debug, "bytes", "took");
+  refused = Kind1[i64].make("refused", "fetcher", Level.Warn, "status");
+  request = Kind1[&amp;str].make("request", "fetcher", Level.Info, "url");
+}
+
+fn fetch(url: &amp;str, status: i64) {
+  let span = request.begin(url);
+  if status != 200 {
+    refused.logMessage(status, (trace.Message() &lt;- "the server said ", status));
+  } else {
+    fetched.emit(5120u64, Nanos(830000i64));
+  }
+  request.end(span);
+}
+
+// A sink that prints each event as a line
+struct Console is trace.Sink {
+  pub min: Level;
+
+  pub fn enabled(self: &amp;, k: &amp;trace.Info) bool {k.level.rank() &lt;= min.rank()}
+
+  pub fn record(self: &amp;, e: &amp;trace.Event) {
+    print &lt;- e.kind.level.name(), " ", e.kind.target, " ", e.kind.name;
+    if e.phase == trace.Phase.Begin {print &lt;- " begins #", e.span;}
+    if e.phase == trace.Phase.End {print &lt;- " ends #", e.span;}
+    var i = 0usize;
+    while i &lt; e.values.len {
+      print &lt;- " ", e.kind.names[i], "=";
+      match e.values[i] {
+        case let U64(v) {print &lt;- v;}
+        case let I64(v) {print &lt;- v;}
+        case let Text(v) {print &lt;- v;}
+        case let Duration(v) {print &lt;- v, "ns";}
+        else {print &lt;- "?";}
+      }
+      i = i + 1usize;
+    }
+    if e.message.len &gt; 0usize {print &lt;- ": ", e.message;}
+    print &lt;- "\n";
+  }
+}
+
+fn main() {
+  trace.install(Uni[Console](Level.Trace));    // errors and warnings, by default
+  trace.setLevel("fetcher", Level.Info);       // more from fetcher, unless CONE_TRACE says
+  fetch("https://example.com/a", 200);
+  fetch("https://example.com/b", 404);
+  trace.setLevel("fetcher", Level.Debug);
+  fetch("https://example.com/c", 200);
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+info fetcher request begins #1 url=https://example.com/a
+info fetcher request ends #1
+info fetcher request begins #2 url=https://example.com/b
+warn fetcher refused status=404: the server said 404
+info fetcher request ends #2
+info fetcher request begins #3 url=https://example.com/c
+debug fetcher fetched bytes=5120 took=830000ns
+info fetcher request ends #3
+</pre>
+	<p>The first fetch's <span class="pre">fetched</span> event is a Debug event of a target at Info, so it is
+		off, and its arguments were never evaluated. Run with <span class="pre">CONE_TRACE=fetcher=warn</span>, the same program
+		prints only the <span class="pre">refused</span> line: what the variable names, the program's own
+		<span class="pre">setLevel</span> calls do not undo.</p>
+
+	<h2 id="kinds">Declaring kinds</h2>
+	<p>A kind is what is known of an event before it happens: its name, its target (the package or subsystem
+		it belongs to, such as <span class="pre">"actors"</span> or <span class="pre">"httpclient"</span>), its
+		level, and the names and types of its fields. An event then carries only values. A kind of
+		<i>n</i> fields is a <span class="pre">Kind<i>n</i></span>, from <span class="pre">Kind0</span> to
+		<span class="pre">Kind4</span>, whose type arguments are its fields' types; <span class="pre">make</span>
+		takes the name, the target, the level and the fields' names.</p>
+	<p>A kind is a global of the module that emits it, made in that module's
+		<a href="mod-globals.html">initializer</a>, and never moved afterwards: the facade keeps its address from its
+		first event on. A field's type is one of seven, and a kind of any other is refused where it is made:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Field type</th><th>A value of it</th></tr>
+	<tr><td><span class="pre">i64</span>, <span class="pre">u64</span>, <span class="pre">f64</span>,
+		<span class="pre">bool</span></td><td>a number or a truth value; a narrower number is widened where it is
+		emitted</td></tr>
+	<tr><td><span class="pre">&amp;str</span></td><td>a text, borrowed for the event only: a sink that keeps it
+		copies it</td></tr>
+	<tr><td><span class="pre">trace.Nanos</span></td><td>a duration in nanoseconds (a
+		<span class="pre">time.Duration</span>'s <span class="pre">nanos()</span>)</td></tr>
+	<tr><td><span class="pre">trace.Ticks</span></td><td>a time of the facade's clock,
+		<span class="pre">trace.ticks()</span></td></tr>
+	</table>
+	<p>The levels are <span class="pre">Err</span>, <span class="pre">Warn</span>, <span class="pre">Info</span>,
+		<span class="pre">Debug</span> and <span class="pre">Trace</span>, from the least detailed to the most, and
+		<span class="pre">Off</span>, which no event has and which wants none.</p>
+
+	<h2 id="emitting">Emitting</h2>
+	<p>A kind has four macro methods, each taking one argument for each field, in order:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Use</th><th>What it records</th></tr>
+	<tr><td><span class="pre">k.emit(a, b)</span></td><td>an event</td></tr>
+	<tr><td><span class="pre">k.log(a, b, msg)</span></td><td>an event with a message, a text</td></tr>
+	<tr><td><span class="pre">k.logMessage(a, b, msg)</span></td><td>an event with a message that is a
+		<span class="pre">trace.Message</span>, built in place with <span class="pre">&lt;-</span> and no allocation
+		(texts, integers and truth values, up to 240 bytes), written in parentheses as an argument. Two names for now:
+		they become one <span class="pre">log</span> when a macro can be overloaded</td></tr>
+	<tr><td><span class="pre">k.begin(a, b)</span></td><td>the start of an interval, answering its id, or 0 when the
+		kind is off</td></tr>
+	<tr><td><span class="pre">k.end(id)</span></td><td>the interval's end; an id of 0 records nothing</td></tr>
+	</table>
+	<p>Each is a <a href="mod-generativity.html#macros">macro</a>, so that its arguments are put inside its test of
+		whether the kind is on: when it is off, none of them is evaluated, so an argument may be as costly as it
+		likes. When it is on, each is evaluated once, left to right, and checked against the field's type as a
+		function's argument is. An interval holds nothing on the stack or in the thread: its end needs only its id,
+		so it may come after an <a href="conc-await.html"><span class="pre">await</span></a>, on another worker, or
+		from another actor.</p>
+	<p>Each event records the place it was emitted (<a href="safe-intrinsics.html#srcloc">srcFile() and
+		srcLine()</a> of the macro's use), the time, read once from the clock, and a context: the worker running and
+		the cause it runs for, from a provider a runtime registers with
+		<span class="pre">trace.setContextProvider</span>, or <span class="pre">noWorker</span> and 0 with
+		none.</p>
+
+	<h2 id="turning-on">Turning it on</h2>
+	<p>Nothing is recorded until a program installs a sink, once, with
+		<span class="pre">trace.install(sink)</span>, or two with
+		<span class="pre">trace.installPair(first, second)</span> (a file and the console, say), each of which
+		records only the kinds it said it wanted. A sink is a struct declaring
+		<span class="pre">is trace.Sink</span>, with three methods: <span class="pre">enabled(k)</span>, whether it
+		wants a kind's events, asked when the kind's state is worked out rather than per event;
+		<span class="pre">record(e)</span>, given each event of a kind it wanted, on the thread that made it; and
+		<span class="pre">flush()</span>, asked by <span class="pre">trace.flush()</span> and when the program ends.
+		A sink whose answer to <span class="pre">enabled</span> changes calls <span class="pre">trace.refresh()</span>.</p>
+	<p>A kind is on when a sink is installed and wants it, and its level is no more detailed than its target's.
+		With no sink installed, every kind is off. A target's level is the one
+		<span class="pre">trace.setLevel(target, level)</span> gave it, else the default,
+		<span class="pre">trace.setDefaultLevel(level)</span>, which is <span class="pre">Warn</span> until set: a
+		program that installs a sink and does nothing more sees its errors and warnings. Either may be changed while
+		the program runs, and <span class="pre">trace.levelOf(target)</span> answers the level now;
+		<span class="pre">CONE_TRACE</span>, below, overrides both.</p>
+
+	<h3 id="cone-trace">CONE_TRACE</h3>
+	<p>The <span class="pre">CONE_TRACE</span> environment variable is the operator's override, needing no
+		rebuild. It is read once, when the sink is installed, and it wins over the program for every target it
+		names, whether the program set that target's level before the install or after. For the targets it does not
+		name, the program's levels hold. A bare level in it is the default, over the program's default; with none,
+		the program's default holds. So a target's level is <span class="pre">CONE_TRACE</span>'s for that target,
+		else the program's for it, else <span class="pre">CONE_TRACE</span>'s default, else the program's, else
+		Warn. <span class="pre">trace.filter(spec)</span> takes the same text from code, and replaces everything
+		the program set (under <span class="pre">CONE_TRACE</span> all the same). A spec is a list of directives
+		separated by commas:</p>
+	<table border="1" cellpadding="4" cellspacing="0">
+	<tr><th>Directive</th><th>Means</th></tr>
+	<tr><td><span class="pre">info</span></td><td>the default level, for every target not named</td></tr>
+	<tr><td><span class="pre">httpclient=debug</span></td><td>that target's level</td></tr>
+	<tr><td><span class="pre">h3</span></td><td>that target at Trace: everything</td></tr>
+	</table>
+	<p>So <span class="pre">CONE_TRACE=warn,httpclient=debug,actors=info</span> wants warnings and errors from
+		everything, and more from two targets. A level is named in any case; a target, up to 32 bytes, as it is
+		spelled; spaces around either are ignored; a later directive for a target replaces an earlier one. A
+		directive that is none of these (an unknown level, an empty or too long target, a thirty-third target) is
+		skipped, and <span class="pre">filter</span> answers how many were.</p>
+
+	<h2 id="cost">What it costs</h2>
+	<p>A kind keeps, in one byte, which sinks want it, worked out when it is first emitted and whenever a level,
+		the filter or the sinks change. An event of a kind that is off costs a relaxed load of that byte and a
+		compare. An event that is on reads the clock and the context once, and calls each sink that wants it.</p>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="library.html#threads">The Standard Library</a> &mdash; the <span class="pre">trace</span> package in the catalogue.</li>
+		<li><a href="mod-generativity.html#macros">Macros</a> &mdash; why an argument of a kind that is off is never evaluated.</li>
+		<li><a href="mod-globals.html">Global state</a> &mdash; where a kind is declared and made.</li>
+	</ul>
+
+	</div>
+	</body>
+</html>

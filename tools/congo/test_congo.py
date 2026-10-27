@@ -11,6 +11,7 @@ it prints from, not copied from a run.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -2975,6 +2976,562 @@ class GpuFolder(unittest.TestCase):
         self.assertTrue(said.endswith("OK\n"), said)
         self.assertEqual(entry_points(ship / "build" / "release" / "starship.spv"),
                          ["blocks", "sample", "probe", "move", "shade", "recut", "layerEnd"])
+
+
+def compiled(run: subprocess.CompletedProcess) -> list[str]:
+    """The packages a build compiled, in order, from its 'Compiling' lines; a
+    package's kernels as '<name> for the GPU'."""
+    names = []
+    for line in run.stdout.splitlines():
+        words = line.split()
+        if words[:1] == ["Compiling"]:
+            names.append(words[1] + (" for the GPU" if "for the GPU" in line else ""))
+    return names
+
+
+class BuildCache(unittest.TestCase):
+    """A compile is skipped where its key is unchanged since the last compile
+    that succeeded in that build folder and its outputs are the files that
+    compile wrote (README.md, "What a build does"). A stale object is the
+    failure that matters: each scenario changes one thing a compile reads and
+    checks that exactly the compiles that read it are done again, and that the
+    program then does what its source now says."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+    registry = Scenarios.registry
+
+    LEAF = """
+        mod leaf;
+
+        pub fn value() i64 {{
+          {value}i64
+        }}
+        {more}"""
+
+    ALL = ["libc", "core", "stdio", "leaf", "mid", "app"]
+
+    def chain(self) -> Path:
+        """leaf, a library; mid, a library importing leaf; app, a program
+        importing mid, which prints mid.twice()."""
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        for name in ("leaf", "mid"):
+            write(pkgs / name / "congo.toml",
+                  f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
+        self.set_leaf(10)
+        write(pkgs / "mid" / "src" / "mid.cone", """
+            mod mid;
+
+            import leaf;
+
+            pub fn twice() i64 {
+              leaf.value() * 2i64
+            }
+            """)
+        app = self.root / "app"
+        write(app / "congo.toml",
+              '[package]\nname = "app"\nversion = "0.1.0"\noutput = "executable"\n')
+        self.set_app("")
+        return app
+
+    def set_leaf(self, value: int, more: str = "") -> None:
+        write(self.root / "pkgs" / "leaf" / "src" / "leaf.cone",
+              self.LEAF.format(value=value, more=more))
+
+    def set_app(self, plus: str) -> None:
+        write(self.root / "app" / "src" / "app.cone", f"""
+            mod app;
+
+            import stdio;
+            import mid;
+
+            fn main() i32 {{
+              stdio.print <- mid.twice(){plus};
+              stdio.print <- "\\n";
+              0i32
+            }}
+            """)
+
+    def run_app(self, app: Path, *args: str) -> tuple[list[str], str]:
+        run = self.congo("run", *args, cwd=app)
+        return compiled(run), self.program_output(run)
+
+    def test_only_what_reads_a_change_is_compiled_again(self):
+        app = self.chain()
+        out = app / "build" / "debug"
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        # Nothing changed: nothing compiled, the program linked and run
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        for name in self.ALL:
+            key = (out / f"{name}.key").read_text(encoding="utf-8")
+            self.assertTrue(key.startswith("congo build key 1\nkey "), name)
+            self.assertIn(f"output {congo.content_hash(out / f'{name}{congo.OBJ_EXT}')} ", key)
+        # The key's inputs: conec and conestd by content, the command line,
+        # the environment conec reads, the manifest, the description, every
+        # source and every include file the description names
+        mid_key = (out / "mid.key").read_text(encoding="utf-8")
+        for kind in ("conec", "conestd", "command", "env CONE_PACKAGES", "manifest",
+                     "description", "source", "include"):
+            self.assertRegex(mid_key, rf"(?m)^{kind}[ =]", kind)
+        self.assertIn(str(out / "leaf.cone"), mid_key)
+        # One line of the program: the program alone
+        self.set_app(" + 1i64")
+        self.assertEqual(self.run_app(app), (["app"], "21\n"))
+        # A body of an import changed, its include file not: the import alone,
+        # and the program links its new object
+        before = (out / "leaf.cone").read_bytes()
+        self.set_leaf(11)
+        self.assertEqual(self.run_app(app), (["leaf"], "23\n"))
+        self.assertEqual((out / "leaf.cone").read_bytes(), before)
+        # An interface changed: the import, and everything whose description
+        # names its include file, mid directly and app among its package lines
+        self.set_leaf(11, "\npub fn extra() i64 {\n  1i64\n}\n")
+        self.assertEqual(self.run_app(app), (["leaf", "mid", "app"], "23\n"))
+        self.assertNotEqual((out / "leaf.cone").read_bytes(), before)
+        # An object or an include file gone, or not the file its compile wrote:
+        # that package. An include file regenerated the same as before
+        # compiles nothing after it
+        (out / f"mid{congo.OBJ_EXT}").unlink()
+        self.assertEqual(self.run_app(app), (["mid"], "23\n"))
+        (out / "leaf.cone").unlink()
+        self.assertEqual(self.run_app(app), (["leaf"], "23\n"))
+        stdio_obj = out / f"stdio{congo.OBJ_EXT}"
+        stdio_obj.write_bytes(stdio_obj.read_bytes() + b"\0")
+        self.assertEqual(self.run_app(app), (["stdio"], "23\n"))
+        # A key file gone, or not one this Congo reads
+        (out / "core.key").unlink()
+        (out / "libc.key").write_text("congo build key 0\n", encoding="utf-8")
+        self.assertEqual(self.run_app(app), (["libc", "core"], "23\n"))
+        # The manifest is part of the key, though this change compiles the same
+        write(self.root / "pkgs" / "mid" / "congo.toml",
+              '[package]\nname = "mid"\nversion = "0.1.0"\noutput = "library"\n'
+              'targets = ["native"]\n')
+        self.assertEqual(self.run_app(app), (["mid"], "23\n"))
+        # A file added to a package changes its description: that package;
+        # and its include file, whose banner names the files it was made
+        # from, so what reads that
+        write(self.root / "pkgs" / "mid" / "src" / "more.cone",
+              "fn helper() i64 {\n  3i64\n}\n")
+        self.assertEqual(self.run_app(app), (["mid", "app"], "23\n"))
+        self.assertIn("from mid.cone and more.cone", (out / "mid.cone").read_text())
+        # --no-cache compiles everything, and records keys that stand
+        self.assertEqual(self.run_app(app, "--no-cache"), (self.ALL, "23\n"))
+        self.assertEqual(self.run_app(app), ([], "23\n"))
+        # congo clean deletes the keys with the build folder
+        self.congo("clean", cwd=app)
+        self.assertEqual(self.run_app(app), (self.ALL, "23\n"))
+
+    def test_each_mode_and_each_set_of_defines(self):
+        app = self.chain()
+        write(app / "src" / "app.cone", """
+            mod app;
+
+            import stdio;
+            import mid;
+
+            fn main() i32 {
+              stdio.print <- mid.twice() + definedInt("N");
+              stdio.print <- "\\n";
+              0i32
+            }
+            """)
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        # Release builds into a folder of its own, its own cache
+        self.assertEqual(self.run_app(app, "--release"), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        self.assertEqual(self.run_app(app, "--release"), ([], "20\n"))
+        # The defines are on every compile's command line, so in every key: a
+        # build with other defines compiles everything again, in the same folder
+        self.assertEqual(self.run_app(app, "-D", "N=5"), (self.ALL, "25\n"))
+        self.assertEqual(self.run_app(app, "-D", "N=5"), ([], "25\n"))
+        self.assertEqual(self.run_app(app, "-D", "N=6"), (self.ALL, "26\n"))
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app, "--release"), ([], "20\n"))
+
+    def test_another_conec_or_conestd_compiles_everything(self):
+        app = self.chain()
+        tools = self.root / "tools"
+        tools.mkdir()
+        conec = tools / congo.REPO_CONEC.name
+        shutil.copyfile(congo.REPO_CONEC, conec)
+        conestd = tools / congo.conestd_path(congo.REPO_CONEC).name
+        shutil.copyfile(congo.conestd_path(congo.REPO_CONEC), conestd)
+        self.env["CONEC"] = str(conec)
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        # conec rebuilt where it stands: another file by its content, whatever
+        # its time. A byte after the end of an executable changes nothing it does
+        with conec.open("ab") as file:
+            file.write(b"\0")
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        # conestd likewise. Built as a library, mid is not linked with it
+        mid = self.root / "pkgs" / "mid"
+        self.assertEqual(compiled(self.congo("build", cwd=mid)), ["libc", "core", "leaf", "mid"])
+        self.assertEqual(compiled(self.congo("build", cwd=mid)), [])
+        with conestd.open("ab") as file:
+            file.write(b"\0")
+        self.assertEqual(compiled(self.congo("build", cwd=mid)), ["libc", "core", "leaf", "mid"])
+        # Another conec, at another path
+        del self.env["CONEC"]
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+
+    def wrapper(self) -> Path:
+        """A conec that runs the repository's, and then, where
+        CONGO_TEST_CLOBBER names a file, writes over it as a compile killed
+        half-way would leave it and ends with a failure; and where
+        CONGO_TEST_HANG names a folder, says so there first and waits for
+        'release' to appear in it, so that Congo can be killed while it runs."""
+        tools = self.root / "wrap"
+        if IS_WINDOWS:
+            script = tools / "conec.bat"
+            write(script, f"""
+                @echo off
+                "{congo.REPO_CONEC}" %*
+                if not defined CONGO_TEST_CLOBBER exit /b %errorlevel%
+                echo half-written> "%CONGO_TEST_CLOBBER%"
+                if not defined CONGO_TEST_HANG exit /b 1
+                echo started> "%CONGO_TEST_HANG%\\started"
+                :wait
+                if exist "%CONGO_TEST_HANG%\\release" goto done
+                ping -n 2 127.0.0.1 >nul
+                goto wait
+                :done
+                echo done> "%CONGO_TEST_HANG%\\done"
+                exit /b 1
+                """)
+        else:
+            script = tools / "conec"
+            write(script, f"""
+                #!/bin/sh
+                "{congo.REPO_CONEC}" "$@"
+                status=$?
+                [ -z "$CONGO_TEST_CLOBBER" ] && exit $status
+                echo half-written > "$CONGO_TEST_CLOBBER"
+                [ -z "$CONGO_TEST_HANG" ] && exit 1
+                echo started > "$CONGO_TEST_HANG/started"
+                while [ ! -f "$CONGO_TEST_HANG/release" ]; do sleep 0.2; done
+                echo done > "$CONGO_TEST_HANG/done"
+                exit 1
+                """)
+            script.chmod(0o755)
+        return script
+
+    def test_a_compile_that_fails_or_is_killed_leaves_no_key(self):
+        app = self.chain()
+        out = app / "build" / "debug"
+        self.env["CONEC"] = str(self.wrapper())
+        self.env["CONESTD"] = str(congo.conestd_path(congo.REPO_CONEC))
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertTrue((out / "leaf.key").is_file())
+        # conec ends with a failure, its object half-written: no key. With the
+        # source put back as it was, its key is the one recorded before, and
+        # leaf is compiled again all the same
+        self.set_leaf(11)
+        self.env["CONGO_TEST_CLOBBER"] = str(out / f"leaf{congo.OBJ_EXT}")
+        run = self.congo("run", cwd=app, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("could not compile leaf", run.stderr)
+        self.assertFalse((out / "leaf.key").exists())
+        del self.env["CONGO_TEST_CLOBBER"]
+        self.set_leaf(10)
+        self.assertEqual(self.run_app(app), (["leaf"], "20\n"))
+        # Congo itself killed while conec runs: the key was removed before
+        # conec started
+        self.set_leaf(12)
+        hang = self.root / "hang"
+        hang.mkdir()
+        self.env["CONGO_TEST_CLOBBER"] = str(out / f"leaf{congo.OBJ_EXT}")
+        self.env["CONGO_TEST_HANG"] = str(hang)
+        killed = subprocess.Popen([*CONGO, "run"], cwd=app, env=self.env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            until = time.monotonic() + 600
+            while not (hang / "started").exists():
+                self.assertIsNone(killed.poll(), "congo ended before conec was killed")
+                self.assertLess(time.monotonic(), until, "conec never started")
+                time.sleep(0.2)
+            self.assertFalse((out / "leaf.key").exists())
+        finally:
+            killed.kill()
+            killed.wait()
+            (hang / "release").write_text("go\n")
+        until = time.monotonic() + 60
+        while not (hang / "done").exists() and time.monotonic() < until:
+            time.sleep(0.2)
+        del self.env["CONGO_TEST_CLOBBER"], self.env["CONGO_TEST_HANG"]
+        self.assertFalse((out / "leaf.key").exists())
+        self.set_leaf(10)
+        self.assertEqual(self.run_app(app), (["leaf"], "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+
+    def test_a_test_program_is_compiled_only_when_it_changes(self):
+        pkg = self.root / "counter"
+        write(pkg / "congo.toml",
+              '[package]\nname = "counter"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "counter.cone",
+              "mod counter;\n\npub fn twice(n: i64) i64 {\n  n * 2i64\n}\n")
+        test = ("mod {name};\n\nimport stdio;\nimport counter;\n\nfn main() i32 {{\n"
+                "  stdio.print <- counter.twice({n}i64);\n  stdio.print <- \"\\n\";\n"
+                "  0i32\n}}\n")
+        write(pkg / "tests" / "one.cone", test.format(name="one", n=1))
+        write(pkg / "tests" / "one.out", "2\n")
+        write(pkg / "tests" / "two.cone", test.format(name="two", n=2))
+        write(pkg / "tests" / "two.out", "4\n")
+        out = pkg / "build" / "debug"
+
+        def stamps() -> dict[str, int]:
+            """When each object was written: only to see whether it was again."""
+            return {name: (out / sub / f"{name}{congo.OBJ_EXT}").stat().st_mtime_ns
+                    for name, sub in (("counter", "."), ("one", "tests/one"),
+                                      ("two", "tests/two"))}
+
+        first = self.congo("test", cwd=pkg)
+        # stdio, which the tests import and the package does not, after it
+        self.assertEqual(compiled(first), ["libc", "core", "counter", "stdio"])
+        self.assertIn("counter: 2 tests: 2 passed, 0 failed", first.stdout)
+        before = stamps()
+        second = self.congo("test", cwd=pkg)
+        self.assertEqual(compiled(second), [])
+        self.assertIn("counter: 2 tests: 2 passed, 0 failed", second.stdout)
+        self.assertEqual(stamps(), before)
+        # One test changed: that test's program alone
+        write(pkg / "tests" / "two.cone", test.format(name="two", n=3))
+        write(pkg / "tests" / "two.out", "6\n")
+        third = self.congo("test", cwd=pkg)
+        self.assertIn("counter: 2 tests: 2 passed, 0 failed", third.stdout)
+        after = stamps()
+        self.assertEqual((after["counter"], after["one"]), (before["counter"], before["one"]))
+        self.assertNotEqual(after["two"], before["two"])
+
+    def test_kernels_are_compiled_when_what_they_compile_from_changes(self):
+        # kern's kernel calls scale.factor(): kern's object is compiled
+        # against scale's include file, but its kernels from scale's source
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        for name in ("scale", "kern"):
+            write(pkgs / name / "congo.toml",
+                  f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n'
+                  f'targets = ["native", "gpu"]\n')
+        factor = "mod scale;\n\npub fn factor() f32 {{\n  {f}\n}}\n"
+        write(pkgs / "scale" / "src" / "scale.cone", factor.format(f="0.5"))
+        write(pkgs / "kern" / "src" / "kern.cone", """
+            mod kern;
+
+            import scale;
+
+            pub fn @compute(64) halve(inv: Invocation, out: &mut Array[f32]) {
+              let i = usize.from(inv.globalId[0usize]);
+              if i < out.len {
+                out[i] = out[i] * scale.factor();
+              }
+            }
+            """)
+        kern = pkgs / "kern"
+        spv = kern / "build" / "debug" / "kern.spv"
+        run = self.congo("build", cwd=kern)
+        self.assertEqual(compiled(run), ["libc", "core", "scale", "kern", "kern for the GPU"])
+        first = spv.read_bytes()
+        self.assertEqual(compiled(self.congo("build", cwd=kern)), [])
+        self.assertEqual(entry_points(spv), ["halve"])
+        # A body of scale: scale's object, and kern's kernels, which inline it.
+        # kern's own object reads scale's include file alone, which is the same
+        write(pkgs / "scale" / "src" / "scale.cone", factor.format(f="0.25"))
+        self.assertEqual(compiled(self.congo("build", cwd=kern)), ["scale", "kern for the GPU"])
+        self.assertNotEqual(spv.read_bytes(), first)
+        # The kernels gone, or not the file their compile wrote: they alone
+        spv.unlink()
+        self.assertEqual(compiled(self.congo("build", cwd=kern)), ["kern for the GPU"])
+        spv.write_bytes(spv.read_bytes() + b"\0")
+        self.assertEqual(compiled(self.congo("build", cwd=kern)), ["kern for the GPU"])
+        self.assertEqual(entry_points(spv), ["halve"])
+        self.assertEqual(compiled(self.congo("build", "--no-cache", cwd=kern)),
+                         ["libc", "core", "scale", "kern", "kern for the GPU"])
+
+
+def clean_environment() -> dict[str, str]:
+    """This process's environment as a plain console's would be: no Visual
+    Studio environment (a test may run in one) and no link.exe on PATH, so
+    that Congo takes the environment from vcvars64.bat, or its cache of it.
+    PATH holds Windows' own folders and Python's."""
+    keep = ("SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP",
+            "USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+            "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+            "CommonProgramFiles", "CommonProgramFiles(x86)", "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE", "OS")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    root = env.get("SystemRoot", r"C:\Windows")
+    env["PATH"] = ";".join([str(Path(sys.executable).parent), rf"{root}\System32", root,
+                            rf"{root}\System32\Wbem",
+                            rf"{root}\System32\WindowsPowerShell\v1.0"])
+    return env
+
+
+@unittest.skipUnless(IS_WINDOWS, "vcvars64.bat is Visual Studio's, on Windows")
+class MsvcEnvironmentCache(unittest.TestCase):
+    """What vcvars64.bat sets, captured once into <Congo home>/msvc-env.json
+    and applied to each link's environment with no batch file run; captured
+    again for a Visual Studio update, a folder gone, no link.exe, a link that
+    fails the way a stale environment does, and --no-cache."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.saved = os.environ.get("CONGO_HOME")
+        os.environ["CONGO_HOME"] = str(self.home)
+        self.runs = 0
+        real = congo.Linker.run_vcvars
+
+        def counted(base, vcvars=None):
+            self.runs += 1
+            return real(base, vcvars)
+
+        self.real = real
+        congo.Linker.run_vcvars = staticmethod(counted)
+
+    def tearDown(self):
+        congo.Linker.run_vcvars = staticmethod(self.real)
+        congo.USE_CACHE[0] = True
+        if self.saved is None:
+            os.environ.pop("CONGO_HOME", None)
+        else:
+            os.environ["CONGO_HOME"] = self.saved
+        self.tmp.cleanup()
+
+    def test_a_template_keeps_the_environment_around_it(self):
+        templates = {"LIB": "A;B;<congo:base>", "PATH": "V;<congo:base>;W", "VSCMD_VER": "17"}
+        env = congo.MsvcEnvironment.apply(templates, {"Lib": r"C:\sdl3", "Path": "P", "X": "1"})
+        # In the base's spelling of each name, which Windows does not tell apart
+        self.assertEqual(env, {"Lib": r"A;B;C:\sdl3", "Path": "V;P;W", "X": "1",
+                               "VSCMD_VER": "17"})
+        self.assertEqual(congo.MsvcEnvironment.apply(templates, {"Path": "P"})["LIB"], "A;B")
+
+    def test_the_key_follows_visual_studio(self):
+        install = self.root / "VS"
+        build = install / "VC" / "Auxiliary" / "Build"
+        write(build / "vcvars64.bat", '@call "%~dp0vcvarsall.bat" x64 %*\n')
+        write(build / "vcvarsall.bat", "@rem vcvarsall\n")
+        write(build / "Microsoft.VCToolsVersion.default.txt", "14.42.34433\n")
+        write(install / "Common7" / "Tools" / "VsDevCmd.bat", "@rem VsDevCmd\n")
+        vcvars = str(build / "vcvars64.bat")
+        key = congo.MsvcEnvironment.key
+        first = key(vcvars)
+        self.assertEqual(key(vcvars), first)
+        # An update of the tools, or of any batch file that sets them
+        for file, text in (("Microsoft.VCToolsVersion.default.txt", "14.44.35207\n"),
+                           ("vcvarsall.bat", "@rem vcvarsall, updated\n"),
+                           ("vcvars64.bat", '@call "%~dp0vcvarsall.bat" x64 %* \n')):
+            before = key(vcvars)
+            write(build / file, text)
+            self.assertNotEqual(key(vcvars), before, file)
+        before = key(vcvars)
+        write(install / "Common7" / "Tools" / "VsDevCmd.bat", "@rem VsDevCmd, updated\n")
+        self.assertNotEqual(key(vcvars), before)
+        # Another installation, the same files
+        other = self.root / "VS2"
+        shutil.copytree(install, other)
+        self.assertNotEqual(key(str(other / "VC" / "Auxiliary" / "Build" / "vcvars64.bat")),
+                            key(vcvars))
+
+    def linker(self, **base) -> congo.Linker:
+        return congo.Linker(congo.conestd_path(congo.REPO_CONEC), {**clean_environment(), **base})
+
+    def made(self) -> tuple[int, bool]:
+        """A Linker made: how many runs of vcvars64.bat there have been since
+        the test began, and whether its environment came from the cache."""
+        linker = self.linker()
+        return self.runs, linker.cached
+
+    def edit(self, change) -> None:
+        file = congo.MsvcEnvironment.path()
+        data = json.loads(file.read_text(encoding="utf-8"))
+        change(data)
+        file.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_the_environment_is_captured_once_and_captured_again_when_stale(self):
+        first = self.linker()
+        self.assertEqual((self.runs, first.cached), (1, False))
+        self.assertTrue(congo.MsvcEnvironment.path().is_file())
+        self.assertTrue(first.tool.lower().endswith("link.exe"))
+        # Kept: no run, and what the environment lists kept behind Visual
+        # Studio's folders, as a run would keep it
+        again = self.linker(LIB=r"C:\mine")
+        self.assertEqual((self.runs, again.cached), (1, True))
+        self.assertEqual(again.tool, first.tool)
+        lib = congo.env_value(again.env, "LIB")
+        self.assertTrue(lib.endswith(r";C:\mine"), lib)
+        self.assertEqual(lib[:-len(r";C:\mine")], congo.env_value(first.env, "LIB"))
+        self.assertEqual(congo.env_value(again.env, "VSCMD_ARG_TGT_ARCH"), "x64")
+        # Another key, as a Visual Studio update makes: captured again
+        self.edit(lambda data: data.update(key="0" * 64))
+        self.assertEqual(self.made(), (2, False))
+        self.assertEqual(self.linker().cached, True)
+        # A folder LIB names is gone: captured again
+        self.edit(lambda data: data["variables"].update(
+            LIB=r"C:\congo-no-such-folder;" + data["variables"]["LIB"]))
+        self.assertEqual(self.made(), (3, False))
+        # No link.exe in it: captured again, once
+        self.edit(lambda data: data["variables"].update(PATH="<congo:base>"))
+        recaught = self.linker()
+        self.assertEqual((self.runs, recaught.cached, recaught.recaptured), (4, True, True))
+        self.assertTrue(recaught.tool.lower().endswith("link.exe"))
+        self.assertEqual(self.linker().cached, True)
+        # --no-cache: captured again
+        congo.USE_CACHE[0] = False
+        self.assertEqual(self.made(), (5, False))
+
+    def test_a_link_that_fails_for_the_environment_captures_it_again(self):
+        env = {**clean_environment(), "CONGO_HOME": str(self.home)}
+
+        def run(pkg: Path, ok: bool = True) -> subprocess.CompletedProcess:
+            done = subprocess.run([*CONGO, "run"], cwd=pkg, env=env, capture_output=True,
+                                  text=True)
+            if ok:
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            return done
+
+        hello = self.root / "hello"
+        write(hello / "congo.toml",
+              '[package]\nname = "hello"\nversion = "0.1.0"\noutput = "executable"\n')
+        write(hello / "src" / "hello.cone", """
+            mod hello;
+
+            import stdio;
+
+            fn main() i32 {
+              stdio.print <- "hello\\n";
+              0i32
+            }
+            """)
+        file = congo.MsvcEnvironment.path()
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertTrue(file.is_file())
+        stamp = file.stat().st_mtime_ns
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertEqual(file.stat().st_mtime_ns, stamp, "captured again with nothing stale")
+        # LIB without Visual Studio's and the SDK's folders: link.exe cannot
+        # open the C runtime's libraries, which no package names, so the
+        # environment is captured again and the link done again
+        self.edit(lambda data: data["variables"].update(LIB="<congo:base>"))
+        self.assertIn("hello\n", run(hello).stdout)
+        self.assertIn(r"\lib\x64", json.loads(file.read_text())["variables"]["LIB"])
+        # A library a package names missing is the build's own fault: no
+        # capture, and the link's error
+        stamp = file.stat().st_mtime_ns
+        needy = self.root / "needy"
+        write(needy / "congo.toml",
+              '[package]\nname = "needy"\nversion = "0.1.0"\noutput = "executable"\n\n'
+              '[link]\nlibraries = ["congonosuchlib"]\n')
+        write(needy / "src" / "needy.cone", "mod needy;\n\nfn main() i32 {\n  0i32\n}\n")
+        failed = run(needy, ok=False)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("congonosuchlib.lib", failed.stderr)
+        self.assertNotIn("linked twice", failed.stderr)
+        self.assertEqual(file.stat().st_mtime_ns, stamp)
 
 
 @unittest.skipUnless(shutil.which("git"), "Congo fetches packages with git")

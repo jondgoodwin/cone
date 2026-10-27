@@ -270,11 +270,13 @@ void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    uint32_t i = 0;
     for (nodesFor((*nodep)->args, cnt, argsp)) {
         INode **valp = (*argsp)->tag == NamedValTag ? &((NamedValNode *)*argsp)->val : argsp;
         flowLoadValue(fstate, valp);
         flowHandleMoveOrCopy(valp);
         flowGateOperand(fstate, *valp);
+        flowGateStatic(fstate, (INode *)*nodep, i++, *valp);
     }
     flowGateOperandsEnd(fstate, inflight);
 }

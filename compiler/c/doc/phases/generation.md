@@ -105,7 +105,11 @@ not a library, WebAssembly or GPU compile; not a function with a C name; with no
 parameters or two) — is therefore declared under the internal symbol
 `cone.main` (`genlGloFnName`), and is called with `argc` and `argv` if it takes
 them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
-nothing is generated returning `i32 0`. A panic ends the process through
+nothing is generated returning `i32 0`. A `main` returning a Result is called
+through the private function type check gave its module, `-mainresult`
+(`propagateMainEntry`, `ir/exp/propagate.h`), which calls it, prints a failure's
+message through conestd's `cone_mainError` and answers 1, or 0; the entry calls
+that in its place and returns what it answers. A panic ends the process through
 `abort`, and a call to C's `exit` leaves it, so neither reaches the final.
 [module](../nodes/module.md), "Init and final".
 
@@ -297,7 +301,7 @@ attached where the body is generated.
 individually discardable, and keeps alive everything it names. A vtable did
 exactly that: a struct coerced to `&<Trait` kept every one of its trait methods
 in the image whether or not anything ever dispatched. The call sites are
-`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, `genlStitch`, and the
+`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtableImpls`, `genlStitch`, and the
 `StringLitTag` case in `genlAddr`. **A new kind of generated global needs a
 seventh.**
 
@@ -340,7 +344,8 @@ section 3, "Roots"), then erase the alloca point. Every parameter and local is m
 comment is that all allocas belong in the entry block so `PromoteMemoryToRegister`
 and SRoA can undo it.
 
-`genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
+`genpgm` then settles the blocks no path reaches and checks every block's
+terminator (section 6, "A jump ends the path"), optionally verifies, dumps `.preir`, runs LLVM's new pass manager
 through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
 standard pipeline, `default<O2>`**, handed the target machine, so that the
 inliner's, the vectorizers' and the unroller's costs are the target's: the
@@ -605,6 +610,22 @@ itself is built. The same cycle runs through the symbol pass: declaring such a
 method types its signature, which builds the vtable, which asks for the symbol
 of every method in its slots. So `genlGloFnName` types the signature first and
 checks again whether the function has been declared before declaring it.
+
+**A vtable's implementers are measured after the type that reached it, not
+inside it.** Each implementer's vtable global holds byte offsets into the
+implementer (its virtual fields) and its type record, which holds its size and
+alignment. A trait's virtual reference is reached from the middle of a struct's
+fields, and the struct may be one of the trait's implementers (`struct One is
+Show {first: Uni[Show]}`, or a field's field holding one) whose body is still
+unset there. Measured then, it has size 0, and LLVM caches a struct's layout
+the first time it is asked, so every later allocation of it is a block too small
+for it. So `genlVtable` builds the two types at once but, while `genlType` is
+generating a type, queues the vtable, and `genlType` builds the queued vtables'
+globals (`genlVtableImpls`) once its outermost type and its pointees are done.
+Outside type generation `genlVtable` builds them at once, and a coercion or
+match calls it every time, so whatever it reads is whole. An implementer's
+global is added before its contents are worked out, since its type record may
+generate a finalizer whose code asks for the same vtable.
 
 **Which vtable a tag names is found two ways, and the tag values decide.** Where
 every variant's tag value is its position in `derived`, the tag indexes the list
@@ -1162,9 +1183,41 @@ the branch, never the block generation was positioned in — evaluating a
 subexpression may have emitted branches of its own and split the block.
 
 `if` builds `endif` first, then per arm a next-condition block and a body
-block. An arm whose last statement is a return, break or continue contributes no
-fallthrough and no phi edge. `while` is not a generation concept: it arrives as
-a loop block containing `if !cond { break }`.
+block. An arm whose path a jump ended contributes no fallthrough and no phi
+edge. `while` is not a generation concept: it arrives as a loop block
+containing `if !cond { break }`.
+
+**A jump ends the path where it is, and nothing is emitted after its
+terminator.** A `return`, `break` or `continue`, and a call that does not
+return, emit their terminator and then `genlEndPath`: generation goes on in a
+fresh, unnamed block no path reaches, which `gen->unreached` remembers. LLVM
+takes a block's last instruction as its terminator, so anything emitted after
+a jump in the same block -- an arm's branch to `endif`, a loop's branch back to
+`loopbeg`, a block's releases, the rest of an expression -- would replace the
+jump, silently: `fn x(c: bool) i32 { if c { { return 7; } } 0 }` gave 0 for
+`x(true)`, the `return` ending a plain block that the arm's block ends in. In
+the block no path reaches, whatever still follows is dead code and harmless.
+**Whether a path ended is the block the builder is at, not the last
+statement's tag** (`genlPathEnded`: is it `gen->unreached`?), so a jump inside
+a statement, however deep, counts as one that is the statement. `genlBlock`
+stops generating a block's statements once its path has ended, skips that
+statement's temporaries and its `dealias` (the jump finalized them as it
+left), and emits no loop back edge; `genlIfArm` emits no branch to `endif` and
+no phi edge; `genlReturn` and `genlBreak` do nothing more after a value whose
+generation itself jumped away (`return { return 7; }`). A block whose path
+ended answers `undef` of its type, for an expression it is part of
+(`add(1, { return 7; })`) to go on with. Once the module is made,
+`genlSettleUnreached` deletes each such block nothing was emitted into and
+ends any other with `unreachable`; the block is unnamed because a name would
+take a number from the function's count of the names it made unique, and so
+rename every value named after it, although the block is gone.
+
+**Every basic block ends in exactly one terminator, and generation checks it**
+(`genlCheckBlockEnds`, in `genpgm` after `genlSettleUnreached` and before
+anything else touches the module). A block with none, with two, or with one not
+last is a compiler defect, reported (`ErrorUnreachable`) with the block and its
+function, and the object is not made. LLVM's verifier says the same, but only
+under `--verify`; this check runs on every compile.
 
 **An arm whose condition is a constant of the build is decided at
 generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
@@ -1220,9 +1273,9 @@ bounds checked.**
 ends in a call returning `Never` end in a `return` of that call
 (blockTypeCheck), and `genlReturn` and `genlBreak` generate such a return, or
 one of an `if` every path of which jumps away, as the value and then
-`unreachable`: nothing is released and nothing handed back. `genlIf` leaves a
-branch that ends in a return out of its phi, and answers `undef` where no
-branch reaches the end. A function returning `Never` is declared `noreturn`.
+`unreachable`, which ends the path (`genlEndPath`): nothing is released and
+nothing handed back. `genlIf` leaves a branch whose path ended out of its phi,
+and answers `undef` where no branch reaches the end. A function returning `Never` is declared `noreturn`.
 
 ### Temporaries
 
@@ -1821,7 +1874,8 @@ Not tried: a GPU or WebAssembly target (a box is a C `malloc`).
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
-by default. `--debug` emits DWARF and drops optimization — it is the only
+by default (the test suite passes it); one of its rules, a block's one terminator,
+is checked on every compile (section 6). `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
 subprograms and each instruction's line and column. A subprogram is in the file its
 function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
@@ -2366,13 +2420,14 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
-| | `genpgm` | generate, move large aggregates into memory (not on a GPU target), verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
+| | `genlCheckBlockEnds` | every block of every defined function ends in its one terminator, else a compiler defect reported per block (section 6) |
+| | `genpgm` | generate, settle the blocks no path reaches and check every block's terminator, move large aggregates into memory (not on a GPU target), verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function but a kernel marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the entry and the stitched pair |
-| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main`, stitched final, its result the exit status |
+| | `genlIsEntryMain`, `genlEntry` | the program's own `main` (renamed `cone.main`), and the C `main` built round it: stitched init, `cone.main` (or, for a `main` returning a Result, the `-mainresult` that calls it and prints its failure), stitched final, its result the exit status |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared by the entry or on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse, each guarded by the `cone.live` flag |
 | | `genlInitByCtor`, `genlCtors` | a C-named module's `init` as a static constructor: `cone.ctor`, calling each such module this object generates in the module order, registered in `llvm.global_ctors` at priority 1000; the stitched init leaves those out |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
@@ -2390,12 +2445,12 @@ variables.
 | | `genlOut` | emit object and asm, the asm from a copy of the module, by a target machine of its own, on a GPU target |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
-| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
+| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees, then the queued vtables' globals, once the outermost type is done, and the per-tag lowering switch |
 | | `genlUsize` | `usize`'s LLVM type: `ConeOptions.ptrsize` bits, the target's pointer, but 32 on SPIR-V's Vulkan form (section 7) |
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
-| | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants (the implementer's type record last), the virtref fat pointer |
+| | `genlVtable`, `genlVtableImpls`, `genlVtableImpl` | vtable type and the virtref fat pointer; then, once no type is being generated, the per-struct constants (the implementer's type record last) and their list |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
@@ -2421,8 +2476,9 @@ variables.
 | | `genlAggByPtr`, `genlAggPassesByPtr` | whether an argument of an LLVM type is passed as a pointer (section 6, "Lending a place to a call") |
 | | `genlAggLent`, `genlAggArgPtr`, `genlAggWideStore` | a load generation lent, passed its address; any other argument passed as a pointer, copied: where it was loaded, a call's result slot passed on, or stored wide |
 | | `genlAggParmInPlace`, `genlAggParmLoad` | a parameter only read, its variable's slot made the pointer; any other read whole as the body begins |
-| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
-| | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
+| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state; no statement, release or back edge once the path ended; each statement's temporaries finalized at its end |
+| | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break; the path ended after |
+| | `genlEndPath`, `genlPathEnded`, `genlSettleUnreached` | after a jump, generation goes on in a block no path reaches; whether it is there; each such block deleted or ended by `unreachable` once the module is made (section 6, "A jump ends the path") |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
 | | `genlFlatAddr`, `genlVarSym` | a global's address as a reference holds it: cast to the flat address space on a GPU target (section 7) |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |

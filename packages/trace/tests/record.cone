@@ -1,0 +1,149 @@
+// What a sink is given: a test sink prints every event it records, and the
+// output is pinned. Kinds of 0 to 4 fields, every field type, a message
+// (plain and formatted), an interval's begin and end, the kind's metadata, the
+// place it was emitted, the time, and the context, before and after a provider
+// is registered.
+
+mod record;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Kind0, Kind1, Kind2, Kind3, Kind4, Nanos, Ticks, Value, Type, Phase;
+
+let started: Kind0;
+let count: Kind1[u64];
+let pair: Kind2[i64, &str];
+let mixed: Kind3[f64, bool, Nanos];
+let four: Kind4[u64, i64, &str, Ticks];
+
+fn @initpure init() {
+  started = Kind0.make("started", "rec", Level.Info);
+  count = Kind1[u64].make("count", "rec", Level.Info, "n");
+  pair = Kind2[i64, &str].make("pair", "rec", Level.Warn, "delta", "label");
+  mixed = Kind3[f64, bool, Nanos].make("mixed", "rec", Level.Error, "ratio", "ok", "took");
+  four = Kind4[u64, i64, &str, Ticks].make("four", "rec", Level.Debug, "a", "b", "c", "at");
+}
+
+fn typeName(t: Type) &str {
+  match t {
+    case is Type.I64 {"i64"}
+    case is Type.U64 {"u64"}
+    case is Type.F64 {"f64"}
+    case is Type.Bool {"bool"}
+    case is Type.Text {"text"}
+    case is Type.Duration {"duration"}
+    else {"time"}
+  }
+}
+
+fn phaseName(p: Phase) &str {
+  match p {
+    case is Phase.Event {"event"}
+    case is Phase.Begin {"begin"}
+    else {"end"}
+  }
+}
+
+fn endsWith(s: &str, tail: &str) bool {
+  let a: &Array[u8] = s;
+  let b: &Array[u8] = tail;
+  if a.len < b.len {
+    return false;
+  }
+  var i = 0usize;
+  while i < b.len {
+    if a[a.len - b.len + i] != b[i] {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+var lastTime = 0u64;
+var timesRise = true;
+var filesRight = true;
+
+struct Printer is trace.Sink {
+  pub n: i64;
+
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+
+  pub fn record(self: &, e: &trace.Event) {
+    let k = e.kind;
+    print <- phaseName(e.phase), " ", k.name, " #", k.id(), " [", k.target, " ", k.level.name(), "] line ", e.line;
+    if e.span != 0u64 {
+      print <- " span ", e.span;
+    }
+    var i = 0usize;
+    while i < e.values.len {
+      print <- " ", k.names[i], ":", typeName(k.types[i]), "=";
+      match e.values[i] {
+        case let I64(v) {print <- v;}
+        case let U64(v) {print <- v;}
+        case let F64(v) {print <- v;}
+        case let Bool(v) {print <- v;}
+        case let Text(v) {print <- "'", v, "'";}
+        case let Duration(v) {print <- v, "ns";}
+        case let Time(v) {print <- if v != 0u64 {"(a time)"} else {"0"};}
+      }
+      i = i + 1usize;
+    }
+    if e.message.len != 0usize {
+      print <- " msg='", e.message, "'";
+    }
+    if e.ctx.worker == trace.noWorker {
+      print <- " worker none";
+    } else {
+      print <- " worker ", e.ctx.worker;
+    }
+    print <- " cause ", e.ctx.cause, "\n";
+    if e.time < lastTime {
+      timesRise = false;
+    }
+    lastTime = e.time;
+    if !endsWith(e.file, "record.cone") {
+      filesRight = false;
+    }
+  }
+}
+
+fn provider() trace.Context {
+  trace.Context(7u32, 42u64)
+}
+
+fn main() i32 {
+  expect(trace.install(Uni[Printer](0)), "the sink is installed");
+  trace.setDefaultLevel(Level.Trace);
+  started.emit();
+  count.emit(5);
+  pair.emit(-3, "three");
+  mixed.emit(0.5, true, Nanos(1500i64));
+  four.emit(1u64, -2i64, "x", Ticks(trace.ticks()));
+  started.log("plain text");
+  let n = 12u64;
+  count.logMessage(n, (trace.Message() <- "n is ", n, ", less ", -20i64, " is ", true));
+  let s = pair.begin(9, "a request");
+  four.emit(2u64, 3i64, "inside", Ticks(0u64));
+  pair.end(s);
+  let z = started.begin();
+  started.end(z);
+  trace.setContextProvider(&provider);
+  count.emit(6);
+
+  // A message too long is cut at 240 bytes
+  var long = trace.Message();
+  var i = 0;
+  while i < 30 {
+    long <- "0123456789";
+    i = i + 1;
+  }
+  expectUInt(u64.from(long.text().len), 240u64, "a message holds 240 bytes at most");
+
+  expect(timesRise, "the times never go back");
+  expect(filesRight, "each event names the file it was emitted in");
+  expectUInt(u64.from(count.info.fields), 1u64, "count has one field");
+  expect(count.info.isOn(), "count is on");
+  expect(trace.clockFrequency() != 0u64, "the clock has a frequency");
+  done()
+}

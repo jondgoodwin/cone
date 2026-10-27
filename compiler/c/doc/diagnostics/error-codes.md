@@ -419,8 +419,15 @@ refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
 in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
-for a parameter annotated in a way that is not built, as a macro's parameter
-given one is. A value parameter, `[N: usize]`, has four codes of its own:
+for a parameter annotated in a way that is not built, as a macro's type
+parameter given one is, and a generic module's. A macro's value parameter has
+two codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
+type or `lazy`, whose remedy is to remove it. A use whose brackets do not fit
+the macro's type parameters is `ErrorMacroTypeArgs` (none written where it
+declares some, since inferring them is not built, or some written where it
+declares none); the wrong number of them is `ErrorArgCount`, as for a generic.
+A generic's value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);
 `ErrorGenValueArg`, an argument that is no non-negative integer literal the
@@ -531,9 +538,9 @@ member only one variant has, named on a name that was narrowed to it and has sin
 changed by an assignment, a writable borrow of the whole enum, a swap, a reference stored over
 or a branch that did one of these, is `ErrorNarrowStale` (type check); a name narrowed from before
 a loop, used in it, that a change later in the loop reaches by the back edge is
-`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that falls through to the binding
-is `ErrorLetElse`. Each is reported at the use or the `else`, and the first two name the
-change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
+`ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that can fall through to the
+binding is `ErrorLetElse`, reported at the spot inside the `else` where a path goes on and
+saying what it lacks. The first two are reported at the use and name the change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
 would sit at another offset in its allocation (generation).
 
 A `parallel each` over a zip of cursors that lend from the same buffer, where the loop
@@ -779,6 +786,18 @@ kernel, an element reached by pointer arithmetic from something that is
 neither a buffer parameter nor a fixed array is `ErrorGpuSliceOrigin`,
 generation's once everything is inlined (`genlGpuFold`), at the index that
 made it.
+
+`?` takes four codes, one per thing to fix, each reported at the `?` by type check
+(`propagateLower`): a value that is neither a Result nor an Option, a reference to one
+included, is `ErrorQuesOperand`; a function with nowhere for the failure to go (it returns
+no Result for a Result or no Option for an Option, the message naming what it returns; a
+closure whose return type is read off its returns; a generator, refused by the parser) is
+`ErrorQuesReturn`; an error the function's error type cannot take, with no `from` and no
+variant holding it, is `ErrorQuesConvert`; and one two variants hold, with no `from` to
+choose, is `ErrorQuesAmbiguous`, naming two of them. They are apart because the remedies
+are: a different value, a different function, a conversion to declare, and a choice to
+make. A `main` returning a Result whose error type has no `message()` giving text is
+`ErrorMainResult`, at the return type (`propagateMainResult`).
 
 ## The one code with no scenario
 

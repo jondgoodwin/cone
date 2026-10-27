@@ -1,0 +1,1207 @@
+// The trace package: the facade every package that logs or traces depends on,
+// and nothing more. A package declares its kinds of event once, as globals,
+// and emits through macros that cost one relaxed load and a compare when
+// nothing wants the event, and whose arguments are then never evaluated. A
+// program installs one sink, or two (a file, ETW, text on the console: other
+// packages), and says which targets it wants, at which level, from code or
+// from the CONE_TRACE environment variable. Logging and tracing are one pipeline: a
+// log message is an event with a level and a text.
+//
+//   mod fetcher;                                // a package that does loggable work
+//   import trace use Level, Kind1, Kind2, Nanos;
+//
+//   let fetched: Kind2[u64, Nanos];             // a kind: declared once, a global
+//   let failed: Kind1[i64];
+//   let request: Kind1[&str];                   // an interval: begin and end
+//   fn @initpure init() {
+//     fetched = Kind2[u64, Nanos].make("fetched", "fetcher", Level.Debug, "bytes", "took");
+//     failed = Kind1[i64].make("failed", "fetcher", Level.Warn, "code");
+//     request = Kind1[&str].make("request", "fetcher", Level.Info, "url");
+//   }
+//
+//   fn fetch(url: &str) {
+//     let span = request.begin(url);            // 0 when the kind is off
+//     ...
+//     fetched.emit(body.len, Nanos(took));      // an event: values only
+//     failed.logMessage(code, (trace.Message() <- "server said ", code));   // with a message
+//     request.end(span);                        // after an 'await', on another worker: fine
+//   }
+//
+//   // and the program:
+//   trace.install(Uni[MySink](...));            // errors and warnings, by default
+//   trace.setLevel("fetcher", Level.Info);      // CONE_TRACE wins where it names fetcher
+//
+// WHAT IT HAS
+//
+//   Level                    Off, Error, Warn, Info, Debug, Trace (Rust's five, and Off)
+//   Kind0 .. Kind4           a kind of event with 0 to 4 typed fields: its name, its
+//                            target, its level, and its fields' names; the field
+//                            types are the kind's type arguments. Made by 'make' in
+//                            the declaring module's init, and kept in a global
+//   k.emit(a, b)             MACROS on a kind, one argument per field: an event;
+//   k.log(a, b, msg)         an event with a message, a '&str';
+//   k.logMessage(a, b, msg)  one with a Message (one overloaded 'log' once macros overload);
+//   k.begin(a, b)            an interval's start, answering its id (0 when off);
+//   k.end(id)                its end. Off, none of them evaluates its arguments
+//   Info                     what every kind holds, and what a sink is shown
+//   Type, Value              the field types and their values (below)
+//   Nanos, Ticks             a duration field's value, a time field's value
+//   Event, Phase, Context    what a sink records: a borrowed view
+//   Sink                     the trait a sink meets: enabled, record, flush
+//   install(sink)            the one sink, once; with none, every event is off
+//   installPair(a, b)        or two, both receiving: the fan-out
+//   setLevel(target, level)  a target's most detailed level
+//   setDefaultLevel(level)   the level of every target not named (Warn until set)
+//   filter(spec)             all the program's levels, in CONE_TRACE's grammar
+//   levelOf(target)          the level a target has now
+//   refresh()                every kind's state worked out again
+//   setContextProvider(f)    the runtime's: who is running, and why
+//   flush()                  the sinks' flush
+//   (Message() <- a, b, ..)  a message formatted in place, with no allocation
+//   ticks(), clockFrequency()  the clock events are stamped with
+//
+// LEVELS AND TARGETS. A kind has one level; a target, a name such as "actors"
+// or "httpclient", has a most detailed level wanted, by default the default
+// level, which is Warn until set: a program that installs a sink sees its
+// errors and warnings. A kind is on when a sink is installed (with none,
+// every kind is off), its level is not Off and no more detailed than its
+// target's, and a sink's 'enabled' said yes. That answer is worked out for a kind when it is first emitted, and
+// again for every kind whenever a level, the filter, the sinks or 'refresh'
+// changes it, and kept in the kind as one byte: which sinks want it. So an
+// event of a kind that is off costs one relaxed load of that byte and a
+// compare, and 'enabled' is not asked per event: a sink whose answer changes
+// calls refresh().
+//
+// CONE_TRACE. The operator's override, needing no rebuild: read once, when the
+// sink is installed, into a layer of the filter of its own, which wins over
+// the program's levels for the targets it names, whether the program set them
+// before the install or after. The program's levels hold for every target it
+// does not name. A bare level in it is the default, over the program's
+// default; with none, the program's default holds (Warn until set). So a
+// target's level is CONE_TRACE's for it, else the program's for it, else
+// CONE_TRACE's default, else the program's, else Warn. Its grammar, which
+// 'filter' takes too (filling the program's layer, replacing what the program
+// set before):
+//
+//   spec       = [ directive { "," directive } ]
+//   directive  = level                  the default level, for every target not named
+//              | target "=" level       that target's level
+//              | target                 that target at Trace: everything
+//   level      = off | error | warn | info | debug | trace     (any case)
+//   target     = 1 to 32 bytes, none of them ',', '=' or a space; compared
+//                exactly, so case matters
+//
+// Spaces and tabs around a directive, a target or a level are ignored, and so
+// is an empty directive. A bare word is a level when it is a level's name.
+// A later directive for a target replaces an earlier one. A directive that is
+// none of these (an unknown level, an empty or too long target, a 33rd
+// target) is skipped; 'filter' answers how many were.
+//
+// KINDS. A kind is a global of the module that emits it, made in that
+// module's init and never moved after: the facade keeps its address once it
+// is first emitted. Its field types are among Type's: i64, u64, f64, bool,
+// &str (a text, borrowed for the event only), Nanos (a duration) and Ticks (a
+// time of the facade's clock); anything else is refused where the kind is
+// made, and an argument of another type where it is emitted, by the compiler.
+// A kind has at most four fields; one that needs more is two kinds.
+//
+// THE SINK. A struct declaring 'is trace.Sink'. 'enabled' is asked when a
+// kind's state is worked out, under the facade's lock: it may look at the kind,
+// and may not emit. 'record' gets each event of a kind it wanted, on the
+// thread that made it, possibly many threads at once; the event is borrowed,
+// and a sink that keeps anything copies it. 'flush' is asked by trace.flush()
+// and when the program ends. The sink is installed once and lives as long as
+// the program; a second install is refused (false) and its sinks dropped.
+// THE FAN-OUT: installPair installs two sinks, a file and the console say,
+// each asked 'enabled' for itself and given only the kinds it wanted; the
+// kind's byte holds one bit for each.
+//
+// CONTEXT. Each event carries the time, read once per event that is on
+// (QueryPerformanceCounter on Windows, CLOCK_MONOTONIC on POSIX, in ticks of
+// clockFrequency()), and a Context: the worker running and the cause id, from
+// the provider a runtime registers (the actors package). The facade knows
+// nothing of actors; with no provider the worker is noWorker and the cause 0.
+//
+// INTERVALS. 'begin' answers a fresh id, which 'end' is given. Nothing is held
+// on a stack or by a thread, so the end may come after an 'await', on another
+// worker, or from another actor. A begin of a kind that is off answers 0, and
+// an end given 0 records nothing.
+//
+// MACROS AND LAZY ARGUMENTS. emit, log, begin and end are macros, so that an
+// argument is substituted where it is used, inside the test of the kind's
+// state, and never evaluated when the kind is off. Under typed macros each of
+// their value parameters becomes 'lazy' (the comment on each macro names them).
+//
+// The package imports only core.
+
+mod trace;
+
+// ---------------------------------------------------------------------------
+// Levels
+// ---------------------------------------------------------------------------
+
+// How detailed: an event's, and the most detailed a target wants. Off is
+// wanted by no event and wants none
+pub enum Level {
+  Off, Error, Warn, Info, Debug, Trace;
+
+  // 0 for Off up to 5 for Trace: a more detailed level ranks higher
+  pub fn rank(self: Level) u8 {
+    match self {
+      case is Level.Off {0u8}
+      case is Level.Error {1u8}
+      case is Level.Warn {2u8}
+      case is Level.Info {3u8}
+      case is Level.Debug {4u8}
+      else {5u8}
+    }
+  }
+
+  // Its name, lower case, as CONE_TRACE spells it
+  pub fn name(self: Level) &str {
+    match self {
+      case is Level.Off {"off"}
+      case is Level.Error {"error"}
+      case is Level.Warn {"warn"}
+      case is Level.Info {"info"}
+      case is Level.Debug {"debug"}
+      else {"trace"}
+    }
+  }
+}
+
+// The level of a rank, 0 to 5 (more is Trace)
+pub fn levelOfRank(r: u8) Level {
+  if r == 0u8 {Level.Off}
+  else if r == 1u8 {Level.Error}
+  else if r == 2u8 {Level.Warn}
+  else if r == 3u8 {Level.Info}
+  else if r == 4u8 {Level.Debug}
+  else {Level.Trace}
+}
+
+// ---------------------------------------------------------------------------
+// Field types and values
+// ---------------------------------------------------------------------------
+
+// A field's type, the kind says; a sink reads its values by it
+pub enum Type {I64, U64, F64, Bool, Text, Duration, Time}
+
+// A field's value in an event. Text borrows the emitter's text for the event
+// only
+pub enum Value {I64(i64), U64(u64), F64(f64), Bool(bool), Text(&str), Duration(i64), Time(u64)}
+
+// A duration field's value: nanoseconds (a time.Duration's 'nanos()')
+pub struct Nanos {
+  pub ns: i64;
+}
+
+// A time field's value: a count of the facade's clock (ticks())
+pub struct Ticks {
+  pub count: u64;
+}
+
+// The value of a field's argument, by its type (a kind's 'values' calls it)
+fn valI64 overload val(v: i64) Value {Value.I64(v)}
+fn valU64 overload val(v: u64) Value {Value.U64(v)}
+fn valF64 overload val(v: f64) Value {Value.F64(v)}
+fn valBool overload val(v: bool) Value {Value.Bool(v)}
+fn valText overload val(v: &str) Value {Value.Text(v)}
+fn valNanos overload val(v: Nanos) Value {Value.Duration(v.ns)}
+fn valTicks overload val(v: Ticks) Value {Value.Time(v.count)}
+
+// The Type of a field type, for a kind's type arguments: chosen by the type
+// of a pointer, which needs no value. A type outside the set has none, so a
+// kind of it is refused where it is made
+fn tyI64 overload typeOf(p: *i64) Type {Type.I64}
+fn tyU64 overload typeOf(p: *u64) Type {Type.U64}
+fn tyF64 overload typeOf(p: *f64) Type {Type.F64}
+fn tyBool overload typeOf(p: *bool) Type {Type.Bool}
+fn tyText overload typeOf(p: *&str) Type {Type.Text}
+fn tyNanos overload typeOf(p: *Nanos) Type {Type.Duration}
+fn tyTicks overload typeOf(p: *Ticks) Type {Type.Time}
+
+// ---------------------------------------------------------------------------
+// Kinds
+// ---------------------------------------------------------------------------
+
+pub const maxFields = 4usize;
+
+// A kind's state: which sinks want its events, a bit for each (bit 0 the
+// first, bit 1 the second), so 0 when none does; or stateNew
+const stateOff = 0u8;           // no sink wants the kind's events
+const stateNew = 0x80u8;        // not yet emitted: worked out on first use
+
+// What every kind holds: the metadata a sink is shown. Made by a kind's 'make'
+pub struct Info {
+  pub name: &str;
+  pub target: &str;
+  pub level: Level;
+  pub fields: u32;                          // how many fields, 0 to 4
+  pub names: Array[&str, 4];                // the first 'fields' are its fields' names
+  pub types: Array[Type, 4];                // and their types
+  state: Atomic[u8];                        // the sinks that want it, or stateNew
+  number: Atomic[u32];                      // its number, 1 up, once first emitted
+  next: Atomic[usize];                      // the kinds emitted so far, a list (under the lock)
+
+  // Its number, 1 up in the order kinds were first emitted: what a binary sink
+  // may write for it. 0 before its first event (a sink's 'enabled' sees it set)
+  pub fn id(self: &) u32 {
+    self.number.loadOrdered(MemOrder.Acquire)
+  }
+
+  // Whether its events go to a sink now
+  pub fn isOn(self: &) bool {
+    let s = self.state.loadOrdered(MemOrder.Acquire);
+    s != stateOff && s != stateNew
+  }
+}
+
+fn makeInfo(name: &str, target: &str, level: Level, n: u32, names: Array[&str, 4], types: Array[Type, 4]) Info {
+  Info(name, target, level, n, names, types, Atomic[u8].of(stateNew), Atomic[u32].of(0u32), Atomic[usize].of(0usize))
+}
+
+// Whether the kind's events are wanted: THE TEST EVERY MACRO MAKES. One relaxed
+// load and a compare when the kind is off; on its first use, it is registered
+fn on(k: &Info) bool inline {
+  let s = mem.atomicLoad[u8](&k.state as *u8, MemOrder.Relaxed);
+  if s == stateOff {
+    return false;
+  }
+  s != stateNew || register(k)
+}
+
+// THE MACROS. Each is a macro method of a kind: emit(a, ..), log(a, .., msg),
+// begin(a, ..) and end(id), one argument per field. Each tests the kind's
+// state first, and only when it is on are its arguments evaluated, left to
+// right: the field values through the kind's 'values', which the compiler
+// checks against its field types, then the message. Under typed macros, every
+// parameter but 'self' becomes 'lazy': each macro's comment names them.
+
+// A kind with no field
+pub struct Kind0 {
+  pub info: Info;
+
+  pub fn make(name: &str, target: &str, level: Level) Kind0 {
+    Kind0(makeInfo(name, target, level, 0u32, ["", "", "", ""], [Type.U64, Type.U64, Type.U64, Type.U64]))
+  }
+
+  // An event. Lazy under typed macros: none (it has no argument)
+  pub macro emit[self] {
+    if on(&self.info) {fireNone(&self.info, "", srcFile(), srcLine())} else {}
+  }
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, msg: lazy &str] {
+    if on(&self.info) {let m = msg; fireNone(&self.info, textOf(&m), srcFile(), srcLine())} else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, msg: lazy Message] {
+    if on(&self.info) {let m = msg; fireNone(&self.info, textOf(&m), srcFile(), srcLine())} else {}
+  }
+  // An interval's start: its id, 0 when off. Lazy under typed macros: none
+  pub macro begin[self] {
+    if on(&self.info) {openNone(&self.info, srcFile(), srcLine())} else {0u64}
+  }
+  // An interval's end. Lazy under typed macros: id
+  pub macro end[self, id: lazy u64] {
+    if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
+  }
+}
+
+// A kind with one field, of type A
+pub struct Kind1[A] {
+  pub info: Info;
+
+  pub fn make(name: &str, target: &str, level: Level, na: &str) Kind1[A] {
+    Kind1[A](makeInfo(name, target, level, 1u32, [na, "", "", ""],
+      [typeOf(null as *A), Type.U64, Type.U64, Type.U64]))
+  }
+
+  // The field values of an event: where an argument's type is checked
+  fn values(self: &, a: A) Array[Value, 1] {
+    [val(a)]
+  }
+
+  // An event. Lazy under typed macros: a
+  pub macro emit[self, a: lazy A] {
+    if on(&self.info) {let v = self.values(a); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
+  }
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, msg: lazy Message] {
+    if on(&self.info) {
+      let v = self.values(a);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An interval's start: its id, 0 when off. Lazy under typed macros: a
+  pub macro begin[self, a: lazy A] {
+    if on(&self.info) {let v = self.values(a); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
+  }
+  // An interval's end. Lazy under typed macros: id
+  pub macro end[self, id: lazy u64] {
+    if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
+  }
+}
+
+// A kind with two fields, of types A and B
+pub struct Kind2[A, B] {
+  pub info: Info;
+
+  pub fn make(name: &str, target: &str, level: Level, na: &str, nb: &str) Kind2[A, B] {
+    Kind2[A, B](makeInfo(name, target, level, 2u32, [na, nb, "", ""],
+      [typeOf(null as *A), typeOf(null as *B), Type.U64, Type.U64]))
+  }
+
+  // The field values of an event: where the arguments' types are checked
+  fn values(self: &, a: A, b: B) Array[Value, 2] {
+    [val(a), val(b)]
+  }
+
+  // An event. Lazy under typed macros: a, b
+  pub macro emit[self, a: lazy A, b: lazy B] {
+    if on(&self.info) {let v = self.values(a, b); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
+  }
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, msg: lazy Message] {
+    if on(&self.info) {
+      let v = self.values(a, b);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An interval's start: its id, 0 when off. Lazy under typed macros: a, b
+  pub macro begin[self, a: lazy A, b: lazy B] {
+    if on(&self.info) {let v = self.values(a, b); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
+  }
+  // An interval's end. Lazy under typed macros: id
+  pub macro end[self, id: lazy u64] {
+    if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
+  }
+}
+
+// A kind with three fields, of types A, B and C
+pub struct Kind3[A, B, C] {
+  pub info: Info;
+
+  pub fn make(name: &str, target: &str, level: Level, na: &str, nb: &str, nc: &str) Kind3[A, B, C] {
+    Kind3[A, B, C](makeInfo(name, target, level, 3u32, [na, nb, nc, ""],
+      [typeOf(null as *A), typeOf(null as *B), typeOf(null as *C), Type.U64]))
+  }
+
+  // The field values of an event: where the arguments' types are checked
+  fn values(self: &, a: A, b: B, c: C) Array[Value, 3] {
+    [val(a), val(b), val(c)]
+  }
+
+  // An event. Lazy under typed macros: a, b, c
+  pub macro emit[self, a: lazy A, b: lazy B, c: lazy C] {
+    if on(&self.info) {let v = self.values(a, b, c); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
+  }
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, c: lazy C, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b, c);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, c: lazy C, msg: lazy Message] {
+    if on(&self.info) {
+      let v = self.values(a, b, c);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An interval's start: its id, 0 when off. Lazy under typed macros: a, b, c
+  pub macro begin[self, a: lazy A, b: lazy B, c: lazy C] {
+    if on(&self.info) {let v = self.values(a, b, c); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
+  }
+  // An interval's end. Lazy under typed macros: id
+  pub macro end[self, id: lazy u64] {
+    if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
+  }
+}
+
+// A kind with four fields, of types A, B, C and D
+pub struct Kind4[A, B, C, D] {
+  pub info: Info;
+
+  pub fn make(name: &str, target: &str, level: Level, na: &str, nb: &str, nc: &str, nd: &str) Kind4[A, B, C, D] {
+    Kind4[A, B, C, D](makeInfo(name, target, level, 4u32, [na, nb, nc, nd],
+      [typeOf(null as *A), typeOf(null as *B), typeOf(null as *C), typeOf(null as *D)]))
+  }
+
+  // The field values of an event: where the arguments' types are checked
+  fn values(self: &, a: A, b: B, c: C, d: D) Array[Value, 4] {
+    [val(a), val(b), val(c), val(d)]
+  }
+
+  // An event. Lazy under typed macros: a, b, c, d
+  pub macro emit[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D] {
+    if on(&self.info) {let v = self.values(a, b, c, d); fire(&self.info, &v, "", srcFile(), srcLine())} else {}
+  }
+  // An event with a message, a '&str'. LATER: it and logMessage fold back into one
+  // overloaded 'log' when macro overloading is built
+  pub macro log[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D, msg: lazy &str] {
+    if on(&self.info) {
+      let v = self.values(a, b, c, d);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An event with a message built in place, a Message. LATER: folds back into 'log'
+  // when macro overloading is built
+  pub macro logMessage[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D, msg: lazy Message] {
+    if on(&self.info) {
+      let v = self.values(a, b, c, d);
+      let m = msg;
+      fire(&self.info, &v, textOf(&m), srcFile(), srcLine())
+    } else {}
+  }
+  // An interval's start: its id, 0 when off. Lazy under typed macros: a, b, c, d
+  pub macro begin[self, a: lazy A, b: lazy B, c: lazy C, d: lazy D] {
+    if on(&self.info) {let v = self.values(a, b, c, d); open(&self.info, &v, srcFile(), srcLine())} else {0u64}
+  }
+  // An interval's end. Lazy under typed macros: id
+  pub macro end[self, id: lazy u64] {
+    if on(&self.info) {closeSpan(&self.info, id, srcFile(), srcLine())} else {}
+  }
+}
+
+// What the macros call once the kind is on: an event, an interval's start,
+// with values or with none
+fn fire(k: &Info, values: &Array[Value], msg: &str, file: &str, line: u32) {
+  deliver(k, Phase.Event, 0u64, values, msg, file, line);
+}
+
+fn open(k: &Info, values: &Array[Value], file: &str, line: u32) u64 {
+  let id = newSpan();
+  deliver(k, Phase.Begin, id, values, "", file, line);
+  id
+}
+
+fn fireNone(k: &Info, msg: &str, file: &str, line: u32) {
+  let none = [Value.U64(0u64)];
+  deliver(k, Phase.Event, 0u64, &none[0..<0], msg, file, line);
+}
+
+fn openNone(k: &Info, file: &str, line: u32) u64 {
+  let id = newSpan();
+  let none = [Value.U64(0u64)];
+  deliver(k, Phase.Begin, id, &none[0..<0], "", file, line);
+  id
+}
+
+fn closeSpan(k: &Info, id: u64, file: &str, line: u32) {
+  if id == 0u64 {
+    return;
+  }
+  let none = [Value.U64(0u64)];
+  deliver(k, Phase.End, id, &none[0..<0], "", file, line);
+}
+
+// ---------------------------------------------------------------------------
+// Events and context
+// ---------------------------------------------------------------------------
+
+// Which of the three an event is
+pub enum Phase {Event, Begin, End}
+
+pub const noWorker = 0xFFFFFFFFu32;
+
+// Who made the event, from the runtime's provider
+pub struct Context {
+  pub worker: u32 = noWorker;               // the worker running, or noWorker
+  pub cause: u64 = 0u64;                    // the id of what it is running for, or 0
+}
+
+// What a sink records: a view, borrowed for the call
+pub struct Event {
+  pub kind: &Info;
+  pub phase: Phase;
+  pub span: u64;                            // an interval's id (Begin, End); 0 for an event
+  pub values: &Array[Value];                // the kind's fields, in order (none at an End)
+  pub message: &str;                        // "" when there is none
+  pub time: u64;                            // ticks()
+  pub ctx: Context;                         // who made it
+  pub file: &str;                           // where it was emitted
+  pub line: u32;
+}
+
+// ---------------------------------------------------------------------------
+// The sink
+// ---------------------------------------------------------------------------
+
+pub trait Sink {
+  // Whether the sink wants a kind's events: asked when the kind's state is
+  // worked out (its first event, or a change of level, filter or sink), under
+  // the facade's lock. It may not emit
+  pub fn enabled(self: &, k: &Info) bool;
+  // One event of a kind it wanted, on the thread that made it
+  pub fn record(self: &, e: &Event);
+  // Write out anything held
+  pub fn flush(self: &) {}
+}
+
+// ---------------------------------------------------------------------------
+// The state: one block, reached through one atomic address, set up in init
+// ---------------------------------------------------------------------------
+
+const maxTargets = 32usize;
+const targetBytes = 32usize;
+
+// A target a layer of the filter names
+struct Directive {
+  len: u32;
+  rank: u8;
+  name: Array[u8, 32];
+}
+
+// One layer of the filter: the program's (setLevel, setDefaultLevel, filter)
+// or the operator's (CONE_TRACE). A default of noLevel is none set
+struct Layer {
+  defaultRank: u8;
+  ntargets: u32;
+  targets: Array[Directive, 32];
+}
+
+struct State {
+  lock: u32;                                // atomic: the lock below
+  installed: u32;                           // atomic: how many sinks are installed, 0 to 2
+  sinks: Array[usize, 4];                   // the sinks, each a Uni[Sink], once installed
+  provider: usize;                          // atomic: the context provider, a function's address, or 0
+  spans: u64;                               // atomic: the last interval id made
+  // Under the lock:
+  kinds: usize;                             // the kinds emitted so far, a list through Info.next
+  kindCount: u32;
+  program: Layer;                           // what the program set
+  operator: Layer;                          // what CONE_TRACE set, which wins
+}
+
+let theState: Atomic[usize];
+
+fn @initpure init() {
+  let size = mem.sizeof[State]();
+  let p = RawBlocks.alloc(size, 16usize);
+  if p == null {
+    panic("trace: out of memory");
+  }
+  var i = 0usize;
+  while i < size {
+    *(p + i) = 0u8;
+    i = i + 1usize;
+  }
+  let st = p as *State;
+  (*st).program.defaultRank = noLevel;
+  (*st).operator.defaultRank = noLevel;
+  theState = Atomic[usize].of(p as usize);
+}
+
+// At the end of the program: what the sinks hold is written out
+fn final() {
+  flush();
+}
+
+fn state() *State {
+  theState.loadOrdered(MemOrder.Relaxed) as *State
+}
+
+// The lock over the list of kinds and the filter. Held only while a kind's
+// state is worked out or the filter changes, never while an event is recorded
+fn lock(st: *State) {
+  let w = &(*st).lock as *u32;
+  while true {
+    var seen = 0u32;
+    var taken = false;
+    seen, taken = mem.atomicCompareSwap[u32](w, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if taken {
+      return;
+    }
+  }
+}
+
+fn unlock(st: *State) {
+  mem.atomicStore[u32](&(*st).lock as *u32, 0u32, MemOrder.Release);
+}
+
+// How many sinks are installed: 0 to 2
+fn sinkCount(st: *State) usize {
+  usize.from(mem.atomicLoad[u32](&(*st).installed as *u32, MemOrder.Acquire))
+}
+
+// Sink i, installed
+fn sinkAt(st: *State, i: usize) &<Sink {
+  mem.readRaw[&<Sink]((&(*st).sinks as *(&<Sink)) + i)
+}
+
+// Install the program's sink: once. Then CONE_TRACE, if set, is read into
+// the operator's layer of the filter, and every kind's state is worked out.
+// False, and the sink dropped, if a sink was installed already
+pub fn install(sink: Uni[Sink]) bool {
+  let st = state();
+  lock(st);
+  if (*st).installed != 0u32 {
+    unlock(st);
+    return false;
+  }
+  mem.writeRaw[Uni[Sink]](&(*st).sinks as *Uni[Sink], sink);
+  installed(st, 1u32);
+  unlock(st);
+  true
+}
+
+// Install two sinks, both receiving (the fan-out): each is asked for itself
+// whether it wants a kind, and records only the kinds it wanted. Once, as
+// install: false, and both dropped, if a sink was installed already
+pub fn installPair(first: Uni[Sink], second: Uni[Sink]) bool {
+  let st = state();
+  lock(st);
+  if (*st).installed != 0u32 {
+    unlock(st);
+    return false;
+  }
+  mem.writeRaw[Uni[Sink]](&(*st).sinks as *Uni[Sink], first);
+  mem.writeRaw[Uni[Sink]]((&(*st).sinks as *Uni[Sink]) + 1usize, second);
+  installed(st, 2u32);
+  unlock(st);
+  true
+}
+
+// The sinks are in place (under the lock): they are published, CONE_TRACE
+// read, and every kind's state worked out
+fn installed(st: *State, n: u32) {
+  mem.atomicStore[u32](&(*st).installed as *u32, n, MemOrder.Release);
+  var spec = Array[u8, 1024]() <- fill 0u8;
+  let len = readEnv(&mut spec);
+  if len != noEnv {
+    applyFilter(&mut (*st).operator, mem.sliceFromParts[u8](&spec as *u8, len));
+  }
+  refreshLocked(st);
+}
+
+// Ask the installed sinks to write out what they hold
+pub fn flush() {
+  let st = state();
+  var i = 0usize;
+  while i < sinkCount(st) {
+    sinkAt(st, i).flush();
+    i = i + 1usize;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Registering kinds and working out their state
+// ---------------------------------------------------------------------------
+
+fn sameText(a: &Array[u8], p: *u8, n: usize) bool {
+  if a.len != n {
+    return false;
+  }
+  var i = 0usize;
+  while i < n {
+    if a[i] != *(p + i) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// The directive of a layer naming a target, or null
+fn findTarget(ly: *Layer, name: &Array[u8]) *Directive {
+  var i = 0usize;
+  while i < usize.from((*ly).ntargets) {
+    let d = (&(*ly).targets as *Directive) + i;
+    if sameText(name, &(*d).name as *u8, usize.from((*d).len)) {
+      return d;
+    }
+    i = i + 1usize;
+  }
+  null
+}
+
+// A target's level now (under the lock): CONE_TRACE's for a target it names,
+// else the program's; for a target neither names, CONE_TRACE's default level,
+// else the program's, else Warn
+fn targetRank(st: *State, target: &str) u8 {
+  var d = findTarget(&mut (*st).operator, target);
+  if d != null {
+    return (*d).rank;
+  }
+  d = findTarget(&mut (*st).program, target);
+  if d != null {
+    return (*d).rank;
+  }
+  if (*st).operator.defaultRank != noLevel {
+    return (*st).operator.defaultRank;
+  }
+  if (*st).program.defaultRank != noLevel {
+    return (*st).program.defaultRank;
+  }
+  defaultRank
+}
+
+// A kind's state, from the filter and the sinks (under the lock)
+fn stateOf(st: *State, k: &Info) u8 {
+  let r = k.level.rank();
+  if r == 0u8 || r > targetRank(st, k.target) {
+    return stateOff;
+  }
+  var bits = stateOff;
+  var i = 0usize;
+  while i < sinkCount(st) {
+    if sinkAt(st, i).enabled(k) {
+      bits = bits | (1u8 << u8.from(i));
+    }
+    i = i + 1usize;
+  }
+  bits
+}
+
+// A kind's first use: it joins the list, is numbered, and its state is worked
+// out. Whether it is on
+fn register(k: &Info) bool {
+  let st = state();
+  lock(st);
+  if mem.atomicLoad[u8](&k.state as *u8, MemOrder.Relaxed) == stateNew {
+    (*st).kindCount = (*st).kindCount + 1u32;
+    k.number.storeOrdered((*st).kindCount, MemOrder.Release);
+    k.next.storeOrdered((*st).kinds, MemOrder.Relaxed);
+    (*st).kinds = k as *Info as usize;
+    k.state.storeOrdered(stateOf(st, k), MemOrder.Release);
+  }
+  unlock(st);
+  k.isOn()
+}
+
+fn refreshLocked(st: *State) {
+  var p = (*st).kinds;
+  while p != 0usize {
+    let k = p as *Info;
+    (*k).state.storeOrdered(stateOf(st, &*k), MemOrder.Release);
+    p = (*k).next.loadOrdered(MemOrder.Relaxed);
+  }
+}
+
+// Work out every kind's state again: what a sink whose 'enabled' answer has
+// changed calls
+pub fn refresh() {
+  let st = state();
+  lock(st);
+  refreshLocked(st);
+  unlock(st);
+}
+
+// ---------------------------------------------------------------------------
+// Levels by target, and the filter
+// ---------------------------------------------------------------------------
+
+// The default level when neither the program nor CONE_TRACE sets one: Warn,
+// so that a program that installs a sink sees its errors and warnings
+const defaultRank = 2u8;
+
+// Set (or add) a target's level in a layer: false if the name is empty or
+// longer than 32 bytes, or the layer names 32 targets already
+fn setTarget(ly: *Layer, name: &Array[u8], rank: u8) bool {
+  if name.len == 0usize || name.len > targetBytes {
+    return false;
+  }
+  var d = findTarget(ly, name);
+  if d == null {
+    if usize.from((*ly).ntargets) >= maxTargets {
+      return false;
+    }
+    d = (&(*ly).targets as *Directive) + usize.from((*ly).ntargets);
+    (*ly).ntargets = (*ly).ntargets + 1u32;
+    (*d).len = u32.from(name.len);
+    var i = 0usize;
+    while i < name.len {
+      *((&(*d).name as *u8) + i) = name[i];
+      i = i + 1usize;
+    }
+  }
+  (*d).rank = rank;
+  true
+}
+
+// The most detailed level a target wants: its events of a level up to this
+// one are recorded, unless CONE_TRACE names the target, which wins whenever
+// it was read. False if the target's name is empty or longer than 32 bytes,
+// or the program names 32 targets already
+pub fn setLevel(target: &str, level: Level) bool {
+  let st = state();
+  lock(st);
+  let ok = setTarget(&mut (*st).program, target, level.rank());
+  refreshLocked(st);
+  unlock(st);
+  ok
+}
+
+// The level of every target not named: Warn until set. A default level in
+// CONE_TRACE wins over it
+pub fn setDefaultLevel(level: Level) {
+  let st = state();
+  lock(st);
+  (*st).program.defaultRank = level.rank();
+  refreshLocked(st);
+  unlock(st);
+}
+
+// The level a target has now (whether or not a sink is installed)
+pub fn levelOf(target: &str) Level {
+  let st = state();
+  lock(st);
+  let r = targetRank(st, target);
+  unlock(st);
+  levelOfRank(r)
+}
+
+fn isSpace(c: u8) bool {
+  c == 32u8 || c == 9u8
+}
+
+fn lower(c: u8) u8 {
+  if c >= 65u8 && c <= 90u8 {c + 32u8} else {c}
+}
+
+fn wordIs(w: &Array[u8], name: &str) bool {
+  let b: &Array[u8] = name;
+  if w.len != b.len {
+    return false;
+  }
+  var i = 0usize;
+  while i < w.len {
+    if lower(w[i]) != b[i] {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+const noLevel = 255u8;
+
+// The rank a word names, or noLevel
+fn rankOfWord(w: &Array[u8]) u8 {
+  if wordIs(w, "off") {0u8}
+  else if wordIs(w, "error") {1u8}
+  else if wordIs(w, "warn") {2u8}
+  else if wordIs(w, "info") {3u8}
+  else if wordIs(w, "debug") {4u8}
+  else if wordIs(w, "trace") {5u8}
+  else {noLevel}
+}
+
+// The part of s from 'from' to 'to', spaces and tabs at either end dropped
+fn trimmed(s: &Array[u8], from: usize, to: usize) &Array[u8] {
+  var a = from;
+  var b = to;
+  while a < b && isSpace(s[a]) {
+    a = a + 1usize;
+  }
+  while b > a && isSpace(s[b - 1usize]) {
+    b = b - 1usize;
+  }
+  mem.sliceFromParts[u8]((s as *u8) + a, b - a)
+}
+
+fn validTarget(t: &Array[u8]) bool {
+  if t.len == 0usize || t.len > targetBytes {
+    return false;
+  }
+  var i = 0usize;
+  while i < t.len {
+    if isSpace(t[i]) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// One directive, into a layer: whether it was applied
+fn applyDirective(ly: *Layer, d: &Array[u8]) bool {
+  var eq = 0usize;
+  while eq < d.len && d[eq] != 61u8 {
+    eq = eq + 1usize;
+  }
+  if eq == d.len {
+    // a bare word: a level, else a target wanting everything
+    let r = rankOfWord(d);
+    if r != noLevel {
+      (*ly).defaultRank = r;
+      return true;
+    }
+    if !validTarget(d) {
+      return false;
+    }
+    return setTarget(ly, d, 5u8);
+  }
+  let t = trimmed(d, 0usize, eq);
+  let lv = trimmed(d, eq + 1usize, d.len);
+  let r = rankOfWord(lv);
+  if r == noLevel || !validTarget(t) {
+    return false;
+  }
+  setTarget(ly, t, r)
+}
+
+// A whole layer from a spec (under the lock): how many directives were skipped
+fn applyFilter(ly: *Layer, spec: &Array[u8]) u32 {
+  (*ly).ntargets = 0u32;
+  (*ly).defaultRank = noLevel;
+  var bad = 0u32;
+  var from = 0usize;
+  while from <= spec.len {
+    var to = from;
+    while to < spec.len && spec[to] != 44u8 {
+      to = to + 1usize;
+    }
+    let d = trimmed(spec, from, to);
+    if d.len != 0usize && !applyDirective(ly, d) {
+      bad = bad + 1u32;
+    }
+    from = to + 1usize;
+  }
+  bad
+}
+
+// Replace everything the program set with a spec in CONE_TRACE's grammar (the
+// package's header): the program's levels for the targets named, and its
+// default if the spec has a bare level (else none, so Warn). CONE_TRACE still
+// wins for what it names. How many directives were skipped as malformed
+pub fn filter(spec: &str) u32 {
+  let st = state();
+  lock(st);
+  let bad = applyFilter(&mut (*st).program, spec);
+  refreshLocked(st);
+  unlock(st);
+  bad
+}
+
+// ---------------------------------------------------------------------------
+// The environment variable
+// ---------------------------------------------------------------------------
+
+const noEnv = 0xFFFFFFFFFFFFFFFFusize;
+
+extern fn @c getenv(name: cstr) *u8;
+extern fn @c _wgetenv(name: *u16) *u16;
+
+// CONE_TRACE's value copied into buf: its length, or noEnv when it is not
+// set. On Windows it is read from the C runtime's wide environment (where the
+// env package sets variables); a character past ASCII becomes 0xFF, which no
+// directive accepts. What does not fit is cut
+fn readEnv(buf: &mut Array[u8, 1024]) usize {
+  if isWindows() {readEnvWindows(buf)} else {readEnvPosix(buf)}
+}
+
+fn readEnvWindows(buf: &mut Array[u8, 1024]) usize {
+  let name = [67u16, 79u16, 78u16, 69u16, 95u16, 84u16, 82u16, 65u16, 67u16, 69u16, 0u16];
+  let v = _wgetenv(&name as *u16);
+  if v == null {
+    return noEnv;
+  }
+  var n = 0usize;
+  while n < 1024usize && *(v + n) != 0u16 {
+    let c = *(v + n);
+    buf[n] = if c < 128u16 {u8.from(c)} else {255u8};
+    n = n + 1usize;
+  }
+  n
+}
+
+fn readEnvPosix(buf: &mut Array[u8, 1024]) usize {
+  let v = getenv("CONE_TRACE");
+  if v == null {
+    return noEnv;
+  }
+  var n = 0usize;
+  while n < 1024usize && *(v + n) != 0u8 {
+    buf[n] = *(v + n);
+    n = n + 1usize;
+  }
+  n
+}
+
+// ---------------------------------------------------------------------------
+// Delivering an event
+// ---------------------------------------------------------------------------
+
+// The function that answers the context, registered by a runtime: who is
+// running and why. Its events then carry what it answers
+pub fn setContextProvider(provider: &fn() Context) {
+  var f = provider;
+  mem.atomicStore[usize](&(*state()).provider as *usize, mem.readRaw[usize](&mut f as *usize), MemOrder.Release);
+}
+
+fn contextNow(st: *State) Context {
+  var p = mem.atomicLoad[usize](&(*st).provider as *usize, MemOrder.Acquire);
+  if p == 0usize {
+    return Context();
+  }
+  let f = mem.readRaw[&fn() Context](&mut p as *(&fn() Context));
+  f()
+}
+
+// An event of a kind that is on, to each sink that wants it
+fn deliver(k: &Info, phase: Phase, span: u64, values: &Array[Value], msg: &str, file: &str, line: u32) {
+  let st = state();
+  let bits = k.state.loadOrdered(MemOrder.Acquire);
+  if bits == stateOff || bits == stateNew {
+    return;
+  }
+  let ev = Event(k, phase, span, values, msg, ticks(), contextNow(st), file, line);
+  var i = 0usize;
+  while i < sinkCount(st) {
+    if (bits & (1u8 << u8.from(i))) != 0u8 {
+      sinkAt(st, i).record(&ev);
+    }
+    i = i + 1usize;
+  }
+}
+
+// A fresh interval id: never 0
+fn newSpan() u64 {
+  mem.atomicAdd[u64](&(*state()).spans as *u64, 1u64, MemOrder.Relaxed) + 1u64
+}
+
+
+// ---------------------------------------------------------------------------
+// The clock
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count: *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq: *i64) i32;
+}
+
+struct PosixTimespec {
+  sec: i64;
+  nsec: i64;
+}
+extern fn @c clock_gettime(clock: i32, ts: *PosixTimespec) i32;
+
+// The clock's count now: what an event's time is, in ticks of clockFrequency()
+pub fn ticks() u64 {
+  if isWindows() {ticksWindows()} else {ticksPosix()}
+}
+
+fn ticksWindows() u64 {
+  var count = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  u64.from(count)
+}
+
+fn ticksPosix() u64 {
+  var ts = PosixTimespec(0i64, 0i64);
+  clock_gettime(1i32, &mut ts as *PosixTimespec);
+  u64.from(ts.sec) * 1000000000u64 + u64.from(ts.nsec)
+}
+
+// Ticks a second
+pub fn clockFrequency() u64 {
+  if isWindows() {
+    var f = 0i64;
+    QueryPerformanceFrequency(&mut f as *i64);
+    u64.from(f)
+  } else {
+    1000000000u64
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+pub const messageBytes = 240usize;
+
+// A log message built in place, with no allocation: '(trace.Message() <-
+// "took ", ms, " ms")', parenthesized as a macro's argument. Texts, integers and bools; what does not fit in 240 bytes is
+// cut. Built only when its kind is on, since it is a macro's argument
+pub struct Message {
+  len: usize;
+  buf: Array[u8, 240];
+
+  // An empty message: 'trace.Message()'
+  pub fn init(self: &new) {*self = Message(0usize, Array[u8, 240]() <- fill 0u8);}
+
+  // The text so far
+  pub fn text(self: &) &str {
+    mem.sliceFromParts[u8](&buf as *u8, len) as &str
+  }
+
+  pub fn appendStr overload `<-`(self: &mut, s: &str) {
+    let b: &Array[u8] = s;
+    var i = 0usize;
+    while i < b.len && len < messageBytes {
+      buf[len] = b[i];
+      len = len + 1usize;
+      i = i + 1usize;
+    }
+  }
+
+  pub fn appendUInt overload `<-`(self: &mut, n: u64) {
+    var digits = Array[u8, 20]() <- fill 0u8;
+    var k = 0usize;
+    var v = n;
+    while true {
+      digits[k] = 48u8 + u8.from(v % 10u64);
+      k = k + 1usize;
+      v = v / 10u64;
+      if v == 0u64 {
+        break;
+      }
+    }
+    while k > 0usize && len < messageBytes {
+      k = k - 1usize;
+      buf[len] = digits[k];
+      len = len + 1usize;
+    }
+  }
+
+  pub fn appendInt overload `<-`(self: &mut, n: i64) {
+    if n < 0i64 {
+      self <- "-";
+      // the most negative i64's magnitude, as a u64, is its bits negated plus one
+      self <- (~(n as u64)) + 1u64;
+    } else {
+      self <- n as u64;
+    }
+  }
+
+  pub fn appendBool overload `<-`(self: &mut, b: bool) {
+    self <- if b {"true"} else {"false"};
+  }
+}
+
+
+// A log macro's message, whichever it was given
+fn textOfStr overload textOf(m: &&str) &str {*m}
+fn textOfMessage overload textOf(m: &Message) &str {m.text()}

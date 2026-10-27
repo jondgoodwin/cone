@@ -6,11 +6,14 @@
 // 2. An empty datagram is a datagram: Done(0), the sender named. (A TCP
 //    receive that says Done(0) is the end of a stream; this is not.)
 // 3. A datagram longer than the receive's room is cut: the answer is Failed
-//    with WSAEMSGSIZE (10040) on both systems, the room filled with its first
-//    bytes, the sender named, the rest lost; the next datagram is whole.
-// 4. A receive with no room is refused (ERROR_INSUFFICIENT_BUFFER); a stream
-//    operation on a datagram socket, a datagram operation on a listener, and
-//    one on a closed handle, fail with ERROR_INVALID_HANDLE.
+//    with the system's number for it (WSAEMSGSIZE, EMSGSIZE), which is
+//    Truncated, the room filled with its first bytes, the sender named, the
+//    rest lost; the next datagram is whole.
+// 4. A receive with no room is refused (InvalidInput: ERROR_INSUFFICIENT_BUFFER,
+//    EINVAL); a stream operation on a datagram socket, a datagram operation on
+//    a listener, and one on a closed handle, fail as on a handle that names
+//    nothing (InvalidInput: ERROR_INVALID_HANDLE, EBADF). A datagram too large
+//    to send fails with the same number as 3's, but Other.
 // 5. A receive with a deadline, the deadline a cancel group's: TimedOut with
 //    its buffer, not before the deadline; the socket works after.
 // 6. A receive cancelled by lp.cancel, by its group's cancel, and by the
@@ -27,6 +30,7 @@ import collections use List;
 import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
+import ioerror use IoErrorKind;
 import diag;
 
 const notFound = 0xFFFFFFFFusize;
@@ -55,7 +59,7 @@ fn portOf(lp: &Loop, h: Handle) u16 {
   var port = 0u16;
   match lp.localAddr(h) {
     case let Ok(a) {port = a.port();}
-    case let Error(e) {}
+    case let Err(e) {}
   }
   port
 }
@@ -151,7 +155,7 @@ fn main() i32 {
       requireUInt(u64.from(k != notFound), 1u64, "3: the receive answers");
       let c = &mut out[k];
       expectUInt(u64.from(c.status), u64.from(diag.outcomeFailed), "3: Failed");
-      expectUInt(u64.from(c.code), 10040u64, "3: WSAEMSGSIZE, on both systems");
+      expect(c.error().isTruncated(), "3: Truncated (WSAEMSGSIZE, EMSGSIZE)");
       expectUInt(u64.from(c.buf.len()), u64.from(held + 8usize), "3: the room is filled");
       expect(holds(&c.buf, held, 8usize, 3u64), "3: with the datagram's first bytes");
       expectUInt(u64.from(c.peer.port()), u64.from(pa), "3: the sender named");
@@ -174,21 +178,21 @@ fn main() i32 {
       lp.submit(Op.RecvFrom(b, full), Target.Here(10u64));
       let k = await1(&mut lp, &mut out, 10u64);
       requireUInt(u64.from(k != notFound), 1u64, "4: a receive with no room answers");
-      expectUInt(u64.from(out[k].code), u64.from(errorInsufficientBuffer), "4: ERROR_INSUFFICIENT_BUFFER");
+      expect(out[k].error().kind() == IoErrorKind.InvalidInput, "4: InvalidInput (ERROR_INSUFFICIENT_BUFFER, EINVAL)");
       expectUInt(u64.from(out[k].buf.len()), u64.from(cap), "4: its buffer back");
       out.clear();
 
       lp.submit(Op.Recv(b, IoBuf(64usize)), Target.Here(11u64));
       let k1 = await1(&mut lp, &mut out, 11u64);
       requireUInt(u64.from(k1 != notFound), 1u64, "4: a stream receive on a datagram socket answers");
-      expectUInt(u64.from(out[k1].code), u64.from(errorInvalidHandle), "4: it fails, ERROR_INVALID_HANDLE");
+      expect(out[k1].error().kind() == IoErrorKind.InvalidInput, "4: it fails, InvalidInput (ERROR_INVALID_HANDLE, EBADF)");
       out.clear();
 
       let listener = lp.mustListen(SocketAddr.localhost(0u16));
       lp.submit(Op.RecvFrom(listener, IoBuf(64usize)), Target.Here(12u64));
       let k2 = await1(&mut lp, &mut out, 12u64);
       requireUInt(u64.from(k2 != notFound), 1u64, "4: a datagram receive on a listener answers");
-      expectUInt(u64.from(out[k2].code), u64.from(errorInvalidHandle), "4: it fails the same way");
+      expectUInt(u64.from(out[k2].code), u64.from(out[k1].code), "4: it fails the same way");
       out.clear();
       lp.close(listener);
 
@@ -197,7 +201,7 @@ fn main() i32 {
       lp.submit(Op.SendTo(listener, SocketAddr.localhost(pb), s), Target.Here(13u64));
       let k3 = await1(&mut lp, &mut out, 13u64);
       requireUInt(u64.from(k3 != notFound), 1u64, "4: a send on a closed handle answers");
-      expectUInt(u64.from(out[k3].code), u64.from(errorInvalidHandle), "4: ERROR_INVALID_HANDLE");
+      expect(out[k3].error().kind() == IoErrorKind.InvalidInput, "4: InvalidInput (ERROR_INVALID_HANDLE, EBADF)");
       expectUInt(u64.from(out[k3].buf.len()), 4u64, "4: its buffer back");
       out.clear();
 
@@ -208,7 +212,7 @@ fn main() i32 {
       let k4 = await1(&mut lp, &mut out, 14u64);
       requireUInt(u64.from(k4 != notFound), 1u64, "4: a send of 70,000 bytes answers");
       expectUInt(u64.from(out[k4].status), u64.from(diag.outcomeFailed), "4: it fails");
-      expectUInt(u64.from(out[k4].code), 10040u64, "4: WSAEMSGSIZE, on both systems");
+      expect(out[k4].error().kind() == IoErrorKind.Other && out[k4].code == IoError.truncated().code, "4: Other, the number of a datagram too long");
       expectUInt(u64.from(out[k4].buf.len()), 70000u64, "4: its buffer back");
       out.clear();
     }

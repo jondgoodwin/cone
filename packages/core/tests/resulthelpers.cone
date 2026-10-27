@@ -1,10 +1,10 @@
 // Result's helpers (WI error-handling, issue 4): unwrap, expect, map, mapError,
-// andThen, ok, error, asRef, asMut and flatten, each on Ok and on Error. As in
+// andThen, ok, error, asRef, asMut and flatten, each on Ok and on Err. As in
 // optionhelpers, the values are Logs, which say when they are finalized, so the
 // lines pin what each helper moves and what it drops: Ok's value and the error
 // alike are finalized once, and the side a helper does not answer is dropped
 // inside it. Each line was worked out by hand from the source. The panics of
-// unwrap and expect on an Error are the tests unwraperror and expecterror.
+// unwrap and expect on an Err are the tests unwraperror and expecterror.
 
 mod resulthelpers;
 
@@ -16,12 +16,12 @@ struct Log {
 }
 
 fn ok(n: i32) Result[Log, Log] { Ok[Log, Log](Log(n)) }
-fn err(n: i32) Result[Log, Log] { Error[Log, Log](Log(n)) }
+fn err(n: i32) Result[Log, Log] { Err[Log, Log](Log(n)) }
 
 fn show(r: &Result[i32, i32]) {
   match r {
     case let Ok(v) { print <- "  Ok ", *v, "\n"; }
-    case let Error(e) { print <- "  Error ", *e, "\n"; }
+    case let Err(e) { print <- "  Error ", *e, "\n"; }
   }
 }
 
@@ -38,31 +38,31 @@ fn main() {
   let m = ok(3).map(fn(l: Log) i32 { l.n * 10 });                    // 3 dies inside the closure
   match m {
     case let Ok(v) { print <- "  Ok ", v, "\n"; }
-    case let Error(e) { print <- "  Error ", e.n, "\n"; }
+    case let Err(e) { print <- "  Error ", e.n, "\n"; }
   }
   let me = err(4).map(fn(l: Log) i32 { l.n * 10 });                   // the error passes through
   match me {
     case let Ok(v) { print <- "  Ok ", v, "\n"; }
-    case let Error(e) { print <- "  Error ", e.n, "\n"; }
+    case let Err(e) { print <- "  Error ", e.n, "\n"; }
   }
 
   print <- "mapError:\n";
   let em = err(5).mapError(fn(l: Log) i32 { l.n * 100 });             // 5 dies inside the closure
   match em {
     case let Ok(v) { print <- "  Ok ", v.n, "\n"; }
-    case let Error(e) { print <- "  Error ", e, "\n"; }
+    case let Err(e) { print <- "  Error ", e, "\n"; }
   }
   let eo = ok(6).mapError(fn(l: Log) i32 { l.n * 100 });              // Ok passes through
   match eo {
     case let Ok(v) { print <- "  Ok ", v.n, "\n"; }
-    case let Error(e) { print <- "  Error ", e, "\n"; }
+    case let Err(e) { print <- "  Error ", e, "\n"; }
   }
 
   print <- "andThen:\n";
   let r7: Result[i32, i32] = Ok(7);
   show(&r7.andThen(fn(x: i32) Result[i32, i32] { Ok[i32, i32](x + 1) }));
-  show(&r7.andThen(fn(x: i32) Result[i32, i32] { Error[i32, i32](x - 1) }));
-  let e9: Result[i32, i32] = Error(9);
+  show(&r7.andThen(fn(x: i32) Result[i32, i32] { Err[i32, i32](x - 1) }));
+  let e9: Result[i32, i32] = Err(9);
   show(&e9.andThen(fn(x: i32) Result[i32, i32] { Ok[i32, i32](x + 1) }));
 
   print <- "ok:\n";
@@ -81,25 +81,25 @@ fn main() {
   let view = ok(14);
   match view.asRef() {
     case let Ok(r) { print <- "  sees Ok ", r.n, "\n"; }
-    case let Error(r) { print <- "  sees Error ", r.n, "\n"; }
+    case let Err(r) { print <- "  sees Error ", r.n, "\n"; }
   }
   let eview = err(15);
   match eview.asRef() {
     case let Ok(r) { print <- "  sees Ok ", r.n, "\n"; }
-    case let Error(r) { print <- "  sees Error ", r.n, "\n"; }
+    case let Err(r) { print <- "  sees Error ", r.n, "\n"; }
   }
-  print <- "  both still held: ", view is Ok, " ", eview is Error, "\n";
+  print <- "  both still held: ", view is Ok, " ", eview is Err, "\n";
 
   print <- "asMut:\n";
   var edit = ok(16);
   match edit.asMut() {
     case let Ok(r) { r.n = 17; }
-    case let Error(r) { r.n = 0; }
+    case let Err(r) { r.n = 0; }
   }
   var eedit = err(18);
   match eedit.asMut() {
     case let Ok(r) { r.n = 0; }
-    case let Error(r) { r.n = 19; }
+    case let Err(r) { r.n = 19; }
   }
   print <- "  now ", edit.asRef().unwrap().n, " and ", eedit.asRef().error().unwrap().n, "\n";
 
@@ -107,9 +107,9 @@ fn main() {
   let okok: Result[Result[i32, i32], i32] = Ok[Result[i32, i32], i32](Ok[i32, i32](20));
   let flat: Result[i32, i32] = okok.flatten();
   show(&flat);
-  let okerr: Result[Result[i32, i32], i32] = Ok[Result[i32, i32], i32](Error[i32, i32](21));
+  let okerr: Result[Result[i32, i32], i32] = Ok[Result[i32, i32], i32](Err[i32, i32](21));
   show(&okerr.flatten[i32]());
-  let outer: Result[Result[i32, i32], i32] = Error[Result[i32, i32], i32](22);
+  let outer: Result[Result[i32, i32], i32] = Err[Result[i32, i32], i32](22);
   show(&outer.flatten[i32]());
 
   print <- "end of main:\n";

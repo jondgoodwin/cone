@@ -11,7 +11,13 @@
 typedef struct MacroDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;
-    Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
+    // The type parameters, 'macro m[T, U][a: T, b: U]': the first of two bracket
+    // lists, NULL when only one is written. A use gives their arguments in its
+    // brackets, 'm[i32, f64](1, 2.)'; inferring them is not built.
+    Nodes *typeparms;
+    // The value parameters (GenVarDcl), each typed: 'a: T', 'a: lazy T' (its
+    // 'valtype' and FlagLazy), except a macro method's 'self', which is bare
+    Nodes *parms;
     INode *body;             // The body of the generic
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
 } MacroDclNode;
@@ -36,7 +42,12 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 // Expand a macro called by name, substituting the arguments for its parameters
 void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
 
-// Expand a macro method called on a receiver, which stands in for 'self'
-void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro);
+// Expand a macro called with its type arguments in brackets and its value
+// arguments in parentheses, 'm[i32](x)': the call's callee is the bracketed use
+void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
+// Expand a macro method called on a receiver, which stands in for 'self'.
+// 'typeargs' are what brackets after its name gave its type parameters, or NULL.
+void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, Nodes *typeargs);
 
 #endif

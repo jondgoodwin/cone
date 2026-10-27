@@ -243,7 +243,7 @@ static int parseUsingSeen = 0;
 // 'case let Ok(avg)', 'if let Some(n) = x', 'let Tea(t) = d else {...};', and 'var' for a name that may
 // change. The 'let' or 'var' is in front of the whole pattern, so the line alone says the name in the
 // parentheses is a new binding; without it a call-shaped pattern is a value, compared by equality. The
-// variant may be written as a reference ('let &mut Error(e)') or through its enum or module
+// variant may be written as a reference ('let &mut Err(e)') or through its enum or module
 // ('Shape.Circle(c)', 'Some[i32](n)'). It is read as the type expression it looks like (a call) and
 // taken apart here: the parentheses hold exactly one name, and a pattern does not nest.
 
@@ -1957,6 +1957,14 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             // 'let q, r = divmod(7, 2);' declares several names and gives them their values at once
             if (lexIsToken(CommaToken) && !parse->usingdcl) {
                 parseDestructDcl(parse, blk, var);
+                // Names always take their values, so there is nothing for an 'else' to do: it is refused
+                // as it is after one name, and read past, whole
+                if (lexIsToken(ElseToken)) {
+                    errorMsgLex(ErrorPatBindForm,
+                        "A declaration of names takes no 'else': they always take their values. A binding that leaves unless it matches names the variant and puts the binding in its parentheses: 'let Some(n) = x else {...};'.");
+                    lexNextToken();
+                    parseExprBlock(parse, 0);
+                }
                 parseEndOfStatement();
                 break;
             }
@@ -2478,9 +2486,9 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
                 break;
             lexNextToken();
         }
-        // A constraint or a parameter type is spelled after a ':' -- '[a: i32]' on a macro. Neither
-        // is implemented there, and reading what follows as two parameters
-        // instead turned that into an arity complaint about a declaration
+        // A constraint or a parameter type is spelled after a ':' -- '[T: Trait]' on a
+        // generic module. Neither is implemented there, and reading what follows as two
+        // parameters instead turned that into an arity complaint about a declaration
         // written in that form. Refuse it here and resync to the next ',' or ']'.
         // A second name straight after the first is refused the same way
         else if (lexIsToken(IdentToken) || lexIsToken(FnToken) || lexIsToken(ColonToken)) {
@@ -2489,7 +2497,7 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
             if (annotate)
                 errorMsgLex(ErrorBadTok, "Expected ',' or ']' after a type parameter");
             else
-                errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
+                errorMsgLex(ErrorGenParmConstr, "A generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
             // (a signature's own commas are inside its parentheses)
             int depth = 0;
             while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {
@@ -2517,8 +2525,132 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
     return parms;
 }
 
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse) {
+// One bracket list of a macro's: each entry a name, and after a ':' its type,
+// 'lazy' before the type marking a parameter substituted whole, 'a: lazy T'
+// (FlagLazy, the type in 'valtype'). 'lazy' is a contextual word: a name
+// everywhere else. What an entry may be -- a type parameter, a value parameter,
+// 'self' -- depends on which list this turns out to be, so parseMacro decides
+// that; here is refused only what no list holds.
+static Nodes *parseMacroParmList(ParseState *parse) {
+    lexNextToken(); // Go past left square bracket
+    Nodes *parms = newNodes(2);
+    // A ',' after a type continues the list: '[f: &fn(x: i32) i32, b: i32]'
+    // is two parameters, not a signature returning two values
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
+    while (lexIsToken(IdentToken) || lexIsToken(LifetimeToken)) {
+        if (lexIsToken(LifetimeToken)) {
+            errorMsgLex(ErrorLifetimePlace, "Only a struct or an enum declares lifetimes in its brackets: a function names its own in its signature.");
+            lexNextToken();
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+            continue;
+        }
+        GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+        nodesAdd(&parms, (INode*)parm);
+        lexNextToken();
+        if (lexIsToken(ColonToken)) {
+            lexNextToken();
+            if (lexIsToken(IdentToken) && lex->val.ident == lazyName) {
+                parm->flags |= FlagLazy;
+                lexNextToken();
+                parm->valtype = parseTypeReq(parse, "'lazy'");
+            }
+            else
+                parm->valtype = parseTypeReq(parse, "':'");
+        }
+        if (lexIsToken(CommaToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (lexIsToken(RBracketToken))
+            break;
+        // The list left open, '[a: i32 {': the missing ']' is reported below,
+        // and nothing more of this parameter
+        if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken)) {
+            if (parm->valtype == NULL)
+                parm->valtype = unknownType;
+            break;
+        }
+        // '[a i32]': a type written without its ':', or anything else that
+        // does not end the parameter. Reported, and the parameter taken as
+        // typed so that it is not reported again as untyped; recovery resumes
+        // at the next ',' or ']' (a signature's own commas are inside its
+        // parentheses)
+        if (parm->valtype == NULL) {
+            errorMsgLex(ErrorBadTok, "Expected ':' before a macro parameter's type, 'a: i32', or ',' or ']' after the parameter.");
+            parm->valtype = unknownType;
+        }
+        else if (parm->valtype != unknownType)    // (no type is reported already)
+            errorMsgLex(ErrorBadTok, "Expected ',' or ']' after a macro parameter's type.");
+        int depth = 0;
+        while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {
+            if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
+                break;
+            if (lexIsToken(LParenToken))
+                ++depth;
+            else if (lexIsToken(RParenToken) && depth > 0)
+                --depth;
+            lexNextToken();
+        }
+        if (lexIsToken(CommaToken))
+            lexNextToken();
+    }
+    parse->inlist = svinlist;
+    if (lexIsToken(RBracketToken))
+        lexNextToken();
+    else
+        errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
+    return parms;
+}
+
+// A macro's type parameters, the first of its two bracket lists, are names
+// alone: a constraint on one is not built
+static void parseMacroTypeParmsCheck(Nodes *typeparms) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(typeparms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        if (parm->valtype && parm->valtype != unknownType)
+            errorMsgNode(parm->valtype, ErrorGenParmConstr,
+                "A macro's type parameter is a name alone: a constraint on it is not built. Its value parameters' types go in the second brackets, 'macro m[T][a: T]'.");
+    }
+}
+
+// A macro's value parameters are always typed, 'a: T' or 'a: lazy T'. The one
+// exception is a macro method's 'self', the first parameter of a macro declared
+// in a type ('member'): the receiver expression as it is, which takes neither a
+// type nor 'lazy'.
+static void parseMacroValueParmsCheck(Nodes *parms, int member) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t i = 0;
+    for (nodesFor(parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        int isself = parm->namesym == selfName && i == 0 && member;
+        ++i;
+        if (isself) {
+            if (parm->valtype && parm->valtype != unknownType)
+                errorMsgNode(parm->valtype, ErrorMacroSelfType,
+                    "A macro method's 'self' is written bare: it is the receiver expression as it is, so it takes neither a type nor 'lazy'.");
+        }
+        else if (parm->valtype == NULL) {
+            if (parm->namesym == selfName)
+                errorMsgNode((INode*)parm, ErrorMacroParmType,
+                    "'self' is written bare only as the first parameter of a macro declared in a type. Any other macro parameter is typed: 'self: T', or 'self: lazy T'.");
+            else
+                errorMsgNode((INode*)parm, ErrorMacroParmType,
+                    "A macro parameter is typed: '%s: T', or '%s: lazy T' for one substituted whole wherever it appears.",
+                    &parm->namesym->namestr, &parm->namesym->namestr);
+        }
+    }
+}
+
+// Parse a macro declaration: 'macro name', then its value parameters in
+// brackets, 'macro m[a: i32]', or its type parameters and then its value
+// parameters, 'macro m[T][a: T, b: lazy T]'. 'member' says it is declared in
+// a type, where a first parameter 'self' makes it a method.
+MacroDclNode *parseMacro(ParseState *parse, int member) {
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTok, "Expected a macro name");
@@ -2527,7 +2659,19 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse, 0, NULL, NULL);
+        Nodes *first = parseMacroParmList(parse);
+        // An empty list declares nothing: as for a generic, 'macro m[]' is
+        // refused. A second list after the type parameters may be empty, 'macro three[T][]'.
+        if (first->used == 0)
+            errorMsgLex(ErrorNoGenParms, "A type parameter list must declare at least one parameter.");
+        if (lexIsToken(LBracketToken)) {
+            macro->typeparms = first;
+            parseMacroTypeParmsCheck(first);
+            macro->parms = parseMacroParmList(parse);
+        }
+        else
+            macro->parms = first;
+        parseMacroValueParmsCheck(macro->parms, member);
     }
     macro->body = parseExprBlock(parse, 0);
     parseTailCheck(macro->body, TailUsed);   // a macro is replaced by its value

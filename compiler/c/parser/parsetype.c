@@ -496,7 +496,7 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
 //
 // 'pub use' makes the bindings public names of this module, so a module that
 // imports this one with 'use *' receives them too. It is how core makes Some, None,
-// Ok and Error bare in every program. The 'pub' is read with the statement's
+// Ok and Err bare in every program. The 'pub' is read with the statement's
 // other leading words, before the 'use', and arrives as 'pubflag'.
 //
 // The source is a type expression, a path included, and nothing about what it
@@ -1210,7 +1210,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // method when its first parameter is 'self', and the receiver
                 // stands in for that parameter when it is expanded
                 parseEnumExtensionMember(isenum, strnode, "a macro");
-                MacroDclNode *macro = parseMacro(parse);
+                MacroDclNode *macro = parseMacro(parse, 1);
                 if (macro->namesym != anonName) {
                     Nodes *parms = macro->parms;
                     if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)

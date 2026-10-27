@@ -7,7 +7,7 @@
 
 // The refusal: kind, status and why, as a Result of any type
 fn bad[T](kind: ErrorKind, status: u16, why: &str) Result[T, HttpError] {
-  Error[T, HttpError](HttpError.make(kind, status, why))
+  Err[T, HttpError](HttpError.make(kind, status, why))
 }
 
 // The first offset of byte c in s at or after from, or s.len
@@ -62,11 +62,11 @@ fn readRequest(h: &Array[u8], cfg: &Config) Result[RequestRead, HttpError] {
   }
   var head = match parseRequestLine(&h[0usize ..< first]) {
     case var Ok(r) {r}
-    case var Error(e) {return Error[RequestRead, HttpError](e);}
+    case var Err(e) {return Err[RequestRead, HttpError](e);}
   };
   let fields = match parseFields(h, lineNext(h, first), cfg, true, true) {
     case var Ok(f) {f}
-    case var Error(e) {return Error[RequestRead, HttpError](e);}
+    case var Err(e) {return Err[RequestRead, HttpError](e);}
   };
   let headers, host, hosts = fields.(headers, host, hosts);
   head.headers = headers;
@@ -76,7 +76,7 @@ fn readRequest(h: &Array[u8], cfg: &Config) Result[RequestRead, HttpError] {
   if head.method == Method.Connect {return bad[RequestRead](ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
   let framing = match framingOf(&head.headers, true, http10) {
     case var Ok(f) {f}
-    case var Error(e) {return Error[RequestRead, HttpError](e);}
+    case var Err(e) {return Err[RequestRead, HttpError](e);}
   };
   head.authority = host;
   Ok[RequestRead, HttpError](RequestRead(head, framing))
@@ -91,11 +91,11 @@ fn readResponse(h: &Array[u8], cfg: &Config) Result[ResponseRead, HttpError] {
   }
   var head = match parseStatusLine(&h[0usize ..< first]) {
     case var Ok(r) {r}
-    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+    case var Err(e) {return Err[ResponseRead, HttpError](e);}
   };
   let fields = match parseFields(h, lineNext(h, first), cfg, false, false) {
     case var Ok(f) {f}
-    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+    case var Err(e) {return Err[ResponseRead, HttpError](e);}
   };
   head.headers = fields.(headers);
   if head.status == 101u16 {
@@ -103,7 +103,7 @@ fn readResponse(h: &Array[u8], cfg: &Config) Result[ResponseRead, HttpError] {
   }
   let framing = match framingOf(&head.headers, false, head.version == Version.Http10) {
     case var Ok(f) {f}
-    case var Error(e) {return Error[ResponseRead, HttpError](e);}
+    case var Err(e) {return Err[ResponseRead, HttpError](e);}
   };
   Ok[ResponseRead, HttpError](ResponseRead(head, framing))
 }
@@ -336,7 +336,7 @@ fn framingOf(headers: &Headers, request: bool, http10: bool) Result[Framing, Htt
   if hasCl {
     return match contentLength(headers, malformed) {
       case var Ok(n) {Ok[Framing, HttpError](Framing(frameSized, n))}
-      case var Error(e) {Error[Framing, HttpError](e)}
+      case var Err(e) {Err[Framing, HttpError](e)}
     };
   }
   Ok[Framing, HttpError](Framing(if request {frameEmpty} else {frameClose}, 0u64))

@@ -536,11 +536,13 @@ their `typecheck` scenarios pin them.
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
 | `callsig`, `callmut` | on the trait the compiler writes for a signature behind a virtual reference or an owner (`&<fn(sig)`, `Uni[fn(sig)]`; `fnSigCallTrait`): the signature, and whether its one `()` takes `self: &mut` (else `self: &`). NULL and 0 on every other type. `structMapVtableImpl` holds an implementer's `()` to that `self` (`fnSigCallSelfFits`) ([closure](closure.md)) |
+| `latewhere` | on an instance of a generic type made while an argument was still being laid out: its members whose `where` waited on that layout, not yet decided. Cleared when they are, by the queued `genericLateWhere` or by the first read of the instance's members (`genericLateWhereNow`); NULL on every other type ([generic](generic.md)) |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, which may be negative, or the next in sequence (`structTagFollow`). **All 64 bits, read as `tagstate` says** |
 | `tagstate` | `TagUnassigned` between reading a variant's name and settling its value, so keeping a pinned value and assigning the next in sequence are one test; after that, **whether `tagnbr` is below zero** (`TagNegative`) or reads unsigned (`TagNonNeg`). A value may be anything `u64` or `i64` holds, and 64 bits hold either but not both — `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits — so the duplicate check (`structTagSame`) and the fit check against a declared type (`enumTagFits`) each read the number the author meant. **A variant of an extension stays unassigned until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
 | `lifeparms` | the lifetimes it declares in its brackets, apart from its type parameters (`LifeParms`, `ir/types/lifetime.h`), or the one its fields name where its brackets declare none; NULL for a struct naming none. Settled at the end of its parse (`lifeStructDeclare`), which also gives an enum's variants their enum's. **Shared, never cloned**: a lifetime is never instanced, so every instance of a generic struct reads the template's. A field's slots are its own (`FieldDclNode.lifeslots`, `lifeFieldSlots`), each instance's field asked afresh |
 | `carriesborrow` | `itypeCarriesBorrow`'s answer to whether a value of the type may hold a borrowed reference: `CarriesBorrowUnknown` until asked, `CarriesBorrowAsking` while its own fields and variants are being asked (a cycle through an owning reference or pointer that reaches it again adds nothing), then `CarriesBorrowYes` or `CarriesBorrowNo`. It is remembered only once the struct is type checked, and a "no" that leaned on a struct still being asked is not remembered. `newStructNode` sets it unknown, and so does `cloneStructNode`: an instance's fields are its own question |
+| `carriesending` | `itypeCarriesEndingBorrow`'s answer, kept the same way: whether a value of the type may hold a borrow of a lifetime that ends, a `'static` borrow passed as a key is. What a signature says a value may carry asks this (`lifeGather`, `lifeHeld`) |
 
 **What tells the three apart:**
 
@@ -2241,10 +2243,12 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   "Layout before members").
 - **An enum's method is never generated for the enum, unless its receiver names
   it.** Each variant has a clone, and a call through a reference to the enum
-  dispatches on the tag. A call on a value typed as the enum — possible only for a
-  by-value `self` — would need the same dispatch on a value, which is not built,
-  so `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than
-  leave a call to a function that does not exist. The same absence is why a
+  dispatches on the tag. A call on a value typed as the enum for a reference
+  `self` borrows the value and dispatches through the borrow the same way
+  (`fnCallLowerMethod` hands it to `fnCallLowerTraitMethod`). For a by-value
+  `self` it would need the same dispatch on a value, which is not built, so
+  `fnCallLowerMethod` refuses it with `ErrorEnumValueDispatch` rather than leave a
+  call to a function that does not exist. The same absence is why a
   virtual reference to another trait is built from the variant's vtable and never
   from one for the enum. **The exception is a method whose written receiver names
   the enum** (`self: &Lamp`, `&mut Lamp`, `self: Lamp`; `structIsWholeEnumMethod`,
@@ -2260,9 +2264,17 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   variant reaches it by `fnCallLowerMethodOn` finding it in the variant's enum
   when the variant has no method of that name, the receiver widened to the enum by
   the ordinary candidate test, so a variant's own method of the same name is the
-  one a variant-typed value calls. A generic enum's (`self: &Box[T]`) is not built:
-  the receiver is not a plain name, so it stays a per-variant method and is
-  refused as before (`ErrorInvType`).
+  one a variant-typed value calls. A generic enum's receiver is a call,
+  `self: &Box[T]`, until the signature is checked, and a use of the instance after:
+  `structIsWholeEnumMethod` reads the call by the generic it names
+  (`structNamesGenericEnum`: the owner, or the generic the owner is an instance
+  of, `genericTypeTemplate`), and a checked use naming another instance of the
+  same generic as whole-enum too, so the answer does not change between the
+  variants' copies being made and the body being checked; `fnDclTypeCheck` then
+  refuses a receiver naming another instance (`ErrorInvType`). A generic method
+  (`map[U]`) is read the same way: its own type parameters do not change what its
+  receiver names, so it is not copied into the variants, and a variant's value
+  reaches it in the enum.
   **A by-value receiver that names no enum is the other half**
   (`structTakesSelfByValue`: a method with a body whose `self` is not a reference;
   one naming the enum is whole-enum above): each variant's clone has its own

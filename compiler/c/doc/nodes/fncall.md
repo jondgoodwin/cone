@@ -209,13 +209,16 @@ access, with the instance the arguments name bound to the member
 (`genericMethodInstance`) — finished here rather than handed back, since the
 receiver is already checked. The type arguments are checked before the
 instance is made, as a generic function's are, so a written instance of a
-generic type, `h.pick[Box[i32]](...)`, is the type it names. A member that is not a generic method is
+generic type, `h.pick[Box[i32]](...)`, is the type it names. A macro method
+declared in the receiver's type, `h.scaled[i32](2)`, expands there with them
+(`macroMethodTypeCheck`). A member that is neither is
 `ErrorNotTyped` at the first type argument. A base that is a type or a module,
 or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
-to `self.name`); `<-` given a list of entries, an entry that is not a plain
+to `self.name`), and a macro called with its type arguments in brackets before
+its value arguments, `m[i32](x)` (`macroCallTypeArgsTypeCheck`); `<-` given a list of entries, an entry that is not a plain
 value, or a construction's contents, which becomes the applications it stands
 for (`contentsLower`, below, "The list after `<-`");
 a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
@@ -579,13 +582,17 @@ and the remedy: obtain a virtual reference first. **A field takes none of this**
 — it lives in the trait's own layout, a prefix of every implementer, so
 `fnCallLowerMethod` reaches it directly.
 
-**A method called on a value typed as an enum is refused**, `ErrorEnumValueDispatch`,
-in `fnCallLowerMethod` once a candidate is selected: a method of a trait reached
-without `FlagVDisp`, other than an intrinsic such as a payload-free enum's `==`.
-Only a by-value `self` can be called on a value, and which variant's clone runs
-would have to be read from the tag at run time, which is built for a reference and
-not for a value. Before, the call named the enum's own declaration, which is never
-generated, and only LLVM's verifier or the linker caught it. On a variant's value
+**A by-value method called on a value typed as an enum is refused**,
+`ErrorEnumValueDispatch`, in `fnCallLowerMethod` once a candidate is selected: a
+method of a trait reached without `FlagVDisp`, other than an intrinsic such as a
+payload-free enum's `==`. Which variant's clone runs would have to be read from the
+tag at run time, which is built for a reference and not for a value. Before, the
+call named the enum's own declaration, which is never generated, and only LLVM's
+verifier or the linker caught it. **A reference receiver (`self: &`, `&mut`) on a
+value is not refused:** candidate selection borrowed the value for it
+(`fnCallBorrowReceiver`), so the receiver is now a reference the value was not, and
+the call is handed to `fnCallLowerTraitMethod` with the enum, which coerces that
+borrow to `&<Enum` and dispatches it as `(&k).name()` is. On a variant's value
 the call reaches that variant's clone and is fine. **A method whose receiver names
 the enum** (`self: &Lamp`, `structIsWholeEnumMethod`) is not a template and is
 exempt: it is the one function over the whole enum, called as it is on an enum's
@@ -623,10 +630,12 @@ name binding one binds it alone, and the candidate tried is the instance: the on
 `fnCallMethodTypeArgs` for written type arguments, or by substitution for a
 bare `pick[i32](6)` that became `self.pick` — which `genericIsInstanceOf`
 recognizes in the generic's memo, else the one the call's arguments infer
-(`genericMethodInstance`). Inference matches the arguments against the
-parameters after `self`, since the receiver is not among them yet, so the
-receiver tells it nothing. The instance is then selected like any method, and
-the receiver dereferenced or borrowed to fit its `self`.
+(`genericMethodInstance`). Inference matches the receiver against `self`
+first, as the call will fit it (`genericInferReceiver`: a value against a
+reference `self`'s target, a reference's target against a by-value `self`), then
+the arguments against the parameters after `self`, since the receiver is not
+among them yet. The instance is then selected like any method, and the receiver
+dereferenced or borrowed to fit its `self`.
 
 **A generic in an overload set is selected by its arguments, and instantiated
 after.** Only a generic whose every type parameter is bound to a function

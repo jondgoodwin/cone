@@ -60,7 +60,7 @@ fn coneFiles(folder: &Path) Listing {
   var entries = List[fs.DirEntry].empty();
   match fs.readDir(folder) {
     case var Ok(ok) { entries <-> ok; }
-    case let Error(e) {
+    case let Err(e) {
       fail(fsMessage(&e));
     }
   }
@@ -116,7 +116,7 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
   mods.push(newModule(name, designated, hasParent, parent));
   match scanHeader(designated) {
     case let Ok(h) { addImports(&mut mods[me], &h); }
-    case let Error(e) { return Error[usize, String](e.copy()); }
+    case let Err(e) { return Err[usize, String](e.copy()); }
   }
   var kids = List[usize].empty();
   let listing = coneFiles(folder);
@@ -127,14 +127,14 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
       var header = noHeader();
       match scanHeader(file) {
         case var Ok(h) { header <-> h; }
-        case let Error(e) { return Error[usize, String](e.copy()); }
+        case let Err(e) { return Err[usize, String](e.copy()); }
       }
       if header.hasMod {
         let stem = file.stem();
         let fault = nameFault(stem);
         if !fault.isEmpty() {
           let place = native(file);
-          return Error[usize, String](cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
+          return Err[usize, String](cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
             "; rename the file and its 'mod' line"));
         }
         let child = mods.len();
@@ -162,18 +162,18 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
         let fault = nameFault(subName);
         if !fault.isEmpty() {
           let place = native(&inner);
-          return Error[usize, String](cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
+          return Err[usize, String](cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
             "; rename the folder, its designated file and its 'mod' line"));
         }
         match scanFolderModule(mods, subName, sub, &inner, true, me) {
           case let Ok(k) { kids.push(k); }
-          case let Error(e) { return Error[usize, String](e.copy()); }
+          case let Err(e) { return Err[usize, String](e.copy()); }
         }
       }
       else {
         match scanOrganisational(mods, me, sub) {
           case is Ok {}
-          case let Error(e) { return Error[usize, String](e.copy()); }
+          case let Err(e) { return Err[usize, String](e.copy()); }
         }
       }
     }
@@ -195,11 +195,11 @@ fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[v
     var hasMod = false;
     match scanHeader(file) {
       case let Ok(h) { hasMod = h.hasMod; }
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     if hasMod {
       let place = native(file);
-      return Error[void, String](cat(place.view(), ": a file opening with 'mod' is a module, and a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view()));
+      return Err[void, String](cat(place.view(), ": a file opening with 'mod' is a module, and a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view()));
     }
     // Like any file of the module but its designated one, it has no imports
     let here = &mut mods[m];
@@ -213,11 +213,11 @@ fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[v
     let inner = sub.join(innerName.view());
     if fs.isFile(&inner) {
       let place = native(&inner);
-      return Error[void, String](cat(place.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view()));
+      return Err[void, String](cat(place.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folderPlace.view()));
     }
     match scanOrganisational(mods, m, sub) {
       case is Ok {}
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -232,7 +232,7 @@ fn scanOrganisational(mods: &mut List[Module], m: usize, folder: &Path) Result[v
 fn scanPackage(pkg: &Package) Result[List[Module], String] {
   if !fs.isFile(&pkg.src) {
     let place = shown(&pkg.src);
-    return Error[List[Module], String](cat("package ", pkg.name.view(), " has no ", place.view(),
+    return Err[List[Module], String](cat("package ", pkg.name.view(), " has no ", place.view(),
       ": a package's root module is src/<name>.cone, named as its manifest names it"));
   }
   var mods = List[Module].empty();
@@ -240,7 +240,7 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
     mods.push(newModule(pkg.name.view(), &pkg.src, false, 0usize));
     match scanHeader(&pkg.src) {
       case let Ok(h) { addImports(&mut mods[0usize], &h); }
-      case let Error(e) { return Error[List[Module], String](e.copy()); }
+      case let Err(e) { return Err[List[Module], String](e.copy()); }
     }
     return Ok[List[Module], String](mods);
   }
@@ -251,13 +251,13 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
   let rootName = pkg.name.copy();
   match scanFolderModule(&mut mods, rootName.view(), &folder, &pkg.src, false, 0usize) {
     case is Ok {}
-    case let Error(e) { return Error[List[Module], String](e.copy()); }
+    case let Err(e) { return Err[List[Module], String](e.copy()); }
   }
   let gpuFolder = pkg.root.join("gpu");
   if fs.isDir(&gpuFolder) {
     match scanGpuFolder(pkg, &mut mods, &gpuFolder) {
       case is Ok {}
-      case let Error(e) { return Error[List[Module], String](e.copy()); }
+      case let Err(e) { return Err[List[Module], String](e.copy()); }
     }
   }
   Ok[List[Module], String](mods)
@@ -276,7 +276,7 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
 fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[void, String] {
   if pkg.gpu {
     let place = native(folder);
-    return Error[void, String](cat(place.view(), ": ", pkg.name.view(),
+    return Err[void, String](cat(place.view(), ": ", pkg.name.view(),
       " is marked for the GPU (targets = [\"native\", \"gpu\"]), so all of it is compiled for the GPU already; a gpu/ folder is for a package that is not: move gpu/'s modules into src/, or take \"gpu\" out of targets"));
   }
   var inSrc = List[usize].empty();
@@ -293,17 +293,17 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     var header = noHeader();
     match scanHeader(file) {
       case var Ok(h) { header <-> h; }
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     if !header.hasMod {
       let place = native(file);
-      return Error[void, String](cat(place.view(), ": a file in gpu/ opens with its own 'mod' line, as a module of one file named for the file: gpu/ holds the package's GPU modules, and a file with no 'mod' line would join none"));
+      return Err[void, String](cat(place.view(), ": a file in gpu/ opens with its own 'mod' line, as a module of one file named for the file: gpu/ holds the package's GPU modules, and a file with no 'mod' line would join none"));
     }
     let stem = file.stem();
     let fault = nameFault(stem);
     if !fault.isEmpty() {
       let place = native(file);
-      return Error[void, String](cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
+      return Err[void, String](cat(place.view(), ": a one-file module is named by its file: '", stem, "' ", fault.view(),
         "; rename the file and its 'mod' line"));
     }
     let child = mods.len();
@@ -320,18 +320,18 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     let inner = sub.join(innerName.view());
     if !fs.isFile(&inner) {
       let place = native(sub);
-      return Error[void, String](cat(place.view(), ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
+      return Err[void, String](cat(place.view(), ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
         ": gpu/ holds the package's GPU modules, and a folder with none would be part of no module"));
     }
     let fault = nameFault(subName);
     if !fault.isEmpty() {
       let place = native(&inner);
-      return Error[void, String](cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
+      return Err[void, String](cat(place.view(), ": a module folder names its module: '", subName, "' ", fault.view(),
         "; rename the folder, its designated file and its 'mod' line"));
     }
     match scanFolderModule(mods, subName, sub, &inner, true, 0usize) {
       case let Ok(k) { found.push(k); }
-      case let Error(e) { return Error[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.copy()); }
     }
     i = i + 1usize;
   }
@@ -350,7 +350,7 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
       if mods[clash].name.equals(mods[m].name.view()) {
         let here = native(mods[m].files[0usize]);
         let there = native(mods[clash].files[0usize]);
-        return Error[void, String](cat(here.view(), ": ", pkg.name.view(), " has two submodules named '", mods[m].name.view(),
+        return Err[void, String](cat(here.view(), ": ", pkg.name.view(), " has two submodules named '", mods[m].name.view(),
           "', this one in gpu/ and ", there.view(), " in src/; rename one"));
       }
       j = j + 1usize;
@@ -525,13 +525,13 @@ fn visitModule(pkg: &Package, mods: &List[Module], reg: &Registry, m: usize,
       chain <- last.view();
       var hint: &str = "";
       if contains { hint = " A module may not depend on a module that contains it: move what they share into a sister both import."; }
-      return Error[void, String](cat("import loop between modules of package ", pkg.name.view(), ": ", chain.view(),
+      return Err[void, String](cat("import loop between modules of package ", pkg.name.view(), ": ", chain.view(),
         ". Imports between modules must not loop (", text.view(), ").", hint));
     }
     if *state[to] == unvisited {
       match visitModule(pkg, mods, reg, to, state, steps) {
         case is Ok {}
-        case let Error(err) { return Error[void, String](err.copy()); }
+        case let Err(err) { return Err[void, String](err.copy()); }
       }
     }
     steps.pop();

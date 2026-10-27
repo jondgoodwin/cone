@@ -180,6 +180,7 @@ void nametblInit() {
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);
+    lazyName = nametblFind("lazy", 4);
     yieldsName = nametblFind("yields", 6);
     nextName = nametblFind("next", 4);
     tagName = nametblFind("tag", 3);
@@ -244,6 +245,10 @@ void nametblInit() {
     splitName = nametblFind("split", 5);
     someName = nametblFind("Some", 4);
     noneName = nametblFind("None", 4);
+    resultName = nametblFind("Result", 6);
+    okName = nametblFind("Ok", 2);
+    errorVariantName = nametblFind("Err", 3);
+    messageName = nametblFind("message", 7);
 
     allocMethodName = nametblFind("alloc", 5);
     allocRegionMethodName = nametblFind("allocRegion", 11);

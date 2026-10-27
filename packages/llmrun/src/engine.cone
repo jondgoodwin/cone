@@ -146,7 +146,7 @@ fn findMatrix(model: &gguf.Model, name: &str, rows: usize, cols: usize) Result[S
         m <- ", ";
         m <- u64.from(rows);
         m <- "] as the model's shape needs";
-        return Error[Spec, String](m);
+        return Err[Spec, String](m);
       }
       let code = t.kind.code();
       if !isSupportedType(code) {
@@ -155,14 +155,14 @@ fn findMatrix(model: &gguf.Model, name: &str, rows: usize, cols: usize) Result[S
         m <- " is stored as ";
         m <- t.kind.name();
         m <- ", which has no GPU kernel in this build (F32, F16, Q8_0, Q4_K and Q6_K have)";
-        return Error[Spec, String](m);
+        return Err[Spec, String](m);
       }
       if u64.from(rowBytes(code, cols) * rows) != t.bytes {
-        return Error[Spec, String](describe("llmrun: tensor ", name, " has a size its type and shape do not give"));
+        return Err[Spec, String](describe("llmrun: tensor ", name, " has a size its type and shape do not give"));
       }
       Ok[Spec, String](Spec(i, rows, cols, code, t.bytes, 0u32, 0usize))
     }
-    case is None { Error[Spec, String](describe("llmrun: the file has no tensor ", name, "")) }
+    case is None { Err[Spec, String](describe("llmrun: the file has no tensor ", name, "")) }
   }
 }
 
@@ -177,7 +177,7 @@ fn layerName(l: usize, suffix: &str) String {
 fn pushSpec(specs: &mut List[Spec], r: Result[Spec, String]) Option[String] {
   match r {
     case let Ok(s) { specs.push(Spec(s.tensor, s.rows, s.cols, s.qtype, s.bytes, s.buf, s.off)); None }
-    case let Error(e) { Some[String](e.copy()) }
+    case let Err(e) { Some[String](e.copy()) }
   }
 }
 
@@ -188,7 +188,7 @@ fn collectSpecs(model: &gguf.Model, s: &ModelShape) Result[List[Spec], String] {
   var name = String.from("output.weight");
   if s.tied { name = String.from("token_embd.weight"); }
   match pushSpec(&mut specs, findMatrix(model, name.view(), s.vocab, s.dim)) {
-    case var Some(e) { return Error[List[Spec], String](e); }
+    case var Some(e) { return Err[List[Spec], String](e); }
     case is None {}
   }
   var l = 0usize;
@@ -196,7 +196,7 @@ fn collectSpecs(model: &gguf.Model, s: &ModelShape) Result[List[Spec], String] {
     var which = 0usize;
     while which < 7usize {
       match layerMatrix(&mut specs, model, s, l, which) {
-        case var Some(e) { return Error[List[Spec], String](e); }
+        case var Some(e) { return Err[List[Spec], String](e); }
         case is None {}
       }
       which = which + 1usize;
@@ -266,19 +266,19 @@ fn makePlan(model: &gguf.Model, info: &ModelInfo, options: &LoadOptions, binding
     m <- " positions; a context of ";
     m <- u64.from(options.ctx);
     m <- " is more";
-    return Error[Plan, String](m);
+    return Err[Plan, String](m);
   }
   var specs = List[Spec].empty();
   match collectSpecs(model, shape) {
     case var Ok(s) { specs = s; }
-    case let Error(e) { return Error[Plan, String](e.copy()); }
+    case let Err(e) { return Err[Plan, String](e.copy()); }
   }
   var limit = WEIGHT_BUFFER_BYTES;
   if bindingSize < limit { limit = bindingSize; }
   var s = 0usize;
   while s < specs.len() {
     if specs[s].bytes > limit {
-      return Error[Plan, String](String.from("llmrun: a weight matrix is larger than the device's storage binding; make the device with ComputeRequest(largeBuffers: true)"));
+      return Err[Plan, String](String.from("llmrun: a weight matrix is larger than the device's storage binding; make the device with ComputeRequest(largeBuffers: true)"));
     }
     s = s + 1usize;
   }
@@ -290,7 +290,7 @@ fn makePlan(model: &gguf.Model, info: &ModelInfo, options: &LoadOptions, binding
   weightBytes = weightBytes + 4u64 * (u64.from(shape.layers) * (2u64 * u64.from(shape.dim) + 2u64 * u64.from(shape.headDim)) + u64.from(shape.dim));
   let budget = budgetFor(shape, weightBytes, options.ctx, options.chunk);
   if deviceLocal > 0u64 && budget.total() + RESERVE_BYTES > deviceLocal {
-    return Error[Plan, String](tooBig("this model", &budget, deviceLocal, options.ctx, shape, options.chunk));
+    return Err[Plan, String](tooBig("this model", &budget, deviceLocal, options.ctx, shape, options.chunk));
   }
   Ok[Plan, String](Plan(specs, sizes, budget))
 }
@@ -311,23 +311,23 @@ pub fn planModel(path: &Path, options: &LoadOptions, bindingSize: u64, deviceLoc
               let planned = makePlan(&model, &info, options, bindingSize, deviceLocal);
               match planned {
                 case var Ok(p) { Ok[PlanSummary, String](PlanSummary(p.sizes.len(), p.specs.len(), p.budget)) }
-                case let Error(e) { Error[PlanSummary, String](e.copy()) }
+                case let Err(e) { Err[PlanSummary, String](e.copy()) }
               }
             }
-            case let Error(e) { Error[PlanSummary, String](e.copy()) }
+            case let Err(e) { Err[PlanSummary, String](e.copy()) }
           }
         }
-        case let Error(e) {
+        case let Err(e) {
           var m = String.from("llmrun: ");
           m <- e.message().view();
-          Error[PlanSummary, String](m)
+          Err[PlanSummary, String](m)
         }
       }
     }
-    case let Error(e) {
+    case let Err(e) {
       var m = String.from("llmrun: ");
       m <- e.message().view();
-      Error[PlanSummary, String](m)
+      Err[PlanSummary, String](m)
     }
   }
 }
@@ -340,14 +340,14 @@ fn norm(model: &gguf.Model, file: &Array[u8], device: &mut Device, name: &str, n
         m <- name;
         m <- " is not an F32 vector of ";
         m <- u64.from(n);
-        return Error[Buffer, String](m);
+        return Err[Buffer, String](m);
       }
       let words = packWords(model.tensorBytes(file, t));
       let b = upload(device, words.view());
-      if !b.isValid() { return Error[Buffer, String](String.from("llmrun: the GPU could not make a buffer")); }
+      if !b.isValid() { return Err[Buffer, String](String.from("llmrun: the GPU could not make a buffer")); }
       Ok[Buffer, String](b)
     }
-    case is None { Error[Buffer, String](describe("llmrun: the file has no tensor ", name, "")) }
+    case is None { Err[Buffer, String](describe("llmrun: the file has no tensor ", name, "")) }
   }
 }
 
@@ -418,14 +418,14 @@ pub struct Engine {
   // runs, a tensor is of a type with no kernel, or the model and its cache would not fit the GPU's memory.
   pub fn open(device: &mut Device, path: &Path, options: &LoadOptions) Result[Engine, String] {
     if options.ctx == 0usize || options.chunk == 0usize {
-      return Error[Engine, String](String.from("llmrun: the context and the chunk must be positive"));
+      return Err[Engine, String](String.from("llmrun: the context and the chunk must be positive"));
     }
     match fs.mapFile(path) {
       case var Ok(f) { Engine.parsed(device, f, options) }
-      case let Error(e) {
+      case let Err(e) {
         var m = String.from("llmrun: ");
         m <- e.message().view();
-        Error[Engine, String](m)
+        Err[Engine, String](m)
       }
     }
   }
@@ -434,10 +434,10 @@ pub struct Engine {
     let parse = gguf.parse(mapped.view());
     match parse {
       case var Ok(m) { Engine.described(device, mapped, m, options) }
-      case let Error(e) {
+      case let Err(e) {
         var m = String.from("llmrun: ");
         m <- e.message().view();
-        Error[Engine, String](m)
+        Err[Engine, String](m)
       }
     }
   }
@@ -446,7 +446,7 @@ pub struct Engine {
     let described = readInfo(&model);
     match described {
       case var Ok(i) { Engine.placed(device, mapped, model, i, options) }
-      case let Error(e) { Error[Engine, String](e.copy()) }
+      case let Err(e) { Err[Engine, String](e.copy()) }
     }
   }
 
@@ -455,7 +455,7 @@ pub struct Engine {
     let planned = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes);
     let specs, sizes = match planned {
       case var Ok(p) { p.(specs, sizes) }
-      case let Error(e) { return Error[Engine, String](e.copy()); }
+      case let Err(e) { return Err[Engine, String](e.copy()); }
     };
 
     // the weights
@@ -465,7 +465,7 @@ pub struct Engine {
     while b < sizes.len() {
       let buf = device.createBuffer(alignUp(*sizes[b], 4u64), BUFFER_USAGE);
       if !buf.isValid() {
-        return Error[Engine, String](String.from("llmrun: the GPU could not make a weights buffer (out of memory?)"));
+        return Err[Engine, String](String.from("llmrun: the GPU could not make a weights buffer (out of memory?)"));
       }
       resident.push(buf);
       b = b + 1usize;
@@ -486,7 +486,7 @@ pub struct Engine {
     var outNorm = 0u32;
     match norm(&model, fileBytes, device, "output_norm.weight", shape.dim) {
       case var Ok(nb) { outNorm = u32.from(resident.len()); resident.push(nb); }
-      case let Error(e) { return Error[Engine, String](e.copy()); }
+      case let Err(e) { return Err[Engine, String](e.copy()); }
     }
     var l = 0usize;
     while l < shape.layers {
@@ -496,20 +496,20 @@ pub struct Engine {
       var ffnNorm = 0u32;
       match norm(&model, fileBytes, device, layerName(l, "attn_norm.weight").view(), shape.dim) {
         case var Ok(nb) { attnNorm = u32.from(resident.len()); resident.push(nb); }
-        case let Error(e) { return Error[Engine, String](e.copy()); }
+        case let Err(e) { return Err[Engine, String](e.copy()); }
       }
       match norm(&model, fileBytes, device, layerName(l, "ffn_norm.weight").view(), shape.dim) {
         case var Ok(nb) { ffnNorm = u32.from(resident.len()); resident.push(nb); }
-        case let Error(e) { return Error[Engine, String](e.copy()); }
+        case let Err(e) { return Err[Engine, String](e.copy()); }
       }
       if shape.qkNorm {
         match norm(&model, fileBytes, device, layerName(l, "attn_q_norm.weight").view(), shape.headDim) {
           case var Ok(nb) { qNorm = u32.from(resident.len()); resident.push(nb); }
-          case let Error(e) { return Error[Engine, String](e.copy()); }
+          case let Err(e) { return Err[Engine, String](e.copy()); }
         }
         match norm(&model, fileBytes, device, layerName(l, "attn_k_norm.weight").view(), shape.headDim) {
           case var Ok(nb) { kNorm = u32.from(resident.len()); resident.push(nb); }
-          case let Error(e) { return Error[Engine, String](e.copy()); }
+          case let Err(e) { return Err[Engine, String](e.copy()); }
         }
       }
       let base = 1usize + 7usize * l;
@@ -548,13 +548,13 @@ pub struct Engine {
     var k = 0usize;
     while k < resident.len() {
       if !resident[k].isValid() {
-        return Error[Engine, String](String.from("llmrun: the GPU could not make a buffer (out of memory?)"));
+        return Err[Engine, String](String.from("llmrun: the GPU could not make a buffer (out of memory?)"));
       }
       k = k + 1usize;
     }
     let kernels = Kernels.make(device);
     if !kernels.isValid() {
-      return Error[Engine, String](String.from("llmrun: the kernels could not be made on this device"));
+      return Err[Engine, String](String.from("llmrun: the kernels could not be made on this device"));
     }
     let embd = model.indexOf("token_embd.weight");
     var embdIndex = 0usize;
@@ -582,12 +582,12 @@ pub struct Engine {
   // 'wantLogits' is false, which skips the output layer). Fails, with the position unchanged, if they would run
   // past the cache or a token is outside the vocabulary.
   pub fn feed(self: &mut, device: &mut Device, tokens: &Array[u32], wantLogits: bool) Result[List[f32], String] {
-    if tokens.len == 0usize { return Error[List[f32], String](String.from("llmrun: no tokens to run")); }
+    if tokens.len == 0usize { return Err[List[f32], String](String.from("llmrun: no tokens to run")); }
     if pos + tokens.len > ctx {
       var m = String.from("llmrun: the context is full (");
       m <- u64.from(ctx);
       m <- " positions)";
-      return Error[List[f32], String](m);
+      return Err[List[f32], String](m);
     }
     var i = 0usize;
     var logits = List[f32].empty();
@@ -597,7 +597,7 @@ pub struct Engine {
       let last = i + m == tokens.len;
       match self.forward(device, &tokens[i..<i + m], pos, wantLogits && last) {
         case var Ok(l) { logits = l; }
-        case let Error(e) { return Error[List[f32], String](e.copy()); }
+        case let Err(e) { return Err[List[f32], String](e.copy()); }
       }
       pos = pos + m;
       i = i + m;
@@ -620,14 +620,14 @@ pub struct Engine {
         var m = String.from("llmrun: token ");
         m <- u64.from(tokens[t]);
         m <- " is outside the vocabulary";
-        return Error[List[f32], String](m);
+        return Err[List[f32], String](m);
       }
       match gguf.rowToF32(&model, file.view(), table, u64.from(tokens[t]), &mut emb) {
         case is Ok {}
-        case let Error(e) {
+        case let Err(e) {
           var m = String.from("llmrun: ");
           m <- e.message().view();
-          return Error[List[f32], String](m);
+          return Err[List[f32], String](m);
         }
       }
       t = t + 1usize;
@@ -687,7 +687,7 @@ pub struct Engine {
   // next job
   fn finish(self: &mut, done: List[Completion], back: u32, wantLogits: bool, recorded: bool) Result[List[f32], String] {
     var all = done;
-    if all.len() != 1usize { return Error[List[f32], String](String.from("llmrun: the job gave no completion")); }
+    if all.len() != 1usize { return Err[List[f32], String](String.from("llmrun: the job gave no completion")); }
     reusedGroups = reusedGroups + u64.from(all[0usize].reusedGroups());
     lastReused = all[0usize].reusedGroups();
     let good = recorded && all[0usize].ok;
@@ -699,7 +699,7 @@ pub struct Engine {
       case var Some(c) { last.push(c); }
       case is None {}
     }
-    if !good { return Error[List[f32], String](String.from("llmrun: a kernel refused its arguments or failed on the GPU")); }
+    if !good { return Err[List[f32], String](String.from("llmrun: a kernel refused its arguments or failed on the GPU")); }
     Ok[List[f32], String](logits)
   }
 }

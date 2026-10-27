@@ -36,6 +36,8 @@ enum FlowGate {
                             // reached through a reference, transient or not, in a function that also makes a
                             // call with a writable argument: that call could reshape it by another name
                             // (reshape.h). The bodies of the functions called are checked before its walk
+    FlowGateStatic = 0x40,  // a struct or variant literal giving a value carrying a borrow to a field whose
+                            // type holds only ''static' borrows: the loan walk checks its loans are global
 };
 
 // How many operands' borrows the gate remembers waiting at once; past that,
@@ -168,6 +170,8 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args);
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
 // A conversion may make an owning virtual reference of a value holding a borrow
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
+// A literal may give a field holding only ''static' borrows a value holding one
+void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val);
 // A call returns a borrow and may be a method lending from a value that changes shape
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument

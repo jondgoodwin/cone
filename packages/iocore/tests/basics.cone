@@ -22,6 +22,7 @@ import collections use List;
 import time use Instant, Duration;
 import iobuf use *;
 import iocore use *;
+import ioerror use IoErrorKind;
 import diag;
 
 // Poll until out holds at least n answers, or two seconds pass
@@ -83,7 +84,7 @@ fn main() i32 {
     var fh = Handle.none();
     match lp.openFile("basics.tmp", Access.Create) {
       case let Ok(r) {fh = r;}
-      case let Error(e) {}
+      case let Err(e) {}
     }
     require(lp.isOpen(fh), "the file opened");
     var s = 0u64;
@@ -131,7 +132,7 @@ fn main() i32 {
     var port = 0u16;
     match lp.localAddr(listener) {
       case let Ok(a) {port = a.port();}
-      case let Error(e) {}
+      case let Err(e) {}
     }
     require(port != 0u16, "the OS chose a port");
     lp.submit(Op.Accept(listener), Target.Here(30u64));
@@ -200,7 +201,7 @@ fn main() i32 {
     lp.submit(Op.Recv(client, IoBuf(100usize)), Target.Here(70u64));
     waitFor(&mut lp, &mut out, 1usize);
     expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a closed handle's receive fails");
-    expectUInt(u64.from(out[0usize].code), u64.from(errorInvalidHandle), "...ERROR_INVALID_HANDLE");
+    expect(out[0usize].error().kind() == IoErrorKind.InvalidInput, "...InvalidInput (ERROR_INVALID_HANDLE, EBADF)");
     expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "and its buffer still comes back");
     out.clear();
 
@@ -230,7 +231,7 @@ fn main() i32 {
     var port6 = 0u16;
     match lp.localAddr(l6) {
       case let Ok(a) {port6 = a.port(); expect(a.isV6(), "an IPv6 listener");}
-      case let Error(e) {}
+      case let Err(e) {}
     }
     lp.submit(Op.Accept(l6), Target.Here(80u64));
     lp.submit(Op.Connect(SocketAddr.v6Localhost(port6)), Target.Here(81u64));

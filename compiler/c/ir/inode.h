@@ -228,6 +228,10 @@ enum NodeTags {
 #define FlagDestructDcl 0x2000      // VarDcl: a name of 'let a, b = values;', hooked and typed by its assignment
 #define FlagDestructAssign 0x2000   // Assign: the assignment that declares the names before it ('let a, b = values;')
 
+// A macro's value parameter written 'a: lazy T': its argument is substituted
+// whole wherever the parameter appears, rather than evaluated once
+#define FlagLazy      0x0001        // GenVarDcl: a macro parameter marked 'lazy'
+
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
 
@@ -373,6 +377,11 @@ enum NodeTags {
 // whose last line has no ';' returns it (closureImplicitReturn)
 #define FlagTailSemi  0x0080        // Block: its last statement is empty, after an expression or a block-ending statement
 #define FlagTailOpen  0x0200        // Block: its last statement is an expression statement with no ';'
+// The block 'x?' is parsed to (parsePropagate): 'x' in a hidden variable, its only
+// statement. Whether 'x' is a Result or an Option, and what the function returns,
+// only type check knows, so type check builds the rest (propagateLower) once the
+// variable is checked, and clears the flag.
+#define FlagPropagate 0x0400        // Block: a '?' whose test and early return type check has yet to build
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain

@@ -63,7 +63,8 @@ Push and pop sites: `modFoldNames` and `modNameRes` (via `modHook`, the whole mo
 `structNameRes` (generic parms, then the whole type namespace, then each
 inherited member as it lands), `structNameResDemand` (another module's
 namespace, via `modHook`), `fnDclNameRes`
-(generic parms, then value parms), `macroNameRes` (parms), `blockNameRes`
+(generic parms, then value parms), `macroNameRes` (type parms, then each value
+parm after its type is resolved), `blockNameRes`
 (locals, accumulated one at a time as they are reached), and
 `clonePushState`/`clonePopState` — **which run during type check**, for generic
 substitution.
@@ -311,7 +312,10 @@ is the contract; there is never a second name resolution pass.
   `DclInfo` to mark. **A parameter's default value counts as an expanded body of
   its function** (`NameResState.sigfn`, set by `fnDclNameRes` round the
   signature, read by `fnSigNameRes`), since an importer evaluates it where it
-  calls. The include-file generator follows the record, so what a body it copies
+  calls. **So do a macro's parameter types**, which `macroNameRes` resolves inside
+  the expander's window: the importer resolves the macro's declaration, so a
+  type only a parameter names is declared beside it (`module_include_roundtrip`,
+  `weigh`). The include-file generator follows the record, so what a body it copies
   names is declared beside it, in whichever of the package's modules it sits
   ([module](../nodes/module.md), "Generating the include file").
 - **Nothing is typed.** No `vtype` is established, and no type check mark is

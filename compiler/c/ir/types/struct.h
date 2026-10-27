@@ -51,6 +51,7 @@ typedef struct StructNode {
     int64_t tagnbr;         // If a tagged struct, the number in the tag field, read as 'tagstate' says
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
+    uint8_t carriesending;  // itypeCarriesEndingBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t shapeinf;       // Whether the compiler finds it shape-changing (ShapeInfer), for a type that declares none of the three (shapeinfer.h)
@@ -61,6 +62,7 @@ typedef struct StructNode {
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
     uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self: &mut', else 'self: &'
     struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
+    struct GenericLateWhere *latewhere;  // An instance's members whose 'where' waits on an argument's layout, not yet decided (genericLateWhere); NULL once they are, and for every other type
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),

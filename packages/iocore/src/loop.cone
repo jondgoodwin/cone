@@ -142,7 +142,7 @@ pub struct Loop {
     var tick = 0usize;
     var code = 0u32;
     code, port, wake, tick = openPort();
-    if code != 0u32 {return Error[Loop, IoError](IoError(code));}
+    if code != 0u32 {return Err[Loop, IoError](IoError(code));}
     Ok[Loop, IoError](Loop.assemble(port, wake, tick))
   }
 
@@ -247,7 +247,7 @@ pub struct Loop {
   // choose one, which localAddr tells
   pub fn listen(self: &mut, addr: SocketAddr, backlog: i32 = 128i32) Result[Handle, IoError] {
     let s = tcpSocket(addr.family());
-    if s == invalidHandle {return Error[Handle, IoError](IoError(wsaError()));}
+    if s == invalidHandle {return Err[Handle, IoError](IoError(wsaError()));}
     var a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
@@ -259,13 +259,13 @@ pub struct Loop {
     if bind(s, &mut a as *u8, a.size) != 0i32 || iocore.listen(s, backlog) != 0i32 {
       let code = wsaError();
       closeRaw(hSocket, s);
-      return Error[Handle, IoError](IoError(code));
+      return Err[Handle, IoError](IoError(code));
     }
     if isWindows() {
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
         let code = GetLastError();
         closesocket(s);
-        return Error[Handle, IoError](IoError(code));
+        return Err[Handle, IoError](IoError(code));
       }
       return Ok[Handle, IoError](self.register(s, hListener, addr.family()));
     }
@@ -273,7 +273,7 @@ pub struct Loop {
     var code = 0u32;
     var h = Handle.none();
     code, h = lxAdopt(self, s, hListener, addr.family());
-    if code != 0u32 {return Error[Handle, IoError](IoError(code));}
+    if code != 0u32 {return Err[Handle, IoError](IoError(code));}
     Ok[Handle, IoError](h)
   }
 
@@ -283,12 +283,12 @@ pub struct Loop {
   // names its sender
   pub fn bindUdp(self: &mut, addr: SocketAddr) Result[Handle, IoError] {
     let s = udpSocket(addr.family());
-    if s == invalidHandle {return Error[Handle, IoError](IoError(wsaError()));}
+    if s == invalidHandle {return Err[Handle, IoError](IoError(wsaError()));}
     var a = addr;
     if bind(s, &mut a as *u8, a.size) != 0i32 {
       let code = wsaError();
       closeRaw(hDatagram, s);
-      return Error[Handle, IoError](IoError(code));
+      return Err[Handle, IoError](IoError(code));
     }
     if isWindows() {
       // An ICMP "port unreachable" for a datagram sent earlier must not make
@@ -299,14 +299,14 @@ pub struct Loop {
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
         let code = GetLastError();
         closesocket(s);
-        return Error[Handle, IoError](IoError(code));
+        return Err[Handle, IoError](IoError(code));
       }
       return Ok[Handle, IoError](self.register(s, hDatagram, addr.family()));
     }
     var code = 0u32;
     var h = Handle.none();
     code, h = lxAdopt(self, s, hDatagram, addr.family());
-    if code != 0u32 {return Error[Handle, IoError](IoError(code));}
+    if code != 0u32 {return Err[Handle, IoError](IoError(code));}
     Ok[Handle, IoError](h)
   }
 
@@ -314,7 +314,7 @@ pub struct Loop {
   pub fn mustBindUdp(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.bindUdp(addr) {
       case let Ok(r) {r}
-      case let Error(e) {panic("iocore: bindUdp failed", file, line)}
+      case let Err(e) {panic("iocore: bindUdp failed", file, line)}
     }
   }
 
@@ -322,19 +322,19 @@ pub struct Loop {
   pub fn mustListen(self: &mut, addr: SocketAddr, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Handle {
     match self.listen(addr) {
       case let Ok(r) {r}
-      case let Error(e) {panic("iocore: listen failed", file, line)}
+      case let Err(e) {panic("iocore: listen failed", file, line)}
     }
   }
 
   // The address a socket is bound to
   pub fn localAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let i = self.handleIndex(h);
-    if i == noEntry {return Error[SocketAddr, IoError](IoError(errorInvalidHandle));}
+    if i == noEntry {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
     let e = handles.at(i) as &HEntry;
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
     if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
-      return Error[SocketAddr, IoError](IoError(wsaError()));
+      return Err[SocketAddr, IoError](IoError(wsaError()));
     }
     a.size = len;
     Ok[SocketAddr, IoError](a)
@@ -343,21 +343,22 @@ pub struct Loop {
   // The address of a connected socket's peer
   pub fn peerAddr(self: &, h: Handle) Result[SocketAddr, IoError] {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return Error[SocketAddr, IoError](IoError(errorInvalidHandle));}
+    if raw == invalidHandle {return Err[SocketAddr, IoError](IoError(noSuchHandle()));}
     var a = SocketAddr(Array[u8, 28]() <- fill 0u8, 28i32);
     var len = 28i32;
     if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
-      return Error[SocketAddr, IoError](IoError(wsaError()));
+      return Err[SocketAddr, IoError](IoError(wsaError()));
     }
     a.size = len;
     Ok[SocketAddr, IoError](a)
   }
 
   // TCP keepalive on a connected socket (KeepAlive says what), set now: 0,
-  // or the Windows error number of the option the OS refused
+  // or the system's error number of the option the OS refused (IoError(n)
+  // reads it); ERROR_INVALID_HANDLE (EBADF) when h is no connected socket
   pub fn setKeepAlive(self: &mut, h: Handle, ka: KeepAlive) u32 {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
+    if raw == invalidHandle {return noSuchHandle();}
     let on = ka.probes > 0u32;
     var flag = if on {1i32} else {0i32};
     let sol = if isWindows() {solSocket} else {solSocketLx};
@@ -384,12 +385,12 @@ pub struct Loop {
   // when it is off (Windows reads userTimeout as 0: it has no such option)
   pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return Error[KeepAlive, IoError](IoError(errorInvalidHandle));}
+    if raw == invalidHandle {return Err[KeepAlive, IoError](IoError(noSuchHandle()));}
     let sol = if isWindows() {solSocket} else {solSocketLx};
     let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
     var flag = 0i32;
     var len = 4i32;
-    if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     if flag == 0i32 {return Ok[KeepAlive, IoError](KeepAlive.off());}
     var idle = 0i32;
     var every = 0i32;
@@ -399,14 +400,14 @@ pub struct Loop {
     let everyOpt = if isWindows() {tcpKeepIntvl} else {tcpKeepIntvlLx};
     let countOpt = if isWindows() {tcpKeepCnt} else {tcpKeepCntLx};
     len = 4i32;
-    if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     len = 4i32;
-    if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     len = 4i32;
-    if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+    if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     if !isWindows() {
       len = 4i32;
-      if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Error[KeepAlive, IoError](IoError(wsaError()));}
+      if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     }
     Ok[KeepAlive, IoError](KeepAlive(Duration.fromSeconds(i64.from(idle)), Duration.fromSeconds(i64.from(every)),
       u32.from(count), Duration.fromMillis(i64.from(ms))))
@@ -417,7 +418,7 @@ pub struct Loop {
     let text: &Array[u8] = path.view();
     if isWindows() {
       let w = widen(text);
-      if w as usize == 0usize {return Error[Handle, IoError](IoError(errorNoUnicodeTranslation));}
+      if w as usize == 0usize {return Err[Handle, IoError](IoError(errorNoUnicodeTranslation));}
       var want = genericRead;
       var how = openExisting;
       match access {
@@ -427,17 +428,17 @@ pub struct Loop {
       }
       let h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
       libc.free(w as *u8);
-      if h == invalidHandle {return Error[Handle, IoError](IoError(GetLastError()));}
+      if h == invalidHandle {return Err[Handle, IoError](IoError(GetLastError()));}
       if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
         let code = GetLastError();
         CloseHandle(h);
-        return Error[Handle, IoError](IoError(code));
+        return Err[Handle, IoError](IoError(code));
       }
       Ok[Handle, IoError](self.register(h, hFile, 0u16))
     } else {
       // Not epoll's: a file is read and written by the pool's threads
       let p = cstrCopy(text);
-      if p as usize == 0usize {return Error[Handle, IoError](IoError(errorNotEnoughMemory));}
+      if p as usize == 0usize {return Err[Handle, IoError](IoError(noMemory()));}
       var flags = oRdonly;
       match access {
         case is Access.Read {}
@@ -446,7 +447,7 @@ pub struct Loop {
       }
       let fd = sysOpen(p, flags | epollCloexec, 438u32);      // 0666, less the umask
       libc.free(p);
-      if fd < 0i32 {return Error[Handle, IoError](IoError(errnoCode(lastErrno())));}
+      if fd < 0i32 {return Err[Handle, IoError](IoError(u32.from(lastErrno())));}
       Ok[Handle, IoError](self.register(usize.from(fd), hFile, 0u16))
     }
   }
@@ -490,11 +491,12 @@ pub struct Loop {
 
   // A connected socket's sending side is finished (a half-close: TCP's FIN
   // goes after what was sent): its peer's receive ends, Done(0), while this
-  // side can still receive. 0, or Winsock's error; a send submitted after
-  // it fails. ERROR_INVALID_HANDLE when h is no connected socket
+  // side can still receive. 0, or the system's error number (IoError(n)
+  // reads it); a send submitted after it fails. ERROR_INVALID_HANDLE (Linux's
+  // EBADF: InvalidInput) when h is no connected socket
   pub fn shutdown(self: &mut, h: Handle) u32 {
     let raw = self.rawOf(h, hSocket);
-    if raw == invalidHandle {return errorInvalidHandle;}
+    if raw == invalidHandle {return noSuchHandle();}
     if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
     0u32
   }
@@ -1287,7 +1289,7 @@ pub struct Loop {
     if k == diag.kindReadAt {return self.startFile(p, r.handle, r.at, false);}
     if k == diag.kindWriteAt {return self.startFile(p, r.handle, r.at, true);}
     if k == diag.kindCall {return self.startCall(p);}
-    errorInvalidParameter
+    badParameter()
   }
 
   // Each starts its kind of operation in record p: 0, the kernel holds it
@@ -1543,11 +1545,11 @@ pub struct Loop {
   fn startCall(self: &mut, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let l = laneAt(r.lane.id);
-    if l as usize == 0usize {return errorInvalidParameter;}
+    if l as usize == 0usize {return badParameter();}
     sendAway(p, Waker(port), jobQueued);
     if !enqueueJob(p, l) {
       bringHome(p);
-      return errorBusy;
+      return queueFull();
     }
     stats.jobs = stats.jobs + 1u64;
     0u32
@@ -1794,7 +1796,7 @@ pub struct Loop {
       r.newHandle = self.register(s, hSocket, r.family);
       0u32
     } else {
-      errorInvalidParameter
+      badParameter()
     }
   }
 

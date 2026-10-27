@@ -1,0 +1,102 @@
+// A record whose type holds only a ''static' borrow (an 'Option' of a struct
+// with a '&'static str' field), reached by index through a raw pointer a
+// method of 'self' returns ('self.recAt(i) as &mut Rec'), carries no borrow
+// of 'self': 'self' may be changed, by a method reshaping it or a list
+// pushed, while the record is still used.
+//
+// Verdict: accept; prints "2 refused" and "1 none".
+// Basis: mem-lifetimes.html, "The global lifetime: 'static"; httpconn's
+// connection table (PR #745, FrameError.detail) is this shape.
+// Master c85d9fa99: refused, Error 1339 at 'self.mark(i)' and Error 1168 at
+// 'self.log.push(i)' (the record taken to carry a borrow of '*self').
+// lifetime_band_static_holder_through_pointer_ending is the same shape with a
+// borrow that ends, still refused.
+
+mod lifetime_band_static_holder_through_pointer;
+
+import stdio use *;
+import libc;
+import collections use List;
+
+struct Fault {
+  code: u32;
+  detail: &'static str;
+}
+
+struct Rec {
+  n: u32;
+  addrs: List[u32];
+  failure: Option[Fault];
+}
+
+struct Driver {
+  blocks: List[*Rec];
+  log: List[u32];
+  marked: List[u32];
+
+  fn recAt(self: &, i: u32) *Rec {
+    *blocks[usize.from(i / 4u32)] + usize.from(i % 4u32)
+  }
+
+  fn grow(self: &mut) {
+    let block = libc.malloc(4usize * mem.sizeof[Rec]()) as *Rec;
+    var j = 0usize;
+    while j < 4usize {
+      mem.writeRaw[Rec](block + j, Rec(0u32, List[u32].empty(), None[Fault]));
+      j = j + 1usize;
+    }
+    blocks.push(block);
+  }
+
+  fn mark(self: &mut, i: u32) {
+    marked.push(i);
+  }
+
+  fn touch(self: &mut, i: u32) {
+    let c = self.recAt(i) as &mut Rec;
+    c.addrs.clear();
+    self.mark(i);
+    c.addrs.push(7u32);
+    self.log.push(i);
+    c.n = c.n + 1u32;
+    c.failure = Some[Fault](Fault(3u32, "refused"));
+  }
+
+  fn free(self: &mut) {
+    var b = 0usize;
+    while b < blocks.len() {
+      let block = *blocks[b];
+      var j = 0usize;
+      while j < 4usize {
+        mem.finalize[Rec](block + j);
+        j = j + 1usize;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+  }
+}
+
+fn show(d: &Driver, i: u32) {
+  let c = d.recAt(i) as &Rec;
+  printInt(i64.from(c.n) + i64.from(u64.from(c.addrs.len())));
+  printStr(" ");
+  match c.failure {
+    case let Some(f) {printStr(f.detail);}
+    else {printStr("none");}
+  }
+  printStr("\n");
+}
+
+fn main() {
+  var d = Driver(List[*Rec].empty(), List[u32].empty(), List[u32].empty());
+  d.grow();
+  d.touch(1u32);
+  show(&d, 1u32);
+  {
+    let c = d.recAt(2u32) as &mut Rec;
+    c.n = 1u32;
+  }
+  show(&d, 2u32);
+  d.free();
+}

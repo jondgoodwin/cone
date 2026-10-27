@@ -23,7 +23,7 @@
 //       imm r = await client.get(url.view());      // pauses until the whole response is in
 //       match r {
 //         case imm ok Ok {...ok.status...  ok.body.view()...}
-//         case imm e Error {...e.isTimedOut()  e.isCancelled()  e.failure.message()...}
+//         case imm e Err {...e.isTimedOut()  e.isCancelled()  e.failure.message()...}
 //       }
 //     }
 //   }
@@ -45,7 +45,7 @@
 //       while true {
 //         match await server.next() {
 //           case mut ok Ok {imm h = Handler(ok); h.run();}   // an actor of its own for each request
-//           case imm e Error {break;}                            // the server was closed
+//           case imm e Err {break;}                            // the server was closed
 //         }
 //       }
 //     }
@@ -108,7 +108,7 @@
 // success is httpclient's Response (its status, header fields, body as bytes,
 // the URL that answered after any redirects, and its Timing), the same value
 // httpclient's fetchWhole gives; its outcome is Done. An HTTP error status
-// (404, 500) is an answer, a Response, not an Error: the Error is the network
+// (404, 500) is an answer, a Response, not an Err: the Err is the network
 // or the client refusing (a name not found, a refused connection, a TLS
 // handshake or a certificate refused, a protocol break, a body past the limit,
 // a URL that does not parse), which carries httpclient's Failure for the
@@ -149,7 +149,7 @@
 // it, the exchange in flight answered Cancelled, if there is one.
 //
 // CANCEL AND DEADLINES. An exchange is answered exactly once: the Response,
-// or an Error that is Failed, Cancelled or TimedOut, as aio's operations are,
+// or an Err that is Failed, Cancelled or TimedOut, as aio's operations are,
 // httpclient's final answer mapped to it. What limits one is a IoLimits (aio's;
 // the package's own type is no different), given to the 'In' form of the call:
 // a cancel group (a value that is copied, sent to other actors or threads, and
@@ -172,7 +172,7 @@
 // aio's own operations use; the I/O thread is the one thread that touches
 // them, as iocore asks. The actors' workers never wait on I/O. An 'await' on
 // an operation hands it to the service through aio's QUEUE for it
-// (aio.hostAwaitable; a job nothing awaits, aio.hostPost), which wakes the
+// (Host.awaitable; a job nothing awaits, Host.post), which wakes the
 // thread. Each pass the thread offers the service the Completions its poll
 // returned (the clients and drivers take their own), runs the service's jobs,
 // which start exchanges, and gives it its turn: every client and driver is
@@ -210,7 +210,7 @@
 // Content-Type text/event-stream). Then 'bs.read()' awaits the next piece of
 // the body (the bytes of one receive, any size) and 'es.next()' the next event;
 // each answers Ok(Some(piece or event)), Ok(None) when the body is whole, or an
-// Error, a FetchError (cancelled, timed out, or failed with httpclient's
+// Err, a FetchError (cancelled, timed out, or failed with httpclient's
 // Failure), once the pieces already taken are read. The sse package's Reader
 // runs on the service thread as the bytes arrive (its comments and unknown
 // fields dropped, its limit of 1 MiB for one event a fetch failure at
@@ -378,7 +378,7 @@ pub struct FetchError {
 // The service: hosted on aio's I/O thread (aio's HOSTED SERVICES), made
 // there by the first job queued for it. Set in 'init'; nothing but its block
 // is made, and no thread started, until a handle or an exchange queues a job
-let svcHost: aio.Host;
+let svcHost: aio.Host[Service];
 
 // The ids handles carry: never 0
 let nextId: Atomic[u64];
@@ -406,12 +406,12 @@ fn final() {
 // 'await', which hands the job's 'run(self, lp &mut Loop, sv &mut Service,
 // rp actors.Reply)' the reply its answer goes back in
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
-  aio.hostAwaitable[Service, J, R](svcHost, body)
+  svcHost.awaitable[J, R](body)
 }
 
 // A job nothing awaits: it is queued at once
 fn post[J](body: J) {
-  aio.hostPost[Service, J](svcHost, body);
+  svcHost.post[J](body);
 }
 
 // ---------------------------------------------------------------------------

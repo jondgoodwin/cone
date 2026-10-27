@@ -106,10 +106,10 @@ fn listenOn(drv: &mut Driver, lp: &mut Loop) u16 {
     case let Ok(r) {
       match drv.localAddr(lp, r) {
         case let Ok(a) {port = a.port();}
-        case let Error(e) {}
+        case let Err(e) {}
       }
     }
-    case let Error(e) {}
+    case let Err(e) {}
   }
   port
 }
@@ -307,7 +307,10 @@ fn serve(a: ServerArgs) u64 {
 // ---------------------------------------------------------------------------
 
 fn idleMemory(n: u64, readyIdle: bool) {
-  setLimits(268435456usize, 268435456usize);
+  // Every other row runs under the buffer pool's default bound (64 MiB).
+  // This one holds a 16 KiB receive buffer at each end of each idle
+  // connection by design, 2,000 x 2 x 16 KiB = 62.5 MiB, at that bound
+  if !readyIdle {setLimits(268435456usize, 268435456usize);}
   var lp = Loop.mustMake();
   var cfg = Config.make();
   cfg.idleRecvReady = readyIdle;

@@ -1473,7 +1473,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
 
         // 'macro'
         case MacroToken: {
-            MacroDclNode *macro = parseMacro(parse);
+            MacroDclNode *macro = parseMacro(parse, 0);
             macro->flags |= pubflag;
             modAddNode(mod, macro->namesym, (INode*)macro);
             made = (INode*)macro;
@@ -2028,6 +2028,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.genctx = NULL;
     parse.library = 0;
     parse.genoperand = 0;
+    parse.awaitoperand = 0;
     parse.tparms = parse.tparmsend = NULL;
     INode **nodesp;
     uint32_t cnt;
@@ -2116,6 +2117,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.genctx = NULL;
     parse.library = desc != NULL && desc->library;
     parse.genoperand = 0;
+    parse.awaitoperand = 0;
     parse.tparms = parse.tparmsend = NULL;
 
     // Create module node and set up for parsing main source file.

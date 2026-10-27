@@ -40,7 +40,7 @@ fn readText(name: &str) String {
   let p = certs(name);
   match fs.readFile(&p) {
     case var Ok(r) {return r;}
-    case let Error(e) {}
+    case let Err(e) {}
   }
   printStr("cannot read ");
   printStr(p.view());
@@ -67,7 +67,7 @@ fn serverCtx(streams: u64, idleMs: i64) quic.Context {
   let key = certs("server.key");
   match quic.Context.server(q, &cert, &key) {
     case var Ok(r) {return r;}
-    case let Error(e) {
+    case let Err(e) {
       printStr(e.message().view());
       printStr("\n");
     }
@@ -469,16 +469,16 @@ fn world(streams: u64, idleMs: i64) World {
     case let Ok(l) {
       match srv.localAddr(&lp, l) {
         case let Ok(a) {port = a.port();}
-        case let Error(e) {}
+        case let Err(e) {}
       }
     }
-    case let Error(f) {printStr(f.message().view()); printStr("\n");}
+    case let Err(f) {printStr(f.message().view()); printStr("\n");}
   }
   var cli = Driver.make(clientConfig(idleMs));
   var conn = ConnId.none();
   match cli.connect(&mut lp, SocketAddr.localhost(port), "localhost", 2u64) {
     case let Ok(c) {conn = c;}
-    case let Error(f) {printStr(f.message().view()); printStr("\n");}
+    case let Err(f) {printStr(f.message().view()); printStr("\n");}
   }
   World(lp, cli, srv, Server(List[Job].empty(), 0u64, 0u64, 0u64, ConnId.none(), 0u64),
     newClient(), conn)
@@ -551,7 +551,7 @@ fn outcomeName(o: u32) &str {
 // The cases
 // ---------------------------------------------------------------------------
 
-let host: Host;
+let host: Host[Svc];
 
 fn @initpure init() {
   host = aio.host[Svc](&makeSvc);
@@ -635,14 +635,14 @@ struct RunJob {
       case let Ok(l) {
         match s.srv.localAddr(lp, l) {
           case let Ok(a) {port = a.port();}
-          case let Error(e) {}
+          case let Err(e) {}
         }
       }
-      case let Error(f) {}
+      case let Err(f) {}
     }
     match s.cli.connect(lp, SocketAddr.localhost(port), "localhost", 2u64) {
       case let Ok(c) {s.conn = c;}
-      case let Error(f) {}
+      case let Err(f) {}
     }
     let sizes = [0u64, 700u64, 20000u64, 150000u64];
     var i = 0usize;
@@ -667,13 +667,13 @@ struct CloseJob {
 
 actor Asker {
   pub async fn run(self, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Svc, RunJob, u64](host, RunJob());
+    let n = await host.awaitable[RunJob, u64](RunJob());
     var d = done;
     d.send(n);
   }
 
   pub async fn close(self, done: OneshotSender[u64]) {
-    let n = await aio.hostAwaitable[Svc, CloseJob, u64](host, CloseJob());
+    let n = await host.awaitable[CloseJob, u64](CloseJob());
     var d = done;
     d.send(n);
   }

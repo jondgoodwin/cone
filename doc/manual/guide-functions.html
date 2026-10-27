@@ -101,13 +101,13 @@ gcd(84, 36)       // 12
 	<h2 id="result-tour"><span id="result"></span>Functions that can fail: Result</h2>
 	<p>Some work can fail for reasons that are not a bug: a file that is not there, text that is not a number, an
 		average of nothing at all. A function like that says so in its return type, and gives back a
-		<b>Result</b>: <span class="pre">Ok</span> holding the answer, or <span class="pre">Error</span> holding what went
+		<b>Result</b>: <span class="pre">Ok</span> holding the answer, or <span class="pre">Err</span> holding what went
 		wrong. It is a good habit from the start, because it is how a program stays honest about everything that can
 		go wrong:</p>
 <pre>
 fn average(total: i32, count: i32) Result[i32, &amp;str] {
   if count == 0 {
-    return Error("there is nothing to average");
+    return Err("there is nothing to average");
   }
   Ok(total / count)
 }
@@ -118,31 +118,110 @@ fn average(total: i32, count: i32) Result[i32, &amp;str] {
 <pre>
 match average(30, 0) {
   case let Ok(avg) { print &lt;- "average: ", avg, "\n"; }
-  case let Error(why) { print &lt;- "no average: ", why, "\n"; }   // this one runs
+  case let Err(why) { print &lt;- "no average: ", why, "\n"; }   // this one runs
 }
 </pre>
 	<p>When only the failure matters, <span class="pre">is</span> asks which it is:
-		<span class="pre">if r is Error { ... }</span>. And a function that cannot deal with a failure itself passes it
-		on to its own caller:</p>
+		<span class="pre">if r is Err { ... }</span>. For the everyday shapes there are methods:
+		<span class="pre">average(30, 3).unwrap()</span> is the answer, and a <a href="safe-panics.html">panic</a> if there is
+		none, and <span class="pre">average(30, 3).map(x =&gt; x * 2)</span> doubles an answer while passing an error on
+		as it is (<a href="guide-enums.html#helpers">Working with an Option or a Result</a> has them all). The
+		<span class="pre">&amp;str</span> here is a view of a piece of text, which <a href="guide-text.html">String</a> explains, and <span class="pre">Result</span> itself is an
+		ordinary enum, as <a href="guide-enums.html#resultenum">Enums</a> shows. The standard library's functions that
+		can fail answer one too: the <span class="pre">fs</span> package's (<a href="lib-fs.html#fs-failure">Failure:
+		Result and FsError</a>), and the I/O an actor awaits (<a href="conc-io.html#await-io">Awaiting I/O</a>). What
+		must never happen at all is not a Result but a <a href="safe-panics.html">panic</a>.</p>
+
+	<h3 id="propagate">Passing a failure on: ?</h3>
+	<p>A function that cannot deal with a failure itself passes it on to its own caller. Written out, that is a
+		match whose failing case returns the error:</p>
 <pre>
 fn doubledAverage(total: i32, count: i32) Result[i32, &amp;str] {
   match average(total, count) {
     case let Ok(avg) { Ok(avg * 2) }
-    case let Error(why) { Error(why) }
+    case let Err(why) { return Err(why) }
   }
 }
 </pre>
-	<p>Those are the patterns in use today. Shorter ways to pass an error on, such as a
-		<span class="pre">?</span> operator, are being designed and are not built yet. For the everyday shapes there
-		are methods: <span class="pre">average(30, 3).unwrap()</span> is the answer, and a
-		<a href="safe-panics.html">panic</a> if there is none, and <span class="pre">average(30, 3).map(x =&gt; x * 2)</span>
-		doubles an answer while passing an error on as it is
-		(<a href="guide-enums.html#helpers">Working with an Option or a Result</a> has them all). The <span class="pre">&amp;str</span> here is a view of a piece of text, which
-		<a href="guide-text.html">String</a> explains, and <span class="pre">Result</span> itself is an ordinary enum, as
-		<a href="guide-enums.html#resultenum">Enums</a> shows. The standard library's functions that can fail answer
-		one too: the <span class="pre">fs</span> package's (<a href="lib-fs.html#fs-failure">Failure: Result and
-		FsError</a>), and the I/O an actor awaits (<a href="conc-io.html#await-io">Awaiting I/O</a>). What must never
-		happen at all is not a Result but a <a href="safe-panics.html">panic</a>.</p>
+	<p>The <span class="pre">?</span> operator, written after a value, says the same thing. On an
+		<span class="pre">Ok</span> its value is what the Ok holds; on an <span class="pre">Err</span> it returns
+		that error from the function it is in, at once:</p>
+<pre>
+fn doubledAverage(total: i32, count: i32) Result[i32, &amp;str] {
+  let avg = average(total, count)?;
+  Ok(avg * 2)
+}
+</pre>
+	<p>It works on an <a href="guide-enums.html#option">Option</a> too: on <span class="pre">Some</span> its value is
+		what the Some holds, and on <span class="pre">None</span> it returns <span class="pre">None</span>. Either way the
+		function it is in must return the same kind, a Result for a Result and an Option for an Option, and anything
+		else is an error the compiler reports at the <span class="pre">?</span>: a failure is never passed on to
+		somewhere that cannot hold it. (To change one kind into the other, or to state that a value cannot be a
+		failure, see <a href="guide-enums.html#helpers">Working with an Option or a Result</a>.)</p>
+	<p><span class="pre">?</span> belongs to the value just before it, as an index or a call does:
+		<span class="pre">-a?</span> negates what <span class="pre">a?</span> gives, and
+		<span class="pre">items()?[0]</span> indexes it. A field or method of what it gives is written in parentheses,
+		<span class="pre">(open(name)?).size</span>, because <span class="pre">?.</span> is reserved
+		(<a href="syntax-lexical.html#held">Held for unimplemented features</a>). The one exception is
+		<a href="conc-await.html">await</a>: <span class="pre">await op?</span> waits first, and the
+		<span class="pre">?</span> takes the Result the wait gives.</p>
+	<p id="propagate-convert">When the error passed on is not of the type the function returns, it is converted. A
+		function that can fail in several ways usually returns an enum of them, and an error that one of its variants
+		holds is wrapped in that variant without more said. Where two variants hold the same type, or the conversion is
+		more than a wrapping, the error type declares a <span class="pre">from</span> that takes the other, which
+		<span class="pre">?</span> calls:</p>
+<pre>
+enum ConfigError {
+  Io(IoError);                   // an IoError is wrapped: Io(e)
+  Parse(ParseError);
+  BadLine(i32);
+  fn fromNumber overload from(e: NumberError) ConfigError { BadLine(e.line) }
+}
+
+fn load(name: &amp;str) Result[Config, ConfigError] {
+  let text = readFile(name)?;     // an IoError becomes Io(e)
+  let size = number(text)?;       // a NumberError becomes ConfigError.from(e)
+  Ok(Config(size))
+}
+</pre>
+	<p>An error that neither converts is reported at the <span class="pre">?</span>, and so is one that two variants
+		hold with no <span class="pre">from</span> to say which.</p>
+
+	<h3 id="letelse">Dealing with a failure and going on: let-else</h3>
+	<p>A function that deals with a failure itself, rather than passing it on, can bind the answer for the rest of the
+		function and say in an <span class="pre">else</span> what happens when there is none. The
+		<span class="pre">else</span> must leave, on every path through it: by <span class="pre">return</span>,
+		<span class="pre">break</span>, <span class="pre">continue</span>, or a call that never returns, such as
+		<span class="pre">panic</span>. Past it, <span class="pre">avg</span> is the answer:</p>
+<pre>
+fn report(total: i32, count: i32) i32 {
+  let Ok(avg) = average(total, count) else {
+    print &lt;- "no average\n";
+    return 0;
+  };
+  print &lt;- "average: ", avg, "\n";
+  avg
+}
+</pre>
+	<p>It binds a <span class="pre">Some</span> the same way, and any other variant of any enum
+		(<a href="guide-enums.html#letelse">Binding past an early exit: let-else</a>).</p>
+
+	<h3 id="main-result">A main that can fail</h3>
+	<p><span class="pre">main</span> may return a Result too, so the program can pass its failures all the way out.
+		When it returns an <span class="pre">Err</span>, the program writes <span class="pre">Error:</span> and the
+		error's <span class="pre">message()</span> to its error output and ends with a failing exit status, 1, once
+		every module's final work is done; when it returns <span class="pre">Ok</span>, the status is 0. Its error type
+		must declare a <span class="pre">message()</span> that gives a String or a <span class="pre">&amp;str</span>, as
+		the standard library's error types do:</p>
+<pre>
+fn main() Result[void, ConfigError] {
+  let config = load("app.cfg")?;
+  run(config)?;
+  Ok(nil)
+}
+</pre>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: printing the chain of causes behind an error, which waits for
+		the standard library's error trait.</i></p>
 
 	<h2 id="closures-tour"><span id="closures"></span>Closures: functions with state</h2>
 	<p>A <b>closure</b> is a function written right where it is used, with no name of its own. It is a value like any

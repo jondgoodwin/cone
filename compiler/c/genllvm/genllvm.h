@@ -168,6 +168,18 @@ typedef struct GenState {
     uint32_t tempmax;
     uint32_t tempbase;      // How many were waiting as the function being generated began: a 'return' finalizes the rest
 
+    // Once a jump the program wrote -- a 'return', 'break' or 'continue', or a
+    // call that does not return -- ends the basic block it was generated in,
+    // generation goes on in a fresh block no path reaches (genlEndPath), so
+    // nothing is ever emitted after a terminator. 'unreached' is the latest,
+    // which the builder is at until generation moves to a block a path
+    // reaches (genlPathEnded); every one made is settled before the module
+    // is checked (genlSettleUnreached).
+    LLVMBasicBlockRef unreached;
+    LLVMBasicBlockRef *unreachedblks;
+    uint32_t unreachedcnt;
+    uint32_t unreachedmax;
+
     // A split method (genlawait.c): its seams, or NULL for any other function;
     // the seam whose second half is being generated, NULL for the first half;
     // where that half resumes, where each field of its record goes there, and
@@ -328,6 +340,13 @@ void genlParCapture(GenState *gen, VarDclNode *var);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
+// After the terminator a jump the program wrote: generation goes on in a block no path reaches
+void genlEndPath(GenState *gen);
+// Has a jump ended the path generation is on, so that nothing it emits now is reached?
+int genlPathEnded(GenState *gen);
+// Each block genlEndPath made: one nothing was emitted into is deleted, one given no
+// terminator gets 'unreachable'
+void genlSettleUnreached(GenState *gen);
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
@@ -575,7 +594,7 @@ LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
-// Generate a vtable type
+// Generate a vtable: its type, and its implementers' globals once no type is being generated
 void genlVtable(GenState *gen, Vtable *vtable);
 // A callable trait's vtable for a plain function, whose one slot is a stub calling it
 LLVMValueRef genlFnStubVtable(GenState *gen, Vtable *vtable);

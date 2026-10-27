@@ -44,7 +44,7 @@ fn makeRoot(name: &str) Path {
   var root = Path.from("");
   match fs.absolute(&tempPath) {
     case let Ok(t) { root = t.join(name); }
-    case is Error { require(false, "TEMP has an absolute path"); }
+    case is Err { require(false, "TEMP has an absolute path"); }
   }
   let up = root.parent();
   let safe = root.isAbsolute() && root.view().endsWith(name) && up.view().len() > 3usize;
@@ -60,7 +60,7 @@ fn shown(root: &Path, message: &String) String {
 
 fn messageOf[T](root: &Path, r: Result[T, fs.FsError]) String {
   match r {
-    case let Error(e) { let m = e.message(); shown(root, &m) }
+    case let Err(e) { let m = e.message(); shown(root, &m) }
     case is Ok { String.from("<succeeded>") }
   }
 }
@@ -115,7 +115,7 @@ fn accessOf(p: &Path) i64 {
 fn modifiedOf(p: &Path) i64 {
   match fs.stat(p) {
     case let Ok(s) { s.modified.unixSeconds() }
-    case is Error { 0i64 - 1i64 }
+    case is Err { 0i64 - 1i64 }
   }
 }
 
@@ -140,22 +140,22 @@ fn links(root: &Path) {
       expect(s.isFile && !s.isDir, "lstat of a file: a file");
       expectInt(s.modified.unixSeconds() - modifiedOf(&file), 0, "lstat of a file: same time as stat");
     }
-    case is Error { expect(false, "lstat of a file"); }
+    case is Err { expect(false, "lstat of a file"); }
   }
   match fs.lstat(&target) {
     case let Ok(s) { expect(s.isDir && !s.isFile, "lstat of a folder: a folder"); }
-    case is Error { expect(false, "lstat of a folder"); }
+    case is Err { expect(false, "lstat of a folder"); }
   }
 
   // A link
   expect(fs.isLink(&link), "a link is a link");
   match fs.lstat(&link) {
     case let Ok(s) { expect(!s.isDir && !s.isFile, "lstat of a link: neither folder nor file"); }
-    case is Error { expect(false, "lstat of a link"); }
+    case is Err { expect(false, "lstat of a link"); }
   }
   match fs.stat(&link) {
     case let Ok(s) { expect(s.isDir, "stat follows the link to its folder"); }
-    case is Error { expect(false, "stat of a link"); }
+    case is Err { expect(false, "stat of a link"); }
   }
   let through = root.join("link/kept.txt");
   expect(!fs.isLink(&through), "a file reached through a link is no link");
@@ -170,7 +170,7 @@ fn links(root: &Path) {
       }
       expect(agree, "a listing's isLink agrees with isLink");
     }
-    case is Error { expect(false, "readDir of the root"); }
+    case is Err { expect(false, "readDir of the root"); }
   }
 
   // A link whose target is gone
@@ -178,7 +178,7 @@ fn links(root: &Path) {
   expect(fs.isLink(&link), "a dangling link is still a link");
   match fs.lstat(&link) {
     case is Ok { expect(true, "lstat sees a dangling link"); }
-    case is Error { expect(false, "lstat of a dangling link"); }
+    case is Err { expect(false, "lstat of a dangling link"); }
   }
   // POSIX's stat follows the link and finds nothing; the Windows runtime's,
   // finding a junction whose folder is gone, answers for the junction itself
@@ -260,7 +260,7 @@ fn times(root: &Path) {
   expectInt(accessOf(&file), 1000000000, "the access time is set");
   match fs.stat(&file) {
     case let Ok(s) { expectInt(s.size, 3, "the size is untouched"); }
-    case is Error { expect(false, "stat after utime"); }
+    case is Err { expect(false, "stat after utime"); }
   }
   // A fraction of a second is kept by the system and shown rounded down
   ok(fs.utime(&file, Timestamp.fromUnixNanos(1700000000999000000i64), Timestamp.fromUnixNanos(1700000001500000000i64)),

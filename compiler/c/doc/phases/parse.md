@@ -39,10 +39,14 @@ claim that these rule rather than describe.**
 3. **The parser desugars.** `match`, `each` over a numeric range, `while`,
    `with`, bound patterns and several prefix forms are lowered here into blocks
    and `if` chains. ▸ **Settles** that later phases never see those forms, so a
-   new sugar costs no node, no dispatch arm and no phase work. The one sugar that
-   cannot be finished here is an `each` over anything but a range: how it walks
+   new sugar costs no node, no dispatch arm and no phase work. Two sugars
+   cannot be finished here. An `each` over anything but a range: how it walks
    its source is the source's type's to say, so the parser builds a block marked
    `FlagEach` that type check finishes ([Block](../nodes/block.md), "Type check").
+   And `x?`: whether `x` is a Result or an Option, and what the function returns,
+   say what its test and early return are, so the parser builds a block marked
+   `FlagPropagate` holding `x` in a hidden variable, which type check finishes
+   (`propagateLower`, `ir/exp/propagate.h`).
    A header `if`, a trailing `if` on `break`, `continue` and `return`, and a
    loop's `else` are desugared here too, into `continue`, an `if` arm and the
    loop's exit ([Block](../nodes/block.md), "Parse").
@@ -400,7 +404,8 @@ and `@move`, since move-ness became the built-in trait `Move`, declared with
 linkage that no code asks about; a fact other code may ask about or constrain
 on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays. A `#` word is held for metaprogramming:
 `ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
-was followed by is not reported again. `?.` is held for None propagation:
+was followed by is not reported again. `?.` is held [Jon 26 Oct]: a member of
+what `?` gives is written `(a?).b`, which the message says. It is
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
 `lexical_reject_unbuilt` holds all three.
@@ -730,8 +735,20 @@ construction, a temporary, which the borrow's type check refuses.
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
 `x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
-the wait gives and `await` binds no looser than `-` does. It builds an
-`AwaitNode` and nothing more; where it may stand is type check's
+the wait gives and `await` binds no looser than `-` does. **The one exception
+is the suffix `?`** [Jon 26 Oct]: `await x?` is `(await x)?`. `parsePrefix`
+reads its operand with `ParseState.awaitoperand` set, which the operand's own
+`parsePrefix` takes and clears, so only a term written directly after `await`
+stops its suffixes before a `?` (`parseSuffixUntil`); the `?` and the suffixes
+after it then apply to the `AwaitNode`. A prefix operator in between takes the
+`?` after its own operand, as everywhere else: `await -x?` awaits `-(x?)`.
+Everywhere but there, `?` is a suffix like `[]`, Rust's precedence:
+`-x?` is `-(x?)`, `f()?[0]` indexes what `f()?` gives (`parsePropagate`). It is
+not a suffix where a type is read (`ParseState.intype`), whose `?` is an
+Option's prefix sugar, and `?.` never reaches it (the lexer holds it, above).
+`?` in a generator's body is refused here (`ErrorQuesReturn`): a generator's
+`return` ends its walk and it has no Result or Option of its own.
+`await` builds an `AwaitNode` and nothing more; where it may stand is type check's
 (`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
 ([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
 anything `await`. Inside an actor's body, each function whose own body holds
@@ -1185,7 +1202,7 @@ numbers.
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
-| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
+| | `parseSuffix`, `parseSuffixUntil`, `parsePropagate`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`, `?` (the block marked `FlagPropagate`); named values. The `.` production serves a member of a value and a path through a namespace alike; a `.` followed by `(` is a field list, `x.(a, b)`, `parseFieldList` building a `DestructNode` ([destruct](../nodes/destruct.md)). The last suffix of a term parsed outside a type is marked as a value term (`parseMarkValueTerm`), which name resolution reads to make an empty variant's name its construction |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
@@ -1200,11 +1217,11 @@ numbers.
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, its `@intrinsic`, recorded as `DclIntrinsic` and letting the declaration end without a body, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, an intrinsic, a trait's or a generic type's method (`ErrorCAttr`), and its `@compute(x, y, z)` (`parseComputeAttr`), first or after the others: constant sizes, at least 1, at most 256 invocations and 64 along z (`ErrorComputeSize`), on no method, generic, `inline` fn, intrinsic, `@c` fn or anonymous one (`ErrorComputeAttr`), its signature left to type check (`fnDclComputeCheck`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
-| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's followed by a `:` and `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`||` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `&&` and `||`, `&&` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
+| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `mod`: comma-separated names, each a generic's followed by a `:` and `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`||` there is `ErrorGenParmOr`), and a module's refused an annotation as `ErrorGenParmConstr`; a macro's own one or two lists (`parseMacroParmList`): `[a: T, b: lazy T]`, or type parameters first, `[T][a: T]`, a value parameter untyped `ErrorMacroParmType`, a method's `self` typed `ErrorMacroSelfType`, a type parameter constrained `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `&&` and `||`, `&&` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch`, `parseLetElse` | `if`/`else if`/`else` and the `match`-to-`if` desugaring, and a local `let` followed by a variant pattern and `else` (`let Ok(n) = r else {...};`, `parseLetPattern`) as the bound `if` it stands for, stood in its own block's statements ([if](../nodes/if.md)); every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseMatchColumn`, `parseMatchWild` | the patterns of one value of a match, joined by `|`; in `match a, b` a column that binds is `ErrorMatchColumn`; `_` (`parseMatchWild`) is a literal `true` flagged `FlagMatchAny`, refused in a match of one value |
-| | `parseBindVarDcl`, `parseLetPattern`, `lexNextOpensPattern` | the pattern after the `let` or `var` that is in front of the whole of it, in a case, an `if`, an `else if` and a statement `let`: a variant with the one name that takes its contents inside its parentheses, `case let Some(n)`, `var Some(n)`, `if let &mut Error(e) = r`, `let Shape.Circle(c) = s else {...};`. It is read as the type expression it looks like (`parseType` reads a name or path with `(` after it as a call) and taken apart: through any reference or pointer written around it, a name or path with type arguments called with exactly one name, which becomes the binding's variable, the callee being the variant's type; none or several names is `ErrorPatBindCount`, anything else in them `ErrorPatBindNested`, and anything that is not that shape `ErrorPatBindForm`. A `_` as the name declares nothing, as it does in `let _, r = f()`: the case, `if` or let-else only tests the variant (`parseBoundMatch`, `parseLetElse`), with a guard allowed. A name and then a variant in a statement `let` that ends in `else` is refused once and read past whole (`lexStatementHasElse`). Without the `let` or `var`, a call-shaped pattern is a value alone, compared by equality (`parseMatchPattern`), and the parse depends on no type. `let name using f(...)` is the function's pattern and is told from the variant by the `using` after the name |
+| | `parseBindVarDcl`, `parseLetPattern`, `lexNextOpensPattern` | the pattern after the `let` or `var` that is in front of the whole of it, in a case, an `if`, an `else if` and a statement `let`: a variant with the one name that takes its contents inside its parentheses, `case let Some(n)`, `var Some(n)`, `if let &mut Err(e) = r`, `let Shape.Circle(c) = s else {...};`. It is read as the type expression it looks like (`parseType` reads a name or path with `(` after it as a call) and taken apart: through any reference or pointer written around it, a name or path with type arguments called with exactly one name, which becomes the binding's variable, the callee being the variant's type; none or several names is `ErrorPatBindCount`, anything else in them `ErrorPatBindNested`, and anything that is not that shape `ErrorPatBindForm`. A `_` as the name declares nothing, as it does in `let _, r = f()`: the case, `if` or let-else only tests the variant (`parseBoundMatch`, `parseLetElse`), with a guard allowed. A name and then a variant in a statement `let` that ends in `else` is refused once and read past whole (`lexStatementHasElse`). Without the `let` or `var`, a call-shaped pattern is a value alone, compared by equality (`parseMatchPattern`), and the parse depends on no type. `let name using f(...)` is the function's pattern and is told from the variant by the `using` after the name |
 | | `parseUsingCall`, `parseUsingMatchee`, `parseUsingSome` | a function's pattern after `using` (`UsingToken`): the call, the matched value put in as its first argument, and the `Some` a binding takes; not a call is `ErrorUsingForm`, a match with one that does not end in `else` is `ErrorMatchUsing` |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone, a test by `using` — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`!b`, `n > 3`), at the start of a case or after a `|`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |

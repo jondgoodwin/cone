@@ -141,7 +141,9 @@ Name *lifeSlotName(INode *use, uint32_t k);
 
 // What a parameter of this type holds beyond its own reference: what a
 // borrowed reference points at, or the value itself; NULL where that holds no
-// borrow
+// borrow of a lifetime that ends (itypeCarriesEndingBorrow): a value holding
+// only ''static' borrows lends nothing of the caller's, as the lifetimes
+// gathered of a type here pass them too
 INode *lifeHeld(INode *parmtype);
 
 // Is this a borrowed reference whose own lifetime a caller lends: no
