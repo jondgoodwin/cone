@@ -626,10 +626,12 @@ name binding one binds it alone, and the candidate tried is the instance: the on
 `fnCallMethodTypeArgs` for written type arguments, or by substitution for a
 bare `pick[i32](6)` that became `self.pick` — which `genericIsInstanceOf`
 recognizes in the generic's memo, else the one the call's arguments infer
-(`genericMethodInstance`). Inference matches the arguments against the
-parameters after `self`, since the receiver is not among them yet, so the
-receiver tells it nothing. The instance is then selected like any method, and
-the receiver dereferenced or borrowed to fit its `self`.
+(`genericMethodInstance`). Inference matches the receiver against `self`
+first, as the call will fit it (`genericInferReceiver`: a value against a
+reference `self`'s target, a reference's target against a by-value `self`), then
+the arguments against the parameters after `self`, since the receiver is not
+among them yet. The instance is then selected like any method, and the receiver
+dereferenced or borrowed to fit its `self`.
 
 **A generic in an overload set is selected by its arguments, and instantiated
 after.** Only a generic whose every type parameter is bound to a function

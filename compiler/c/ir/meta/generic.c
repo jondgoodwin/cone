@@ -463,7 +463,9 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
 
 // Infer generic type parameters from the function call arguments 'args', which
 // match the signature's parameters from 'firstparm' on: 1 for a method called
-// on a receiver, whose 'self' is not among the arguments yet, else 0.
+// on a receiver, whose 'self' is not among the arguments yet, else 0. 'self' is
+// that receiver where the call has one written (NULL for a method named bare in
+// its type's braces), and is matched against 'self' first.
 static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall);
 static FnSigNode *genericFnTypeSig(INode *type);
 
@@ -611,8 +613,26 @@ static void genericMissingParms(FnCallNode *inferredgencall, Nodes *genparms, Na
         nmissing == 1 ? "" : "s", missing, &name->namestr, nmissing == 1 ? "what it is" : "what they are", &name->namestr, all);
 }
 
+// Match a receiver's type against its 'self' parameter's as the call will fit
+// the one to the other: a value given to 'self: &Option[T]' is borrowed, so its
+// type is matched against the reference's target; a reference given to a
+// by-value 'self: Option[T]' is dereferenced, so what it points at is matched
+static int genericInferReceiver(FnCallNode *inferredgencall, Nodes *genparms, INode *parmtype, INode *recvtype) {
+    if (parmtype == NULL || recvtype == NULL || recvtype == unknownType)
+        return 1;
+    int parmref = parmtype->tag == RefTag || parmtype->tag == BorrowTag;
+    INode *recvdcl = itypeGetTypeDcl(recvtype);
+    if (parmref && recvdcl->tag != RefTag)
+        parmtype = ((RefNode*)parmtype)->vtexp;
+    while (!parmref && recvdcl->tag == RefTag) {
+        recvtype = ((RefNode*)recvdcl)->vtexp;
+        recvdcl = itypeGetTypeDcl(recvtype);
+    }
+    return genericInferType(inferredgencall, genparms, parmtype, recvtype);
+}
+
 static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
-        Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where,
+        INode *self, Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where,
         INode *expectType) {
 
     genericReported = 0;
@@ -625,6 +645,20 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
     int retcode = 1;
     INode **argsp;
     uint32_t cnt;
+
+    // A method called on a receiver that is not among the arguments yet: the
+    // receiver takes part as any argument does, matched against 'self' as the
+    // call will borrow or dereference it ('nested.flatten()' is
+    // 'flatten(self: Option[Option[U]])' given an 'Option[Option[i32]]')
+    if (self != NULL && firstparm == 1 && genfnsig->parms->used > 0 && isExpNode(self) && !inodeIsError(self)) {
+        INode *parmtype = ((VarDclNode *)nodesGet(genfnsig->parms, 0))->vtype;
+        if (genericInferReceiver(inferredgencall, genparms, parmtype, ((IExpNode *)self)->vtype) == 0) {
+            if (!genericReported)
+                errorMsgNode(self, ErrorInvType, "Inconsistent type for generic function");
+            retcode = 0;
+        }
+        genericReported = 0;
+    }
     INode **parmp = &nodesGet(genfnsig->parms, firstparm);
     for (cnt = args ? args->used : 0, argsp = args ? &nodesGet(args, 0) : NULL; cnt; cnt--, argsp++) {
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
@@ -3458,7 +3492,7 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp, INode *e
         // receiver is the first argument.
         uint32_t firstparm = (nodetoclone->flags & FlagMethFld) && !(objfn->flags & FlagQualified) ? 1 : 0;
         if (genericInferFnParms(pstate, genericinfo->parms,
-            (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), srcgencall->args, firstparm,
+            (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), NULL, srcgencall->args, firstparm,
             (INode*)srcgencall, inferredgencall, ((FnDclNode *)nodetoclone)->where, expectType) == 0)
             return 1;
         break;
@@ -3519,8 +3553,9 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp, INode *e
 
 // The instance of generic method 'genmeth' that a call on a receiver names:
 // 'h.pick(6)', or 'h.pick[i32](6)' with 'typeargs' written. Unwritten, the type
-// arguments are inferred from the call's arguments, which do not yet hold the
-// receiver, so they match the method's parameters after 'self'. Returns NULL
+// arguments are inferred from the receiver, matched against 'self', and the
+// call's arguments, which do not yet hold the receiver, so they match the
+// method's parameters after 'self'. Returns NULL
 // once an error is reported.
 FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, FnDclNode *genmeth, Nodes *typeargs,
         INode *expectType) {
@@ -3538,7 +3573,7 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
         while (nparms--)
             nodesAdd(&gencall->args, (INode*)NULL);
         if (genericInferFnParms(pstate, genericinfo->parms, (FnSigNode*)itypeGetTypeDcl(genmeth->vtype),
-            callnode->args, 1, (INode*)callnode, gencall, genmeth->where, expectType) == 0)
+            callnode->objfn, callnode->args, 1, (INode*)callnode, gencall, genmeth->where, expectType) == 0)
             return NULL;
         for (nodesFor(gencall->args, cnt, argsp)) {
             if (*argsp == NULL) {

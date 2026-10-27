@@ -534,7 +534,8 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    **An unsuffixed number literal passed for a bare type parameter** (`v: T`;
    a `ULitTag` or `FLitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is
-   wanted. `genericInferFnParms` runs in three steps: every other argument, then
+   wanted. `genericInferFnParms` runs in three steps: the receiver, if one is
+   given, and every other argument, then
    the bounds (`genericInferFromBounds`), then the literals. A literal meets a
    slot already given by taking it, where `iexpMatches` accepts it as that type
    (the call's own check then converts it and judges its range,
@@ -607,8 +608,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
 only from the receiver's type ([fncall](fncall.md), "Selecting a candidate"):
-`genericMethodInstance` infers from the arguments after `self`, or takes the
-written type arguments, and memoizes as a call does. A method's instance is
+`genericMethodInstance` infers from the receiver, matched against `self` as the
+call will borrow or dereference it (`genericInferReceiver`), and the arguments
+after `self`, or takes the written type arguments, and memoizes as a call does.
+A method named bare inside its type's braces has no receiver written, and
+infers from its arguments alone. A method's instance is
 type checked with its owner as the walk's type, whatever type the call is in,
 as a method reached by demand is. A generic method copied with its type — into
 a generic type's instance, or a trait's default into an implementer — is still
