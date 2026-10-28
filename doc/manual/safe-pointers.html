@@ -171,11 +171,33 @@ trust {                    // Not built yet: today, write the line without trust
 </pre>
 	<p>Storing through a pointer, <span class="pre">*ptr = value</span>, treats the place as already holding a
 		value of its type. Where that type is an owning reference, the reference the place held is released before
-		the new one is stored; a value whose type has a <span class="pre">final</span> is not finalized. Reading a
-		value of a type that moves with <span class="pre">*ptr</span> marks the variable <span class="pre">ptr</span>
-		as moved. Memory that holds no value yet, or a value being moved out for good, is what the intrinsics
-		<a href="safe-intrinsics.html#writeraw"><span class="pre">mem.writeRaw</span></a> and
-		<a href="safe-intrinsics.html#readraw"><span class="pre">mem.readRaw</span></a> are for.</p>
+		the new one is stored; a value whose type has a <span class="pre">final</span> is not finalized. Memory
+		that holds no value yet is what the intrinsic
+		<a href="safe-intrinsics.html#writeraw"><span class="pre">mem.writeRaw</span></a> is for.</p>
+
+	<h3 id="moveout">Moving a value out: mem.readRaw</h3>
+	<p>Reading a value whose type copies, a number or a struct of numbers, through <span class="pre">*ptr</span>
+		makes a copy, and the place keeps its value. A value whose type moves, one that has a
+		<span class="pre">final</span> or owns something, may not be moved out with <span class="pre">*ptr</span>,
+		<span class="pre">ptr[i]</span> or a field list <span class="pre">(*ptr).(a)</span>. A pointer owns nothing:
+		whatever holds the place it points at, a variable or a collection's slot, still finalizes it, and the
+		value moved out would be finalized a second time:</p>
+<pre>
+struct Buf is Move {
+  p: *u8;
+  fn final(self: &amp;uni) { libc.free(self.p); }
+}
+
+fn takeOut(slot: *Buf) Buf {
+  *slot                    // **ERROR** 1539: May not move a value out through a raw pointer, which does not
+                           //   own it. Use 'mem.readRaw(p)', which leaves the place holding nothing.
+}
+</pre>
+	<p>The deliberate way is <a href="safe-intrinsics.html#readraw"><span class="pre">mem.readRaw(slot)</span></a>,
+		whose name says what the caller promises: the value moves out and the slot is dead after, holding nothing
+		that anything will finalize. Reading the same slot twice with <span class="pre">readRaw</span>, or one that
+		held no value, is not caught; like raw pointers in general it belongs to
+		<a href="safe-trust.html"><span class="pre">trust</span></a>, which is not built yet.</p>
 
 	<p>You can now work with raw memory and know which promises you have taken on. Next is the mechanism
 		that makes taking them on visible: <span class="pre">trust</span>.</p>

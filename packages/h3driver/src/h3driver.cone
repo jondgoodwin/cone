@@ -34,7 +34,7 @@
 //
 //   Driver.make(config)                                           (THE DRIVER)
 //   d.connect(lp, addr, serverName, token)                         (CONNECTIONS)
-//   d.listen(lp, addr, certFile, keyFile, token)  d.localAddr(lp, l)  d.stopListening(lp, l)
+//   d.listen(lp, addr, ctx, token)  d.localAddr(lp, l)  d.stopListening(lp, l)
 //   d.close(lp, conn)  d.abort(lp, conn)  d.abortAll(lp)  d.isOpen(conn)  d.peer(conn)
 //   d.request(lp, conn, head, body, token)                         (REQUESTS)
 //   d.respond(req, head, body)  d.sendInterim(req, head)            (SERVING)
@@ -43,7 +43,9 @@
 //   d.cancel(lp, req)                                               (CANCEL)
 //   d.turn(lp)  d.complete(lp, c)  d.wakeAt()  d.end(lp)            (HOSTING)
 //   d.takeEvents(out)  d.pump(lp, out)  d.poll(lp, until, out)
+//   d.takesRequests(conn)  d.hasRoom(conn)                         (A CLIENT'S ROOM)
 //   d.owns(token)  d.stats()  d.live()  d.streamRecords(conn)  d.injectLoss(perMille, seed)  (DIAGNOSTICS)
+//   plugin(tlsConfig)  Plugin.make(config)  Plugin.forClient(tlsConfig)  (THE PLUG-IN)
 //   Event: e.kind e.token e.conn e.req e.stream, and per kind e.listener e.peer   (EVENTS)
 //     e.clean e.failure e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
@@ -76,8 +78,9 @@
 // against serverName by quic's Config.verify: its ConnId, or the Failure that
 // stopped it at once (an IPv6 address, the socket, the TLS context). Requests
 // may be made on it at once: they wait for the handshake and for the peer's
-// stream limit. 'listen(lp, addr, certFile, keyFile, token)' binds a server's
-// UDP socket and its TLS context (the certificate chain and key, PEM files).
+// stream limit. 'listen(lp, addr, ctx, token)' binds a server's
+// UDP socket, its connections made with ctx (a quic.Context.server: the
+// certificate chain and key, PEM files, and QUIC's bounds).
 // Every connection's life is told: Connected (a client's) or Accepted (a
 // server's) when its handshake is done, and EXACTLY ONE Closed last, after
 // every request on it has had its final answer: 'clean' when it ended as
@@ -215,7 +218,29 @@
 // that did is Closed (TimedOut after QUIC's idle timeout), unless http3's own
 // GOAWAY rule already refused it. A peer's reset fails one request (Reset;
 // Refused for H3_REQUEST_REJECTED). The QUIC error's own words are in the
-// detail.
+// detail. A client's request failed before its response's head came says
+// so ('noResponse', as http2's do), so a client may send an idempotent one
+// again.
+//
+// A CLIENT'S ROOM. 'takesRequests(conn)' is whether a client connection
+// takes a new request (open, its QUIC not closed, no GOAWAY received);
+// 'hasRoom(conn)' whether one made now goes to QUIC at once: the handshake
+// is done and none waits for the peer's stream limit. A client that keeps
+// its own order (httpclient's scheduler) asks it before each request, so
+// at most one waits here.
+//
+// THE PLUG-IN. httpclient imports no QUIC: it drives HTTP/3 through its
+// trait Http3, which a Plugin fills (plugin.cone), each method the Driver's
+// own call with its ids as numbers (a ConnId's or ListenerId's 'number', a
+// request as httpclient.H3Req: its connection's number and its own) and its
+// events as httpclient.H3Events, a failure as an httpclient.Failure.
+// 'plugin(tlsConfig)' is the maker httpclient.Config.http3 and actorhttp's
+// ServerConfig.offerHttp3 name: a client's connections check certificates
+// with tlsConfig's verifier (offline, its lane), so a client's HTTP/3 trusts
+// what its TCP does; a server's listen makes its QUIC context from the TLS
+// config's certificate and key. So this package imports httpclient (and
+// tls), never the reverse, and only a program that names the plug-in links
+// QUIC.
 //
 // CERTIFICATES. A client checks the server's certificate by quic's
 // Config.verify. The OS's verifier (tls.Verifier.platform(), the default)
@@ -256,7 +281,8 @@
 // WebTransport, HTTPS DNS records, the HTTP/2 and HTTP/3 race, a
 // CONNECTION_CLOSE sent again when packets keep coming after it, and a
 // timer wheel for many connections' wake times. Nothing in a release imports
-// this package yet (so no release ships ngtcp2's libraries for it).
+// this package yet (so no release ships ngtcp2's libraries for it): httpclient
+// and actorhttp reach it only through a program that names the plug-in.
 
 mod h3driver;
 
@@ -271,6 +297,8 @@ import slots use SlotTable, Slot;
 import http use *;
 import http3;
 import quic;
+import tls;
+import httpclient;
 
 fn @initpure init() {
   numberNext = Atomic[u32].of(0u32);

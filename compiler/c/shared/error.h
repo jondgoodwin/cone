@@ -276,6 +276,7 @@ enum ErrorCode {
 
     // Moves: what a move-typed value may be moved out of
     ErrorMoveOut = 1120,        // A move-typed value moved out through a reference that does not solely own it: a borrowed one, or a shared (aliasable) owning one
+    ErrorMoveRawPtr = 1539,     // A move-typed value (one that finalizes or owns) moved out through a raw pointer, which owns nothing (`*p`, `(*p).(a)`, `p[i]`, a function handing back `*p`): what holds the place still finalizes it. `mem.readRaw(p)` moves it out, leaving the place holding nothing; only an '@intrinsic' body (readRaw's fallback) is let through. A copy through `*p` is not refused
 
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)

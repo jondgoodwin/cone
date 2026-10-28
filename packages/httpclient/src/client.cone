@@ -12,6 +12,10 @@
 // names the client's record (and its generation), so the driver's events
 // come back to the record they are about; the client's own timers (a
 // fetch's deadline and group) are submitted with the driver's upperToken.
+// An HTTP/3 connection is a pooled connection too, marked 'quic', whose
+// requests and events are the plug-in's (its tokens the same shape); its
+// name's lookup is an upperToken operation of the client's (bit 39 set),
+// and an origin holds at most one ('h3c'), being made or shared.
 //
 // 'pump' takes the driver's events, turning each request's into the
 // fetch's (or following a redirect, or retrying), each connection's into
@@ -23,7 +27,10 @@
 
 const recsPerBlock = 64u32;
 const genMask = 0xFFFFFFu32;
-const watchGenMask = 0xFFFFu32;     // the generation a fetch's watch token keeps: 16 bits, for the driver's 8 take room from its 48
+const watchGenMask = 0x7FFFu32;     // the generation a watch token keeps: 15 bits (the driver's 8 take room from its 48, and bit 39 is the kind)
+const resolveBit = 0x8000000000u64; // bit 39 of an upper token: an HTTP/3 attempt's name lookup, not a fetch's watch
+const resolveSize = 1024usize;      // a lookup's buffer: room for 32 addresses
+const h3BrokenFor = 300i64;         // seconds an origin's HTTP/3 is not tried after an attempt fell back
 
 fn nextGen(g: u32) u32 {if g >= genMask {1u32} else {g + 1u32}}
 
@@ -44,6 +51,12 @@ const pShared = 5u32;       // HTTP/2: open, carrying any number of fetches, one
 const protoUnknown = 0u32;  // not yet chosen: its TLS handshake (ALPN) is still under way
 const protoH1 = 1u32;
 const protoH2 = 2u32;
+const protoH3 = 3u32;       // a QUIC connection of the HTTP/3 plug-in's: known from the start
+
+// What scheduleH3 did for an origin
+const h3No = 0u32;          // its fetches are TCP's
+const h3Held = 1u32;        // they are HTTP/3's, and none could go now
+const h3Did = 2u32;         // they are HTTP/3's: some went, or an attempt was made
 
 // How a fetch ends
 const endNone = 0u32;
@@ -80,6 +93,7 @@ struct Fetch {
   origin: u32;
   conn: u32;                 // its pooled connection, while active
   req: httpconn.ReqId;       // its request on the driver, the last attempt's
+  qreq: H3Req;               // ...or on the HTTP/3 plug-in (none when the attempt is the driver's)
   deadline: Instant;
   group: Option[CancelGroup];
   watch: OpId;               // the timer for its deadline and group, or none
@@ -114,6 +128,10 @@ struct PConn {
   opened: Instant;           // when it was asked for: its lifetime runs from then
   proto: u32;                // what it speaks: protoUnknown until its driver has chosen
   awaiting: bool;            // connected, its protocol still to be chosen: in the client's 'undecided'
+  quic: bool;                // the HTTP/3 plug-in's (qid), not the driver's (id)
+  qid: u64;                  // ...its number there, once its name is looked up and its connect begun
+  lookup: OpId;              // ...its name's lookup, while it runs
+  h3By: Instant;             // ...connected by then, or it falls back (http3Timeout)
 }
 
 // What of its Config a client keeps once made: its limits (the driver has
@@ -127,6 +145,8 @@ struct Limits {
   maxRedirects: u32;
   userAgent: String;
   priorKnowledge: bool;      // http connections speak HTTP/2 from their first byte (the driver's h2PriorKnowledge)
+  h3Origins: List[String];   // the origins (Url.origin) known to speak HTTP/3
+  h3Timeout: Duration;
 }
 
 // An event held for a full channel: where it goes, its fetch and that
@@ -139,6 +159,7 @@ struct Held {
   gen: u32;
   credit: usize;
   req: httpconn.ReqId;
+  qreq: H3Req;
 }
 
 // An origin: its pool and its queue
@@ -154,6 +175,11 @@ struct Origin {
   connecting: u32;
   undecided: u32;            // ...of them connected, their protocol still to be chosen
   h2: bool;                  // the last connection whose protocol was chosen spoke HTTP/2
+  h3Port: u16;               // HTTP/3 is on this UDP port of its host (0: none known)
+  h3Until: Instant;          // ...until then (an Alt-Svc's max-age; forever for prior knowledge)
+  h3Prior: bool;             // ...by prior knowledge, which an Alt-Svc 'clear' leaves
+  h3Broken: Instant;         // HTTP/3 is not tried before then (an attempt fell back)
+  h3c: u32;                  // its HTTP/3 connection, being made or open, or noEntry
 }
 
 // A client of HTTP and HTTPS servers on one Loop (see the package's header)
@@ -179,6 +205,10 @@ pub struct Client {
   heldEvents: List[Held];    // events held for full channels, in order
   wantSchedule: bool;
   st: ClientStats;
+  h3: Uni[Http3];            // the HTTP/3 plug-in: the config's maker's, or NoHttp3
+  h3on: bool;                // ...the config named one
+  h3evs: List[H3Event];
+  attempts: List[u32];       // HTTP/3 connections being made: their lookups or handshakes, each with its deadline
 
   // A client whose connections take cfg's limits and buffers from pool. Its
   // TLS context is made now from cfg.tlsConfig; if that fails (a root bundle
@@ -190,12 +220,29 @@ pub struct Client {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
     let given, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects,
-      userAgent, var conn = cfg.(tlsConfig, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued,
-      maxRetries, maxRedirects, userAgent, conn);
+      userAgent, var conn, http3, http3Origins, h3Timeout = cfg.(tlsConfig, http2, maxPerOrigin, maxTotal, idleTimeout,
+      maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, conn, http3, http3Origins, http3Timeout);
     conn.protocol.idleTimeout = idleTimeout;
     conn.h2IdleTimeout = idleTimeout;
     var tlsConfig = given;
     tlsConfig.alpn = alpnFor(&tlsConfig.alpn, http2);
+    // The HTTP/3 plug-in, made by the program's maker from the TLS config
+    // (its verifier is the one QUIC's handshake uses too)
+    var h3on = false;
+    match http3 {
+      case let Some(mk) {h3on = true;}
+      else {}
+    }
+    let h3 = http3From(http3, &tlsConfig);
+    var h3Origins = List[String].empty();
+    var k = 0usize;
+    while k < http3Origins.len() {
+      match Url.parse(http3Origins[k].view()) {
+        case let Ok(u) {if u.isSecure() {h3Origins.push(u.origin());}}
+        case let Err(x) {}
+      }
+      k = k + 1usize;
+    }
     let tlsc = match tls.Client.make(tlsConfig) {
       case var Ok(r) {Ok[tls.Client, Failure](r)}
       case var Err(e) {
@@ -204,13 +251,14 @@ pub struct Client {
     };
     let priorKnowledge = conn.h2PriorKnowledge;
     let d = httpconn.Driver.make(conn);
-    Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge),
+    Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
+        h3Origins, h3Timeout),
       drv: d, tlsc: tlsc,
       fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
       total: 0u32, undecided: List[u32].empty(), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event].empty(),
       comps: List[Completion].empty(), ready: List[Event].empty(), heldEvents: List[Held].empty(),
-      wantSchedule: false, st: ClientStats.zero())
+      wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event].empty(), attempts: List[u32].empty())
   }
 
   // Its counters, as they are now
@@ -229,6 +277,10 @@ pub struct Client {
         if (self.connAt(*og.shared[j]) as &PConn).active == 0u32 {idle = idle + 1u32;}
         j = j + 1usize;
       }
+      if og.h3c != noEntry {
+        let p = self.connAt(og.h3c) as &PConn;
+        if p.state == pShared && p.active == 0u32 {idle = idle + 1u32;}
+      }
       o = o + 1usize;
     }
     s.idleNow = idle;
@@ -241,6 +293,10 @@ pub struct Client {
 
   // Fetches not yet answered
   pub fn live(self: &) u32 {liveFetches}
+
+  // Connections its HTTP/3 plug-in still holds (0 without one): a client
+  // being let go waits for them as for its driver's
+  pub fn http3Live(self: &) usize {h3.live()}
 
   // Fetches waiting for a connection
   pub fn queued(self: &) u32 {queuedN}
@@ -280,7 +336,7 @@ pub struct Client {
     Fetch(gen: 1u32, state: fFree, nextFree: next, seq: 0u64, intent: Intent.Visible, score: 0i64,
       sink: Sink.Here(0u64), method: Method.Get, methodText: String.empty(), url: Url.empty(),
       headers: Headers.empty(), body: String.empty(), origin: noEntry, conn: noEntry,
-      req: httpconn.ReqId.none(), deadline: forever(), group: None, watch: OpId.none(),
+      req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
       ending: endNone, delivered: false, following: false, cutting: false, location: String.empty(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
       maxRedirects: 0u32, heldEvents: 0u32, timing: Timing.zero())
@@ -309,6 +365,7 @@ pub struct Client {
     f.origin = noEntry;
     f.conn = noEntry;
     f.req = httpconn.ReqId.none();
+    f.qreq = H3Req.none();
     f.watch = OpId.none();
     f.ending = endNone;
     f.delivered = false;
@@ -343,7 +400,8 @@ pub struct Client {
 
   fn blankConn(self: &, next: u32) PConn {
     PConn(gen: 1u32, state: pFree, nextFree: next, id: httpconn.ConnId.none(), origin: noEntry,
-      active: 0u32, uses: 0u32, opened: Instant(), proto: protoUnknown, awaiting: false)
+      active: 0u32, uses: 0u32, opened: Instant(), proto: protoUnknown, awaiting: false, quic: false, qid: 0u64,
+      lookup: OpId.none(), h3By: Instant())
   }
 
   fn newConn(self: &mut) u32 {
@@ -371,6 +429,9 @@ pub struct Client {
     p.opened = Instant.now();
     p.proto = protoUnknown;
     p.awaiting = false;
+    p.quic = false;
+    p.qid = 0u64;
+    p.lookup = OpId.none();
     i
   }
 
@@ -393,9 +454,21 @@ pub struct Client {
       if og.port == port && og.secure == secure && og.host.view() == u.host.view() {return u32.from(k);}
       k = k + 1usize;
     }
-    origins.add(Origin(key: u.origin(), secure: secure, host: u.host.copy(),
-      port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), shared: List[u32].empty(),
-      open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge)).index
+    let key = u.origin();
+    // Prior knowledge of HTTP/3: on the origin's own port, for good
+    var prior = false;
+    if secure {
+      var j = 0usize;
+      while j < cfg.h3Origins.len() {
+        if cfg.h3Origins[j].view() == key.view() {prior = true;}
+        j = j + 1usize;
+      }
+    }
+    origins.add(Origin(key: key, secure: secure, host: u.host.copy(),
+      port: port, queue: List[u32].empty(), idle: List[u32].empty(), shared: List[u32].empty(),
+      open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge,
+      h3Port: if prior {port} else {0u16}, h3Until: if prior {forever()} else {Instant()}, h3Prior: prior,
+      h3Broken: Instant(), h3c: noEntry)).index
   }
 
   // ---------------------------------------------------------------------------
@@ -532,7 +605,29 @@ pub struct Client {
     let m = if n < f.held {n} else {f.held};
     if m == 0usize {return;}
     f.held = f.held - m;
-    drv.release(f.req, m);
+    self.creditReq(f.req, f.qreq, m);
+  }
+
+  // n body bytes of a request released to what carries it: the HTTP/3
+  // plug-in's request when qreq names one, else the driver's
+  fn creditReq(self: &mut, req: httpconn.ReqId, qreq: H3Req, n: usize) {
+    if qreq.isNone() {
+      drv.release(req, n);
+      return;
+    }
+    h3.release(qreq, n);
+  }
+
+  // Fetch fi's request under way, given up (Cancelled comes)
+  fn cancelReq(self: &mut, lp: &mut Loop, fi: u32) {
+    let f = self.fetchAt(fi) as &Fetch;
+    let req = f.req;
+    let qreq = f.qreq;
+    if qreq.isNone() {
+      drv.cancel(lp, req);
+      return;
+    }
+    h3.cancel(lp, qreq);
   }
 
   // Ask a fetch to end (see the package's header, CANCEL AND DEADLINES):
@@ -575,6 +670,15 @@ pub struct Client {
           n = n + 1u32;
         }
       }
+      // ...and an HTTP/3 one
+      let qc = og.h3c;
+      if qc != noEntry {
+        let p = self.connAt(qc) as &PConn;
+        if p.state == pShared && p.active == 0u32 {
+          self.retire(lp, qc, true);
+          n = n + 1u32;
+        }
+      }
       o = o + 1usize;
     }
     n
@@ -590,6 +694,15 @@ pub struct Client {
       i = i + 1u32;
     }
     drv.abortAll(lp);
+    // HTTP/3: the lookups under way given up, every connection reset
+    var k = attempts.len();
+    while k > 0usize {
+      k = k - 1usize;
+      let pc = *attempts[k];
+      let p = self.connAt(pc) as &PConn;
+      if !p.lookup.isNone() {self.dropAttempt(lp, pc, false);}
+    }
+    h3.abortAll(lp);
     wantSchedule = false;
   }
 
@@ -600,7 +713,7 @@ pub struct Client {
       self.finishFetch(lp, fi, how, None);
     } else if f.state == fActive {
       if f.ending == endNone {f.ending = how;}
-      drv.cancel(lp, f.req);
+      self.cancelReq(lp, fi);
     }
   }
 
@@ -621,7 +734,7 @@ pub struct Client {
       f.watch = OpId.none();
     }
     if f.held > 0usize {
-      drv.release(f.req, f.held);
+      self.creditReq(f.req, f.qreq, f.held);
       f.held = 0usize;
     }
     f.timing.ended = Instant.now();
@@ -689,13 +802,13 @@ pub struct Client {
       case is Gone {st.dropped = st.dropped + 1u64;}
       else {}
     }
-    if credit > 0usize {drv.release(f.req, credit);}
+    if credit > 0usize {self.creditReq(f.req, f.qreq, credit);}
   }
 
   fn hold(self: &mut, fi: u32, credit: usize, e: Event) {
     let f = self.fetchAt(fi) as &mut Fetch;
     st.held = st.held + 1u64;
-    heldEvents.push(Held(e, copySink(&mut f.sink), fi, f.gen, credit, f.req));
+    heldEvents.push(Held(e, copySink(&mut f.sink), fi, f.gen, credit, f.req, f.qreq));
     f.heldEvents = f.heldEvents + 1u32;
   }
 
@@ -708,19 +821,20 @@ pub struct Client {
     // The credit of those taken goes back to the driver after: its calls are
     // not visible here, so none is made while the held list is drained
     var creditTo = List[httpconn.ReqId].empty();
+    var creditQ = List[H3Req].empty();
     var credits = List[usize].empty();
     {
       each h in heldEvents.drain() {
-        let e, var sink, fi, gen, n, q = h.(e, sink, fetch, gen, credit, req);
+        let e, var sink, fi, gen, n, q, qq = h.(e, sink, fetch, gen, credit, req, qreq);
         let key = (u64.from(gen) << 32u64) | u64.from(fi);
         if isIn(&blocked, key) {
-          kept.push(Held(e, sink, fi, gen, n, q));
+          kept.push(Held(e, sink, fi, gen, n, q, qq));
           continue;
         }
         match trySink(&mut sink, e) {
           case var Full(b) {
             blocked.push(key);
-            kept.push(Held(b.(e), sink, fi, gen, n, q));
+            kept.push(Held(b.(e), sink, fi, gen, n, q, qq));
             continue;
           }
           case is Gone {st.dropped = st.dropped + 1u64;}
@@ -730,6 +844,7 @@ pub struct Client {
         if f.gen == gen && f.state != fFree && f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
         if n > 0usize {
           creditTo.push(q);
+          creditQ.push(qq);
           credits.push(n);
         }
       }
@@ -737,7 +852,7 @@ pub struct Client {
     heldEvents = kept;
     var k = 0usize;
     while k < credits.len() {
-      drv.release(*creditTo[k], *credits[k]);
+      self.creditReq(*creditTo[k], *creditQ[k], *credits[k]);
       k = k + 1usize;
     }
   }
@@ -764,6 +879,15 @@ pub struct Client {
   pub fn wakeAt(self: &) Instant {
     if ready.len() > 0usize || wantSchedule {return Instant();}
     var w = drv.wakeAt();
+    let pw = h3.wakeAt();
+    if pw < w {w = pw;}
+    // An HTTP/3 attempt's deadline: it falls back then
+    var k = 0usize;
+    while k < attempts.len() {
+      let due = (self.connAt(*attempts[k]) as &PConn).h3By;
+      if due < w {w = due;}
+      k = k + 1usize;
+    }
     if heldEvents.len() > 0usize {
       let h = Instant.now() + Duration.fromNanos(heldRetryNs);
       if h < w {w = h;}
@@ -800,8 +924,13 @@ pub struct Client {
   // or one of its own timers), which takes what it needs from it
   pub fn complete(self: &mut, lp: &mut Loop, comp: &mut Completion) bool {
     if drv.complete(lp, comp) {return true;}
+    if h3.complete(lp, comp) {return true;}
     if !drv.isUpperToken(comp.token) {return false;}
     let n = comp.token & 0xFFFFFFFFFFu64;
+    if (n & resolveBit) != 0u64 {
+      self.looked(lp, comp);
+      return true;
+    }
     let fi = u32.from(n & u64.from(genMask));
     let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
     if fi >= fetchCount {return true;}
@@ -818,8 +947,9 @@ pub struct Client {
     self.retryHeld();
     var rounds = 0u32;
     while rounds < 64u32 {
-      let got = self.takeDriverEvents(lp);
+      let got = self.takeDriverEvents(lp) + self.takeH3Events(lp);
       self.learnAll();
+      self.attemptsDue(lp);
       var did = false;
       if wantSchedule {
         wantSchedule = false;
@@ -976,7 +1106,7 @@ pub struct Client {
   fn keepShared(self: &mut, lp: &mut Loop, pc: u32) {
     let p = self.connAt(pc) as &PConn;
     if p.state != pShared {return;}
-    if !drv.takesRequests(p.id) {
+    if !self.takes(pc) {
       self.retire(lp, pc, false);
     } else if self.pastLifetime(pc) {
       self.retire(lp, pc, true);
@@ -997,8 +1127,22 @@ pub struct Client {
       total = total - 1u32;
     }
     p.state = pClosing;
-    if close {drv.close(lp, p.id);}
     wantSchedule = true;
+    if !p.quic {
+      if close {drv.close(lp, p.id);}
+      return;
+    }
+    if og.h3c == pc {og.h3c = noEntry;}
+    removeValue(&mut attempts, pc);
+    let qid = p.qid;
+    if close {h3.close(lp, qid);}
+  }
+
+  // Whether connection pc takes new requests: the driver's, or the HTTP/3 plug-in's
+  fn takes(self: &, pc: u32) bool {
+    let p = self.connAt(pc) as &PConn;
+    if !p.quic {return drv.takesRequests(p.id);}
+    h3.takesRequests(p.qid)
   }
 
   // What connection pc speaks, once its driver has chosen: a plain one's at
@@ -1120,10 +1264,286 @@ pub struct Client {
           }
           j = j + 1usize;
         }
+        let qc = og.h3c;
+        if qc != noEntry {
+          let p = self.connAt(qc) as &PConn;
+          if p.state == pShared && p.active == 0u32 {
+            self.retire(lp, qc, true);
+            return true;
+          }
+        }
       }
       o = o + 1usize;
     }
     false
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTTP/3 (see the package's header, HTTP/3)
+  // ---------------------------------------------------------------------------
+
+  // Whether the config named a plug-in (else h3 is NoHttp3)
+  fn hasH3(self: &) bool {h3on}
+
+  // Whether origin oi is to be fetched from over HTTP/3 now: the plug-in is
+  // there, the origin is https and known to speak it (prior knowledge, or an
+  // Alt-Svc not yet past its max-age), and no attempt has fallen back lately
+  fn wantsH3(self: &, oi: u32) bool {
+    let og = self.originAt(oi) as &Origin;
+    if !og.secure || og.h3Port == 0u16 || !self.hasH3() {return false;}
+    let now = Instant.now();
+    now < og.h3Until && now >= og.h3Broken
+  }
+
+  // An Alt-Svc field on a response to fetch fi (over TCP): its h3
+  // alternative for the fetch's origin cached with its max-age, or a 'clear'
+  // taken. Read only when there is a plug-in to use it
+  fn learnAltSvc(self: &mut, fi: u32, headers: &Headers) {
+    if !self.hasH3() {return;}
+    let f = self.fetchAt(fi) as &Fetch;
+    if f.origin == noEntry {return;}
+    let og = self.originAt(f.origin) as &mut Origin;
+    if !og.secure {return;}
+    var k = 0usize;
+    while k < headers.len() {
+      if fieldIs(headers.nameAt(k), "alt-svc") {
+        let host = og.host.copy();
+        match readAltSvc(headers.valueAt(k), host.view()) {
+          case is Clear {
+            if !og.h3Prior {
+              og.h3Port = 0u16;
+              og.h3Until = Instant();
+            }
+            return;
+          }
+          case let H3(a) {
+            if !og.h3Prior {
+              let now = Instant.now();
+              if og.h3Port == 0u16 || og.h3Until <= now {st.altSvc = st.altSvc + 1u64;}
+              let age = if a.maxAge > 31536000u64 {31536000u64} else {a.maxAge};
+              og.h3Port = a.port;
+              og.h3Until = now + Duration.fromSeconds(i64.from(age));
+            }
+            return;
+          }
+          else {}
+        }
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // HTTP/3 for origin oi: an attempt made when it is wanted and none is under
+  // way; while one is being made, or one is open and takes requests, the
+  // origin's fetches go on it alone, as many as it has room for. h3No when
+  // the origin's fetches are TCP's; h3Did when this dispatched or opened
+  // anything; else h3Held
+  fn scheduleH3(self: &mut, lp: &mut Loop, oi: u32) u32 {
+    let og = self.originAt(oi) as &mut Origin;
+    var qc = og.h3c;
+    if qc != noEntry {
+      let p = self.connAt(qc) as &PConn;
+      if p.state == pShared && (!self.takes(qc) || self.pastLifetime(qc)) {
+        // Going away (its GOAWAY), or open its whole lifetime (closed
+        // politely): the next fetch makes another
+        let going = !self.takes(qc);
+        self.retire(lp, qc, !going);
+        qc = noEntry;
+      }
+    }
+    if qc == noEntry {
+      if og.queue.len() == 0usize || !self.wantsH3(oi) {return h3No;}
+      if total >= cfg.maxTotal && !self.closeAnIdle(lp) {return h3Held;}
+      self.openH3(lp, oi);
+      return h3Did;
+    }
+    var did = false;
+    if (self.connAt(qc) as &PConn).state == pShared {
+      while og.queue.len() > 0usize && self.roomOn(qc) {
+        let pos = self.firstIn(oi);
+        let fi = *og.queue[pos];
+        removeAt(&mut og.queue, pos);
+        queuedN = queuedN - 1u32;
+        self.dispatch(lp, fi, qc);
+        did = true;
+      }
+    }
+    if did {h3Did} else {h3Held}
+  }
+
+  // Whether a request made on HTTP/3 connection pc now goes out at once
+  fn roomOn(self: &, pc: u32) bool {
+    let qid = (self.connAt(pc) as &PConn).qid;
+    h3.hasRoom(qid)
+  }
+
+  // An HTTP/3 attempt for origin oi: its host looked up (bounded by the
+  // attempt's deadline), then the plug-in's connect to its first IPv4
+  // address, on the Alt-Svc's port
+  fn openH3(self: &mut, lp: &mut Loop, oi: u32) {
+    let og = self.originAt(oi) as &mut Origin;
+    let pc = self.newConn();
+    let p = self.connAt(pc) as &mut PConn;
+    p.origin = oi;
+    p.quic = true;
+    p.proto = protoH3;
+    p.h3By = Instant.now() + cfg.h3Timeout;
+    og.open = og.open + 1u32;
+    og.connecting = og.connecting + 1u32;
+    og.h3c = pc;
+    total = total + 1u32;
+    st.connects = st.connects + 1u64;
+    st.h3Attempts = st.h3Attempts + 1u64;
+    attempts.push(pc);
+    let tok = drv.upperToken(lp, kWatch, resolveBit | (u64.from(p.gen & watchGenMask) << 24u64) | u64.from(pc));
+    let host = og.host.copy();
+    p.lookup = lp.submitBy(resolveOp(host.view(), og.h3Port, IoBuf(resolveSize)), Target.Here(tok), p.h3By);
+  }
+
+  // An HTTP/3 attempt's lookup has answered: the connect, or the fallback
+  fn looked(self: &mut, lp: &mut Loop, comp: &mut Completion) {
+    let n = comp.token & 0xFFFFFFFFFFu64;
+    let pc = u32.from(n & u64.from(genMask));
+    let gen = u32.from((n >> 24u64) & u64.from(watchGenMask));
+    if pc >= connCount {return;}
+    let p = self.connAt(pc) as &mut PConn;
+    if (p.gen & watchGenMask) != gen || p.state != pConnecting || !p.quic || p.lookup != comp.id {return;}
+    p.lookup = OpId.none();
+    wantSchedule = true;
+    var addr = SocketAddr.localhost(0u16);
+    var found = false;
+    if comp.isDone() {
+      let all = addressesIn(&comp.buf);
+      var k = 0usize;
+      while k < all.len() && !found {
+        if !all[k].isV6() {
+          addr = *all[k];
+          found = true;
+        }
+        k = k + 1usize;
+      }
+    }
+    if !found {
+      self.dropAttempt(lp, pc, true);
+      return;
+    }
+    let og = self.originAt(p.origin) as &Origin;
+    let host = og.host.copy();
+    let token = tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc);
+    match h3.connect(lp, addr, host.view(), token) {
+      case let Ok(q) {p.qid = q;}
+      case let Err(x) {self.dropAttempt(lp, pc, true);}
+    }
+  }
+
+  // An HTTP/3 attempt given up: its lookup cancelled, or its connection
+  // aborted (its Closed frees the record); when it fell back, the origin's
+  // HTTP/3 is not tried again for h3BrokenFor, and its fetches take TCP
+  fn dropAttempt(self: &mut, lp: &mut Loop, pc: u32, fellBack: bool) {
+    let p = self.connAt(pc) as &mut PConn;
+    let og = self.originAt(p.origin) as &mut Origin;
+    removeValue(&mut attempts, pc);
+    if og.h3c == pc {og.h3c = noEntry;}
+    if fellBack {
+      og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
+      st.h3Fallbacks = st.h3Fallbacks + 1u64;
+    }
+    if p.state == pConnecting {
+      og.connecting = og.connecting - 1u32;
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    }
+    wantSchedule = true;
+    if !p.lookup.isNone() {
+      lp.cancel(p.lookup);
+      p.lookup = OpId.none();
+    }
+    let qid = p.qid;
+    if qid == 0u64 {
+      self.freeConnRec(pc);
+      return;
+    }
+    p.state = pClosing;
+    h3.abort(lp, qid);
+  }
+
+  // The HTTP/3 attempts whose deadline has passed fall back
+  fn attemptsDue(self: &mut, lp: &mut Loop) {
+    if attempts.len() == 0usize {return;}
+    let now = Instant.now();
+    var k = attempts.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if k >= attempts.len() {continue;}
+      let pc = *attempts[k];
+      if now >= (self.connAt(pc) as &PConn).h3By {self.dropAttempt(lp, pc, true);}
+    }
+  }
+
+  // The plug-in's events, each to the fetch or connection it is about: how many
+  fn takeH3Events(self: &mut, lp: &mut Loop) usize {
+    var evs = List[H3Event].empty();
+    evs <-> h3evs;
+    h3.turn(lp);
+    let n = h3.takeEvents(&mut evs);
+    each e in evs.drain() {
+      let t = e.token;
+      let index = u32.from(t & 0xFFFFFFFFu64);
+      let gen = u32.from((t >> 32u64) & u64.from(genMask));
+      if (t & tokReq) != 0u64 {
+        if index < fetchCount {
+          let f = self.fetchAt(index) as &Fetch;
+          if f.gen == gen && f.state == fActive && f.conn != noEntry && (self.connAt(f.conn) as &PConn).quic &&
+              f.qreq == e.req {
+            self.onH3Request(lp, index, e);
+            continue;
+          }
+        }
+        // A request the client no longer follows: its body's credit back
+        if e.kind == H3Kind.Data {self.creditReq(httpconn.ReqId.none(), e.req, e.buf.len());}
+      } else if (t & tokConn) != 0u64 {
+        if index < connCount {
+          let p = self.connAt(index) as &PConn;
+          if p.gen == gen && p.state != pFree && p.quic {self.onH3Conn(index, &e);}
+        }
+      }
+    }
+    h3evs <-> evs;
+    n
+  }
+
+  // An HTTP/3 connection's event: connected (it takes fetches now), or
+  // closed (one that never connected falls back)
+  fn onH3Conn(self: &mut, pc: u32, e: &H3Event) {
+    let p = self.connAt(pc) as &mut PConn;
+    let og = self.originAt(p.origin) as &mut Origin;
+    if e.kind == H3Kind.Connected {
+      if p.state == pConnecting {
+        removeValue(&mut attempts, pc);
+        og.connecting = og.connecting - 1u32;
+        p.state = pShared;
+        wantSchedule = true;
+      }
+      return;
+    }
+    if e.kind != H3Kind.Closed {return;}
+    let was = p.state;
+    removeValue(&mut attempts, pc);
+    if og.h3c == pc {og.h3c = noEntry;}
+    if was == pConnecting {
+      // Its handshake failed: TCP for a while
+      og.connecting = og.connecting - 1u32;
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+      og.h3Broken = Instant.now() + Duration.fromSeconds(h3BrokenFor);
+      st.h3Fallbacks = st.h3Fallbacks + 1u64;
+    } else if was == pShared {
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    }
+    st.closed = st.closed + 1u64;
+    self.freeConnRec(pc);
+    wantSchedule = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -1161,6 +1581,13 @@ pub struct Client {
     var did = false;
     var o = 0u32;
     while o < u32.from(origins.len()) {
+      // HTTP/3 first: an origin whose fetches go on it takes no TCP connection
+      let via = self.scheduleH3(lp, o);
+      if via != h3No {
+        if via == h3Did {did = true;}
+        o = o + 1u32;
+        continue;
+      }
       let og = self.originAt(o) as &mut Origin;
       while og.queue.len() > 0usize && og.idle.len() > 0usize {
         let pc = *og.idle[og.idle.len() - 1usize];
@@ -1248,6 +1675,8 @@ pub struct Client {
   // chosen (it will most likely be shared)
   fn mayOpen(self: &, oi: u32) bool {
     let og = self.originAt(oi) as &Origin;
+    // HTTP/3 being tried, or open, or to be tried: no TCP connection
+    if og.h3c != noEntry || self.wantsH3(oi) {return false;}
     var j = 0usize;
     while j < og.shared.len() {
       let p = self.connAt(*og.shared[j]) as &PConn;
@@ -1257,14 +1686,18 @@ pub struct Client {
     !(og.h2 && (og.connecting > 0u32 || og.undecided > 0u32))
   }
 
-  // Fetch fi's request, on connection pc: idle, or shared (HTTP/2)
+  // Fetch fi's request, on connection pc: idle, or shared (HTTP/2, HTTP/3)
   fn dispatch(self: &mut, lp: &mut Loop, fi: u32, pc: u32) {
     let f = self.fetchAt(fi) as &mut Fetch;
     let p = self.connAt(pc) as &mut PConn;
     f.state = fActive;
     f.conn = pc;
     f.sent = 0usize;
-    if p.state != pShared {p.state = pBusy;} else {st.streams = st.streams + 1u64;}
+    f.req = httpconn.ReqId.none();
+    f.qreq = H3Req.none();
+    if p.state != pShared {p.state = pBusy;}
+    else if p.quic {st.h3 = st.h3 + 1u64;}
+    else {st.streams = st.streams + 1u64;}
     p.active = p.active + 1u32;
     p.uses = p.uses + 1u32;
     let target = f.url.target();
@@ -1278,7 +1711,17 @@ pub struct Client {
     f.timing.reused = p.uses > 1u32;
     st.sent = st.sent + 1u64;
     if f.timing.reused {st.reused = st.reused + 1u64;}
-    f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here(tokReq | (u64.from(f.gen) << 32u64) | u64.from(fi)));
+    let token = tokReq | (u64.from(f.gen) << 32u64) | u64.from(fi);
+    if !p.quic {
+      f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here(token));
+      return;
+    }
+    // HTTP/3: its body, if any, goes at once (the plug-in tells Writable only
+    // after a refusal)
+    let qid = p.qid;
+    let q = h3.request(lp, qid, head, body, token);
+    f.qreq = q;
+    if !q.isNone() && f.body.len() > 0usize {self.sendBody(lp, fi);}
   }
 
   // As much of fetch fi's body as its connection takes now
@@ -1292,12 +1735,35 @@ pub struct Client {
       var b = IoBuf(n);
       let all = f.body.view();
       b.append(&all[f.sent ..< f.sent + n]);
-      match drv.sendData(f.req, b) {
-        case is None[IoBuf] {f.sent = f.sent + n;}
-        else {return;}      // refused: Writable comes when there is room
+      if self.sendPiece(fi, b) {
+        f.sent = f.sent + n;
+      } else {
+        return;      // refused: Writable comes when there is room
       }
     }
-    drv.finish(f.req);
+    let qreq = f.qreq;
+    if qreq.isNone() {
+      drv.finish(f.req);
+      return;
+    }
+    h3.finish(qreq);
+  }
+
+  // A piece of fetch fi's body to what carries its request: whether it was taken
+  fn sendPiece(self: &mut, fi: u32, b: IoBuf) bool {
+    let f = self.fetchAt(fi) as &Fetch;
+    let req = f.req;
+    let qreq = f.qreq;
+    if qreq.isNone() {
+      match drv.sendData(req, b) {
+        case is None[IoBuf] {return true;}
+        else {return false;}
+      }
+    }
+    match h3.sendData(qreq, b) {
+      case is None[IoBuf] {true}
+      else {false}
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1307,93 +1773,152 @@ pub struct Client {
   // An event of fetch fi's request on the driver, taken by value: what it
   // carries goes on whole into the fetch's own event
   fn onRequest(self: &mut, lp: &mut Loop, fi: u32, e: httpconn.Event) {
-    let f = self.fetchAt(fi) as &mut Fetch;
     let k = e.kind;
     if k == httpconn.EventKind.Response {
-      f.timing.firstByte = Instant.now();
-      let status = e.response.status;
-      if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 {
-        match e.response.headers.get("Location") {
-          case let Some(loc) {
-            f.following = true;
-            f.location = String.fromBytes(loc);
-            f.redirectStatus = status;
-            f.drained = 0usize;
-            return;
-          }
-          else {}
-        }
-      }
-      f.delivered = true;
-      var ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
+      self.learnAltSvc(fi, &e.response.headers);
       let response, body = e.(response, body);
-      ev.response = response;
-      ev.body = body;
-      ev.url = f.url.text();
-      self.emit(fi, 0usize, ev);
+      self.reqResponse(fi, response, body);
     } else if k == httpconn.EventKind.Data {
-      let n = e.buf.len();
-      if f.following {
-        // A redirect's body: read and dropped, cut off past drainLimit
-        drv.release(f.req, n);
-        f.drained = f.drained + n;
-        if f.drained > drainLimit && !f.cutting {
-          f.cutting = true;
-          drv.cancel(lp, f.req);
-        }
-        return;
-      }
-      var ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
-      ev.buf = e.(buf);
-      if isChan(&mut f.sink) {
-        self.emit(fi, n, ev);
-      } else {
-        f.held = f.held + n;
-        self.emit(fi, 0usize, ev);
-      }
+      self.reqData(lp, fi, e.(buf));
     } else if k == httpconn.EventKind.End {
-      if f.following {return;}
-      var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
-      ev.trailers = e.(trailers);
-      self.emit(fi, 0usize, ev);
+      self.reqEnd(fi, e.(trailers));
     } else if k == httpconn.EventKind.Writable {
       self.sendBody(lp, fi);
     } else if k == httpconn.EventKind.Done {
-      let pc = f.conn;
-      self.connDone(lp, pc);
-      if f.following {
-        self.follow(lp, fi);
-      } else {
-        self.finishFetch(lp, fi, endDone, None);
-      }
+      self.reqDone(lp, fi);
     } else if k == httpconn.EventKind.Failed {
-      self.learn(f.conn);
-      let h2 = (self.connAt(f.conn) as &PConn).proto == protoH2;
-      self.connEnded(lp, f.conn);
-      let fl = Failure.fromConn(&e.failure);
-      if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
-        self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
-      } else if self.canRetry(fi, &fl, h2) {
-        f.retries = f.retries + 1u32;
-        st.retries = st.retries + 1u64;
-        self.enqueue(fi);
-      } else {
-        self.finishFetch(lp, fi, endFailed, Some[Failure](fl));
-      }
+      self.reqFailed(lp, fi, Failure.fromConn(&e.failure));
     } else if k == httpconn.EventKind.Cancelled || k == httpconn.EventKind.TimedOut {
-      self.connEnded(lp, f.conn);
-      if f.cutting && f.ending == endNone {
-        self.follow(lp, fi);
-      } else if f.ending == endFailed {
-        self.finishFetch(lp, fi, endFailed, Some[Failure](
-          Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body")));
-      } else if f.ending == endTimedOut || f.ending == endLimit {
-        self.finishFetch(lp, fi, f.ending, None);
-      } else if k == httpconn.EventKind.TimedOut {
-        self.finishFetch(lp, fi, endTimedOut, None);
-      } else {
-        self.finishFetch(lp, fi, endCancelled, None);
+      self.reqStopped(lp, fi, k == httpconn.EventKind.TimedOut);
+    }
+  }
+
+  // The same of fetch fi's request on the HTTP/3 plug-in
+  fn onH3Request(self: &mut, lp: &mut Loop, fi: u32, e: H3Event) {
+    let k = e.kind;
+    if k == H3Kind.Response {
+      let response, body = e.(response, body);
+      self.reqResponse(fi, response, body);
+    } else if k == H3Kind.Data {
+      self.reqData(lp, fi, e.(buf));
+    } else if k == H3Kind.End {
+      self.reqEnd(fi, e.(trailers));
+    } else if k == H3Kind.Writable {
+      self.sendBody(lp, fi);
+    } else if k == H3Kind.Done {
+      self.reqDone(lp, fi);
+    } else if k == H3Kind.Failed {
+      self.reqFailed(lp, fi, e.(failure));
+    } else if k == H3Kind.Cancelled {
+      self.reqStopped(lp, fi, false);
+    }
+  }
+
+  // Fetch fi's response head: a redirect to follow is kept to itself, else
+  // it goes to the fetch's sink
+  fn reqResponse(self: &mut, fi: u32, response: ResponseHead, body: BodyLength) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    f.timing.firstByte = Instant.now();
+    let status = response.status;
+    if f.ending == endNone && followsRedirect(status) && f.maxRedirects > 0u32 {
+      match response.headers.get("Location") {
+        case let Some(loc) {
+          f.following = true;
+          f.location = String.fromBytes(loc);
+          f.redirectStatus = status;
+          f.drained = 0usize;
+          return;
+        }
+        else {}
       }
+    }
+    f.delivered = true;
+    var ev = Event.make(EventKind.Response, f.sink.token, self.idOf(fi));
+    ev.response = response;
+    ev.body = body;
+    ev.url = f.url.text();
+    self.emit(fi, 0usize, ev);
+  }
+
+  // Body bytes of fetch fi's response: a redirect's dropped, else to its sink
+  fn reqData(self: &mut, lp: &mut Loop, fi: u32, buf: IoBuf) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let n = buf.len();
+    if f.following {
+      // A redirect's body: read and dropped, cut off past drainLimit
+      self.creditReq(f.req, f.qreq, n);
+      f.drained = f.drained + n;
+      if f.drained > drainLimit && !f.cutting {
+        f.cutting = true;
+        self.cancelReq(lp, fi);
+      }
+      return;
+    }
+    var ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
+    ev.buf = buf;
+    if isChan(&mut f.sink) {
+      self.emit(fi, n, ev);
+    } else {
+      f.held = f.held + n;
+      self.emit(fi, 0usize, ev);
+    }
+  }
+
+  // Fetch fi's response is whole
+  fn reqEnd(self: &mut, fi: u32, trailers: Headers) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    if f.following {return;}
+    var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
+    ev.trailers = trailers;
+    self.emit(fi, 0usize, ev);
+  }
+
+  // Fetch fi's exchange ended well: its connection is free again (or carries
+  // on), and the fetch is Done, or follows its redirect
+  fn reqDone(self: &mut, lp: &mut Loop, fi: u32) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    let pc = f.conn;
+    self.connDone(lp, pc);
+    if f.following {
+      self.follow(lp, fi);
+    } else {
+      self.finishFetch(lp, fi, endDone, None);
+    }
+  }
+
+  // Fetch fi's exchange failed with fl: retried when that is safe, else Failed
+  fn reqFailed(self: &mut, lp: &mut Loop, fi: u32, fl: Failure) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    self.learn(f.conn);
+    let proto = (self.connAt(f.conn) as &PConn).proto;
+    let multiplexed = proto == protoH2 || proto == protoH3;
+    self.connEnded(lp, f.conn);
+    if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
+      self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
+    } else if self.canRetry(fi, &fl, multiplexed) {
+      f.retries = f.retries + 1u32;
+      st.retries = st.retries + 1u64;
+      self.enqueue(fi);
+    } else {
+      self.finishFetch(lp, fi, endFailed, Some[Failure](fl));
+    }
+  }
+
+  // Fetch fi's exchange was cancelled, or timed out (the driver's own timeout)
+  fn reqStopped(self: &mut, lp: &mut Loop, fi: u32, timedOut: bool) {
+    let f = self.fetchAt(fi) as &mut Fetch;
+    self.connEnded(lp, f.conn);
+    if f.cutting && f.ending == endNone {
+      self.follow(lp, fi);
+    } else if f.ending == endFailed {
+      self.finishFetch(lp, fi, endFailed, Some[Failure](
+        Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body")));
+    } else if f.ending == endTimedOut || f.ending == endLimit {
+      self.finishFetch(lp, fi, f.ending, None);
+    } else if timedOut {
+      self.finishFetch(lp, fi, endTimedOut, None);
+    } else {
+      self.finishFetch(lp, fi, endCancelled, None);
     }
   }
 

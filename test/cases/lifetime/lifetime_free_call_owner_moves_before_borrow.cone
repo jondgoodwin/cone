@@ -1,0 +1,47 @@
+// The reversed orders of lifetime_free_call_copy_before_owner_moves: a call
+// argument moves a borrow's owner away before a later argument reads the
+// borrow, or while the borrow is still carried into the call -- as an
+// argument, or as the receiver of a method. In written order the owner is
+// gone first, so the borrow would read, or hand on, freed memory.
+//
+// Verdict: refuse each, at the move of the owner, naming the borrow.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a source may not be moved
+// while a borrow of it is still to be used; arguments are evaluated in written
+// order, so a later argument's read, and the call's use of an earlier
+// argument or of its receiver, are uses after the move.
+// Master a1bd36b0d: correct (ErrorFrozen for each), with no pin until this
+// file.
+
+mod lifetime_free_call_owner_moves_before_borrow;
+
+struct Big { pub a: i64; pub b: i64; pub c: i64; pub d: i64; pub e: i64;
+  pub fn plus(self: &, n: i64) i64 { a + n }
+}
+
+fn consume(o: Uni[Big]) i64 { o.a }                // frees o at its end
+fn takeVal2(n: i64, b: Big) i64 { b.a + b.e + n }
+fn takeRef(b: &Big, n: i64) i64 { b.a + n }
+
+// The owner moves first, then the borrow is read for a later argument
+fn ownerFirst() i64 {
+  let own = Uni[Big](Big(1, 2, 3, 4, 5));
+  let r = &*own;
+  takeVal2(consume(own), *r)       //~ ErrorFrozen:20 "used again"
+}
+
+// The borrow is an argument the call uses after the owner moved
+fn borrowCarried() i64 {
+  let own = Uni[Big](Big(1, 2, 3, 4, 5));
+  let r = &*own;
+  takeRef(r, consume(own))         //~ ErrorFrozen:22 "still being made"
+}
+
+// The borrow is the receiver the method uses after the owner moved
+fn receiverCarried() i64 {
+  let own = Uni[Big](Big(1, 2, 3, 4, 5));
+  let r = &*own;
+  r.plus(consume(own))             //~ ErrorFrozen:18 "still being made"
+}
+
+fn main() {
+}

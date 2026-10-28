@@ -125,6 +125,18 @@ value", "stored only into a variable that holds a value", "not stored into a
 variable whose value has been moved out", "moved out").
 A method cannot fill in a variable it borrows before it holds a value.
 
+`ErrorMoveRawPtr` is a value that finalizes or owns moved out through a raw pointer, which owns
+nothing: `*p` handed back, bound, passed or built in, an element `p[i]`, what a `*Uni[T]` points
+at, and a field list `(*p).(a)`, which moves `*p` whole. Whatever holds the place still finalizes
+it, so the value would be finalized twice. It is not `ErrorMoveOut`, the move through a borrowed
+or a shared owning reference, because the remedy differs: the message names `mem.readRaw(p)`, which
+moves the value out and leaves the place holding nothing, the caller's promise. Reported by flow
+(`flowRefuseMoveThrough`) at the dereference or the index; a field reached through the pointer,
+`(*p).d`, is `ErrorMoveField` first, as any field is. The body of an `@intrinsic` function, which
+only core declares, is not refused: `readRaw`'s fallback is `{*p}`. A copy read through `*p` never
+is. Reading one place twice with `readRaw`, and what a raw pointer may point at in general, are not
+checked: they belong to `trust`, which is not built.
+
 `ErrorTypeVariant` is a variant declared as a type (`Ok(i32);`) used where it has
 nothing to give: written in an enum that has fields in common, whose variants all
 name what they hold (parse), or bound through a reference into a managed value, whose
