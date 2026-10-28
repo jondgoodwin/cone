@@ -269,6 +269,26 @@ static int nameUseGenParm(NameResState *pstate, NameUseNode *name) {
     return 1;
 }
 
+// By declaration, not by DclLifecycle: that mark is made when the module is type
+// checked, which may be after a use of it elsewhere is resolved, and an include
+// file's declaration never gets it. A module-level function under either name
+// is the module's lifecycle function, or malformed and reported as such.
+int nameUseLifecycleNamed(NameUseNode *name) {
+    INode *dcl = name->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag || (dcl->flags & FlagMethFld))
+        return 0;
+    Name *fnname = ((FnDclNode*)dcl)->namesym;
+    if (fnname != initName && fnname != finalName)
+        return 0;
+    INode *owner = inodeGetOwner(dcl);
+    if (owner == NULL || owner->tag != ModuleTag)
+        return 0;
+    errorMsgNode((INode*)name, ErrorLifecycleNamed,
+        "%s is a module's lifecycle function: a module's init and final are run by the runtime, once, and may not be called, borrowed or named.",
+        &fnname->namestr);
+    return 1;
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -335,6 +355,9 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             &name->namesym->namestr, &name->namesym->namestr);
 
     nameUseMarkExpandReached(pstate, name);
+
+    // The declaration stays attached after the diagnostic, as a private path's does
+    nameUseLifecycleNamed(name);
 
     // Inside a closure literal, a variable of the code around is one it borrows
     closureNoteUse(pstate, name);

@@ -274,7 +274,11 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // program asked for, and leaving the use unresolved would only hand the
     // next pass a null to trip over.
     ModuleNode *qualmod = dclInfoGetModule(basedcl);
-    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+    // A module's init and final are run by the program, once, whatever their
+    // visibility and whichever module names them, its own included. That answer
+    // comes first: a private one's remedy is not to make it public
+    int lifecycle = basedcl->tag == ModuleTag && nameUseLifecycleNamed(member);
+    if (!lifecycle && qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
@@ -4972,6 +4976,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
     // A call type check gave up on without a diagnostic of its own, because what
     // it reads failed elsewhere -- a field of a value returned by a function
     // whose signature failed -- passes this function's flow gate but was never
@@ -4990,6 +4995,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if (callee && callee->tag == VarDclTag)
         nameuseFlow(fstate, (NameUseNode**)&node->objfn);
     for (nodesFor(node->args, cnt, argsp)) {
+        flowGateOperandNext(fstate, *argsp);
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);
         else
@@ -4997,7 +5003,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }
-    flowGateOperandsEnd(fstate, inflight);
+    flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value

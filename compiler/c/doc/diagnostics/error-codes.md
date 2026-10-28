@@ -321,7 +321,7 @@ the others, so it wears this code, and `ErrorModExtends` keeps what an
 shape Congo's has for the same loop, so a direct `conec` run and a Congo build
 say one thing.
 
-A module's `init` and `final` take two codes, split where the remedy is.
+A module's `init` and `final` take three codes, split where the remedy is.
 `ErrorModLifecycle` is a declaration under either name that is not the one the
 program's stitched init and final call — `fn @initpure init()` or
 `fn final()`: one taking parameters, returning a value, generic, `inline` or
@@ -335,7 +335,14 @@ declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
 give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
-second assignment of a `let` one `ErrorNoMut`.
+second assignment of a `let` one `ErrorNoMut`. `ErrorLifecycleNamed` is a use of
+either function in an expression — a call, a borrow (`&extra.final`), the bare name
+inside its own module, or a path from any module — whether it is `pub` or not: the
+program runs each once, so the remedy is to delete the use, and no visibility
+makes it right (`ErrorNotPublic` would send the author to make it `pub`).
+It is pointed at the name (`nameUseLifecycleNamed`). A fold naming one — a list
+item, or a `but` after a star, which passes both over unasked — is `ErrorBadFold`,
+as it is for `final` and `clone`.
 
 A generic module takes three codes, split where the remedy is.
 `ErrorGenModBare` is the generic named without type arguments where only an
@@ -550,6 +557,13 @@ needed or by a read-only path, and a narrowed reference by ending its use before
 change. A collection's are reported at the change, naming where the borrow is used again;
 `ErrorVariantReshape` is reported where the narrowed reference or name is used again,
 naming the change, as the narrowing errors below are.
+
+One call's arguments meet the two codes by order. An argument whose value is a borrow
+into a collection (`both(s.view(), &mut s)`) freezes it through the later arguments as a
+`let` holding it would, so a later `&mut` of it is `ErrorFrozen`, at that argument, with
+the message a `let` gets (`... for a call or value still being made, which uses that
+borrow`); the `&mut` written first (`both2(&mut s, s.view())`) is an alias loan the view
+meets without conflict, and the call is the shape check's `ErrorShapeReshape`.
 
 `ErrorNarrowStale`, `ErrorNarrowLoop` and `ErrorLetElse` are about a name narrowed by a test
 (flow typing, [narrow](../nodes/narrow.md)) and the binding that outlives an early exit. A
