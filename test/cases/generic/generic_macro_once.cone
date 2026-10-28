@@ -1,0 +1,129 @@
+// A macro's plain parameter is evaluated once; a 'lazy' one is substituted.
+//
+// The expansion binds each plain parameter's argument first, as
+// '{ let a: T = arg; body }', in the parameters' order, and the body's uses of
+// the parameter are uses of that variable. So an argument with a side effect
+// runs once however many times the body names it, and once even where the body
+// never names it. A 'lazy' parameter's argument is put in whole wherever the
+// parameter appears: it runs once per use, and not at all where the body does
+// not reach it. A macro method's 'self' is the receiver as it is, substituted.
+//
+// Every argument here is a call that counts itself, so what the program prints
+// says how many times each one ran.
+
+mod generic_macro_once;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+var @threadlocal calls = 0i64;
+
+// Each call counts, and gives the count so far
+fn bump() i64 {
+  calls = calls + 1i64;
+  calls
+}
+
+// Named twice, plain: the argument runs once
+macro twice[a: i64] {
+  a + a
+}
+
+// Named twice, lazy: the argument runs twice
+macro twiceLazy[a: lazy i64] {
+  a + a
+}
+
+// Never named, plain: the argument still runs, once
+macro ignored[a: i64] {
+  0i64
+}
+
+// Never named, lazy: the argument does not run
+macro ignoredLazy[a: lazy i64] {
+  0i64
+}
+
+// Named on one branch alone, lazy: the argument runs only when that branch does
+macro orZero[yes: bool, a: lazy i64] {
+  if yes {a} else {0i64}
+}
+
+// Plain parameters bind in their order before the body runs, so the second
+// argument runs second although the body names it first
+macro second[a: i64, b: i64] {
+  b * 10i64 + a
+}
+
+// A plain parameter typed by a type parameter binds as that type
+macro sumOf[T][a: T, b: T] {
+  a + a + b
+}
+
+// A macro whose body uses another macro: each plain argument runs once at each
+// level, so the outer argument runs once and the inner uses read its variable
+macro quad[a: i64] {
+  twice(a) + twice(a)
+}
+
+struct Counter {
+  pub base: i64;
+
+  // A macro method's plain parameter is evaluated once too
+  macro plusTwice[self, k: i64] {
+    self.base + k + k
+  }
+}
+
+fn main() {
+  calls = 0i64;
+  show("twice plain", twice(bump()));
+  show("twice plain ran", calls);
+
+  calls = 0i64;
+  show("twice lazy", twiceLazy(bump()));
+  show("twice lazy ran", calls);
+
+  calls = 0i64;
+  show("ignored plain", ignored(bump()));
+  show("ignored plain ran", calls);
+
+  calls = 0i64;
+  show("ignored lazy", ignoredLazy(bump()));
+  show("ignored lazy ran", calls);
+
+  calls = 0i64;
+  show("lazy branch taken", orZero(true, bump()));
+  show("lazy branch not taken", orZero(false, bump()));
+  show("lazy branch ran", calls);
+
+  calls = 0i64;
+  show("in order", second(bump(), bump()));
+
+  calls = 0i64;
+  show("typed by T", sumOf[i64](bump(), bump()));
+  show("typed by T ran", calls);
+
+  calls = 0i64;
+  show("nested", quad(bump()));
+  show("nested ran", calls);
+
+  calls = 0i64;
+  show("an argument a macro use", twice(twice(bump())));
+  show("an argument a macro use ran", calls);
+
+  calls = 0i64;
+  let c = Counter(base: 100);
+  show("method", c.plusTwice(bump()));
+  show("method ran", calls);
+
+  // A name as the argument: the variable is read once into the binding
+  let n = 21i64;
+  show("a name", twice(n));
+}

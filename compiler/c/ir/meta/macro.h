@@ -50,4 +50,8 @@ void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
 // 'typeargs' are what brackets after its name gave its type parameters, or NULL.
 void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, Nodes *typeargs);
 
+// Refuse, at 'at', a change to the variable a macro's expansion bound a plain
+// parameter to (FlagMacroBind): an argument the macro assigns to must be 'lazy'
+void macroParmAssignRefused(INode *at, VarDclNode *var);
+
 #endif
