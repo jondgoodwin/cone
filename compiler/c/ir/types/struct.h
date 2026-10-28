@@ -168,6 +168,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node);
 // 'copy' of the same name, for the clones made while the map is in force
 void structCloneMapMembers(StructNode *original, StructNode *copy);
 
+// Bind each alias a generic module's instance re-made for an enrichment
+// (CloneState.enrichfix) to the member of the same name in the instance's copy
+// of the base, once every declaration of the instance is copied
+void structCloneEnrichFix(Nodes *fix);
+
 // Add a field node to a struct type
 void structAddField(StructNode *type, FieldDclNode *node);
 

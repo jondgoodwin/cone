@@ -25,6 +25,7 @@ typedef struct CloneState {
     Nodes *latepairs;    // Out: each of 'late' beside the copy made of it, alternating, the original first
     uint16_t scope;     // Current block level
     uint16_t modinst;   // Cloning a generic module's instance (modInstantiate): a generic type it declares is copied still generic, and a type naming a trait it declares names the copy (cloneStructNode)
+    Nodes *enrichfix;   // Out, with modinst: each alias an enrichment's copy re-binds, beside the copy of its base, alternating (structCloneEnrichFix)
 } CloneState;
 
 // Data structures used for fixing dcl pointers

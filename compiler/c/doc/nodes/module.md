@@ -823,6 +823,18 @@ it, as a generic type's methods are. **An executable's root may not be
 generic** (`ErrorGenModRoot`): nothing could instantiate the program. A
 library's root may, and so may a submodule or an imported module.
 
+**A type of the module that `extends` a base is enriched again in each
+instance** (`cloneStructNode`, `reenrich`): name resolution took the base into
+the generic's type — its fields copied in, its other members bound as aliases —
+and a copy's namespace, made from its fields and members, would hold neither,
+so the copy starts without the base's fields and its type check takes the base
+(`structEnrichFromBase`), as an instance of a generic type's does: the
+instance's own copy of a base the module declares, or another module's base as
+it is. A use in a method body of an alias the generic's enrichment made is
+pointed at a fresh alias, bound to the instance's base's member of that name
+once every declaration is copied (`structCloneEnrichFix`), since the base may
+be copied after the type extending it (`module_generic_extends`).
+
 **Its symbols carry the instance's type arguments on the module**, as a generic
 type instance's carry them on the type: the instance's `instnode` is what
 `nameOwnTypeArgs` reads, so `namePath` wraps the module's component in `I…E` —

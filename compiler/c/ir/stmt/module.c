@@ -1163,6 +1163,9 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
         shell->instnode = (INode*)srcgencall;
         shell->dclinfo.owner = (INode*)inst;
     }
+    // A type extending a base the module declares names the instance's copy of
+    // the base's members (cloneStructNode)
+    structCloneEnrichFix(cstate.enrichfix);
 
     // An enum's copy lists its own variants, the copies made above, in the
     // enum's order, as a generic enum's instance lists its own (genericMemoize)
