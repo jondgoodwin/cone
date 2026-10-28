@@ -495,6 +495,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
             errorMsgNode(lval, ErrorMove, "A field or element is stored only into a variable that holds a value. Give the whole variable its value first.");
         else if (root && (root->flowtempflags & VarMoved))
             errorMsgNode(lval, ErrorMove, "A field or element is not stored into a variable whose value has been moved out. Give the whole variable a new value first.");
+        // VarHollow is a guard, not a path: a hollowed owner is refused first, as a use
         else if (!flowNoDeath(((IExpNode *)lval)->vtype) && root
                 && ((root->flowtempflags & VarHollow)
                     || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
