@@ -27,10 +27,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     // 'Item' -- is a use of the alias, whose own copy substitutes the
     // parameter; its name is hooked to nothing, and reading it as the
     // parameter cloned nothing at all
+    //
+    // A macro's plain parameter is hooked to the variable its expansion binds
+    // the argument to (macroExpand), and a use of it is copied as a use of that
+    // variable, keeping the use's own place.
     if (isNameUseNode(nodep) && ((NameUseNode*)nodep)->dclnode
         && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
-        if (!(hooked && hooked->tag == GenVarDclTag)) {
+        int ownuse = hooked && (hooked->tag == GenVarDclTag
+            || (hooked->tag == VarDclTag && (hooked->flags & FlagMacroBind)));
+        if (!ownuse) {
             // A type argument is the use's own source, resolved where the use is: a
             // 'Self' in it (a trait's default naming 'Wrap[Self]') is the type the
             // default was taken into, and is not repointed at the type being
