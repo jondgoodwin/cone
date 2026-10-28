@@ -1,0 +1,81 @@
+// What stays accepted beside collection_flow_args_borrow's refusals of a view
+// and a mutable borrow of one source in one call's arguments: two views of one
+// source; a view and a mutable borrow of different sources; an argument that is
+// a number computed from a view ('len(s.view())', 's.len'), which carries no
+// borrow past itself; and two arguments borrowing the WHOLE of one source,
+// '&mut b, &mut b' (in the call and through locals), '&s, &mut s', and the two
+// '&mut' a cursor's 'at' hands out twice. The callee grows through one and then
+// reads through the other: both point at the collection itself, not into its
+// storage, so the read sees the grown collection; a borrow the callee took into
+// one before growing the other is the callee's own refusal
+// (collection_flow_args_borrow_callee).
+
+mod collection_args_borrow_success;
+
+import stdio use *;
+import collections use *;
+
+struct Item { pub n: i64; pub l: List[i64]; }
+
+fn sumViews(r: &Array[u8], q: &Array[u8]) i64 { i64.from(r[0usize]) + i64.from(q[1usize]) }
+fn readGrowList(r: &Array[u8], w: &mut List[u8]) u8 {
+  var i = 0usize;
+  while i < 100000usize { w.push(1u8); i = i + 1usize; }
+  r[0usize]
+}
+fn len(r: &str) usize { r.len }
+fn countGrow(n: usize, w: &mut String) usize { w.appendByte('b'); n * 100usize + w.len }
+fn growRead(a: &mut List[i64], c: &mut List[i64]) i64 {
+  var i = 0usize;
+  while i < 100000usize { a.push(1i64); i = i + 1usize; }
+  let v = c.view();
+  v[0usize] * 1000000i64 + i64.from(c.len)
+}
+fn growReadRo(r: &String, w: &mut String) i64 {
+  var i = 0usize;
+  while i < 100000usize { w.appendByte('b'); i = i + 1usize; }
+  let v = r.view();
+  i64.from(v[0usize]) * 1000000i64 + i64.from(r.len)
+}
+fn growReadItem(a: &mut Item, b: &mut Item) i64 {
+  var i = 0usize;
+  while i < 100000usize { a.l.push(1i64); i = i + 1usize; }
+  let v = b.l.view();
+  v[0usize] * 1000000i64 + i64.from(b.l.len)
+}
+fn atTwice(l: &mut List[Item]) i64 {
+  let c = l.mutItems();
+  growReadItem(c.at(0usize), c.at(0usize))
+}
+
+fn main() i32 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  b.push(66u8);
+  printInt(sumViews(b.view(), b.view())); printStr("\n");
+
+  var other = List[u8].empty();
+  other.push(67u8);
+  printInt(i64.from(readGrowList(other.view(), &mut b))); printStr("\n");
+
+  var s = String.from("a");
+  printInt(i64.from(countGrow(len(s.view()), &mut s))); printStr("\n");
+  printInt(i64.from(countGrow(s.len, &mut s))); printStr("\n");
+
+  var n = List[i64].empty();
+  n.push(65i64);
+  printInt(growRead(&mut n, &mut n)); printStr("\n");
+  let x = &mut n;
+  let y = &mut n;
+  printInt(growRead(x, y)); printStr("\n");
+
+  var t = String.from("a");
+  printInt(growReadRo(&t, &mut t)); printStr("\n");
+
+  var items = List[Item].empty();
+  var inner = List[i64].empty();
+  inner.push(65i64);
+  items.push(Item(0i64, inner));
+  printInt(atTwice(&mut items)); printStr("\n");
+  0i32
+}

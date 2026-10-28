@@ -1,0 +1,34 @@
+// Two arguments borrowing the WHOLE of one source -- '&mut b, &mut b', '&s,
+// &mut s' -- are accepted (collection_args_borrow_success): a callee sees each
+// reference parameter as a path other references share, so a borrow it takes
+// INTO what one parameter reaches is refused across any call that could grow
+// what another reaches (ErrorShapeReshape). These are those callees.
+
+mod collection_flow_args_borrow_callee;
+
+import collections use *;
+
+struct Item { pub n: i64; pub l: List[i64]; }
+
+// Two '&mut List' parameters: a view of one, then the other grown
+fn viewThenGrowOther(a: &mut List[i64], c: &mut List[i64]) i64 {
+  let v = c.view();
+  a.push(1i64);                           //~ ErrorShapeReshape:4 "could change the shape of a"
+  v[0usize]
+}
+
+// A read-only and a mutable String: a view of the read-only one, then the
+// mutable one grown
+fn roViewThenGrow(r: &String, w: &mut String) u8 {
+  let v = r.view();
+  w.appendByte('b');                      //~ ErrorShapeReshape:4 "could change the shape of a"
+  v[0usize]
+}
+
+// Two '&mut Item' (what a cursor's 'at' twice hands on): a view of one's list,
+// then the other's list grown
+fn itemViewThenGrow(a: &mut Item, b: &mut Item) i64 {
+  let v = b.l.view();
+  a.l.push(1i64);                         //~ ErrorShapeReshape:6 "could change the shape of a"
+  v[0usize]
+}
