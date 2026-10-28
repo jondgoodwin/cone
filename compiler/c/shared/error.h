@@ -109,6 +109,7 @@ enum ErrorCode {
     ErrorMacroTypeArgs = 1535,  // A macro use giving type arguments to a macro that declares none (`m[i32](x)`). Pointed at the use
     ErrorMacroParmAssign = 1538, // A macro's body changing a plain (not `lazy`) parameter: assigning to it or to a part of it, swapping it, or borrowing it mutably. A plain parameter is evaluated once, bound as a `let`, so an argument the macro assigns to must be `lazy`. Reported where the macro is declared when its body says so with no type in question (the parameter itself, or a part of it reached through no reference), else where it is used; pointed at the change in the body
     ErrorMacroArgType = 1548,   // A macro's argument whose type does not fit its parameter's (`m("x")` for `macro m[a: lazy i64]`): a `lazy` one checked when the macro is expanded, before it is substituted, and a plain one as its binding. Pointed at the argument, naming the parameter
+    ErrorMacroLazyInfer = 1549, // A macro use leaving off a type parameter that only a `lazy` parameter's type names (`pick(c, x, y)` for `macro pick[T][c: bool, a: lazy T, b: lazy T]`): a lazy argument fixes no type, being checked, as a copy, once its type is known. Pointed at the use; the remedy is to write the type arguments, `pick[i64](...)`
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'

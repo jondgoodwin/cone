@@ -535,7 +535,9 @@ static StructNode *closureBuild(TypeCheckState *pstate, ClosureNode *clo, Closur
             structInheritDefaults(st, plan->trait);
     }
 
-    if (final)
+    // A closure built inside a trial (error.h) is the trial's copy's, made to be
+    // checked and dropped: it does not join the module, so nothing generates it
+    if (final && !errorSilent)
         nodesAdd(&mod->nodes, (INode*)st);
     INode *stnode = (INode*)st;
     inodeTypeCheckAny(pstate, &stnode);
@@ -618,7 +620,9 @@ StructNode *closureFnHolder(TypeCheckState *pstate, FnSigNode *sig, INode *refty
     fn->closure = info;
     iNsTypeAddFn((INsTypeNode*)st, fn);
 
-    nodesAdd(&mod->nodes, (INode*)st);
+    // Made inside a trial, it is the trial's copy's (closureBuild)
+    if (!errorSilent)
+        nodesAdd(&mod->nodes, (INode*)st);
     INode *stnode = (INode*)st;
     inodeTypeCheckAny(pstate, &stnode);
     return st;
@@ -637,7 +641,9 @@ static int closureTry(TypeCheckState *pstate, ClosureNode *tmpl, ClosurePlan *pl
     clonePopState();
     cloneDclPop(dclpos);
     closureBuild(pstate, copy, plan, statetypes, exsig, 0);
-    return errorTrialEnd(&trial);
+    int ok = errorTrialEnd(&trial);
+    genericTrialPurge();
+    return ok;
 }
 
 // Does this type name a closure's hidden struct made since the trial began, or
@@ -688,6 +694,17 @@ int closureTrialOwns(INode *dcl) {
                     return 1;
         }
     }
+    return 0;
+}
+
+int closureTrialArgs(Nodes *args) {
+    if (!errorSilent || args == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp))
+        if (closureTrialMentions(*nodesp, 0))
+            return 1;
     return 0;
 }
 
@@ -813,7 +830,9 @@ void closureTypeCheck(TypeCheckState *pstate, ClosureNode **nodep, INode *expect
             sig->rettype = exsig->rettype;
         FnDclNode *fn = newFnDclNode(NULL, 0, (INode*)sig, clo->body);
         inodeLexCopy((INode*)fn, (INode*)clo);
-        nodesAdd(&mod->nodes, (INode*)fn);
+        // Made inside a trial, it is the trial's copy's (closureBuild)
+        if (!errorSilent)
+            nodesAdd(&mod->nodes, (INode*)fn);
         dclInfoJoin((INode*)fn, (INode*)mod);
         INode *fnnode = (INode*)fn;
         inodeTypeCheckAny(pstate, &fnnode);

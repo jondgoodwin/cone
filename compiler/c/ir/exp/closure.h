@@ -69,6 +69,9 @@ ClosureInfo *closureOfDcl(INode *dcl);
 // Is this declaration the work of a trial now open (error.h, "A trial"), so that
 // what checking it reports is the trial's to discard? Else it is the program's.
 int closureTrialOwns(INode *dcl);
+// Does any of these type arguments name a closure's hidden struct made by a trial
+// now open? An instance made with one is the trial's (genericTrialPurge)
+int closureTrialArgs(Nodes *args);
 // The number of the last hidden struct made: what a trial opens with (errorTrialBegin)
 uint32_t closureSerialNow(void);
 

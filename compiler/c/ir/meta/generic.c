@@ -725,9 +725,11 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
 // type matched against its parameter's, a 'null' and an unsuffixed number
 // literal left to the others, then a literal's own type. A macro has no
 // return type and no bounds, so nothing else has a say. 'parmtypes' and
-// 'args' are paired: a parameter's type as written, and its argument as a type
-// checked copy (macro.c); a pair is left out where either is NULL. Answers the
-// type arguments, or NULL once reported at 'errnode' or at an argument.
+// 'args' are paired: a parameter's type as written, and its argument, type
+// checked (macro.c); a pair is left out where either is NULL. Answers the type
+// arguments, a type parameter nothing said left NULL for the caller to report
+// (genericMacroMissingParms), or NULL once two arguments are reported to
+// disagree.
 Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
         INode *errnode, Name *name) {
     FnSigNode *sig = newFnSigNode();
@@ -753,15 +755,19 @@ Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *p
         &name->namestr);
     if (genericInferFnParms(pstate, typeparms, sig, NULL, typedargs, 0, errnode, inferred, NULL, NULL, what) == 0)
         return NULL;
+    return inferred->args;
+}
+
+// Say which of a macro's type parameters its arguments left unsaid: the NULLs
+// of 'typeargs', as genericInferMacroParms answered them
+void genericMacroMissingParms(Nodes *typeargs, Nodes *typeparms, Name *name, INode *errnode) {
+    FnCallNode *inferred = newFnCallNode(NULL, typeargs->used);
+    inodeLexCopy((INode*)inferred, errnode);
     INode **argsp;
     uint32_t cnt;
-    for (nodesFor(inferred->args, cnt, argsp)) {
-        if (*argsp == NULL) {
-            genericMissingParms(inferred, typeparms, name, errnode, 1);
-            return NULL;
-        }
-    }
-    return inferred->args;
+    for (nodesFor(typeargs, cnt, argsp))
+        nodesAdd(&inferred->args, *argsp);
+    genericMissingParms(inferred, typeparms, name, errnode, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2940,6 +2946,43 @@ void genericLateWhereNow(StructNode *instance) {
     structLayoutExit();
 }
 
+// The instances made inside a trial for a type the trial made, to be taken out
+// of their generics' memonodes once no trial is open (genericTrialPurge)
+typedef struct {
+    GenericInfo *info;
+    INode *instance;
+} GenericTrialMemo;
+static GenericTrialMemo *genericTrialMemos = NULL;
+static uint32_t genericTrialMemoUsed = 0;
+static uint32_t genericTrialMemoCap = 0;
+
+static void genericTrialNote(GenericInfo *info, INode *instance) {
+    if (genericTrialMemoUsed == genericTrialMemoCap) {
+        genericTrialMemoCap = genericTrialMemoCap ? genericTrialMemoCap * 2 : 16;
+        genericTrialMemos = (GenericTrialMemo*)realloc(genericTrialMemos, genericTrialMemoCap * sizeof(GenericTrialMemo));
+    }
+    genericTrialMemos[genericTrialMemoUsed].info = info;
+    genericTrialMemos[genericTrialMemoUsed].instance = instance;
+    ++genericTrialMemoUsed;
+}
+
+void genericTrialPurge(void) {
+    if (errorSilent)
+        return;
+    for (uint32_t i = 0; i < genericTrialMemoUsed; ++i) {
+        Nodes *memonodes = genericTrialMemos[i].info->memonodes;
+        if (memonodes == NULL)
+            continue;
+        for (uint32_t pos = 0; pos + 1 < memonodes->used; pos += 2) {
+            if (nodesGet(memonodes, pos + 1) == genericTrialMemos[i].instance) {
+                nodesMakeSpace(&genericTrialMemos[i].info->memonodes, pos, -2);
+                break;
+            }
+        }
+    }
+    genericTrialMemoUsed = 0;
+}
+
 // Clone the generic's instance for parms and remember it, without type checking it.
 // 'shell' is the instance reserved for a generic type (genericReserve), else NULL.
 // 'absent' lists a generic type's members whose 'where' clause the arguments do
@@ -2984,6 +3027,8 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
         genericinfo->memonodes = newNodes(2);
     nodesAdd(&genericinfo->memonodes, (INode*)srcgencall);
     nodesAdd(&genericinfo->memonodes, instance);
+    if (errorSilent && closureTrialArgs(srcgencall->args))
+        genericTrialNote(genericinfo, instance);
     return instance;
 }
 

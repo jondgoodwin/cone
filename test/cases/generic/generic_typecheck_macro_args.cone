@@ -10,10 +10,12 @@
 // diagnostic. The check of a lazy argument is made on a copy (generic_macro_lazy
 // runs the cases where that matters).
 //
-// A use that writes no type arguments has them inferred from its arguments by
-// the rule a generic function's call follows: refused where no argument says
-// what a type parameter is, or two say it differently. A type parameter only
-// ever written out ('unitAs[i64]()') is no question for inference.
+// A use that writes no type arguments has them inferred from its plain
+// arguments by the rule a generic function's call follows: refused where no
+// argument says what a type parameter is, or two say it differently, and
+// refused with its own diagnostic where only a lazy parameter's type names it.
+// A type parameter only ever written out ('unitAs[i64]()') is no question for
+// inference.
 
 mod generic_typecheck_macro_args;
 
@@ -71,7 +73,28 @@ fn lazyWrongType() {
   twice(3);                             //~ ErrorMacroArgType:9 "parameter a is 'a: lazy void'"
   twice({x = x + 1});
   let t = pick[i64](true, 1, "two");    //~ ErrorMacroArgType:30 "parameter b is 'b: lazy i64'"
-  let u = pick(true, 1i64, 2.5);        //~ ErrorInvType:28 "must agree"
+  // A plain argument fixes T, and a lazy one is checked against it
+  let u = keepOr(1i64, "two");          //~ ErrorMacroArgType:24 "parameter b is 'b: lazy i64'"
+}
+
+// -------- a type parameter only a lazy parameter names --------
+
+// A lazy argument is checked, on a copy, once its parameter's type is known,
+// so it fixes no type, whether a value or a closure: the type arguments are
+// written out
+macro keepOr[T][a: T, b: lazy T] {
+  if a > a {b} else {a}
+}
+
+macro callIt[F][f: lazy F] {
+  f(1i64)
+}
+
+fn lazyOnly() {
+  let r = pick(true, 1i64, 2i64);       //~ ErrorMacroLazyInfer:15 "Write the type arguments out"
+  let s = callIt(fn (y: i64) i64 { y }); //~ ErrorMacroLazyInfer:17 "named only by the type of a lazy parameter, f"
+  let t = pick[i64](true, 1, 2);
+  let u = keepOr(1i64, 2);
 }
 
 // -------- a plain argument of the wrong type --------

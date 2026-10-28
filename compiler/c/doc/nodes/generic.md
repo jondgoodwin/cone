@@ -1022,19 +1022,50 @@ type parameters where it declares them, its value parameters where it does not
 (`twice[x]`, as before). `macroExpand` substitutes the type arguments and the
 `lazy` value arguments together, the type parameters first.
 
-**What an argument is, before the macro expands, is asked of a copy.** Type
-checking lowers and replaces nodes and an expression is checked once, where the
-expansion puts it, so `macroArgTrial` clones the argument (`cloneDclPush`, so a
-declaration inside it is the copy's own) and checks the clone inside a trial
-(`errorTrialBegin`/`End`, error.h, "A trial": its diagnostics counted and
-dropped), with narrowing's state saved and restored around it
-(`narrowFnBegin`/`narrowFnEnd`, the current facts restored inside), so the
-copy's tests, kills and hidden locals reach nothing outside it. The argument
-itself is untouched. A declaration the copy reaches first — a function not yet
-checked, a generic's instance — is the program's, checked loud and once, and is
-what the real argument reaches too. Two questions are asked this way:
+**What the arguments are is asked before the body is expanded**, and never by
+checking an argument twice: type checking lowers and replaces nodes, and an
+expression is checked once.
 
-- **A `lazy` argument's type** (`macroLazyArgsFit`): the copy is checked wanting
+- **The type arguments a use leaves off are inferred from its plain
+  arguments** (`macroInferTypeArgs`). A plain argument is its binding's
+  initializer, and the binding is a declaration, checked once and marked so.
+  So each binding whose parameter's type names a type parameter is checked
+  first, for real, typed by its argument as `let a = arg` is (marked in
+  `early`), and `genericInferMacroParms` matches those types against the
+  parameters' types as written by the function rule, `genericInferFnParms`
+  itself (a `null` and an unsuffixed number literal wait for the others, then
+  take the literal's own type; their bindings are checked with the block,
+  typed by the parameter). A macro has no return type and no bounds, so
+  nothing else has a say. A binding the type arguments then type otherwise is
+  coerced to its parameter's type (`macroEarlyBindingsFit`; `ErrorMacroArgType`
+  where it does not fit). The block the bindings head passes a checked one by.
+  A type parameter no argument says is `ErrorInvType` ("Could not infer the
+  type parameter T of the macro m", `genericMacroMissingParms`), as is one two
+  arguments say differently ("Inconsistent type for the macro m's type
+  parameters"), and one that only a `lazy` parameter's type names is
+  `ErrorMacroLazyInfer`, whose remedy is to write the type arguments: a lazy
+  argument fixes no type (below). A type parameter only ever written
+  (`three[i64]()`) is never inferred. A binding that does not check reports its
+  own error, and the use is not expanded. Since a closure given as a plain
+  argument is checked for real, a type parameter inferred from it is that
+  closure's own struct.
+- **A `lazy` argument is checked against its type on a copy**, once the type
+  arguments are known. `macroArgTrial` clones the argument (`cloneDclPush`, so
+  a declaration inside it is the copy's own) and checks the clone inside a
+  trial (`errorTrialBegin`/`End`, error.h, "A trial": its diagnostics counted
+  and dropped), with narrowing's state saved and restored around it
+  (`narrowFnBegin`/`narrowFnEnd`, the current facts restored inside), so the
+  copy's tests, kills and hidden locals reach nothing outside it. The argument
+  itself is untouched, and is checked where the body puts it. A declaration
+  the copy reaches first — a function not yet checked, a generic's instance for
+  the program's types — is the program's, checked loud and once, and is what
+  the real argument reaches too. What the copy makes for itself — a closure's
+  struct, an instance made with it — is the trial's and is never generated
+  ([type check](../phases/type-check.md), "What a trial makes is not
+  generated"); that is also why a lazy argument infers nothing, since the
+  copy's type is the copy's.
+
+  The check (`macroLazyArgsFit`): the copy is checked wanting
   the parameter's type with the type arguments substituted
   (`macroParmTypeAt`), and coerced to it. One that checks but does not fit is
   refused at the use, naming the parameter (`ErrorMacroArgType`,
@@ -1044,25 +1075,6 @@ what the real argument reaches too. Two questions are asked this way:
   which reports it, as before. A plain argument's mismatch is the same
   diagnostic, reported by its binding's check (`varDclTypeCheck`, for a
   `FlagMacroBind` variable).
-- **The type arguments a use leaves off** (`macroInferTypeArgs`): each argument
-  whose parameter's type names a type parameter is checked as a copy, wanting
-  nothing, and `genericInferMacroParms` matches the copies' types against the
-  parameters' types as written by the function rule, `genericInferFnParms`
-  itself (a `null` and an unsuffixed number literal wait for the others, then
-  take the literal's own type). A macro has no return type and no bounds, so
-  nothing else has a say. A type parameter no argument says is `ErrorInvType`
-  ("Could not infer the type parameter T of the macro m", `genericMissingParms`),
-  as is one two arguments say differently ("Inconsistent type for the macro
-  m's type parameters"). A type parameter only ever written (`three[i64]()`)
-  is never inferred. An argument whose copy does not check says nothing, so it
-  is checked in place, reporting its own error, and the use is not expanded.
-
-The copy of an argument holding a closure literal is a hazard: building the
-copy's closure adds its hidden struct to the module, and a generic's instance
-made with that struct is memoized and generated, so the program carries a
-second, dead closure struct (the same is true of a closure nested in another's
-body under `closureTry`), and a type parameter inferred from the copy is the
-copy's struct, which the real closure is not.
 
 **A plain (not `lazy`) parameter is evaluated once.** `macroExpand` binds its
 argument to a variable first, and the expansion is a block,

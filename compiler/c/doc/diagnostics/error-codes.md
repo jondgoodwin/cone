@@ -473,8 +473,11 @@ argument: a `lazy` one checked at expansion before it is substituted, a plain
 one by its binding, in place of `ErrorInvType`. Type arguments given to a macro
 that declares none are `ErrorMacroTypeArgs`; the wrong number of them is
 `ErrorArgCount`, as for a generic; type arguments a use leaves off are
-inferred, and one that cannot be, or is inferred two ways, is `ErrorInvType`
-with a generic function's wording.
+inferred from its plain arguments, and one that cannot be, or is inferred two
+ways, is `ErrorInvType` with a generic function's wording. One that only a
+`lazy` parameter's type names is `ErrorMacroLazyInfer`, its own code because its
+remedy is the macro's: a lazy argument fixes no type, so the type arguments are
+written out.
 A generic's value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);
