@@ -2548,6 +2548,113 @@ pub trait Map[K, V] {
   pub fn contains(self: &, key: &K) bool;
 }
 
+// -------- errors --------
+
+// What an error value is [WI error-handling, issue 5]. A library returns its own
+// typed errors (an enum or struct that declares 'is Error'); an application takes
+// them all as an 'AnyError'. The trait is in this package, where String is.
+//
+//   message()  one line for a person, this error alone: the outermost line of a
+//              chain ('readFile notes.txt: No such file or directory').
+//   source()   the error that caused this one, or None (the default).
+//   report()   the message and each cause under it, one to a line, which 'main'
+//              prints for an error that has it. INTERIM: its text format stands
+//              until the display design lands, when 'Error' may come to require
+//              the display trait (Rust's 'Error: Display'), with 'message()' kept
+//              or made a default.
+//
+// 'source' answers a virtual reference, '&<Error' (a plain '&' to a trait cannot
+// be called through): a type with a cause builds it with the type argument,
+// 'Some[&<Error](&cause)'.
+pub trait Error {
+  pub fn message(self: &) String;
+
+  pub fn source(self: &) Option[&<Error] { None }
+
+  // 'message', then 'caused by:' and each cause's message, down the chain
+  pub fn report(self: &) String {
+    var out = self.message();
+    var cur = self.source();
+    var more = true;
+    while more {
+      match cur {
+        case let Some(cause) {
+          let line = cause.message();
+          out.append("\n  caused by: ");
+          out.append(line.view());
+          cur = cause.source();
+        }
+        case is None { more = false; }
+      }
+    }
+    out
+  }
+}
+
+// An error that is only a line of text: where an application has no typed error
+// to give ('AnyError.msg("no such mode")')
+struct TextError is Error, Sendable {
+  line: String;
+
+  pub fn message(self: &) String { line.copy() }
+}
+
+// Any error, owned: what an application's functions return where a library's
+// typed errors differ ('fn run() Result[Config, AnyError]'). '?' converts any
+// error that is Error and Sendable into one with 'from', as it converts into any
+// error type, so an application writes no conversions. It holds a 'Uni' of the
+// error, so it is Sendable and crosses between actors (anyhow's Send + Sync).
+//
+// 'addContext' wraps what an AnyError holds in a line of text, so that the line is
+// its 'message()' and the error it was is the 'source()' under it; a chain of
+// them is a chain of such lines. 'report()' (the Error trait's default, which
+// 'main' prints) gives the lines, then the original error's message and each of
+// its own causes. Getting the original error back out is not built (it needs a
+// type's identity through a trait value: with the generics work).
+pub struct AnyError is Error, Sendable {
+  inner: Uni[Error + Sendable];
+
+  // Any error as an AnyError: the conversion '?' finds. (A plain generic method
+  // named 'from', not an 'overload from': an overload set takes no generic that
+  // is bound by a trait. To be revisited with the overload-ranking design.)
+  pub fn from[E: Error + Sendable](e: E) AnyError {
+    let owner: Uni[Error + Sendable] = Uni[E](e);
+    AnyError(owner)
+  }
+
+  // An error that is only this line of text
+  pub fn msg(line: &str) AnyError { AnyError.from(TextError(String.from(line))) }
+
+  // The outermost line: the latest context, or the error's own message
+  pub fn message(self: &) String { inner.message() }
+
+  // What is under the outermost line
+  pub fn source(self: &) Option[&<Error] { inner.source() }
+
+  // This error under one more line of context: 'e.addContext("reading the config")'.
+  // ('context' is a reserved word, a planned language feature, so this is not
+  // named for it.)
+  pub fn addContext(self, line: &str) AnyError {
+    AnyError.from(ContextError(String.from(line), self))
+  }
+
+  // 'addContext', its line made by 'f' when this is called (anyhow's with_context)
+  pub fn withContext[F: fn() String](self, f: F) AnyError {
+    AnyError.from(ContextError(f(), self))
+  }
+}
+
+// An error that is a line of text, and another error under it for 'addContext'.
+// (Declared after AnyError, which it holds: written before it, its 'source' is
+// refused, the AnyError it lends not yet taken for an Error.)
+struct ContextError is Error, Sendable {
+  line: String;
+  cause: AnyError;
+
+  pub fn message(self: &) String { line.copy() }
+  pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
+}
+
 // -------- byte slices --------
 
 // The functions the types above read bytes with, public for bytes that are

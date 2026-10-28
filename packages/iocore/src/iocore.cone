@@ -584,7 +584,7 @@ mod iocore;
 import libc;
 import thread;
 import sync use Arc, Once, Mutex, Condvar, Sender, OneshotSender;
-import collections use List, String;
+import collections use List, String, Error;
 import slots use SlotTable, Slot;
 import time use Instant, Duration, Timestamp;
 import iobuf use IoBuf, Bytes, Chain;
@@ -669,9 +669,9 @@ enum ErrorSource {
 // made of a kind ('IoError.ofKind', Rust's io::Error::from(ErrorKind)). A
 // Truncated error carries the system's number for a datagram too long
 // (WSAEMSGSIZE, EMSGSIZE)
-pub struct IoError {
+pub struct IoError is Error {
   pub code: u32;
-  source: ErrorSource = ErrorSource.System;
+  origin: ErrorSource = ErrorSource.System;
   made: IoErrorKind = IoErrorKind.Other;
 
   // A failure that is a library's own, not the system's: of that kind, with
@@ -696,10 +696,10 @@ pub struct IoError {
   // What went wrong: the ioerror package's kind, the system's number read by
   // its osKind
   pub fn kind(self: &) IoErrorKind {
-    if source == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
-    if source == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
-    if source == ErrorSource.Cut {return IoErrorKind.Truncated;}
-    if source == ErrorSource.Made {return made;}
+    if origin == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
+    if origin == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
+    if origin == ErrorSource.Cut {return IoErrorKind.Truncated;}
+    if origin == ErrorSource.Made {return made;}
     osKind(code)
   }
 
@@ -717,17 +717,17 @@ pub struct IoError {
   // C library's (strerror, gai_strerror) on Linux; a cancel's and a
   // deadline's error says so
   pub fn message(self: &) String {
-    if source == ErrorSource.Cancel {
+    if origin == ErrorSource.Cancel {
       var s = String.empty();
       s.append("cancelled");
       return s;
     }
-    if source == ErrorSource.Deadline {
+    if origin == ErrorSource.Deadline {
       var s = String.empty();
       s.append("deadline passed");
       return s;
     }
-    if source == ErrorSource.Made {return String.from(errorKindName(made));}
+    if origin == ErrorSource.Made {return String.from(errorKindName(made));}
     systemText(code)
   }
 

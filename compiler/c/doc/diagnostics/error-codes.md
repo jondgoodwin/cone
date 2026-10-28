@@ -794,8 +794,10 @@ closure whose return type is read off its returns; a generator, refused by the p
 variant holding it, is `ErrorQuesConvert`; and one two variants hold, with no `from` to
 choose, is `ErrorQuesAmbiguous`, naming two of them. They are apart because the remedies
 are: a different value, a different function, a conversion to declare, and a choice to
-make. A `main` returning a Result whose error type has no `message()` giving text is
-`ErrorMainResult`, at the return type (`propagateMainResult`).
+make. The `from` that converts is an `overload from` or a plain method named `from` (a
+generic one too), and `ErrorQuesConvert` says so. A `main` returning a Result prints its
+error with the error type's `report()` where that gives text, else its `message()`; a type
+with neither giving text is `ErrorMainResult`, at the return type (`propagateMainResult`).
 
 A `try` block adds two (`propagateTryFinish`, `propagateTrySite`): one wanted as no Result
 or Option whose type cannot be read off it, its `?`s failing with different error types

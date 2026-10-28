@@ -150,6 +150,7 @@ extern Name *resultName;   // "Result"
 extern Name *okName;       // "Ok"
 extern Name *errorVariantName; // "Err", Result's failure
 extern Name *messageName;  // "message"
+extern Name *reportName;   // "report"
 
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait
