@@ -1,0 +1,233 @@
+// httpclient over HTTP/3 (this package's plug-in) against this package's
+// server, both on one Loop and one thread over 127.0.0.1, beside the same
+// over HTTP/2 (httpconn's TLS server): GETs answered 200 with 64 bytes, one
+// at a time and 16 in flight. Informative: numbers vary run to run, and the
+// machine's other work moves them. Run from its build folder (the tls
+// package's test certificates):
+//
+//   congo test     (builds it)   then   cd build/release/examples/clientbench; ./clientbench
+//
+// Prints requests a second for each.
+
+mod clientbench;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, forever;
+import http use *;
+import httpconn;
+import tls;
+import quic;
+import h3driver;
+import httpclient use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String.empty();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+struct TlsMaker {
+  server: tls.Server;
+
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
+}
+
+const bodySize = 64usize;
+
+// The two servers: each request answered 200 with 64 bytes when it is whole
+struct Servers {
+  pub h3: h3driver.Driver;
+  pub tcp: httpconn.Driver;
+}
+
+fn serveH3(s: &mut Servers, lp: &mut Loop) {
+  var evs = List[h3driver.Event].empty();
+  s.h3.pump(lp, &mut evs);
+  var k = 0usize;
+  while k < evs.len() {
+    let e = &mut evs[k];
+    k = k + 1usize;
+    if e.kind == h3driver.EventKind.Data {
+      s.h3.release(e.req, e.buf.len());
+    } else if e.kind == h3driver.EventKind.End {
+      s.h3.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(bodySize)));
+      var b = IoBuf(bodySize);
+      b.setLen(bodySize);
+      let back = s.h3.sendData(e.req, b);
+      s.h3.finish(e.req);
+    }
+  }
+}
+
+fn serveTcp(s: &mut Servers, lp: &mut Loop) {
+  var evs = List[httpconn.Event].empty();
+  s.tcp.pump(lp, &uni evs);
+  var k = 0usize;
+  while k < evs.len() {
+    let e = &mut evs[k];
+    k = k + 1usize;
+    if e.kind == httpconn.EventKind.Data {
+      s.tcp.release(e.req, e.buf.len());
+    } else if e.kind == httpconn.EventKind.End {
+      s.tcp.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(bodySize)));
+      var b = IoBuf(bodySize);
+      b.setLen(bodySize);
+      s.tcp.sendData(e.req, b);
+      s.tcp.finish(e.req);
+    }
+  }
+}
+
+fn step(cl: &mut Client, s: &mut Servers, lp: &mut Loop, out: &uni List[Event]) {
+  cl.pump(lp, out);
+  serveH3(s, lp);
+  serveTcp(s, lp);
+  var limit = Instant.now() + Duration.fromMillis(100i64);
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = s.h3.wakeAt();
+  if b < limit {limit = b;}
+  let c = s.tcp.wakeAt();
+  if c < limit {limit = c;}
+  if out.len() > 0usize {limit = Instant();}
+  var comps = List[Completion].empty();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let cp = &mut comps[k];
+    if !cl.complete(lp, cp) {
+      if !s.h3.complete(lp, cp) {s.tcp.complete(lp, cp);}
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  serveH3(s, lp);
+  serveTcp(s, lp);
+  cl.pump(lp, out);
+}
+
+// n GETs of u, at most 'width' in flight: how many came back Done over v
+fn run(cl: &mut Client, s: &mut Servers, lp: &mut Loop, u: &str, n: u32, width: u32, v: Version) u32 {
+  var asked = 0u32;
+  var inFlight = 0u32;
+  var good = 0u32;
+  var answered = 0u32;
+  var out = List[Event].empty();
+  while answered < n {
+    while asked < n && inFlight < width {
+      cl.get(lp, u, Sink.Here(1u64));
+      asked = asked + 1u32;
+      inFlight = inFlight + 1u32;
+    }
+    step(cl, s, lp, &uni out);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      else if e.kind == EventKind.Response {if e.response.version == v {good = good + 1u32;}}
+      else if e.isTerminal() {
+        answered = answered + 1u32;
+        inFlight = inFlight - 1u32;
+        if e.kind != EventKind.Done && good > 0u32 {good = good - 1u32;}
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  good
+}
+
+fn rate(what: &str, cl: &mut Client, s: &mut Servers, lp: &mut Loop, u: &str, n: u32, width: u32, v: Version) {
+  run(cl, s, lp, u, 50u32, width, v);                      // warm: the connection made
+  let t0 = Instant.now();
+  let good = run(cl, s, lp, u, n, width, v);
+  let ns = (Instant.now() - t0).nanos();
+  printStr(what);
+  printStr(": ");
+  printUInt(u64.from(n) * 1000000000u64 / u64.from(ns));
+  printStr(" a second (");
+  printUInt(u64.from(good));
+  printStr(" of ");
+  printUInt(u64.from(n));
+  printStr(" Done over it)\n");
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var s = Servers(h3: h3driver.Driver.make(h3driver.Config.make()), tcp: httpconn.Driver.make(httpconn.Config.make()));
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  var up = 0u16;
+  match quic.Context.server(quic.Config.make(), &cert, &key) {
+    case let Ok(ctx) {
+      match s.h3.listen(&mut lp, SocketAddr.localhost(0u16), ctx, 7u64) {
+        case let Ok(l) {
+          match s.h3.localAddr(&lp, l) {
+            case let Ok(a) {up = a.port();}
+            case let Err(e) {}
+          }
+        }
+        case let Err(f) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  var tcfg = tls.ServerConfig.make(&cert, &key);
+  var names = List[String].empty();
+  names.push(String.from("h2"));
+  tcfg.alpn = names;
+  var tp = 0u16;
+  match tls.Server.make(tcfg) {
+    case let Ok(srv) {
+      match s.tcp.listenWith(&mut lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(srv)), httpconn.Sink.Here(0u64)) {
+        case let Ok(l) {
+          match s.tcp.localAddr(&lp, l) {
+            case let Ok(a) {tp = a.port();}
+            case let Err(e) {}
+          }
+        }
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  if up == 0u16 || tp == 0u16 {
+    printStr("the servers could not listen: run it from its build folder\n");
+    return 1i32;
+  }
+  var cfg = Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[Http3]](&h3driver.plugin);
+  var h3url = String.from("https://127.0.0.1:");
+  h3url.appendUInt(u64.from(up));
+  cfg.http3Origins.push(h3url.copy());
+  h3url.append("/bench");
+  var h2url = String.from("https://127.0.0.1:");
+  h2url.appendUInt(u64.from(tp));
+  h2url.append("/bench");
+  var cl = Client.make(cfg);
+  rate("HTTP/3, one at a time", &mut cl, &mut s, &mut lp, h3url.view(), 2000u32, 1u32, Version.Http3);
+  rate("HTTP/3, 16 in flight ", &mut cl, &mut s, &mut lp, h3url.view(), 4000u32, 16u32, Version.Http3);
+  rate("HTTP/2, one at a time", &mut cl, &mut s, &mut lp, h2url.view(), 2000u32, 1u32, Version.Http2);
+  rate("HTTP/2, 16 in flight ", &mut cl, &mut s, &mut lp, h2url.view(), 4000u32, 16u32, Version.Http2);
+  cl.abortAll(&mut lp);
+  s.h3.abortAll(&mut lp);
+  s.tcp.abortAll(&mut lp);
+  0i32
+}

@@ -1,0 +1,47 @@
+// Alt-Svc fields read for an origin's host (RFC 7838): the first "h3"
+// alternative on the same host, with its max-age, a 'clear', or nothing.
+
+mod altsvc;
+
+import testing use *;
+import collections use String;
+import httpclient use *;
+
+// What readAltSvc says, as text: 'h3 443 86400', 'clear' or 'nothing'
+fn said(v: &str, host: &str) String {
+  var out = String.empty();
+  match readAltSvc(v as &Array[u8], host) {
+    case let H3(a) {
+      out.append("h3 ");
+      out.appendUInt(u64.from(a.port));
+      out.append(" ");
+      out.appendUInt(a.maxAge);
+    }
+    case is Clear {out.append("clear");}
+    else {out.append("nothing");}
+  }
+  out
+}
+
+fn main() i32 {
+  expectStr(said("h3=\":443\"; ma=86400", "example.com").view(), "h3 443 86400", "h3 on 443 for a day");
+  expectStr(said("h3=\":443\"", "example.com").view(), "h3 443 86400", "no ma: 24 hours");
+  expectStr(said("h3-29=\":443\"; ma=10, h3=\":8443\"; ma=60", "example.com").view(), "h3 8443 60", "a draft's name passed over");
+  expectStr(said("h3=\":443\"; persist=1; ma=7", "example.com").view(), "h3 443 7", "ma after another parameter");
+  expectStr(said("h3=\":443\";ma=\"30\"", "example.com").view(), "h3 443 30", "a quoted ma, no spaces");
+  expectStr(said("h3=\"EXAMPLE.com:444\"; ma=5", "example.com").view(), "h3 444 5", "the same host, its case aside");
+  expectStr(said("h3=\"other.example.com:443\"", "example.com").view(), "nothing", "another host: not taken");
+  expectStr(said("h3=\"other.example.com:443\", h3=\":443\"; ma=9", "example.com").view(), "h3 443 9", "...the next alternative is");
+  expectStr(said("h2=\":443\"", "example.com").view(), "nothing", "h2 alone: nothing for HTTP/3");
+  expectStr(said("clear", "example.com").view(), "clear", "clear");
+  expectStr(said("  clear  ", "example.com").view(), "clear", "clear, spaced");
+  expectStr(said("h3=\":0\"", "example.com").view(), "nothing", "port 0: nothing");
+  expectStr(said("h3=\":99999\"", "example.com").view(), "nothing", "a port past 65535: nothing");
+  expectStr(said("h3=\":44x\"", "example.com").view(), "nothing", "a port that is not a number: nothing");
+  expectStr(said("h3=443", "example.com").view(), "nothing", "an unquoted authority: nothing");
+  expectStr(said("h3", "example.com").view(), "nothing", "a name alone: nothing");
+  expectStr(said("", "example.com").view(), "nothing", "empty: nothing");
+  expectStr(said("h3=\":443\"; ma=0", "example.com").view(), "h3 443 0", "ma=0: kept (it has expired)");
+  expectStr(said("h3=\"[::1]:443\"", "::1").view(), "h3 443 86400", "an IPv6 host in brackets");
+  done()
+}
