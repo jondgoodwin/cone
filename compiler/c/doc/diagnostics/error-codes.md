@@ -365,10 +365,9 @@ A generic module takes three codes, split where the remedy is.
 instance has members — a path through it, a standalone `use`, an import's `use`
 clause, `extends`, a default fold on its own `mod` line; the remedy is to name
 an instance, `stack[i64].push`, or to stop folding. `ErrorGenModBody` is what a
-generic module holds that an instance is not yet built for — a generic function
-or type, a trait or an enum, a macro, a module trait, a global's `use` clause,
-a submodule; the remedy is in the generic module, and the code retires piece
-by piece as the clone learns each. `ErrorGenModRoot` is an executable's root
+generic module holds that an instance is not yet built for — a module trait, a
+generic submodule; the remedy is in the generic module, and the code retires piece by
+piece as the clone learns each. `ErrorGenModRoot` is an executable's root
 declared generic; the remedy is to move the generic module under a root. What an
 instance is given that is not a type, or the wrong number of arguments, wears
 `ErrorNotType` and `ErrorArgCount`, as for a generic type, and a member an

@@ -320,7 +320,7 @@ enum ErrorCode {
 
     // A generic module, 'mod stack[T];'
     ErrorGenModBare = 1142,     // A generic module named without type arguments where only an instance has members: a path through it, an import's 'use' clause or default fold of it, 'extends' or a standalone 'use' naming it
-    ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a submodule, a generic function or type, a trait or an enum, a module trait
+    ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a generic submodule, a module trait
     ErrorGenModRoot = 1144,     // An executable's root module declared generic: nothing can instantiate the program
 
     // A file's header: its 'mod' line, then its imports

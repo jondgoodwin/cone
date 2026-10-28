@@ -742,7 +742,11 @@ resolved once, in place, with its parameters hooked over its own names
 (`modNameRes`), and never type checked (`modTypeCheck` returns after its
 imports) or generated (`genlProgram` passes it over): its body is written
 against parameters that stand for nothing. Its imports, folds and `is` are
-made once, on the generic, and every instance shares them.
+made once, on the generic, and every instance shares them. **So is each of its
+submodules, at any depth** (`modIsTemplate`): resolved in place with the
+parameters of every generic module it is inside hooked, as a generic type's
+methods see the type's (`modHookTemplateParms`), never checked or generated
+itself, and instantiated with its parent.
 
 **An instance is a module of its own**, made by `modInstantiate` the first
 time type check meets `stack[i64]` — `genericSubstitute` asks `genericMemoize`,
@@ -750,17 +754,46 @@ whose memo is the generic's `memonodes`. **Identical arguments anywhere are one
 instance**, compared by `itypeIsSame`, so `stack[i64]` in two modules is one
 module with one set of globals (`module_generic`). The instance is named as
 the generic is, owned where it is, marked with the call that made it
-(`instnode`, which `generic` points back from), and flagged `FlagGenMod`. Its
-declarations are cloned the way a generic type's members are
-(`cloneStructNode`): a shell for each — a function, a global, a type, an
-overload name, a type alias — mapped from the generic's before anything is
-copied, then every signature, body, type and initial value, so a body naming
-another declaration of the module, before it or after, names the instance's.
+(`instnode`, which `generic` points back from), and flagged `FlagGenMod`.
+**Each submodule of the generic is a module of the instance too**
+(`modInstanceTree`, `module_generic_submodule`): its copy is owned by the
+instance's copy of its parent, shares the call that made the instance (so its
+own symbol component carries no type arguments: `holder[i64].inner.twice` is
+`_CNvNtIC6holderxE5inner5twice`), has `generic` pointing back at the submodule
+it copies, and is mapped from it, so the parent naming `inner.twice` names
+this instance's copy, and `holder[i64].inner.twice` reaches it from outside
+through two collapsed paths. Its declarations, and every module of the
+instance's, are cloned the way a generic type's members are
+(`cloneStructNode`): a shell for each — a function, a global, a type, trait,
+enum or variant, an overload name, a type alias, a macro, and each copy of a
+base's variant an enum extension holds (no module's node) — mapped from the
+generic's before anything is copied, then every signature, body, type and
+initial value, so a body naming another declaration of the module, before it
+or after, names the instance's. An enum's copy lists the copies of its
+variants, in its order, as a generic enum's instance does; a type that `is` a
+trait of the module takes the instance's copy of the trait (the clone runs
+with `CloneState.modinst`, which `cloneStructNode` reads). **A generic function
+or type of the module stays generic in each instance**, as a generic method is
+copied with its type (`cloneFnDclShell`): the copy shares the original's
+parameters, hooked to themselves while it is copied, so only the module's are
+substituted, and its instances are made from the copy at their own arguments,
+in its own memo — `stack[i64].Pair[f64]`, and `stack[i64].tag[f64]` beside
+`stack[f64].tag[f64]` (`module_generic_gentype`, `module_generic_genfn`).
 The generic's own name is mapped to the instance, so `stack.count` or
 `stack[T].count` inside the body is this instance's global, while another
 argument list, `stack[f64]`, is another instance reached through the memo
-(`cloneFnCallNode`). Every other name the generic's namespace binds — what its
-imports bound and folded — is bound in the instance's to the same declaration.
+(`cloneFnCallNode`); a generic type of the module given type arguments in the
+body stays mapped to the instance's copy, which is the generic its instances
+come from. **The names the generic folded in that stand for something of its
+own** — a variant a standalone `use` of its enum folded in, a member a
+global's `use` clause folded in through the global — are aliases of the
+instance's own, mapped before any body is copied (`modFoldAliasShells`) and
+pointed at the instance's variant, or its global and the member of that
+global's type, once everything is copied (`modFoldAliasFill`). Every other
+name the generic's namespace binds — what its imports bound and folded — is
+bound in the instance's to the same declaration. A global's `use` clause is
+expanded in the fold pass, before the module's own resolution, so a generic
+module's type parameters are hooked for it there too (`modFoldNames`).
 A module trait's defaults the generic took are declarations of it, and are
 cloned with the rest; the instance keeps the generic's `trait`, so
 `modTraitCheck` checks each instance. It is registered before it is type checked, so a body
@@ -772,7 +805,13 @@ then type checked with no function around it, which runs `modLifecycle`, so
 `fnCallModuleInstancePath`), since the instance does not exist at name
 resolution: `stack[i64].push` looks `push` up in the instance's namespace, a
 private member named from outside it is `ErrorNotPublic`, and the hop
-disappears as `fnCallNameResPath` makes it for any other module. What a
+disappears as `fnCallNameResPath` makes it for any other module. A member
+given brackets through an instance — a generic function's type arguments,
+`stack[i64].make[f64]`, or a macro's, `stack[i64].dbl[3]` — is read at name
+resolution as the generic declares it (`fnCallGenModMember`, so a type in the
+brackets is not taken for a value), and at type check the path is collapsed
+first, without checking the member (`fnCallInstanceMember`), so the brackets
+follow the instance's member as they follow `m.make` in `m.make[f64]`. What a
 generic is given that is not a list of types is refused as a generic type's is
 — `ErrorNotType`, `ErrorArgCount`; nothing is inferred.
 
@@ -785,23 +824,39 @@ the name and folds nothing); `extends stack`; and a default fold on its own
 instance is then written through that name.
 
 **What an instance is cloned from is its generic's own declarations**, so what
-a clone does not yet re-point is refused where the generic declares it,
-`ErrorGenModBody` (`modGenericCheckBody`): a generic function or type inside it,
-whose own parameters the clone would have to carry through; a trait or an enum,
-a macro and a module trait; and a global's `use` clause, whose aliases are
-reached through the generic's global. **A generic module's submodules are not
-built** (the same code, `pgmGenericModulesCheck`): by the analogy they are
-instantiated with it, as a generic type's methods are, and the flat case is
-what is built. **An executable's root may not be generic** (`ErrorGenModRoot`):
-nothing could instantiate the program. A library's root may, and so may a
-submodule or an imported module.
+a clone is not built for is refused where the generic declares it,
+`ErrorGenModBody` (`modGenericCheckBody`): a module trait. One declared inside
+a generic module would be each instance's own, as everything else it declares
+is, and a module conforming to it is outside the instance, with no spelling yet
+that names an instance's module trait (`is` takes one name, and an import of a
+generic folds nothing). So is a generic module inside a generic module (the
+same code, `pgmGenericModulesCheck`), which would be a generic of each instance,
+copied still generic into it. **An executable's root may not be
+generic** (`ErrorGenModRoot`): nothing could instantiate the program. A
+library's root may, and so may a submodule or an imported module.
+
+**A type of the module that `extends` a base is enriched again in each
+instance** (`cloneStructNode`, `reenrich`): name resolution took the base into
+the generic's type — its fields copied in, its other members bound as aliases —
+and a copy's namespace, made from its fields and members, would hold neither,
+so the copy starts without the base's fields and its type check takes the base
+(`structEnrichFromBase`), as an instance of a generic type's does: the
+instance's own copy of a base the module declares, or another module's base as
+it is. A use in a method body of an alias the generic's enrichment made is
+pointed at a fresh alias, bound to the instance's base's member of that name
+once every declaration is copied (`structCloneEnrichFix`), since the base may
+be copied after the type extending it (`module_generic_extends`).
 
 **Its symbols carry the instance's type arguments on the module**, as a generic
 type instance's carry them on the type: the instance's `instnode` is what
 `nameOwnTypeArgs` reads, so `namePath` wraps the module's component in `I…E` —
 `stack[i64].push` is `_CNvIC5stackxE4push`, `stack[i64].Entry.doubled` is
 `_CNvNtIC5stackxE5Entry7doubled` — and each member's own component is its
-identifier alone. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
+identifier alone, or its own `I…E` where it is an instance of a generic the
+module declares: `pairs[i64].Pair[f64].first` is
+`_CNvINtIC5pairsxE4PairdE5first`, `tags[i64].tag[f64]` is
+`_CINvIC4tagsxE3tagdE`, and a vtable names the instance's type and trait,
+`shapes[i64].Box as shapes[i64].Has`. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
 "Symbols", is the rule.
 
 **An instance joins the program's modules once type check is done**
@@ -1648,7 +1703,13 @@ module that follows those and uses it — **except a module that supplied one of
 its type arguments**, which the instance follows: in `module_generic`,
 `tally[user.Tag]` runs its `init` after `user`'s. A module that uses an instance
 places no edge of its own: its place was fixed at name resolution. Instances
-that use one another round a loop are placed last, in the order made.
+that use one another round a loop are placed last, in the order made. **An
+instance's copies of its generic's submodules take the instance's place with
+it, together** [design chat, 28 Oct] (`pgmInstanceGroup`): in the order the walk
+gave the generic and its submodules — an ordinary parent's and its submodules',
+each submodule before the module holding it — and after whatever any of them
+depends on outside the instance; finalizers run in the reverse
+(`module_generic_submodule`).
 
 `modFoldNames` runs four kinds of fold, in order: what the module extends, then its `imports`,
 then every global carrying a `use` clause, then every standalone `use` on
