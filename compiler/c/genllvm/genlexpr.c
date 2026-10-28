@@ -1720,28 +1720,6 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
     }
 }
 
-// An owner narrowed to one of its enum's variants is a copy of the same pointer, which
-// holds the value's address with the allocation's header before it: the same bytes only
-// if the value sits at the same offset in an allocation of either type. The value of a
-// variant is its enum's, but the offset rounds the header up to the value's alignment,
-// which a variant may have less of.
-static void genlOwnerNarrowCheck(GenState *gen, CastNode *node) {
-    INode *from = iexpGetTypeDcl(node->exp);
-    INode *to = itypeGetTypeDcl(node->vtype);
-    if (from->tag != RefTag || to->tag != RefTag || ((RefNode*)from)->region->tag == BorrowRegTag)
-        return;
-    genlType(gen, from);
-    genlType(gen, to);
-    genlRefTypeSetup(gen, (RefNode*)from);
-    genlRefTypeSetup(gen, (RefNode*)to);
-    unsigned long long fromat = LLVMOffsetOfElement(gen->datalayout, ((RefNode*)from)->typeinfo->structype, ValueField);
-    unsigned long long toat = LLVMOffsetOfElement(gen->datalayout, ((RefNode*)to)->typeinfo->structype, ValueField);
-    if (fromat != toat)
-        errorMsgNode((INode*)node, ErrorOwnerNarrow,
-            "Narrowing this owner to a variant would change where its value is in the allocation (%llu bytes in as the enum, %llu as the variant): the header before the value is rounded up to the alignment of the type, and the variant has less of it than its enum. The address would have to change.",
-            fromat, toat);
-}
-
 static FieldDclNode *genlTagField(StructNode *structtype);
 
 // Reinterpret a value as if it were another type
@@ -3646,8 +3624,6 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
             return genlConvert(gen, node->exp, node->vtype, (node->flags & FlagTraitBind) != 0);
-        if (node->flags & FlagOwnerNarrow)
-            genlOwnerNarrowCheck(gen, node);
         return genlRecast(gen, node->exp, node->vtype);
     }
     case IsTag:

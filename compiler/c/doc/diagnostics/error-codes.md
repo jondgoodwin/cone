@@ -552,8 +552,7 @@ or a branch that did one of these, is `ErrorNarrowStale` (type check); a name na
 a loop, used in it, that a change later in the loop reaches by the back edge is
 `ErrorNarrowLoop`; and the `else` of `let Ok(n) = r else {...};` that can fall through to the
 binding is `ErrorLetElse`, reported at the spot inside the `else` where a path goes on and
-saying what it lacks. The first two are reported at the use and name the change. `ErrorOwnerNarrow` is an owner (`Rc[mut, Shape]`) narrowed to a variant whose value
-would sit at another offset in its allocation (generation).
+saying what it lacks. The first two are reported at the use and name the change.
 
 A `parallel each` over a zip of cursors that lend from the same buffer, where the loop
 changes what they lend, is `ErrorParSources` (type check, `pareach.c`): two passes could
