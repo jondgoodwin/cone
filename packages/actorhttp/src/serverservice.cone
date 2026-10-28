@@ -365,12 +365,14 @@ struct ListenJob {
 
   pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
     let addr, cfg = self.(addr, cfg);
-    let conn, maxBody, maxPending, tcfg = cfg.(conn, maxBody, maxPending, tlsConfig);
+    let conn, maxBody, maxPending, tcfg, http2 = cfg.(conn, maxBody, maxPending, tlsConfig, http2);
     var drv = httpconn.Driver.make(conn);
     var res: Result[httpconn.ListenerId, IoError] = Err[httpconn.ListenerId, IoError](IoError.cancelled());
     var secure = false;
     match tcfg {
-      case let Some(t) {
+      case let Some(given) {
+        var t = given;
+        t.alpn = serverAlpn(&t.alpn, http2);
         match tls.Server.make(t) {
           case let Ok(s) {
             secure = true;

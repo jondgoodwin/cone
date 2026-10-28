@@ -2201,6 +2201,18 @@ pub struct Driver {
       c.failure is None && !c.closeAsked && c.core.canSendRequest()
   }
 
+  // Whether a client connection still takes new requests, now or once it is
+  // free: being made or open, not closing or failed, and on HTTP/2 no GOAWAY
+  // sent or received. An HTTP/2 connection whose streams are all in use is
+  // not idle but still takes them; one going away takes none. False for an id
+  // that names none
+  pub fn takesRequests(self: &, conn: ConnId) bool {
+    let ci = self.connIndex(conn);
+    if ci == noEntry {return false;}
+    let c = self.connAt(ci) as &Conn;
+    !c.server && c.state != cClosing && c.failure is None && !c.closeAsked && !c.goAway && !c.shutAsked
+  }
+
   // The protocol a connection speaks: Http11 or Http2, once it is chosen
   // (at its layer's opening: the TLS handshake's ALPN, or at once for a
   // connection with no handshake); None before, or for an id that names none
