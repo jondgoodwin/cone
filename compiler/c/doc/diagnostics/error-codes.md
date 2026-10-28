@@ -321,7 +321,7 @@ the others, so it wears this code, and `ErrorModExtends` keeps what an
 shape Congo's has for the same loop, so a direct `conec` run and a Congo build
 say one thing.
 
-A module's `init` and `final` take two codes, split where the remedy is.
+A module's `init` and `final` take three codes, split where the remedy is.
 `ErrorModLifecycle` is a declaration under either name that is not the one the
 program's stitched init and final call — `fn @initpure init()` or
 `fn final()`: one taking parameters, returning a value, generic, `inline` or
@@ -335,7 +335,14 @@ declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
 give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
-second assignment of a `let` one `ErrorNoMut`.
+second assignment of a `let` one `ErrorNoMut`. `ErrorLifecycleNamed` is a use of
+either function in an expression — a call, a borrow (`&extra.final`), the bare name
+inside its own module, or a path from any module — whether it is `pub` or not: the
+program runs each once, so the remedy is to delete the use, and no visibility
+makes it right (`ErrorNotPublic` would send the author to make it `pub`).
+It is pointed at the name (`nameUseLifecycleNamed`). A fold naming one — a list
+item, or a `but` after a star, which passes both over unasked — is `ErrorBadFold`,
+as it is for `final` and `clone`.
 
 A generic module takes three codes, split where the remedy is.
 `ErrorGenModBare` is the generic named without type arguments where only an
