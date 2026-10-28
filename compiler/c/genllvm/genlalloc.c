@@ -21,6 +21,49 @@
 #include <string.h>
 #include <assert.h>
 
+// The enum 'vtype' is a variant of, or NULL for any other type
+static StructNode *genlVariantEnum(INode *vtype) {
+    INode *dcl = itypeGetTypeDcl(vtype);
+    if (dcl->tag != StructTag)
+        return NULL;
+    INode *base = ((StructNode *)dcl)->basetrait ? itypeGetTypeDcl(((StructNode *)dcl)->basetrait) : NULL;
+    return (base && base->tag == StructTag && (base->flags & EnumType)) ? (StructNode *)base : NULL;
+}
+
+// The alignment a value of 'vtype' has in an allocation, and in its type record.
+// A variant is placed at its enum's alignment, which is never less than its own:
+// the value then sits at one offset in the block however the reference reached it
+// (as the variant, as the enum, or through a virtual reference whose vtable names
+// the variant by the tag), since all the header part has to know is the type's
+// enum. A variant laid out alone is padded, a little, to get there.
+static unsigned genlAllocAlign(GenState *gen, INode *vtype) {
+    unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, vtype));
+    StructNode *enumnode = genlVariantEnum(vtype);
+    if (enumnode) {
+        unsigned enumalign = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, (INode *)enumnode));
+        if (enumalign > align)
+            align = enumalign;
+    }
+    return align;
+}
+
+// The type of an allocation's value field. A variant whose enum is more strictly
+// aligned than it is gets a zero-length array of the enum before it, which raises
+// the field's alignment to the enum's (genlAllocAlign) and so where it starts.
+static LLVMTypeRef genlAllocValueType(GenState *gen, INode *vtype) {
+    LLVMTypeRef valtype = genlType(gen, vtype);
+    StructNode *enumnode = genlVariantEnum(vtype);
+    if (enumnode == NULL)
+        return valtype;
+    LLVMTypeRef enumtype = genlType(gen, (INode *)enumnode);
+    if (LLVMABIAlignmentOfType(gen->datalayout, enumtype) <= LLVMABIAlignmentOfType(gen->datalayout, valtype))
+        return valtype;
+    LLVMTypeRef parts[2];
+    parts[0] = LLVMArrayType(enumtype, 0);
+    parts[1] = valtype;
+    return LLVMStructTypeInContext(gen->context, parts, 2, 0);
+}
+
 // Build an owning reference's allocation layout, the first time it is asked
 // for. Only an allocation and a region header read it; generating the
 // reference's own type does not, since that would generate its pointee there.
@@ -40,7 +83,7 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     *fieldtypep++ = genlType(gen, reftype->region);
     *fieldtypep++ = genlType(gen, reftype->perm);
     INode *elemtype = itypeLenBodyElem(reftype->vtexp);
-    *fieldtypep = genlType(gen, elemtype ? elemtype : reftype->vtexp);
+    *fieldtypep = genlAllocValueType(gen, elemtype ? elemtype : reftype->vtexp);
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
     LLVMStructSetBody(structype, field_types, 3, 0);
     refinfo->structype = structype;
@@ -715,7 +758,8 @@ static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, uns
 // The type record of 'vtype': a private constant of core's TypeRecord, what a
 // region's 'alloc(size usize, ty *TypeRecord)' is handed and what
 // 'mem.typeRecord[T]()' is the address of. Its size and alignment are the
-// target's (as mem.sizeof and mem.alignof); its finalizer is the value's death
+// target's (as mem.sizeof and mem.alignof, but a variant's alignment is its
+// enum's: genlAllocAlign); its finalizer is the value's death
 // in place (genlTypeRecFinalBody), or the shared do-nothing function where
 // finalizing does nothing, which its flags say too; its trace hands each
 // traced reference the value holds to its region's 'mark' (genlTypeRecTraceBody),
@@ -773,7 +817,7 @@ LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode) 
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef fields[TypeRecFieldCount];
     fields[TypeRecSize] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, valtype), 0);
-    fields[TypeRecAlign] = LLVMConstInt(usize, LLVMABIAlignmentOfType(gen->datalayout, valtype), 0);
+    fields[TypeRecAlign] = LLVMConstInt(usize, genlAllocAlign(gen, vtype), 0);
     if (needsfinal) {
         sprintf(name, "cone.tyrec.final.%u", index);
         fields[TypeRecFinalize] = genlTypeRecFn(gen, vtype, finaltype, name, genlTypeRecFinalBody);
@@ -1404,7 +1448,9 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     genlRefTypeSetup(gen, reftype);
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
-    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(reftype->typeinfo->structype, ValueField);
+    // The value's own type, not its field's (which may carry padding before a variant)
+    INode *bodyelem = itypeLenBodyElem(reftype->vtexp);
+    LLVMTypeRef valuetypllvm = genlType(gen, bodyelem ? bodyelem : reftype->vtexp);
     LLVMTypeRef valueptrtyp = LLVMPointerType(valuetypllvm, 0);
 
     // Calculate how much memory space we need to allocate

@@ -1,0 +1,166 @@
+// A variant is placed in an allocation at its enum's alignment, and its type record says so, so
+// the region's header is found at one place for a value however its owner was reached: as the
+// enum, as the variant, narrowed from the enum, or through a virtual reference whose vtable
+// the tag picked (region_enum_variant_uaf is the failure this closes, on its own).
+//
+// 'Tally' keeps a counter of one u32 as its header (a header that ends off the enum's
+// alignment, which is what makes the offset depend on the alignment), prints each count, and
+// notes where its block is: a count moved, or a block freed, at any other address is shown as
+// "misplaced". Every line is worked out by hand: the allocation counts one, each copy one
+// more, each owner going away one fewer, "free" at zero, once, after the last owner.
+
+mod region_enum_variant_header;
+
+import stdio use *;
+import libc;
+
+var allocated: usize = 0usize;
+
+fn loc(at: usize) &str { if at == allocated {" "} else {" misplaced "} }
+
+struct Tally is RegionRef {
+  owners: u32;
+  fn alloc(size: usize) *u8 { let p = malloc(size); allocated = p as usize; p }
+  fn init(self: &new) inline { *self = Tally(1u32); }
+  fn aliasRef(self: &uni Tally) inline {
+    owners = owners + 1u32;
+    printStr("+"); printInt(i64.from(owners)); printStr(loc(self as usize));
+  }
+  fn dealiasRef(self: &uni Tally) bool inline {
+    owners = owners - 1u32;
+    printStr("-"); printInt(i64.from(owners)); printStr(loc(self as usize));
+    owners == 0u32
+  }
+  fn free(self: &uni Tally) {
+    printStr(if (self as usize) == allocated {"free "} else {"free-misplaced "});
+    libc.free(self as *u8);
+  }
+}
+
+// The same with a one-byte count: a header that ends at 1
+struct Tally1 is RegionRef {
+  owners: u8;
+  fn alloc(size: usize) *u8 { let p = malloc(size); allocated = p as usize; p }
+  fn init(self: &new) inline { *self = Tally1(1u8); }
+  fn aliasRef(self: &uni Tally1) inline {
+    owners = owners + 1u8;
+    printStr("+"); printInt(i64.from(owners)); printStr(loc(self as usize));
+  }
+  fn dealiasRef(self: &uni Tally1) bool inline {
+    owners = owners - 1u8;
+    printStr("-"); printInt(i64.from(owners)); printStr(loc(self as usize));
+    owners == 0u8
+  }
+  fn free(self: &uni Tally1) {
+    printStr(if (self as usize) == allocated {"free "} else {"free-misplaced "});
+    libc.free(self as *u8);
+  }
+}
+
+trait Looker { pub fn look(self: &) i64; }
+
+// Tiny is less aligned than the enum; Big has the enum's alignment
+enum Shape {
+  pub fn look(self: &) i64;
+  struct Big { pub n: i64; fn look(self: &) i64 {n} }
+  struct Tiny { pub n: i8; fn look(self: &) i64 {i64.from(n)} }
+}
+
+// Variants of different sizes
+enum Mixed {
+  pub fn look(self: &) i64;
+  struct Wide { pub a: i64; pub b: i64; fn look(self: &) i64 {a + b} }
+  struct Narrow { pub n: i8; fn look(self: &) i64 {i64.from(n)} }
+}
+
+fn end() { printStr("|\n"); }
+fn label(s: &str) { printStr(s); printStr(": "); }
+
+// The enum owner and the virtual reference both in scope: the virtual reference goes first
+fn inScope() {
+  let s: Shape = Shape.Tiny(3i8);
+  let e: Tally[mut, Shape] = Tally[mut, Shape](s);
+  let v: Tally[mut, Looker] = e;
+  printInt(v.look()); printStr(" ");
+}
+
+// The virtual reference outlives the enum owner
+fn makeVirt() Tally[mut, Looker] {
+  let s: Shape = Shape.Tiny(3i8);
+  let e: Tally[mut, Shape] = Tally[mut, Shape](s);
+  let v: Tally[mut, Looker] = e;
+  v
+}
+fn outlives() {
+  let v = makeVirt();
+  printStr("back ");
+  printInt(v.look()); printStr(" ");
+}
+
+// The variant with the enum's alignment, reached through the enum: where it was
+fn bigViaEnum() {
+  let s: Shape = Shape.Big(7);
+  let e: Tally[mut, Shape] = Tally[mut, Shape](s);
+  let v: Tally[mut, Looker] = e;
+  printInt(v.look()); printStr(" ");
+}
+
+// A variant allocated as itself, then made virtual, with and without the enum's alignment
+fn tinyDirect() {
+  let t: Tally[mut, Shape.Tiny] = Tally[mut, Shape.Tiny](Shape.Tiny(3i8));
+  let v: Tally[mut, Looker] = t;
+  printInt(v.look()); printStr(" ");
+}
+fn bigDirect() {
+  let t: Tally[mut, Shape.Big] = Tally[mut, Shape.Big](Shape.Big(7));
+  let v: Tally[mut, Looker] = t;
+  printInt(v.look()); printStr(" ");
+}
+
+// A header of one byte, the virtual reference outliving the enum owner
+fn makeVirt1() Tally1[mut, Looker] {
+  let s: Shape = Shape.Tiny(3i8);
+  let e: Tally1[mut, Shape] = Tally1[mut, Shape](s);
+  let v: Tally1[mut, Looker] = e;
+  v
+}
+fn oneByte() {
+  let v = makeVirt1();
+  printStr("back ");
+  printInt(v.look()); printStr(" ");
+}
+
+// An enum whose variants differ in size
+fn makeMixed() Tally[mut, Looker] {
+  let s: Mixed = Mixed.Narrow(5i8);
+  let e: Tally[mut, Mixed] = Tally[mut, Mixed](s);
+  let v: Tally[mut, Looker] = e;
+  v
+}
+fn mixed() {
+  let v = makeMixed();
+  printStr("back ");
+  printInt(v.look()); printStr(" ");
+}
+
+// An owner narrowed to its variant is the same pointer: the variant's header is found where
+// the enum's was. The arm's copy is released as the arm ends.
+fn narrowed() {
+  let e = Tally[imm, Shape](Shape.Tiny(3i8));
+  match e {
+    case let Shape.Tiny(t) { printInt(i64.from(t.n)); printStr(" "); }
+    else { printStr("else "); }
+  }
+}
+
+fn main() i32 {
+  label("in scope"); inScope(); end();
+  label("outlives"); outlives(); end();
+  label("big via enum"); bigViaEnum(); end();
+  label("tiny direct"); tinyDirect(); end();
+  label("big direct"); bigDirect(); end();
+  label("one byte"); oneByte(); end();
+  label("mixed"); mixed(); end();
+  label("narrowed"); narrowed(); end();
+  0i32
+}

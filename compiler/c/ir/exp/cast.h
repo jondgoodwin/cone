@@ -45,11 +45,6 @@ struct NameUseNode;
 // it reads the matched place before the arm is chosen, so it takes nothing from it --
 // a payload that moves is viewed through a borrow (castGuardBorrow)
 #define FlagMatchGuardBind 0x0020  // Cast: a bound pattern's conversion made for its guard
-// An owning reference ('Rc[mut, Shape]') narrowed to one of its variants is a copy of
-// the owner, typed as the variant (castSumInterior). Its address is the same only if
-// the value sits at the same offset in both allocations, which generation asks
-// (genlOwnerNarrowCheck).
-#define FlagOwnerNarrow 0x0040  // Cast: narrows an owning reference to a variant of its enum
 // A trait pattern on an enum, 'case let Measured(m)' [topic 7], binds a virtual reference to the
 // trait built from whichever variant the reference points at, chosen by the tag. Only the variants
 // that comply have a vtable, so generation tolerates the others: they cannot reach the arm.
