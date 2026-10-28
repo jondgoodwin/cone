@@ -73,6 +73,13 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl);
 // through, naming the fixes where the member's name hides a module
 void nameUseNoSelf(TypeCheckState *pstate, NameUseNode *name);
 
+// Report a use of a module's own 'init' or 'final' at the use 'name' and return
+// 1 if its bound declaration is one, whether named bare in its own module or by
+// a path. The program's stitched init and final run each once, so any use
+// would run it twice (ErrorLifecycleNamed). A method named 'init' or 'final',
+// and a module's other functions, are not
+int nameUseLifecycleNamed(NameUseNode *name);
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
 
