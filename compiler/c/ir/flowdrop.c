@@ -50,6 +50,7 @@ typedef struct {
     INode *node;
     uint32_t id;
     uint32_t gen;
+    uint8_t reported;   // a refusal was made at this node (one that is also a site)
 } DropSlot;
 
 static DropSlot *map = NULL;
@@ -103,9 +104,21 @@ static uint32_t mapFind(INode *node, uint32_t id) {
         slot->node = node;
         slot->id = id;
         slot->gen = mapgen;
+        slot->reported = 0;
         ++mapused;
     }
     return 0;
+}
+
+// Was a refusal already made at a part store, which the path walk meets once
+// for each pass of a loop and which is also a site? Records that one is made.
+// (A site's slot cannot hold the UINT32_MAX id a refused use does.)
+static int mapReported(INode *node) {
+    mapFind(node, UINT32_MAX);      // a slot if there is none, as a refused use has
+    DropSlot *slot = mapSlot(node);
+    int was = slot->reported;
+    slot->reported = 1;
+    return was;
 }
 
 void dropWalkBegin() {
@@ -143,15 +156,19 @@ static void dropRefuse(INode *node, uint8_t state, int borrow) {
 }
 
 // A field or an element stored into a variable some path reaching the store gave
-// no value: the whole variable is given its value first
+// no value, or moved out whole: the whole variable is given its value first. A
+// hollowed one (DropHollow alone) still owns its allocation: its part store has
+// no old value to release (dropApplyPart), and is no use of the moved value.
 void dropPartUse(uint32_t var, INode *node) {
     PathVar *pv = &pathVars[var];
-    if (!pv->tracked || !(pv->state & DropUninit))
+    if (!pv->tracked || !(pv->state & (DropUninit | DropMoved)))
         return;
-    if (mapFind(node, 0))
+    if (mapReported(node))
         return;
-    mapFind(node, UINT32_MAX);
-    errorMsgNode(node, ErrorMove, "A field or element is stored only into a variable that holds a value on every path that reaches here. Give the whole variable its value first.");
+    if (pv->state & DropMoved)
+        errorMsgNode(node, ErrorMove, "A field or element is not stored into a variable whose value may have been moved out on a path that reaches here (a branch, or an earlier pass of a loop). Give the whole variable a new value first.");
+    else
+        errorMsgNode(node, ErrorMove, "A field or element is stored only into a variable that holds a value on every path that reaches here. Give the whole variable its value first.");
 }
 
 void dropMove(uint32_t var, INode *node, int hollow) {
