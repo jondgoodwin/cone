@@ -2609,8 +2609,14 @@ struct TextError is Error, Sendable {
 // its 'message()' and the error it was is the 'source()' under it; a chain of
 // them is a chain of such lines. 'report()' (the Error trait's default, which
 // 'main' prints) gives the lines, then the original error's message and each of
-// its own causes. Getting the original error back out is not built (it needs a
-// type's identity through a trait value: with the generics work).
+// its own causes.
+//
+// Getting the original error back out is anyhow's: 'holds[E]()' says whether the
+// error is an E ('is' is the language's own word for that test), 'downcastRef[E]()'
+// lends it as a '&E' and 'downcastMut[E]()' as a '&mut E', or None. They are a
+// downcast of the owned trait value ('case let E(e)' on it, which binds a borrow,
+// never the owner), and they look through each line of context to the error under
+// it, as anyhow's do, so 'e.addContext("...")' still holds what 'e' held.
 pub struct AnyError is Error, Sendable {
   inner: Uni[Error + Sendable];
 
@@ -2641,6 +2647,29 @@ pub struct AnyError is Error, Sendable {
   // 'addContext', its line made by 'f' when this is called (anyhow's with_context)
   pub fn withContext[F: fn() String](self, f: F) AnyError {
     AnyError.from(ContextError(f(), self))
+  }
+
+  // Whether the error, under any lines of context, is an E (anyhow's 'is')
+  pub fn holds[E](self: &) bool {
+    match self.downcastRef[E]() {
+      case is Some {true}
+      else {false}
+    }
+  }
+
+  // The error as an E, lent, under any lines of context; None where it is not
+  // one (anyhow's downcast_ref)
+  pub fn downcastRef[E](self: &) Option[&E] {
+    if let E(e) = inner { return Some[&E](e); }
+    if let ContextError(c) = inner { return c.cause.downcastRef[E](); }
+    None
+  }
+
+  // The same, lent mutably (anyhow's downcast_mut)
+  pub fn downcastMut[E](self: &mut) Option[&mut E] {
+    if let E(e) = inner { return Some[&mut E](e); }
+    if let ContextError(c) = inner { return c.cause.downcastMut[E](); }
+    None
   }
 }
 

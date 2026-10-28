@@ -3893,3 +3893,28 @@ include = ["include/cimp.cone"]
 category = "reject"
 description = "A C-named module's 'init' runs before the program starts, ahead of every Cone module's, so a C-named module with an 'init' that imports a Cone module with an 'init' of its own is refused"
 tags = ["typecheck"]
+
+# A downcast between two objects of an optimized program, linked with the
+# linker's defaults: identical-COMDAT folding (link.exe's /OPT:ICF) makes the two
+# types' 'sides' one function, and the comparison of vtable addresses still tells
+# them apart, because each vtable's last slot names its own type's record
+# (generation.md, "Vtables").
+[scenario.module_downcast_icf]
+category = "run"
+description = "Two types whose methods fold into one function, downcast in one object from values made in the other, optimized and linked with the linker's defaults"
+tags = ["genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# Neither vtable is unnamed_addr, so neither may be merged with the other, and
+# each points at its own record, private and not unnamed_addr either
+[[scenario.module_downcast_icf.check]]
+name = "the-vtables-and-records-keep-their-addresses"
+target = "llvmir"
+object = "q"
+contains = [
+  "@_CYNtC1q6CircleNtC1q5Shape = linkonce_odr constant",
+  "@_CYNtC1q6SquareNtC1q5Shape = linkonce_odr constant",
+  "@cone.tyrec.0 = private constant %TypeRecord",
+  "@cone.tyrec.1 = private constant %TypeRecord",
+]

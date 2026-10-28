@@ -591,6 +591,31 @@ constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
 
+**An implementer's vtable address is its type's identity through that trait**: a
+downcast, `v is Circle` or `case let Circle(c)` on a `&<Shape` or a `Uni[Shape]`,
+compares the virtual reference's vtable pointer with `Circle as Shape`'s
+(`genlIsType`), so there is no identity field. That holds only while each
+(trait, type) pair has one vtable in the image, which three things keep:
+- **Every object that builds it shares it.** In a described build the vtable is
+  `linkonce_odr` in a COMDAT of `any` ("Linkage" above), in a debug and a release
+  build alike, and the linker keeps one copy; a build with no description is the
+  program's only object, so its internal vtables have no second copy to disagree
+  with.
+- **Two vtables never fold into one.** Neither carries `unnamed_addr`, so LLVM
+  merges no two. The linker's identical-COMDAT folding (`link.exe`'s default
+  `/OPT:ICF`, with no `/DEBUG`) does fold two implementers' methods whose code is
+  the same, but each vtable's last slot points at its implementer's own type
+  record, a private constant in the object's plain `.rdata` (no COMDAT, no
+  `unnamed_addr`), so no two vtables' bytes are the same and neither are folded,
+  and no two records are either. A record moved into a COMDAT of its own, or given
+  `unnamed_addr`, would let two implementers whose methods fold share a vtable, and
+  `v is Circle` say yes of a `Square` (`module_downcast_icf` holds it).
+- **Every Cone object links into one image.** Congo links a program's packages
+  statically, a library being an object (`tools/congo/README.md`), and `conec`
+  makes no shared library, so no second image holds a second copy. A Cone package
+  built as a DLL or shared object would break the comparison, and identity would
+  then have to compare something stable instead, such as the type's mangled name.
+
 **A plain function has a vtable of its own for a callable trait** (`fnSigCallTrait`,
 [closure](../nodes/closure.md), "A callable used dynamically"). A reference to a
 function converts to `&<fn(sig)` with the function's code pointer as the data

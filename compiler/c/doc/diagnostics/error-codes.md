@@ -644,7 +644,10 @@ is no variant's). A trait pattern that binds needs a borrowed reference to build
 from, and is written as the trait or `&<Trait`: a matched value, an owner, or a pattern written as a
 plain reference `&Trait` is `ErrorPatTraitBind`. Where the matched value is not an enum (a virtual
 reference to an open trait, a tagged trait), a trait named as a pattern is `ErrorPatTrait`: only a
-closed family can say which of its values comply.
+closed family can say which of its values comply, and a test of one trait value against another trait
+is not built. A downcast of a virtual reference to an open trait names a concrete type that meets the
+trait; one that does not, or a type that is no struct (`n is i64`), is `ErrorInvType` with a message
+saying the value is never one, not that a tag is missing ([cast](../nodes/cast.md), "`castIsTypeCheck`").
 
 An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
