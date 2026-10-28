@@ -1,0 +1,297 @@
+// Replies from the I/O thread under 24 workers, counted (the actors package's
+// header, THE HOME INBOX: a reply made off the workers goes to the inbox of the
+// worker its actor awaited from, and is stolen from there if that worker is busy).
+// In one program, at once:
+//
+//   socket actors, each with a loopback pair of its own, write 64 bytes on one
+//   end and read them on the other, again and again: two awaits a round;
+//   sleeping actors, each awaiting a zero sleep again and again;
+//   pure-message actors beside them, pairs bouncing a message back and forth,
+//   never awaiting;
+//   a busy round: an actor sends a hog to run next on its own worker, then awaits
+//   a 1 ms sleep; the hog holds that worker until the actor's reply has run, so
+//   the reply runs only if another worker takes it (THE HOME INBOX: stealable
+//   while its worker is busy). A hog that ran elsewhere (stolen) holds nothing.
+//
+// Counted per actor: every await answered exactly once (a count per actor,
+// checked against its rounds at the end), and no half of an actor run while
+// another runs (a flag per actor, swapped in at each start: a resume twice, or
+// one actor on two workers at once, finds it set). A wake lost hangs the
+// program, which the test runner's time limit ends. The busy rounds whose hog
+// held the home worker must every one have run their reply while it held it.
+// Built with -D COUNTS=1 it prints one line of the counts, for scripts that run
+// it many times.
+
+mod homestress;
+
+import libc;
+import testing use *;
+import stdio use *;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+const sockActors = 12usize;
+const sockRounds = 300u64;
+const sleepActors = 12usize;
+const sleepRounds = 150u64;
+const pairs = 8u64;
+const bounces = 3000u64;
+const busyRounds = 40u64;
+const nSlots = 32usize;       // one per awaiting actor (socket ones first, then sleeping ones, then the busy one)
+const busyAt = 24usize;
+
+let answered: Atomic[usize];  // nSlots u64s: awaits answered, per actor
+let inside: Atomic[usize];    // nSlots u64s: 1 while one of the actor's halves runs
+let twice: Atomic[u64];       // a half that found its actor's flag already set
+let wrong: Atomic[u64];       // an operation that ended in an error
+let skipped: Atomic[u64];     // socket actors that found no connection to make (the system's ports used up)
+let bounced: Atomic[u64];     // pure messages handled
+let hogRound: Atomic[u64];    // the busy actor's last round resumed, + 1
+let busySeen: Atomic[u64];    // busy rounds whose hog ran on the actor's home worker
+let busyRan: Atomic[u64];     // ... whose reply ran while the hog held it
+let busyLate: Atomic[u64];    // ... whose reply had not run after 2 s of holding: no progress
+let busyMoved: Atomic[u64];   // busy rounds whose reply ran on another worker than the one it awaited from
+
+fn @initpure init() {
+  answered = Atomic[usize].of(0usize);
+  inside = Atomic[usize].of(0usize);
+  twice = Atomic[u64].of(0u64);
+  wrong = Atomic[u64].of(0u64);
+  skipped = Atomic[u64].of(0u64);
+  bounced = Atomic[u64].of(0u64);
+  hogRound = Atomic[u64].of(0u64);
+  busySeen = Atomic[u64].of(0u64);
+  busyRan = Atomic[u64].of(0u64);
+  busyLate = Atomic[u64].of(0u64);
+  busyMoved = Atomic[u64].of(0u64);
+}
+
+fn slotOf(base: &Atomic[usize], i: usize) *u64 {(base.load() as *u64) + i}
+
+// A half of actor i begins: its flag must be clear
+fn enter(i: usize) {
+  if mem.atomicSwap[u64](slotOf(&inside, i), 1u64, MemOrder.SeqCst) != 0u64 {
+    twice.add(1u64);
+  }
+}
+
+// It is about to await: the flag cleared
+fn away(i: usize) {
+  mem.atomicStore[u64](slotOf(&inside, i), 0u64, MemOrder.SeqCst);
+}
+
+// Back from an await: one answer more, and the flag set again
+fn back(i: usize) {
+  mem.atomicAdd[u64](slotOf(&answered, i), 1u64, MemOrder.SeqCst);
+  enter(i);
+}
+
+fn nowNs() u64 {u64.from(Instant.now().nanos())}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn bufOk(r: Result[IoBuf, IoError]) bool {
+  match r {
+    case is Err {false}
+    else {true}
+  }
+}
+
+actor SockLoop {
+  pub async fn run(self, i: usize, n: u64) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let addr = await ls.localAddr();
+    var port = 0u16;
+    match addr {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let a = socketOf(c);
+    if a.isNone() {
+      skipped.add(1u64);
+      return;
+    }
+    let ac = await ls.accept();
+    let b = socketOf(ac);
+    if b.isNone() {
+      skipped.add(1u64);
+      return;
+    }
+    enter(i);
+    var k = 0u64;
+    while k < n {
+      var out = IoBuf(64usize);
+      out.setLen(64usize);
+      away(i);
+      let w = await a.write(out);
+      back(i);
+      match w {
+        case let Ok(m) {if m != 64usize {wrong.add(1u64);}}
+        case is Err {wrong.add(1u64);}
+      }
+      away(i);
+      let r = await b.read(IoBuf(64usize));
+      back(i);
+      if !bufOk(r) {wrong.add(1u64);}
+      k = k + 1u64;
+    }
+    away(i);
+  }
+}
+
+actor SleepLoop {
+  pub async fn run(self, i: usize, n: u64) {
+    enter(i);
+    var k = 0u64;
+    while k < n {
+      away(i);
+      let r = await aio.sleep(Duration.fromMillis(0i64));
+      back(i);
+      match r {
+        case is Err {wrong.add(1u64);}
+        else {}
+      }
+      k = k + 1u64;
+    }
+    away(i);
+  }
+}
+
+actor Bounce {
+  pub async fn hit(self, other: Bounce, left: u64) {
+    bounced.add(1u64);
+    if left > 0u64 {
+      other.hit(selfactor, left - 1u64);
+    }
+  }
+}
+
+// Holds the worker it runs on until the busy actor's round k has resumed, if
+// that is the worker the actor awaited from (2 s at most)
+actor Hog {
+  pub async fn hold(self, home: u32, k: u64) {
+    if actors.workerIndex() != home {
+      return;
+    }
+    busySeen.add(1u64);
+    let until = nowNs() + 2000000000u64;
+    while hogRound.load() <= k && nowNs() < until {}
+    if hogRound.load() > k {
+      busyRan.add(1u64);
+    } else {
+      busyLate.add(1u64);
+    }
+  }
+}
+
+actor Busy {
+  pub async fn run(self, hog: Hog, n: u64) {
+    enter(busyAt);
+    var k = 0u64;
+    while k < n {
+      let home = actors.workerIndex();
+      hog.hold(home, k);
+      away(busyAt);
+      let r = await aio.sleep(Duration.fromMillis(1i64));
+      back(busyAt);
+      hogRound.store(k + 1u64);
+      if actors.workerIndex() != home {busyMoved.add(1u64);}
+      match r {
+        case is Err {wrong.add(1u64);}
+        else {}
+      }
+      k = k + 1u64;
+    }
+    away(busyAt);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 24u32));
+  answered.store(libc.calloc(nSlots, 8usize) as usize);
+  inside.store(libc.calloc(nSlots, 8usize) as usize);
+  {
+    var i = 0usize;
+    while i < sockActors {
+      let s = SockLoop();
+      s.run(i, sockRounds);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < sleepActors {
+      let s = SleepLoop();
+      s.run(sockActors + i, sleepRounds);
+      i = i + 1usize;
+    }
+    var p = 0u64;
+    while p < pairs {
+      let x = Bounce();
+      let y = Bounce();
+      x.hit(y, bounces - 1u64);
+      p = p + 1u64;
+    }
+    let b = Busy();
+    b.run(Hog(), busyRounds);
+  }
+  actors.waitUntilIdle();
+  // Per actor: every await answered exactly once
+  var got = 0u64;
+  var want = 0u64;
+  var off = 0u64;
+  var i = 0usize;
+  while i < nSlots {
+    var w = 0u64;
+    if i < sockActors {w = 2u64 * sockRounds;}
+    else if i < sockActors + sleepActors {w = sleepRounds;}
+    else if i == busyAt {w = busyRounds;}
+    let g = mem.atomicLoad[u64](slotOf(&answered, i), MemOrder.SeqCst);
+    if g != w {off = off + 1u64;}
+    got = got + g;
+    want = want + w;
+    i = i + 1usize;
+  }
+  let st = actors.stats();
+  if isDefined("COUNTS") {
+    printStr("homestress: answered "); printUInt(got); printStr(" of "); printUInt(want);
+    printStr(" actorsOff "); printUInt(off);
+    printStr(" twice "); printUInt(twice.load());
+    printStr(" wrong "); printUInt(wrong.load());
+    printStr(" skipped "); printUInt(skipped.load());
+    printStr(" bounced "); printUInt(bounced.load()); printStr(" of "); printUInt(pairs * bounces);
+    printStr(" busySeen "); printUInt(busySeen.load());
+    printStr(" busyRan "); printUInt(busyRan.load());
+    printStr(" busyLate "); printUInt(busyLate.load());
+    printStr(" busyMoved "); printUInt(busyMoved.load());
+    printStr(" homeTaken "); printUInt(st.homeTaken);
+    printStr(" homeStolen "); printUInt(st.homeStolen);
+    printStr(" steals "); printUInt(st.steals);
+    printStr("\n");
+  }
+  finalAll();
+  if skipped.load() > 0u64 {
+    return skip("the system refused connections: its ports are used up by earlier runs");
+  }
+  expectUInt(off, 0u64, "every actor's awaits answered exactly once");
+  expectUInt(got, want, "every await answered");
+  expectUInt(twice.load(), 0u64, "no actor resumed twice or run on two workers at once");
+  expectUInt(wrong.load(), 0u64, "every operation succeeded");
+  expectUInt(bounced.load(), pairs * bounces, "every pure message handled");
+  expectUInt(busyLate.load(), 0u64, "a reply whose worker is busy runs elsewhere");
+  expectUInt(busyRan.load(), busySeen.load(), "every busy round's reply ran while its worker was held");
+  expect(st.homeTaken > 0u64, "replies were taken at home");
+  done()
+}
