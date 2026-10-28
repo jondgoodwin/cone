@@ -155,8 +155,11 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        let sw = (self.srvAt(s) as &SrvRec).drv.wakeAt();
+        let srec = self.srvAt(s) as &SrvRec;
+        let sw = srec.drv.wakeAt();
         if sw < limit {limit = sw;}
+        let hw = srec.h3.wakeAt();
+        if hw < limit {limit = hw;}
       }
       s = s + 1usize;
     }
@@ -179,6 +182,7 @@ struct Service {
       if srvs.isLive(u32.from(s)) {
         let srec = self.srvAt(s) as &mut SrvRec;
         if srec.drv.complete(lp, c) {return true;}
+        if srec.h3.complete(lp, c) {return true;}
       }
       s = s + 1usize;
     }
@@ -201,7 +205,9 @@ struct Service {
     var s = 0usize;
     while s < srvs.bound() {
       if srvs.isLive(u32.from(s)) {
-        (self.srvAt(s) as &mut SrvRec).drv.abortAll(lp);
+        let srec = self.srvAt(s) as &mut SrvRec;
+        srec.drv.abortAll(lp);
+        srec.h3.end(lp);
       }
       s = s + 1usize;
     }
@@ -219,8 +225,9 @@ struct Service {
           if !srec.aborted {
             srec.aborted = true;
             srec.drv.abortAll(lp);
+            srec.h3.abortAll(lp);
           }
-          if srec.drv.live() == 0u32 && srec.drv.held() == 0usize {
+          if srec.drv.live() == 0u32 && srec.drv.held() == 0usize && srec.h3.live() == 0usize {
             srvs.removeAt(u32.from(k));
           }
         }
@@ -237,7 +244,7 @@ struct Service {
         let rec = self.clientAt(k) as &ClientRec;
         if rec.dying && rec.client.live() == 0u32 && rec.client.held() == 0usize {
           let ds = rec.client.driverStats();
-          if ds.connects == ds.closed {
+          if ds.connects == ds.closed && rec.client.http3Live() == 0usize {
             clients.removeAt(u32.from(k));
           }
         }

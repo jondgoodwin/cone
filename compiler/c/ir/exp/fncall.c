@@ -287,7 +287,11 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // program asked for, and leaving the use unresolved would only hand the
     // next pass a null to trip over.
     ModuleNode *qualmod = dclInfoGetModule(basedcl);
-    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+    // A module's init and final are run by the program, once, whatever their
+    // visibility and whichever module names them, its own included. That answer
+    // comes first: a private one's remedy is not to make it public
+    int lifecycle = basedcl->tag == ModuleTag && nameUseLifecycleNamed(member);
+    if (!lifecycle && qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
@@ -4159,6 +4163,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
+    // '?a' over a parameter that a value was substituted for: not the Option type
+    // name resolution could not yet tell it from, so the refusal it deferred
+    if ((node->flags & FlagQuesProvisional) && node->methfld == NULL && node->args && node->args->used == 1
+        && !isTypeNode(nodesGet(node->args, 0)) && !inodeIsProvisionalType(nodesGet(node->args, 0))) {
+        errorMsgNode((INode*)node, ErrorInvType, "'?' is not valid here.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
     // 'T(1)': a call of a type that only a generic's substitution made one
     if (fnCallIsTypeCall(node))
         fnCallMarkConstruction(node);
@@ -5010,7 +5023,10 @@ dispatch:
     }
 
     default:
-        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        // A type that was refused where it was written (a generic named with
+        // no arguments) has said so; its uses do not say it again
+        if (objtype != errorType)
+            errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
     }
 
@@ -5044,6 +5060,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
     // A call type check gave up on without a diagnostic of its own, because what
     // it reads failed elsewhere -- a field of a value returned by a function
     // whose signature failed -- passes this function's flow gate but was never
@@ -5062,6 +5079,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if (callee && callee->tag == VarDclTag)
         nameuseFlow(fstate, (NameUseNode**)&node->objfn);
     for (nodesFor(node->args, cnt, argsp)) {
+        flowGateOperandNext(fstate, *argsp);
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);
         else
@@ -5069,7 +5087,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }
-    flowGateOperandsEnd(fstate, inflight);
+    flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value

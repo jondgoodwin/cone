@@ -553,6 +553,23 @@ first.x;                       //   again below. It may not be borrowed mutably 
 		receiver is mutable and waits for the call, meeting the arguments as a read-only borrow would, so
 		<span class="pre">v.push(v.len())</span> reads <span class="pre">v</span> first and then pushes, as does
 		<span class="pre">v.push(takeLast(&amp;mut v))</span>, which works the argument out before the push.</p>
+	<p>An argument whose value is a borrow <i>into</i> a collection, a view or an element or a call returning one,
+		keeps the collection frozen through the later arguments and the call, just as a <span class="pre">let</span>
+		holding it would: the callee could grow the collection through a later <span class="pre">&amp;mut</span> of it,
+		moving what the view points into, and then read the view. An argument only computed from a view, such as its
+		length, holds no borrow and leaves the collection free. Two borrows of the whole collection stay allowed, as
+		above: both point at the collection itself, and the callee may not keep a borrow into one across a change
+		through the other (<a href="mem-shape.html">Borrowing into a collection or an enum</a>).</p>
+<pre>
+fn grow(r: &amp;str, w: &amp;mut String) u8 { w.append("more"); r[0usize] }
+fn count(n: usize, w: &amp;mut String) { w.append("more"); }
+fn len(r: &amp;str) usize { r.len }
+
+var s = String.from("a");
+count(len(s.view()), &amp;mut s);   // Ok: the first argument is a number
+grow(s.view(), &amp;mut s);         // Error 1168: 's' is borrowed (by 'view') for a call or value still being
+                                 //   made, which uses that borrow. It may not be borrowed mutably before then.
+</pre>
 	<p>An owning reference used where a borrowed one is wanted lends what it owns, and is frozen the same way: after
 		<span class="pre">let b: &amp;Point = u</span>, for <span class="pre">u</span> a <span class="pre">Uni[Point]</span>,
 		<span class="pre">u</span> may not be moved while <span class="pre">b</span> is still to be used. A container may

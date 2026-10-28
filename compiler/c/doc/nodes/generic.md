@@ -367,7 +367,11 @@ generic parameter (`R[mut, T]`), and `ttupleNameRes` lets it vote with neither
 side (so `(T, i64)` is a type tuple, not a mix) while `allocateQuesNameRes`
 leaves `?T` the `Option[T]` type instead of refusing it. A macro's parameter is
 the same declaration, so a macro given a value still clones a value: every
-re-decision flips only an operand that was not a type and now is.
+re-decision flips only an operand that was not a type and now is. The refusal
+`allocateQuesNameRes` deferred is made at the clone's type check: it marks the `?`
+node `FlagQuesProvisional`, and `fnCallTypeCheckNode` refuses one whose operand
+is still no type once the argument is in (`'?' is not valid here.`), a value
+given to a macro's `?a` among them.
 
 ### How a cloned name gets re-pointed — two independent mechanisms
 
@@ -884,7 +888,14 @@ the generic, the clause and the argument, or, for a condition joined by `||` or
 (`genericBindingsCat`), and an error node stands for the instance,
 so nothing inside the generic is checked against arguments it was never meant
 for. A variant answers to its enum's clauses. A type position holding the error
-node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A
+node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet; so
+does one whose check reported something and left no type (a struct in brackets,
+`Box[3]`): `itypeTypeCheck` says "Expected a type" only when checking said
+nothing (judged by the error count around that one type's own check),
+`arrayTypeCheck` says "Element type must be a known type" only when checking the
+element said nothing, and a field
+read through a variable of `errorType` is not refused again
+(`fnCallTypeCheck`). A
 clause naming an instance of a generic trait says why the argument does not fit
 it (`genericFitWhy`): the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to

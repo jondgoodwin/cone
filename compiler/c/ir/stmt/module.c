@@ -657,8 +657,8 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
         else if (inodeIsPrivate(found))
             errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so it cannot be a default fold.",
                 &name->namestr, &mod->namesym->namestr);
-        // Nor can it list the module's finalizer or a clone (importStarAdmits)
-        else if (name == finalName || name == cloneName)
+        // Nor can it list the module's init, finalizer or a clone (importStarAdmits)
+        else if (importIsLifecycleName(name))
             errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so it cannot be a default fold.",
                 &name->namestr, &mod->namesym->namestr);
     }
@@ -673,8 +673,8 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
         else if (inodeIsPrivate(found))
             errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
                 &name->namestr, &mod->namesym->namestr);
-        // Nor does it fold the module's finalizer or a clone (importStarAdmits)
-        else if (name == finalName || name == cloneName)
+        // Nor does it fold the module's init, finalizer or a clone (importStarAdmits)
+        else if (importIsLifecycleName(name))
             errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so '*' never folds it; there is nothing to leave out.",
                 &name->namestr, &mod->namesym->namestr);
     }

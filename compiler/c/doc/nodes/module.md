@@ -1849,8 +1849,9 @@ declaration's `DclPrivate` bit where the source declared the name, the alias's o
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
 clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
 private name behaves as a missing one does, and there is nothing to leave out.
-The source's `final` and `clone` are passed over by a star clause as well
-(`importStarAdmits`), so after `but` they are `ErrorBadFold`, in `importNameRes`
+The source's `init`, `final` and `clone` are passed over by a star clause as well
+(`importStarAdmits`, which asks `importIsLifecycleName`), so after `but` they are
+`ErrorBadFold`, in `importNameRes`
 and, for a `mod` line's default, `modDefaultFoldCheck`; so is naming them in a
 list (`importFoldItem`, and `modDefaultFoldCheck`). A
 name the source has not got, listed or after `but`, is `ErrorNoMbr`;
@@ -1996,11 +1997,25 @@ it, and its own function `final`, written `fn final()` by analogy with a type's
 overload name, since the stitched functions call each with nothing to pass and
 nothing to receive. Anything else under either name at module scope is
 `ErrorModLifecycle`, with the cause in the message — a function of another
-shape, `init` without `@initpure`, a global named `final`. A name a fold
-brought is another module's `init` and is not this module's. Either may be
-`extern` (an include file's), and either may be private: the stitched functions
-reach them however they are declared. A module may declare either, both or
-neither. Each well-formed one is marked `DclLifecycle`.
+shape, `init` without `@initpure`, a global named `final`. A name an alias
+brought is another module's and is not this module's. Either may be
+`extern` (an include file's), and either may be private or `pub`: the stitched
+functions reach them however they are declared. A module may declare either, both
+or neither. Each well-formed one is marked `DclLifecycle`.
+
+**They are run by the runtime, once, and are not named by anything else.** A use
+of either in an expression — a call, a borrow, a bare name inside the module that
+declares it, or a path from any module (`extra.final()`, `&extra.init`) — is
+`ErrorLifecycleNamed`, whatever `pub` says: the stitched functions already run
+each once, and a second run is a double `final`, which frees twice. The check is
+`nameUseLifecycleNamed`, asked of a bare name in `nameUseNameRes` and of a path's
+member in `fnCallNameResPath`, ahead of the private-name check, so a private one
+is told the lifecycle answer and not "make it public". It asks the declaration,
+not `DclLifecycle`, which is set only when the module is type checked and never
+on an include file's declaration. A module-level function named `init` or `final`
+is the module's lifecycle function; a method of that name is not. Neither folds:
+`importIsLifecycleName` makes a star pass over `init`, `final` and `clone`, and a
+list or `but` naming one is `ErrorBadFold`.
 
 **`@initpure`** is an attribute after `fn`, before or after `@c`: a function a
 module's `init` may call, as `init` itself is. The parser records it

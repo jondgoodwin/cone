@@ -275,10 +275,10 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
                 &srcname->namestr, &src->namesym->namestr);
         return;
     }
-    // The module's finalizer and a clone are its own lifecycle's: a star passes
+    // The module's init, finalizer and a clone are its own lifecycle's: a star passes
     // over them (importStarAdmits), and a list naming them is refused alike. The
     // item is made, unbound, so no later pass reports it again
-    if (srcname == finalName || srcname == cloneName) {
+    if (importIsLifecycleName(srcname)) {
         target->dclnode = found;
         if (!import->isdefault)
             errorMsgNode((INode*)alias, ErrorBadFold, "%s belongs to %s's own lifecycle, so it does not fold.",
@@ -333,6 +333,10 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
         modFoldDupReport(at, alias, prior);
 }
 
+int importIsLifecycleName(Name *name) {
+    return name == initName || name == finalName || name == cloneName;
+}
+
 // Does a star clause admit this name of its module? Not Self, not an unnamed
 // node, not the module's own lifecycle names, not a name 'but' leaves out, and
 // not the module's own name, which it publishes into its own namespace and which
@@ -344,7 +348,7 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
 // rather than a part of it [Jon 23 Sep].
 static int importStarAdmits(ImportNode *import, Name *name, INode *member) {
     if (name == NULL || name == selfTypeName || name == anonName
-        || name == finalName || name == cloneName || name == import->module->namesym
+        || importIsLifecycleName(name) || name == import->module->namesym
         || foldExcluded(import->fold, name))
         return 0;
     if (import->isextends)
@@ -593,9 +597,9 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
                     errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
                         &name->namestr, &src->namesym->namestr);
                 // A public name the star passes over for a reason of its own is as
-                // absent: the module's finalizer, and a clone, which are its own
+                // absent: the module's init, finalizer and a clone, which are its own
                 // lifecycle's (importStarAdmits)
-                else if (name == finalName || name == cloneName)
+                else if (importIsLifecycleName(name))
                     errorMsgNode(*itemp, ErrorBadFold, "%s belongs to %s's own lifecycle, so '*' never folds it; there is nothing to leave out.",
                         &name->namestr, &src->namesym->namestr);
             }

@@ -46,7 +46,10 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
         // In a generic's template '?T' asks of a generic parameter, which is
         // not a type until substituted. Leave it the Option[T] type: the
         // instance's clone substitutes the argument, and the clone of a '&T'
-        // or '(T, T)' argument decides that one again.
+        // or '(T, T)' argument decides that one again. A value substituted
+        // for a macro's parameter is refused then (fnCallTypeCheck).
+        assert(quesNode->methfld == NULL && "FlagQuesProvisional shares FlagRcvChecked's bit, which only a node with a methfld carries");
+        quesNode->flags |= FlagQuesProvisional;
     }
     else {
         errorMsgNode((INode*)quesNode, ErrorInvType, "'?' is not valid here.");
