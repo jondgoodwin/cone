@@ -1000,15 +1000,35 @@ none given to a macro with type parameters, or some to one without, is
 `ErrorMacroTypeArgs`; the wrong number `ErrorArgCount`; a value `ErrorNotType`).
 Brackets after the macro's name fill its first list: its type parameters where
 it declares them, its value parameters where it does not (`twice[x]`, as
-before). `macroExpand` substitutes the type arguments and the value arguments
-together, the type parameters first. Inferring the type arguments, checking each
-value argument against its parameter's type, and binding a plain (not `lazy`)
-parameter so that it is evaluated once, are checked at expansion `[planned]`:
-today every value parameter is substituted whole, and `FlagLazy` is read by
-nothing. That is what makes `twice[bump()]`, its parameter `lazy`, call `bump()`
-twice. It is also what lets an argument go unevaluated: core's
-`assertDebug[cond: lazy bool]` puts `cond` inside `if isDebugBuild() {...}`, so a
-release build never runs it.
+before). `macroExpand` substitutes the type arguments and the `lazy` value
+arguments together, the type parameters first. Inferring the type arguments,
+and checking a `lazy` argument against its parameter's type, are `[planned]`.
+
+**A plain (not `lazy`) parameter is evaluated once.** `macroExpand` binds its
+argument to a variable first, and the expansion is a block,
+`{ let a: T = arg; body }`, one `let` per plain parameter in the parameters'
+order, so the arguments run once each, left to right, before the body, however
+many times the body names them, and once where it never does. The variable is
+an immutable `VarDcl` of the parameter's name, its type the parameter's with the
+type parameters substituted, its value the argument node itself (not a clone),
+scoped one level in, as the block it heads is, and marked `FlagMacroBind`. The
+parameter is hooked to it rather than to the argument, and `cloneNode` copies a
+use hooked to such a variable as a use of it, keeping the use's own place
+(hygiene costs nothing: the use is bound to the declaration, not to a name).
+The argument is checked against the type as any initializer is, by the `let`
+(`ErrorInvType`, "does not match variable's declared type", pointed at the argument), and moved into the
+variable where its type moves. A body that changes the variable — a store into
+it or a part of it, a swap, a borrow to change it, an operator changing it in
+place, a method taking `self: &mut` — is refused with `ErrorMacroParmAssign`
+where the body writes the change (`macroParmAssignRefused`, from the permission
+refusals in `assign.c`, `swap.c` and `borrow.c`), since an argument the macro
+assigns to must be `lazy` [Jon 18 Oct]. A macro with no plain parameter expands
+to its body alone, as before.
+
+A `lazy` parameter, and a macro method's `self`, are substituted whole: what
+makes `twice[bump()]`, its parameter `lazy`, call `bump()` twice. It is also what
+lets an argument go unevaluated: core's `assertDebug[cond: lazy bool]` puts
+`cond` inside `if isDebugBuild() {...}`, so a release build never runs it.
 
 **A parameter typed by a trait is refused**, at name resolution, as
 `ErrorGenParmConstr` (`macroParmTrait`): `[a: Ordered]` or an instance of a
@@ -1021,9 +1041,10 @@ An enum, and a reference to a trait (`&Ordered`), are types like any other.
 `cloneFnCallNode` gives a call to either that place. The place is the outermost
 use (`macroSrcSite`): every node cloned from a body is marked as instantiated by
 the use it expands (`instnode`), so a macro used in a body climbs that chain
-while each link is a macro's use. An argument is cloned with `srcsite` and
-`instnode` cleared, so it keeps the place it was written at and the chain stops
-at it: a macro passed as an argument answers where it is written. Nothing else
+while each link is a macro's use. A `lazy` argument is cloned with `srcsite`
+and `instnode` cleared, and a plain one is not cloned at all, so either keeps
+the place it was written at and the chain stops at it: a macro passed as an
+argument answers where it is written. Nothing else
 in the body moves: a diagnostic about the body, `ErrorInstDepth`'s included,
 still points into it. `intrinsic_srcloc_macro` pins each case.
 
@@ -1033,8 +1054,10 @@ which for a member access checks the receiver *before* the arguments and asks th
 receiver's type what the name binds — a macro's arguments must stay unchecked
 until substituted, so the receiver is the only thing checked ahead of the
 lookup. The receiver is inserted at the front of the argument list and
-`macroExpand` substitutes it for `self` like any other argument: a body naming
-`self` twice evaluates the receiver twice. The call is written with parentheses
+`macroExpand` substitutes it for `self`, as a `lazy` argument is substituted: a
+body naming `self` twice evaluates the receiver twice (`self` is the receiver
+expression as it is [Jon 26 Oct]). The method's plain parameters after it are
+bound once, as any macro's are. The call is written with parentheses
 or as the bare member (`x.name`); `x.name[i]` indexes what the member names,
 except where the macro declares type parameters and what is in the brackets
 are types: `x.name[i32](args)` is then its use, given them, as a generic
@@ -1116,9 +1139,10 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 
 - **`cloneNode`'s generic-parameter substitution re-enters `cloneNode` on a
   *global*** — the parameter name's hooked node — whose value at type-check time
-  need not be what name resolution saw. Its one guard is for the name being
+  need not be what name resolution saw. Its guards are for the name being
   hooked to a `GenVarDclNode` — a template being copied, a macro's or a generic
-  method's — which it copies as a use.
+  method's — or to a macro's binding of a plain parameter (`FlagMacroBind`),
+  either of which it copies as a use.
   Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips

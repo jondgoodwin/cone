@@ -107,6 +107,7 @@ enum ErrorCode {
     ErrorMacroParmType = 1533,  // A macro's value parameter written without a type (`macro twice[a]`): a macro parameter is always typed, `a: T` or `a: lazy T`. Only `self`, first in a macro declared in a type, is written bare. Pointed at the parameter
     ErrorMacroSelfType = 1534,  // A macro method's `self` written with a type or `lazy` (`macro m[self: &Point]`): `self` is the receiver expression as it is, so it takes neither. Pointed at the type
     ErrorMacroTypeArgs = 1535,  // A macro use whose brackets do not fit the macro's type parameters: none written where the macro declares some (inferring them is not built), or type arguments given to a macro that declares none (`m[i32](x)`). Pointed at the use
+    ErrorMacroParmAssign = 1538, // A macro's body changing a plain (not `lazy`) parameter: assigning to it or to a part of it, swapping it, or borrowing it mutably. A plain parameter is evaluated once, bound as a `let`, so an argument the macro assigns to must be `lazy`. Reported where the macro is used, pointed at the change in the body
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'

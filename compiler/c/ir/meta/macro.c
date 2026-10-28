@@ -240,9 +240,10 @@ static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs)
 }
 
 // Expand a macro in place of the node that used it, substituting 'typeargs'
-// for its type parameters and 'args' for its value parameters, then type
-// check what it expanded to. 'selfparm' is the parameter a macro method's
-// receiver stands in for, or NULL.
+// for its type parameters, binding each plain value parameter's argument to a
+// variable and substituting each 'lazy' one's, then type check what it
+// expanded to. 'selfparm' is the parameter a macro method's receiver stands in
+// for, or NULL.
 static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *macro, Nodes *typeargs, Nodes *args, INode *selfparm) {
     if (!macroTypeArgsFit(nodep, macro, typeargs))
         return;
@@ -258,25 +259,63 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
         return;
     }
 
-    // Type arguments and value arguments substitute alike: one list of each,
-    // the type parameters first
-    Nodes *parms = given ? macro->parms : NULL;
-    if (typeargs) {
-        Nodes *allparms = newNodes(typeargs->used + given);
-        Nodes *allargs = newNodes(typeargs->used + given);
+    // A plain parameter is evaluated once: the expansion binds its argument
+    // first, '{ let a: T = arg; body }', and the body's uses of the parameter
+    // are uses of that variable (cloneNode). A 'lazy' one, and a macro
+    // method's 'self', are substituted whole. One whose declaration was
+    // refused (no type) is substituted, as before, so as not to report again.
+    // 'bindings' holds, per value parameter, its variable or NULL.
+    Nodes *bindings = NULL;
+    if (given) {
         INode **nodesp;
         uint32_t cnt;
-        for (nodesFor(macro->typeparms, cnt, nodesp))
-            nodesAdd(&allparms, *nodesp);
-        for (nodesFor(typeargs, cnt, nodesp))
-            nodesAdd(&allargs, *nodesp);
-        if (given) {
-            for (nodesFor(macro->parms, cnt, nodesp))
-                nodesAdd(&allparms, *nodesp);
-            for (nodesFor(args, cnt, nodesp))
+        uint32_t i = 0;
+        for (nodesFor(macro->parms, cnt, nodesp)) {
+            GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+            INode *arg = nodesGet(args, i++);
+            if ((INode*)parm == selfparm || (parm->flags & FlagLazy)
+                || parm->valtype == NULL || parm->valtype == unknownType)
+                continue;
+            if (bindings == NULL) {
+                bindings = newNodes(given);
+                for (uint32_t j = 0; j < given; ++j)
+                    nodesAdd(&bindings, NULL);
+            }
+            // Typed below, once the type parameters are hooked to their arguments.
+            // Declared in the block the expansion becomes, one level in
+            VarDclNode *var = newVarDclFull(parm->namesym, VarDclTag, NULL, (INode*)immPerm, arg);
+            inodeLexCopy((INode*)var, arg);
+            var->scope = (uint16_t)(pstate->scope + 1);
+            var->flags |= FlagMacroBind;
+            nodesGet(bindings, i - 1) = (INode*)var;
+        }
+    }
+
+    // Type arguments and value arguments substitute alike: one list of each,
+    // the type parameters first. A plain parameter is hooked to its variable.
+    Nodes *parms = NULL;
+    if (typeargs || given) {
+        uint32_t ntypes = typeargs ? typeargs->used : 0;
+        parms = newNodes(ntypes + given);
+        Nodes *allargs = newNodes(ntypes + given);
+        INode **nodesp;
+        uint32_t cnt;
+        if (typeargs) {
+            for (nodesFor(macro->typeparms, cnt, nodesp))
+                nodesAdd(&parms, *nodesp);
+            for (nodesFor(typeargs, cnt, nodesp))
                 nodesAdd(&allargs, *nodesp);
         }
-        parms = allparms;
+        if (given) {
+            for (nodesFor(macro->parms, cnt, nodesp))
+                nodesAdd(&parms, *nodesp);
+            uint32_t i = 0;
+            for (nodesFor(args, cnt, nodesp)) {
+                INode *var = bindings ? nodesGet(bindings, i) : NULL;
+                nodesAdd(&allargs, var ? var : *nodesp);
+                ++i;
+            }
+        }
         args = allargs;
     }
 
@@ -288,12 +327,36 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
     }
 
     // Replace the use with the body, substituting arguments for parameters
+    INode *use = *nodep;
     CloneState cstate;
-    clonePushState(&cstate, *nodep, NULL, pstate->scope, parms, args);
+    clonePushState(&cstate, use, NULL, pstate->scope, parms, args);
     cstate.selfparm = selfparm;
     // 'srcFile()' and 'srcLine()' in the body answer where it is used
-    cstate.srcsite = macroSrcSite(*nodep);
-    *nodep = cloneNode(&cstate, macro->body);
+    cstate.srcsite = macroSrcSite(use);
+    INode *body = cloneNode(&cstate, macro->body);
+    // Each binding's type is its parameter's, the macro's type parameters
+    // substituted, and the bindings go first, in the parameters' order: the
+    // arguments are evaluated once each, left to right, before the body
+    if (bindings) {
+        BlockNode *blk = newBlockNode();
+        inodeLexCopy((INode*)blk, use);
+        blk->instnode = use;
+        INode **nodesp;
+        uint32_t cnt;
+        uint32_t i = 0;
+        for (nodesFor(bindings, cnt, nodesp)) {
+            VarDclNode *var = (VarDclNode*)*nodesp;
+            GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i++);
+            if (var == NULL)
+                continue;
+            var->vtype = cloneNode(&cstate, parm->valtype);
+            var->instnode = use;
+            nodesAdd(&blk->stmts, (INode*)var);
+        }
+        nodesAdd(&blk->stmts, body);
+        body = (INode*)blk;
+    }
+    *nodep = body;
     clonePopState();
 
     // Now type check the instantiated nodes
@@ -387,6 +450,16 @@ void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     Nodes *typeargs = index->args ? index->args : newNodes(1);
     (*nodep)->objfn = index->objfn;
     macroUseExpand(pstate, nodep, macrodcl, typeargs, (*nodep)->args);
+}
+
+// A plain parameter is evaluated once, into a variable nothing may change
+// (macroExpand), so a body that changes it -- assigns to it or a part of it,
+// swaps it, borrows it to change it -- wanted its argument substituted whole.
+// Reported where the body changes it, in each expansion.
+void macroParmAssignRefused(INode *at, VarDclNode *var) {
+    errorMsgNode(at, ErrorMacroParmAssign,
+        "The macro's parameter %s is evaluated once, so its body cannot change it: an argument the macro assigns to must be lazy, '%s: lazy T'.",
+        &var->namesym->namestr, &var->namesym->namestr);
 }
 
 // Expand a macro method called on a receiver: 'x.name(args)' expands the body
