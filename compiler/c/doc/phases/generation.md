@@ -705,6 +705,17 @@ What follows from that:
   a `Uni`, whose header is empty), and its death calls the record's `finalize`
   on the object (`genlVirtFinalize`) where a plain reference's calls
   `genlFinalizeAt`.
+- **An enum variant's allocation is laid out at its enum's alignment, and so is
+  its record.** A virtual reference reaches a variant through its vtable, which
+  the tag picks, so the offset `genlVirtHeader` computes from the record's `align`
+  must be the one the allocation used, whether the owner was made as the enum or
+  as the variant. `genlAllocAlign` answers the variant's alignment as its enum's
+  (never less than its own), for the record (`genlTypeRecordOf`); and
+  `genlAllocValueType` gives the value field a zero-length array of the enum before
+  the variant where the enum is the more strictly aligned, which puts the value at
+  the same offset (`genlRefTypeSetup`). A variant allocated alone therefore takes a
+  little padding. The same offset is why an owner narrowed to a variant is the same
+  pointer ([cast](../nodes/cast.md)).
 - **An owning reference to a body that carries its length is the fat `{ptr, usize}`
   value, and its header is as constant as a thin one's.** The element type
   stands in the allocation's value field (`genlRefTypeSetup`), since the body has

@@ -676,7 +676,6 @@ enum ErrorCode {
     ErrorNarrowStale = 1460,    // A member of one variant named on a name that was narrowed to it and has since been changed: the message names the change
     ErrorNarrowLoop = 1461,     // A name narrowed to a variant from before a loop, used in the loop, which changes it later and comes back to the use
     ErrorLetElse = 1462,        // The 'else' of 'let Ok(n) = r else ...' can fall through to the binding: every path through it must leave, by 'return', 'break', 'continue', a call that does not return, or an 'if' or 'match' with an 'else' each of whose blocks leaves. Pointed at where a path goes on
-    ErrorOwnerNarrow = 1463,    // An owner ('Rc[mut, Shape]') narrowed to a variant whose value would sit at another offset in its allocation: the address would have to change
 
     // Trait patterns on a closed family (ir/exp/cast.c)
     ErrorPatTrait = 1470,       // A trait named as a pattern where the matched value is not an enum: an open trait cannot say which values comply with another trait, so only a concrete type can be narrowed to

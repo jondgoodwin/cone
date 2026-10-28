@@ -647,10 +647,8 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
     if (!castIsSumNarrow(from, to))
         return;
     if (itypeGetTypeDcl(from->region) != borrowRef) {
-        if (permGetFlags(from->perm) & MayIntRefSum) {
-            node->flags |= FlagOwnerNarrow;
+        if (permGetFlags(from->perm) & MayIntRefSum)
             return;
-        }
         PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
         errorMsgNode((INode *)node, ErrorBadPerm,
             "A '%s' reference to %s, held by an owner (an 'Rc'), may not be narrowed to a reference into one of its variants: another owner could change which variant it holds while this one is used. Bind the payload by copy, or match through a borrow of the value, a 'uni' or 'imm' reference, or the value.",

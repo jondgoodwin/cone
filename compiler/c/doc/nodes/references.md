@@ -831,7 +831,8 @@ slot of the vtable, a pointer to the implementer's core `TypeRecord`
 (`genlVirtFinalize`), and the header sits before the value at the region and
 permission's size rounded up to the record's `align` (`genlVirtHeader`), which
 `genlOwnerHeader` hands to `aliasRef`, `dealiasRef` and `free` in place of
-`genlRegionHeader`'s static offset. A `Uni` header is empty, so no alignment is
+`genlRegionHeader`'s static offset. A variant's record carries its enum's
+alignment, as its allocations lay it out. A `Uni` header is empty, so no alignment is
 read for one. **A conversion into an owning virtual reference carries its
 operand's owner** (`flowCastCarries`): unlike any other conversion, which makes
 a new value, flow walks through it as through a recast, so a plain owner

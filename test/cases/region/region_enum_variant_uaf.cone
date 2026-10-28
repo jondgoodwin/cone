@@ -1,0 +1,71 @@
+// An owning reference to an enum, made an owning virtual reference to a trait, finds its
+// region's header where the allocation put it. The enum's value sits in its block after the
+// region's header, at the enum's alignment (8 here), but the virtual reference reads the
+// alignment from its vtable's type record, and the record of the variant the tag names
+// (Tiny, whose fields are a byte) gave the variant's own (1). The header was looked for 4
+// bytes before the value instead of 8: the count moved was some other bytes of the block, the
+// real count stayed at one, the enum owner's death freed the block while the virtual reference
+// lived, and the program read freed memory and wrote into it ('look' below, then the -1 at the end).
+//
+// A single self-contained program, so it can be run under a memory checker. The region is
+// 'Tally' (a counter of one u32 for its header, which is what makes the header's end
+// off the enum's alignment), printing each count. Worked out by hand:
+//   alloc by 'make'; the virtual reference counts one more, "+2"; the enum owner 'e' goes away
+//   at the end of 'make', "-1"; main reads through the virtual reference, "back 3"; its owner
+//   goes away at the end of main: "-0", and the block is freed, once, "free".
+
+mod region_enum_variant_uaf;
+
+import stdio use *;
+import libc;
+
+var allocated: usize = 0usize;
+
+struct Tally is RegionRef {
+  owners: u32;
+  fn alloc(size: usize) *u8 { let p = malloc(size); allocated = p as usize; p }
+  fn init(self: &new) inline { *self = Tally(1u32); }
+  fn aliasRef(self: &uni Tally) inline {
+    owners = owners + 1u32;
+    printStr("+"); printInt(i64.from(owners));
+    printStr(if (self as usize) == allocated {" "} else {" misplaced "});
+  }
+  fn dealiasRef(self: &uni Tally) bool inline {
+    owners = owners - 1u32;
+    printStr("-"); printInt(i64.from(owners));
+    printStr(if (self as usize) == allocated {" "} else {" misplaced "});
+    owners == 0u32
+  }
+  fn free(self: &uni Tally) {
+    printStr(if (self as usize) == allocated {"free "} else {"free-misplaced "});
+    libc.free(self as *u8);
+  }
+}
+
+trait Looker { pub fn look(self: &) i64; }
+
+enum Shape {
+  pub fn look(self: &) i64;
+  struct Big { pub n: i64; fn look(self: &) i64 {n} }
+  struct Tiny { pub n: i8; fn look(self: &) i64 {i64.from(n)} }
+}
+
+fn make() Tally[mut, Looker] {
+  let s: Shape = Shape.Tiny(3i8);
+  let e: Tally[mut, Shape] = Tally[mut, Shape](s);
+  let v: Tally[mut, Looker] = e;
+  v
+}
+
+fn run() {
+  let v = make();
+  printStr("back ");
+  printInt(v.look());
+  printStr(" ");
+}
+
+fn main() i32 {
+  run();
+  printStr("|\n");
+  0i32
+}
