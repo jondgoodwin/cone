@@ -292,7 +292,11 @@ type's method) or on what is not a function or global; the remedy is to write
 the body, or the declaration, without it. A `@c` that is well formed and says
 nothing — a bare one on a function its C-named module already names — is kept
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
-that the module already said it.
+that the module already said it. A `@c` whose final name is well formed as a
+string but is LLVM's name for an intrinsic (it begins `llvm.`) is
+`ErrorLlvmName`: not a malformed marker, so not `ErrorCAttr`, and the remedy is
+a different name. It is judged on the final name, so a module's prefix `llvm.`
+is reported at each declaration it would give such a name, saying the name built.
 
 One C name declared by two declarations of one compile is one symbol, and what
 can be wrong with that takes two codes, because the remedies differ.
@@ -361,10 +365,9 @@ A generic module takes three codes, split where the remedy is.
 instance has members — a path through it, a standalone `use`, an import's `use`
 clause, `extends`, a default fold on its own `mod` line; the remedy is to name
 an instance, `stack[i64].push`, or to stop folding. `ErrorGenModBody` is what a
-generic module holds that an instance is not yet built for — a generic function
-or type, a trait or an enum, a macro, a module trait, a global's `use` clause,
-a submodule; the remedy is in the generic module, and the code retires piece
-by piece as the clone learns each. `ErrorGenModRoot` is an executable's root
+generic module holds that an instance is not yet built for — a module trait, a
+generic submodule; the remedy is in the generic module, and the code retires piece by
+piece as the clone learns each. `ErrorGenModRoot` is an executable's root
 declared generic; the remedy is to move the generic module under a root. What an
 instance is given that is not a type, or the wrong number of arguments, wears
 `ErrorNotType` and `ErrorArgCount`, as for a generic type, and a member an

@@ -1,0 +1,68 @@
+// A GENERIC MODULE'S SUBMODULE, instantiated with it as a generic type's
+// methods are with the type [Jon 23 Sep]: each instance, holder[i64] and
+// holder[f64], holds its own copy of inner, with holder's T in scope and
+// substituted, its own globals, and its own 'init' and 'final'. The parent
+// names its submodule bare, and from outside it is named through the instance,
+// 'holder[i64].inner.twice'.
+//
+// The init order is an ordinary parent's and its submodule's [design chat, 28
+// Oct]: the submodule's 'init' runs before its parent's, and each instance and
+// its copy of inner take the instance's place together -- after holder and
+// seq, before the root -- in the order the instances were made. The finalizers
+// run in exactly the reverse.
+//
+// This is the designated file of the scenario's folder; seq.cone and the
+// holder/ folder (holder.cone and its submodule inner.cone) are submodules of
+// it. Each printed value was checked by hand against the source.
+
+mod module_generic_submodule;
+
+import stdio use *;
+
+let order: i64;
+
+fn @initpure init() {
+  order = seq.take();
+  printStr("init root, order ");
+  printInt(order);
+  printStr("\n");
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label: &str, n: f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  initAll();
+  show("holder[i64].keep", holder[i64].keep(5i64));               // 10
+  showF("holder[f64].keep", holder[f64].keep(1.25));              // 2.5
+  show("holder[i64].inner.twice", holder[i64].inner.twice(3i64)); // 6
+
+  // Each instance's own copy of inner, and its own globals
+  show("holder[i64].inner.hits", holder[i64].inner.hits);         // 2
+  show("holder[f64].inner.hits", holder[f64].inner.hits);         // 1
+  show("holder[i64].kept", holder[i64].kept);                     // 10
+  showF("holder[f64].kept", holder[f64].kept);                    // 2.5
+
+  // Each copy's 'init' ran, setting its own T
+  show("holder[i64].inner.start", holder[i64].inner.start);       // 1
+  showF("holder[f64].inner.start", holder[f64].inner.start);      // 1
+
+  // When each holder's 'init' ran: holder[i64]'s inner, then holder[i64],
+  // then holder[f64]'s inner, then holder[f64] (the prints above say so)
+  show("holder[i64].order", holder[i64].order);                   // 1
+  show("holder[f64].order", holder[f64].order);                   // 2
+  show("order", order);                                           // 3
+  finalAll();
+  0i32
+}

@@ -1454,6 +1454,7 @@ int itypeRefuseModule(INode *type) {
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
+    int errorsBefore = errors;
     inodeTypeCheckAny(pstate, node);
     // A type that failed as it was checked -- an instance refused where it was
     // asked for -- was reported there, and stands as the error type from here
@@ -1463,7 +1464,12 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
         return 0;
     }
     if (!isTypeNode(*node)) {
-        errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
+        // What checking it refused is the reason it is no type, and is said:
+        // saying that it is no type as well is the same refusal twice
+        if (errors != errorsBefore)
+            *node = errorType;
+        else
+            errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
         return 0;
     }
     if (itypeRefuseBareGeneric(*node) || itypeRefuseModule(*node))

@@ -878,7 +878,9 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 // This only supports whether downcasting specialization is possible
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
-    iexpTypeCheckAny(pstate, &node->exp);
+    // Not iexpTypeCheckAny: a left side that is no expression is refused below,
+    // once, with this test's own message
+    inodeTypeCheckAny(pstate, &node->exp);
     narrowNoteTest((INode*)node);
     // A value already reported has no variants to name, so the pattern says nothing of it
     if (isExpNode(node->exp) && ((IExpNode*)node->exp)->vtype == errorType) {

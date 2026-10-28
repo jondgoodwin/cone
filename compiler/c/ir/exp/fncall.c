@@ -94,10 +94,13 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     // it is the generic again: 'Box[i32]' inside 'Box[T]' is another instance,
     // and 'Box[T]' is this one, both reached through the memo. A bare use with a
     // value list -- 'Mb.No[]', 'Box[v]' -- stays mapped: it builds this instance.
+    // A generic module's instance maps a generic type it declares to the
+    // instance's copy, which is still generic and is what its instances are
+    // made from (cloneStructNode), so that use stays mapped too.
     if (isNameUseNode(node->objfn) && isNameUseNode(newnode->objfn)) {
         INode *generic = ((NameUseNode*)node->objfn)->dclnode;
         if (generic && generic != ((NameUseNode*)newnode->objfn)->dclnode
-            && ((generic->tag == StructTag && ((StructNode*)generic)->genericinfo)
+            && ((generic->tag == StructTag && ((StructNode*)generic)->genericinfo && !cstate->modinst)
                 || (generic->tag == ModuleTag && ((ModuleNode*)generic)->genericinfo))
             && fnCallHasTypeArgs(newnode))
             ((NameUseNode*)newnode->objfn)->dclnode = generic;
@@ -174,6 +177,15 @@ static int fnCallNamesMethod(INode *dcl) {
 
 static void fnCallVariantReceiver(FnCallNode *node);
 
+// Whether 'mod' is 'outer' or a submodule within it, at any depth
+static int fnCallInsideModule(ModuleNode *mod, ModuleNode *outer) {
+    for (INode *node = (INode*)mod; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (node == (INode*)outer)
+            return 1;
+    }
+    return 0;
+}
+
 // A '.' whose left side names a namespace is a path through it, not an access
 // to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
 // tell the two apart, so the decision is made here, as soon as the base name is
@@ -214,9 +226,10 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // 'stack[i64].push' -- which is collapsed at type check, once it exists
     // (fnCallModuleInstancePath). Inside its own body its bare name means the
     // instance being defined, as a generic type's does, and the clone points
-    // the member at the instance's
+    // the member at the instance's -- in the body of a submodule of it too,
+    // which is instantiated with it
     if (basedcl->tag == ModuleTag && ((ModuleNode*)basedcl)->genericinfo
-        && (ModuleNode*)basedcl != pstate->mod) {
+        && !fnCallInsideModule(pstate->mod, (ModuleNode*)basedcl)) {
         errorMsgNode(node->objfn, ErrorGenModBare,
             "%s is a generic module: its members belong to each instance, named with type arguments as %s[...].%s.",
             &inodeGetName(basedcl)->namestr, &inodeGetName(basedcl)->namestr,
@@ -314,6 +327,25 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
 }
 
 static StructNode *fnCallVariantNamed(INode *node);
+
+// 'stack[i64].make': what a member named through an instance of a generic
+// module is, as the generic declares it -- each instance holds a copy of every
+// declaration of its generic -- or NULL when 'node' names no member that way
+static INode *fnCallGenModMember(INode *path) {
+    if (path == NULL || path->tag != FnCallTag)
+        return NULL;
+    FnCallNode *node = (FnCallNode*)path;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || node->args != NULL
+        || (node->flags & (FlagIndex | FlagOperator)) || node->objfn == NULL || node->objfn->tag != FnCallTag)
+        return NULL;
+    FnCallNode *inst = (FnCallNode*)node->objfn;
+    if (!(inst->flags & FlagIndex) || inst->methfld != NULL || !isNameUseNode(inst->objfn))
+        return NULL;
+    INode *generic = nameUseGetDcl((NameUseNode*)inst->objfn);
+    if (generic == NULL || generic->tag != ModuleTag || ((ModuleNode*)generic)->genericinfo == NULL)
+        return NULL;
+    return namespaceFind(&((ModuleNode*)generic)->namespace, ((NameUseNode*)node->methfld)->namesym);
+}
 
 // Is this a call of a type, 'Point(1, 2)', 'List[i32](100)', 'Rc[mut, Node](1)': a
 // construction, which the type's name with parentheses is for every type? A call
@@ -429,7 +461,20 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     // What stands in brackets after a type or a generic is type arguments, so a
     // name there is never an empty variant's construction, 'Array[Lamp.Red, 4]';
-    // after a value it is an index, and one is, 'counts[Lamp.Red]'
+    // after a value it is an index, and one is, 'counts[Lamp.Red]'. A member
+    // named through an instance of a generic module, 'stack[i64].make[f64]', is
+    // collapsed only at type check, and is read here as its generic declares it.
+    INode *instmember = node->args && (node->flags & FlagIndex) && node->methfld == NULL
+        ? fnCallGenModMember(node->objfn) : NULL;
+    if (instmember && (instmember->tag == StructTag || genericGetInfo(instmember) != NULL
+            || (instmember->tag == MacroDclTag && ((MacroDclNode*)instmember)->typeparms != NULL))) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            if ((*argsp)->tag == NameUseTag)
+                (*argsp)->flags &= ~FlagValueTermName;
+            else if ((*argsp)->tag == FnCallTag)
+                (*argsp)->flags &= ~FlagValueTermCall;
+        }
+    }
     if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
         INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
         if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL
@@ -2957,8 +3002,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
 // module, and the hop disappears: with no arguments the node becomes the bound
 // name, and with arguments the callee. Returns 1 when the node was replaced
 // outright (and checked), so the caller stops.
-static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
+// The member a path through an instance of a generic module names, bound in
+// the instance's namespace, or NULL when it names nothing there (reported)
+static NameUseNode *fnCallInstanceMember(TypeCheckState *pstate, FnCallNode *node) {
     ModuleNode *mod = (ModuleNode*)nameUseGetDcl((NameUseNode*)node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     member->dclnode = namespaceFind(&mod->namespace, member->namesym);
@@ -2966,9 +3012,7 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
         errorMsgNode((INode*)member, ErrorUnkName,
             "The name %s does not refer to a declared name of module %s",
             &member->namesym->namestr, &mod->namesym->namestr);
-        node->vtype = errorType;
-        *((INode**)nodep) = (INode*)newErrorNode((INode*)node);
-        return 1;
+        return NULL;
     }
     member->flags |= FlagQualified;
     ModuleNode *asker = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
@@ -2976,6 +3020,17 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
+    return member;
+}
+
+static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    NameUseNode *member = fnCallInstanceMember(pstate, node);
+    if (member == NULL) {
+        node->vtype = errorType;
+        *((INode**)nodep) = (INode*)newErrorNode((INode*)node);
+        return 1;
+    }
     if (node->args == NULL) {
         *((INode**)nodep) = (INode*)member;
         inodeTypeCheckAny(pstate, (INode**)nodep);
@@ -4108,6 +4163,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
+    // '?a' over a parameter that a value was substituted for: not the Option type
+    // name resolution could not yet tell it from, so the refusal it deferred
+    if ((node->flags & FlagQuesProvisional) && node->methfld == NULL && node->args && node->args->used == 1
+        && !isTypeNode(nodesGet(node->args, 0)) && !inodeIsProvisionalType(nodesGet(node->args, 0))) {
+        errorMsgNode((INode*)node, ErrorInvType, "'?' is not valid here.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
     // 'T(1)': a call of a type that only a generic's substitution made one
     if (fnCallIsTypeCall(node))
         fnCallMarkConstruction(node);
@@ -4156,6 +4220,23 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // once, and none is another's.
     if ((node->flags & FlagLvalOp) && node->objfn)
         fnCallSetPlace(node->objfn);
+
+    // 'stack[i64].make[f64]', 'stack[i64].twice[3]': a member named through an
+    // instance of a generic module, given type arguments or a macro's. The path
+    // is collapsed first, once the instance is made, and the member is left
+    // unchecked (fnCallInstanceMember), so the brackets follow the instance's
+    // member named directly, as they follow 'm.make' in 'm.make[f64]'.
+    if ((node->flags & FlagIndex) && node->methfld == NULL && fnCallGenModMember(node->objfn)) {
+        FnCallNode *path = (FnCallNode*)node->objfn;
+        inodeTypeCheckAny(pstate, &path->objfn);
+        NameUseNode *member = inodeIsError(path->objfn) || !nameUseNames(path->objfn, ModuleTag)
+            ? NULL : fnCallInstanceMember(pstate, path);
+        if (member == NULL) {
+            node->vtype = errorType;
+            return;
+        }
+        node->objfn = (INode*)member;
+    }
 
     // 'h.pick[i32](6)': a generic method given its type arguments
     if (fnCallMethodTypeArgs(pstate, nodep))
@@ -4942,7 +5023,10 @@ dispatch:
     }
 
     default:
-        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        // A type that was refused where it was written (a generic named with
+        // no arguments) has said so; its uses do not say it again
+        if (objtype != errorType)
+            errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
     }
 
