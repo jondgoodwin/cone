@@ -274,16 +274,18 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
     ArrayNode *arrlit = *nodep;
     INode **elemsp;
     uint32_t cnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
 
     // List form: each element is its own holder
     if (arrlit->dimens->used == 0) {
         uint16_t inflight = fstate->inflightcnt;
         for (nodesFor(arrlit->elems, cnt, elemsp)) {
+            flowGateOperandNext(fstate, *elemsp);
             flowLoadValue(fstate, elemsp);
             flowHandleMoveOrCopy(elemsp);
             flowGateOperand(fstate, *elemsp);
         }
-        flowGateOperandsEnd(fstate, inflight);
+        flowGateOperandsEnd(fstate, inflight, keep);
         return;
     }
 

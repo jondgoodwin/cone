@@ -544,6 +544,13 @@ change. A collection's are reported at the change, naming where the borrow is us
 `ErrorVariantReshape` is reported where the narrowed reference or name is used again,
 naming the change, as the narrowing errors below are.
 
+One call's arguments meet the two codes by order. An argument whose value is a borrow
+into a collection (`both(s.view(), &mut s)`) freezes it through the later arguments as a
+`let` holding it would, so a later `&mut` of it is `ErrorFrozen`, at that argument, with
+the message a `let` gets (`... for a call or value still being made, which uses that
+borrow`); the `&mut` written first (`both2(&mut s, s.view())`) is an alias loan the view
+meets without conflict, and the call is the shape check's `ErrorShapeReshape`.
+
 `ErrorNarrowStale`, `ErrorNarrowLoop` and `ErrorLetElse` are about a name narrowed by a test
 (flow typing, [narrow](../nodes/narrow.md)) and the binding that outlives an early exit. A
 member only one variant has, named on a name that was narrowed to it and has since been
