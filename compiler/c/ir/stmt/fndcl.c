@@ -669,6 +669,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
+    fstate.intrinsic = (fnnode->dclinfo.facts & DclIntrinsic) != 0;
     // An init's 'self: &new' holds no value until '*self = value' fills it
     VarDclNode *newself = fnDclIsInit(fnnode) ? (VarDclNode *)nodesGet(((FnSigNode *)fnnode->vtype)->parms, 0) : NULL;
     if (newself)

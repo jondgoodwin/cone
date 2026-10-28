@@ -55,6 +55,9 @@ typedef struct FlowState {
     uint8_t shapelend;  // FlowGateShape: a method lending a borrow of a value that may change shape was met
     uint8_t shapewrite; // FlowGateShape: a call with a writable argument was met
     uint8_t shapeglobal;    // FlowGateShape: the borrow was lent from a 'var' global, which any call may write
+    uint8_t inflightkeep;   // FlowGateInCall: the call or literal about to be walked is an operand whose value
+                            // may carry a borrow, so what its own operands lend waits for the one around it too
+    uint8_t intrinsic;  // The function is an '@intrinsic' (a fallback body), which may move a value out through a raw pointer
     Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     Nodes *yields;     // Each 'yield' the walk met, a generator's seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
@@ -176,7 +179,19 @@ void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val);
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
-#define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
+// A call's or literal's operands are about to be walked: whether it is itself an
+// operand whose value may carry a borrow (flowGateOperandNext), read once and cleared
+static inline uint8_t flowGateOperandsKeep(FlowState *fstate) {
+    uint8_t keep = fstate->inflightkeep;
+    fstate->inflightkeep = 0;
+    return keep;
+}
+// Its operands were walked: what they lend stops waiting, unless its own value
+// may carry one of those borrows into the operands after it ('keep'): an argument
+// whose value is a borrow into a source ('s.view()', 'first(&mut b)') keeps that
+// source borrowed through the later arguments and the call they are made for
+#define flowGateOperandsEnd(fstate, mark, keep) \
+    do { if (!(keep)) (fstate)->inflightcnt = (mark); } while (0)
 
 // A variable is named while an operand's borrow waits: gate trigger when it is
 // the one borrowed. Called only when 'inflightcnt' is not zero.

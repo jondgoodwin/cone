@@ -168,6 +168,8 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused((INode *)node, (VarDclNode *)lvalvar);
         else if (lvalvar && lvalvar->tag == VarDclTag)
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
@@ -682,6 +684,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *lvalperm = (INode*)immPerm;
     scope = 0;  // Global
     int refused = 0;
+    INode *lvalvar = NULL;
     if (!borrowIsConstLit(lval)) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
@@ -694,7 +697,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // borrow ('uni', unless an owner or a field on the way says less), and
         // lives no longer than the block it is made in (borrowTempScope).
         lvalperm = (INode*)uniPerm;
-        INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
+        lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
         // So is a lock's guard (borrowLockPlace) where no declaration
         // extended it: it dies at the statement's end, giving the lock back,
         // and the loan walk refuses the borrow used after that
@@ -741,8 +744,12 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         refused = 1;
         refperm = newPermUseNode(immPerm);
     }
-    if (!refused && !permMatches(refperm, lvalperm) && !borrowLocalLendsUni(lval, lvalperm, scope, refperm))
-        errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    if (!refused && !permMatches(refperm, lvalperm) && !borrowLocalLendsUni(lval, lvalperm, scope, refperm)) {
+        if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused((INode *)node, (VarDclNode *)lvalvar);
+        else
+            errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    }
 
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
     reftype->scope = scope;

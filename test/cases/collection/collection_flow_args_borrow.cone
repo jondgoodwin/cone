@@ -1,0 +1,117 @@
+// A call's arguments are all live at once: an argument whose VALUE is a borrow
+// into a collection's contents -- a view, an element, or a call or literal
+// returning one -- keeps the collection borrowed through the later arguments and
+// the call, exactly as if it were held in a 'let' first. A later argument that
+// borrows the collection mutably is refused at that argument (ErrorFrozen): the
+// callee could grow the collection through it, moving the storage the earlier
+// argument points into, and then read through that argument. Each shape here
+// was accepted before, and crashed or read freed memory when the callee grew the
+// list or string before reading the view.
+//
+// The other order, and the receiver, were refused already and stay so: a
+// '&mut' argument before the view is the shape check's (ErrorShapeReshape), a
+// method's '&mut self' receiver meeting a view argument is ErrorFrozen.
+// collection_args_borrow_success runs the neighbours that stay accepted: two
+// views of one source, sources apart, an argument that is a number computed from
+// a view, and two borrows of the WHOLE source ('&' or '&mut'), which the callee's
+// own shape check guards (collection_flow_args_borrow_callee).
+
+mod collection_flow_args_borrow;
+
+import collections use *;
+
+struct H { pub r: &Array[u8]; }
+
+fn readGrowStr(r: &str, w: &mut String) u8 { w.appendByte('b'); r[0usize] }
+fn readGrowList(r: &Array[u8], w: &mut List[u8]) u8 { w.push(1u8); r[0usize] }
+fn growReadStr(w: &mut String, r: &str) u8 { w.appendByte('b'); r[0usize] }
+fn writeGrow(a: &mut u8, w: &mut List[u8]) { w.push(1u8); *a = 7u8; }
+fn elemGrow(a: &mut i64, w: &mut List[i64]) { w.push(1i64); *a = 7i64; }
+fn firstElem(l: &mut List[u8]) &mut u8 { &mut l[0usize] }
+fn sameStr(r: &str) &str { r }
+fn grown(w: &mut List[u8]) &mut List[u8] { w.push(1u8); w }
+fn holderGrow(h: H, w: &mut List[u8]) u8 { w.push(1u8); h.r[0usize] }
+fn tupleGrow(t: (&Array[u8], i64), w: &mut List[u8]) u8 { w.push(1u8); t.0[0usize] }
+fn readGrowAny[T](r: &Array[T], w: &mut List[T], v: T) T { w.push(v); r[0usize] }
+fn growReadAny[T](w: &mut List[T], r: &Array[T], v: T) T { w.push(v); r[0usize] }
+
+// A String's view, then the String borrowed mutably
+fn stringView() u8 {
+  var s = String.from("a");
+  readGrowStr(s.view(), &mut s)           //~ ErrorFrozen:25 "for a call or value still being made"
+}
+
+// A List's view, then the List borrowed mutably
+fn listView() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  readGrowList(b.view(), &mut b)          //~ ErrorFrozen:26 "for a call or value still being made"
+}
+
+// A mutable borrow of an element a call returned, then the list borrowed mutably
+fn elementByCall() {
+  var b = List[u8].empty();
+  b.push(65u8);
+  writeGrow(firstElem(&mut b), &mut b);   //~ ErrorFrozen:32 "for a call or value still being made"
+}
+
+// The view handed on by a call returning a borrow of its argument
+fn viewThroughCall() u8 {
+  var s = String.from("a");
+  readGrowStr(sameStr(s.view()), &mut s)  //~ ErrorFrozen:34 "for a call or value still being made"
+}
+
+// The mutable borrow made inside a later argument
+fn mutInNestedCall() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  readGrowList(b.view(), grown(&mut b))   //~ ErrorFrozen:32 "for a call or value still being made"
+}
+
+// The view held in a struct literal, and in a tuple
+fn viewInLiteral() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  holderGrow(H(b.view()), &mut b)         //~ ErrorFrozen:27 "for a call or value still being made"
+}
+fn viewInTuple() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  tupleGrow((b.view(), 1i64), &mut b)     //~ ErrorFrozen:31 "for a call or value still being made"
+}
+
+// A generic function, monomorphized: the same walk
+fn viewGeneric() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  readGrowAny[u8](b.view(), &mut b, 1u8)  //~ ErrorFrozen:29 "for a call or value still being made"
+}
+
+// Already refused, kept: the receiver's '&mut self' meeting a view argument, a
+// generic library method's among them
+fn receiverString() {
+  var s = String.from("a");
+  s.append(s.view());                     //~ ErrorFrozen:3 "as the call's receiver"
+}
+fn receiverGenericMethod() {
+  var b = List[u8].empty();
+  b.push(65u8);
+  b.appendSlice(b.view());                //~ ErrorFrozen:3 "as the call's receiver"
+}
+
+// Already refused, kept: the '&mut' argument first, then a borrow into the
+// same source (the shape check)
+fn mutThenView() u8 {
+  var s = String.from("a");
+  growReadStr(&mut s, s.view())           //~ ErrorShapeReshape:14 "could change the shape of a"
+}
+fn mutThenViewGeneric() u8 {
+  var b = List[u8].empty();
+  b.push(65u8);
+  growReadAny[u8](&mut b, b.view(), 1u8)  //~ ErrorShapeReshape:18 "could change the shape of a"
+}
+fn elementThenMut() {
+  var b = List[i64].empty();
+  b.push(65i64);
+  elemGrow(&mut b[0usize], &mut b);       //~ ErrorShapeReshape:11 "could change the shape of a"
+}

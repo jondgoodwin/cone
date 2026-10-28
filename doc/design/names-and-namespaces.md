@@ -294,7 +294,7 @@ The clause is the one spelling of a fold [Jon 23 Sep]. `import math3d.*;` and `i
 
 Any category of name folds, subject to the importing namespace's single collision domain. What the clause may name and admit:
 
-- **Only a public binding of the source folds**, whether the source declared it or folded it in with `pub`. A private one named in a list is `ErrorNotPublic`; a star clause passes it over, so one named after `but` is `ErrorNotPublic` too — seen from outside a module a private name behaves as a missing one does, and there is nothing to leave out. The same holds for the module's own `final` and `clone`, which a star passes over: after `but` or in a list they are `ErrorBadFold` (an import's clause, a standalone `use` and a `mod` line's default alike). (A module's `extends` is the one fold that takes private names too: "A module extending a module", below.)
+- **Only a public binding of the source folds**, whether the source declared it or folded it in with `pub`. A private one named in a list is `ErrorNotPublic`; a star clause passes it over, so one named after `but` is `ErrorNotPublic` too — seen from outside a module a private name behaves as a missing one does, and there is nothing to leave out. The same holds for the module's own `init`, `final` and `clone`, which a star passes over: after `but` or in a list they are `ErrorBadFold` (an import's clause, a standalone `use` and a `mod` line's default alike). (A module's `extends` is the one fold that takes private names too: "A module extending a module", below.)
 - A name the source has not got, listed or after `but`, is `ErrorNoMbr`. The source's own name is the one the import binds already, so a list naming it is `ErrorBadFold` and a star clause passes it over.
 - A folded name must be unique in the module, whatever brought the other one: a declaration, another import's fold, a global's, a standalone `use`. `ErrorDupName`, reported at the listed name, or at the `use` of a star clause; `as` or `but` settles it. **A name the module writes twice is refused even for the same declaration; a name it never wrote is not** — see "One declaration by two routes" below: the same declaration arriving again by a wildcard, an `extends` or the core import is the binding the name has already.
 - **Every name folds as an `AliasDclNode` in the receiving module's namespace**, whose target is the source's own binding and whose `FlagPub` is the import's.
@@ -658,7 +658,10 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   declaration of it must agree (`ErrorCNameConflict`), and at most one may
   define it (`ErrorCNameDefTwice`), which then owns it. A private C-named
   definition is internal, so nothing links against its name, and it takes no
-  part. The marker affects the symbol only; resolution is through the
+  part. A C name beginning `llvm.` is LLVM's name for an intrinsic, no symbol
+  to link, and is refused (`ErrorLlvmName`) wherever the final name is built,
+  from a function's own string or a module's prefix and the declared name.
+  The marker affects the symbol only; resolution is through the
   ordinary module, so a caller writes `sdl.Init`. Inbound (a C library's
   symbols) and outbound (a Cone body published to C, `pub fn @c(...)`) are one
   mechanism in two directions.

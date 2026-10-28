@@ -522,6 +522,25 @@ pub struct Driver {
     c as usize != 0usize && !(*c).ended
   }
 
+  // Whether a client connection takes new requests: open, its QUIC not
+  // closed, and no GOAWAY received (a request made now is not refused at once)
+  pub fn takesRequests(self: &, conn: ConnId) bool {
+    let c = self.connOf(conn);
+    if c as usize == 0usize {return false;}
+    let cr = c as &Conn;
+    !cr.ended && !cr.server && !cr.quicClosed && cr.h.canSendRequest()
+  }
+
+  // ...and whether a request made now goes to QUIC at once: none of its
+  // requests waits for the peer's stream limit (or for the handshake). A
+  // client that asks this keeps the rest of its requests in its own order
+  // (httpclient's scheduler), one at most waiting here
+  pub fn hasRoom(self: &, conn: ConnId) bool {
+    if !self.takesRequests(conn) {return false;}
+    let c = self.connOf(conn) as &Conn;
+    c.told && c.waitBidi.len() == 0usize
+  }
+
   // A connection's other end
   pub fn peer(self: &, conn: ConnId) SocketAddr {
     let c = self.connOf(conn);
@@ -1081,7 +1100,9 @@ pub struct Driver {
       }
       self.quicWords(c, &mut e.detail);
     }
-    if unsent {e.noResponse = true;}
+    // No byte of a response came (its head is the first): as http2 and
+    // httpconn say it, so an idempotent request may be sent again
+    if unsent || (!c.server && !(s.timing.firstByte > Instant())) {e.noResponse = true;}
     var code = 0u32;
     match c.q.error() {
       case let Some(qe) {code = qe.osError;}

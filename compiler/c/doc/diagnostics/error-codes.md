@@ -125,6 +125,18 @@ value", "stored only into a variable that holds a value", "not stored into a
 variable whose value has been moved out", "moved out").
 A method cannot fill in a variable it borrows before it holds a value.
 
+`ErrorMoveRawPtr` is a value that finalizes or owns moved out through a raw pointer, which owns
+nothing: `*p` handed back, bound, passed or built in, an element `p[i]`, what a `*Uni[T]` points
+at, and a field list `(*p).(a)`, which moves `*p` whole. Whatever holds the place still finalizes
+it, so the value would be finalized twice. It is not `ErrorMoveOut`, the move through a borrowed
+or a shared owning reference, because the remedy differs: the message names `mem.readRaw(p)`, which
+moves the value out and leaves the place holding nothing, the caller's promise. Reported by flow
+(`flowRefuseMoveThrough`) at the dereference or the index; a field reached through the pointer,
+`(*p).d`, is `ErrorMoveField` first, as any field is. The body of an `@intrinsic` function, which
+only core declares, is not refused: `readRaw`'s fallback is `{*p}`. A copy read through `*p` never
+is. Reading one place twice with `readRaw`, and what a raw pointer may point at in general, are not
+checked: they belong to `trust`, which is not built.
+
 `ErrorTypeVariant` is a variant declared as a type (`Ok(i32);`) used where it has
 nothing to give: written in an enum that has fields in common, whose variants all
 name what they hold (parse), or bound through a reference into a managed value, whose
@@ -280,7 +292,11 @@ type's method) or on what is not a function or global; the remedy is to write
 the body, or the declaration, without it. A `@c` that is well formed and says
 nothing — a bare one on a function its C-named module already names — is kept
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
-that the module already said it.
+that the module already said it. A `@c` whose final name is well formed as a
+string but is LLVM's name for an intrinsic (it begins `llvm.`) is
+`ErrorLlvmName`: not a malformed marker, so not `ErrorCAttr`, and the remedy is
+a different name. It is judged on the final name, so a module's prefix `llvm.`
+is reported at each declaration it would give such a name, saying the name built.
 
 One C name declared by two declarations of one compile is one symbol, and what
 can be wrong with that takes two codes, because the remedies differ.
@@ -321,7 +337,7 @@ the others, so it wears this code, and `ErrorModExtends` keeps what an
 shape Congo's has for the same loop, so a direct `conec` run and a Congo build
 say one thing.
 
-A module's `init` and `final` take two codes, split where the remedy is.
+A module's `init` and `final` take three codes, split where the remedy is.
 `ErrorModLifecycle` is a declaration under either name that is not the one the
 program's stitched init and final call — `fn @initpure init()` or
 `fn final()`: one taking parameters, returning a value, generic, `inline` or
@@ -335,7 +351,14 @@ declared without a value that no `init` of its module assigns — its module
 declares none, or its `init` never does; the remedy is to assign it there, or to
 give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
-second assignment of a `let` one `ErrorNoMut`.
+second assignment of a `let` one `ErrorNoMut`. `ErrorLifecycleNamed` is a use of
+either function in an expression — a call, a borrow (`&extra.final`), the bare name
+inside its own module, or a path from any module — whether it is `pub` or not: the
+program runs each once, so the remedy is to delete the use, and no visibility
+makes it right (`ErrorNotPublic` would send the author to make it `pub`).
+It is pointed at the name (`nameUseLifecycleNamed`). A fold naming one — a list
+item, or a `but` after a star, which passes both over unasked — is `ErrorBadFold`,
+as it is for `final` and `clone`.
 
 A generic module takes three codes, split where the remedy is.
 `ErrorGenModBare` is the generic named without type arguments where only an
@@ -432,10 +455,17 @@ in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
 for a parameter annotated in a way that is not built, as a macro's type
-parameter given one is, and a generic module's. A macro's value parameter has
-two codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+parameter given one is, and a generic module's. A macro's value parameter typed
+by a trait, `[a: Ordered]`, is the same refusal as its type parameter
+constrained by one, `[T: Ordered]`: what either would accept waits for generics
+(an enum, and a reference to a trait, `&Ordered`, are types it may have). A macro's value parameter has
+three codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
 type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
-type or `lazy`, whose remedy is to remove it. A use whose brackets do not fit
+type or `lazy`, whose remedy is to remove it; and `ErrorMacroParmAssign`, a body
+changing a plain parameter, which is evaluated once into a variable nothing may
+change, whose remedy is to make it `lazy`. It is reported at the change, by the
+store or borrow refusal that finds it (an assignment, a swap, a mutable borrow, an
+operator or method changing it), in place of `ErrorNoMut` or `ErrorBadPerm`. A use whose brackets do not fit
 the macro's type parameters is `ErrorMacroTypeArgs` (none written where it
 declares some, since inferring them is not built, or some written where it
 declares none); the wrong number of them is `ErrorArgCount`, as for a generic.
@@ -543,6 +573,13 @@ needed or by a read-only path, and a narrowed reference by ending its use before
 change. A collection's are reported at the change, naming where the borrow is used again;
 `ErrorVariantReshape` is reported where the narrowed reference or name is used again,
 naming the change, as the narrowing errors below are.
+
+One call's arguments meet the two codes by order. An argument whose value is a borrow
+into a collection (`both(s.view(), &mut s)`) freezes it through the later arguments as a
+`let` holding it would, so a later `&mut` of it is `ErrorFrozen`, at that argument, with
+the message a `let` gets (`... for a call or value still being made, which uses that
+borrow`); the `&mut` written first (`both2(&mut s, s.view())`) is an alias loan the view
+meets without conflict, and the call is the shape check's `ErrorShapeReshape`.
 
 `ErrorNarrowStale`, `ErrorNarrowLoop` and `ErrorLetElse` are about a name narrowed by a test
 (flow typing, [narrow](../nodes/narrow.md)) and the binding that outlives an early exit. A

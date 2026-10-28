@@ -53,10 +53,11 @@ pub struct ServerConfig {
   pub maxPending: usize;                    // the most requests that wait for an actor to take them (past it, 503)
   pub tlsConfig: Option[tls.ServerConfig];  // Some: every connection is TLS
   pub http2: bool;                          // TLS: HTTP/2 offered (ALPN "h2" before "http/1.1")
+  pub http3: Option[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]];   // TLS: HTTP/3 on UDP, by this plug-in's maker
 
   // The defaults: plain HTTP/1.1, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
-    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false)
+    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false, None)
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
@@ -72,6 +73,18 @@ pub struct ServerConfig {
   pub fn offerHttp2(self) ServerConfig {
     var c = self;
     c.http2 = true;
+    c
+  }
+
+  // The same offering HTTP/3 beside it: a UDP socket on the TCP listener's
+  // own address and port, its QUIC connections through the plug-in 'maker'
+  // makes (h3driver's 'plugin'), with the TLS config's certificate and key;
+  // the TCP responses say so in an Alt-Svc field (h3 on that port, for a day)
+  // unless the program wrote one. It needs TLS ('secure'): without it the
+  // listen fails
+  pub fn offerHttp3(self, maker: &fn(t: &tls.ClientConfig) Uni[httpclient.Http3]) ServerConfig {
+    var c = self;
+    c.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](maker);
     c
   }
 }
@@ -152,9 +165,10 @@ pub struct Server is Move {
   id: u64;
   addr: SocketAddr;
   tlsOn: bool;
+  h3On: bool;
 
   // A Server naming nothing, which closes nothing
-  pub fn none() Server {Server(0u64, SocketAddr.localhost(0u16), false)}
+  pub fn none() Server {Server(0u64, SocketAddr.localhost(0u16), false, false)}
 
   pub fn isNone(self: &) bool {id == 0u64}
 
@@ -166,12 +180,15 @@ pub struct Server is Move {
   // Whether its connections are TLS
   pub fn isSecure(self: &) bool {tlsOn}
 
+  // Whether it serves HTTP/3 too, on UDP at the same address and port
+  pub fn offersHttp3(self: &) bool {h3On}
+
   // Another handle to the same server
   pub fn clone(self: &) Server {
     if id != 0u64 {
       post[SrvRefJob](SrvRefJob(id, true));
     }
-    Server(id, addr, tlsOn)
+    Server(id, addr, tlsOn, h3On)
   }
 
   // The next request, whole, as an Exchange to answer; or Closed when the

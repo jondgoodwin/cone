@@ -220,6 +220,12 @@ enum NodeTags {
 // nothing can change; the refusal of a write to it says how to change the items instead.
 // 0x0800 is free on a variable as 0x0200 and 0x0400 are.
 #define FlagEachVar   0x0800        // VarDcl: a variable of an 'each' pass over a source (not a range)
+// The variable a macro's expansion binds a plain parameter's argument to,
+// '{ let a: T = arg; body }' (macroExpand): the parameter is evaluated once,
+// and the refusal of a write to it says that one the macro writes must be
+// 'lazy'. 0x0100 is free on a variable: the type flag that shares it is read
+// on types alone.
+#define FlagMacroBind 0x0100        // VarDcl: a macro's plain parameter, bound once by its expansion
 // A name of a declaration of several, 'let q, r = divmod(7, 2);' (parseDestructDcl). The parser
 // declares each name with no value, then the assignment that gives them their values, flagged
 // FlagDestructAssign. A name is not hooked until that assignment's values are resolved, so a value
@@ -316,7 +322,19 @@ enum NodeTags {
 // fnCallMethodTypeArgs asking what the name before an index of numbers is. Its
 // own check does not walk the receiver a second time, and clears this.
 // 0x2000 is free on a FnCall: FlagHollowOut is a name use's.
+// SHARES ITS BIT with FlagQuesProvisional (below), because a FnCall's 16 flag bits
+// are all taken. They cannot meet: only a member access (a node with a methfld)
+// is given this flag, and a '?' node has no methfld.
 #define FlagRcvChecked 0x2000       // FnCall: the receiver (objfn) is already type checked
+// A '?a' whose operand was a generic or macro parameter when name resolution met
+// it, so that '?' could not yet be told to be an Option type or the refused
+// spelling of an allocation (allocateQuesNameRes). The instance's clone
+// substitutes the argument, and fnCallTypeCheck asks again then.
+// SHARES ITS BIT with FlagRcvChecked (above), because a FnCall's 16 flag bits are
+// all taken. They cannot meet: FlagRcvChecked is given only to a node with a
+// methfld, and this node has none (allocateQuesNameRes asserts it where it sets
+// this flag).
+#define FlagQuesProvisional 0x2000  // FnCall: '?' over a parameter, to be told from a type once substituted
 // A variant is constructed with parentheses, 'Some(5)', and an empty one by its name
 // alone, 'None', 'Lamp.Red', 'None[i32]'; written in square brackets, 'Some[5]',
 // it is refused. Both are built as the one literal, a FnCall with FlagIndex

@@ -103,10 +103,11 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
-    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a generic module's, any; on a macro's type parameter, any
+    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter, or a generic trait given no type arguments); on a generic module's, any; on a macro's type parameter, any; and a macro's value parameter typed by a trait (`[a: Ordered]`), whose meaning waits for generics as a constraint's does
     ErrorMacroParmType = 1533,  // A macro's value parameter written without a type (`macro twice[a]`): a macro parameter is always typed, `a: T` or `a: lazy T`. Only `self`, first in a macro declared in a type, is written bare. Pointed at the parameter
     ErrorMacroSelfType = 1534,  // A macro method's `self` written with a type or `lazy` (`macro m[self: &Point]`): `self` is the receiver expression as it is, so it takes neither. Pointed at the type
     ErrorMacroTypeArgs = 1535,  // A macro use whose brackets do not fit the macro's type parameters: none written where the macro declares some (inferring them is not built), or type arguments given to a macro that declares none (`m[i32](x)`). Pointed at the use
+    ErrorMacroParmAssign = 1538, // A macro's body changing a plain (not `lazy`) parameter: assigning to it or to a part of it, swapping it, or borrowing it mutably. A plain parameter is evaluated once, bound as a `let`, so an argument the macro assigns to must be `lazy`. Reported where the macro is used, pointed at the change in the body
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'
@@ -275,6 +276,7 @@ enum ErrorCode {
 
     // Moves: what a move-typed value may be moved out of
     ErrorMoveOut = 1120,        // A move-typed value moved out through a reference that does not solely own it: a borrowed one, or a shared (aliasable) owning one
+    ErrorMoveRawPtr = 1539,     // A move-typed value (one that finalizes or owns) moved out through a raw pointer, which owns nothing (`*p`, `(*p).(a)`, `p[i]`, a function handing back `*p`): what holds the place still finalizes it. `mem.readRaw(p)` moves it out, leaving the place holding nothing; only an '@intrinsic' body (readRaw's fallback) is let through. A copy through `*p` is not refused
 
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)
@@ -299,7 +301,8 @@ enum ErrorCode {
     ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, an intrinsic, a trait's method, a generic module, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, an intrinsic, a trait's or a generic type's method -- or on something not a fn or a global
-    ErrorCNameConflict = 1152,  // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
+    ErrorLlvmName = 1541,       // A function or global whose final C name (its own '@c("...")', or its C-named module's prefix and its name) begins 'llvm.': LLVM's names for its intrinsics, which are no symbol to link and which the code generator cannot select. Pointed at the declaration
+    ErrorCNameConflict = 1152, // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
     ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 
     // A module trait, and a module conforming to one with 'is'
@@ -747,6 +750,7 @@ enum ErrorCode {
     ErrorMainResult = 1532,     // A `main` returning `Result[T, E]` whose `E` has no `message()` method for the program to print the error with when `main` fails. Pointed at the return type
     ErrorTryType = 1536,        // A `try` block wanted as no Result or Option whose type cannot be read off it: its `?`s fail with different error types, or it has no `?`, so neither the error type nor the kind is known. The message asks for the type, `let r: Result[i32, E] = try {...}`. Pointed at the `try`
     ErrorTryMix = 1537,         // A `?` in a `try` block taking an Option where another `?` of the block, or the type the block is wanted as, is a Result, or the reverse. The message names `okOr(error)` and `ok()`, which convert one into the other. Pointed at the '?'
+    ErrorLifecycleNamed = 1540, // A module's `init` or `final` named in an expression, by its bare name in its own module or by a path from another: called, borrowed or otherwise used. The program runs each once, so a use would run it a second time. Folding one is ErrorBadFold. Pointed at the name
 
     // Warnings
     WarnCode = 3000,
