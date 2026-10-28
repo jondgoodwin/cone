@@ -323,6 +323,13 @@ enum NodeTags {
 // own check does not walk the receiver a second time, and clears this.
 // 0x2000 is free on a FnCall: FlagHollowOut is a name use's.
 #define FlagRcvChecked 0x2000       // FnCall: the receiver (objfn) is already type checked
+// A '?a' whose operand was a generic or macro parameter when name resolution met
+// it, so that '?' could not yet be told to be an Option type or the refused
+// spelling of an allocation (allocateQuesNameRes). The instance's clone
+// substitutes the argument, and fnCallTypeCheck asks again then. It shares the
+// bit of FlagRcvChecked, which only a member access (a node with a methfld)
+// carries; this node has none.
+#define FlagQuesProvisional 0x2000  // FnCall: '?' over a parameter, to be told from a type once substituted
 // A variant is constructed with parentheses, 'Some(5)', and an empty one by its name
 // alone, 'None', 'Lamp.Red', 'None[i32]'; written in square brackets, 'Some[5]',
 // it is refused. Both are built as the one literal, a FnCall with FlagIndex

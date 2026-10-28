@@ -203,7 +203,8 @@ flow later injects wraps the already-coerced node.
 
 ### `ifExhaustCheck`
 
-Given an `is` condition on a **closed** variant set — an enum with no base of
+An `is` whose left side is no expression (a type, already refused by
+`castIsTypeCheck`) has no variants to ask about, and returns at once. Given an `is` condition on a **closed** variant set — an enum with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
 two name uses of one declaration, or two reads of the same place -- the same variable,

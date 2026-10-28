@@ -702,6 +702,29 @@ void parseExternFnCheck(FnDclNode *fn) {
             "A generic function is instantiated where it is used, so it has no definition elsewhere for 'extern' to name. Write its body.");
 }
 
+// Refuse a C name that LLVM reserves for its intrinsics, 'llvm.x86.sse2.pause':
+// a function so named is no symbol to link, and the code generator cannot select
+// the call. The name is the final one, where the declaration's own '@c("sym")'
+// or its C-named module's prefix gives it. A Cone name holds no '.', so a final
+// name begins 'llvm.' only if the string that gave it that start does: the
+// declaration's own, or the module's prefix. Run on a declaration whose module
+// line is parsed already, which sets the prefix. A generic fn keeps its Cone name.
+static void parseLlvmNameCheck(ParseState *parse, INode *node, Name *namesym, DclInfo *dclinfo, int generic) {
+    if (namesym == NULL)
+        return;
+    DclInfo *modinfo = &parse->mod->dclinfo;
+    if ((dclinfo->facts & DclCName) && dclinfo->cname != NULL) {
+        if (strncmp(dclinfo->cname, "llvm.", 5) == 0)
+            errorMsgNode(node, ErrorLlvmName,
+                "The C name \"%s\" begins 'llvm.', which LLVM reserves for its intrinsics: they are not symbols to link, and a call to one cannot be generated. Give %s a C name that does not.",
+                dclinfo->cname, &namesym->namestr);
+    }
+    else if (!generic && (modinfo->facts & DclCName) && modinfo->cname != NULL && strncmp(modinfo->cname, "llvm.", 5) == 0)
+        errorMsgNode(node, ErrorLlvmName,
+            "Module %s gives its C names the prefix \"%s\", so %s is the C name \"%s%s\", which begins 'llvm.': LLVM reserves those for its intrinsics, which are not symbols to link. Give the module a prefix that does not begin so.",
+            &parse->mod->namesym->namestr, modinfo->cname, &namesym->namestr, modinfo->cname, &namesym->namestr);
+}
+
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either. 'member' is set for an item of an 'extern' block's
 // braces, whose last declaration needs no ';' before the '}' (parseEndOfMember)
@@ -723,6 +746,7 @@ static INode *parseFnOrVarIn(ParseState *parse, uint16_t flags, int member) {
             errorMsgNode((INode*)node, ErrorCNameTwice,
                 "Module %s already gives its functions C names, so a bare '@c' on %s says nothing. To spell its symbol differently, write it: '@c(\"symbol\")'.",
                 &parse->mod->namesym->namestr, &node->namesym->namestr);
+        parseLlvmNameCheck(parse, (INode*)node, node->namesym, dclinfo, node->genericinfo != NULL);
         modAddFn(parse->mod, node);
         return (INode*)node;
     }
@@ -754,6 +778,7 @@ static INode *parseFnOrVarIn(ParseState *parse, uint16_t flags, int member) {
                 "'@workgroup' global %s may not have an initial value: each workgroup's copy starts undefined, and its invocations write what they will read, before a barrier.",
                 &node->namesym->namestr);
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
+        parseLlvmNameCheck(parse, (INode*)node, node->namesym, &node->dclinfo, 0);
         if (member)
             parseEndOfMember();
         else

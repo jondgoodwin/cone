@@ -280,7 +280,11 @@ type's method) or on what is not a function or global; the remedy is to write
 the body, or the declaration, without it. A `@c` that is well formed and says
 nothing — a bare one on a function its C-named module already names — is kept
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
-that the module already said it.
+that the module already said it. A `@c` whose final name is well formed as a
+string but is LLVM's name for an intrinsic (it begins `llvm.`) is
+`ErrorLlvmName`: not a malformed marker, so not `ErrorCAttr`, and the remedy is
+a different name. It is judged on the final name, so a module's prefix `llvm.`
+is reported at each declaration it would give such a name, saying the name built.
 
 One C name declared by two declarations of one compile is one symbol, and what
 can be wrong with that takes two codes, because the remedies differ.

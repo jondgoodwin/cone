@@ -370,6 +370,11 @@ not rewritten: its guard binds the reference, which takes nothing.
 Decides only whether a **downcast specialization** is possible, and needs a
 discriminant to do it.
 
+A left side that is no expression, a type (`Handle is Move`), is refused once, as
+`ErrorInvType` "requires a typed expression to the left": it is checked with
+`inodeTypeCheckAny`, not `iexpTypeCheckAny`, so `ErrorNotTyped` does not say it
+first, and `ifExhaustCheck` returns on it rather than ask a type for its variants.
+
 - **Reference to reference** (from a virtual or a plain ref): regions must be
   **identical** — two regions are represented differently in memory, so no
   recast exists between them, not even into a borrow. Then permissions must

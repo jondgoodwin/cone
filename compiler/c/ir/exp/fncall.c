@@ -4108,6 +4108,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
+    // '?a' over a parameter that a value was substituted for: not the Option type
+    // name resolution could not yet tell it from, so the refusal it deferred
+    if ((node->flags & FlagQuesProvisional) && node->methfld == NULL && node->args && node->args->used == 1
+        && !isTypeNode(nodesGet(node->args, 0)) && !inodeIsProvisionalType(nodesGet(node->args, 0))) {
+        errorMsgNode((INode*)node, ErrorInvType, "'?' is not valid here.");
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
     // 'T(1)': a call of a type that only a generic's substitution made one
     if (fnCallIsTypeCall(node))
         fnCallMarkConstruction(node);
@@ -4942,7 +4951,10 @@ dispatch:
     }
 
     default:
-        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        // A type that was refused where it was written (a generic named with
+        // no arguments) has said so; its uses do not say it again
+        if (objtype != errorType)
+            errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
     }
 

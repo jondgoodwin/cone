@@ -658,7 +658,10 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   declaration of it must agree (`ErrorCNameConflict`), and at most one may
   define it (`ErrorCNameDefTwice`), which then owns it. A private C-named
   definition is internal, so nothing links against its name, and it takes no
-  part. The marker affects the symbol only; resolution is through the
+  part. A C name beginning `llvm.` is LLVM's name for an intrinsic, no symbol
+  to link, and is refused (`ErrorLlvmName`) wherever the final name is built,
+  from a function's own string or a module's prefix and the declared name.
+  The marker affects the symbol only; resolution is through the
   ordinary module, so a caller writes `sdl.Init`. Inbound (a C library's
   symbols) and outbound (a Cone body published to C, `pub fn @c(...)`) are one
   mechanism in two directions.
