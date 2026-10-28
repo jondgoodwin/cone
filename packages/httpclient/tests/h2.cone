@@ -1,0 +1,641 @@
+// HTTP/2 through the client, offline: servers of httpconn's own on
+// 127.0.0.1 on the client's Loop, one over TLS that offers h2 by ALPN (the
+// tls package's test certificates), one over TLS that offers only
+// http/1.1, and one in cleartext that speaks HTTP/2 by prior knowledge and
+// allows one stream at a time. Checked: a fetch over TLS chooses h2 by ALPN
+// and its Response says Version.Http2; 64 at once go on that one connection,
+// many in flight together; a client made with http2 off, and a server that
+// does not offer h2, fall back to HTTP/1.1; a slow reader does not hold back
+// another fetch on the same connection; with the peer's one stream in use,
+// waiting fetches become streams in the scheduler's order (intent, score,
+// order asked); streams the server refused past its limit (REFUSED_STREAM)
+// are retried and Done; a stream reset before any response is retried for a
+// GET and not for a POST; a connection going away (GOAWAY) with a stream
+// still in flight on it is not waited for: the next fetch takes a new
+// connection; a fresh client's first burst to an h2 origin ends with one
+// connection pooled.
+
+mod h2;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, IoError, forever;
+import http use *;
+import httpconn;
+import tls;
+import httpclient use *;
+
+// ---------------------------------------------------------------------------
+// The loopback servers: httpconn's own drivers on the client's Loop. What
+// they answer is chosen by the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /order/L           200 L
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /stall             200 with 1 MiB to come; 64 KiB of it sent, then nothing
+//   /goaway            200 "bye", then the connection closed (GOAWAY on HTTP/2)
+//   /resetonce         the first time, the stream reset before any response; after, 200 "again"
+//   /reset             the stream reset before any response, always
+// Every request's target is kept in 'order', in the order they came.
+// ---------------------------------------------------------------------------
+
+const tokSrv = 100u64;
+
+struct Srv {
+  pub drv: httpconn.Driver;
+  pub accepted: u64;
+  pub requests: u64;
+  pub inFlight: u64;
+  pub maxInFlight: u64;
+  pub h2: u64;                 // requests that came over HTTP/2
+  pub resetOnce: bool;
+  pub order: List[String];
+  pub reqs: List[httpconn.ReqId];
+  pub conns: List[httpconn.ConnId];
+  pub targets: List[String];
+  pub streams: List[httpconn.ReqId];
+  pub sent: List[u64];
+  pub totals: List[u64];
+}
+
+fn server(cfg: httpconn.Config) Srv {
+  Srv(drv: httpconn.Driver.make(cfg), accepted: 0u64, requests: 0u64, inFlight: 0u64, maxInFlight: 0u64,
+    h2: 0u64, resetOnce: false, order: List[String].empty(), reqs: List[httpconn.ReqId].empty(),
+    conns: List[httpconn.ConnId].empty(), targets: List[String].empty(), streams: List[httpconn.ReqId].empty(),
+    sent: List[u64].empty(), totals: List[u64].empty())
+}
+
+fn portOf(sv: &mut Srv, lp: &mut Loop, r: Result[httpconn.ListenerId, IoError]) u16 {
+  var port = 0u16;
+  match r {
+    case let Ok(l) {
+      match sv.drv.localAddr(lp, l) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  port
+}
+
+fn reply(sv: &mut Srv, req: httpconn.ReqId, status: u16, body: &Array[u8]) {
+  sv.drv.respond(req, ResponseHead.make(status), BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize {
+    var b = IoBuf(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s: &str) u64 {
+  match collections.parseUInt(s) {
+    case let Some(v) {v}
+    case is None[u64] {0u64}
+  }
+}
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv: &mut Srv, j: usize) {
+  let req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    let at = *sv.sent[j];
+    let left = *sv.totals[j] - at;
+    let n = if left < 65536u64 {usize.from(left)} else {65536usize};
+    var b = IoBuf(n);
+    let s = b.spare();
+    var i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn dropStream(sv: &mut Srv, j: usize) {
+  let last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
+  var j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len()
+}
+
+// The answer to request k, read whole
+fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
+  let req = *sv.reqs[k];
+  let full = sv.targets[k].copy();
+  let path = full.view();
+  if path.len > 7usize && &path[0usize ..< 7usize] == "/order/" {
+    reply(sv, req, 200u16, &path[7usize ..]);
+  } else if path.len > 5usize && &path[0usize ..< 5usize] == "/big/" {
+    let n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } else if path == "/stall" {
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
+    var b = IoBuf(65536usize);
+    b.setLen(65536usize);
+    sv.drv.sendData(req, b);
+  } else if path == "/goaway" {
+    reply(sv, req, 200u16, "bye");
+    sv.drv.close(lp, *sv.conns[k]);
+  } else if path == "/resetonce" {
+    if !sv.resetOnce {
+      sv.resetOnce = true;
+      sv.drv.cancel(lp, req);
+    } else {
+      reply(sv, req, 200u16, "again");
+    }
+  } else if path == "/reset" {
+    sv.drv.cancel(lp, req);
+  } else {
+    reply(sv, req, 200u16, "hello");
+  }
+}
+
+fn findReq(sv: &Srv, req: httpconn.ReqId) usize {
+  var k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len()
+}
+
+fn forget(sv: &mut Srv, k: usize) {
+  let last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.conns.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.reqs.pop();
+  sv.conns.pop();
+  sv.targets.pop();
+}
+
+fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
+  let kind = e.kind;
+  if kind == httpconn.EventKind.Accepted {
+    sv.accepted = sv.accepted + 1u64;
+  } else if kind == httpconn.EventKind.Request {
+    sv.requests = sv.requests + 1u64;
+    sv.inFlight = sv.inFlight + 1u64;
+    if sv.inFlight > sv.maxInFlight {sv.maxInFlight = sv.inFlight;}
+    if e.request.version == Version.Http2 {sv.h2 = sv.h2 + 1u64;}
+    sv.order.push(e.request.target.copy());
+    sv.reqs.push(e.req);
+    sv.conns.push(e.conn);
+    sv.targets.push(e.request.target.copy());
+  } else if kind == httpconn.EventKind.Data {
+    sv.drv.release(e.req, e.buf.len());
+  } else if kind == httpconn.EventKind.End {
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, lp, k);}
+  } else if kind == httpconn.EventKind.Writable {
+    let j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } else if e.isTerminal() {
+    if sv.inFlight > 0u64 {sv.inFlight = sv.inFlight - 1u64;}
+    let k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    let j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+// The server's events for now, answered
+fn serveAll(sv: &mut Srv, lp: &mut Loop) {
+  var sevs = List[httpconn.Event].empty();
+  sv.drv.pump(lp, &uni sevs);
+  var k = 0usize;
+  while k < sevs.len() {
+    serve(sv, lp, &mut sevs[k]);
+    k = k + 1usize;
+  }
+}
+
+// The servers, as one loop drives them
+struct Servers {
+  pub a: Srv;      // TLS: h2 and http/1.1 offered; TLS http/1.1 alone
+  pub b: Srv;      // cleartext, HTTP/2 by prior knowledge, one stream at a time
+}
+
+// One turn of the loop: the client's completions to it, the servers' to
+// their drivers; the servers' events answered; the client's appended to out
+fn step(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  cl.pump(lp, out);
+  serveAll(&mut svs.a, lp);
+  serveAll(&mut svs.b, lp);
+  var limit = until;
+  let w = cl.wakeAt();
+  if w < limit {limit = w;}
+  let wa = svs.a.drv.wakeAt();
+  if wa < limit {limit = wa;}
+  let wb = svs.b.drv.wakeAt();
+  if wb < limit {limit = wb;}
+  if out.len() > 0usize {limit = Instant();}
+  var comps = List[Completion].empty();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let c = &mut comps[k];
+    if !cl.complete(lp, c) {
+      if !svs.a.drv.complete(lp, c) {svs.b.drv.complete(lp, c);}
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  serveAll(&mut svs.a, lp);
+  serveAll(&mut svs.b, lp);
+  cl.pump(lp, out);
+}
+
+// ---------------------------------------------------------------------------
+// What the client saw
+// ---------------------------------------------------------------------------
+
+struct Seen {
+  pub id: FetchId;
+  pub status: u16;
+  pub version: Version;
+  pub body: String;
+  pub finals: u64;
+  pub last: EventKind;
+  pub kind: ErrorKind;
+  pub stage: Stage;
+  pub timing: Timing;
+  pub release: bool;           // its body's bytes are released as they come
+}
+
+fn seen(id: FetchId, release: bool) Seen {
+  Seen(id: id, status: 0u16, version: Version.Http10, body: String.empty(), finals: 0u64, last: EventKind.Done,
+    kind: ErrorKind.Closed, stage: Stage.Url, timing: Timing.zero(), release: release)
+}
+
+fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
+  if e.kind == EventKind.Response {
+    s.status = e.response.status;
+    s.version = e.response.version;
+  } else if e.kind == EventKind.Data {
+    if s.body.len() < 65536usize {s.body.appendBytes(e.buf.view());}
+    if s.release {cl.release(e.id, e.buf.len());}
+  } else if e.isTerminal() {
+    s.finals = s.finals + 1u64;
+    s.last = e.kind;
+    s.timing = e.timing;
+    if e.kind == EventKind.Failed {
+      s.kind = e.failure.error.kind;
+      s.stage = e.failure.stage;
+    }
+  }
+}
+
+// Drive until every fetch in ss has its final answer (or ten seconds)
+fn drive(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, ss: &uni List[Seen]) bool {
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while Instant.now() < giveUp {
+    var all = true;
+    var j = 0usize;
+    while j < ss.len() {
+      if ss[j].finals == 0u64 {all = false;}
+      j = j + 1usize;
+    }
+    if all {return true;}
+    step(cl, svs, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      j = 0usize;
+      while j < ss.len() {
+        if ss[j].id == e.id {note(cl, &mut ss[j], e);}
+        j = j + 1usize;
+      }
+      if e.kind == EventKind.Data && !isFollowed(ss, e.id) {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  false
+}
+
+fn isFollowed(ss: &List[Seen], id: FetchId) bool {
+  var j = 0usize;
+  while j < ss.len() {
+    if ss[j].id == id {return true;}
+    j = j + 1usize;
+  }
+  false
+}
+
+// One request sent and driven to its final answer
+fn fetchOne(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, r: Request) Seen {
+  var ss = List[Seen].empty();
+  ss.push(seen(cl.send(lp, r, Sink.Here(1u64)), true));
+  drive(cl, svs, lp, &uni ss);
+  match ss.pop() {
+    case let Some(s) {s}
+    else {seen(FetchId.none(), true)}
+  }
+}
+
+// Drive for a while
+fn idleFor(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, d: Duration) {
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, svs, lp, &uni out, until);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+}
+
+fn countDone(ss: &List[Seen]) u64 {
+  var n = 0u64;
+  var j = 0usize;
+  while j < ss.len() {
+    if ss[j].last == EventKind.Done && ss[j].finals == 1u64 && ss[j].status == 200u16 {n = n + 1u64;}
+    j = j + 1usize;
+  }
+  n
+}
+
+// ---------------------------------------------------------------------------
+// TLS
+// ---------------------------------------------------------------------------
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String.empty();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+struct TlsMaker {
+  server: tls.Server;
+
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
+}
+
+// A TLS server context, offering h2 first when h2
+fn tlsServer(h2: bool) tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  if h2 {
+    var names = List[String].empty();
+    names.push(String.from("h2"));
+    names.push(String.from("http/1.1"));
+    cfg.alpn = names;
+  }
+  match tls.Server.make(cfg) {
+    case let Ok(r) {
+      let s = r;
+      return s;
+    }
+    case let Err(e) {}
+  }
+  panic("no TLS server: run the test from its build folder")
+}
+
+fn listenTls(sv: &mut Srv, lp: &mut Loop, s: tls.Server) u16 {
+  let r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(s)), httpconn.Sink.Here(tokSrv));
+  portOf(sv, lp, r)
+}
+
+fn listenPlain(sv: &mut Srv, lp: &mut Loop) u16 {
+  let r = sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(tokSrv));
+  portOf(sv, lp, r)
+}
+
+fn secure(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn plain(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn trusting() Config {
+  var cfg = Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg
+}
+
+fn withIntent(r: Request, i: Intent) Request {
+  var q = r;
+  q.intent = i;
+  q
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var bcfg = httpconn.Config.make();
+  bcfg.h2PriorKnowledge = true;
+  bcfg.h2.maxConcurrentStreams = 1u32;
+  var svs = Servers(a: server(httpconn.Config.make()), b: server(bcfg));
+  let h2port = listenTls(&mut svs.a, &mut lp, tlsServer(true));
+  let h1port = listenTls(&mut svs.a, &mut lp, tlsServer(false));
+  let pkport = listenPlain(&mut svs.b, &mut lp);
+  require(h2port != 0u16 && h1port != 0u16 && pkport != 0u16, "three servers listen");
+  var cl = Client.make(trusting());
+
+  // One fetch over TLS: ALPN chose h2, and the response says so
+  var one = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h2port, "/hello").view()));
+  expect(one.last == EventKind.Done && one.status == 200u16 && one.body.view() == "hello", "an https GET to an h2 server: Done");
+  expect(one.version == Version.Http2, "...over HTTP/2: ALPN chose h2");
+  expect(svs.a.h2 >= 1u64, "...the server read it as HTTP/2");
+
+  // 64 at once: one connection carries them all, many in flight together
+  let acc0 = svs.a.accepted;
+  let st0 = cl.stats();
+  var many = List[Seen].empty();
+  var k = 0u32;
+  while k < 64u32 {
+    many.push(seen(cl.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(2u64)), true));
+    k = k + 1u32;
+  }
+  expect(drive(&mut cl, &mut svs, &mut lp, &uni many), "64 at once: every one answered");
+  expectUInt(countDone(&many), 64u64, "...each Done, 200");
+  expectUInt(svs.a.accepted - acc0, 0u64, "...on the connection already open: no new one");
+  expect(svs.a.maxInFlight > 1u64, "...many in flight at once on it");
+  let st1 = cl.stats();
+  expectUInt(st1.streams - st0.streams, 64u64, "...each sent as an HTTP/2 stream");
+  expectUInt(st1.connects - st0.connects, 0u64, "...no connection opened");
+
+  // HTTP/1.1 where h2 is not agreed: a server offering http/1.1 alone, and a
+  // client made with http2 off
+  let a1 = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h1port, "/hello").view()));
+  expect(a1.last == EventKind.Done && a1.version == Version.Http11, "a server offering only http/1.1: Done over HTTP/1.1");
+  var offCfg = trusting();
+  offCfg.http2 = false;
+  var off = Client.make(offCfg);
+  let a2 = fetchOne(&mut off, &mut svs, &mut lp, Request.get(secure(h2port, "/hello").view()));
+  expect(a2.last == EventKind.Done && a2.version == Version.Http11, "a client with http2 off: Done over HTTP/1.1");
+  off.abortAll(&mut lp);
+
+  // A slow reader holds back only its own stream: a big body never
+  // released, and another fetch on the same connection Done meanwhile
+  let acc2 = svs.a.accepted;
+  var both = List[Seen].empty();
+  both.push(seen(cl.get(&mut lp, secure(h2port, "/big/4000000").view(), Sink.Here(3u64)), false));
+  both.push(seen(cl.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(3u64)), true));
+  {
+    var out = List[Event].empty();
+    let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+    while both[1usize].finals == 0u64 && Instant.now() < giveUp {
+      step(&mut cl, &mut svs, &mut lp, &uni out, giveUp);
+      var j = 0usize;
+      while j < out.len() {
+        let e = &mut out[j];
+        if e.id == both[0usize].id {note(&mut cl, &mut both[0usize], e);}
+        if e.id == both[1usize].id {note(&mut cl, &mut both[1usize], e);}
+        j = j + 1usize;
+      }
+      out.clear();
+    }
+  }
+  expect(both[1usize].last == EventKind.Done && both[1usize].finals == 1u64, "a slow reader's stream stalled: another fetch on the connection Done");
+  expectUInt(both[0usize].finals, 0u64, "...the slow one still under way");
+  expectUInt(svs.a.accepted - acc2, 0u64, "...both on the connection already open");
+  cl.cancel(&mut lp, both[0usize].id);
+  idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
+
+  // Prior knowledge, one stream at a time: fetches asked for at once before
+  // the server's SETTINGS are known go out together, those past its limit
+  // are refused (REFUSED_STREAM) and retried: every one Done
+  var pcfg = Config.make();
+  pcfg.conn.h2PriorKnowledge = true;
+  var pk = Client.make(pcfg);
+  var burst = List[Seen].empty();
+  k = 0u32;
+  while k < 5u32 {
+    burst.push(seen(pk.get(&mut lp, plain(pkport, "/hello").view(), Sink.Here(4u64)), true));
+    k = k + 1u32;
+  }
+  expect(drive(&mut pk, &mut svs, &mut lp, &uni burst), "five at once to a one-stream server: every one answered");
+  expectUInt(countDone(&burst), 5u64, "...each Done");
+  expect(pk.stats().retries >= 1u64, "...those refused past its stream limit retried");
+  expectUInt(svs.b.maxInFlight, 1u64, "...the server never held more than its one stream");
+  expectUInt(svs.b.accepted, 1u64, "...on one connection");
+
+  // The scheduler's order onto streams: the server's one stream known, the
+  // waiting fetches become streams as it frees, by intent, then the order asked
+  let o0 = svs.b.order.len();
+  var ordered = List[Seen].empty();
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/b1").view()), Intent.Background), Sink.Here(5u64)), true));
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/b2").view()), Intent.Background), Sink.Here(5u64)), true));
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/v1").view()), Intent.Visible), Sink.Here(5u64)), true));
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/p1").view()), Intent.Prefetch), Sink.Here(5u64)), true));
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/u1").view()), Intent.Urgent), Sink.Here(5u64)), true));
+  ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/v2").view()), Intent.Visible), Sink.Here(5u64)), true));
+  expect(drive(&mut pk, &mut svs, &mut lp, &uni ordered), "six of mixed intents: every one answered");
+  expectUInt(countDone(&ordered), 6u64, "...each Done");
+  var got = String.empty();
+  var q = o0;
+  while q < svs.b.order.len() {
+    if got.len() > 0usize {got.append(" ");}
+    got.append(svs.b.order[q].view());
+    q = q + 1usize;
+  }
+  expectStr(got.view(), "/order/u1 /order/v1 /order/v2 /order/p1 /order/b1 /order/b2", "...streams opened in the scheduler's order");
+  pk.abortAll(&mut lp);
+
+  // A stream reset before any response: a GET is retried, a POST is not
+  let g = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h2port, "/resetonce").view()));
+  expect(g.last == EventKind.Done && g.body.view() == "again", "a GET whose stream was reset: retried, Done");
+  expectUInt(u64.from(g.timing.attempts), 2u64, "...in two attempts");
+  let p = fetchOne(&mut cl, &mut svs, &mut lp, Request.make("POST", secure(h2port, "/reset").view()));
+  expect(p.last == EventKind.Failed && p.stage == Stage.Http && p.kind == ErrorKind.Reset, "a POST whose stream was reset: Failed, Http, Reset");
+  expectUInt(u64.from(p.timing.attempts), 1u64, "...not retried");
+
+  // A connection going away (GOAWAY) with a stream still in flight on it:
+  // the next fetch does not wait for it, but takes a new connection
+  let acc1 = svs.a.accepted;
+  var stall = List[Seen].empty();
+  stall.push(seen(cl.get(&mut lp, secure(h2port, "/stall").view(), Sink.Here(6u64)), true));
+  idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
+  let bye = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h2port, "/goaway").view()));
+  expect(bye.last == EventKind.Done && bye.body.view() == "bye", "a response followed by the server's GOAWAY: Done");
+  // The GOAWAY arrives (a stream sent before it would still be served there)
+  idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
+  let after = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h2port, "/hello").view()));
+  expect(after.last == EventKind.Done && after.version == Version.Http2, "the next fetch, a stream still in flight on the going connection: Done");
+  expectUInt(svs.a.accepted - acc1, 1u64, "...on a new connection");
+  cl.cancel(&mut lp, stall[0usize].id);
+  idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
+
+  // A fresh client's first burst to an h2 origin it has not met: it may open
+  // several connections before it learns the origin speaks h2; once the
+  // burst is over, one stays pooled
+  var fresh = Client.make(trusting());
+  var fb = List[Seen].empty();
+  k = 0u32;
+  while k < 8u32 {
+    fb.push(seen(fresh.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(7u64)), true));
+    k = k + 1u32;
+  }
+  expect(drive(&mut fresh, &mut svs, &mut lp, &uni fb), "a fresh client's burst of eight: every one answered");
+  expectUInt(countDone(&fb), 8u64, "...each Done");
+  idleFor(&mut fresh, &mut svs, &mut lp, Duration.fromMillis(30i64));
+  expectUInt(u64.from(fresh.stats().openNow), 1u64, "...one connection left pooled");
+  let fsb = fresh.stats();
+  expectUInt(fsb.fetches, fsb.done + fsb.failed + fsb.cancelled + fsb.timedOut, "...every fetch answered once");
+  fresh.abortAll(&mut lp);
+
+  let s = cl.stats();
+  expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "every fetch has had its one final answer");
+  cl.abortAll(&mut lp);
+  idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(50i64));
+  svs.a.drv.abortAll(&mut lp);
+  svs.b.drv.abortAll(&mut lp);
+  serveAll(&mut svs.a, &mut lp);
+  serveAll(&mut svs.b, &mut lp);
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

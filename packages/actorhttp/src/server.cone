@@ -52,10 +52,11 @@ pub struct ServerConfig {
   pub maxBody: usize;                       // the most request body bytes it takes (past it, 413)
   pub maxPending: usize;                    // the most requests that wait for an actor to take them (past it, 503)
   pub tlsConfig: Option[tls.ServerConfig];  // Some: every connection is TLS
+  pub http2: bool;                          // TLS: HTTP/2 offered (ALPN "h2" before "http/1.1")
 
-  // The defaults: plain HTTP, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
+  // The defaults: plain HTTP/1.1, httpconn's bounds, bodies up to 1 MiB, 1024 requests waiting
   pub fn make() ServerConfig {
-    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None)
+    ServerConfig(httpconn.Config.make(), defaultMaxRequestBody, 1024usize, None, false)
   }
 
   // The same through TLS, with a certificate chain and a key (tls.ServerConfig's)
@@ -64,6 +65,34 @@ pub struct ServerConfig {
     c.tlsConfig = Some[tls.ServerConfig](cfg);
     c
   }
+
+  // The same offering HTTP/2 through TLS: a client that offers h2 by ALPN
+  // gets it, one that does not HTTP/1.1. Without TLS, HTTP/2 is by prior
+  // knowledge alone ('conn.h2PriorKnowledge': every connection speaks it)
+  pub fn offerHttp2(self) ServerConfig {
+    var c = self;
+    c.http2 = true;
+    c
+  }
+}
+
+// The ALPN list a server's TLS accepts: its config's, with "h2" put first when
+// it offers HTTP/2 (unless already there)
+fn serverAlpn(names: &List[String], http2: bool) List[String] {
+  var out = List[String].empty();
+  var has = false;
+  var k = 0usize;
+  while k < names.len() {
+    if names[k].view() == "h2" {has = true;}
+    k = k + 1usize;
+  }
+  if http2 && !has {out.push(String.from("h2"));}
+  k = 0usize;
+  while k < names.len() {
+    out.push(names[k].copy());
+    k = k + 1usize;
+  }
+  out
 }
 
 // The most request body bytes a server takes unless it is made with another limit

@@ -1,0 +1,336 @@
+// HTTP/2 between actors, on loopback through TLS (the tls package's test
+// certificates): a server made with 'offerHttp2' and the package's own
+// client, which offers h2 by ALPN. Checked: a GET, a POST with a body and a
+// stream of server-sent events, each answered over HTTP/2 and saying so
+// (Version.Http2), the caller's code the same as over HTTP/1.1; twenty GETs
+// awaited at once by four actors through one client, every one over HTTP/2;
+// a request body past the server's limit answered 413 and the client's next
+// request still answered; a client made with http2 off, and a server that
+// does not offer h2, answering over HTTP/1.1; a Conn whose TLS offers h2
+// speaking it.
+
+mod h2;
+
+import stdio use *;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import sse;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, EventStream;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+fn versionName(v: Version) &str {
+  if v == Version.Http2 {"HTTP/2"}
+  else if v == Version.Http11 {"HTTP/1.1"}
+  else {"other"}
+}
+
+// ---------------------------------------------------------------------------
+// The server's side
+// ---------------------------------------------------------------------------
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if p == "/events" {
+      ex.startEvents();
+      let a = sse.Event.named("h2", "one");
+      let b = sse.Event.message("two");
+      let r1 = await ex.sendEvent(&a);
+      let r2 = await ex.sendEvent(&b);
+      let f = await ex.finish();
+    } else {
+      var t = String.from(ex.request.methodName());
+      t.append(" ");
+      t.append(path.view());
+      if ex.request.head.version == Version.Http2 {t.append(" h2");} else {t.append(" h1");}
+      if ex.request.body.len() > 0usize {
+        t.append(" ");
+        t.append(ex.request.body.view());
+      }
+      ex.text(200u16, t.view());
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client's side
+// ---------------------------------------------------------------------------
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String.empty();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A client that trusts the test root (and asks no one else); h2 offered unless told not to
+fn trusting(h2: bool) Client {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = h2;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+fn say(what: &str, r: Result[Response, FetchError]) {
+  printStr(what);
+  printStr(": ");
+  match &r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      printStr(" ");
+      printStr(versionName(ok.version));
+      printStr(" ");
+      printStr(ok.body.view());
+      printStr("\n");
+    }
+    case let &Err(e) {
+      printStr("failed: ");
+      printStr(e.message().view());
+      printStr("\n");
+    }
+  }
+}
+
+// Whether r is a 200 over HTTP/2
+fn overH2(r: Result[Response, FetchError]) bool {
+  match &r {
+    case let &Ok(ok) {ok.status == 200u16 && ok.version == Version.Http2}
+    else {false}
+  }
+}
+
+// One of several actors fetching at once through the same client
+actor Many {
+  client: Client;
+
+  pub async fn run(self, port: u16, n: u32, done: Sender[u64]) {
+    var good = 0u64;
+    var k = 0u32;
+    while k < n {
+      if overH2(await client.get(url(port, "/many").view())) {good = good + 1u64;}
+      k = k + 1u32;
+    }
+    done.send(good);
+  }
+}
+
+actor Prober {
+  client: Client;
+  off: Client;
+
+  pub async fn run(self, port: u16, h1port: u16, smallPort: u16, done: OneshotSender[u64]) {
+    say("get", await client.get(url(port, "/hello").view()));
+    var post = Request.make("POST", url(port, "/echo").view());
+    post.body = String.from("over h2");
+    say("post", await client.send(post));
+
+    // Events over HTTP/2
+    let r = await client.events(Request.get(url(port, "/events").view()));
+    match r {
+      case let Ok(es) {
+        printStr("events: status ");
+        printUInt(u64.from(es.status));
+        printStr(" ");
+        printStr(versionName(es.version));
+        printStr(", event stream: ");
+        printStr(yes(es.isEventStream()));
+        printStr("\n");
+        var going = true;
+        while going {
+          let n = await es.next();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(ev) {
+                  printStr("  ");
+                  printStr(ev.kind());
+                  printStr(": ");
+                  printStr(ev.data.view());
+                  printStr("\n");
+                }
+                case is None[sse.Event] {going = false;}
+              }
+            }
+            case let Err(er) {
+              printStr("  error\n");
+              going = false;
+            }
+          }
+        }
+      }
+      case let Err(e) {printStr("events failed\n");}
+    }
+
+    // A body past the server's limit: 413, and the next request answered
+    var big = Request.make("POST", url(smallPort, "/echo").view());
+    big.body = String.from("a body longer than the sixteen bytes the server takes");
+    match await client.send(big) {
+      case let Ok(ok) {
+        printStr("past the limit: ");
+        printUInt(u64.from(ok.status));
+        printStr(" ");
+        printStr(versionName(ok.version));
+        printStr("\n");
+      }
+      case let Err(e) {
+        printStr("past the limit: failed: ");
+        printStr(e.message().view());
+        printStr("\n");
+      }
+    }
+    say("after it", await client.get(url(smallPort, "/after").view()));
+
+    // HTTP/1.1 where h2 is not agreed
+    say("a client with http2 off", await off.get(url(port, "/hello").view()));
+    say("a server not offering h2", await client.get(url(h1port, "/hello").view()));
+
+    // A Conn whose TLS offers h2
+    var tcfg = tls.ClientConfig.make();
+    tcfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+    tcfg.offline = true;
+    var names = List[String].empty();
+    names.push(String.from("h2"));
+    names.push(String.from("http/1.1"));
+    tcfg.alpn = names;
+    let cr = await actorhttp.connectSecure("127.0.0.1", port, tcfg);
+    match cr {
+      case let Ok(conn) {
+        say("a Conn offering h2", await conn.request(RequestHead.make("GET", "/conn", "127.0.0.1"), String.empty()));
+      }
+      case let Err(e) {printStr("connect failed\n");}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T {
+  match rx.recv() {
+    case let Some(v) {v}
+    else {dflt}
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    // A server offering h2, one that does not, and one offering h2 that takes 16 body bytes at most
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    acceptor.serve();
+    let h1 = Acceptor(Server.none());
+    h1.open(ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)), ptx.clone());
+    let h1port = take[u16](&mut prx, 0u16);
+    h1.serve();
+    var smallCfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).offerHttp2();
+    smallCfg.maxBody = 16usize;
+    let small = Acceptor(Server.none());
+    small.open(smallCfg, ptx.clone());
+    let smallPort = take[u16](&mut prx, 0u16);
+    small.serve();
+    printStr("three servers listen: ");
+    printStr(yes(port != 0u16 && h1port != 0u16 && smallPort != 0u16));
+    printStr("\n");
+    let client = trusting(true);
+    {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      let p = Prober(client.clone(), trusting(false));
+      p.run(port, h1port, smallPort, tx);
+      rx.recv();
+    }
+    {
+      // Twenty GETs awaited at once, by four actors through one client
+      var dtx: Sender[u64];
+      var drx: Receiver[u64];
+      dtx, drx = Channel[u64].make();
+      var k = 0u32;
+      while k < 4u32 {
+        let m = Many(client.clone());
+        m.run(port, 5u32, dtx.clone());
+        k = k + 1u32;
+      }
+      var good = 0u64;
+      k = 0u32;
+      while k < 4u32 {
+        good = good + take[u64](&mut drx, 0u64);
+        k = k + 1u32;
+      }
+      printStr("twenty at once through one client, each 200 over HTTP/2: ");
+      printUInt(good);
+      printStr("\n");
+    }
+    acceptor.stop();
+    h1.stop();
+    small.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}
