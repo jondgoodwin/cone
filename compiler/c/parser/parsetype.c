@@ -176,9 +176,9 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         bodyp = lex->tokp;
         lexNextToken();
         if (lexIsToken(UndefToken)) {
-            // 'undef' is used to signal that programmer believes variable
-            // can be considered safely "initialized", even though it is UB.
-            varnode->flowtempflags |= VarInitialized;
+            // 'undef' declares the variable with no value, exactly as leaving
+            // the initializer off does: no value node, and no VarInitialized,
+            // so flow tracks it as unvalued
             lexNextToken();
         }
         else
