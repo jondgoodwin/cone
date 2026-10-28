@@ -24,6 +24,7 @@ typedef struct CloneState {
     Nodes *late;         // That instance's members whose 'where' waits on an argument's layout: cloned, and settled once layouts are done (genericLateWhere)
     Nodes *latepairs;    // Out: each of 'late' beside the copy made of it, alternating, the original first
     uint16_t scope;     // Current block level
+    uint16_t modinst;   // Cloning a generic module's instance (modInstantiate): a generic type it declares is copied still generic, and a type naming a trait it declares names the copy (cloneStructNode)
 } CloneState;
 
 // Data structures used for fixing dcl pointers

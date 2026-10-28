@@ -439,6 +439,13 @@ own name to the instance too (`modInstantiate`), without a reservation — the
 instance module exists before its declarations are cloned — and
 `cloneFnCallNode` puts the generic back the same way, so `stack[T].count` inside
 `stack[T]` reaches this instance through the memo and `stack[f64]` another.
+A generic *type* the module declares is the exception to the exception: the
+module's instance maps it to the instance's copy, which `cloneStructNode`
+keeps generic (`CloneState.modinst`: its own parameters hooked to themselves,
+a fresh memo, its `where` and conditional `is` entries copied for its own
+instances to decide), so `Pair[i32]` in the module's body stays mapped to that
+copy, the generic its instances are made from, rather than put back to the
+generic module's original.
 
 Not yet built: a generic enum's variant that an **extension** copies
 (`structEnumCopyVariant`). The copy is cloned from the base's variant template

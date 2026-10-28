@@ -214,6 +214,7 @@ void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32
     cstate->late = NULL;
     cstate->latepairs = NULL;
     cstate->scope = scope;
+    cstate->modinst = 0;
     nametblHookPush();
 
     if (parms) {

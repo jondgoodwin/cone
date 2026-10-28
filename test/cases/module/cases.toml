@@ -1292,9 +1292,9 @@ diagnostics = 2
 
 [scenario.module_generic_nameres]
 category = "reject"
-description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a generic function, a trait or a submodule"
+description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a module trait or a submodule"
 tags = ["nameres"]
-diagnostics = 8
+diagnostics = 7
 
 [scenario.module_generic_typecheck]
 category = "reject"
@@ -1307,6 +1307,116 @@ category = "reject"
 description = "A program whose root module is declared generic"
 tags = ["nameres"]
 diagnostics = 1
+
+# WHAT A GENERIC MODULE DECLARES, each kind cloned into every instance with the
+# module's type parameter substituted, as a generic type's members are [Jon 23
+# Sep]. Each runs two instances, at i64 and at f64, and shows each holding its
+# own copy: an enum (and a generic enum, an enum extending it, a standalone
+# 'use' of it), a generic type, a generic function, a trait, a macro, and a
+# global's 'use' clause. module_generic_body_link carries every kind across
+# packages. What a generic module still refuses is in module_generic_nameres.
+[scenario.module_generic_enum]
+category = "run"
+description = "Enums inside a generic module: a plain enum whose variant holds T, folded in by a standalone 'use'; a generic enum with a parameter of its own; an enum extending the first; a global of the enum's type, each instance's own"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_generic_gentype]
+category = "run"
+description = "A generic type inside a generic module: each instance's copy is still generic, with its own instances; its methods name both parameters, its own name inside its braces, a generic method; a generic function given its type argument through the instance"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The copy's instances carry both lists: the module's on the module, the type's
+# on the type
+[[scenario.module_generic_gentype.check]]
+name = "a-generic-type-of-an-instance-is-spelled-with-both-lists"
+target = "symbols"
+contains = [
+  "define internal pairs[i64].Pair[f64].first comdat nodeduplicate",
+  "define internal pairs[f64].Pair[i32].first comdat nodeduplicate",
+  "define internal pairs[f64].Pair[i32].keep[i64] comdat nodeduplicate",
+  "define internal pairs[i64].make[f64] comdat nodeduplicate",
+  "define internal pairs[f64].make[i32] comdat nodeduplicate",
+]
+excludes = ["pairs.Pair", "pairs.make"]
+
+[scenario.module_generic_genfn]
+category = "run"
+description = "A generic function inside a generic module, instantiated per module instance and per its own type argument, inferred or written through the instance, each counting into its own module instance's global"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# One instance per module instance and per the function's own argument
+[[scenario.module_generic_genfn.check]]
+name = "a-generic-function-of-an-instance-is-instantiated-per-pair"
+target = "symbols"
+contains = [
+  "define internal tags[i64].tag[f64] comdat nodeduplicate",
+  "define internal tags[i64].tag[i64] comdat nodeduplicate",
+  "define internal tags[f64].tag[i64] comdat nodeduplicate",
+  "define internal tags[f64].tag[f64] comdat nodeduplicate",
+]
+excludes = ["tags.tag"]
+
+[scenario.module_generic_trait]
+category = "run"
+description = "A trait inside a generic module, with a requirement and a default naming T, taken by two types of the module, used through a virtual reference and as a bound: each instance's trait and vtables its own"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# Each instance's types meet each instance's own trait, with vtables of their own
+[[scenario.module_generic_trait.check]]
+name = "each-instance-has-its-own-vtables"
+target = "symbols"
+contains = [
+  "shapes[i64].Box as shapes[i64].Has (vtable)",
+  "shapes[f64].Pair as shapes[f64].Has (vtable)",
+  "define internal shapes[i64].Pair.twice comdat nodeduplicate",
+  "define internal shapes[f64].Box.twice comdat nodeduplicate",
+]
+excludes = ["shapes.Has", "shapes.Box"]
+
+[scenario.module_generic_macro]
+category = "run"
+description = "A macro inside a generic module, its parameter of type T and its body naming the instance's global, expanded in the module's own function and named through the instance"
+tags = ["nameres", "typecheck", "runtime"]
+
+[scenario.module_generic_fold]
+category = "run"
+description = "A global's 'use' clause inside a generic module: each instance's folded names reached through its own copy of the global, whose type holds the module's T"
+tags = ["nameres", "typecheck", "runtime"]
+
+# Every kind across packages, as module_generic_link carries the flat case: g
+# declares an enum, a generic type, a generic function, a trait and a type
+# taking it, a macro and a global's 'use' clause; its include file is its whole
+# source, and q's object and the program's each define g[i64] -- its types'
+# methods, its instances of its generics and its vtables too -- shared, so the
+# copies merge into one storage and one total.
+[scenario.module_generic_body_link]
+category = "run"
+description = "A generic module declaring every kind its instances hold copies of, in a package of its own, instantiated at i64 in a package compiled alone and in the program, whose copies merge at link; and an instance the program alone uses"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+[[scenario.module_generic_body_link.check]]
+name = "q-defines-every-copy-of-the-instance-it-uses-shared"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "define linkonce_odr g[i64].Box.get comdat any",
+  "define linkonce_odr g[i64].Pair[i32].first comdat any",
+  "define linkonce_odr g[i64].second[i64] comdat any",
+  "global linkonce_odr thread_local g[i64].last comdat any",
+  "global linkonce_odr thread_local g[i64].dial comdat any",
+  "g[i64].Box as g[i64].Has (vtable) comdat any",
+  "define q.addTwice comdat nodeduplicate",
+]
+excludes = ["g[f64]"]
+
+[[scenario.module_generic_body_link.check]]
+name = "the-generic-package-defines-nothing-of-any-kind"
+target = "symbols"
+object = "g"
+excludes = ["g[", "g.add", "g.Box", "g.Pair", "g.second"]
 
 # A module or a module trait named where a type must be. Each used to reach
 # generation unrefused and crash the compiler there.

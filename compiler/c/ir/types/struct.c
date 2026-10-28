@@ -83,6 +83,24 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     cstate->late = NULL;
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
+    // A generic type a generic module declares is copied into each of the
+    // module's instances still generic, as a generic method is copied with its
+    // type (cloneFnDclShell): its own instances are made from the copy, at their
+    // own arguments, with the module's parameters already substituted. Its own
+    // parameters are hooked to themselves for the copy, so a use of one stays a
+    // use of it; only the module's are substituted.
+    int keepgeneric = node->genericinfo && cstate->modinst;
+    if (keepgeneric) {
+        newnode->genericinfo = newGenericInfo();
+        newnode->genericinfo->parms = node->genericinfo->parms;
+        nametblHookPush();
+        INode **parmp;
+        uint32_t parmcnt;
+        for (nodesFor(node->genericinfo->parms, parmcnt, parmp))
+            nametblHookNode(((GenVarDclNode*)*parmp)->namesym, *parmp);
+        if (node->genericinfo->where)
+            newnode->genericinfo->where = cloneNodes(cstate, node->genericinfo->where);
+    }
     newnode->lifecycle = NULL;
     newnode->latewhere = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
@@ -122,12 +140,14 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // too, since their members are cloned below with everything else. The list
     // is the instance's own, because a generic base trait is taken in only once
     // the instance exists (structTypeCheck) and is appended here.
+    // A trait a generic module declares is copied into each instance with the
+    // types that take it, so a type of the instance takes the instance's copy.
     if (node->traits) {
         newnode->traits = newNodes(node->traits->used);
         INode **traitp;
         uint32_t traitcnt;
         for (nodesFor(node->traits, traitcnt, traitp))
-            nodesAdd(&newnode->traits, *traitp);
+            nodesAdd(&newnode->traits, cstate->modinst ? cloneDclFix(*traitp) : *traitp);
     }
     // A sibling 'use' is folded per instance, like an enrichment and for the same
     // reason: the template's clause names a type in terms of its type parameters,
@@ -157,8 +177,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // atomic value, is marked at once, as name resolution marks a declared one,
     // so that a type asking before this one is laid out is answered. The entry
     // can only add Move: whatever else makes the instance move still does.
+    // A copy still generic keeps its entries for its own instances to decide.
     newnode->condis = NULL;
-    if (node->condis && node->genericinfo) {
+    if (node->condis && keepgeneric)
+        newnode->condis = cloneNodes(cstate, node->condis);
+    else if (node->condis && node->genericinfo) {
         for (nodesFor(node->condis, cnt, nodesp)) {
             FieldDclNode *entry = (FieldDclNode*)*nodesp;
             if (structMemberAbsent(absent, (INode*)entry))
@@ -233,6 +256,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         ++copyp;
     }
     cloneDclPop(dclpos);
+    if (keepgeneric)
+        nametblHookPop();
 
     cstate->selftype = svselftype;
     return (INode *)newnode;
