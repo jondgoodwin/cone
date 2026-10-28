@@ -1,0 +1,314 @@
+// HTTP/3 as a plug-in: the trait a QUIC and HTTP/3 driver fills for the
+// client (and for actorhttp's servers), the events it hands back, and the
+// Alt-Svc field the client learns h3 from (see the package's header,
+// HTTP/3). This package never imports QUIC: the h3driver package fills the
+// trait, and a program that wants HTTP/3 imports it and names its maker in
+// Config.http3. So nothing that imports httpclient alone links QUIC's C
+// libraries (ngtcp2, OpenSSL 3.5).
+
+// What an HTTP/3 event says happened: h3driver's kinds, field for field
+pub enum H3Kind {
+  Connected,     // a client connection's handshake is done: peer
+  Accepted,      // a server connection's handshake is done: listener, peer
+  Closed,        // a connection has ended, its last event: clean, failure
+  Request,       // a server's request has arrived: request, body
+  Response,      // a client's response head: response, body
+  Interim,       // a 1xx before it: response
+  Data,          // body bytes: buf
+  End,           // the message being read is whole: trailers
+  Writable,      // a request may send body bytes again
+  Done,          // FINAL: the exchange ended as it should
+  Failed,        // FINAL: failure
+  Cancelled      // FINAL
+}
+
+// A request on an HTTP/3 plug-in: its connection's number and its own, as
+// the plug-in gave them
+pub struct H3Req {
+  pub conn: u64;
+  pub req: u64;
+
+  pub fn none() H3Req {H3Req(0u64, 0u64)}
+  pub fn isNone(self) bool {conn == 0u64 && req == 0u64}
+  pub fn `==`(self, o: H3Req) bool {conn == o.conn && req == o.req}
+  pub fn `!=`(self, o: H3Req) bool {conn != o.conn || req != o.req}
+}
+
+// What happened on an HTTP/3 plug-in: a struct, read in place, the fields
+// its kind does not fill empty
+pub struct H3Event {
+  pub kind: H3Kind;
+  pub token: u64;             // the token its connection, listener or request was given
+  pub conn: u64;              // the connection it is about (the plug-in's number)
+  pub req: H3Req;             // the request it is about, or H3Req.none()
+  pub listener: u64;          // Accepted: the listener
+  pub peer: SocketAddr;       // Connected, Accepted: the other end
+  pub clean: bool;            // Closed: it ended as HTTP/3 meant it to
+  pub failure: Failure;       // Closed when not clean, Failed: why, as a fetch's
+  pub request: RequestHead;   // Request: the head
+  pub response: ResponseHead; // Response, Interim: the head
+  pub body: BodyLength;       // Request, Response: what is known of the body
+  pub buf: IoBuf;             // Data: the bytes, the program's now
+  pub trailers: Headers;      // End: the trailer fields
+
+  // An event of kind k, every other field empty
+  pub fn make(k: H3Kind, token: u64, conn: u64, req: H3Req) H3Event {
+    H3Event(kind: k, token: token, conn: conn, req: req, listener: 0u64, peer: SocketAddr.localhost(0u16),
+      clean: false, failure: Failure.none(), request: RequestHead.empty(), response: ResponseHead.empty(),
+      body: BodyLength.empty(), buf: IoBuf.empty(), trailers: Headers.empty())
+  }
+
+  // Whether it is a request's final answer
+  pub fn isTerminal(self: &) bool {
+    kind == H3Kind.Done || kind == H3Kind.Failed || kind == H3Kind.Cancelled
+  }
+}
+
+// A QUIC and HTTP/3 driver as the client and actorhttp's servers drive one,
+// on the same Loop as their own driver (h3driver's Plugin has these methods;
+// its header says what each does). A plug-in is one per client or server,
+// held behind an owning virtual reference
+pub trait Http3 {
+  // Hosting: its turn, a completion offered (true when its own), the latest
+  // the loop may wait, its end with the loop still alive
+  pub fn turn(self: &mut, lp: &mut Loop);
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool;
+  pub fn wakeAt(self: &) Instant;
+  pub fn end(self: &mut, lp: &mut Loop);
+  // Its events so far, appended to out: how many
+  pub fn takeEvents(self: &mut, out: &mut List[H3Event]) usize;
+  // A client connection to addr, the certificate checked against serverName:
+  // its number, or why it could not be begun
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, Failure];
+  // A server's UDP socket at addr, its certificate and key cfg's: its
+  // listener's number, or why not
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, Failure];
+  // The port a listener is bound to (0 for one that has gone)
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16;
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool;
+  // A connection ended gracefully (GOAWAY, then the close), or now
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool;
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool;
+  pub fn abortAll(self: &mut, lp: &mut Loop);
+  // Whether a client connection is open and takes new requests (no GOAWAY)
+  pub fn takesRequests(self: &, conn: u64) bool;
+  // ...and whether a request made now goes out at once: none waits for the
+  // peer's stream limit (nor for the handshake)
+  pub fn hasRoom(self: &, conn: u64) bool;
+  pub fn peer(self: &, conn: u64) SocketAddr;
+  // Connections it holds
+  pub fn live(self: &) usize;
+  // A request on a client connection: its id, or H3Req.none() when it is
+  // Failed at once (its Failed event comes all the same)
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) H3Req;
+  // A server's response, interim response, body bytes and end
+  pub fn respond(self: &mut, req: H3Req, head: ResponseHead, body: BodyLength) bool;
+  pub fn sendInterim(self: &mut, req: H3Req, head: ResponseHead) bool;
+  // Body bytes (a client's request or a server's response): None once taken,
+  // the buffer back when the stream holds enough (Writable follows)
+  pub fn sendData(self: &mut, req: H3Req, buf: IoBuf) Option[IoBuf];
+  pub fn finish(self: &mut, req: H3Req);
+  // The program is done with n bytes of a request's Data
+  pub fn release(self: &mut, req: H3Req, n: usize);
+  // Give a request up: Cancelled now
+  pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool;
+}
+
+// The plug-in of a client or server made with none: it has no connection,
+// makes none, and has nothing to say. It is what 'no HTTP/3' is, so that a
+// client holds a plug-in whether or not it was given one
+pub struct NoHttp3 {
+  pub refused: u64;          // connects and listens asked of it, each refused
+
+  pub fn make() NoHttp3 {NoHttp3(0u64)}
+
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+  pub fn takeEvents(self: &mut, out: &mut List[H3Event]) usize {0usize}
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, Failure] {
+    refused = refused + 1u64;
+    Err[u64, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "no HTTP/3 plug-in (Config.http3)"))
+  }
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, Failure] {
+    refused = refused + 1u64;
+    Err[u64, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "no HTTP/3 plug-in"))
+  }
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {0u16}
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool {false}
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool {false}
+  pub fn abortAll(self: &mut, lp: &mut Loop) {}
+  pub fn takesRequests(self: &, conn: u64) bool {false}
+  pub fn hasRoom(self: &, conn: u64) bool {false}
+  pub fn peer(self: &, conn: u64) SocketAddr {SocketAddr.localhost(0u16)}
+  pub fn live(self: &) usize {0usize}
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) H3Req {H3Req.none()}
+  pub fn respond(self: &mut, req: H3Req, head: ResponseHead, body: BodyLength) bool {false}
+  pub fn sendInterim(self: &mut, req: H3Req, head: ResponseHead) bool {false}
+  pub fn sendData(self: &mut, req: H3Req, buf: IoBuf) Option[IoBuf] {None}
+  pub fn finish(self: &mut, req: H3Req) {}
+  pub fn release(self: &mut, req: H3Req, n: usize) {}
+  pub fn cancel(self: &mut, lp: &mut Loop, req: H3Req) bool {false}
+}
+
+// The plug-in a maker makes, or NoHttp3 when there is no maker
+pub fn http3From(maker: Option[&fn(t: &tls.ClientConfig) Uni[Http3]], t: &tls.ClientConfig) Uni[Http3] {
+  match maker {
+    case let Some(mk) {return mk(t);}
+    else {}
+  }
+  Uni[NoHttp3](NoHttp3.make())
+}
+
+// ---------------------------------------------------------------------------
+// Alt-Svc (RFC 7838)
+// ---------------------------------------------------------------------------
+
+// What an Alt-Svc field says of HTTP/3 for the origin that sent it
+pub enum AltSvc {
+  pub struct Nothing {}                           // no h3 alternative for this origin
+  pub struct Clear {}                             // 'clear': forget every alternative
+  pub struct H3 {pub port: u16; pub maxAge: u64;} // h3 on this port of the same host, for maxAge seconds
+}
+
+// The default freshness of an alternative (RFC 7838, section 3: 24 hours)
+pub const altSvcDefaultMaxAge = 86400u64;
+
+// An Alt-Svc field's value read for an origin of host: its first "h3"
+// alternative on the same host (an empty host, or host itself; another host
+// is not taken), with its 'ma' (seconds; 24 hours when not given), or Clear,
+// or Nothing. 'h3-29' and the other drafts' names are not HTTP/3 and are
+// passed over, as is anything that does not parse
+pub fn readAltSvc(value: &Array[u8], host: &str) AltSvc {
+  let v = value;
+  var i = skipSpace(v, 0usize);
+  // 'clear', alone
+  if v.len - i >= 5usize && asciiLower(v[i]) == 'c' && asciiLower(v[i + 1usize]) == 'l' &&
+      asciiLower(v[i + 2usize]) == 'e' && asciiLower(v[i + 3usize]) == 'a' && asciiLower(v[i + 4usize]) == 'r' {
+    let j = skipSpace(v, i + 5usize);
+    if j >= v.len || v[j] == ',' {return AltSvc.Clear;}
+  }
+  while i < v.len {
+    // protocol-id
+    let pStart = i;
+    while i < v.len && v[i] != '=' && v[i] != ',' && v[i] != ';' {i = i + 1usize;}
+    let pEnd = trimEnd(v, pStart, i);
+    if i >= v.len || v[i] != '=' {
+      i = nextAlternative(v, i);
+      continue;
+    }
+    i = skipSpace(v, i + 1usize);
+    // alt-authority: a quoted string "[host]:port"
+    var authHost = String.empty();
+    var port = 0u64;
+    var good = false;
+    if i < v.len && v[i] == '"' {
+      i = i + 1usize;
+      let aStart = i;
+      while i < v.len && v[i] != '"' {i = i + 1usize;}
+      let aEnd = i;
+      if i < v.len {i = i + 1usize;}
+      // The port after the last colon
+      var colon = aEnd;
+      var k = aStart;
+      while k < aEnd {
+        if v[k] == ':' {colon = k;}
+        k = k + 1usize;
+      }
+      if colon < aEnd && colon + 1usize < aEnd {
+        good = true;
+        k = colon + 1usize;
+        while k < aEnd {
+          if v[k] < '0' || v[k] > '9' || port > 65535u64 {good = false;}
+          else {port = port * 10u64 + u64.from(v[k] - '0');}
+          k = k + 1usize;
+        }
+        if port == 0u64 || port > 65535u64 {good = false;}
+        authHost.appendBytes(&v[aStart ..< colon]);
+      }
+    }
+    // Its parameters: 'ma' kept
+    var maxAge = altSvcDefaultMaxAge;
+    while true {
+      i = skipSpace(v, i);
+      if i >= v.len || v[i] != ';' {break;}
+      i = skipSpace(v, i + 1usize);
+      let nStart = i;
+      while i < v.len && v[i] != '=' && v[i] != ';' && v[i] != ',' {i = i + 1usize;}
+      let nEnd = trimEnd(v, nStart, i);
+      var num = 0u64;
+      var numGood = false;
+      if i < v.len && v[i] == '=' {
+        i = skipSpace(v, i + 1usize);
+        let quoted = i < v.len && v[i] == '"';
+        if quoted {i = i + 1usize;}
+        numGood = i < v.len && v[i] >= '0' && v[i] <= '9';
+        while i < v.len && v[i] >= '0' && v[i] <= '9' {
+          if num < 100000000000u64 {num = num * 10u64 + u64.from(v[i] - '0');}
+          i = i + 1usize;
+        }
+        // Whatever else the value holds (a token, a quoted string) is skipped
+        if quoted {
+          while i < v.len && v[i] != '"' {i = i + 1usize;}
+          if i < v.len {i = i + 1usize;}
+        } else {
+          while i < v.len && v[i] != ';' && v[i] != ',' {i = i + 1usize;}
+        }
+      }
+      if nEnd - nStart == 2usize && asciiLower(v[nStart]) == 'm' && asciiLower(v[nStart + 1usize]) == 'a' && numGood {
+        maxAge = num;
+      }
+    }
+    let isH3 = pEnd - pStart == 2usize && v[pStart] == 'h' && v[pStart + 1usize] == '3';
+    if isH3 && good && (authHost.len() == 0usize || sameHost(authHost.view(), host)) {
+      return AltSvc.H3(u16.from(port), maxAge);
+    }
+    i = nextAlternative(v, i);
+  }
+  AltSvc.Nothing
+}
+
+// Past the next comma that is not in a quoted string
+fn nextAlternative(v: &Array[u8], from: usize) usize {
+  var i = from;
+  var quoted = false;
+  while i < v.len {
+    if v[i] == '"' {quoted = !quoted;}
+    else if v[i] == ',' && !quoted {return skipSpace(v, i + 1usize);}
+    i = i + 1usize;
+  }
+  i
+}
+
+fn skipSpace(v: &Array[u8], from: usize) usize {
+  var i = from;
+  while i < v.len && (v[i] == ' ' || v[i] == '\t') {i = i + 1usize;}
+  i
+}
+
+fn trimEnd(v: &Array[u8], start: usize, end: usize) usize {
+  var e = end;
+  while e > start && (v[e - 1usize] == ' ' || v[e - 1usize] == '\t') {e = e - 1usize;}
+  e
+}
+
+fn asciiLower(c: u8) u8 {if c >= 'A' && c <= 'Z' {c + 32u8} else {c}}
+
+// Whether two host names are the same, ignoring ASCII case (an IPv6
+// address's brackets are the Alt-Svc's, not the origin's)
+fn sameHost(a: &Array[u8], b: &Array[u8]) bool {
+  var x = a;
+  if x.len >= 2usize && x[0usize] == '[' && x[x.len - 1usize] == ']' {x = &a[1usize ..< a.len - 1usize];}
+  if x.len != b.len {return false;}
+  var k = 0usize;
+  while k < x.len {
+    if asciiLower(x[k]) != asciiLower(b[k]) {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// Whether a field's name is name, ignoring ASCII case
+fn fieldIs(n: &str, name: &str) bool {sameHost(n as &Array[u8], name as &Array[u8])}

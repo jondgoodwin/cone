@@ -181,6 +181,7 @@ Put these first, because every one of them is load-bearing.
 | `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
 | `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked jumped away (a `return`, or a `break` or `continue` that handed its state to its loop), so it takes no part in the join; and `blockFlow` of a loop, whose body's end is then not reached |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
+| `inflightkeep` | `flowGateOperandsKeep`, at the start of `fnCallFlow`, `typeLitFlow`, `arrayLitFlow` and a value tuple's walk: set by `flowGateOperandNext` for an operand whose value may carry a borrow, so its operands' lends stay waiting for the call or literal around it |
 | `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
 | `intrinsic` | `flowRefuseMoveThrough`: the function carries `DclIntrinsic` (set by `fnDclTypeCheck`), so a move out through a raw pointer is let through — `mem.readRaw`'s fallback body `{*p}` ("Only a sole owner may be moved out of", below) |
 
@@ -199,7 +200,7 @@ one bit per trigger:
 | `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was). The temporary an operator changing its operand in place borrows it through (`x += 1`, `v <- (a, b)`; named `tempName`) is not asked: it is the operator's, as a method's receiver is, and the loan walk holds nothing in it |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow, a bare borrowed reference too: its scope number does not follow a borrow through a variable, a value holding it, or a call's by-value argument |
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
-| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
+| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`), the borrow made inside an operand that is itself a call or literal whose value may carry it included (`both(s.view(), &mut s)`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
 | `FlowGateStatic` | `typeLitFlow` (`flowGateStatic`, `flowGateStaticAsk`) | a struct or variant literal giving a value carrying a borrow to a field whose type holds borrows but only `'static` ones, whose loans the loan walk checks are global (`pwStaticOnly`, section 6, "Named lifetimes"): `stash(H(&v))` holds nothing in a local, returns nothing, and is otherwise no trigger |
@@ -218,7 +219,14 @@ For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
 reference of its kind (`flowGateIsOwnedLent`, the recast `pwOwnedLent` reads:
 `both(a, a)` for `a` a `Uni[R]` or a `Uni[App]`, and a lent receiver), pushes
 the variable at the root of its place onto `inflight` once it is walked, and
-the call or literal pops back to where it started. A lend the compiler makes
+the call or literal pops back to where it started -- unless it is itself an
+operand whose value may carry a borrow (`flowGateOperandNext`, a call, struct or
+array literal or value tuple whose type is not one `flowGateCarriesNone`
+dismisses: `FlowState.inflightkeep`, read by `flowGateOperandsKeep`), when what
+its own operands lent stays waiting for the call or literal around it: in
+`both(s.view(), &mut s)` the receiver `view` borrowed waits for `both`, and
+`&mut s` names it. `both(len(s.view()), &mut s)` passes a number, and `len`'s
+lends end with it. A lend the compiler makes
 must trigger it exactly as a written borrow does: a function holding no other
 borrow is otherwise never walked, and its conflicts pass unseen. A name use checks the list only when it is not empty, so a function
 with nothing waiting pays one test per name use. More than `FlowInflightMax`
@@ -1190,8 +1198,26 @@ so an access conflicting with a loan in flight is reported at once
 `PlaceStepElem`, whatever its value), so a `&uni` of an element or a sub-slice
 beside any other borrow of the same slice in one call is refused, `f(&uni s[0],
 &uni s[1])` and two ranges that do not overlap included; only distinct fields
-are apart (`placeOverlaps`). Two `&mut`, two `&`, are not refused: a `&mut` of a
-shared path is an alias loan, which meets no `&mut`. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
+are apart (`placeOverlaps`). So an argument whose *value* is a borrow into a
+source's contents -- a view, an element borrow, a call or literal returning one
+(`first(s.view())`, `H(b.view())`) -- freezes that source through the later
+arguments and the call, exactly as a `let` holding it would:
+`both(s.view(), &mut s)` and `two(first(&mut b), &mut b)` are refused at the
+later argument (`collection_flow_args_borrow`), since the callee could grow the
+source through its `&mut` parameter and then read through the other, which it
+cannot know points into what it grew. The freeze follows the value, not every
+borrow made computing it: `both(len(s.view()), &mut s)` passes a number. The
+other order, `both2(&mut s, s.view())`, is the shape check's (below). Two
+borrows of the *whole* source, `two(&mut b, &mut b)` or `both(&s, &mut s)`, are
+not refused: a `&mut` of a shared path, or of a place reached as `uni`, is an
+alias loan, which meets no `&mut`, and a `&` beside a `&mut` of one local in one
+call is an alias loan too (`loanFlightOwnRo`). That is safe because both point at
+the collection itself, never into its storage, and the callee treats every
+reference parameter as a path other references share: a borrow it takes into
+what one parameter reaches is refused across a call that could grow what another
+reaches (`ErrorShapeReshape`, `collection_flow_args_borrow_callee`). Held in a
+`let` first, `let r = &s; both(r, &mut s)` is refused all the same: the call form
+is the lenient one. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
 *reserved* while the arguments are walked, it accesses its place as a
 read-only borrow would and meets their accesses as one, so `v.push(v.len())`
 compiles and `v.push(takeLast(&mut v))` does not; then *activated* at the
@@ -2140,7 +2166,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorEscape` | `loanNotGlobalStatic`, from `pwStaticOnly` | a value given to a place whose type holds borrows but only `'static` ones (a literal's field, a store, a local's initializer) carries a loan that is not global |
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
-| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
+| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries (a view or an element borrow, or a call returning one, then a `&mut` of its source: `both(s.view(), &mut s)`), or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight, a plain path |
 | `ErrorFrozen` | `loanUse`, for a generator seam's `AccessYield` conflict | a borrow of a generator's own ground -- one of its locals, or of a parameter it holds by value -- held at a `yield` and used after it, reported at the `yield`; and, from the stand-in for the generator's caller, a change to a place a borrow a `yield` handed out points into, reported at the change |
 | `ErrorGenFrame` | `pwYieldVar` | a lock's guard, or a value holding a traced reference, that would stay in a generator's frame across a `yield`; or, in generation, a `yield` where a temporary of an enclosing statement is still to be dropped |
@@ -2314,7 +2340,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowLoopBegin`, `flowLoopJump`, `flowLoopEnd` | a frame for each loop being walked: what each `break` and `continue` to it wrote; where the loop ends, the head's state (entry, continues, body's end) joined, then the breaks over it (§3, "What ends a path") |
 | | `flowDropTracked`, `flowDropTrackUninit`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable (any local declared without a value included) changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateStaticAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
-| `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
+| `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperandNext`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow`, `itypeCarriesEndingBorrow` | may a value of this type hold a borrowed reference; one of a lifetime that ends, not `'static`; a struct's answers remembered in `StructNode.carriesborrow` and `carriesending` |
 | | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach |
 | `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper, with its frame (`flowLoopBegin`, `flowLoopEnd`); a `break` or `continue` handing its state to its loop (`flowLoopJump`); whether every path jumped away (`jumped`) |
