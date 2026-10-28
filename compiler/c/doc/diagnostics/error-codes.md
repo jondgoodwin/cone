@@ -432,10 +432,17 @@ in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
 clause on a declaration with no type parameters to constrain. An annotation after
 a type parameter's name that names no trait or integer type stays `ErrorGenParmConstr`, the code
 for a parameter annotated in a way that is not built, as a macro's type
-parameter given one is, and a generic module's. A macro's value parameter has
-two codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+parameter given one is, and a generic module's. A macro's value parameter typed
+by a trait, `[a: Ordered]`, is the same refusal as its type parameter
+constrained by one, `[T: Ordered]`: what either would accept waits for generics
+(an enum, and a reference to a trait, `&Ordered`, are types it may have). A macro's value parameter has
+three codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
 type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
-type or `lazy`, whose remedy is to remove it. A use whose brackets do not fit
+type or `lazy`, whose remedy is to remove it; and `ErrorMacroParmAssign`, a body
+changing a plain parameter, which is evaluated once into a variable nothing may
+change, whose remedy is to make it `lazy`. It is reported at the change, by the
+store or borrow refusal that finds it (an assignment, a swap, a mutable borrow, an
+operator or method changing it), in place of `ErrorNoMut` or `ErrorBadPerm`. A use whose brackets do not fit
 the macro's type parameters is `ErrorMacroTypeArgs` (none written where it
 declares some, since inferring them is not built, or some written where it
 declares none); the wrong number of them is `ErrorArgCount`, as for a generic.
