@@ -884,7 +884,9 @@ for. A variant answers to its enum's clauses. A type position holding the error
 node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet; so
 does one whose check reported something and left no type (a struct in brackets,
 `Box[3]`): `itypeTypeCheck` says "Expected a type" only when checking said
-nothing, `arrayTypeCheck` adds nothing to its element's refusal, and a field
+nothing (judged by the error count around that one type's own check),
+`arrayTypeCheck` says "Element type must be a known type" only when checking the
+element said nothing, and a field
 read through a variable of `errorType` is not refused again
 (`fnCallTypeCheck`). A
 clause naming an instance of a generic trait says why the argument does not fit
