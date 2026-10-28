@@ -152,7 +152,10 @@ reference to that type with the matched value's region and permission:
 their own copy of the pattern, around the one shared name. A pattern that is
 already a reference, `&Circle`, or an alias of one, is left as written: it is the
 check, and `castIsTypeCheck` refuses it where the matched value is no reference,
-is in another region, or has a weaker permission.
+is in another region, or has a weaker permission. A bound pattern on an **owning
+virtual reference** is the exception: its conversion binds a borrow, not an owner
+(see "A binding through an owning trait value" below), while its `is` test adopts
+the owner as above.
 
 **Only the `is` test reports.** In source the two nodes share `typ`, so the `is`
 test, checked first, binds it for both and the conversion finds the mark
@@ -305,7 +308,8 @@ a trait (a struct with `TraitType`, not an enum) at the root of a pattern, looki
 written reference, and `castMatchedEnum` says the matched value is an enum, so the pattern
 is a trait pattern; where the matched value is not an enum, the downcast checks of
 `castIsTypeCheck` refuse it with `ErrorPatTrait` (a closed family alone can say which values
-comply).
+comply), and the conversion of such a binding, on a virtual reference to an open trait, is
+typed `errorType` (`castTraitBind`) so that its uses say nothing more.
 
 **Which variants comply** (`castTraitVariants`, `castVariantComplies`): a variant of the
 enum's `derived` complies when a generic's `where T is Trait` would say yes of it
@@ -342,6 +346,27 @@ only the variants that comply, so `FlagTraitBind` lets the selection skip the ot
 (`genlVtableForTag`'s `partial`); they cannot reach the arm, because the test that guards it
 named only the others. The selection is always by comparing the tag, never by index, since the
 trait's vtable list is in the order conversions registered their implementers.
+
+### A binding through an owning trait value
+
+A bound pattern naming a concrete type, matched against an owning virtual reference
+(`case let Cat(c)` on a `Uni[Named]`, an `Rc[Named]`, a field holding one), binds a
+**borrow of the value as that type, never the owner**: Rust's `downcast_ref` and
+`downcast_mut`, so nothing is moved out of the value through the binding.
+`castOwnerVirtLend`, which `castBindProject` runs before anything else, lends the
+owner as a borrowed virtual reference, `&<mut Named`, through `iexpCoerce` (the
+coercion that lends an owner where a borrowed virtual reference is wanted, which
+flow reads as a loan of the owner), and turns the conversion's pattern into the
+borrow it binds, `&mut Cat`; the conversion then narrows a borrowed virtual reference
+as it always has. Where the arm took the matched place into a hidden variable of its
+own (`FlagMatchArm`), that variable holds the borrow instead, so the place is lent and
+stays whole (`match h.inner` through a `&Holder`); a value the match holds itself
+(`match makeOwner()`) is lent from its hidden variable. The permission is the owner's
+as a borrow can hold it (`castOwnerLendPerm`): `uni` and `mut` lend `mut`, `imm` lends
+`imm`, anything else `ro`, and an owner reached through a borrow that only reads lends
+only `ro`, as `borrowOwnerLendRefused` would require. The `is` test is untouched: it
+reads the owner where it is. A guard's binding on a place (`FlagMatchGuardBind`, whose
+matched value is the place itself, not a hidden variable) is not rewritten.
 
 ### What a binding takes from a place
 
@@ -384,7 +409,13 @@ first, and `ifExhaustCheck` returns on it rather than ask a type for its variant
   not narrow to a trait or an enum: it was made from a concrete type, its vtable
   pointer is compared with that type's, and no vtable is built for a trait or an
   enum, so the comparison had nothing to find and failed at link. (A trait is
-  `ErrorPatTrait`: a trait pattern is for an enum, [Trait patterns](#trait-patterns).)
+  `ErrorPatTrait`: a trait pattern is for an enum, [Trait patterns](#trait-patterns);
+  a test of one trait value against another trait would need tables of which traits
+  each type meets, which are not built.) A type that does not meet the trait, or
+  something that is no struct (`n is i64`), is no type a virtual reference to an
+  untagged trait can have been made from, and is refused as that (`ErrorInvType`,
+  "Plain does not meet Named, so no value seen through Named is one")
+  rather than as a missing tag.
 - **Struct to struct**: needs `HasTagField`, then `structMatches` under
   `Coercion`.
 

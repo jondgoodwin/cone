@@ -259,10 +259,12 @@ struct Pt is Same {
 	<h3 id="vtable">How it works</h3>
 	<p>A virtual reference is a "fat" reference: two pointers, one to the value and one to a <i>vtable</i>, a table
 		describing the value's concrete type as seen through the trait. It holds the addresses of the type's methods
-		that the trait declares, where the trait's fields sit, an id unique to the concrete type, and the type's
+		that the trait declares, where the trait's fields sit, and the type's
 		size, alignment and finalizer, which an owning virtual reference needs to release the value. There is one
-		vtable for each concrete type and trait, one for <span class="pre">Circle</span>-as-<span class="pre">Shape</span>
-		and another for <span class="pre">Rectangle</span>-as-<span class="pre">Shape</span>. When a reference to a
+		vtable for each concrete type and trait in the whole program, one for <span class="pre">Circle</span>-as-<span class="pre">Shape</span>
+		and another for <span class="pre">Rectangle</span>-as-<span class="pre">Shape</span>, so which vtable a virtual
+		reference carries also says which concrete type it was made from (<a href="#downcast">Getting the concrete
+		type back</a>). When a reference to a
 		<span class="pre">Circle</span> is passed to <span class="pre">describe</span>, the virtual reference is made by
 		attaching the <span class="pre">Circle</span> vtable to the pointer, and a call through it fetches the method
 		from the vtable and calls it, handing it the pointer. Calling a method that way is called dynamic, or
@@ -380,24 +382,60 @@ trait lends only what the trait declares, so Counter would have more of the valu
 Declare `read` with `self: &amp;`, or the trait's with `self: &amp;mut`.
 </pre>
 
-	<h3 id="downcast">Getting the concrete type back: match</h3>
-	<p id="virtual">Sometimes you want the concrete reference back from a virtual one, which is called
-		downcasting. A <span class="pre">match</span> does it, each case naming a concrete type and binding a plain
-		reference to it:</p>
+	<h3 id="downcast">Getting the concrete type back: is and match</h3>
+	<p id="virtual">Sometimes you want the concrete type back from a trait value, which is called
+		downcasting. <span class="pre">shape is Circle</span> asks whether the value a virtual reference points at is a
+		<span class="pre">Circle</span>, and a <span class="pre">match</span>, a bound <span class="pre">if</span> or a
+		<span class="pre">let ... else</span> binds a reference to it as one, each pattern naming a concrete type:</p>
 <pre>
 fn which(shape: &amp;&lt;Shape) i32 {
+  if shape is Square { return 4; }
   match shape {
-    case let &amp;Circle(c) { 1 }       // c is a &amp;Circle here
-    case let &amp;Rectangle(r) { 2 }    // r is a &amp;Rectangle
+    case let Circle(c) { 1 }       // c is a &amp;Circle here
+    case let Rectangle(r) { 2 }    // r is a &amp;Rectangle
     else { 0 }                     // some other shape
   }
 }
+
+fn stretch(shape: &amp;&lt;mut Shape) {
+  if let Rectangle(r) = shape { r.width = r.width * 2.; }   // r is a &amp;mut Rectangle
+}
 </pre>
-	<p>The vtable records which concrete type made the virtual reference, and the match checks it. So each pattern
-		names a concrete type: a trait or an enum is refused there, since no value is created as one. A virtual
-		reference made from a reference to an enum was made from one of its variants, and it is the variant that a
-		pattern names. A trait is a pattern only in the other direction, a match on an enum, where it names the
-		variants that comply with the trait and binds a virtual reference built from one
+	<p>The vtable records which concrete type made the virtual reference, and the test compares it, so it is
+		true exactly when the value's type is the one named, and a type made from a generic is named with its
+		arguments, <span class="pre">shape is Box[i64]</span>. The reference a pattern binds has the virtual
+		reference's own permission: <span class="pre">&amp;&lt;Shape</span> gives <span class="pre">&amp;Circle</span>,
+		<span class="pre">&amp;&lt;mut Shape</span> a <span class="pre">&amp;mut Circle</span> that writes through, and
+		<span class="pre">&amp;&lt;uni Shape</span> a <span class="pre">&amp;uni Circle</span>. A pattern may also be
+		written as that reference, <span class="pre">case let &amp;Circle(c)</span>, which checks it. This is what
+		Rust's <span class="pre">is</span>, <span class="pre">downcast_ref</span> and
+		<span class="pre">downcast_mut</span> do.</p>
+	<p>Matched against an <b>owning</b> virtual reference, <span class="pre">Uni[Shape]</span> or
+		<span class="pre">Rc[Shape]</span> or a field holding one, a pattern still binds a <i>borrow</i> of the value,
+		never the owner: the owner is lent, not moved, and is used again after the match. The borrow is
+		<span class="pre">&amp;mut</span> where the owner may be written through its path (a <span class="pre">var</span>,
+		a field reached through a <span class="pre">&amp;mut</span>), <span class="pre">&amp;imm</span> from an
+		<span class="pre">imm</span> owner, and <span class="pre">&amp;</span> otherwise, as through a
+		<span class="pre">&amp;</span> to the struct holding it. Nothing can be moved out of the value through it.</p>
+<pre>
+struct Holder {
+  pub inner: Uni[Shape];
+}
+
+fn radius(h: &amp;Holder) f32 {
+  match h.inner {
+    case let Circle(c) { c.radius }    // c is a &amp;Circle; h.inner stays where it is
+    else { 0. }
+  }
+}
+</pre>
+	<p>A match on a virtual reference is never complete without an <span class="pre">else</span>: any type meeting
+		the trait may be the one, so its cases cannot be counted. Each pattern names a concrete type that meets the
+		trait. A type that does not meet it is refused, since no value seen through the trait can be one, and so is
+		a trait or an enum, since no value is created as one (a test of one trait against another is not built). A
+		virtual reference made from a reference to an enum was made from one of its variants, and it is the variant
+		that a pattern names. A trait is a pattern only in the other direction, a match on an enum, where it names
+		the variants that comply with the trait and binds a virtual reference built from one
 		(<a href="#traitpat">Trait patterns</a>); an open trait has no such pattern.</p>
 
 	<h3 id="restrictions">What a virtual reference cannot reach</h3>

@@ -7,6 +7,9 @@
 // finalizer once: the last section builds and drops nested chains many times, the
 // shape (an owned trait value holding another) that once corrupted the heap, and
 // counts the deaths, which only a heap that was kept whole keeps right.
+// holds, downcastRef and downcastMut get the original error back out (anyhow's is,
+// downcast_ref and downcast_mut), through any lines of context, and lend it: the
+// AnyError still holds it after.
 // (A refusal of a type that is not an Error is the suite's enum_typecheck_anyerror.)
 
 mod anyerror;
@@ -145,8 +148,45 @@ fn drops() {
   expectBool(lines > 0usize, true, "the chains were really walked");
 }
 
+// A second typed error, so that each downcast says no as well as yes
+struct Busy is Error, Sendable {
+  pub tries: i32;
+  pub fn message(self: &) String { String.from("busy") }
+}
+
+fn downcasts() {
+  let e = typedToAny(true).error().unwrap();
+  expectBool(e.holds[Leaf](), true, "an AnyError holds the Leaf ? converted");
+  expectBool(e.holds[Busy](), false, "and not a Busy");
+  match e.downcastRef[Leaf]() {
+    case let Some(leaf) { expectInt(i64.from(leaf.code), 7, "downcastRef lends the Leaf"); }
+    else { expectBool(false, true, "downcastRef found no Leaf"); }
+  }
+  expectBool(e.downcastRef[Busy]() is None, true, "downcastRef of another type is None");
+
+  // Through lines of context, to the error under them
+  var c = AnyError.from(Busy(2i32)).addContext("reading").addContext("starting up");
+  expectBool(c.holds[Busy](), true, "holds looks through contexts");
+  expectBool(c.holds[Leaf](), false, "and still says no");
+  match c.downcastMut[Busy]() {
+    case let Some(busy) { busy.tries = busy.tries + 40i32; }
+    else {}
+  }
+  match c.downcastRef[Busy]() {
+    case let Some(busy) { expectInt(i64.from(busy.tries), 42, "downcastMut wrote through, under two contexts"); }
+    else { expectBool(false, true, "downcastRef found no Busy"); }
+  }
+  expectStr(c.report().view(), "starting up\n  caused by: reading\n  caused by: busy",
+    "the AnyError is whole after its error was lent");
+
+  // A plain line of text holds no typed error
+  let m = AnyError.msg("plain");
+  expectBool(m.holds[Leaf](), false, "a message holds no Leaf");
+}
+
 fn main() i32 {
   conversions();
+  downcasts();
   chains();
   contexts();
   drops();

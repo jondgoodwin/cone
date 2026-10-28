@@ -15,9 +15,8 @@
 
 	<p style="margin-left: 40px;"><i>Note: Not built yet: <span class="pre">.context</span> on a Result or an Option
 		(<span class="pre">addContext</span> is on an AnyError only; the rest waits for methods added to a type from
-		outside it); getting the original error back out of an AnyError (it needs a type's identity through a trait
-		value); and the final text of <span class="pre">report()</span>, which stands until the design of display
-		lands.</i></p>
+		outside it); taking the original error out of an AnyError by value (it is only lent, below); and the final
+		text of <span class="pre">report()</span>, which stands until the design of display lands.</i></p>
 
 	<p>A function that can fail returns a <a href="guide-functions.html#result-tour">Result</a>, and what its failure
 		holds is an <b>error value</b>. The <span class="pre">collections</span> package defines what makes a value an
@@ -89,6 +88,28 @@ let e = AnyError.from(failure).addContext("reading the config").addContext("star
 </pre>
 	<p>The name is not <span class="pre">context</span>, which is a reserved word: it is held for a language feature
 		not built yet (<a href="syntax-lexical.html#held">Held for unimplemented features</a>).</p>
+
+	<h3 id="downcast">Getting the original error back</h3>
+	<p>An AnyError still knows the typed error it was made from. <span class="pre">holds[E]()</span> says whether it
+		is an <span class="pre">E</span>, <span class="pre">downcastRef[E]()</span> lends it as a
+		<span class="pre">&amp;E</span> and <span class="pre">downcastMut[E]()</span> as a <span class="pre">&amp;mut E</span>,
+		each giving <span class="pre">None</span> where it is not one: Rust's anyhow <span class="pre">is</span>,
+		<span class="pre">downcast_ref</span> and <span class="pre">downcast_mut</span> (<span class="pre">is</span> is Cone's
+		own word for the test, so the first is named for what it asks). Each looks through the lines of context
+		over the error, so a context added on the way up does not hide it, and the error is lent, never taken: the
+		AnyError still holds it afterwards.</p>
+<pre>
+// Timeout and ServerError are an application's own error types, each 'is Error, Sendable'
+fn retryable(e: &amp;AnyError) bool {
+  if e.holds[Timeout]() { return true; }
+  match e.downcastRef[ServerError]() {
+    case let Some(s) { s.code == 503 }      // s is a &amp;ServerError
+    else { false }
+  }
+}
+</pre>
+	<p>They are a <a href="mod-substitution.html#downcast">downcast</a> of the trait value the AnyError owns,
+		<span class="pre">case let E(e)</span> on it, which binds a borrow of the value, never the owner.</p>
 
 	<h2 id="main">A main that fails</h2>
 	<p>A <a href="guide-functions.html#main-result"><span class="pre">main</span> returning a Result</a> prints its error

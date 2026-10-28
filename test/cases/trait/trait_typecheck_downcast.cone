@@ -1,0 +1,102 @@
+// What a downcast from a trait value refuses (trait_downcast is what it does).
+// A trait value's concrete type is one type, so a pattern names a concrete type: a
+// trait is refused there (a test of one trait against another would need tables of
+// which traits each type meets, which are not built), and so is a type that does not
+// meet the trait, which no value seen through it can be. The binding through an owner
+// is a borrow, so nothing is moved out through it and it writes only where the path to
+// the owner may. A match on a trait value is not closed: its type arms need an 'else'.
+
+mod trait_typecheck_downcast;
+
+trait Named {
+  pub fn label(self: &) i64;
+}
+
+trait Other {
+  pub fn other(self: &) i64;
+}
+
+struct Cat is Named, Other {
+  pub lives: i64;
+  pub fn label(self: &) i64 {lives}
+  pub fn other(self: &) i64 {lives}
+}
+
+struct Dog is Named {
+  pub barks: i64;
+  pub fn label(self: &) i64 {barks}
+}
+
+struct Plain {
+  pub v: i64;
+}
+
+struct Holder {
+  pub inner: Uni[Named];
+}
+
+// A trait as the type: no trait-to-trait test
+fn traitTest(n: &<Named) i64 {
+  if n is Other {1} else {0}         //~ ErrorPatTrait "narrows only to the concrete type it was made from"
+}
+
+fn traitBind(n: &<Named) i64 {
+  match n {
+    case let Other(o) {o.other()}         //~ ErrorPatTrait "narrows only to the concrete type it was made from"
+    else {0}
+  }
+}
+
+// A type that does not meet the trait is never what the value was made from
+fn notMet(n: &<Named) i64 {
+  if n is Plain {1} else {0}         //~ ErrorInvType "Plain does not meet Named, so no value seen through Named is one"
+}
+
+fn notStruct(n: &<Named) i64 {
+  if n is i64 {1} else {0}         //~ ErrorInvType "i64 does not meet Named"
+}
+
+// The binding through an owner is a borrow, not the owner
+fn keep(c: Uni[Cat]) i64 {c.lives}
+
+fn notAnOwner(u: Uni[Named]) i64 {
+  match u {
+    case let Cat(c) {keep(c)}         //~ ErrorInvType "does not match declared parameter"
+    else {0}
+  }
+}
+
+// ... so the value is not moved out through it
+struct Kennel is Named {
+  pub dog: Uni[Dog];
+  pub fn label(self: &) i64 {1}
+}
+
+fn moveOut(u: Uni[Named]) i64 {
+  match u {
+    case let Kennel(k) {
+      let whole = *k;         //~ ErrorMoveOut "through a borrowed reference, which does not own it"
+      whole.label()
+    }
+    else {0}
+  }
+}
+
+// ... and through a read-only borrow of the holder it only reads
+fn readOnly(h: &Holder) {
+  match h.inner {
+    case let Cat(c) {c.lives = 3;}         //~ ErrorNoMut
+    else {}
+  }
+}
+
+// Not closed: type arms on a trait value need an 'else'
+fn noElse(n: &<Named) i64 {
+  match n {         //~ ErrorMatchNotExhaustive "end it with 'else {}'"
+                    //~^ ErrorInvType follow-on
+    case let Cat(c) {c.lives}
+    case let Dog(d) {d.barks}
+  }
+}
+
+fn main() {}
