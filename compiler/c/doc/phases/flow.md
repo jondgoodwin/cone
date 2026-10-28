@@ -183,6 +183,7 @@ Put these first, because every one of them is load-bearing.
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
 | `inflightkeep` | `flowGateOperandsKeep`, at the start of `fnCallFlow`, `typeLitFlow`, `arrayLitFlow` and a value tuple's walk: set by `flowGateOperandNext` for an operand whose value may carry a borrow, so its operands' lends stay waiting for the call or literal around it |
 | `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
+| `intrinsic` | `flowRefuseMoveThrough`: the function carries `DclIntrinsic` (set by `fnDclTypeCheck`), so a move out through a raw pointer is let through — `mem.readRaw`'s fallback body `{*p}` ("Only a sole owner may be moved out of", below) |
 
 ### The gate
 
@@ -376,7 +377,7 @@ value's drop flag says it no longer holds its payload, and the value cannot be
 used or taken again (`ErrorMove`). A variant with two fields, or a finalizer of
 its own, is refused as before.
 
-**Only a sole owner may be moved out of.** The same inward walk refuses three
+**Only a sole owner may be moved out of.** The same inward walk refuses four
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an
 element read straight through one, as a slice's element is (not a borrow of
@@ -389,13 +390,25 @@ while it lives, and still does not own it. A place reached the same way through
 a **shared owning reference** — one that is not a move type, so may be aliased:
 `Rc[mut, T]`, `Rc[imm, T]`, `Rc[ro, T]`, `Rc[mut1, T]`, single or virtual — is one of possibly
 many holders of the value, and the others still point at it after the move, so
-it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
+it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A place
+reached through a **raw pointer** — `*p`, an element `p[i]`, what a pointer to
+an owning reference points at (`*p` of a `*Uni[T]`), and a field list
+`(*p).(a)`, which moves `*p` whole — owns nothing either: whatever holds the
+place (a variable the pointer was made from, a collection's slot) still
+finalizes it, so the value would be finalized twice (`ErrorMoveRawPtr`,
+`flowRefuseMoveThrough`, which names `mem.readRaw(p)`). That intrinsic moves a
+value out of raw memory for good, leaving the place holding nothing, and its
+fallback body `{*p}` is the one move through a pointer let through: the walk of
+a function carrying `DclIntrinsic` (`FlowState.intrinsic`, set by
+`fnDclTypeCheck`) is not refused, and only core may declare one. Whether the
+place still held a value, or is read out twice, is not flow's to know: raw
+pointers belong to `trust`, which is not built. A **sole**
 owning reference — any `Uni`, and `Rc[uni, T]` (what `Rc` means) — is not
 refused, and moving out through one held in a local variable **hollows** the
 variable, below. Copy values are never
-walked, so they read out through a borrow or a shared owner freely, and swap
-and left-assignment take a move value out of either because they leave it
-holding one.
+walked, so they read out through a borrow, a shared owner or a raw pointer
+freely, and swap and left-assignment take a move value out of a borrow or a
+shared owner because they leave it holding one.
 
 The walk has two entries. `flowHandleMove` is the one `flowHandleMoveOrCopy`
 takes, for a value going to a new holder, and it deactivates the source.
@@ -2120,7 +2133,7 @@ included) as 1048 "may have been moved out". Fill and use are tracked by
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use or borrow of a moved-out or uninitialized variable, and on a field or an element stored into one never given a value or moved out whole (Rust's E0381 and E0382 lines); move out of a field, or of an element of an array held by value or by a sole owner, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | |
+| **Move / ownership** | yes | `ErrorMove` on use or borrow of a moved-out or uninitialized variable, and on a field or an element stored into one never given a value or moved out whole (Rust's E0381 and E0382 lines); move out of a field, or of an element of an array held by value or by a sole owner, or of a global, or out through a borrowed or a shared owning reference or a raw pointer (outside an `@intrinsic` body: `mem.readRaw`'s), refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | |
 | **Escape / lifetime** | representation in type check, enforcement here and in the loan walk | storing a bare borrow into a global or through a reference into a longer-lived place, by assignment or by either direction of a swap; any value — bare borrow, struct, `Option`, `Rc` owner, call result, a variable that was given a local's borrow — returned, or stored where it may outlive the function (a global, what a parameter or a copy of one points at, an `Rc`'s referent), or handed to a call that may store it so, while it holds a loan of the function's own storage (the loan walk); returning a borrow of a local, or a local initialized with one, its type declared or not; returning or storing outward a borrow of a by-value parameter, of `self` by value or through an owner passed by value; storing a borrowed parameter's borrow into a global, bare, read through a `&mut &T` parameter, held by a by-value parameter or carried inside a value; a returned `if`, `match` or block, arm by arm, and one used as a value carrying its shortest arm's lifetime; an owner handed back, or stored, as a borrow; a borrow through a borrowed reference held in a local, which has that reference's lifetime; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow — `&T` itself, a struct with a borrow field, an `Option` or `List` of borrows, a slice of them — where that place would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference; with lifetimes named on a signature or a struct, a caller's borrow returned, or stored where a parameter points, as a lifetime its part does not flow to by the `where` clause's order, a struct's field by field, and a borrow not global handed to a `'static` parameter; a type parameter's lifetime bound, by the order an instance's signature carries, a `'static` one's argument checked global; what a virtual reference bounded by `'a` points at holding a borrow not known to last `'a`, returned or stored through `*p`; a value holding a borrow not known to be global made an owning virtual reference, which is bounded by `'static` | a borrow captured; a lifetime bound on a generic type's parameter, or of a lifetime but `'static` on an owning virtual reference, and invariant lifetimes; a struct's tags are dropped wherever a value leaves it, and after a call that may move a borrow between its slots, so what it holds is then kept as one; a store through a reference a call returned, or one read through another, to a local struct of a self-similar type (a list node) holding the caller's borrows is refused |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a container that changes shape (`ShapeChanging`, declared or found) returns, which freezes the path it was reached through as a local's does | an element borrow of a container that changes shape through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
@@ -2136,6 +2149,7 @@ Everything else about permissions is type check's: `permMatches` in
 | --- | --- | --- |
 | `ErrorInvType` | `flowHandleMove`, `flowResultMove` | move out of a global variable |
 | `ErrorMoveOut` | `flowHandleMove`, `flowResultMove` | move out through a borrowed reference, or through a shared (aliasable) owning one |
+| `ErrorMoveRawPtr` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveThrough`) | move out through a raw pointer — `*p`, `p[i]`, a field list `(*p).(a)` — outside an `@intrinsic` function's body; the message names `mem.readRaw(p)` |
 | `ErrorMoveField` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveField`) | move out of a field — a struct's or a tuple's — or out of what is reached through one |
 | `ErrorMoveElem` | `flowHandleMove`, `flowResultMove` (the `ArrIndexTag` arm of `flowMoveSource`) | move out of an element of an array held by value — a variable's, a parameter's or a temporary's — or of the array a local or temporary sole owner points at |
 | `ErrorInvType` | `assignBorrowLifetimeCheck`, from `assignlvalrtype` and `swapFlow` | lval — a global, or a place reached through a reference — outlives the borrowed reference stored into it, or swapped into it |
@@ -2308,7 +2322,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self: &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference or, outside an `@intrinsic` body, a raw pointer (`flowRefuseMoveThrough`) |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead`, `flowIsKeptRead` | the temporary-vs-lvalue test that makes counting correct; the second adds an assignment, whose target keeps its value |

@@ -57,6 +57,7 @@ typedef struct FlowState {
     uint8_t shapeglobal;    // FlowGateShape: the borrow was lent from a 'var' global, which any call may write
     uint8_t inflightkeep;   // FlowGateInCall: the call or literal about to be walked is an operand whose value
                             // may carry a borrow, so what its own operands lend waits for the one around it too
+    uint8_t intrinsic;  // The function is an '@intrinsic' (a fallback body), which may move a value out through a raw pointer
     Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     Nodes *yields;     // Each 'yield' the walk met, a generator's seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of

@@ -70,8 +70,18 @@ static int flowIsSharedOwner(INode *exp) {
 }
 
 // Refuse a move out through a reference that does not solely own what it points
-// at. Returns 1 when it refused.
+// at, or through a raw pointer, which owns nothing: what holds the place it
+// points at still finalizes it, so the value moved out would be finalized
+// twice. Moving a value out of raw memory for good, leaving the place holding
+// nothing, is 'mem.readRaw', whose fallback body '{*p}' is an '@intrinsic'
+// one, let through. Returns 1 when it refused.
 static int flowRefuseMoveThrough(INode *node, INode *ref) {
+    if (iexpGetTypeDcl(ref)->tag == PtrTag) {
+        if (flowCurrent && flowCurrent->intrinsic)
+            return 0;
+        errorMsgNode(node, ErrorMoveRawPtr, "May not move a value out through a raw pointer, which does not own it. Use 'mem.readRaw(p)', which leaves the place holding nothing.");
+        return 1;
+    }
     if (flowIsBorrowedRef(ref)) {
         errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
         return 1;
@@ -2104,6 +2114,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->inflightkeep = 0;
     fstate->dropgate = 0;
     fstate->jumped = 0;
+    fstate->intrinsic = 0;
     fstate->awaits = NULL;
     fstate->yields = NULL;
     fstate->shapelend = 0;
