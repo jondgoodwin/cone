@@ -112,7 +112,7 @@ CMake will auto-detect LLVM, so all you should need to do:
 	cmake .
 	make
 
-More detailed instructions: https://github.com/git-yledu/cone-misc/blob/main/install_cone_on_mac.md
+More detailed instructions: https://github.com/ianxek/cone-misc/blob/main/install_cone_on_mac.md
 
 ## License
 
