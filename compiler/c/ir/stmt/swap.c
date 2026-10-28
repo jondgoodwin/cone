@@ -41,6 +41,9 @@ void swapPrint(SwapNode *node) {
 void swapNameRes(NameResState *pstate, SwapNode *node) {
     inodeNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
+    // In a macro's body, a swap of a plain parameter is refused here
+    macroChangeNameRes(node->lval, node->lval, MacroChangePlace);
+    macroChangeNameRes(node->rval, node->rval, MacroChangePlace);
 }
 
 // Type check one side of a swap as a place stored through. Answer 0 if it is not one.

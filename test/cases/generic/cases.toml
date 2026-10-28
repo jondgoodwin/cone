@@ -23,9 +23,13 @@
 # own braces or inside another generic's), and generic_typecheck_macro covers what
 # expansion itself cannot serve -- an argument list that does not match, a body
 # that would expand forever, and a macro method with nothing to stand in for
-# its self. A macro body changing a plain parameter, which is evaluated once, is
-# refused at two stages, by what does the changing: a borrow to change it at
-# type check (generic_typecheck_macro_once), a store into it at flow analysis
+# its self -- and generic_typecheck_macro_args a macro's arguments: a lazy or
+# plain one of the wrong type, and type arguments inference cannot find. A
+# macro body changing a plain parameter, which is evaluated once, is refused
+# at three stages: where the macro is declared when no type is in question
+# (generic_nameres_macro_once), and otherwise where it is used, by what does
+# the changing -- a borrow to change it at type check
+# (generic_typecheck_macro_once), a store into it at flow analysis
 # (generic_flow_macro_once).
 
 support = []
@@ -217,6 +221,11 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 category = "run"
 description = "A macro's plain parameter evaluated once, its argument bound before the body in the parameters' order: a side-effecting argument named twice or never runs once, as an argument of a macro method, typed by a type parameter, and through a nested macro; a lazy one runs once per use, not at all where the body never reaches it"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.generic_macro_lazy]
+category = "run"
+description = "A macro's lazy argument checked against its type on a copy before it is substituted, the expansion after the check unchanged: inside two instances of a generic at different types, with a macro use as another's lazy argument, and a side-effect block for 'lazy void'; type parameters inferred from the arguments, and written, in one program"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.generic_instance_path]
 category = "run"
@@ -552,6 +561,11 @@ category = "reject"
 description = "A macro method's body naming a member of its type without self, and a macro parameter's type naming a function, nothing, or a trait (not built, as a constraint on a macro's type parameter is not); an enum and a reference to a trait are types it may name"
 tags = ["nameres"]
 diagnostics = 9
+[scenario.generic_nameres_macro_once]
+category = "reject"
+description = "A macro's body changing a plain parameter where no type is in question, refused where the macro is declared, none of them used: an assignment, a swap on either side, a '&mut' and an operator in place on the parameter or on a part of it reached through no reference (a field, a nested field, an array value's element, a reference field itself), and an assignment to a type parameter's value; through a reference, a type parameter's part, a method, a lazy parameter and a shadowing local accepted here"
+tags = ["nameres"]
+diagnostics = 12
 [scenario.generic_nameres_where]
 category = "reject"
 description = "Constraints whose subject is not a type parameter or whose name is neither a trait nor a type (a function, a generic type without arguments), a parameter annotated with a type, and a 'where' on a function with no type parameters in scope"
@@ -633,12 +647,17 @@ diagnostics = 3
 
 [scenario.generic_typecheck_macro]
 category = "reject"
-description = "Macro argument counts that do not match the declaration, expansion that would never terminate, one branching at each level included, a macro method with no self to stand in for, and type arguments left off (inferring them is not built), given to a macro without type parameters, too many, or not a type"
+description = "Macro argument counts that do not match the declaration, expansion that would never terminate, one branching at each level included, a macro method with no self to stand in for, and type arguments given to a macro without type parameters, too many, or not a type"
 tags = ["typecheck"]
-diagnostics = 23
+diagnostics = 20
+[scenario.generic_typecheck_macro_args]
+category = "reject"
+description = "A macro's arguments checked at expansion: a lazy argument of the wrong type refused at the use naming its parameter (a string, a float, a value for 'lazy void', one of a written type parameter's), a plain one likewise as its binding; type parameters left off inferred, or refused where no argument says them (a bare name, empty parentheses) or two say them differently, and an argument that does not check on its own reported once"
+tags = ["typecheck"]
+diagnostics = 10
 [scenario.generic_typecheck_macro_once]
 category = "reject"
-description = "A macro's body changing a plain parameter, which is evaluated once: a mutable borrow of it or of its field, an operator changing it in place, a method taking 'self: &mut' on it, each refused where the body writes it; the same through a reference argument and on a lazy parameter accepted"
+description = "A macro's body changing a plain parameter in a way that waits on a type, refused where the macro is used: a method taking 'self: &mut', a mutable borrow of a type parameter's part, an operator in place on a type parameter's value and on its part; the same through a reference argument, a reference type argument and a lazy parameter accepted"
 tags = ["typecheck"]
 diagnostics = 4
 [scenario.generic_typecheck_macro_ques]
@@ -682,9 +701,9 @@ diagnostics = 2
 
 [scenario.generic_flow_macro_once]
 category = "reject"
-description = "A macro's body storing into a plain parameter, which is evaluated once: an assignment to it or to its field, and a swap with it on either side, each refused where the body writes it; the same through a reference argument and on lazy parameters accepted"
+description = "A macro's body storing into a plain parameter in a way that waits on a type, refused where the macro is used: an assignment to and a swap of a type parameter's part, and the plain parameter given to another macro's lazy parameter that is stored into; the same through a reference type argument and on a lazy parameter accepted"
 tags = ["flow"]
-diagnostics = 4
+diagnostics = 3
 
 [scenario.generic_lifetime_fn_instances]
 category = "run"

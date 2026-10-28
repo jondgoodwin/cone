@@ -569,7 +569,10 @@ are analyzed — each a fresh clone that `genericInstantiate` checks as it build
 memoized on `genericinfo->memonodes`. Macros expand by the same clone-and-check
 path, the expansion a block binding each plain parameter's argument in a `let`
 ahead of the cloned body, so the argument is checked as that `let`'s
-initializer ([generic](../nodes/generic.md), "Macros differ from generics"). So instantiation is demand-driven, and rules 1 to 6 apply to instances
+initializer ([generic](../nodes/generic.md), "Macros differ from generics"). What
+an argument is before the expansion — a `lazy` argument's type, the type
+arguments a use leaves off — is asked of a copy checked as a trial, so the
+argument itself is still checked once, where the expansion puts it. So instantiation is demand-driven, and rules 1 to 6 apply to instances
 rather than templates. A generic's constraints are evaluated against the type
 arguments before an instance is cloned: an unmet requirement refuses the
 instance where it is asked for, and an unmet condition on a generic type's

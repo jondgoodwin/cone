@@ -327,8 +327,14 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     // A pattern's reference is always a type: the name under it is bound at type
     // check, against the matched value, and may be unbound or mean a value until then.
     if (!isTypeNode(node->vtexp) && !castPatternPending(node->vtexp)) {
-        if (node->tag == RefTag)
+        if (node->tag == RefTag) {
             node->tag = node->region == (INode*)borrowRef ? BorrowTag : AllocateTag;
+            // In a macro's body, a '&mut' of a plain parameter is refused here
+            INode *perm = (INode*)node->perm;
+            if (node->tag == BorrowTag && perm && isNameUseNode(perm)
+                && ((NameUseNode*)perm)->dclnode == (INode*)mutPerm)
+                macroChangeNameRes((INode*)node, node->vtexp, MacroChangePlace);
+        }
         else if (node->region == (INode*)borrowRef)
             errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow a virtual reference. Coerce from a regular ref.");
         else

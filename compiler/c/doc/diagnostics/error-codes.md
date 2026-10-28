@@ -458,16 +458,23 @@ parameter given one is, and a generic module's. A macro's value parameter typed
 by a trait, `[a: Ordered]`, is the same refusal as its type parameter
 constrained by one, `[T: Ordered]`: what either would accept waits for generics
 (an enum, and a reference to a trait, `&Ordered`, are types it may have). A macro's value parameter has
-three codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
+four codes of its own, one per remedy: `ErrorMacroParmType`, one written with no
 type, whose remedy is to add one; `ErrorMacroSelfType`, a method's `self` given a
-type or `lazy`, whose remedy is to remove it; and `ErrorMacroParmAssign`, a body
+type or `lazy`, whose remedy is to remove it; `ErrorMacroParmAssign`, a body
 changing a plain parameter, which is evaluated once into a variable nothing may
-change, whose remedy is to make it `lazy`. It is reported at the change, by the
-store or borrow refusal that finds it (an assignment, a swap, a mutable borrow, an
-operator or method changing it), in place of `ErrorNoMut` or `ErrorBadPerm`. A use whose brackets do not fit
-the macro's type parameters is `ErrorMacroTypeArgs` (none written where it
-declares some, since inferring them is not built, or some written where it
-declares none); the wrong number of them is `ErrorArgCount`, as for a generic.
+change, whose remedy is to make it `lazy`; and `ErrorMacroArgType`, an argument
+whose type does not fit its parameter's, named in the message. `ErrorMacroParmAssign`
+is reported at the change: where the macro is declared when no type is in
+question (the parameter itself, or a part of it reached through no reference),
+otherwise in each expansion by the store or borrow refusal that finds it (an
+assignment, a swap, a mutable borrow, an operator or method changing it), in
+place of `ErrorNoMut` or `ErrorBadPerm`. `ErrorMacroArgType` is reported at the
+argument: a `lazy` one checked at expansion before it is substituted, a plain
+one by its binding, in place of `ErrorInvType`. Type arguments given to a macro
+that declares none are `ErrorMacroTypeArgs`; the wrong number of them is
+`ErrorArgCount`, as for a generic; type arguments a use leaves off are
+inferred, and one that cannot be, or is inferred two ways, is `ErrorInvType`
+with a generic function's wording.
 A generic's value parameter, `[N: usize]`, has four codes of its own:
 `ErrorGenValueParm`, one declared in a way not built (not an integer type, a
 constraint beside it, a `where` clause about it, on a generic type);

@@ -820,9 +820,6 @@ struct Labelled[T] is Show if T is Show {
 		<span class="pre">+</span>, which only one of them has.</p>
 
 	<h2 id="macros">Macros: a fresh copy at every use</h2>
-	<p style="margin-left: 40px;"><i>Not built yet: a <span class="pre">lazy</span> argument is not yet checked
-		against its parameter's type, and a macro's type arguments are not yet inferred from its arguments: they are
-		written at every use.</i></p>
 	<p>A generic makes one version per set of type arguments, and every call of it is a call. A <b>macro</b> is
 		closer to the source: its logic is written into the program in place, wherever it is used, with the arguments
 		put in for its parameters. Every parameter is typed, its type after a <span class="pre">:</span>, as a
@@ -845,19 +842,26 @@ fn tester(x: i32, y: i32) {
 		<span class="pre">max(f(), g())</span> runs as <span class="pre">{let a: i32 = f(); let b: i32 = g(); if a &gt; b {a}
 		else {b}}</span>. So the argument is checked against the parameter's type as any initializer is, an argument
 		whose type moves is moved into the parameter, and the macro's logic may not change the parameter: an argument
-		the macro assigns to must be <span class="pre">lazy</span>. A plain parameter thus behaves like a function's:
+		the macro assigns to must be <span class="pre">lazy</span>. Logic that assigns to a plain parameter, swaps it,
+		borrows it <span class="pre">&amp;mut</span> or changes it with an operator such as <span class="pre">+=</span>,
+		itself or a part of it held in place (a field of a struct value, an element of an array value), is refused
+		where the macro is declared, whether or not it is ever used. A change that depends on the types the macro is
+		given, such as one to a part of a parameter whose type is a type parameter, or a method that changes its
+		receiver, is refused where the macro is used. A plain parameter thus behaves like a function's:
 		an argument whose type moves is consumed, and a borrow the logic takes of it, such as
 		<span class="pre">&amp;b.n</span>, borrows the parameter rather than the caller's value, so it cannot be the
 		macro's result. Write the parameter <span class="pre">lazy</span> to work on the caller's value itself.</p>
 
 	<h3 id="lazy">lazy parameters</h3>
 	<p>A parameter whose type is written after the word <span class="pre">lazy</span> is not evaluated first: its
-		argument, still typed, is put in whole wherever the parameter appears in the macro's logic, so it is evaluated as
-		many times as the logic reaches it, and not at all when the logic does not. Core's
+		argument is put in whole wherever the parameter appears in the macro's logic, so it is evaluated as many times as
+		the logic reaches it, and not at all when the logic does not. Core's
 		<span class="pre">assertDebug[cond: lazy bool]</span> (<a href="safe-panics.html#panic">Panics</a>) is a macro for
-		that reason: in a release build its condition is not evaluated. A block run for its effect is a
-		<span class="pre">lazy void</span> parameter. An argument the macro's logic assigns to must be
-		<span class="pre">lazy</span>.</p>
+		that reason: in a release build its condition is not evaluated. The argument is still typed: it is checked
+		against the parameter's type where the macro is used, before it is put in, so an argument of another type is
+		refused there, naming the parameter, even where the logic never reaches it. A block run for its effect is a
+		<span class="pre">lazy void</span> parameter, which takes a block that gives no value, not a value. An argument
+		the macro's logic assigns to must be <span class="pre">lazy</span>.</p>
 <pre>
 // Run 'then' after reading 'first', and give back what was read
 macro afterward[first: i64, then: lazy void] {
@@ -876,9 +880,12 @@ fn tester(n: i64) i64 {
 
 	<h3 id="macrotypes">A macro's type parameters</h3>
 	<p>A macro may also take types, for the same logic over values of several types. Its type parameters come in a
-		first pair of brackets, before its parameters, and its parameters' types may name them; a use gives the types in
-		brackets before the arguments. Where the macro takes no other parameters the second brackets are empty, and the
-		use may leave off its parentheses.</p>
+		first pair of brackets, before its parameters, and its parameters' types may name them. A use may give the types
+		in brackets before the arguments, or leave them off, and they are worked out from the arguments as a generic
+		function's are (<a href="#inference">Working out the type arguments</a>): an argument's type, an unsuffixed
+		number literal taking the type the others say. A type parameter that no argument says is written out; a use
+		that leaves it off is refused, and so is one whose arguments say two different types for it. Where the macro
+		takes no other parameters the second brackets are empty, and the use may leave off its parentheses.</p>
 <pre>
 macro sum[T][a: T, b: T] {
   a + b
@@ -890,7 +897,7 @@ macro zero[T][] {
 }
 
 fn tester(x: f64) f64 {
-  sum[f64](x, 1.5) + zero[f64]
+  sum(x, 1.5) + sum[f64](x, 2.5) + zero[f64]
 }
 </pre>
 	<p>A type parameter is a name alone: unlike a generic's, it takes no constraint yet. Nor may a parameter be typed
@@ -947,7 +954,8 @@ fn tester(m: &amp;imm Maybe) i32 {
 		into a variable first. The parameters after it are any macro's: a plain one is evaluated once. A macro method with no parameters beyond <span class="pre">self</span> is used as the bare
 		member name, <span class="pre">m.isSet</span>, or with an empty argument list. A macro method with type
 		parameters, <span class="pre">macro scaled[T][self, k: T]</span>, is given them in brackets after its name, as a
-		generic method is: <span class="pre">m.scaled[i32](2)</span>.</p>
+		generic method is, <span class="pre">m.scaled[i32](2)</span>, or has them worked out from its arguments,
+		<span class="pre">m.scaled(2i32)</span>.</p>
 	<p>Inside the macro's logic, the type's fields and methods are reached through <span class="pre">self</span>, as
 		in <span class="pre">self.value</span>, and never by their bare names. The logic expands into whichever function
 		uses the macro, so it may reach the type's private members through <span class="pre">self</span> just as a method

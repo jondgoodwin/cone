@@ -592,8 +592,10 @@ static INode *genericResultTemplate(StructNode *generic, GenericInfo *info) {
     return (INode*)template;
 }
 
-// Say which type parameters no argument and no expected type named
-static void genericMissingParms(FnCallNode *inferredgencall, Nodes *genparms, Name *name, INode *errnode) {
+// Say which type parameters no argument and no expected type named. A macro's
+// value goes nowhere that says a type (it has no return type), so for one,
+// 'ismacro', only its arguments are said to have been asked.
+static void genericMissingParms(FnCallNode *inferredgencall, Nodes *genparms, Name *name, INode *errnode, int ismacro) {
     char missing[200] = "";
     char all[200] = "";
     size_t mused = 0, aused = 0;
@@ -608,9 +610,14 @@ static void genericMissingParms(FnCallNode *inferredgencall, Nodes *genparms, Na
             ++nmissing;
         }
     }
-    errorMsgNode(errnode, ErrorInvType,
-        "Could not infer the type parameter%s %s of %s, since neither its arguments nor where its value goes say %s. Write the type arguments out: %s[%s].",
-        nmissing == 1 ? "" : "s", missing, &name->namestr, nmissing == 1 ? "what it is" : "what they are", &name->namestr, all);
+    if (ismacro)
+        errorMsgNode(errnode, ErrorInvType,
+            "Could not infer the type parameter%s %s of the macro %s, since none of its arguments says %s. Write the type arguments out: %s[%s](...).",
+            nmissing == 1 ? "" : "s", missing, &name->namestr, nmissing == 1 ? "what it is" : "what they are", &name->namestr, all);
+    else
+        errorMsgNode(errnode, ErrorInvType,
+            "Could not infer the type parameter%s %s of %s, since neither its arguments nor where its value goes say %s. Write the type arguments out: %s[%s].",
+            nmissing == 1 ? "" : "s", missing, &name->namestr, nmissing == 1 ? "what it is" : "what they are", &name->namestr, all);
 }
 
 // Match a receiver's type against its 'self' parameter's as the call will fit
@@ -631,9 +638,11 @@ static int genericInferReceiver(FnCallNode *inferredgencall, Nodes *genparms, IN
     return genericInferType(inferredgencall, genparms, parmtype, recvtype);
 }
 
+// 'what' names what is inferred, for the message where two arguments disagree
+// on a type parameter: "generic function", or a macro's type parameters.
 static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
         INode *self, Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where,
-        INode *expectType) {
+        INode *expectType, const char *what) {
 
     genericReported = 0;
     if (args != NULL && args->used + firstparm > genfnsig->parms->used) {
@@ -654,7 +663,7 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
         INode *parmtype = ((VarDclNode *)nodesGet(genfnsig->parms, 0))->vtype;
         if (genericInferReceiver(inferredgencall, genparms, parmtype, ((IExpNode *)self)->vtype) == 0) {
             if (!genericReported)
-                errorMsgNode(self, ErrorInvType, "Inconsistent type for generic function");
+                errorMsgNode(self, ErrorInvType, "Inconsistent type for %s", what);
             retcode = 0;
         }
         genericReported = 0;
@@ -673,7 +682,7 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
             && !genericInferArrayBound(pstate, genparms, where, inferredgencall, parmtype, argtype)
             && genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
             if (!genericReported)
-                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for %s", what);
             retcode = 0;
         }
         genericReported = 0;
@@ -702,13 +711,57 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
             if (given == NULL)
                 genericInferType(inferredgencall, genparms, parmtype, ((IExpNode *)*argsp)->vtype);
             else if (!itypeIsSame(given, ((IExpNode *)*argsp)->vtype) && iexpMatches(argsp, given, Coercion) == NoMatch) {
-                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for %s", what);
                 retcode = 0;
             }
         }
         ++parmp;
     }
     return retcode;
+}
+
+// A macro's type parameters, inferred from its arguments by the rules a
+// generic function's are from a call's (genericInferFnParms): each argument's
+// type matched against its parameter's, a 'null' and an unsuffixed number
+// literal left to the others, then a literal's own type. A macro has no
+// return type and no bounds, so nothing else has a say. 'parmtypes' and
+// 'args' are paired: a parameter's type as written, and its argument as a type
+// checked copy (macro.c); a pair is left out where either is NULL. Answers the
+// type arguments, or NULL once reported at 'errnode' or at an argument.
+Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
+        INode *errnode, Name *name) {
+    FnSigNode *sig = newFnSigNode();
+    Nodes *typedargs = newNodes(args->used ? args->used : 1);
+    for (uint32_t i = 0; i < args->used; ++i) {
+        INode *parmtype = nodesGet(parmtypes, i);
+        INode *arg = nodesGet(args, i);
+        if (parmtype == NULL || arg == NULL)
+            continue;
+        VarDclNode *parm = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
+        inodeLexCopy((INode*)parm, arg);
+        parm->vtype = parmtype;
+        nodesAdd(&sig->parms, (INode*)parm);
+        nodesAdd(&typedargs, arg);
+    }
+    uint32_t nparms = typeparms->used;
+    FnCallNode *inferred = newFnCallNode(NULL, nparms);
+    inodeLexCopy((INode*)inferred, errnode);
+    while (nparms--)
+        nodesAdd(&inferred->args, (INode*)NULL);
+    char what[200];
+    snprintf(what, sizeof(what), "the macro %s's type parameters: its arguments must agree on each",
+        &name->namestr);
+    if (genericInferFnParms(pstate, typeparms, sig, NULL, typedargs, 0, errnode, inferred, NULL, NULL, what) == 0)
+        return NULL;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(inferred->args, cnt, argsp)) {
+        if (*argsp == NULL) {
+            genericMissingParms(inferred, typeparms, name, errnode, 1);
+            return NULL;
+        }
+    }
+    return inferred->args;
 }
 
 // ---------------------------------------------------------------------------
@@ -3493,7 +3546,7 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp, INode *e
         uint32_t firstparm = (nodetoclone->flags & FlagMethFld) && !(objfn->flags & FlagQualified) ? 1 : 0;
         if (genericInferFnParms(pstate, genericinfo->parms,
             (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), NULL, srcgencall->args, firstparm,
-            (INode*)srcgencall, inferredgencall, ((FnDclNode *)nodetoclone)->where, expectType) == 0)
+            (INode*)srcgencall, inferredgencall, ((FnDclNode *)nodetoclone)->where, expectType, "generic function") == 0)
             return 1;
         break;
     }
@@ -3522,7 +3575,7 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp, INode *e
     // Be sure all expected generic parameters were inferred
     for (nodesFor(inferredgencall->args, cnt, argsp)) {
         if (*argsp == NULL) {
-            genericMissingParms(inferredgencall, genericinfo->parms, name, (INode*)srcgencall);
+            genericMissingParms(inferredgencall, genericinfo->parms, name, (INode*)srcgencall, 0);
             *((INode**)srcgencallp) = newErrorNode((INode*)srcgencall);
             return 1;
         }
@@ -3573,11 +3626,11 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
         while (nparms--)
             nodesAdd(&gencall->args, (INode*)NULL);
         if (genericInferFnParms(pstate, genericinfo->parms, (FnSigNode*)itypeGetTypeDcl(genmeth->vtype),
-            callnode->objfn, callnode->args, 1, (INode*)callnode, gencall, genmeth->where, expectType) == 0)
+            callnode->objfn, callnode->args, 1, (INode*)callnode, gencall, genmeth->where, expectType, "generic function") == 0)
             return NULL;
         for (nodesFor(gencall->args, cnt, argsp)) {
             if (*argsp == NULL) {
-                genericMissingParms(gencall, genericinfo->parms, genmeth->namesym, (INode*)callnode);
+                genericMissingParms(gencall, genericinfo->parms, genmeth->namesym, (INode*)callnode, 0);
                 return NULL;
             }
         }

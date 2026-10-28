@@ -7,6 +7,7 @@
 
 #include "../ir.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -107,6 +108,135 @@ static StructNode *macroParmTrait(INode *type) {
     return (StructNode*)dcl;
 }
 
+// ---------------------------------------------------------------------------
+// A plain parameter changed by its macro's body, refused where the macro is
+// declared. A plain parameter is evaluated once, into a variable nothing may
+// change (macroExpand), so a body that changes it wanted it 'lazy'. Name
+// resolution sees which parameter a change names, and that is enough where no
+// type is in question: an assignment, swap or '&mut' of the parameter itself,
+// or of a part of it reached through no reference ('p.a = 0' for 'p: Pair'),
+// is refused whatever the macro is given, so an unused macro is refused too.
+// Where the answer waits on a type -- a step of the path that is a reference,
+// a type parameter, an index into anything but an array value, a method --
+// the change is judged where the macro is used, by the checks of a store, a
+// swap or a borrow (macroParmAssignRefused), as before.
+
+// The macro whose body is being resolved, or NULL
+static MacroDclNode *macroResolving = NULL;
+
+#define MacroParmAssignMsg "The macro's parameter %s is evaluated once, so its body cannot change it: an argument the macro assigns to must be lazy, '%s: lazy T'."
+
+// The plain parameter of the macro being resolved that this name use names, or NULL
+static GenVarDclNode *macroPlainParmOf(INode *node) {
+    if (macroResolving == NULL || !isNameUseNode(node))
+        return NULL;
+    INode *dcl = ((NameUseNode*)node)->dclnode;
+    if (dcl == NULL || dcl->tag != GenVarDclTag)
+        return NULL;
+    GenVarDclNode *parm = (GenVarDclNode*)dcl;
+    if ((parm->flags & FlagLazy) || parm->valtype == NULL || parm->valtype == unknownType)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(macroResolving->parms, cnt, nodesp))
+        if (*nodesp == dcl)
+            return parm;
+    return NULL;
+}
+
+// The declaration of a type, as written, that holds its value in place and is
+// no reference: a number, a struct (not a trait, not a generic one, whose
+// fields wait on its type arguments), or an array value. NULL for anything
+// else, or a name not resolved yet.
+static INode *macroValueTypeDcl(INode *type) {
+    if (type == NULL)
+        return NULL;
+    if (type->tag == ArrayTag)
+        return type;
+    if (!isNameUseNode(type))
+        return NULL;
+    INode *dcl = ((NameUseNode*)type)->dclnode;
+    if (dcl == NULL)
+        return NULL;
+    switch (dcl->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+        return dcl;
+    case StructTag:
+        if (((dcl->flags & TraitType) && !(dcl->flags & EnumType)) || ((StructNode*)dcl)->genericinfo)
+            return NULL;
+        return dcl;
+    default:
+        return NULL;
+    }
+}
+
+// The plain parameter whose own storage 'place' is, reached through no
+// reference: the parameter, a field of a struct value that is, or an element
+// of an array value that is. '*typep' is the place's type as written. NULL
+// where it is not, or where saying so waits on a type.
+static GenVarDclNode *macroPlaceParm(INode *place, INode **typep, int depth) {
+    if (place == NULL || depth > 32)
+        return NULL;
+    if (isNameUseNode(place)) {
+        GenVarDclNode *parm = macroPlainParmOf(place);
+        if (parm)
+            *typep = parm->valtype;
+        return parm;
+    }
+    if (place->tag != FnCallTag)
+        return NULL;
+    FnCallNode *call = (FnCallNode*)place;
+    INode *outer = NULL;
+    // A field, 'p.a'
+    if (call->methfld && isNameUseNode(call->methfld) && call->args == NULL && !(call->flags & FlagIndex)) {
+        GenVarDclNode *parm = macroPlaceParm(call->objfn, &outer, depth + 1);
+        INode *dcl = macroValueTypeDcl(outer);
+        if (parm == NULL || dcl == NULL || dcl->tag != StructTag)
+            return NULL;
+        INode *fld = iNsTypeFindFnField((INsTypeNode*)dcl, ((NameUseNode*)call->methfld)->namesym);
+        if (fld == NULL || fld->tag != FieldDclTag)
+            return NULL;
+        *typep = ((FieldDclNode*)fld)->vtype;
+        return parm;
+    }
+    // An element of an array value, 'a[i]'
+    if (call->methfld == NULL && (call->flags & FlagIndex) && !(call->flags & FlagRange)
+        && call->args && call->args->used == 1) {
+        GenVarDclNode *parm = macroPlaceParm(call->objfn, &outer, depth + 1);
+        if (parm == NULL || outer == NULL || outer->tag != ArrayTag)
+            return NULL;
+        *typep = arrayElemType(outer);
+        return parm;
+    }
+    return NULL;
+}
+
+// 'place', in the body of the macro being resolved, is stored to, swapped or
+// borrowed '&mut' (MacroChangePlace), or changed in place by an operator
+// such as '+=', which reaches through a reference its operand is
+// (MacroChangeInPlace). Refused at 'at' where it is a plain parameter's own
+// storage, and so says nothing that waits on a type.
+void macroChangeNameRes(INode *at, INode *place, MacroChange how) {
+    if (macroResolving == NULL || place == NULL)
+        return;
+    if (place->tag == VTupleTag || place->tag == TupleTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)place)->elems, cnt, nodesp))
+            macroChangeNameRes(*nodesp, *nodesp, how);
+        return;
+    }
+    INode *type = NULL;
+    GenVarDclNode *parm = macroPlaceParm(place, &type, 0);
+    if (parm == NULL)
+        return;
+    if (how == MacroChangeInPlace && macroValueTypeDcl(type) == NULL)
+        return;
+    errorMsgNode(at, ErrorMacroParmAssign, MacroParmAssignMsg, &parm->namesym->namestr, &parm->namesym->namestr);
+}
+
 // Perform name resolution
 void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
     uint16_t oldscope = pstate->scope;
@@ -163,7 +293,12 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
         inodeNameRes(pstate, nodesp);
     }
 
+    // A change to a plain parameter is refused as the body is resolved
+    // (macroChangeNameRes), so that an unused macro is refused too
+    MacroDclNode *svresolving = macroResolving;
+    macroResolving = gennode;
     inodeNameRes(pstate, (INode**)&gennode->body);
+    macroResolving = svresolving;
 
     nametblHookPop();
     pstate->macromethod = svmacromethod;
@@ -200,9 +335,8 @@ static INode *macroSrcSite(INode *use) {
 
 // Do the type arguments a use wrote fit the macro's type parameters? Each is
 // substituted for its parameter, as a value argument is, so it must be a type.
-// Reported at the use, which becomes an error node, where they do not.
-// Inferring a type parameter from the arguments is not built, so a macro that
-// declares any is given all of them in brackets.
+// Reported at the use, which becomes an error node, where they do not. Where
+// none are written they are inferred from the arguments (macroInferTypeArgs).
 static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs) {
     if (macro->typeparms == NULL) {
         if (typeargs == NULL)
@@ -213,13 +347,8 @@ static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs)
         *nodep = newErrorNode(*nodep);
         return 0;
     }
-    if (typeargs == NULL) {
-        errorMsgNode(*nodep, ErrorMacroTypeArgs,
-            "%s declares type parameters, and inferring them from its arguments is not built yet: write them in brackets before the arguments, '%s[i32](...)'.",
-            &macro->namesym->namestr, &macro->namesym->namestr);
-        *nodep = newErrorNode(*nodep);
-        return 0;
-    }
+    if (typeargs == NULL)
+        return 1;
     if (typeargs->used != macro->typeparms->used) {
         errorMsgNode(*nodep, ErrorArgCount, "Incorrect number of type arguments vs. type parameters expected");
         *nodep = newErrorNode(*nodep);
@@ -231,6 +360,184 @@ static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs)
     for (nodesFor(typeargs, cnt, nodesp)) {
         if (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp)) {
             errorMsgNode(*nodesp, ErrorNotType, "Expected a type for a macro's type parameter");
+            bad = 1;
+        }
+    }
+    if (bad)
+        *nodep = newErrorNode(*nodep);
+    return !bad;
+}
+
+// ---------------------------------------------------------------------------
+// What an argument is, asked before the macro is expanded: a 'lazy' argument's
+// type, checked against its parameter's, and every argument's, from which
+// type parameters not written are inferred. Type checking lowers and replaces
+// nodes, and an expression is checked once, where the expansion puts it
+// (inode.c), so the question is asked of a copy, as a trial (error.h, "A
+// trial"): its diagnostics counted and not kept, and what type check knows of
+// narrowed names (narrow.h) as it was before. Nothing of the argument itself is
+// touched. A declaration the copy reaches first -- a generic's instance, a
+// function not yet checked -- is the program's, checked once and loud, and
+// is what the argument reaches too when it is checked for real.
+
+// Type check a copy of 'arg' as a trial, wanted as 'expect'. Answers the
+// checked copy, or NULL where it does not check on its own (what it reports is
+// the argument's, said where the argument is checked for real). With 'fits',
+// also whether it coerces to 'expect'.
+static INode *macroArgTrial(TypeCheckState *pstate, INode *arg, INode *expect, int *fits) {
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+    INode *probe = cloneNode(&cstate, arg);
+    clonePopState();
+    cloneDclPop(dclpos);
+
+    NarrowFnSave nsave;
+    narrowFnBegin(&nsave);
+    narrowRestore(nsave.env);
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerialNow());
+    int before = errorsOwn();
+    inodeTypeCheck(pstate, &probe, expect);
+    int checked = errorsOwn() == before && isExpNode(probe) && !inodeIsError(probe);
+    if (checked && fits)
+        *fits = iexpCheckedCoerceIn(pstate, expect, &probe) && errorsOwn() == before;
+    errorTrialEnd(&trial);
+    narrowFnEnd(&nsave);
+    return checked ? probe : NULL;
+}
+
+// Does this parameter type, as written, name one of the macro's type parameters?
+static int macroTypeNamesParm(INode *type, Nodes *typeparms, int depth) {
+    if (type == NULL || depth > 32)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    if (isNameUseNode(type)) {
+        for (nodesFor(typeparms, cnt, nodesp))
+            if (*nodesp == ((NameUseNode*)type)->dclnode)
+                return 1;
+        return 0;
+    }
+    switch (type->tag) {
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode*)type;
+        if (macroTypeNamesParm(call->objfn, typeparms, depth + 1))
+            return 1;
+        if (call->args)
+            for (nodesFor(call->args, cnt, nodesp))
+                if (macroTypeNamesParm(*nodesp, typeparms, depth + 1))
+                    return 1;
+        return 0;
+    }
+    case RefTag:
+    case BorrowTag:
+    case AllocateTag:
+    case ArrayRefTag:
+    case ArrayBorrowTag:
+    case VirtRefTag:
+        return macroTypeNamesParm(((RefNode*)type)->vtexp, typeparms, depth + 1);
+    case PtrTag:
+    case DerefTag:
+        return macroTypeNamesParm(((StarNode*)type)->vtexp, typeparms, depth + 1);
+    case ArrayTag:
+        return macroTypeNamesParm(arrayElemType(type), typeparms, depth + 1);
+    case FnSigTag: {
+        FnSigNode *sig = (FnSigNode*)type;
+        for (nodesFor(sig->parms, cnt, nodesp))
+            if (macroTypeNamesParm(((VarDclNode*)*nodesp)->vtype, typeparms, depth + 1))
+                return 1;
+        return macroTypeNamesParm(sig->rettype, typeparms, depth + 1);
+    }
+    case TTupleTag:
+        for (nodesFor(((TupleNode*)type)->elems, cnt, nodesp))
+            if (macroTypeNamesParm(*nodesp, typeparms, depth + 1))
+                return 1;
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+// The type arguments of a use that writes none, inferred from its arguments
+// by the rules a generic function's are (genericInferMacroParms): each
+// argument whose parameter's type names a type parameter is checked, as a
+// copy, and its type matched against that parameter's type. Answers NULL once
+// reported: a type parameter no argument says, or one two arguments say
+// differently. An argument that does not check on its own says nothing, and
+// its own error is the one to report, so it is checked where it stands and
+// the use is not expanded.
+static Nodes *macroInferTypeArgs(TypeCheckState *pstate, INode *use, MacroDclNode *macro, Nodes *args, INode *selfparm) {
+    uint32_t given = args ? args->used : 0;
+    Nodes *parmtypes = newNodes(given ? given : 1);
+    Nodes *probes = newNodes(given ? given : 1);
+    int failed = 0;
+    for (uint32_t i = 0; i < given; ++i) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i);
+        INode *parmtype = NULL;
+        INode *probe = NULL;
+        if ((INode*)parm != selfparm && parm->valtype && parm->valtype != unknownType
+            && macroTypeNamesParm(parm->valtype, macro->typeparms, 0)) {
+            parmtype = parm->valtype;
+            probe = macroArgTrial(pstate, nodesGet(args, i), unknownType, NULL);
+            if (probe == NULL)
+                failed = 1;
+        }
+        nodesAdd(&parmtypes, parmtype);
+        nodesAdd(&probes, probe);
+    }
+    if (failed) {
+        int before = errors;
+        for (uint32_t i = 0; i < given; ++i) {
+            if (nodesGet(parmtypes, i) != NULL && nodesGet(probes, i) == NULL) {
+                inodeTypeCheckAny(pstate, &nodesGet(args, i));
+                if (errors == before)
+                    errorMsgNode(nodesGet(args, i), ErrorInvType,
+                        "This argument's type is not known here, so it says nothing of %s's type parameters: write them out, %s[...](...).",
+                        &macro->namesym->namestr, &macro->namesym->namestr);
+            }
+        }
+        return NULL;
+    }
+    return genericInferMacroParms(pstate, macro->typeparms, parmtypes, probes, use, macro->namesym);
+}
+
+// A value parameter's type with the macro's type parameters substituted, and
+// type checked, as the use's expansion will have it. NULL where it is no type
+// (reported).
+static INode *macroParmTypeAt(TypeCheckState *pstate, INode *use, MacroDclNode *macro, Nodes *typeargs, GenVarDclNode *parm) {
+    CloneState cstate;
+    clonePushState(&cstate, use, NULL, pstate->scope, typeargs ? macro->typeparms : NULL, typeargs);
+    INode *type = cloneNode(&cstate, parm->valtype);
+    clonePopState();
+    if (!itypeTypeCheck(pstate, &type))
+        return NULL;
+    return type;
+}
+
+// Does each 'lazy' argument fit its parameter's type? It is checked as a copy
+// (macroArgTrial) before it is substituted, so a wrong type is refused at the
+// use, naming the parameter, rather than wherever the body puts it, or nowhere
+// if the body never does. 'lazy void' takes a block or statement that gives no
+// value. An argument that does not check on its own is left to be checked
+// where it is put, which reports it. Reported, the use an error node, where
+// one does not fit.
+static int macroLazyArgsFit(TypeCheckState *pstate, INode **nodep, MacroDclNode *macro, Nodes *typeargs, Nodes *args, INode *selfparm) {
+    uint32_t given = args ? args->used : 0;
+    int bad = 0;
+    for (uint32_t i = 0; i < given; ++i) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i);
+        if ((INode*)parm == selfparm || !(parm->flags & FlagLazy) || parm->valtype == NULL || parm->valtype == unknownType)
+            continue;
+        INode *parmtype = macroParmTypeAt(pstate, *nodep, macro, typeargs, parm);
+        if (parmtype == NULL) {
+            bad = 1;
+            continue;
+        }
+        int fits = 1;
+        INode *probe = macroArgTrial(pstate, nodesGet(args, i), parmtype, &fits);
+        if (probe && !fits) {
+            macroArgTypeRefused(probe, parm->namesym, 1, parmtype);
             bad = 1;
         }
     }
@@ -258,6 +565,17 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
         *nodep = newErrorNode(*nodep);
         return;
     }
+    // Type parameters not written are inferred from the arguments
+    if (macro->typeparms && typeargs == NULL) {
+        typeargs = macroInferTypeArgs(pstate, *nodep, macro, args, selfparm);
+        if (typeargs == NULL) {
+            *nodep = newErrorNode(*nodep);
+            return;
+        }
+    }
+    // A 'lazy' argument is checked against its type before it is substituted
+    if (!macroLazyArgsFit(pstate, nodep, macro, typeargs, args, selfparm))
+        return;
 
     // A plain parameter is evaluated once: the expansion binds its argument
     // first, '{ let a: T = arg; body }', and the body's uses of the parameter
@@ -457,9 +775,34 @@ void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 // swaps it, borrows it to change it -- wanted its argument substituted whole.
 // Reported where the body changes it, in each expansion.
 void macroParmAssignRefused(INode *at, VarDclNode *var) {
-    errorMsgNode(at, ErrorMacroParmAssign,
-        "The macro's parameter %s is evaluated once, so its body cannot change it: an argument the macro assigns to must be lazy, '%s: lazy T'.",
-        &var->namesym->namestr, &var->namesym->namestr);
+    errorMsgNode(at, ErrorMacroParmAssign, MacroParmAssignMsg, &var->namesym->namestr, &var->namesym->namestr);
+}
+
+// An argument whose type does not fit its parameter's, 'parmtype': a 'lazy'
+// one (macroLazyArgsFit), or a plain one as its binding is checked (varDclTypeCheck)
+static void macroTypeSpell(char *buf, size_t size, INode *type) {
+    buf[0] = '\0';
+    if (itypeGetTypeDcl(type)->tag == VoidTag)
+        snprintf(buf, size, "void");
+    else
+        itypeSpellCat(buf, size, type, 0);
+}
+
+void macroArgTypeRefused(INode *arg, Name *parm, int lazy, INode *parmtype) {
+    char want[200];
+    macroTypeSpell(want, sizeof(want), parmtype);
+    INode *argtype = isExpNode(arg) ? ((IExpNode*)arg)->vtype : NULL;
+    if (argtype && argtype != unknownType && argtype != errorType) {
+        char given[200];
+        macroTypeSpell(given, sizeof(given), argtype);
+        errorMsgNode(arg, ErrorMacroArgType,
+            "This argument's type is %s, and the macro's parameter %s is '%s: %s%s'.",
+            given, &parm->namestr, &parm->namestr, lazy ? "lazy " : "", want);
+    }
+    else
+        errorMsgNode(arg, ErrorMacroArgType,
+            "This argument is not of the type the macro's parameter %s is, '%s: %s%s'.",
+            &parm->namestr, &parm->namestr, lazy ? "lazy " : "", want);
 }
 
 // Expand a macro method called on a receiver: 'x.name(args)' expands the body

@@ -1,0 +1,125 @@
+// A macro's lazy arguments checked when it is expanded, and its type
+// parameters inferred from its arguments.
+//
+// A 'lazy' argument is checked against its parameter's type before it is
+// substituted, and the check is made on a copy of the argument, as a trial:
+// type checking lowers and replaces nodes, and an argument is checked once,
+// where the body puts it. So the expansion that follows the check is the one
+// an unchecked argument would make, which is what this program shows in the
+// places where a check that touched the argument would show: inside a
+// generic's instances (two of them, at different types), and with a macro use
+// as another's lazy argument, nested. Each argument counts the times it runs,
+// so what the program prints says the lazy argument still runs once per use
+// and not at all where the body does not reach it.
+//
+// A use that writes no type arguments has them inferred from its arguments, as
+// a generic function's call does; one that writes them is as before.
+
+mod generic_macro_lazy;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showf(label: &str, n: f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+var @threadlocal calls = 0i64;
+
+fn bump() i64 {
+  calls = calls + 1i64;
+  calls
+}
+
+fn bumpf() f64 {
+  calls = calls + 1i64;
+  0.5
+}
+
+// Named twice, lazy: runs twice
+macro twiceLazy[a: lazy i64] {
+  a + a
+}
+
+// One of two lazy arguments, by a plain condition: only the one taken runs
+macro pick[T][yes: bool, a: lazy T, b: lazy T] {
+  if yes {a} else {b}
+}
+
+// A plain parameter typed by a type parameter, which the arguments infer
+macro larger[T][a: T, b: T] {
+  if a > b {a} else {b}
+}
+
+// A lazy block that gives no value, run as many times as the body says
+macro repeat3[body: lazy void] {
+  body;
+  body;
+  body
+}
+
+// -------- inside a generic's instances --------
+
+// The macro's lazy arguments name the instance's own values, of its type
+// parameter: checked against 'T' as each instance has it, i64 in one and f64
+// in the other
+fn choose[T](yes: bool, x: T, y: T) T {
+  pick(yes, x, y)
+}
+
+fn chooseCounted[T](yes: bool, x: T, f: &fn() T) T {
+  pick[T](yes, f(), x)
+}
+
+// -------- nested --------
+
+// A macro use whose own argument is a macro use, both lazy
+macro quadLazy[a: lazy i64] {
+  twiceLazy(a) + twiceLazy(a)
+}
+
+fn main() {
+  // Inside a generic's instances
+  show("instance i64 taken", choose(true, 3i64, 4i64));
+  show("instance i64 not taken", choose(false, 3i64, 4i64));
+  showf("instance f64", choose(false, 1.5, 2.5));
+  calls = 0i64;
+  show("instance lazy runs", chooseCounted(true, 9i64, &bump));
+  show("instance lazy ran", calls);
+  calls = 0i64;
+  showf("instance f64 lazy skipped", chooseCounted(false, 7.5, &bumpf));
+  show("instance f64 lazy ran", calls);
+
+  // Nested: a macro use as another's lazy argument
+  calls = 0i64;
+  show("nested", twiceLazy(twiceLazy(bump())));
+  show("nested ran", calls);
+  calls = 0i64;
+  show("nested in a body", quadLazy(bump()));
+  show("nested in a body ran", calls);
+  calls = 0i64;
+  show("nested not taken", pick(false, twiceLazy(bump()), 5i64));
+  show("nested not taken ran", calls);
+
+  // A side-effect block for 'lazy void'
+  var n = 0i64;
+  repeat3({n = n + 2i64});
+  show("lazy void", n);
+
+  // Inferred and written type arguments, in one program
+  show("inferred", larger(3i64, 8i64));
+  show("inferred from a literal and a value", larger(3, 8i64));
+  showf("inferred f64", larger(2.5, 1.5));
+  show("written", larger[i64](4, 2));
+  show("written lazy", pick[i64](true, 11, 12));
+  show("inferred lazy", pick(false, 11i64, 12i64));
+}

@@ -635,6 +635,9 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             char privwhy[400];
             if (why)
                 errorMsgNode(name->value, whycode, "%s", why);
+            // A macro's plain argument, bound to its parameter: said of the parameter
+            else if (name->flags & FlagMacroBind)
+                macroArgTypeRefused(name->value, name->namesym, 0, name->vtype);
             else if (isExpNode(name->value)
                 && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)name->value)->vtype, name->vtype))
                 errorMsgNode(name->value, ErrorPrivateMatch,

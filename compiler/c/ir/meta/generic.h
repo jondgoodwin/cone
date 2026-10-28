@@ -83,6 +83,13 @@ void genericInstantiateDepthSet(uint32_t depth);
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
+// A macro's type parameters, inferred from its arguments by the rules a
+// generic function's are from a call's. 'parmtypes' and 'args' are paired, a
+// parameter's type as written and its argument type checked (a copy), a pair
+// left out where either is NULL. The type arguments, or NULL once reported.
+Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
+    INode *errnode, Name *name);
+
 // The instance of generic method 'genmeth' that a call on a receiver names,
 // its type arguments 'typeargs' or, when NULL, inferred from the call's
 // arguments and from 'expectType', the type its value is wanted as. NULL once

@@ -493,6 +493,9 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
     }
+    // In a macro's body, '+=' or '<-' on a plain parameter is refused here
+    if (node->flags & FlagOpAssgn)
+        macroChangeNameRes(node->objfn, node->objfn, MacroChangeInPlace);
 
     if (reduction) {
         parallelReduceNameRes(pstate, nodep);
