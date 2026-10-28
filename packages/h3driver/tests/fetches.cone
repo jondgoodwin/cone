@@ -1,0 +1,513 @@
+// httpclient over HTTP/3 through this package's plug-in, offline: on one
+// Loop, the client, an HTTP/3 server (a Driver of this package's on a UDP
+// port of 127.0.0.1) and HTTP/1.1 and HTTP/2 servers over TLS (httpconn's,
+// the tls package's test certificates). Checked:
+// 1. Prior knowledge (Config.http3Origins): a GET is Done over HTTP/3, its
+//    Response says Version.Http3; 32 at once go on the one QUIC connection;
+//    a POST's body goes whole.
+// 2. Alt-Svc: a response over HTTP/2 saying h3 is on the UDP port makes the
+//    next fetch to that origin go over HTTP/3; one whose max-age has passed
+//    does not.
+// 3. Fallback: prior knowledge of a port where no HTTP/3 server is: the
+//    attempt gives up at http3Timeout and the fetch is Done over TCP; the
+//    next fetch takes TCP at once (the origin's HTTP/3 is not tried again
+//    for a while).
+// 4. The server's GOAWAY: the next fetch takes a new QUIC connection.
+// 5. The server aborts the connection under a GET: it is retried, Done.
+// 6. A client without the plug-in reads no Alt-Svc: TCP only.
+
+mod fetches;
+
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, IoError, forever;
+import http use *;
+import httpconn;
+import tls;
+import quic;
+import h3driver;
+import httpclient use *;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String.empty();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn startsWith(t: &str, p: &str) bool {
+  if t.len() < p.len() {return false;}
+  var k = 0usize;
+  while k < p.len() {
+    if t[k] != p[k] {return false;}
+    k = k + 1usize;
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// The HTTP/3 server: /hello 200 "hello"; /post 200 with the count of the
+// body's bytes; /goaway 200 "bye", then the connection closed gracefully;
+// /abort the first time, the connection aborted under it, after 200 "again"
+// ---------------------------------------------------------------------------
+
+struct Q {
+  req: h3driver.ReqId;
+  conn: h3driver.ConnId;
+  target: String;
+  got: u64;
+}
+
+struct H3Srv {
+  pub drv: h3driver.Driver;
+  pub accepted: u64;
+  pub requests: u64;
+  pub inFlight: u64;
+  pub maxInFlight: u64;
+  pub aborted: bool;
+  pub qs: List[Q];
+  pub port: u16;
+}
+
+fn findQ(sv: &H3Srv, r: h3driver.ReqId) usize {
+  var k = 0usize;
+  while k < sv.qs.len() {
+    if sv.qs[k].req == r {return k;}
+    k = k + 1usize;
+  }
+  sv.qs.len()
+}
+
+fn h3Reply(sv: &mut H3Srv, req: h3driver.ReqId, body: &str) {
+  sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(body.len())));
+  var b = IoBuf(body.len());
+  b.append(body);
+  let back = sv.drv.sendData(req, b);
+  sv.drv.finish(req);
+}
+
+fn h3Serve(sv: &mut H3Srv, lp: &mut Loop) {
+  var evs = List[h3driver.Event].empty();
+  sv.drv.pump(lp, &mut evs);
+  var k = 0usize;
+  while k < evs.len() {
+    let e = &mut evs[k];
+    k = k + 1usize;
+    if e.kind == h3driver.EventKind.Accepted {
+      sv.accepted = sv.accepted + 1u64;
+    } else if e.kind == h3driver.EventKind.Request {
+      sv.requests = sv.requests + 1u64;
+      sv.inFlight = sv.inFlight + 1u64;
+      if sv.inFlight > sv.maxInFlight {sv.maxInFlight = sv.inFlight;}
+      sv.qs.push(Q(e.req, e.conn, e.request.target.copy(), 0u64));
+    } else if e.kind == h3driver.EventKind.Data {
+      let j = findQ(sv, e.req);
+      if j < sv.qs.len() {sv.qs[j].got = sv.qs[j].got + u64.from(e.buf.len());}
+      sv.drv.release(e.req, e.buf.len());
+    } else if e.kind == h3driver.EventKind.End {
+      let j = findQ(sv, e.req);
+      if j < sv.qs.len() {
+        let req = sv.qs[j].req;
+        let conn = sv.qs[j].conn;
+        let t = sv.qs[j].target.copy();
+        if t.view() == "/post" {
+          var s = String.empty();
+          s.appendUInt(sv.qs[j].got);
+          h3Reply(sv, req, s.view());
+        } else if t.view() == "/goaway" {
+          h3Reply(sv, req, "bye");
+          sv.drv.close(lp, conn);
+        } else if t.view() == "/abort" && !sv.aborted {
+          sv.aborted = true;
+          sv.drv.abort(lp, conn);
+        } else if t.view() == "/abort" {
+          h3Reply(sv, req, "again");
+        } else {
+          h3Reply(sv, req, "hello");
+        }
+      }
+    } else if e.isTerminal() {
+      if sv.inFlight > 0u64 {sv.inFlight = sv.inFlight - 1u64;}
+      let j = findQ(sv, e.req);
+      if j < sv.qs.len() {
+        let last = sv.qs.len() - 1usize;
+        sv.qs.swap(j, last);
+        sv.qs.pop();
+      }
+    }
+  }
+}
+
+fn h3Server(lp: &mut Loop) H3Srv {
+  var sv = H3Srv(drv: h3driver.Driver.make(h3driver.Config.make()), accepted: 0u64, requests: 0u64, inFlight: 0u64,
+    maxInFlight: 0u64, aborted: false, qs: List[Q].empty(), port: 0u16);
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(quic.Config.make(), &cert, &key) {
+    case let Ok(ctx) {
+      match sv.drv.listen(lp, SocketAddr.localhost(0u16), ctx, 7u64) {
+        case let Ok(l) {
+          match sv.drv.localAddr(lp, l) {
+            case let Ok(a) {sv.port = a.port();}
+            case let Err(e) {}
+          }
+        }
+        case let Err(f) {}
+      }
+    }
+    case let Err(e) {panic("no QUIC server context: run the test from its build folder");}
+  }
+  sv
+}
+
+// ---------------------------------------------------------------------------
+// The TCP servers (httpconn's, TLS, h2 and http/1.1): /hello 200 "hello",
+// with the Alt-Svc field the listener was given (none when empty)
+// ---------------------------------------------------------------------------
+
+struct TlsMaker {
+  server: tls.Server;
+
+  pub fn make(self: &mut) Uni[httpconn.Layer] {Uni[tls.Stream](server.stream())}
+}
+
+fn tlsServer() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var cfg = tls.ServerConfig.make(&certFile, &keyFile);
+  var names = List[String].empty();
+  names.push(String.from("h2"));
+  names.push(String.from("http/1.1"));
+  cfg.alpn = names;
+  match tls.Server.make(cfg) {
+    case let Ok(r) {
+      let s = r;
+      return s;
+    }
+    case let Err(e) {}
+  }
+  panic("no TLS server: run the test from its build folder")
+}
+
+struct TcpSrv {
+  pub drv: httpconn.Driver;
+  pub requests: u64;
+  pub altSvc: List[String];     // per listener (its sink's token): the Alt-Svc it sends
+  pub ports: List[u16];
+}
+
+fn tcpListen(sv: &mut TcpSrv, lp: &mut Loop, altSvc: &str) u16 {
+  let token = u64.from(sv.altSvc.len());
+  sv.altSvc.push(String.from(altSvc));
+  let r = sv.drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(tlsServer())), httpconn.Sink.Here(token));
+  var port = 0u16;
+  match r {
+    case let Ok(l) {
+      match sv.drv.localAddr(lp, l) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(e) {}
+  }
+  sv.ports.push(port);
+  port
+}
+
+fn tcpServe(sv: &mut TcpSrv, lp: &mut Loop) {
+  var evs = List[httpconn.Event].empty();
+  sv.drv.pump(lp, &uni evs);
+  var k = 0usize;
+  while k < evs.len() {
+    let e = &mut evs[k];
+    k = k + 1usize;
+    if e.kind == httpconn.EventKind.Data {
+      sv.drv.release(e.req, e.buf.len());
+    } else if e.kind == httpconn.EventKind.End {
+      sv.requests = sv.requests + 1u64;
+      var h = ResponseHead.make(200u16);
+      let li = usize.from(e.token);
+      if li < sv.altSvc.len() && sv.altSvc[li].len() > 0usize {
+        let a = sv.altSvc[li].copy();
+        h.headers.add("Alt-Svc", a.view());
+      }
+      sv.drv.respond(e.req, h, BodyLength.sized(5u64));
+      var b = IoBuf(5usize);
+      b.append("hello");
+      sv.drv.sendData(e.req, b);
+      sv.drv.finish(e.req);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Driving
+// ---------------------------------------------------------------------------
+
+struct World {
+  pub h3: H3Srv;
+  pub tcp: TcpSrv;
+}
+
+fn step(cl: &mut Client, w: &mut World, lp: &mut Loop, out: &uni List[Event], until: Instant) {
+  cl.pump(lp, out);
+  h3Serve(&mut w.h3, lp);
+  tcpServe(&mut w.tcp, lp);
+  var limit = until;
+  let a = cl.wakeAt();
+  if a < limit {limit = a;}
+  let b = w.h3.drv.wakeAt();
+  if b < limit {limit = b;}
+  let c = w.tcp.drv.wakeAt();
+  if c < limit {limit = c;}
+  if out.len() > 0usize {limit = Instant();}
+  var comps = List[Completion].empty();
+  lp.poll(limit, &mut comps);
+  var k = 0usize;
+  while k < comps.len() {
+    let cp = &mut comps[k];
+    if !cl.complete(lp, cp) {
+      if !w.h3.drv.complete(lp, cp) {w.tcp.drv.complete(lp, cp);}
+    }
+    k = k + 1usize;
+  }
+  comps.clear();
+  h3Serve(&mut w.h3, lp);
+  tcpServe(&mut w.tcp, lp);
+  cl.pump(lp, out);
+}
+
+struct Seen {
+  pub id: FetchId;
+  pub status: u16;
+  pub version: Version;
+  pub body: String;
+  pub finals: u64;
+  pub last: EventKind;
+  pub timing: Timing;
+  pub failText: String;
+}
+
+fn seen(id: FetchId) Seen {
+  Seen(id: id, status: 0u16, version: Version.Http10, body: String.empty(), finals: 0u64, last: EventKind.Done,
+    timing: Timing.zero(), failText: String.empty())
+}
+
+fn drive(cl: &mut Client, w: &mut World, lp: &mut Loop, ss: &uni List[Seen]) bool {
+  var out = List[Event].empty();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while Instant.now() < giveUp {
+    var all = true;
+    var j = 0usize;
+    while j < ss.len() {
+      if ss[j].finals == 0u64 {all = false;}
+      j = j + 1usize;
+    }
+    if all {return true;}
+    step(cl, w, lp, &uni out, giveUp);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      j = 0usize;
+      while j < ss.len() {
+        if ss[j].id == e.id {
+          let s = &mut ss[j];
+          if e.kind == EventKind.Response {
+            s.status = e.response.status;
+            s.version = e.response.version;
+          } else if e.kind == EventKind.Data {
+            s.body.appendBytes(e.buf.view());
+          } else if e.isTerminal() {
+            s.finals = s.finals + 1u64;
+            s.last = e.kind;
+            s.timing = e.timing;
+            if e.kind == EventKind.Failed {s.failText = e.failure.message();}
+          }
+        }
+        j = j + 1usize;
+      }
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  false
+}
+
+fn fetchOne(cl: &mut Client, w: &mut World, lp: &mut Loop, r: Request) Seen {
+  var ss = List[Seen].empty();
+  ss.push(seen(cl.send(lp, r, Sink.Here(1u64))));
+  drive(cl, w, lp, &uni ss);
+  match ss.pop() {
+    case let Some(s) {s}
+    else {seen(FetchId.none())}
+  }
+}
+
+fn idleFor(cl: &mut Client, w: &mut World, lp: &mut Loop, d: Duration) {
+  var out = List[Event].empty();
+  let until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, w, lp, &uni out, until);
+    var k = 0usize;
+    while k < out.len() {
+      let e = &mut out[k];
+      if e.kind == EventKind.Data {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn altSvc(port: u16, ma: &str) String {
+  var a = String.from("h3=\":");
+  a.appendUInt(u64.from(port));
+  a.append("\"; ma=");
+  a.append(ma);
+  a
+}
+
+// A client trusting the test root, with the HTTP/3 plug-in unless 'plain'
+fn client(plain: bool, origins: &List[String], timeoutMs: i64) Client {
+  var cfg = Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  if !plain {cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[Http3]](&h3driver.plugin);}
+  var k = 0usize;
+  while k < origins.len() {
+    cfg.http3Origins.push(origins[k].copy());
+    k = k + 1usize;
+  }
+  cfg.http3Timeout = Duration.fromMillis(timeoutMs);
+  Client.make(cfg)
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var w = World(h3: h3Server(&mut lp), tcp: TcpSrv(drv: httpconn.Driver.make(httpconn.Config.make()), requests: 0u64,
+    altSvc: List[String].empty(), ports: List[u16].empty()));
+  let up = w.h3.port;
+  let longAlt = altSvc(up, "60");
+  let shortAlt = altSvc(up, "1");
+  let tA = tcpListen(&mut w.tcp, &mut lp, longAlt.view());     // says h3 is on up for 60 s
+  let tB = tcpListen(&mut w.tcp, &mut lp, shortAlt.view());    // ...for 1 s
+  let tC = tcpListen(&mut w.tcp, &mut lp, "");                 // says nothing; no HTTP/3 on its port
+  require(up != 0u16 && tA != 0u16 && tB != 0u16 && tC != 0u16, "the servers listen");
+
+  // 1. Prior knowledge
+  var origins = List[String].empty();
+  origins.push(url(up, ""));
+  origins.push(url(tC, ""));
+  var cl = client(false, &origins, 300i64);
+  let one = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(up, "/hello").view()));
+  expect(one.last == EventKind.Done && one.status == 200u16 && one.body.view() == "hello", "prior knowledge: a GET Done");
+  expect(one.version == Version.Http3, "...over HTTP/3");
+  expectUInt(cl.stats().h3, 1u64, "...sent over HTTP/3");
+  expectUInt(w.h3.accepted, 1u64, "...on one QUIC connection");
+
+  var many = List[Seen].empty();
+  var k = 0u32;
+  while k < 32u32 {
+    many.push(seen(cl.get(&mut lp, url(up, "/hello").view(), Sink.Here(2u64))));
+    k = k + 1u32;
+  }
+  expect(drive(&mut cl, &mut w, &mut lp, &uni many), "32 at once: every one answered");
+  var n = 0u64;
+  var j = 0usize;
+  while j < many.len() {
+    if many[j].last == EventKind.Done && many[j].version == Version.Http3 && many[j].body.view() == "hello" {n = n + 1u64;}
+    j = j + 1usize;
+  }
+  expectUInt(n, 32u64, "...each Done over HTTP/3");
+  expectUInt(w.h3.accepted, 1u64, "...on the QUIC connection already open");
+  expect(w.h3.maxInFlight > 1u64, "...many in flight on it at once");
+
+  var post = Request.make("POST", url(up, "/post").view());
+  var big = String.empty();
+  while big.len() < 100000usize {big.append("0123456789");}
+  post.body = big;
+  let p = fetchOne(&mut cl, &mut w, &mut lp, post);
+  expect(p.last == EventKind.Done && p.body.view() == "100000" && p.version == Version.Http3, "a POST of 100,000 bytes over HTTP/3: the server read them all");
+
+  // 2. Alt-Svc
+  let a1 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));
+  expect(a1.last == EventKind.Done && a1.version == Version.Http2, "an origin not known to speak h3: its first fetch over HTTP/2");
+  expectUInt(cl.stats().altSvc, 1u64, "...its Alt-Svc learned");
+  let acc0 = w.h3.accepted;
+  let a2 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));
+  expect(a2.last == EventKind.Done && a2.version == Version.Http3 && a2.body.view() == "hello", "...the next fetch to it over HTTP/3");
+  expectUInt(w.h3.accepted - acc0, 1u64, "...on a QUIC connection of its own (another origin)");
+  let b1 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tB, "/hello").view()));
+  expect(b1.last == EventKind.Done && b1.version == Version.Http2, "an Alt-Svc of max-age 1: its first fetch over HTTP/2");
+  idleFor(&mut cl, &mut w, &mut lp, Duration.fromMillis(1100i64));
+  let b2 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tB, "/hello").view()));
+  expect(b2.last == EventKind.Done && b2.version != Version.Http3, "...past its max-age, the next fetch is not HTTP/3");
+
+  // 3. Fallback: prior knowledge of tC, whose UDP port has no server
+  let st0 = cl.stats();
+  let t0 = Instant.now();
+  let c1 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tC, "/hello").view()));
+  let took = Instant.now() - t0;
+  expect(c1.last == EventKind.Done && c1.version == Version.Http2, "no HTTP/3 where prior knowledge said: the fetch Done over HTTP/2");
+  let st1 = cl.stats();
+  expectUInt(st1.h3Fallbacks - st0.h3Fallbacks, 1u64, "...after one HTTP/3 attempt fell back");
+  expect(took >= Duration.fromMillis(250i64) && took < Duration.fromSeconds(3i64), "...at about http3Timeout (300 ms)");
+  let c2 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(tC, "/hello").view()));
+  expect(c2.last == EventKind.Done && c2.version == Version.Http2, "...the next fetch to it Done over HTTP/2");
+  expectUInt(cl.stats().h3Attempts - st1.h3Attempts, 0u64, "...with no new HTTP/3 attempt");
+
+  // 4. The server's GOAWAY: the next fetch takes a new QUIC connection
+  let acc1 = w.h3.accepted;
+  let g = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(up, "/goaway").view()));
+  expect(g.last == EventKind.Done && g.body.view() == "bye", "a response followed by the server's GOAWAY: Done");
+  idleFor(&mut cl, &mut w, &mut lp, Duration.fromMillis(50i64));
+  let g2 = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(up, "/hello").view()));
+  expect(g2.last == EventKind.Done && g2.version == Version.Http3, "...the next fetch Done over HTTP/3");
+  expectUInt(w.h3.accepted - acc1, 1u64, "...on a new QUIC connection");
+
+  // 5. The server aborts the connection under a GET: retried, Done
+  let ab = fetchOne(&mut cl, &mut w, &mut lp, Request.get(url(up, "/abort").view()));
+  expect(ab.last == EventKind.Done && ab.body.view() == "again" && ab.version == Version.Http3, "a GET whose connection the server aborted: retried, Done over HTTP/3");
+  expectUInt(u64.from(ab.timing.attempts), 2u64, "...in two attempts");
+
+  let s = cl.stats();
+  expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "every fetch has had its one final answer");
+  cl.abortAll(&mut lp);
+  idleFor(&mut cl, &mut w, &mut lp, Duration.fromMillis(50i64));
+
+  // 6. No plug-in: Alt-Svc is not read, every fetch is TCP's
+  var none = List[String].empty();
+  var tcpOnly = client(true, &none, 300i64);
+  let x1 = fetchOne(&mut tcpOnly, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));
+  let x2 = fetchOne(&mut tcpOnly, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));
+  expect(x1.version == Version.Http2 && x2.version == Version.Http2, "a client without the plug-in: HTTP/2, twice");
+  expectUInt(tcpOnly.stats().altSvc + tcpOnly.stats().h3Attempts, 0u64, "...no Alt-Svc learned, no HTTP/3 tried");
+  tcpOnly.abortAll(&mut lp);
+  idleFor(&mut tcpOnly, &mut w, &mut lp, Duration.fromMillis(50i64));
+
+  w.h3.drv.abortAll(&mut lp);
+  w.tcp.drv.abortAll(&mut lp);
+  h3Serve(&mut w.h3, &mut lp);
+  tcpServe(&mut w.tcp, &mut lp);
+  done()
+}

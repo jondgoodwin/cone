@@ -1,0 +1,198 @@
+// The driver as httpclient's HTTP/3 plug-in (the package's header, THE
+// PLUG-IN): a Plugin has the methods of httpclient's trait Http3, each the
+// Driver's own call with its ids and events in httpclient's shapes (a
+// connection's or listener's number, an H3Req, an H3Event whose failure is
+// an httpclient.Failure). 'plugin' is the maker httpclient.Config.http3 and
+// actorhttp.ServerConfig.offerHttp3 take.
+
+// A Driver behind httpclient's HTTP/3 trait
+pub struct Plugin {
+  drv: Driver;
+  evs: List[Event];           // the driver's events, on their way out as H3Events
+
+  // A plug-in whose driver takes cfg's bounds
+  pub fn make(cfg: Config) Plugin {Plugin(Driver.make(cfg), List[Event].empty())}
+
+  // A plug-in whose client connections check a server's certificate as t
+  // says (its verifier, offline, the lane the OS's verifier runs on): the
+  // TLS config httpclient's own connections use
+  pub fn forClient(t: &tls.ClientConfig) Plugin {
+    var cfg = Config.make();
+    cfg.transport.verify = verifierOf(&t.verify);
+    cfg.transport.offline = t.offline;
+    cfg.transport.verifyLane = t.verifyLane;
+    Plugin.make(cfg)
+  }
+
+  // Its driver's counters
+  pub fn stats(self: &) DriverStats {drv.stats()}
+
+  pub fn turn(self: &mut, lp: &mut Loop) {drv.turn(lp);}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {drv.complete(lp, c)}
+  pub fn wakeAt(self: &) Instant {drv.wakeAt()}
+  pub fn end(self: &mut, lp: &mut Loop) {drv.end(lp);}
+
+  pub fn takeEvents(self: &mut, out: &mut List[httpclient.H3Event]) usize {
+    drv.takeEvents(&mut evs);
+    let n = evs.len();
+    each e in evs.drain() {out.push(clientEvent(e));}
+    n
+  }
+
+  pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, httpclient.Failure] {
+    match drv.connect(lp, addr, serverName, token) {
+      case let Ok(id) {return Ok[u64, httpclient.Failure](id.number());}
+      case let Err(f) {return Err[u64, httpclient.Failure](clientFailure(f));}
+    }
+  }
+
+  // A server's UDP socket at addr, its connections' TLS cfg's certificate
+  // and key (QUIC's own bounds the defaults)
+  pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
+    match quic.Context.server(quic.Config.make(), &cfg.certFile, &cfg.keyFile) {
+      case let Ok(ctx) {
+        match drv.listen(lp, addr, ctx, token) {
+          case let Ok(l) {return Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index));}
+          case let Err(f) {return Err[u64, httpclient.Failure](clientFailure(f));}
+        }
+      }
+      case let Err(e) {
+        return Err[u64, httpclient.Failure](httpclient.Failure.make(httpclient.Stage.Tls, e.osError, ErrorKind.Unsupported,
+          e.message().view()));
+      }
+    }
+  }
+
+  pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {
+    match drv.localAddr(lp, listenerOf(listener)) {
+      case let Ok(a) {return a.port();}
+      case let Err(e) {}
+    }
+    0u16
+  }
+
+  pub fn stopListening(self: &mut, lp: &mut Loop, listener: u64) bool {drv.stopListening(lp, listenerOf(listener))}
+  pub fn close(self: &mut, lp: &mut Loop, conn: u64) bool {drv.close(lp, connOf(conn))}
+  pub fn abort(self: &mut, lp: &mut Loop, conn: u64) bool {drv.abort(lp, connOf(conn))}
+  pub fn abortAll(self: &mut, lp: &mut Loop) {drv.abortAll(lp);}
+  pub fn takesRequests(self: &, conn: u64) bool {drv.takesRequests(connOf(conn))}
+  pub fn hasRoom(self: &, conn: u64) bool {drv.hasRoom(connOf(conn))}
+  pub fn peer(self: &, conn: u64) SocketAddr {drv.peer(connOf(conn))}
+  pub fn live(self: &) usize {drv.live()}
+
+  pub fn request(self: &mut, lp: &mut Loop, conn: u64, head: RequestHead, body: BodyLength, token: u64) httpclient.H3Req {
+    reqNumbers(drv.request(lp, connOf(conn), head, body, token))
+  }
+
+  pub fn respond(self: &mut, req: httpclient.H3Req, head: ResponseHead, body: BodyLength) bool {
+    drv.respond(reqOf(req), head, body)
+  }
+
+  pub fn sendInterim(self: &mut, req: httpclient.H3Req, head: ResponseHead) bool {drv.sendInterim(reqOf(req), head)}
+  pub fn sendData(self: &mut, req: httpclient.H3Req, buf: IoBuf) Option[IoBuf] {drv.sendData(reqOf(req), buf)}
+  pub fn finish(self: &mut, req: httpclient.H3Req) {drv.finish(reqOf(req));}
+  pub fn release(self: &mut, req: httpclient.H3Req, n: usize) {drv.release(reqOf(req), n);}
+  pub fn cancel(self: &mut, lp: &mut Loop, req: httpclient.H3Req) bool {drv.cancel(lp, reqOf(req))}
+}
+
+// The maker httpclient.Config.http3 names (and actorhttp's offerHttp3): a
+// plug-in whose QUIC checks certificates as the client's TLS config does
+pub fn plugin(t: &tls.ClientConfig) Uni[httpclient.Http3] {Uni[Plugin](Plugin.forClient(t))}
+
+// ---------------------------------------------------------------------------
+// Ids and events, in httpclient's shapes
+// ---------------------------------------------------------------------------
+
+fn connOf(n: u64) ConnId {
+  if n == 0u64 {return ConnId.none();}
+  ConnId(u32.from(n & 0xFFFFFFFFu64), u32.from(n >> 32u64))
+}
+
+fn listenerOf(n: u64) ListenerId {
+  if n == 0u64 {return ListenerId.none();}
+  ListenerId(u32.from(n & 0xFFFFFFFFu64), u32.from(n >> 32u64))
+}
+
+fn reqOf(r: httpclient.H3Req) ReqId {
+  if r.isNone() {return ReqId.none();}
+  ReqId(connOf(r.conn), u32.from(r.req & 0xFFFFFFFFu64), u32.from(r.req >> 32u64))
+}
+
+fn reqNumbers(r: ReqId) httpclient.H3Req {
+  if r.isNone() {return httpclient.H3Req.none();}
+  httpclient.H3Req(r.conn.number(), r.number())
+}
+
+// A driver's failure as a fetch's
+fn clientFailure(f: Failure) httpclient.Failure {
+  let stage, code, error, unsent = f.(stage, code, error, unsent);
+  var st = httpclient.Stage.Closed;
+  if stage == Stage.Resolve {st = httpclient.Stage.Resolve;}
+  else if stage == Stage.Connect {st = httpclient.Stage.Connect;}
+  else if stage == Stage.Read {st = httpclient.Stage.Read;}
+  else if stage == Stage.Write {st = httpclient.Stage.Write;}
+  else if stage == Stage.Http {st = httpclient.Stage.Http;}
+  else if stage == Stage.Tls {st = httpclient.Stage.Tls;}
+  else if stage == Stage.Limit {st = httpclient.Stage.Limit;}
+  var out = httpclient.Failure.none();
+  out.stage = st;
+  out.code = code;
+  out.error = error;
+  out.unsent = unsent;
+  out
+}
+
+// A driver's event as an H3Event, its fields moved
+fn clientEvent(e: Event) httpclient.H3Event {
+  let k = e.kind;
+  var kind = httpclient.H3Kind.Failed;
+  if k == EventKind.Connected {kind = httpclient.H3Kind.Connected;}
+  else if k == EventKind.Accepted {kind = httpclient.H3Kind.Accepted;}
+  else if k == EventKind.Closed {kind = httpclient.H3Kind.Closed;}
+  else if k == EventKind.Request {kind = httpclient.H3Kind.Request;}
+  else if k == EventKind.Response {kind = httpclient.H3Kind.Response;}
+  else if k == EventKind.Interim {kind = httpclient.H3Kind.Interim;}
+  else if k == EventKind.Data {kind = httpclient.H3Kind.Data;}
+  else if k == EventKind.End {kind = httpclient.H3Kind.End;}
+  else if k == EventKind.Writable {kind = httpclient.H3Kind.Writable;}
+  else if k == EventKind.Done {kind = httpclient.H3Kind.Done;}
+  else if k == EventKind.Cancelled {kind = httpclient.H3Kind.Cancelled;}
+  let token, conn, req, listener, peer, clean, failure, request, response, body, buf, trailers =
+    e.(token, conn, req, listener, peer, clean, failure, request, response, body, buf, trailers);
+  var out = httpclient.H3Event.make(kind, token, if conn.isNone() {0u64} else {conn.number()}, reqNumbers(req));
+  if !listener.isNone() {out.listener = (u64.from(listener.gen) << 32u64) | u64.from(listener.index);}
+  out.peer = peer;
+  out.clean = clean;
+  if k == EventKind.Failed || k == EventKind.TimedOut || (k == EventKind.Closed && !clean) {
+    out.failure = clientFailure(failure);
+  }
+  out.request = request;
+  out.response = response;
+  out.body = body;
+  out.buf = buf;
+  out.trailers = trailers;
+  out
+}
+
+// A copy of a verifier, made from what it shows
+fn verifierOf(v: &tls.Verifier) tls.Verifier {
+  let k = v.kind;
+  if k == tls.VerifyKind.Roots {return tls.Verifier.roots(v.rootsPem());}
+  if k == tls.VerifyKind.Insecure {return tls.Verifier.insecureDevelopmentOnly();}
+  if k == tls.VerifyKind.Pinned {
+    let keys = v.pinnedKeys();
+    let digits = "0123456789abcdef" as &Array[u8];
+    var hex = String.empty();
+    var i = 0usize;
+    while i < keys.len {
+      if i > 0usize && i % 32usize == 0usize {hex.append(" ");}
+      let hi = usize.from(keys[i] >> 4u8);
+      let lo = usize.from(keys[i] & 15u8);
+      hex.appendBytes(&digits[hi ..< hi + 1usize]);
+      hex.appendBytes(&digits[lo ..< lo + 1usize]);
+      i = i + 1usize;
+    }
+    return tls.Verifier.pinnedSha256(hex.view());
+  }
+  tls.Verifier.platform()
+}
