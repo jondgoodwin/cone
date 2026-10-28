@@ -223,6 +223,9 @@ static int ifTestsVariant(CastNode *isnode, INode *variant) {
 // Detect when all closed variants are matched, and turn last match into 'else'
 // We know the condition is an 'is' node
 void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
+    // A value to the left that is no expression (a type) has been reported, and has no variants
+    if (!isExpNode(condition->exp))
+        return;
     StructNode *strnode = (StructNode*)iexpGetDerefTypeDcl(condition->exp);
 
     // Exhaustiveness check only on closed variants against a base trait

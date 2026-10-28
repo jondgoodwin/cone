@@ -270,8 +270,13 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         errorMsgNode((INode*)node, ErrorBadArray, "Exactly one element type must be specified");
     }
     INode **elemtypep = &nodesGet(node->elems, 0);
+    // An element that is no type has usually been refused while it was checked,
+    // in words of its own (a generic with no arguments, a value, a module): the
+    // array adds its message only when checking the element said nothing
+    int errorsBefore = errors;
     if (itypeTypeCheck(pstate, elemtypep) == 0) {
-        errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
+        if (errors == errorsBefore)
+            errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
         return;
     }
     // A reference's target does not wait on its layout, and neither does an
