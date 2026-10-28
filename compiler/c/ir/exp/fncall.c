@@ -274,7 +274,11 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // program asked for, and leaving the use unresolved would only hand the
     // next pass a null to trip over.
     ModuleNode *qualmod = dclInfoGetModule(basedcl);
-    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+    // A module's init and final are run by the program, once, whatever their
+    // visibility and whichever module names them, its own included. That answer
+    // comes first: a private one's remedy is not to make it public
+    int lifecycle = basedcl->tag == ModuleTag && nameUseLifecycleNamed(member);
+    if (!lifecycle && qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
