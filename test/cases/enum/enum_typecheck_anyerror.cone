@@ -1,0 +1,38 @@
+// What AnyError and the Error trait refuse: a '?' whose error is not an Error, into
+// an AnyError, and the explicit 'AnyError.from' of one; an error that is an Error but
+// not Sendable (an AnyError crosses between actors), which '?' cannot convert and says
+// no 'from' takes; a type declaring 'is Error' without the message(self: &) String the
+// trait requires. Each is reported once.
+
+mod enum_typecheck_anyerror;
+
+import collections use *;
+
+struct Plain { pub code: i32; }
+
+// An Error, but holding a borrow, which no thread may take
+struct Borrowing is Error {
+  pub text: &'static str;
+  pub fn message(self: &) String { String.from(text) }
+}
+
+fn plain() Result[i32, Plain] { Err[i32, Plain](Plain(1i32)) }
+fn borrowing() Result[i32, Borrowing] { Err[i32, Borrowing](Borrowing("a literal")) }
+
+fn notAnError() Result[i32, AnyError] {
+  let v = plain()?;              //~ ErrorQuesConvert:18 "declare an 'overload from' or a plain 'from' method on AnyError that takes Plain"
+  Ok(v)
+}
+
+fn explicit() AnyError {
+  AnyError.from(Plain(2i32))     //~ ErrorWhereUnmet:11 "from requires E is Error, and Plain is not Error"
+}
+
+fn notSendable() Result[i32, AnyError] {
+  let v = borrowing()?;          //~ ErrorQuesConvert:22 "on AnyError that takes Borrowing"
+  Ok(v)
+}
+
+struct NoMessage is Error {      //~ ErrorInvType:8 "Type must implement message method, as required by Error"
+  pub code: i32;
+}

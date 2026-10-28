@@ -30,8 +30,9 @@
 // 'conv' takes the error the function is given to the error the function
 // returns, in this order:
 // - the same type, or one that coerces to it as any value does: as it is;
-// - an 'overload from' of the function's error type that takes it,
-//   'ConfigError.from(e)', selected as a call of it is;
+// - a method of the function's error type named 'from' that takes it, an
+//   'overload from' or a plain one (a generic one, 'AnyError.from[E: Error]',
+//   included), 'ConfigError.from(e)', selected as a call of it is;
 // - the one variant of the function's error enum that holds exactly that type,
 //   'Io(e)' (Cone's addition to Rust's rule). Two or more such variants and no
 //   'from' is ErrorQuesAmbiguous, naming two of them;
@@ -88,14 +89,16 @@ INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk);
 //
 //   fn -mainresult(params) i32 {
 //     let -held = main(params);
-//     if -held is Err { let -err = [Err]-held; let -msg = -err.message();
+//     if -held is Err { let -err = [Err]-held; let -msg = -err.report();
 //                         -mainError(-msg.view()); return 1 }
 //     return 0 }
 //
 // where '-mainError' is conestd's 'cone_mainError(msg: &str)', declared here,
-// which writes 'Error: <message>' to stderr. 'message()' gives a String (its
-// view is lent) or a '&str' (passed as it is). Until core's error trait is in,
-// E is asked for 'message()' by name; one without it is ErrorMainResult.
+// which writes 'Error: <text>' to stderr. The text is E's 'report()' where E has
+// one (the collections Error trait's default, the message and each cause under
+// it: INTERIM until the display design), else its 'message()'. Either gives a
+// String (its view is lent) or a '&str' (passed as it is). E is asked by name;
+// one with neither is ErrorMainResult.
 // The value an 'Ok' holds is dropped, and the exit status is 0.
 void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod);
 

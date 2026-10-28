@@ -1,0 +1,120 @@
+<html>
+  <head>
+	  <title>Errors - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Errors: the Error trait and AnyError</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Not built yet: <span class="pre">.context</span> on a Result or an Option
+		(<span class="pre">addContext</span> is on an AnyError only; the rest waits for methods added to a type from
+		outside it); getting the original error back out of an AnyError (it needs a type's identity through a trait
+		value); and the final text of <span class="pre">report()</span>, which stands until the design of display
+		lands.</i></p>
+
+	<p>A function that can fail returns a <a href="guide-functions.html#result-tour">Result</a>, and what its failure
+		holds is an <b>error value</b>. The <span class="pre">collections</span> package defines what makes a value an
+		error, the <span class="pre">Error</span> trait, and a catch-all that holds any of them, <span class="pre">AnyError</span>.
+		A library returns its own typed errors, which meet <span class="pre">Error</span>; an application, where its functions
+		fail in different ways, returns <span class="pre">AnyError</span> and lets <span class="pre">?</span> convert.
+		Both come with <span class="pre">import collections use *;</span>.</p>
+
+	<h2 id="trait">The Error trait</h2>
+<pre>
+pub trait Error {
+  pub fn message(self: &amp;) String;                       // one line for a person, this error alone
+  pub fn source(self: &amp;) Option[&amp;&lt;Error] { None }      // the error that caused this one
+  pub fn report(self: &amp;) String { ... }                 // the message, then each cause under it
+}
+</pre>
+	<p>A type meets it by declaring <span class="pre">is Error</span> and having a
+		<span class="pre">message(self: &amp;) String</span>; <span class="pre">source</span> is given only by a type that
+		has a cause. <span class="pre">source</span> answers a <b>virtual reference</b>, <span class="pre">&amp;&lt;Error</span>
+		(a plain <span class="pre">&amp;</span> to a trait cannot be called through), which a type with a cause builds
+		with the type argument, <span class="pre">Some[&amp;&lt;Error](&amp;cause)</span>:</p>
+<pre>
+struct ConfigError is Error {
+  pub path: String;
+  pub cause: FsError;
+
+  pub fn message(self: &amp;) String { String.from("the config could not be read") }
+  pub fn source(self: &amp;) Option[&amp;&lt;Error] { Some[&amp;&lt;Error](&amp;cause) }
+}
+</pre>
+	<p><span class="pre">report()</span> is the trait's own, and gives the message and then the message of each cause,
+		one to a line, as <span class="pre">main</span> prints a failure (below):</p>
+<pre>
+the config could not be read
+  caused by: readFile app.cfg: No such file or directory
+</pre>
+	<p>The wording of that report is provisional. The library's error types, <span class="pre">FsError</span>,
+		<span class="pre">HttpError</span>, <span class="pre">IoError</span>, <span class="pre">TlsError</span> and the others,
+		all meet <span class="pre">Error</span> with the <span class="pre">message()</span> they always had.</p>
+
+	<h2 id="anyerror">AnyError</h2>
+	<p>An <span class="pre">AnyError</span> owns any error that is an <span class="pre">Error</span> and
+		<span class="pre">Sendable</span>, so it may cross between actors. It has a generic
+		<span class="pre">from</span>, so <a href="guide-functions.html#propagate-convert">the <span class="pre">?</span> operator</a>
+		converts any such error into it, with nothing written; an AnyError passes through <span class="pre">?</span> as it is:</p>
+<pre>
+fn readConfig(path: &amp;str) Result[Config, AnyError] {
+  let text = fs.readFile(path)?;        // an FsError becomes an AnyError
+  let config = parseConfig(text)?;      // so does a ConfigError, or an AnyError as it is
+  Ok(config)
+}
+</pre>
+	<p>(The conversion is a plain generic method named <span class="pre">from</span>, not an
+		<span class="pre">overload from</span>, which a generic bounded by a trait may not be.)
+		<span class="pre">AnyError.msg("text")</span> makes one from a line of text alone. An AnyError is itself an
+		<span class="pre">Error</span>: its <span class="pre">message()</span> is its outermost line, and
+		<span class="pre">source()</span> and <span class="pre">report()</span> walk down the chain.</p>
+
+	<h3 id="context">Putting a line of context over an error</h3>
+	<p><span class="pre">addContext(line)</span> adds a line over what an AnyError holds: the line becomes its
+		<span class="pre">message()</span> and the error it was is under it. <span class="pre">withContext(f)</span>
+		takes a closure that makes the line, called when the method is. Each gives the AnyError back, so they chain:</p>
+<pre>
+let e = AnyError.from(failure).addContext("reading the config").addContext("starting up");
+// e.message():  "starting up"
+// e.report():   "starting up
+//                  caused by: reading the config
+//                  caused by: the failure's own message ..."
+</pre>
+	<p>The name is not <span class="pre">context</span>, which is a reserved word: it is held for a language feature
+		not built yet (<a href="syntax-lexical.html#held">Held for unimplemented features</a>).</p>
+
+	<h2 id="main">A main that fails</h2>
+	<p>A <a href="guide-functions.html#main-result"><span class="pre">main</span> returning a Result</a> prints its error
+		to its error output as <span class="pre">Error:</span> and the error's <span class="pre">report()</span>, and
+		exits with status 1. With an <span class="pre">AnyError</span> or any type meeting <span class="pre">Error</span>
+		that prints the whole chain; a type with only a <span class="pre">message()</span> prints that.</p>
+<pre>
+fn main() Result[void, AnyError] {
+  let config = readConfig("app.cfg").addContext("starting up")?;
+  ...
+}
+</pre>
+<pre>
+Error: starting up
+  caused by: the config could not be read
+  caused by: readFile app.cfg: No such file or directory
+</pre>
+
+	<h2>Comes back in</h2>
+	<ul>
+		<li><a href="guide-functions.html#propagate-convert">Functions: Result and ?</a> &mdash; how <span class="pre">?</span> converts an error.</li>
+		<li><a href="conc-sharing.html#marks">Sendable</a> &mdash; what lets an AnyError cross between actors.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;"><a href="syntax.html"><img alt="_" src="next.png" /></a></p>
+
+	</div>
+	</body>
+</html>

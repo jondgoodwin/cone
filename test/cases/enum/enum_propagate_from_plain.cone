@@ -1,0 +1,81 @@
+// '?' converts an error through a method of the destination named 'from' that takes
+// it, an 'overload from' or a plain one. A plain one may be generic and bounded by
+// a trait: AnyError's is, 'fn from[E: Error + Sendable](e: E) AnyError', which is
+// not an 'overload from' (an overload set takes no generic bounded by a trait).
+// Here a plain 'from' of a concrete type, one generic over a bound, and the
+// destination without a 'from' wrapping a variant as before.
+
+mod enum_propagate_from_plain;
+
+import stdio use *;
+
+trait Named { pub fn name(self: &) i32; }
+
+struct IoErr is Named { pub code: i32; pub fn name(self: &) i32 { code } }
+struct ParseErr is Named { pub line: i32; pub fn name(self: &) i32 { line } }
+
+// A plain 'from', not generic
+struct Plain {
+  pub n: i32;
+  pub fn from(e: IoErr) Plain { Plain(e.code + 100i32) }
+}
+
+// A plain 'from', generic over a trait bound: any Named
+struct Any {
+  pub n: i32;
+  pub fn from[E: Named](e: E) Any { Any(e.name() + 1000i32) }
+}
+
+fn io(fail: bool) Result[i32, IoErr] {
+  if fail { Err[i32, IoErr](IoErr(7i32)) } else { Ok[i32, IoErr](1i32) }
+}
+
+fn parse(fail: bool) Result[i32, ParseErr] {
+  if fail { Err[i32, ParseErr](ParseErr(3i32)) } else { Ok[i32, ParseErr](2i32) }
+}
+
+fn plain() Result[i32, Plain] {
+  let v = io(true)?;
+  Ok[i32, Plain](v)
+}
+
+fn generic() Result[i32, Any] {
+  let a = io(false)?;
+  let b = parse(true)?;
+  Ok[i32, Any](a + b)
+}
+
+fn genericIo() Result[i32, Any] {
+  let a = io(true)?;
+  Ok[i32, Any](a)
+}
+
+fn plainCode() i32 {
+  match plain() {
+    case let Ok(v) { v }
+    case let Err(e) { e.n }
+  }
+}
+
+fn genericCode() i32 {
+  match generic() {
+    case let Ok(v) { v }
+    case let Err(e) { e.n }
+  }
+}
+
+fn genericIoCode() i32 {
+  match genericIo() {
+    case let Ok(v) { v }
+    case let Err(e) { e.n }
+  }
+}
+
+fn main() {
+  printInt(i64.from(plainCode()));
+  printStr("\n");
+  printInt(i64.from(genericCode()));
+  printStr("\n");
+  printInt(i64.from(genericIoCode()));
+  printStr("\n");
+}

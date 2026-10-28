@@ -1,0 +1,154 @@
+// The Error trait and AnyError. A typed error meets Error with a message() (one
+// line, this error alone) and, when it has a cause, a source(); the trait's
+// report() joins the message and each cause under it, which is what 'main' prints.
+// '?' turns any Error that is Sendable into an AnyError by AnyError's generic
+// 'from' (and an AnyError into an AnyError as it is); addContext and withContext
+// put a line over what an AnyError holds. Dropping a chain runs every
+// finalizer once: the last section builds and drops nested chains many times, the
+// shape (an owned trait value holding another) that once corrupted the heap, and
+// counts the deaths, which only a heap that was kept whole keeps right.
+// (A refusal of a type that is not an Error is the suite's enum_typecheck_anyerror.)
+
+mod anyerror;
+
+import testing use *;
+import collections use *;
+
+var @threadlocal leafDeaths = 0i64;
+var @threadlocal midDeaths = 0i64;
+var @threadlocal topDeaths = 0i64;
+var @threadlocal lazyCalls = 0i64;
+
+// A three-deep chain: Top, caused by Mid, caused by Leaf
+struct Leaf is Error, Sendable {
+  code: i32;
+  pub fn message(self: &) String { String.from("leaf failed") }
+  fn final(self: &uni) { leafDeaths = leafDeaths + 1; }
+}
+
+struct Mid is Error, Sendable {
+  cause: Leaf;
+  pub fn message(self: &) String { String.from("mid failed") }
+  pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
+  fn final(self: &uni) { midDeaths = midDeaths + 1; }
+}
+
+struct Top is Error, Sendable {
+  cause: Mid;
+  pub fn message(self: &) String { String.from("top failed") }
+  pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
+  fn final(self: &uni) { topDeaths = topDeaths + 1; }
+}
+
+fn leaf(fail: bool) Result[i32, Leaf] {
+  if fail { Err[i32, Leaf](Leaf(7i32)) } else { Ok[i32, Leaf](1i32) }
+}
+
+// A typed error into an AnyError: '?' finds AnyError.from
+fn typedToAny(fail: bool) Result[i32, AnyError] {
+  let v = leaf(fail)?;
+  Ok[i32, AnyError](v + 1i32)
+}
+
+// An AnyError into an AnyError: '?' passes it as it is
+fn anyToAny(fail: bool) Result[i32, AnyError] {
+  let v = typedToAny(fail)?;
+  Ok[i32, AnyError](v + 1i32)
+}
+
+fn deepChain() Result[i32, AnyError] {
+  let v = Err[i32, Top](Top(Mid(Leaf(9i32))))?;
+  Ok[i32, AnyError](v)
+}
+
+fn sendableAs[T: Sendable]() bool { true }
+
+fn conversions() {
+  expectInt(i64.from(typedToAny(false).unwrap()), 2, "an Ok passes through ? into an AnyError");
+  let e1 = typedToAny(true).error().unwrap();
+  expectStr(e1.message().view(), "leaf failed", "a typed error's message through AnyError");
+  expectStr(e1.report().view(), "leaf failed", "a lone error's report is its message");
+  expectBool(e1.source() is None, true, "and it has no source");
+
+  let e2 = anyToAny(true).error().unwrap();
+  expectStr(e2.message().view(), "leaf failed", "AnyError into AnyError by ? keeps the error");
+  expectInt(i64.from(anyToAny(false).unwrap()), 3, "and the Ok");
+
+  let e3 = AnyError.from(Leaf(1i32));
+  expectStr(e3.message().view(), "leaf failed", "AnyError.from, called");
+  expectBool(sendableAs[AnyError](), true, "an AnyError is Sendable");
+}
+
+fn chains() {
+  // Three deep, typed: the default report walks source()
+  let top = Top(Mid(Leaf(2i32)));
+  expectStr(top.message().view(), "top failed", "message is this error alone");
+  expectStr(top.report().view(),
+    "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of a three-deep typed chain");
+
+  // The same chain inside an AnyError
+  let deep = deepChain().error().unwrap();
+  expectStr(deep.message().view(), "top failed", "an AnyError's message is the outermost line");
+  expectStr(deep.report().view(),
+    "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of the chain inside an AnyError");
+}
+
+fn contexts() {
+  let e = deepChain().error().unwrap().addContext("reading the config").addContext("starting up");
+  expectStr(e.message().view(), "starting up", "the latest context is the message");
+  expectStr(e.report().view(),
+    "starting up\n  caused by: reading the config\n  caused by: top failed\n  caused by: mid failed\n  caused by: leaf failed",
+    "contexts over a three-deep chain");
+
+  // context on an AnyError that was converted by ?
+  let f = typedToAny(true).error().unwrap().addContext("opening");
+  expectStr(f.report().view(), "opening\n  caused by: leaf failed", "addContext on a converted error");
+
+  // The lazy form builds its line only when it is called
+  let before = lazyCalls;
+  let g = typedToAny(true).error().unwrap().withContext(fn() String {
+    lazyCalls = lazyCalls + 1;
+    String.from("lazily")
+  });
+  expectInt(lazyCalls - before, 1, "withContext called its closure once");
+  expectStr(g.report().view(), "lazily\n  caused by: leaf failed", "withContext puts its line over the error");
+  let ok = typedToAny(false);
+  expectInt(lazyCalls - before, 1, "an Ok never reaches it");
+
+  let m = AnyError.msg("plain text").addContext("while testing");
+  expectStr(m.report().view(), "while testing\n  caused by: plain text", "AnyError.msg and a context over it");
+}
+
+// Chains built and dropped many times: every Leaf, Mid and Top finalized once
+fn drops() {
+  let rounds = 20000i64;
+  let leafBase = leafDeaths;
+  let midBase = midDeaths;
+  let topBase = topDeaths;
+  var i = 0i64;
+  var lines = 0usize;
+  while i < rounds {
+    {
+      let e = AnyError.from(Top(Mid(Leaf(i32.from(i))))).addContext("a").addContext("b").addContext("c");
+      lines = lines + e.report().len();
+    }
+    // an AnyError built by ? and dropped unread
+    {
+      let r = anyToAny(true);
+      lines = lines + 1usize;
+    }
+    i = i + 1;
+  }
+  expectInt(topDeaths - topBase, rounds, "every Top finalized once");
+  expectInt(midDeaths - midBase, rounds, "every Mid finalized once");
+  expectInt(leafDeaths - leafBase, 2 * rounds, "every Leaf finalized once");
+  expectBool(lines > 0usize, true, "the chains were really walked");
+}
+
+fn main() i32 {
+  conversions();
+  chains();
+  contexts();
+  drops();
+  done()
+}

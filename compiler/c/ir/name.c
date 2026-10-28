@@ -101,6 +101,7 @@ Name *resultName;
 Name *okName;
 Name *errorVariantName;
 Name *messageName;
+Name *reportName;
 Name *allocMethodName;
 Name *allocRegionMethodName;
 Name *initMethodName;

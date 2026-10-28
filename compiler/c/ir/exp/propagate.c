@@ -223,8 +223,8 @@ static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode *
     }
     char retname[200];
     errorMsgNode(lexnode, ErrorQuesConvert,
-        intry ? "'?' gives this error, %s, to a try block giving %s, whose error %s cannot take it: declare an 'overload from' on %s that takes %s, or a variant of %s that holds it."
-            : "'?' returns this error, %s, from a function returning %s, whose error %s cannot take it: declare an 'overload from' on %s that takes %s, or a variant of %s that holds it.",
+        intry ? "'?' gives this error, %s, to a try block giving %s, whose error %s cannot take it: declare an 'overload from' or a plain 'from' method on %s that takes %s, or a variant of %s that holds it."
+            : "'?' returns this error, %s, from a function returning %s, whose error %s cannot take it: declare an 'overload from' or a plain 'from' method on %s that takes %s, or a variant of %s that holds it.",
         propagateSpell(fromname, sizeof(fromname), from), propagateSpell(retname, sizeof(retname), rettype),
         propagateSpell(toname, sizeof(toname), to), toname, fromname, toname);
     return ConvRefused;
@@ -689,35 +689,64 @@ static FnCallNode *propagateMethodCall(INode *recv, Name *name, INode *lexnode) 
     return call;
 }
 
-// How the error's message is had as '&str': 0 refused (reported), 1 'message()'
-// gives it, 2 it gives a String, whose 'view()' is lent
-static int propagateMainMessage(INode *errtype, INode *errnode) {
+// The method of this name that takes only 'self', or NULL; its answer is text as
+// a '&str' (*form 1) or as a String, whose 'view()' is lent (*form 2), or
+// neither (*form 0). '*gives' is what it answers.
+static INode *propagateTextMethod(INode *edcl, Name *name, int *form, INode **gives) {
     static Name *viewName = NULL;
     if (viewName == NULL)
         viewName = nametblFind("view", 4);
-    char ename[200];
-    INode *edcl = itypeGetTypeDcl(errtype);
-    INode *msgfn = isMethodType(edcl) ? iNsTypeFindFnField((INsTypeNode*)edcl, messageName) : NULL;
-    if (msgfn == NULL || msgfn->tag != FnDclTag || !(msgfn->flags & FlagMethFld)
-        || ((FnDclNode*)msgfn)->vtype->tag != FnSigTag || ((FnSigNode*)((FnDclNode*)msgfn)->vtype)->parms->used != 1) {
-        errorMsgNode(errnode, ErrorMainResult,
-            "A 'main' returning a Result prints its error when it fails, with the error's 'message()', and %s declares no 'message(self: &)'.",
-            propagateSpell(ename, sizeof(ename), errtype));
-        return 0;
+    *form = 0;
+    *gives = NULL;
+    INode *fn = isMethodType(edcl) ? iNsTypeFindFnField((INsTypeNode*)edcl, name) : NULL;
+    if (fn == NULL || fn->tag != FnDclTag || !(fn->flags & FlagMethFld)
+        || ((FnDclNode*)fn)->vtype->tag != FnSigTag || ((FnSigNode*)((FnDclNode*)fn)->vtype)->parms->used != 1)
+        return NULL;
+    INode *rettype = ((FnSigNode*)((FnDclNode*)fn)->vtype)->rettype;
+    *gives = rettype;
+    if (propagateIsStrRef(rettype)) {
+        *form = 1;
+        return fn;
     }
-    INode *gives = ((FnSigNode*)((FnDclNode*)msgfn)->vtype)->rettype;
-    if (propagateIsStrRef(gives))
-        return 1;
-    INode *gdcl = itypeGetTypeDcl(gives);
+    INode *gdcl = itypeGetTypeDcl(rettype);
     INode *view = isMethodType(gdcl) ? iNsTypeFindFnField((INsTypeNode*)gdcl, viewName) : NULL;
     if (view != NULL && view->tag == FnDclTag && ((FnDclNode*)view)->vtype->tag == FnSigTag
         && propagateIsStrRef(((FnSigNode*)((FnDclNode*)view)->vtype)->rettype))
-        return 2;
-    char gname[200];
-    errorMsgNode(errnode, ErrorMainResult,
-        "A 'main' returning a Result prints its error when it fails, with the error's 'message()', and the 'message()' of %s gives %s, which is neither a String nor a '&str'.",
-        propagateSpell(ename, sizeof(ename), errtype), propagateSpell(gname, sizeof(gname), gives));
-    return 0;
+        *form = 2;
+    return fn;
+}
+
+// How the error's text is had as '&str', and by which method: 0 refused
+// (reported), else 1 the method gives it, 2 it gives a String, whose 'view()' is
+// lent. The method is the error's 'report()' where it has one that answers text
+// (the Error trait's default: the message and each cause under it), else its
+// 'message()'. Both are found by name. (What the Error trait's report() prints
+// is INTERIM until the display design lands.)
+static int propagateMainMessage(INode *errtype, INode *errnode, Name **method) {
+    char ename[200];
+    INode *edcl = itypeGetTypeDcl(errtype);
+    int form;
+    INode *gives;
+    if (propagateTextMethod(edcl, reportName, &form, &gives) != NULL && form != 0) {
+        *method = reportName;
+        return form;
+    }
+    INode *msgfn = propagateTextMethod(edcl, messageName, &form, &gives);
+    if (msgfn == NULL) {
+        errorMsgNode(errnode, ErrorMainResult,
+            "A 'main' returning a Result prints its error when it fails, with the error's 'report()' where it has one, else its 'message()', and %s declares no 'message(self: &)'.",
+            propagateSpell(ename, sizeof(ename), errtype));
+        return 0;
+    }
+    if (form == 0) {
+        char gname[200];
+        errorMsgNode(errnode, ErrorMainResult,
+            "A 'main' returning a Result prints its error when it fails, with the error's 'report()' where it has one, else its 'message()', and the 'message()' of %s gives %s, which is neither a String nor a '&str'.",
+            propagateSpell(ename, sizeof(ename), errtype), propagateSpell(gname, sizeof(gname), gives));
+        return 0;
+    }
+    *method = messageName;
+    return form;
 }
 
 // Is this a module's 'main' that returns a Result: a function of the module, not
@@ -756,7 +785,8 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     INode *errtype = propagateHeld(propagateVariant(retdcl, errorVariantName));
     if (errtype == NULL)
         return;
-    int msgform = propagateMainMessage(errtype, mainsig->rettype);
+    Name *textmethod;
+    int msgform = propagateMainMessage(errtype, mainsig->rettype, &textmethod);
     if (msgform == 0)
         return;
 
@@ -804,14 +834,14 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     held->namesym = anonName;
     nodesAdd(&body->stmts, (INode*)held);
 
-    // if -held is Err { let -err = [Err]-held; let -msg = -err.message(); -mainError(-msg.view()); return 1 }
+    // if -held is Err { let -err = [Err]-held; let -msg = -err.report() (or message()); -mainError(-msg.view()); return 1 }
     CastNode *failtest, *failbind;
     propagateTest(held, errorVariantName, lexnode, &failtest, &failbind);
     BlockNode *arm = newBlockNode();
     inodeLexCopy((INode*)arm, lexnode);
     VarDclNode *err = propagateVar("-err", (INode*)failbind, 3, lexnode);
     nodesAdd(&arm->stmts, (INode*)err);
-    VarDclNode *msg = propagateVar("-msg", (INode*)propagateMethodCall(propagateUse(err, lexnode), messageName, lexnode), 3, lexnode);
+    VarDclNode *msg = propagateVar("-msg", (INode*)propagateMethodCall(propagateUse(err, lexnode), textmethod, lexnode), 3, lexnode);
     nodesAdd(&arm->stmts, (INode*)msg);
     INode *text = propagateUse(msg, lexnode);
     if (msgform == 2)

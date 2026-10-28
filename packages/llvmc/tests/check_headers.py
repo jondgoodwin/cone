@@ -183,7 +183,7 @@ def main():
     for name, (params, ret, where) in funcs.items():
         for t in params + [ret]:
             base = t.lstrip("*")
-            if t.startswith("*") and base[:1].isupper() and base not in structs and base not in ("Error",) and base not in structs:
+            if t.startswith("*") and base[:1].isupper() and base not in structs and base not in ("ErrorRef",) and base not in structs:
                 problems.append("%s: the type %s is declared by no @opaque struct" % (name, base))
 
     # enums and constants
