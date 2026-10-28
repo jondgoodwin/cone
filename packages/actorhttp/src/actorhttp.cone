@@ -82,12 +82,12 @@
 //                                                               Result[BodyStream, FetchError]
 //   c.events(request)  c.eventsIn(request, lim)     a response read as server-sent events      (STREAMS)
 //                                                               Result[EventStream, FetchError]
-//   bs.read()   BodyStream: bs.status bs.headers bs.url bs.isOk()    Result[Option[String], FetchError]
-//   es.next()   EventStream: es.status es.headers es.url es.isOk() es.isEventStream()
+//   bs.read()   BodyStream: bs.status bs.version bs.headers bs.url bs.isOk()    Result[Option[String], FetchError]
+//   es.next()   EventStream: es.status es.version es.headers es.url es.isOk() es.isEventStream()
 //                                                               Result[Option[sse.Event], FetchError]
 //   actorhttp.listen(addr, cfg)                          a listening server                   (A SERVER)
 //                                                               Result[Server, ServerError]
-//   ServerConfig.make()  cfg.secure(tlsServerConfig)  cfg.maxBody cfg.maxPending cfg.conn
+//   ServerConfig.make()  cfg.secure(tlsServerConfig)  cfg.offerHttp2()  cfg.maxBody cfg.maxPending cfg.conn
 //   server.next()  server.close()  server.clone()  server.port() localAddr() isSecure()
 //   Server.none()  server.isNone()          next(): the next request, an Exchange  Result[Exchange, ServerError]
 //   ex.request (Request: head body peer secure; path() query() methodName() header(name))
@@ -105,7 +105,8 @@
 //
 // WHAT THE SECOND HALF SEES. Each operation declares its own result, a Result:
 // the whole response, or why there is none. 'await' adds nothing to it. The
-// success is httpclient's Response (its status, header fields, body as bytes,
+// success is httpclient's Response (its status, the protocol that carried it
+// -- 'version', Version.Http2 or Http11 -- header fields, body as bytes,
 // the URL that answered after any redirects, and its Timing), the same value
 // httpclient's fetchWhole gives; its outcome is Done. An HTTP error status
 // (404, 500) is an answer, a Response, not an Err: the Err is the network
@@ -129,13 +130,22 @@
 // A Request (httpclient's) carries its intent, score and redirect limit; its
 // deadline and group are limited by the 'In' forms' as below. Streaming a
 // response's body to the actor as it arrives is not here: it comes whole.
+// Over https
+// the client offers HTTP/2 (httpclient's Config.http2, on by default), and a
+// server that chooses it carries the client's fetches to it on one
+// connection, a stream each; the caller's code is the same, and the
+// response's 'version' says which protocol was used (httpclient's header,
+// HTTP/2).
 //
 // A CONNECTION. 'connect(host, port)' makes one HTTP/1.1 connection of httpconn's
 // Driver (the host looked up and connected within the driver's connectTimeout,
 // 10 s) and answers a Conn when it is made; 'connectSecure' does so through a
 // TLS client made from the tls.ClientConfig given, the host the name the
-// server's certificate must hold. The connection is made when the TCP connection
-// is: a TLS handshake runs under the first request, and a certificate refused
+// server's certificate must hold (it speaks HTTP/2 when that config's 'alpn'
+// offers "h2" and the server chooses it; what follows is HTTP/1.1's, and on
+// HTTP/2 each request is a stream of its own, as httpconn's header says).
+// The connection is made when the TCP connection is: a TLS handshake runs
+// under the first request, and a certificate refused
 // ends that request Failed at Stage.Tls (at Read or Closed instead, if the
 // connection broke before the request was asked for). A Conn is plain data
 // that moves, like Client. 'request' writes the head the caller made (a RequestHead, its
@@ -289,6 +299,14 @@
 // request at a time and the next once the response is whole, until the client or
 // 'Connection: close' ends it.
 //
+// HTTP/2. 'cfg.offerHttp2()' has a TLS server's ALPN take "h2" before
+// "http/1.1": a client that offers h2 gets it, one that does not HTTP/1.1.
+// Each stream of an HTTP/2 connection is a request of its own, many at once,
+// delivered and answered exactly as above (the request's head says
+// Version.Http2); a request past the limit is answered 413 on its stream, the
+// connection carrying on. Without TLS, HTTP/2 is by prior knowledge alone
+// ('cfg.conn.h2PriorKnowledge': every connection of the server speaks it).
+//
 // 'server.close()' (and the last handle's going) stops listening, answers every
 // 'next' waiting Closed and every request still waiting for an actor 503, and
 // lets the exchanges already taken finish; the server's idle connections are
@@ -300,7 +318,7 @@
 // request's body streamed from a client actor (a request carries its body
 // whole), a client's 'stream' and 'events' reconnecting, SSE's Last-Event-ID
 // resuming on the server (the program reads the field and chooses), WebSocket
-// and other Upgrades, HTTP/2, routing (the program matches 'request.path()'),
+// and other Upgrades, HTTP/3, routing (the program matches 'request.path()'),
 // an 'In' form of 'next', a Conn made with its driver's other settings
 // (maxWaiting and the rest are httpconn.Config's defaults), a client's
 // reprioritize and closeIdle, a connect with an 'In' form, and httpclient and
