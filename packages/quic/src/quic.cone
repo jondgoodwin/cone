@@ -153,7 +153,9 @@
 //   connection says VerifyNeeded, its owner runs 'verifyOp' on the blocking
 //   pool (or 'verifyNow' where blocking is fine), and the handshake goes on
 //   from 'verifyDone'. A refusal closes the connection with the TLS alert
-//   OpenSSL sends, and 'error()' carries Windows' error ('osError') and its
+//   OpenSSL sends, and 'error()' carries the verifier's own number ('osError':
+//   Windows' error, or on Linux OpenSSL's verify result; tls's
+//   'certErrorKind(osError)' reads it as a kind, the same on both) and its
 //   words. UNTESTED: an acceptance by Windows' own store. tests/verify.cone
 //   shows the OS's store alone accepting on Linux (SSL_CERT_FILE naming the
 //   test root, for the test's process) and crypt32 refusing the test root
@@ -249,7 +251,7 @@ import sync use Once;
 import time use Instant, Duration;
 import path use Path;
 import iobuf use IoBuf;
-import iocore use Op, Completion, Lane, IoError;
+import iocore use Op, Completion, Lane;
 import slots use SlotTable;
 import tls;
 
@@ -301,7 +303,7 @@ fn helperReady() {helperOnce.callOnce(&initHelper);}
 // Why a connection could not be made, or failed
 pub struct QuicError {
   pub code: i32;           // ngtcp2's error (negative), or 0 when the failure was not ngtcp2's
-  pub osError: u32;        // Windows' error when the OS's verifier refused the certificate, else 0
+  pub osError: u32;        // the verifier's own number when the OS's verifier refused the certificate, else 0 (tls.certErrorKind reads it)
   pub detail: String;      // what was wrong, one line
 
   pub fn make(code: i32, detail: &str) QuicError {QuicError(code, 0u32, String.from(detail))}
@@ -309,7 +311,7 @@ pub struct QuicError {
   pub fn copy(self: &) QuicError {QuicError(code, osError, detail.copy())}
 
   // 'quic: the server's certificate was refused by the OS's verifier: ...
-  // (Windows 0x800B0109) (ERR_CRYPTO)'
+  // (Windows 0x800b0109) (ERR_CRYPTO)'
   pub fn message(self: &) String {
     var out = String.from("quic: ");
     out.append(detail.view());

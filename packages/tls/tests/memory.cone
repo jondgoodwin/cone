@@ -144,6 +144,12 @@ fn kindName(s: &tls.Session) &str {
 
 // A handshake that must fail: the client's error kind, and the server's
 fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsErrorKind) {
+  refusedShowing(label, c, s, want, true);
+}
+
+// The same, the error's words printed only when 'show' (the OS's verifier has
+// its own words on each system: Windows' text, OpenSSL's)
+fn refusedShowing(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsErrorKind, show: bool) {
   var a = String.empty();
   var b = String.empty();
   pump(c, s, &mut a, &mut b);
@@ -155,7 +161,12 @@ fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsE
   printStr("\n");
   if c.isFailed() {
     printStr("  ");
-    printStr(c.error().message().view());
+    if show {
+      let words = c.error().message();
+      printStr(words.view());
+    } else {
+      printStr("(the system's words)");
+    }
     printStr("\n");
   }
   expect(c.isFailed() && c.error().kind == want, label);
@@ -401,8 +412,14 @@ fn main() i32 {
   expect(c.wantsVerify(), "the handshake waits for the OS's verifier");
   expect(c.pollEvent() == tls.SessionEvent.VerifyNeeded, "and says so");
   expect(c.isHandshaking() && !c.isOpen(), "still handshaking");
-  refused("the OS's verifier, offline", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted);
-  expectUInt(u64.from(c.error().osError), 0x800B0109u64, "CERT_E_UNTRUSTEDROOT");
+  refusedShowing("the OS's verifier, offline", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted, false);
+  // The platform's own number: CERT_E_UNTRUSTEDROOT; on Linux OpenSSL's
+  // X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+  expectUInt(u64.from(c.error().osError), if isWindows() {0x800B0109u64} else {20u64}, "the platform's own number");
+  expectUInt(u64.from(c.error().code), u64.from(c.error().osError), "...kept as the code too");
+  expect(tls.certErrorKind(c.error().osError) == tls.TlsErrorKind.CertUntrusted, "...and read as the kind it is");
+  expect(c.error().detail.contains(if isWindows() {"(Windows 0x800b0109)"} else {"(OpenSSL's verify result 20)"}),
+    "...and in its words");
   expect(c.pollEvent() == tls.SessionEvent.Failed, "the client hears Failed");
 
   // No version both allow

@@ -80,6 +80,23 @@ fn main() i32 {
   expect(a.isCancelled() && !a.isTimedOut(), "a system error numbered so is Cancelled, as a cancel is");
   expect(osKind(n(995u32, 125u32)) == IoErrorKind.Cancelled, "ioerror's osKind sorts the system's numbers too");
 
+  // A library's own failure, of a kind
+  let m = IoError.ofKind(IoErrorKind.InvalidInput);
+  expect(m.kind() == IoErrorKind.InvalidInput, "an error made of a kind has it");
+  expectUInt(u64.from(m.code), 0u64, "...with no system number");
+  expect(m.message().view() == "invalid input" && m.describe().view() == "invalid input", "...and says its kind");
+  expect(!m.isCancelled() && !m.isTimedOut() && !m.isTruncated(), "...it is none of iocore's own endings");
+  expect(IoError.ofKind(IoErrorKind.Cancelled).isCancelled(), "made of Cancelled, it is cancelled");
+  expect(IoError.ofKind(IoErrorKind.Other).kind() == IoErrorKind.Other, "made of Other, it is Other");
+
+  // The kind in words, then the system's number and its text
+  let refused = IoError(n(1225u32, 111u32)).describe();
+  expect(refused.startsWith("connection refused, OS error "), "describe: the kind, then the number");
+  expect(refused.contains(if isWindows() {"1225: "} else {"111: "}), "...the system's own number, and its text after");
+  expect(IoError.cancelled().describe().view() == "cancelled", "a cancel's describe is its kind alone");
+  expect(IoError.timedOut().describe().view() == "timed out", "a deadline's too");
+  expect(IoError(n(11001u32, 0xFFFFFFFEu32)).describe().startsWith("not found, OS error "), "a lookup's failure too");
+
   // An answer that is not Done, read
   expect(answerError(diag.kindRecv, diag.outcomeCancelled, 0u32).isCancelled(), "a Cancelled answer is Cancelled");
   let dl = answerError(diag.kindRecv, diag.outcomeTimedOut, 0u32);

@@ -4,8 +4,10 @@
 // verifier can say yes, which it cannot to any test chain otherwise. Checked:
 // a chain the root signed is accepted for its name and for its address; a
 // wrong name, an expired certificate and a chain from another root are each
-// refused with the Windows error the package reports for that failure
-// (CERT_E_CN_NO_MATCH, CERT_E_EXPIRED, CERT_E_UNTRUSTEDROOT).
+// refused with the kind the package reports for that failure (name mismatch,
+// expired, untrusted) and the platform's own number, OpenSSL's verify result
+// (X509_V_ERR_HOSTNAME_MISMATCH, IP_ADDRESS_MISMATCH, CERT_HAS_EXPIRED,
+// UNABLE_TO_GET_ISSUER_CERT_LOCALLY).
 //
 // On Windows the platform verifier is crypt32's, which has the machine's
 // roots and ignores SSL_CERT_FILE: this test then says so and checks
@@ -96,7 +98,7 @@ fn accepted(label: &str, c: &mut tls.Session, s: &mut tls.Session) {
 }
 
 // A handshake that must fail: the client's error kind, its words and the
-// Windows error number
+// platform's own number (OpenSSL's verify result)
 fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsErrorKind, code: u64) {
   pump(c, s);
   printStr(label);
@@ -109,7 +111,8 @@ fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsE
     printStr("\n");
   }
   expect(c.isFailed() && c.error().kind == want, label);
-  expectUInt(u64.from(c.error().osError), code, "...with Windows' error number");
+  expectUInt(u64.from(c.error().osError), code, "...with the platform's own number");
+  expect(tls.certErrorKind(c.error().osError) == want, "...which reads as that kind");
   expect(!c.isOpen() && !s.isOpen(), "neither side is open");
 }
 
@@ -134,19 +137,19 @@ fn main() i32 {
 
   c = cl.session("wrong.example");
   s = good.session();
-  refused("wrong name", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch, 0x800B010Fu64);
+  refused("wrong name", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch, 62u64);        // X509_V_ERR_HOSTNAME_MISMATCH
   c = cl.session("10.1.2.3");
   s = good.session();
-  refused("wrong address", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch, 0x800B010Fu64);
+  refused("wrong address", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch, 64u64);     // X509_V_ERR_IP_ADDRESS_MISMATCH
 
   let expired = server("expired.pem", "expired.key");
   c = cl.session("localhost");
   s = expired.session();
-  refused("expired", &mut c, &mut s, tls.TlsErrorKind.CertExpired, 0x800B0101u64);
+  refused("expired", &mut c, &mut s, tls.TlsErrorKind.CertExpired, 10u64);               // X509_V_ERR_CERT_HAS_EXPIRED
 
   let other = server("untrusted.pem", "untrusted.key");
   c = cl.session("localhost");
   s = other.session();
-  refused("another root", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted, 0x800B0109u64);
+  refused("another root", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted, 20u64);        // X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
   done()
 }

@@ -9,14 +9,21 @@
 //    (ERROR_CONNECTION_REFUSED), the path a connect takes when the machine's
 //    ephemeral ports are used up and it ends with the local address in use.
 // 3. And the driver goes on: a connection after them makes its request.
+// 4. A listener and a connection that name nothing: InvalidInput, a kind and no
+//    system number.
+//
+// The failure keeps the system's own number (case 2: ERROR_CONNECTION_REFUSED,
+// ECONNREFUSED), which reads as ConnectionRefused on both systems, and its
+// message names that kind.
 
 mod connectfail;
 
 import testing use *;
-import collections use List;
+import collections use List, String;
 import time use Instant, Duration;
 import iobuf use *;
-import iocore use Loop, SocketAddr;
+import iocore use Loop, SocketAddr, IoError;
+import ioerror use IoErrorKind;
 import http use *;
 import httpconn use *;
 
@@ -32,9 +39,10 @@ struct Seen {
   pub finals: u32;
   pub ending: EventKind;
   pub unsent: bool;
+  pub text: String;
 }
 
-fn blank() Seen {Seen(0u32, false, Stage.Closed, 0u32, false, 0u32, EventKind.Writable, false)}
+fn blank() Seen {Seen(0u32, false, Stage.Closed, 0u32, false, 0u32, EventKind.Writable, false, String.empty())}
 
 // A connect to port, its request; polled until both have ended, or 8 s
 fn attempt(drv: &mut Driver, lp: &mut Loop, port: u16) Seen {
@@ -64,6 +72,7 @@ fn attempt(drv: &mut Driver, lp: &mut Loop, port: u16) Seen {
           s.clean = e.clean;
           s.stage = e.failure.stage;
           s.code = e.failure.code;
+          s.text = e.failure.message();
         }
       } else if e.token == 2u64 {
         if e.kind == EventKind.Data {drv.release(e.req, e.buf.len());}
@@ -123,6 +132,9 @@ fn main() i32 {
     expect(!s2.clean && s2.stage == Stage.Connect && s2.code != 0u32, "2: ...not clean, at Connect, with the OS's error");
     expectUInt(u64.from(s2.finals), 1u64, "2: ...its request answered once");
     expect(s2.ending ==EventKind.Failed && s2.unsent, "2: ...Failed, unsent");
+    expect(IoError(s2.code).kind() == IoErrorKind.ConnectionRefused, "2: ...the system's number reads as ConnectionRefused");
+    expect(s2.text.contains("(connection refused, OS error ") && !s2.text.contains("Windows error"),
+      "2: ...and the message names that kind");
 
     // 3. The driver goes on
     var port = 0u16;
@@ -138,6 +150,20 @@ fn main() i32 {
     require(port != 0u16, "3: a listener");
     let s3 = attempt(&mut drv, &mut lp, port);
     expect(s3.connected && s3.ending ==EventKind.Done, "3: a connection after them: Connected, its request Done");
+
+    // 4. Names that name nothing
+    match drv.localAddr(&lp, ListenerId.none()) {
+      case let Ok(a) {expect(false, "4: a listener that names nothing has no address");}
+      case let Err(e) {
+        expect(e.kind() == IoErrorKind.InvalidInput && e.code == 0u32, "4: its address: InvalidInput, no system number");
+      }
+    }
+    match drv.keepAliveOf(&lp, ConnId.none()) {
+      case let Ok(k) {expect(false, "4: a connection that names nothing has no keepalive");}
+      case let Err(e) {
+        expect(e.kind() == IoErrorKind.InvalidInput && e.code == 0u32, "4: its keepalive: InvalidInput, no system number");
+      }
+    }
 
     let st = drv.stats();
     expectUInt(st.connects, 3u64, "three connects asked for");

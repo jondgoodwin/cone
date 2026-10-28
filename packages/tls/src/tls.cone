@@ -55,6 +55,7 @@
 //     Stream.make(session)  st.session()
 //   TlsError: e.kind e.code e.osError e.detail e.message()             (ERRORS)
 //   TlsErrorKind; errorName(k)
+//   certErrorKind(code)  certErrorText(code)  genericFailure()   the verifier's own number
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
 //     handshakeTime verifyTime closeNotify truncated; i.text()
 //   stats(): TlsStats; backendVersion(); verifyKindName(k)
@@ -145,10 +146,15 @@
 // a configuration that could not be loaded; the back end's own failure.
 // 'code' keeps the back end's or the OS's own number (the Windows error
 // from its verifier, OpenSSL's verify result, the alert's number, OpenSSL's
-// error code), 'osError' the OS's error number when the OS gave the reason
-// (a certificate's: Windows' CERT_E_ numbers on both systems, below; the
-// verifier's job that could not run: the system's own, Windows' or the
-// errno, which iocore's IoError reads), and 'detail' the words.
+// error code), 'osError' the OS's number when the OS gave the reason (a
+// certificate's: the platform verifier's own, Windows' CERT_E_ error on
+// Windows and OpenSSL's X509_V_ERR_ verify result on Linux, each as it is;
+// the verifier's job that could not run: the system's own, Windows' error
+// or the errno, which iocore's IoError reads), and 'detail' the words, the
+// OS's text and number among them. What a program matches on is the kind,
+// the same on both systems; 'certErrorKind(osError)' reads a bare number
+// kept elsewhere (httpconn's Failure, quic's QuicError) as the kind it
+// stands for, and 'certErrorText' gives its words.
 //
 // DIAGNOSTICS. 'stats()' counts, for the process, handshakes done (and of
 // them resumed), sessions failed, verifications run by the OS's verifier,
@@ -167,11 +173,13 @@
 // against the system's roots (the file and folder SSL_CERT_FILE and
 // SSL_CERT_DIR name, else OpenSSL's defaults, /etc/ssl/certs on Ubuntu),
 // loaded once. It fetches nothing and reads no revocation data, so 'offline'
-// changes nothing there. Its answer is mapped to the Windows error the
-// package reports for that failure (verify.cone), so a TlsError reads the
-// same on both systems: CERT_E_UNTRUSTEDROOT for a chain that ends short of a
-// root the system holds, CERT_E_CN_NO_MATCH, CERT_E_EXPIRED, and E_FAIL for
-// any other reason. Windows bundles OpenSSL 3.5; the package uses nothing
+// changes nothing there. Its verify result is the number the TlsError keeps
+// (X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY for a chain that ends short
+// of a root the system holds, X509_V_ERR_HOSTNAME_MISMATCH,
+// X509_V_ERR_CERT_HAS_EXPIRED, ...), where Windows keeps crypt32's
+// (CERT_E_UNTRUSTEDROOT, CERT_E_CN_NO_MATCH, CERT_E_EXPIRED, ...); the
+// TlsError's kind reads the same on both systems, whichever verifier
+// answered (verify.cone, certErrorKind). Windows bundles OpenSSL 3.5; the package uses nothing
 // newer than 3.0 (Ubuntu 24.04's), so it runs on either.
 //
 // MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
@@ -390,7 +398,7 @@ pub fn errorName(k: TlsErrorKind) &str {
 pub struct TlsError {
   pub kind: TlsErrorKind;
   pub code: u32;         // the back end's or the OS's own number for it
-  pub osError: u32;      // the OS's error number when the OS gave the reason, else 0 (ERRORS)
+  pub osError: u32;      // the OS's number when the OS gave the reason (the platform's own), else 0 (ERRORS)
   pub detail: String;    // what was wrong, one line
 
   pub fn make(kind: TlsErrorKind, code: u32, detail: &str) TlsError {
@@ -401,9 +409,10 @@ pub struct TlsError {
 
   pub fn copy(self: &) TlsError {TlsError(kind, code, osError, detail.copy())}
 
-  // 'certificate untrusted: A certificate chain processed, but terminated
-  // in a root certificate which is not trusted by the trust provider.
-  // (Windows 0x800B0109)'
+  // 'tls: certificate untrusted: A certificate chain processed, but
+  // terminated in a root certificate which is not trusted by the trust
+  // provider (Windows 0x800b0109)'; on Linux 'tls: certificate untrusted:
+  // unable to get local issuer certificate (OpenSSL's verify result 20)'
   pub fn message(self: &) String {
     var out = String.from("tls: ");
     out.append(errorName(kind));

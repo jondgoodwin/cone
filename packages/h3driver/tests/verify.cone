@@ -8,11 +8,12 @@
 // store is named by SSL_CERT_FILE, set to the test root for this process
 // only: the chain for 'localhost' is accepted and a GET goes through; on
 // Windows crypt32 uses the machine's roots, which do not hold the test root,
-// and the chain is refused as untrusted (0x800B0109): the connection's
-// Closed carries the failure at stage tls, with Windows' error, and the
-// request made before the handshake fails unsent. A name the certificate
-// does not hold is refused on both (on Linux, CERT_E_CN_NO_MATCH,
-// 0x800B010F). So the test has Windows' output, verify.out, and Linux's,
+// and the chain is refused as untrusted: the connection's Closed carries
+// the failure at stage tls, with the verifier's own number (Windows' error,
+// or on Linux OpenSSL's verify result), which the test reports as the kind
+// tls reads it as, and the request made before the handshake fails unsent.
+// A name the certificate does not hold is refused on both (on Linux, as a
+// name mismatch). So the test has Windows' output, verify.out, and Linux's,
 // verify.linux.out.
 
 mod verify;
@@ -554,12 +555,10 @@ fn outcomeName(o: u32) &str {
 // The cases
 // ---------------------------------------------------------------------------
 
-fn hex(n: u64) String {
-  var s = String.from("0x");
-  var digits = 1usize;
-  while digits < 16usize && (n >> u64.from(digits * 4usize)) != 0u64 {digits = digits + 1usize;}
-  s.appendHex(n, digits);
-  s
+// The kind of the verifier's own number the failure holds (Windows' error, or
+// OpenSSL's verify result), the same on both; "no number" for none
+fn certKindName(code: u32) &str {
+  if code == 0u32 {"no number"} else {tls.errorName(tls.certErrorKind(code))}
 }
 
 fn platformCase(name: &str) {
@@ -606,7 +605,7 @@ fn platformCase(name: &str) {
   if w.cl.clean == 1u64 {
     printStr("clean");
   } else {
-    printStr(w.cl.closeHead.view()); printStr(", OS error "); printStr(hex(u64.from(w.cl.closeCode)).view());
+    printStr(w.cl.closeHead.view()); printStr(", the verifier's error: "); printStr(certKindName(w.cl.closeCode));
   }
   printStr(", told once: "); printStr(yes(w.cl.closed == 1u64)); printStr("\n");
   finish(&mut w);
