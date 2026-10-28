@@ -1386,8 +1386,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
         int16_t generating = mod->flags & FlagGenMod;
         // A generic module is compiled only as its instances: each is a module
-        // of the program (pgmTypeCheck), generated in every object that uses it
-        if (mod->genericinfo)
+        // of the program (pgmTypeCheck), generated in every object that uses
+        // it. So is each of its submodules, as each instance's copy
+        if (modIsTemplate(mod))
             continue;
 
         uint32_t icnt;
@@ -1402,7 +1403,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     // Now generate implementation logic, including function logic or var init
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
-        if (mod->genericinfo)
+        if (modIsTemplate(mod))
             continue;
 
         // Generate implementation only for module(s) flagged for generation,

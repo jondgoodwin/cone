@@ -177,6 +177,15 @@ static int fnCallNamesMethod(INode *dcl) {
 
 static void fnCallVariantReceiver(FnCallNode *node);
 
+// Whether 'mod' is 'outer' or a submodule within it, at any depth
+static int fnCallInsideModule(ModuleNode *mod, ModuleNode *outer) {
+    for (INode *node = (INode*)mod; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (node == (INode*)outer)
+            return 1;
+    }
+    return 0;
+}
+
 // A '.' whose left side names a namespace is a path through it, not an access
 // to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
 // tell the two apart, so the decision is made here, as soon as the base name is
@@ -217,9 +226,10 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     // 'stack[i64].push' -- which is collapsed at type check, once it exists
     // (fnCallModuleInstancePath). Inside its own body its bare name means the
     // instance being defined, as a generic type's does, and the clone points
-    // the member at the instance's
+    // the member at the instance's -- in the body of a submodule of it too,
+    // which is instantiated with it
     if (basedcl->tag == ModuleTag && ((ModuleNode*)basedcl)->genericinfo
-        && (ModuleNode*)basedcl != pstate->mod) {
+        && !fnCallInsideModule(pstate->mod, (ModuleNode*)basedcl)) {
         errorMsgNode(node->objfn, ErrorGenModBare,
             "%s is a generic module: its members belong to each instance, named with type arguments as %s[...].%s.",
             &inodeGetName(basedcl)->namestr, &inodeGetName(basedcl)->namestr,

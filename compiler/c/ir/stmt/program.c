@@ -234,23 +234,22 @@ void pgmModuleOrder(ProgramNode *pgm) {
 }
 
 // Refuse the three places a generic module cannot stand. An executable's root
-// has nothing to instantiate it. A submodule of a generic module would be
-// instantiated with it, as a generic type's methods are, and that is not built:
-// an instance is cloned from its generic's own declarations alone. And a 'mod'
-// line's default fold names what an import folds, where a generic's names
-// belong to each instance and fold from none.
+// has nothing to instantiate it. A generic module inside another would be a
+// generic of each instance, copied still generic into it, and an instance is
+// not built for one. And a 'mod' line's default fold names what an import
+// folds, where a generic's names belong to each instance and fold from none.
 static void pgmGenericModulesCheck(ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
-        ModuleNode *owner = (ModuleNode*)mod->dclinfo.owner;
-        if (owner != NULL && owner->tag == ModuleTag && owner->genericinfo)
-            errorMsgNode((INode*)mod, ErrorGenModBody,
-                "Generic module %s may not hold submodule %s: an instance of a generic module is not built with submodules yet.",
-                &owner->namesym->namestr, &mod->namesym->namestr);
         if (mod->genericinfo == NULL)
             continue;
+        ModuleNode *owner = (ModuleNode*)mod->dclinfo.owner;
+        if (owner != NULL && owner->tag == ModuleTag && modIsTemplate(owner))
+            errorMsgNode((INode*)mod, ErrorGenModBody,
+                "Generic module %s may not hold generic submodule %s: an instance of a generic module is not built for one yet.",
+                &owner->namesym->namestr, &mod->namesym->namestr);
         if (*nodesp == nodesGet(pgm->modules, 0) && !(mod->dclinfo.facts & DclNamesChain))
             errorMsgNode((INode*)mod, ErrorGenModRoot,
                 "The program's root module %s is declared generic, and nothing can instantiate a program. A generic module is a submodule, an imported module or a library's root.",
@@ -341,6 +340,33 @@ static int32_t pgmOrderIndex(ProgramNode *pgm, INode *mod) {
     return -1;
 }
 
+// Whether 'mod' is 'outer' or a module within it, at any depth
+static int pgmModuleWithin(ModuleNode *mod, ModuleNode *outer) {
+    for (INode *node = (INode*)mod; node && node->tag == ModuleTag; node = ((ModuleNode*)node)->dclinfo.owner) {
+        if (node == (INode*)outer)
+            return 1;
+    }
+    return 0;
+}
+
+// The modules of the instance 'inst' -- it and its copies of its generic's
+// submodules -- in the order the walk gave the modules they are copies of
+static Nodes *pgmInstanceGroup(ProgramNode *pgm, Nodes *instances, ModuleNode *inst) {
+    Nodes *group = newNodes(2);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(instances, cnt, nodesp)) {
+        if (!pgmModuleWithin((ModuleNode*)*nodesp, inst))
+            continue;
+        int32_t at = pgmOrderIndex(pgm, (INode*)((ModuleNode*)*nodesp)->generic);
+        uint32_t pos = group->used;
+        while (pos > 0 && pgmOrderIndex(pgm, (INode*)((ModuleNode*)nodesGet(group, pos - 1))->generic) > at)
+            --pos;
+        nodesInsert(&group, *nodesp, pos);
+    }
+    return group;
+}
+
 // Give each instance of a generic module its place in the init order, which
 // was made at name resolution, before any instance existed (pgmModuleOrder). An
 // instance goes straight after the last of what it depends on: its generic,
@@ -355,27 +381,49 @@ static int32_t pgmOrderIndex(ProgramNode *pgm, INode *mod) {
 // modules each instantiating the other at the same arguments -- are placed last,
 // in the order made; imports of generic modules are a DAG like any, so that
 // loop is the instances' alone.
+//
+// An instance's copies of its generic's submodules take the instance's place
+// with it, together: in the order the walk gave the generic and its submodules,
+// which is an ordinary parent's and its submodules', each submodule before the
+// module holding it. What any of them depends on outside the instance the whole
+// group follows.
 static void pgmInstanceOrder(ProgramNode *pgm, Nodes *instances) {
     Nodes *pending = newNodes(instances->used);
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(instances, cnt, nodesp))
-        nodesAdd(&pending, *nodesp);
+    // Each instance of a generic module, whose submodules' copies go with it
+    for (nodesFor(instances, cnt, nodesp)) {
+        if (((ModuleNode*)*nodesp)->generic->genericinfo)
+            nodesAdd(&pending, *nodesp);
+    }
     while (pending->used > 0) {
         Nodes *waiting = newNodes(pending->used);
         for (nodesFor(pending, cnt, nodesp)) {
             ModuleNode *inst = (ModuleNode*)*nodesp;
-            int32_t after = pgmOrderIndex(pgm, (INode*)inst->generic);
-            INode **depp;
-            uint32_t depcnt;
-            for (nodesFor(inst->instdeps, depcnt, depp)) {
-                int32_t at = pgmOrderIndex(pgm, *depp);
-                if (at < 0) {
-                    after = -2;
-                    break;
-                }
+            Nodes *group = pgmInstanceGroup(pgm, instances, inst);
+            int32_t after = -1;
+            INode **memberp;
+            uint32_t membercnt;
+            for (nodesFor(group, membercnt, memberp)) {
+                ModuleNode *member = (ModuleNode*)*memberp;
+                int32_t at = pgmOrderIndex(pgm, (INode*)member->generic);
                 if (at > after)
                     after = at;
+                INode **depp;
+                uint32_t depcnt;
+                for (nodesFor(member->instdeps, depcnt, depp)) {
+                    if ((*depp)->tag == ModuleTag && pgmModuleWithin((ModuleNode*)*depp, inst))
+                        continue;
+                    at = pgmOrderIndex(pgm, *depp);
+                    if (at < 0) {
+                        after = -2;
+                        break;
+                    }
+                    if (at > after)
+                        after = at;
+                }
+                if (after == -2)
+                    break;
             }
             if (after == -2) {
                 nodesAdd(&waiting, (INode*)inst);
@@ -386,14 +434,21 @@ static void pgmInstanceOrder(ProgramNode *pgm, Nodes *instances) {
             while ((uint32_t)(after + 1) < pgm->initorder->used
                 && ((ModuleNode*)nodesGet(pgm->initorder, after + 1))->generic != NULL)
                 ++after;
-            nodesInsert(&pgm->initorder, (INode*)inst, after + 1);
-            inst->dagmark = 2;
+            for (nodesFor(group, membercnt, memberp)) {
+                nodesInsert(&pgm->initorder, *memberp, ++after);
+                ((ModuleNode*)*memberp)->dagmark = 2;
+            }
         }
         int progress = waiting->used < pending->used;
         pending = waiting;
         if (!progress) {
-            for (nodesFor(pending, cnt, nodesp))
-                nodesAdd(&pgm->initorder, *nodesp);
+            for (nodesFor(pending, cnt, nodesp)) {
+                Nodes *group = pgmInstanceGroup(pgm, instances, (ModuleNode*)*nodesp);
+                INode **memberp;
+                uint32_t membercnt;
+                for (nodesFor(group, membercnt, memberp))
+                    nodesAdd(&pgm->initorder, *memberp);
+            }
             break;
         }
     }

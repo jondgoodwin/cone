@@ -742,7 +742,11 @@ resolved once, in place, with its parameters hooked over its own names
 (`modNameRes`), and never type checked (`modTypeCheck` returns after its
 imports) or generated (`genlProgram` passes it over): its body is written
 against parameters that stand for nothing. Its imports, folds and `is` are
-made once, on the generic, and every instance shares them.
+made once, on the generic, and every instance shares them. **So is each of its
+submodules, at any depth** (`modIsTemplate`): resolved in place with the
+parameters of every generic module it is inside hooked, as a generic type's
+methods see the type's (`modHookTemplateParms`), never checked or generated
+itself, and instantiated with its parent.
 
 **An instance is a module of its own**, made by `modInstantiate` the first
 time type check meets `stack[i64]` — `genericSubstitute` asks `genericMemoize`,
@@ -750,8 +754,16 @@ whose memo is the generic's `memonodes`. **Identical arguments anywhere are one
 instance**, compared by `itypeIsSame`, so `stack[i64]` in two modules is one
 module with one set of globals (`module_generic`). The instance is named as
 the generic is, owned where it is, marked with the call that made it
-(`instnode`, which `generic` points back from), and flagged `FlagGenMod`. Its
-declarations are cloned the way a generic type's members are
+(`instnode`, which `generic` points back from), and flagged `FlagGenMod`.
+**Each submodule of the generic is a module of the instance too**
+(`modInstanceTree`, `module_generic_submodule`): its copy is owned by the
+instance's copy of its parent, shares the call that made the instance (so its
+own symbol component carries no type arguments: `holder[i64].inner.twice` is
+`_CNvNtIC6holderxE5inner5twice`), has `generic` pointing back at the submodule
+it copies, and is mapped from it, so the parent naming `inner.twice` names
+this instance's copy, and `holder[i64].inner.twice` reaches it from outside
+through two collapsed paths. Its declarations, and every module of the
+instance's, are cloned the way a generic type's members are
 (`cloneStructNode`): a shell for each — a function, a global, a type, trait,
 enum or variant, an overload name, a type alias, a macro, and each copy of a
 base's variant an enum extension holds (no module's node) — mapped from the
@@ -817,9 +829,9 @@ a clone is not built for is refused where the generic declares it,
 a generic module would be each instance's own, as everything else it declares
 is, and a module conforming to it is outside the instance, with no spelling yet
 that names an instance's module trait (`is` takes one name, and an import of a
-generic folds nothing). **A generic module's submodules are not built** (the
-same code, `pgmGenericModulesCheck`): by the analogy they are instantiated with
-it, as a generic type's methods are. **An executable's root may not be
+generic folds nothing). So is a generic module inside a generic module (the
+same code, `pgmGenericModulesCheck`), which would be a generic of each instance,
+copied still generic into it. **An executable's root may not be
 generic** (`ErrorGenModRoot`): nothing could instantiate the program. A
 library's root may, and so may a submodule or an imported module.
 
@@ -1691,7 +1703,13 @@ module that follows those and uses it — **except a module that supplied one of
 its type arguments**, which the instance follows: in `module_generic`,
 `tally[user.Tag]` runs its `init` after `user`'s. A module that uses an instance
 places no edge of its own: its place was fixed at name resolution. Instances
-that use one another round a loop are placed last, in the order made.
+that use one another round a loop are placed last, in the order made. **An
+instance's copies of its generic's submodules take the instance's place with
+it, together** [design chat, 28 Oct] (`pgmInstanceGroup`): in the order the walk
+gave the generic and its submodules — an ordinary parent's and its submodules',
+each submodule before the module holding it — and after whatever any of them
+depends on outside the instance; finalizers run in the reverse
+(`module_generic_submodule`).
 
 `modFoldNames` runs four kinds of fold, in order: what the module extends, then its `imports`,
 then every global carrying a `use` clause, then every standalone `use` on

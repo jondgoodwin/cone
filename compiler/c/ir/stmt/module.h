@@ -57,6 +57,10 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 
+// Whether a module is a generic module, or a submodule inside one: compiled
+// only as each instance's copy of it, never itself type checked or generated
+int modIsTemplate(ModuleNode *mod);
+
 // Whether the module's finalizer finalizes this global (itypeNeedsFinal, and
 // not C's storage): what modGiveDrop builds and an include file keeps
 int modGlobalFinalized(struct VarDclNode *var);
