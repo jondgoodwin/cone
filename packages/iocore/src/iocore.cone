@@ -482,8 +482,10 @@
 // epoll instance, which ends the wait on time to the nanosecond.
 //
 // WAKERS. 'lp.waker()' is a Waker: Sendable, copied to share, and 'wake()'
-// from any thread ends the loop's current or next poll. It is also how
-// Target.Post reaches its loop. A waker keeps its loop's port open (not the
+// from any thread ends the loop's current or next poll; wakes asked while
+// one waits to be taken end it once, and what the posters made before waking
+// is there when the poll returns (on both systems the loop takes the wake
+// before it looks). It is also how Target.Post reaches its loop. A waker keeps its loop's port open (not the
 // loop): one woken or posted to after its loop has died says so (false), and
 // a posted answer's buffer goes home.
 //
@@ -1063,7 +1065,9 @@ struct Port is Sendable {
   jobsTail: *OpCore;
   // Linux: a wake asked since the loop last took its packets (a wake carries
   // nothing, so it is this word and the eventfd's write, no packet: a wake
-  // allocates nothing)
+  // allocates nothing). Windows: a wake packet is posted and the loop has not
+  // yet taken it; a wake asked meanwhile posts nothing, the packet already
+  // there will end the poll for it too (see 'send')
   wakes: Atomic[u32];
 
   // Its queue, changed under its lock through a shared reference
@@ -1076,6 +1080,18 @@ struct Port is Sendable {
   // what the key says. False if it could not be queued
   fn send(self: &, key: usize, ov: *u8) bool {
     if isWindows() {
+      if key == keyWake {
+        // A wake packet carries nothing, so one in the port serves every wake
+        // asked until the loop takes it. The word is raised before the post;
+        // the loop lowers it when it takes the packet, before it looks at
+        // anything the wake was for (dequeue): a wake after that posts
+        // again, one before it is covered by the packet. If the post itself
+        // fails the word is lowered again, so a later wake tries afresh
+        if wakes.swap(1u32) != 0u32 {return true;}
+        if PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32 {return true;}
+        wakes.store(0u32);
+        return false;
+      }
       PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32
     } else {
       if key == keyWake {
