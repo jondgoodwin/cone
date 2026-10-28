@@ -90,6 +90,23 @@ void macroPrint(MacroDclNode *name) {
     inodePrintNode(name->body);
 }
 
+// The trait a macro parameter's resolved type names, 'a: Ordered' or an
+// instance of a generic trait, 'a: Stack[i64]', or NULL. A trait is open: what
+// a parameter typed by one would accept is a generic constraint's question,
+// not built for a macro (Jon, 26 Oct 2026). An enum is a closed family, a type
+// whose values a parameter holds, and a reference to a trait, 'a: &Shape', is a
+// concrete type: neither is one.
+static StructNode *macroParmTrait(INode *type) {
+    if (type->tag == FnCallTag)
+        type = ((FnCallNode*)type)->objfn;
+    if (!isNameUseNode(type))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)type);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & TraitType) || (dcl->flags & EnumType))
+        return NULL;
+    return (StructNode*)dcl;
+}
+
 // Perform name resolution
 void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
     uint16_t oldscope = pstate->scope;
@@ -133,6 +150,15 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
                 errorMsgNode(parm->valtype, ErrorNotType,
                     "A macro parameter's type must be a type: '%s: T', or '%s: lazy T'.",
                     &parm->namesym->namestr, &parm->namesym->namestr);
+            else {
+                // Pointed at the trait's name, in an instance too
+                INode *named = parm->valtype->tag == FnCallTag ? ((FnCallNode*)parm->valtype)->objfn : parm->valtype;
+                StructNode *trait = macroParmTrait(parm->valtype);
+                if (trait)
+                    errorMsgNode(named, ErrorGenParmConstr,
+                        "The macro parameter %s is typed by a trait, %s: that is not built yet, as a constraint on a macro's type parameter is not, since what either means waits for generics.",
+                        &parm->namesym->namestr, &trait->namesym->namestr);
+            }
         }
         inodeNameRes(pstate, nodesp);
     }

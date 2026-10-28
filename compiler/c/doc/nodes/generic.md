@@ -1010,6 +1010,12 @@ twice. It is also what lets an argument go unevaluated: core's
 `assertDebug[cond: lazy bool]` puts `cond` inside `if isDebugBuild() {...}`, so a
 release build never runs it.
 
+**A parameter typed by a trait is refused**, at name resolution, as
+`ErrorGenParmConstr` (`macroParmTrait`): `[a: Ordered]` or an instance of a
+generic trait, the same refusal as a constraint on the macro's type parameter,
+`[T: Ordered]`, since what either would accept waits for generics [Jon 26 Oct].
+An enum, and a reference to a trait (`&Ordered`), are types like any other.
+
 **`srcFile()` and `srcLine()` in a macro's body answer where it is used.**
 `macroExpand` sets `CloneState.srcsite` to the use before cloning the body, and
 `cloneFnCallNode` gives a call to either that place. The place is the outermost
