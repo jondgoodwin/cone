@@ -1532,11 +1532,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         uint32_t cnt;
         uint32_t index = 0;
         uint16_t inflight = fstate->inflightcnt;
+        uint8_t keep = flowGateOperandsKeep(fstate);
         for (nodesFor(((TupleNode *)*nodep)->elems, cnt, nodesp)) {
+            flowGateOperandNext(fstate, *nodesp);
             flowLoadValue(fstate, nodesp);
             flowGateOperand(fstate, *nodesp);
         }
-        flowGateOperandsEnd(fstate, inflight);
+        flowGateOperandsEnd(fstate, inflight, keep);
         break;
     }
     case DerefTag:
@@ -2099,6 +2101,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->scope = 1;
     fstate->gate = 0;
     fstate->inflightcnt = 0;
+    fstate->inflightkeep = 0;
     fstate->dropgate = 0;
     fstate->jumped = 0;
     fstate->awaits = NULL;

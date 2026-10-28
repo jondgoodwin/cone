@@ -4988,6 +4988,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    uint8_t keep = flowGateOperandsKeep(fstate);
     // A call type check gave up on without a diagnostic of its own, because what
     // it reads failed elsewhere -- a field of a value returned by a function
     // whose signature failed -- passes this function's flow gate but was never
@@ -5006,6 +5007,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if (callee && callee->tag == VarDclTag)
         nameuseFlow(fstate, (NameUseNode**)&node->objfn);
     for (nodesFor(node->args, cnt, argsp)) {
+        flowGateOperandNext(fstate, *argsp);
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);
         else
@@ -5013,7 +5015,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }
-    flowGateOperandsEnd(fstate, inflight);
+    flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value
