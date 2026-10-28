@@ -207,8 +207,10 @@ only a path shows (`dropRefuse`, below). `nameuseFlow` checks a name read:
 - `VarMoved` → `ErrorMove`, "value has been moved out"
 
 `nameuseFlowBorrowed` checks the variable at the root of a borrowed place
-(`borrowFlow`), and only the second: a variable never initialized may be
-borrowed, so that a method taking it `&mut` can fill it in.
+(`borrowFlow`) the same two ways, with "There is no value to borrow": a borrow
+of a variable never given a value would let a method read memory never
+written, so `&c`, `&mut c`, a method's receiver and a field's borrow are all
+refused until the variable holds a value.
 
 It returns immediately for anything that is not a `VarDclTag`, so a function or
 constant name passes through untouched. The flags themselves are read elsewhere

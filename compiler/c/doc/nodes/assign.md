@@ -207,7 +207,10 @@ Per target:
 3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved` and
    `VarHollow` (`flowVarSetFlags`), and note a tracked variable stored over
    deeper than it was declared, which sends the function's drops to the path
-   walk (`flowDropNote`).
+   walk (`flowDropNote`). A store into a field or an element of a local never
+   given a value is `ErrorMove` here ("stored only into a variable that holds
+   a value"), and where only some paths gave it one, the path walk's
+   (`dropPartUse`): the whole variable is given its value first.
 4. **`FlagFirstAssign`** on the lval's name-use node when the variable holds
    nothing whole: never initialized, moved out, or hollowed — or is a match's
    binding by reference, a copy of the matched reference, which owns nothing (a
@@ -219,7 +222,7 @@ Per target:
    every path, or marks the site `FlagDropTest`, so the variable's drop flag
    decides ([Flow Analysis](../phases/flow.md), "Drop flags"). A store over a
    field or an element of a local's own value (`flowLvalRootVar`) is marked
-   `FlagPartNoPrior` the same way when the local holds nothing (or is a
+   `FlagPartNoPrior` the same way when the local was moved out (or is a
    match's binding by reference). A
    hollowed variable's old allocation still has to go back:
    `assignlvalrtype` builds its `HollowNode` and `assignSingleTarget` wraps it

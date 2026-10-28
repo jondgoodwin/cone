@@ -113,6 +113,16 @@ struct enrichment wears for the same mistake. One question — is this
 relationship declared correctly — with the cause in the
 message.
 
+`ErrorMove` (1048) is a variable used where it holds no value, whatever the cause
+and the use: its value moved out, or never given on every path (a loop's earlier
+pass included), met by a read, a move, or a borrow — `&c`, `&mut c`, a method's
+receiver, a borrow of a field of it — and a field or an element stored into a
+variable that holds no value on every path. The remedy is one edit, to give the
+variable its whole value first; the message says which use and whether it is
+every path or some ("has not been initialized", "may not have been given a
+value", "stored only into a variable that holds a value", "moved out").
+A method cannot fill in a variable it borrows before it holds a value.
+
 `ErrorTypeVariant` is a variant declared as a type (`Ok(i32);`) used where it has
 nothing to give: written in an enum that has fields in common, whose variants all
 name what they hold (parse), or bound through a reference into a managed value, whose

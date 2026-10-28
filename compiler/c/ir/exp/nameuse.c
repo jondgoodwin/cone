@@ -622,9 +622,10 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
     }
 }
 
-// Ensure the variable at the root of a borrowed place was not moved out or
-// hollowed. One never initialized is not refused: a borrow of it is what lets a
-// method fill it in.
+// Ensure the variable at the root of a borrowed place holds a value and was not
+// moved out or hollowed: a borrow of a variable never given one would let a
+// method read memory that was never written. (A variable given a value on only
+// some paths is the path walk's, dropUse.)
 void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
     NameUseNode *node = *nodep;
     VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
@@ -636,6 +637,8 @@ void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
     if ((vardclnode->flowtempflags & VarUnfilled) && flowNewSelf((INode*)node))
         errorMsgNode((INode*)node, ErrorInitSelf,
             "self holds no value until '*self = value' fills it, on every path before this borrow.");
-    if (vardclnode->flowtempflags & (VarMoved | VarHollow))
+    if (!(vardclnode->flowtempflags & VarInitialized) && !flowNewSelf((INode*)node))
+        errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to borrow.");
+    else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
         errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
 }

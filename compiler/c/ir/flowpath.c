@@ -1120,8 +1120,7 @@ static PathSet *pwBorrow(INode *node, int aswrite) {
 // the new one and whatever the holder at the place's root holds. 'loan'
 // returns the new loan's id, if asked.
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan) {
-    // A borrow needs the value there, not moved out; a variable never given
-    // one may be borrowed, so that a method can fill it in
+    // A borrow needs the value there: not moved out, and given on every path
     pwDropUse(pl, site, 1);
     if (!pathLoans) {
         if (loan)
@@ -2586,8 +2585,10 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     if (pathLoans && loanShapeCount())
         pwShapeStore(*lvalp, &pl);
     // Part of a local's own value: its old value is released if the local holds one
-    if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
+    if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var) {
+        dropPartUse(pl.var, *lvalp);
         dropPartStore(pl.var, *lvalp);
+    }
     holds = pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
