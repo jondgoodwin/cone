@@ -141,10 +141,14 @@ that word. Any other permission is `ErrorInvType` — so `ro` is refused on a
 global, a local and a parameter alike. Only the default differs, and it differs by
 *kind* rather than by site: `let` for all three of these, `var` for a field.
 
-**`undef` is not an initializer.** `var y: i32 = undef` builds no `value` node at
-all; it stamps `VarInitialized` directly. That is the "the author asserts this
-holds something" contract — reads pass the flow check, and generation emits the
-alloca with no store.
+**`undef` is not an initializer.** `var y: i32 = undef` builds no `value` node
+and stamps nothing: the declaration is exactly `var y: i32;`. Flow tracks the
+variable as unvalued, so a read, a borrow, and a field or element stored into it
+are refused until a value is given on every path, the first assignment releases
+no earlier value, and a variable never given one releases nothing at its scope's
+end. A global, a field and a parameter are pre-marked at parse as they are
+without it; a field's `= undef` is a parse error, and a `let` or a declaration
+with no type gets the refusals that the same declaration without `= undef` gets.
 
 A parameter with a default value forces every later parameter to have one.
 
@@ -435,8 +439,6 @@ Fields and constants have no flow participation at all.
   arms of an `if` joined after it; a loop's later passes are not in it. Do not
   read it as what the variable holds on every path to a point: that is the path
   walk's (`VarDropFlag` marks a variable for which it differs at a release).
-- **`undef` reads as initialized.** Deliberate, but easy to mistake for
-  "initialized to something".
 
 ## What lives elsewhere
 
