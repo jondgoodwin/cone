@@ -43,9 +43,12 @@
 //   c.release(id, n)  c.cancel(lp, id)  c.reprioritize(id, intent, score)
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
-//   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)
+//   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)  c.http3Live()
 //   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
 //     maxLifetime maxQueued maxRetries maxRedirects userAgent
+//     http3 http3Origins http3Timeout                                    (HTTP/3)
+//   trait Http3  NoHttp3  H3Event H3Kind H3Req  http3From(maker, t)       (THE PLUG-IN)
+//   readAltSvc(value, host): AltSvc.H3(port, maxAge) Clear Nothing
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
 //   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
@@ -169,6 +172,38 @@
 // fetch alone: the connection carries on. An idle HTTP/2 connection closes
 // after idleTimeout, as an HTTP/1.1 one does.
 //
+// HTTP/3. A client speaks HTTP/3 (QUIC over UDP) only through a PLUG-IN,
+// since this package imports no QUIC: 'http3' names the maker of one, a
+// function from the TLS config to a Uni[Http3] (h3driver's 'plugin';
+// a program importing httpclient alone, or with it None, the default,
+// never links QUIC's C libraries). The plug-in runs on the client's Loop,
+// beside its driver: 'complete', 'pump' and 'wakeAt' take it in. An https
+// origin is fetched over HTTP/3 when it is known to speak it: by prior
+// knowledge ('http3Origins', URLs whose origin is taken: its own port, for
+// good), or by an Alt-Svc field on a response that came over HTTP/1.1 or
+// HTTP/2 ('h3=":443"; ma=86400': the first "h3" alternative on the same
+// host, kept for its max-age, 24 hours when none is given; 'clear' forgets
+// it; another host's is not taken; RFC 7838). While an origin is known so,
+// its fetches go on its one QUIC connection alone and open no TCP one: the
+// first fetch makes the connection (the host looked up, its first IPv4
+// address, the Alt-Svc's port, the certificate checked against the host as
+// the TLS config says) and waits for it; once it is connected, waiting
+// fetches become its streams while it has room (the peer's stream limit:
+// at most one waits in the plug-in, the rest here, in the order), and each
+// Response says Version.Http3. A connection not connected within
+// 'http3Timeout' (1 s: a handshake to a far server, its certificate checked
+// by the OS, takes a few hundred milliseconds) is given up, as is one whose
+// lookup or handshake fails first: the fetches waiting take TCP as above,
+// and the origin's HTTP/3 is not tried again for five minutes (Chrome's
+// first back-off), so a network that drops UDP costs one http3Timeout per
+// origin, not one per fetch. A connection going away (GOAWAY, QUIC's idle
+// timeout, maxLifetime) takes no new fetch, and the next makes another.
+// Retries are HTTP/2's: a stream refused (sent before a GOAWAY's last, or
+// never reached QUIC) whatever the method, one cut off with no response
+// byte when the method is idempotent. Not here: racing QUIC against TCP
+// (Chrome's), HTTPS DNS records, 0-RTT, IPv6 (quic's addresses are IPv4),
+// another host's alternative, and Alt-Svc's 'persist'.
+//
 // RETRIES (invariant I21). A request is tried again, on another connection,
 // when its connection ended under it -- reset, closed, a receive or send
 // failed (httpconn's stages Read, Write and Closed, or Http when the core's
@@ -238,7 +273,8 @@
 //
 // DIAGNOSTICS. 'stats()' counts fetches by their final answer, retries,
 // redirects, requests sent on a kept connection against new ones (and as
-// HTTP/2 streams),
+// HTTP/2 streams, and over HTTP/3), HTTP/3 attempts and those that fell
+// back, Alt-Svc alternatives learned,
 // connections opened and closed, events delivered, held and dropped, the
 // queue now and at its deepest; 'driverStats()' is the driver's own. Done
 // carries the fetch's Timing: when it was asked for, last given a
@@ -271,10 +307,11 @@
 //   measure, the same way, 6.3 KB), 1.3 to 1.6 KB once those tables have
 //   grown (the records reused); TLS 94 to 116 KB, 70 to 94 KB, OpenSSL's
 //   sessions most of it. The client's own record of a pooled connection is
-//   32 bytes.
+//   72 bytes.
+// - HTTP/3: h3driver's examples/clientbench.cone.
 //
-// Not here yet: a request body streamed (it is sent whole); HTTP/3, and
-// priorities on the wire (RFC 9218), Alt-Svc and HTTPS records; a second
+// Not here yet: a request body streamed (it is sent whole); HTTP/3 beyond
+// what its section says, priorities on the wire (RFC 9218), HTTPS records; a second
 // HTTP/2 connection to an origin whose streams are all in use;
 // compression (no Accept-Encoding is sent, and a Content-Encoding is left to
 // the program); cookies; proxies; authentication (a URL's user information
@@ -292,7 +329,7 @@ import collections use List, String, Error;
 import time use Instant, Duration;
 import sync use Sender;
 import iobuf use IoBuf;
-import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, forever;
+import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
 import http use *;
 import httpconn;
 import tls;
@@ -364,12 +401,16 @@ pub struct Config {
   pub maxRetries: u32;           // retries of one request (see RETRIES)
   pub maxRedirects: u32;         // redirects followed, unless a request says otherwise
   pub userAgent: String;         // User-Agent, when a request has none
+  pub http3: Option[&fn(t: &tls.ClientConfig) Uni[Http3]];   // the HTTP/3 plug-in's maker; None: no HTTP/3
+  pub http3Origins: List[String];   // https origins known to speak HTTP/3 (prior knowledge), as URLs
+  pub http3Timeout: Duration;    // an HTTP/3 attempt not connected by then falls back to TCP
 
-  // The defaults
+  // The defaults: no HTTP/3 (see HTTP/3)
   pub fn make() Config {
     Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), http2: true, maxPerOrigin: 16u32,
       maxTotal: 256u32, idleTimeout: Duration.fromSeconds(50i64), maxLifetime: Duration.fromMinutes(5i64),
-      maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"))
+      maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"),
+      http3: None, http3Origins: List[String].empty(), http3Timeout: Duration.fromSeconds(1i64))
   }
 }
 
@@ -595,7 +636,7 @@ pub struct Event {
 pub struct Response {
   pub outcome: EventKind;     // Done, Failed, Cancelled or TimedOut
   pub status: u16;
-  pub version: Version;       // the protocol that carried it: Http11, or Http2
+  pub version: Version;       // the protocol that carried it: Http11, Http2 or Http3
   pub headers: Headers;
   pub body: String;           // the whole body, as bytes
   pub url: String;            // the URL that answered, after any redirects
@@ -628,7 +669,11 @@ pub struct ClientStats {
   pub sent: u64;           // requests given a connection (attempts)
   pub reused: u64;         // ...on a connection that had carried an exchange before
   pub streams: u64;        // ...as an HTTP/2 stream
-  pub connects: u64;       // connections opened
+  pub h3: u64;             // ...over HTTP/3
+  pub connects: u64;       // connections opened (HTTP/3 attempts among them)
+  pub h3Attempts: u64;     // HTTP/3 connections attempted
+  pub h3Fallbacks: u64;    // ...that did not connect within http3Timeout, or failed first: TCP taken instead
+  pub altSvc: u64;         // h3 alternatives learned from Alt-Svc fields
   pub closed: u64;         // connections ended
   pub events: u64;         // events handed to sinks
   pub held: u64;           // events held for a full channel
@@ -642,7 +687,7 @@ pub struct ClientStats {
   pub origins: u32;        // origins the client has pooled for
 
   pub fn zero() ClientStats {
-    ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
+    ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
   }
 }

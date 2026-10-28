@@ -120,9 +120,26 @@ static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
         flowGateShapeAsk(fstate, (INode *)call);
 }
 
+// An operand of a call or a literal is about to be walked. One that is itself a
+// call or a literal whose value may carry a borrow may carry one its own operands
+// made, of a variable the later operands may name ('both(s.view(), &mut s)',
+// 'two(first(&mut b), &mut b)'): what its operands lend is kept waiting
+// (flowGateOperandsEnd) until the call or literal around it is made. One whose
+// value carries none ('len(s.view())') lends nothing past itself.
+static inline void flowGateOperandNext(FlowState *fstate, INode *operand) {
+    while (operand->tag == CastTag)
+        operand = ((CastNode *)operand)->exp;
+    if ((operand->tag == FnCallTag || operand->tag == TypeLitTag || operand->tag == ArrayLitTag
+            || operand->tag == VTupleTag)
+        && flowGateOpen(fstate, FlowGateInCall)
+        && ((IExpNode *)operand)->vtype && !flowGateCarriesNone(((IExpNode *)operand)->vtype))
+        fstate->inflightkeep = 1;
+}
+
 // An operand of a call or a literal was just walked: while the rest are, a
 // borrow it made waits, and the variable it borrows is remembered
 static inline void flowGateOperand(FlowState *fstate, INode *operand) {
+    fstate->inflightkeep = 0;
     if ((operand->tag == BorrowTag || operand->tag == ArrayBorrowTag || operand->tag == CastTag
             || operand->tag == ArrIndexTag)
         && flowGateOpen(fstate, FlowGateInCall))

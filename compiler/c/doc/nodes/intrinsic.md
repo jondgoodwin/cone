@@ -151,7 +151,10 @@ type while each call gives its own orderings.
    stronger than its success ordering. Every call to a function carrying
    `DclIntrinsic` is asked, lowered or not.
 6. **Flow** sees an ordinary call: an argument passed by value is moved into it,
-   as `writeRaw`'s value is.
+   as `writeRaw`'s value is. A fallback body is walked as any function's, but
+   its walk lets a move out through a raw pointer through (`FlowState.intrinsic`):
+   `readRaw`'s `{*p}` is the one place a value is moved out of raw memory, which
+   is refused anywhere else (`ErrorMoveRawPtr`).
 7. **Generation** (`genlDeclaredIntrinsic`), dispatched by kind before the C-built
    kinds' LLVM-type switch. An atomic operation is caught earlier, in
    `genlFnCall` (`intrinsicAtomicCallee`), where the call's arguments are still

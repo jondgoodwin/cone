@@ -276,6 +276,7 @@ enum ErrorCode {
 
     // Moves: what a move-typed value may be moved out of
     ErrorMoveOut = 1120,        // A move-typed value moved out through a reference that does not solely own it: a borrowed one, or a shared (aliasable) owning one
+    ErrorMoveRawPtr = 1539,     // A move-typed value (one that finalizes or owns) moved out through a raw pointer, which owns nothing (`*p`, `(*p).(a)`, `p[i]`, a function handing back `*p`): what holds the place still finalizes it. `mem.readRaw(p)` moves it out, leaving the place holding nothing; only an '@intrinsic' body (readRaw's fallback) is let through. A copy through `*p` is not refused
 
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)
@@ -748,6 +749,7 @@ enum ErrorCode {
     ErrorMainResult = 1532,     // A `main` returning `Result[T, E]` whose `E` has no `message()` method for the program to print the error with when `main` fails. Pointed at the return type
     ErrorTryType = 1536,        // A `try` block wanted as no Result or Option whose type cannot be read off it: its `?`s fail with different error types, or it has no `?`, so neither the error type nor the kind is known. The message asks for the type, `let r: Result[i32, E] = try {...}`. Pointed at the `try`
     ErrorTryMix = 1537,         // A `?` in a `try` block taking an Option where another `?` of the block, or the type the block is wanted as, is a Result, or the reverse. The message names `okOr(error)` and `ok()`, which convert one into the other. Pointed at the '?'
+    ErrorLifecycleNamed = 1540, // A module's `init` or `final` named in an expression, by its bare name in its own module or by a path from another: called, borrowed or otherwise used. The program runs each once, so a use would run it a second time. Folding one is ErrorBadFold. Pointed at the name
 
     // Warnings
     WarnCode = 3000,

@@ -1,0 +1,36 @@
+// A call's arguments are evaluated in written order: a copy read through a
+// borrow in an earlier argument is made before a later argument moves the
+// borrow's owner away, so the borrow is free by then and the call is safe.
+// `takeVal(*r, consume(own))` copies `*r` (a 40-byte struct, passed by
+// pointer) into a temporary first, then `consume` frees `own`, then `takeVal`
+// reads the copy, not the freed memory. The reversed orders, where the owner
+// moves before the borrow is read or while one is still carried, are refused
+// (lifetime_free_call_owner_moves_before_borrow).
+//
+// Verdict: accept; prints 7, read from the copy (1 + 5 + 1).
+// Basis: evaluation order is written order (arguments cannot be reordered:
+// a call names no argument), and a borrow is free after its last use
+// (borrow-freezing rule, 26 Sep 2026); a by-pointer argument's lending never
+// lends what is reached through a reference, so the copy is a copy.
+// Master a1bd36b0d: correct (the IR copies '*r' into the argument's slot,
+// then calls 'consume', then 'takeVal'), with no pin until this file.
+
+mod lifetime_free_call_copy_before_owner_moves;
+
+import stdio use *;
+
+struct Big { pub a: i64; pub b: i64; pub c: i64; pub d: i64; pub e: i64; }
+
+fn consume(o: Uni[Big]) i64 { o.a }                // frees o at its end
+fn takeVal(b: Big, n: i64) i64 { b.a + b.e + n }
+
+fn copyFirst() i64 {
+  let own = Uni[Big](Big(1, 2, 3, 4, 5));
+  let r = &*own;
+  takeVal(*r, consume(own))
+}
+
+fn main() {
+  printInt(copyFirst());
+  printStr("\n");
+}
