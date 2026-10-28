@@ -220,6 +220,12 @@ enum NodeTags {
 // nothing can change; the refusal of a write to it says how to change the items instead.
 // 0x0800 is free on a variable as 0x0200 and 0x0400 are.
 #define FlagEachVar   0x0800        // VarDcl: a variable of an 'each' pass over a source (not a range)
+// The variable a macro's expansion binds a plain parameter's argument to,
+// '{ let a: T = arg; body }' (macroExpand): the parameter is evaluated once,
+// and the refusal of a write to it says that one the macro writes must be
+// 'lazy'. 0x0100 is free on a variable: the type flag that shares it is read
+// on types alone.
+#define FlagMacroBind 0x0100        // VarDcl: a macro's plain parameter, bound once by its expansion
 // A name of a declaration of several, 'let q, r = divmod(7, 2);' (parseDestructDcl). The parser
 // declares each name with no value, then the assignment that gives them their values, flagged
 // FlagDestructAssign. A name is not hooked until that assignment's values are resolved, so a value
