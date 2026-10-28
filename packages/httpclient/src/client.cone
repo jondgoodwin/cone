@@ -5,7 +5,9 @@
 // reused through free lists, as httpconn's are; a FetchId is a record's
 // index and generation. Origins are records of their own, one per scheme,
 // host and port the client has fetched from, each holding its queue of
-// waiting fetches and its idle connections. Every connection and every
+// waiting fetches, its idle HTTP/1.1 connections and its shared HTTP/2 ones
+// (a connection's protocol is its driver's 'protocol', asked at every pump
+// until its TLS handshake has chosen one). Every connection and every
 // request the client makes is its driver's, with a Here sink whose token
 // names the client's record (and its generation), so the driver's events
 // come back to the record they are about; the client's own timers (a
@@ -36,6 +38,12 @@ const pConnecting = 1u32;
 const pIdle = 2u32;
 const pBusy = 3u32;
 const pClosing = 4u32;      // on its way out: counted nowhere
+const pShared = 5u32;       // HTTP/2: open, carrying any number of fetches, one a stream each
+
+// What a pooled connection speaks, as far as the client knows
+const protoUnknown = 0u32;  // not yet chosen: its TLS handshake (ALPN) is still under way
+const protoH1 = 1u32;
+const protoH2 = 2u32;
 
 // How a fetch ends
 const endNone = 0u32;
@@ -101,9 +109,11 @@ struct PConn {
   nextFree: u32;
   id: httpconn.ConnId;
   origin: u32;
-  fetch: u32;                // the fetch on it, while busy
+  active: u32;               // fetches on it: one while busy (HTTP/1.1), any number shared (HTTP/2)
   uses: u32;                 // exchanges given it
   opened: Instant;           // when it was asked for: its lifetime runs from then
+  proto: u32;                // what it speaks: protoUnknown until its driver has chosen
+  awaiting: bool;            // connected, its protocol still to be chosen: in the client's 'undecided'
 }
 
 // What of its Config a client keeps once made: its limits (the driver has
@@ -116,6 +126,7 @@ struct Limits {
   maxRetries: u32;
   maxRedirects: u32;
   userAgent: String;
+  priorKnowledge: bool;      // http connections speak HTTP/2 from their first byte (the driver's h2PriorKnowledge)
 }
 
 // An event held for a full channel: where it goes, its fetch and that
@@ -138,8 +149,11 @@ struct Origin {
   port: u16;
   queue: List[u32];          // fetches waiting
   idle: List[u32];           // pooled connections idle, the latest last
-  open: u32;                 // connections connecting, idle or busy
+  shared: List[u32];         // HTTP/2 connections open (pShared), the first the one kept
+  open: u32;                 // connections connecting, idle, busy or shared
   connecting: u32;
+  undecided: u32;            // ...of them connected, their protocol still to be chosen
+  h2: bool;                  // the last connection whose protocol was chosen spoke HTTP/2
 }
 
 // A client of HTTP and HTTPS servers on one Loop (see the package's header)
@@ -156,7 +170,8 @@ pub struct Client {
   connBlocks: List[*PConn];
   connCount: u32;
   freeConn: u32;
-  total: u32;                // connections connecting, idle or busy
+  total: u32;                // connections connecting, idle, busy or shared
+  undecided: List[u32];      // pooled connections connected whose protocol is still to be chosen
   origins: SlotTable[Origin];    // never removed: an origin's number is its cell's
   dev: List[httpconn.Event];
   comps: List[Completion];
@@ -174,22 +189,26 @@ pub struct Client {
     if cfg.maxPerOrigin == 0u32 || cfg.maxTotal == 0u32 {
       panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
     }
-    let tlsConfig, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects,
-      userAgent, var conn = cfg.(tlsConfig, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries,
-      maxRedirects, userAgent, conn);
+    let given, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued, maxRetries, maxRedirects,
+      userAgent, var conn = cfg.(tlsConfig, http2, maxPerOrigin, maxTotal, idleTimeout, maxLifetime, maxQueued,
+      maxRetries, maxRedirects, userAgent, conn);
     conn.protocol.idleTimeout = idleTimeout;
+    conn.h2IdleTimeout = idleTimeout;
+    var tlsConfig = given;
+    tlsConfig.alpn = alpnFor(&tlsConfig.alpn, http2);
     let tlsc = match tls.Client.make(tlsConfig) {
       case var Ok(r) {Ok[tls.Client, Failure](r)}
       case var Err(e) {
         Err[tls.Client, Failure](Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view()))
       }
     };
+    let priorKnowledge = conn.h2PriorKnowledge;
     let d = httpconn.Driver.make(conn);
-    Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent),
+    Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge),
       drv: d, tlsc: tlsc,
       fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
-      total: 0u32, origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event].empty(),
+      total: 0u32, undecided: List[u32].empty(), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event].empty(),
       comps: List[Completion].empty(), ready: List[Event].empty(), heldEvents: List[Held].empty(),
       wantSchedule: false, st: ClientStats.zero())
   }
@@ -203,7 +222,13 @@ pub struct Client {
     var idle = 0u32;
     var o = 0usize;
     while o < origins.len() {
-      idle = idle + u32.from((origins.at(u32.from(o)) as &Origin).idle.len());
+      let og = origins.at(u32.from(o)) as &Origin;
+      idle = idle + u32.from(og.idle.len());
+      var j = 0usize;
+      while j < og.shared.len() {
+        if (self.connAt(*og.shared[j]) as &PConn).active == 0u32 {idle = idle + 1u32;}
+        j = j + 1usize;
+      }
       o = o + 1usize;
     }
     s.idleNow = idle;
@@ -318,7 +343,7 @@ pub struct Client {
 
   fn blankConn(self: &, next: u32) PConn {
     PConn(gen: 1u32, state: pFree, nextFree: next, id: httpconn.ConnId.none(), origin: noEntry,
-      fetch: noEntry, uses: 0u32, opened: Instant())
+      active: 0u32, uses: 0u32, opened: Instant(), proto: protoUnknown, awaiting: false)
   }
 
   fn newConn(self: &mut) u32 {
@@ -341,9 +366,11 @@ pub struct Client {
     freeConn = p.nextFree;
     p.nextFree = noEntry;
     p.state = pConnecting;
-    p.fetch = noEntry;
+    p.active = 0u32;
     p.uses = 0u32;
     p.opened = Instant.now();
+    p.proto = protoUnknown;
+    p.awaiting = false;
     i
   }
 
@@ -367,8 +394,8 @@ pub struct Client {
       k = k + 1usize;
     }
     origins.add(Origin(key: u.origin(), secure: secure, host: u.host.copy(),
-      port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), open: 0u32,
-      connecting: 0u32)).index
+      port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), shared: List[u32].empty(),
+      open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge)).index
   }
 
   // ---------------------------------------------------------------------------
@@ -538,6 +565,16 @@ pub struct Client {
         self.retire(lp, *og.idle[0usize], true);
         n = n + 1u32;
       }
+      // An HTTP/2 connection carrying no fetch is idle too
+      var j = og.shared.len();
+      while j > 0usize {
+        j = j - 1usize;
+        let pc = *og.shared[j];
+        if (self.connAt(pc) as &PConn).active == 0u32 {
+          self.retire(lp, pc, true);
+          n = n + 1u32;
+        }
+      }
       o = o + 1usize;
     }
     n
@@ -621,10 +658,10 @@ pub struct Client {
 
   // Whether fetch fi may be sent again after its attempt failed with fl
   // (see the package's header, RETRIES)
-  fn canRetry(self: &, fi: u32, fl: &Failure) bool {
+  fn canRetry(self: &, fi: u32, fl: &Failure, h2: bool) bool {
     let f = self.fetchAt(fi) as &Fetch;
     if f.delivered || f.ending != endNone || f.retries >= cfg.maxRetries {return false;}
-    safeToRetry(fl, f.method, f.timing.reused)
+    safeToRetry(fl, f.method, f.timing.reused, h2)
   }
 
   // ---------------------------------------------------------------------------
@@ -782,6 +819,7 @@ pub struct Client {
     var rounds = 0u32;
     while rounds < 64u32 {
       let got = self.takeDriverEvents(lp);
+      self.learnAll();
       var did = false;
       if wantSchedule {
         wantSchedule = false;
@@ -838,10 +876,12 @@ pub struct Client {
         og.connecting = og.connecting - 1u32;
         og.idle.push(pc);
         wantSchedule = true;
+        self.learn(pc);
       }
       return;
     }
     if e.kind != httpconn.EventKind.Closed {return;}
+    self.forgetUndecided(pc);
     let was = p.state;
     if was == pConnecting {
       og.connecting = og.connecting - 1u32;
@@ -852,6 +892,10 @@ pub struct Client {
       og.open = og.open - 1u32;
       total = total - 1u32;
     } else if was == pBusy {
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    } else if was == pShared {
+      removeValue(&mut og.shared, pc);
       og.open = og.open - 1u32;
       total = total - 1u32;
     }
@@ -878,9 +922,17 @@ pub struct Client {
   // An exchange on connection pc has ended well: it is idle in its pool if
   // it can carry another, else it closes
   fn connDone(self: &mut, lp: &mut Loop, pc: u32) {
+    self.learn(pc);
     let p = self.connAt(pc) as &mut PConn;
+    if p.state == pShared {
+      // HTTP/2: one stream fewer; the connection carries on
+      if p.active > 0u32 {p.active = p.active - 1u32;}
+      self.keepShared(lp, pc);
+      wantSchedule = true;
+      return;
+    }
     if p.state != pBusy {return;}
-    p.fetch = noEntry;
+    p.active = 0u32;
     let og = self.originAt(p.origin) as &mut Origin;
     if !drv.isIdle(p.id) {
       self.retire(lp, pc, false);
@@ -899,33 +951,111 @@ pub struct Client {
   }
 
   // The exchange on connection pc ended otherwise than well (failed,
-  // cancelled): the connection is ending -- unless the request never
-  // started on it (cancelled while the driver still held it), when it is
-  // free again
+  // cancelled): on HTTP/1.1 the connection is ending -- unless the request
+  // never started on it (cancelled while the driver still held it), when it
+  // is free again. On HTTP/2 it was one stream's end (a reset, a cancel):
+  // the connection carries on, unless it is going away
   fn connEnded(self: &mut, lp: &mut Loop, pc: u32) {
+    self.learn(pc);
     let p = self.connAt(pc) as &mut PConn;
-    if p.state == pBusy && drv.isIdle(p.id) {
+    if p.state == pShared {
+      if p.active > 0u32 {p.active = p.active - 1u32;}
+      self.keepShared(lp, pc);
+      wantSchedule = true;
+    } else if p.state == pBusy && drv.isIdle(p.id) {
       self.connDone(lp, pc);
     } else {
       self.retire(lp, pc, false);
     }
   }
 
+  // An HTTP/2 connection stays shared while it takes new requests and has
+  // not been open its whole lifetime: one going away (a GOAWAY, its idle
+  // timeout) leaves the pool, and one past its lifetime is closed politely,
+  // the streams on it ending first
+  fn keepShared(self: &mut, lp: &mut Loop, pc: u32) {
+    let p = self.connAt(pc) as &PConn;
+    if p.state != pShared {return;}
+    if !drv.takesRequests(p.id) {
+      self.retire(lp, pc, false);
+    } else if self.pastLifetime(pc) {
+      self.retire(lp, pc, true);
+    }
+  }
+
   // Connection pc leaves the pool: closed now (politely) when 'close', or
   // already ending; its Closed frees its record
   fn retire(self: &mut, lp: &mut Loop, pc: u32, close: bool) {
+    self.forgetUndecided(pc);
     let p = self.connAt(pc) as &mut PConn;
     let og = self.originAt(p.origin) as &mut Origin;
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
+    if p.state == pShared {removeValue(&mut og.shared, pc);}
     if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
     if p.state != pClosing && p.state != pFree {
       og.open = og.open - 1u32;
       total = total - 1u32;
     }
     p.state = pClosing;
-    p.fetch = noEntry;
     if close {drv.close(lp, p.id);}
     wantSchedule = true;
+  }
+
+  // What connection pc speaks, once its driver has chosen: a plain one's at
+  // once, a TLS one's when its handshake's ALPN has. Until then it is in
+  // 'undecided', asked again at every pump. One that speaks HTTP/2 leaves
+  // the idle list (or its one fetch's busy state) to be shared, and its
+  // origin is known to speak it; one that speaks HTTP/1.1 tells its origin
+  // the opposite (see the package's header, HTTP/2)
+  fn learn(self: &mut, pc: u32) {
+    let p = self.connAt(pc) as &mut PConn;
+    if p.proto != protoUnknown || (p.state != pIdle && p.state != pBusy) {return;}
+    let og = self.originAt(p.origin) as &mut Origin;
+    var h2 = false;
+    match drv.protocol(p.id) {
+      case let Some(v) {h2 = v == Version.Http2;}
+      else {
+        if !p.awaiting {
+          p.awaiting = true;
+          undecided.push(pc);
+          og.undecided = og.undecided + 1u32;
+        }
+        return;
+      }
+    }
+    self.forgetUndecided(pc);
+    og.h2 = h2;
+    if !h2 {
+      p.proto = protoH1;
+      return;
+    }
+    p.proto = protoH2;
+    if p.state == pIdle {removeValue(&mut og.idle, pc);}
+    // From idle (no fetch) or busy (the one dispatched while it was undecided,
+    // a stream now)
+    st.streams = st.streams + u64.from(p.active);
+    p.state = pShared;
+    og.shared.push(pc);
+    wantSchedule = true;
+  }
+
+  // Connection pc's protocol is no longer awaited
+  fn forgetUndecided(self: &mut, pc: u32) {
+    let p = self.connAt(pc) as &mut PConn;
+    if !p.awaiting {return;}
+    p.awaiting = false;
+    removeValue(&mut undecided, pc);
+    let og = self.originAt(p.origin) as &mut Origin;
+    og.undecided = og.undecided - 1u32;
+  }
+
+  // Every connection whose protocol is awaited, asked again
+  fn learnAll(self: &mut) {
+    var k = undecided.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if k < undecided.len() {self.learn(*undecided[k]);}
+    }
   }
 
   // Open a connection to origin oi
@@ -979,6 +1109,17 @@ pub struct Client {
         let pc = *og.idle[0usize];
         self.retire(lp, pc, true);
         return true;
+      }
+      if og.queue.len() == 0usize {
+        var j = 0usize;
+        while j < og.shared.len() {
+          let pc = *og.shared[j];
+          if (self.connAt(pc) as &PConn).active == 0u32 {
+            self.retire(lp, pc, true);
+            return true;
+          }
+          j = j + 1usize;
+        }
       }
       o = o + 1usize;
     }
@@ -1042,6 +1183,39 @@ pub struct Client {
         self.dispatch(lp, fi, pc);
         did = true;
       }
+      // HTTP/2: each shared connection takes the first waiting fetches as a
+      // stream each, while the peer allows another; the rest wait here, in
+      // the order, for a stream to end
+      var j = 0usize;
+      while j < og.shared.len() && og.queue.len() > 0usize {
+        let pc = *og.shared[j];
+        let p = self.connAt(pc) as &PConn;
+        if !drv.takesRequests(p.id) || self.pastLifetime(pc) {
+          self.keepShared(lp, pc);      // out of the list: j now names the next
+          continue;
+        }
+        if !drv.isIdle(p.id) {
+          j = j + 1usize;
+          continue;
+        }
+        let pos = self.firstIn(o);
+        let fi = *og.queue[pos];
+        removeAt(&mut og.queue, pos);
+        queuedN = queuedN - 1u32;
+        self.dispatch(lp, fi, pc);
+        did = true;
+      }
+      // One HTTP/2 connection to an origin is enough: others left over (made
+      // before the origin was known to speak it) close once they carry nothing
+      if og.queue.len() == 0usize && og.shared.len() > 1usize &&
+          drv.takesRequests((self.connAt(*og.shared[0usize]) as &PConn).id) {
+        var k = og.shared.len();
+        while k > 1usize {
+          k = k - 1usize;
+          let pc = *og.shared[k];
+          if (self.connAt(pc) as &PConn).active == 0u32 {self.retire(lp, pc, true);}
+        }
+      }
       o = o + 1u32;
     }
     while true {
@@ -1050,7 +1224,7 @@ pub struct Client {
       o = 0u32;
       while o < u32.from(origins.len()) {
         let og = self.originAt(o) as &Origin;
-        if og.queue.len() > usize.from(og.connecting) && og.open < cfg.maxPerOrigin {
+        if og.queue.len() > usize.from(og.connecting) && og.open < cfg.maxPerOrigin && self.mayOpen(o) {
           let fi = *og.queue[self.firstIn(o)];
           if bestF == noEntry || self.before(fi, bestF) {
             bestO = o;
@@ -1067,15 +1241,31 @@ pub struct Client {
     did
   }
 
-  // Fetch fi's request, on idle connection pc
+  // Whether another connection may be opened to origin oi for what waits
+  // there, HTTP/2 aside: not while a shared connection to it takes requests
+  // (its streams, when all in use, free up), nor, for an origin known to
+  // speak HTTP/2, while one is being made or its protocol is still to be
+  // chosen (it will most likely be shared)
+  fn mayOpen(self: &, oi: u32) bool {
+    let og = self.originAt(oi) as &Origin;
+    var j = 0usize;
+    while j < og.shared.len() {
+      let p = self.connAt(*og.shared[j]) as &PConn;
+      if drv.takesRequests(p.id) {return false;}
+      j = j + 1usize;
+    }
+    !(og.h2 && (og.connecting > 0u32 || og.undecided > 0u32))
+  }
+
+  // Fetch fi's request, on connection pc: idle, or shared (HTTP/2)
   fn dispatch(self: &mut, lp: &mut Loop, fi: u32, pc: u32) {
     let f = self.fetchAt(fi) as &mut Fetch;
     let p = self.connAt(pc) as &mut PConn;
     f.state = fActive;
     f.conn = pc;
     f.sent = 0usize;
-    p.state = pBusy;
-    p.fetch = fi;
+    if p.state != pShared {p.state = pBusy;} else {st.streams = st.streams + 1u64;}
+    p.active = p.active + 1u32;
     p.uses = p.uses + 1u32;
     let target = f.url.target();
     let authority = f.url.authority();
@@ -1177,11 +1367,13 @@ pub struct Client {
         self.finishFetch(lp, fi, endDone, None);
       }
     } else if k == httpconn.EventKind.Failed {
+      self.learn(f.conn);
+      let h2 = (self.connAt(f.conn) as &PConn).proto == protoH2;
       self.connEnded(lp, f.conn);
       let fl = Failure.fromConn(&e.failure);
       if f.ending == endLimit || f.ending == endCancelled || f.ending == endTimedOut {
         self.finishFetch(lp, fi, if f.ending == endLimit {endLimit} else {endFailed}, Some[Failure](fl));
-      } else if self.canRetry(fi, &fl) {
+      } else if self.canRetry(fi, &fl, h2) {
         f.retries = f.retries + 1u32;
         st.retries = st.retries + 1u64;
         self.enqueue(fi);
@@ -1283,8 +1475,9 @@ pub struct Client {
           others.push(e);
         } else if e.kind == EventKind.Response {
           let response, url = e.(response, url);
-          let status, headers = response.(status, headers);
+          let status, version, headers = response.(status, version, headers);
           resp.status = status;
+          resp.version = version;
           resp.headers = headers;
           resp.url = url;
         } else if e.kind == EventKind.Data {
@@ -1367,26 +1560,51 @@ pub fn getWhole(text: &str, limit: usize) Response {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// The ALPN list a client's TLS offers: the config's, with "h2" put first
+// when it offers HTTP/2 (unless already there) and taken out when it does not
+fn alpnFor(names: &List[String], http2: bool) List[String] {
+  var out = List[String].empty();
+  var has = false;
+  var k = 0usize;
+  while k < names.len() {
+    if names[k].view() == "h2" {has = true;}
+    k = k + 1usize;
+  }
+  if http2 && !has {out.push(String.from("h2"));}
+  k = 0usize;
+  while k < names.len() {
+    if http2 || names[k].view() != "h2" {out.push(names[k].copy());}
+    k = k + 1usize;
+  }
+  out
+}
+
 // Whether a status is a redirect the client follows
 fn followsRedirect(s: u16) bool {
   s == 301u16 || s == 302u16 || s == 303u16 || s == 307u16 || s == 308u16
 }
 
 // Whether a fetch whose attempt failed with fl may be sent again (see the
-// package's header, RETRIES): the failure is its connection's end (not one
-// that could not be made, nor TLS, nor a refusal or a timeout), and either no
-// byte of the request reached the socket, or no byte of a response came and
-// the method is idempotent or the connection a reused one (the idle race:
-// the server closed a kept connection as the request went out). A refusal
-// that says the server did not process the request (HTTP/2's REFUSED_STREAM,
-// http's ErrorKind.Refused once it has it) joins 'unsent' here
-fn safeToRetry(fl: &Failure, method: Method, reused: bool) bool {
+// package's header, RETRIES). A refusal that says the server did not process
+// the request (http's ErrorKind.Refused: HTTP/2's REFUSED_STREAM, or a stream
+// above a GOAWAY's last) is safe whatever the method; a stream reset
+// (ErrorKind.Reset) is not, unless no byte of a response came and the method
+// is idempotent. Otherwise the failure must be its connection's end (not one
+// that could not be made, nor TLS, nor a protocol refusal or a timeout), and
+// either no byte of the request reached the socket, or no byte of a response
+// came and the method is idempotent or the connection a reused HTTP/1.1 one
+// (the idle race: the server closed a kept connection as the request went
+// out; an HTTP/2 server says so with GOAWAY, which is a Refused)
+fn safeToRetry(fl: &Failure, method: Method, reused: bool, h2: bool) bool {
+  let kind = fl.error.kind;
+  if kind == ErrorKind.Refused {return true;}
+  if kind == ErrorKind.Reset {return fl.error.noResponse && isIdempotent(method);}
   let s = fl.stage;
   let connEnded = s == Stage.Read || s == Stage.Write || s == Stage.Closed ||
-    (s == Stage.Http && fl.error.kind == ErrorKind.Closed);
+    (s == Stage.Http && kind == ErrorKind.Closed);
   if !connEnded {return false;}
   if fl.unsent {return true;}
-  fl.error.noResponse && (isIdempotent(method) || reused)
+  fl.error.noResponse && (isIdempotent(method) || (reused && !h2))
 }
 
 // Whether v is in l

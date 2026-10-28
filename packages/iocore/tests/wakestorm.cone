@@ -1,0 +1,119 @@
+// Wakers hammering one loop while it drains: no wake is lost, and wakes are
+// coalesced (a wake asked while one is still waiting to be taken posts
+// nothing: Windows' port packet, Linux's eventfd and its word).
+//
+// Several threads each do what a real poster does: make the thing the loop is
+// to find (here a count it reads), then wake. The loop polls, and after each
+// poll reads the count, then spends a little time as a loop does handling what
+// it took (the window in which more wakes arrive while it is not waiting). A
+// wake that is lost shows as a poll that sleeps out its whole timeout with
+// the count ahead of what the loop has seen; none may.
+//
+// 1. Rounds of 4 threads x 3000 wakes each: every thing made is seen, none of
+//    the polls timed out with work outstanding, every wake returned true.
+// 2. The loop took fewer wakes than were asked (coalesced), and at least one.
+// 3. After a round a single wake still ends a poll, promptly (the word that
+//    coalesces is back down when the loop took its packet).
+
+mod wakestorm;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+
+const rounds = 20u32;
+const wakesEach = 3000u64;
+
+// What the posters have made so far, across rounds
+var made: Atomic[u64];
+
+fn @initpure init() {
+  made = Atomic[u64].of(0u64);
+}
+
+struct Poster {
+  pub w: Waker;
+  pub n: u64;
+}
+
+// Make a thing, wake; n times. How many wakes returned false
+fn poster(a: Poster) u64 {
+  var refused = 0u64;
+  var k = 0u64;
+  while k < a.n {
+    made.add(1u64);
+    if !a.w.wake() {refused = refused + 1u64;}
+    k = k + 1u64;
+    if k % 64u64 == 0u64 {thread.yieldNow();}
+  }
+  refused
+}
+
+// Handling what a poll took: a loop is busy for a while before it polls again
+fn busy() {
+  let until = Instant.now() + Duration.fromNanos(20000i64);
+  while Instant.now() < until {}
+}
+
+fn nudge(w: Waker) bool {
+  thread.sleep(Duration.fromMillis(20i64));
+  w.wake()
+}
+
+fn main() i32 {
+  {
+    var m = Loop.mustMake();
+    var out = List[Completion].empty();
+    var lost = 0u64;
+    var refused = 0u64;
+    var unseen = 0u64;
+    var polls = 0u64;
+    var asked = 0u64;
+    let wakesBefore = m.counters().wakes;
+    var r = 0u32;
+    while r < rounds {
+      var seen = made.load();
+      let target = seen + 4u64 * wakesEach;
+      let t0 = thread.start(Poster(m.waker(), wakesEach), &poster);
+      let t1 = thread.start(Poster(m.waker(), wakesEach), &poster);
+      let t2 = thread.start(Poster(m.waker(), wakesEach), &poster);
+      let t3 = thread.start(Poster(m.waker(), wakesEach), &poster);
+      asked = asked + 4u64 * wakesEach;
+      let limit = Instant.now() + Duration.fromSeconds(30i64);
+      while seen < target && Instant.now() < limit {
+        // A poll that sleeps out its timeout with work made meanwhile is a
+        // lost wake
+        let t = Instant.now();
+        m.poll(t + Duration.fromSeconds(2i64), &mut out);
+        polls = polls + 1u64;
+        let now = made.load();
+        if t.elapsed() >= Duration.fromMillis(1900i64) && now > seen {lost = lost + 1u64;}
+        busy();
+        seen = now;
+      }
+      if seen < target {unseen = unseen + 1u64;}
+      refused = refused + t0.join() + t1.join() + t2.join() + t3.join();
+      r = r + 1u32;
+    }
+    let received = m.counters().wakes - wakesBefore;
+    expectUInt(lost, 0u64, "no poll slept out its timeout with a wake owed");
+    expectUInt(unseen, 0u64, "every round saw everything its posters made");
+    expectUInt(refused, 0u64, "every wake reached the loop");
+    expect(received >= 1u64, "the loop took wakes");
+    expect(received < asked, "and fewer than were asked: they coalesced");
+
+    // 3. The word is down again: one wake, one prompt end of a poll
+    out.clear();
+    m.poll(Instant.now(), &mut out);
+    let t0 = Instant.now();
+    let nudger = thread.start(m.waker(), &nudge);
+    m.poll(Instant.now() + Duration.fromSeconds(5i64), &mut out);
+    let took = t0.elapsed();
+    expect(nudger.join(), "the wake reached the loop");
+    expect(took >= Duration.fromMillis(15i64), "after the sleep");
+    expect(took < Duration.fromSeconds(2i64), "and not long after");
+  }
+  done()
+}

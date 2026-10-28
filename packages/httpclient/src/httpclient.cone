@@ -44,8 +44,8 @@
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
 //   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)
-//   Config.make(): conn tlsConfig maxPerOrigin maxTotal idleTimeout maxLifetime  (CONFIGURATION)
-//     maxQueued maxRetries maxRedirects userAgent
+//   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
+//     maxLifetime maxQueued maxRetries maxRedirects userAgent
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
 //   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
@@ -53,7 +53,7 @@
 //   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
 //     e.trailers e.failure e.timing;  e.isTerminal()
 //   EventKind: Response Data End Done Failed Cancelled TimedOut;  eventName(k)
-//   Response: r.outcome r.status r.headers r.body r.url r.failure r.timing r.isOk()
+//   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
 //   Failure: f.stage f.code f.error f.unsent f.attempts f.message();  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
 //
@@ -75,7 +75,8 @@
 // follows. Each gives a FetchId and later exactly one final answer, Done,
 // Failed, Cancelled or TimedOut, and nothing after it (invariant I1). Before
 // it: Response (the head of the response that will be the answer, after any
-// redirects, with the URL that gave it), Data (the body's bytes, in order,
+// redirects, with the URL that gave it; its head's 'version' says which
+// protocol carried it, see HTTP/2), Data (the body's bytes, in order,
 // each an IoBuf the program owns), End (the body is whole, with its trailer
 // fields). A fetch that cannot be made is answered at once: a URL that does
 // not parse or is not http or https (Stage.Url), the queue full (Queue), its
@@ -86,7 +87,7 @@
 // coding (no Accept-Encoding): bodies arrive as the server stores them.
 // 'fetchWhole(lp, request, limit)' does it all in one call: it drives the
 // loop until the fetch's final answer and gives a Response, its status,
-// fields and whole body, or its failure; a body longer than limit fails it
+// version, fields and whole body, or its failure; a body longer than limit fails it
 // (Stage.Limit). Events for other fetches that arrive meanwhile are kept
 // for the next poll; it polls the loop as 'poll' does, so a loop that also
 // runs other work (a server's driver) cannot use it, since what completes
@@ -110,7 +111,8 @@
 // so a DNS change or a new server behind a load balancer is seen. A
 // connection closing (its FIN sent, the server's awaited) counts toward
 // neither limit. HTTP/1.1 carries one request at a time on a connection
-// (no pipelining), so these are also the most requests under way at once.
+// (no pipelining), so these are also the most requests under way at once
+// over HTTP/1.1; an HTTP/2 connection carries many (HTTP/2, below).
 // Every https connection takes its TLS session from one tls.Client the
 // client makes from 'config.tlsConfig' (the OS's own verifier unless it
 // says otherwise), so a new connection to a server resumes from a TLS
@@ -137,10 +139,35 @@
 // request is first get them first. A request is given a connection only
 // once it is free -- connected, idle -- never queued behind another's
 // exchange, so a request asked for later at a higher intent overtakes every
-// one still waiting. Under way, a request's intent changes nothing more
-// over HTTP/1.1 (no priority on the wire; HTTP/2 and HTTP/3's
-// PRIORITY_UPDATE to come). An intent is strict: a Background request waits
-// while any Urgent one does for the same connections.
+// one still waiting. On HTTP/2 the same order decides which waiting request
+// becomes the next stream when the server allows one more. Under way, a
+// request's intent changes nothing more (no priority on the wire: RFC 9218's
+// Priority field and PRIORITY_UPDATE are to come). An intent is strict: a
+// Background request waits while any Urgent one does for the same
+// connections.
+//
+// HTTP/2. An https connection offers HTTP/2 by ALPN ('http2', true by
+// default: "h2" put before "http/1.1" in the TLS config's list; false takes
+// it out) and speaks it when the server chooses it; an http connection
+// speaks it only by prior knowledge ('conn.h2PriorKnowledge': every http
+// connection of the client's, from its first byte, never by an Upgrade).
+// Each Response says which protocol carried it ('version': Version.Http2 or
+// Http11); the program's calls are the same either way. Per origin, one
+// HTTP/2 connection carries many fetches, a stream each: while it takes
+// requests no other is opened to the origin, so maxPerOrigin bounds the
+// HTTP/1.1 connections alone (maxTotal counts both). A fetch becomes a
+// stream only while the server allows another (its MAX_CONCURRENT_STREAMS);
+// the rest wait in the client's queue, in the order. A connection's protocol
+// is known once its TLS handshake has chosen it, and an origin remembers
+// what its last connection spoke: one known to speak HTTP/2 opens a single
+// connection and waits for it; one not yet known opens connections as for
+// HTTP/1.1, each taking one fetch until its protocol is chosen, and those
+// left over once it is HTTP/2 close as soon as they carry nothing. A
+// connection going away (the server's GOAWAY, its idle timeout, its
+// lifetime passed) takes no new fetch, and the next opens another while
+// the streams still on it finish. A stream reset or cancelled ends that
+// fetch alone: the connection carries on. An idle HTTP/2 connection closes
+// after idleTimeout, as an HTTP/1.1 one does.
 //
 // RETRIES (invariant I21). A request is tried again, on another connection,
 // when its connection ended under it -- reset, closed, a receive or send
@@ -149,12 +176,17 @@
 // repeat: no byte of it reached the socket (httpconn's 'unsent'); or no
 // byte of a response arrived ('noResponse') and either its method is
 // idempotent (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) or its connection was
-// a reused one, kept from an exchange before: a kept connection the server
-// closed as the request went out (the idle race) never read it, whatever
-// its method. At most 'maxRetries' times (2), and never once its Response
-// has gone to its sink. A connection that could not be made, a TLS failure,
-// a protocol refusal and a timeout are not retried. A retried request keeps
-// its place in the order.
+// a reused HTTP/1.1 one, kept from an exchange before: a kept connection the
+// server closed as the request went out (the idle race) never read it,
+// whatever its method (an HTTP/2 server says so with GOAWAY instead). On
+// HTTP/2, a stream the server refused -- REFUSED_STREAM, or a stream above
+// its GOAWAY's last (http's ErrorKind.Refused: not processed) -- is tried
+// again whatever its method, and a stream it reset (ErrorKind.Reset) only
+// when no byte of a response came and its method is idempotent. At most
+// 'maxRetries' times (2), and never once its Response has gone to its sink.
+// A connection that could not be made, a TLS failure, a protocol refusal
+// and a timeout are not retried. A retried request keeps its place in the
+// order.
 //
 // REDIRECTS. A response of 301, 302, 303, 307 or 308 with a Location is
 // followed, up to 'maxRedirects' (10, reqwest's) or the request's own;
@@ -172,7 +204,8 @@
 // CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
 // id)' asks a fetch to end: waiting, it is taken out and answered Cancelled
 // at once; under way, its connection's exchange is ended (HTTP/1.1 can only
-// reset the connection) and the answer says how it ended -- Cancelled, or
+// reset the connection; HTTP/2 resets the stream alone) and the answer
+// says how it ended -- Cancelled, or
 // what it had come to first. A Request's 'deadline' (an absolute Instant)
 // answers it TimedOut then, waiting or under way, across its retries and
 // redirects; its 'group', an iocore CancelGroup, cancels it with the
@@ -190,7 +223,8 @@
 // delivered Here; for a channel, as the channel takes them. Its connection
 // reads no more than httpconn's body window (256 KiB) ahead of what was
 // released, and TCP holds the server: a slow consumer slows the link, never
-// fills memory. A fetch's final answer releases what it still had out (the
+// fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
+// initialWindowSize, 256 KiB: a slow consumer stops only its own stream). A fetch's final answer releases what it still had out (the
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
@@ -203,7 +237,8 @@
 // kind, detail, and noResponse), 'unsent', and how many attempts were made.
 //
 // DIAGNOSTICS. 'stats()' counts fetches by their final answer, retries,
-// redirects, requests sent on a kept connection against new ones,
+// redirects, requests sent on a kept connection against new ones (and as
+// HTTP/2 streams),
 // connections opened and closed, events delivered, held and dropped, the
 // queue now and at its deepest; 'driverStats()' is the driver's own. Done
 // carries the fetch's Timing: when it was asked for, last given a
@@ -238,8 +273,9 @@
 //   sessions most of it. The client's own record of a pooled connection is
 //   32 bytes.
 //
-// Not here yet: a request body streamed (it is sent whole); HTTP/2 and
-// HTTP/3 (and their priorities on the wire), Alt-Svc and HTTPS records;
+// Not here yet: a request body streamed (it is sent whole); HTTP/3, and
+// priorities on the wire (RFC 9218), Alt-Svc and HTTPS records; a second
+// HTTP/2 connection to an origin whose streams are all in use;
 // compression (no Accept-Encoding is sent, and a Content-Encoding is left to
 // the program); cookies; proxies; authentication (a URL's user information
 // is never sent); a cache; happy eyeballs (httpconn tries a name's addresses
@@ -317,8 +353,9 @@ pub struct FetchId {
 
 // A client's bounds, limits and timeouts (see the package's header)
 pub struct Config {
-  pub conn: httpconn.Config;     // its driver's: connect timeout, buffers, and http1's bounds and timeouts
+  pub conn: httpconn.Config;     // its driver's: connect timeout, buffers, http1's and http2's bounds and timeouts
   pub tlsConfig: tls.ClientConfig;  // its https connections' TLS: the verifier, versions, resumption
+  pub http2: bool;               // https offers HTTP/2 (ALPN "h2" before "http/1.1"); false: HTTP/1.1 only
   pub maxPerOrigin: u32;         // connections open to one origin
   pub maxTotal: u32;             // connections open in all
   pub idleTimeout: Duration;     // an idle pooled connection is closed after it
@@ -330,7 +367,7 @@ pub struct Config {
 
   // The defaults
   pub fn make() Config {
-    Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), maxPerOrigin: 16u32,
+    Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), http2: true, maxPerOrigin: 16u32,
       maxTotal: 256u32, idleTimeout: Duration.fromSeconds(50i64), maxLifetime: Duration.fromMinutes(5i64),
       maxQueued: 10000u32, maxRetries: 2u32, maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"))
   }
@@ -558,6 +595,7 @@ pub struct Event {
 pub struct Response {
   pub outcome: EventKind;     // Done, Failed, Cancelled or TimedOut
   pub status: u16;
+  pub version: Version;       // the protocol that carried it: Http11, or Http2
   pub headers: Headers;
   pub body: String;           // the whole body, as bytes
   pub url: String;            // the URL that answered, after any redirects
@@ -565,8 +603,8 @@ pub struct Response {
   pub timing: Timing;
 
   pub fn blank() Response {
-    Response(EventKind.Failed, 0u16, Headers.empty(), String.empty(), String.empty(), Failure.none(),
-      Timing.zero())
+    Response(EventKind.Failed, 0u16, Version.Http11, Headers.empty(), String.empty(), String.empty(),
+      Failure.none(), Timing.zero())
   }
 
   // Whether it ended Done
@@ -589,6 +627,7 @@ pub struct ClientStats {
   pub redirects: u64;      // redirects followed
   pub sent: u64;           // requests given a connection (attempts)
   pub reused: u64;         // ...on a connection that had carried an exchange before
+  pub streams: u64;        // ...as an HTTP/2 stream
   pub connects: u64;       // connections opened
   pub closed: u64;         // connections ended
   pub events: u64;         // events handed to sinks
@@ -604,6 +643,6 @@ pub struct ClientStats {
 
   pub fn zero() ClientStats {
     ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
+      0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
   }
 }
