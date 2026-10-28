@@ -483,12 +483,17 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         flowDropNote(flowCurrent, var);
     }
     // A part of a local's own value -- a field, an element -- is stored over:
-    // its old value is released unless the variable holds none (never given a
-    // value, or moved out), whose part is garbage or another owner's
-    else if ((lval->tag == FldAccessTag || lval->tag == ArrIndexTag) && !flowNoDeath(((IExpNode *)lval)->vtype)) {
+    // its old value is released unless the variable holds none (moved out),
+    // whose part is another owner's
+    // (a variable never given a value has no parts to store into: the whole of
+    // it is given first, so that no part is left holding nothing)
+    else if (lval->tag == FldAccessTag || lval->tag == ArrIndexTag) {
         VarDclNode *root = flowLvalRootVar(lval);
-        if (root && (!(root->flowtempflags & VarInitialized) || (root->flowtempflags & (VarMoved | VarHollow))
-                || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
+        if (root && !(root->flowtempflags & VarInitialized) && !flowNewSelfVar(root))
+            errorMsgNode(lval, ErrorMove, "A field or element is stored only into a variable that holds a value. Give the whole variable its value first.");
+        else if (!flowNoDeath(((IExpNode *)lval)->vtype) && root
+                && ((root->flowtempflags & (VarMoved | VarHollow))
+                    || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
             lval->flags |= FlagPartNoPrior;
     }
 

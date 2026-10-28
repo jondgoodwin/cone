@@ -1,0 +1,152 @@
+// A local declared without a value is borrowed only where every path reaching
+// the borrow has given it one. A borrow of one that has none lets a method read
+// memory that was never written (a 'List' declared and pushed to corrupted a
+// heap), so it is refused as a read of it is: '&c', '&mut c', a method called
+// on it, and a borrow of, or a method called through, a field of it. A field or
+// an element stored into such a variable is refused too, as the whole variable
+// must hold a value first. The accepted neighbours are in
+// move_flow_uninit_borrow_ok.
+
+mod move_flow_uninit_borrow;
+
+struct Counter {
+  pub n: i32;
+  pub fn bump(self: &mut) { n = n + 1; }
+  pub fn get(self: &) i32 { n }
+}
+
+struct Pair {
+  pub a: i32;
+  pub b: Counter;
+}
+
+enum Dir {
+  Up, Down, Left
+}
+
+fn peek(c: &Counter) i32 { c.get() }
+fn fill(c: &mut Counter) { c.n = 5; }
+
+// A method call borrows its receiver
+fn methodNeverAssigned() {
+  var c: Counter;
+  c.bump();                //~ ErrorMove:3 "has not been initialized"
+}
+
+// An explicit shared borrow
+fn sharedBorrow() i32 {
+  var c: Counter;
+  peek(&c)                 //~ ErrorMove:9 "has not been initialized"
+}
+
+// An explicit mutable borrow, as a call that means to fill it would take
+fn mutBorrow() {
+  var c: Counter;
+  fill(&mut c);            //~ ErrorMove:13 "has not been initialized"
+}
+
+// A borrow of a plain number
+fn borrowNumber() i32 {
+  var x: i32;
+  let r = &x;              //~ ErrorMove:12 "has not been initialized"
+  *r
+}
+
+// A borrow of a field of a variable that holds nothing
+fn borrowField() i32 {
+  var p: Pair;
+  peek(&p.b)               //~ ErrorMove:9 "has not been initialized"
+}
+
+// A method called through a field of one
+fn methodThroughField() i32 {
+  var p: Pair;
+  p.b.get()                //~ ErrorMove:3 "has not been initialized"
+}
+
+// A field stored into one
+fn fieldStore() {
+  var p: Pair;
+  p.a = 3;                 //~ ErrorMove:4 "stored only into a variable"
+}
+
+// An element stored into an array that holds nothing
+fn elementStore(i: i32) {
+  var a: Array[i32, 4];
+  a[1] = i;                //~ ErrorMove:4 "stored only into a variable"
+}
+
+// Given a value on one branch only, then borrowed
+fn oneBranchBorrow(k: bool) i32 {
+  var c: Counter;
+  if k { c = Counter(1); }
+  peek(&c)                 //~ ErrorMove:9 "may not have been given a value"
+}
+
+// Given a value on one branch only, then a method called
+fn oneBranchMethod(k: bool) {
+  var c: Counter;
+  if k { c = Counter(1); }
+  c.bump();                //~ ErrorMove:3 "may not have been given a value"
+}
+
+// A field stored where one branch gave the variable no value
+fn oneBranchFieldStore(k: bool) {
+  var p: Pair;
+  if k { p = Pair(1, Counter(2)); }
+  p.a = 3;                 //~ ErrorMove:4 "stored only into a variable"
+}
+
+// A 'match' with an arm that gives it none
+fn matchSomeArms(d: Dir) i32 {
+  var c: Counter;
+  match d {
+    case is Up { c = Counter(1); }
+    case is Down { c = Counter(2); }
+    case is Left { }
+  }
+  peek(&c)                 //~ ErrorMove:9 "may not have been given a value"
+}
+
+fn matchOneArmMethod(d: Dir) {
+  var c: Counter;
+  match d {
+    case is Up { c = Counter(1); }
+    else { }
+  }
+  c.bump();                //~ ErrorMove:3 "may not have been given a value"
+}
+
+// The first pass of a loop borrows what only a later pass gives a value
+fn loopEarlierPass(n: i32) {
+  var c: Counter;
+  var i = 0;
+  while i < n {
+    c.bump();              //~ ErrorMove:5 "has not been initialized"
+    c = Counter(0);
+    i = i + 1;
+  }
+}
+
+// The same, where the value is given in an arm the first pass takes and a later
+// pass skips
+fn loopEarlierPassArm(n: i32) {
+  var c: Counter;
+  var i = 0;
+  while i < n {
+    if i == 0 { c = Counter(0); }
+    if i > 0 { c.bump(); } //~ ErrorMove:16 "may not have been given a value"
+    i = i + 1;
+  }
+}
+
+// A loop that may not run
+fn loopMayNotRun(n: i32) i32 {
+  var c: Counter;
+  var i = 0;
+  while i < n {
+    c = Counter(i);
+    i = i + 1;
+  }
+  peek(&c)                 //~ ErrorMove:9 "may not have been given a value"
+}

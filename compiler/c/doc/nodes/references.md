@@ -608,10 +608,10 @@ first thing in an owner's release when the owner is a guard
 ## Flow
 
 `allocateFlow` loads and move-or-copies the initial value. `borrowFlow` asks
-only that the borrowed place was not moved out: it walks the place to the
-variable at its root, which `nameuseFlowBorrowed` refuses if moved out or
-hollowed, as a read is refused. Unlike a read, a variable never initialized may
-be borrowed, so that a method taking it `&mut` can fill it in. A reference the place is reached through is
+only that the borrowed place held a value: it walks the place to the
+variable at its root, which `nameuseFlowBorrowed` refuses if moved out,
+hollowed or never given a value, as a read is refused (a variable given a value
+on some paths only is the path walk's, `dropUse`). A reference the place is reached through is
 loaded as a value, not read through, and an index is read. A borrow
 deactivates nothing and records nothing, so no aliasing of borrows is tracked.
 

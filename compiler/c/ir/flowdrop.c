@@ -136,8 +136,22 @@ static void dropRefuse(INode *node, uint8_t state, int borrow) {
     mapFind(node, UINT32_MAX);
     if (state & (DropMoved | DropHollow))
         errorMsgNode(node, ErrorMove, "This variable's value may have been moved out on a path that reaches here (a branch, or an earlier pass of a loop). It is not certainly there to use.");
-    else if (!borrow)
+    else if (borrow)
+        errorMsgNode(node, ErrorMove, "This variable may not have been given a value on every path that reaches here. There is not certainly a value to borrow.");
+    else
         errorMsgNode(node, ErrorMove, "This variable may not have been given a value on every path that reaches here. There is not certainly a value to use.");
+}
+
+// A field or an element stored into a variable some path reaching the store gave
+// no value: the whole variable is given its value first
+void dropPartUse(uint32_t var, INode *node) {
+    PathVar *pv = &pathVars[var];
+    if (!pv->tracked || !(pv->state & DropUninit))
+        return;
+    if (mapFind(node, 0))
+        return;
+    mapFind(node, UINT32_MAX);
+    errorMsgNode(node, ErrorMove, "A field or element is stored only into a variable that holds a value on every path that reaches here. Give the whole variable its value first.");
 }
 
 void dropMove(uint32_t var, INode *node, int hollow) {
@@ -153,8 +167,7 @@ void dropUse(uint32_t var, INode *node, int borrow) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked || pv->state == DropWhole || pv->state == 0)
         return;
-    uint8_t missing = pv->state & (borrow ? (DropMoved | DropHollow) : (DropMoved | DropHollow | DropUninit));
-    if (missing)
+    if (pv->state & (DropMoved | DropHollow | DropUninit))
         dropRefuse(node, pv->state, borrow);
 }
 
