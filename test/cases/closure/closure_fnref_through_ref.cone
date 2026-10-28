@@ -1,0 +1,78 @@
+// A function reference reached through a reference to it, '&&fn(...)', called as
+// '(*g)(n)': '*g' is the function reference, loaded and called through. The
+// reference comes from a pattern binding into a borrowed Option ('case let
+// &Some(g)', 'if let &Some(g)'), a parameter, a local and a field. Beside them,
+// the spellings that already called: '(**g)(n)' through the same '&&fn', and
+// '(*f)(n)' on a plain '&fn', where '*f' is the function itself. Each result is
+// worked out by hand: 'bump' adds one, 'twice' doubles.
+
+mod closure_fnref_through_ref;
+
+import stdio use *;
+
+fn bump(n: &u32) u32 {*n + 1u32}
+fn twice(n: &u32) u32 {*n * 2u32}
+
+// The shape found by h3driver: a borrowed Option of a function reference
+fn fromCase(m: &Option[&fn(n: &u32) u32], n: &u32) u32 {
+  match m {
+    case let &Some(g) {return (*g)(n);}
+    else {}
+  }
+  0u32
+}
+
+fn fromIfLet(m: &Option[&fn(n: &u32) u32], n: &u32) u32 {
+  if let &Some(g) = m {return (*g)(n);}
+  0u32
+}
+
+// One more level of borrowing, matched through '*m'
+fn fromRefRef(m: &&Option[&fn(n: &u32) u32], n: &u32) u32 {
+  match *m {
+    case let &Some(g) {return (*g)(n);}
+    else {}
+  }
+  0u32
+}
+
+fn fromParam(g: &&fn(n: &u32) u32, n: &u32) u32 {(*g)(n)}
+
+fn fromDoubleDeref(g: &&fn(n: &u32) u32, n: &u32) u32 {(**g)(n)}
+
+fn fromPlain(f: &fn(n: &u32) u32, n: &u32) u32 {(*f)(n)}
+
+struct Holder {f: &fn(n: &u32) u32}
+
+fn fromField(h: &Holder, n: &u32) u32 {
+  let g = &h.f;
+  (*g)(n)
+}
+
+fn show(label: &str, n: u32) {
+  printStr(label);
+  printStr(" ");
+  printUInt(u64.from(n));
+  printStr("\n");
+}
+
+fn main() i32 {
+  let v = 3u32;
+  let o = Some[&fn(n: &u32) u32](&bump);
+  let none = None[&fn(n: &u32) u32];
+  show("case", fromCase(&o, &v));
+  show("case-none", fromCase(&none, &v));
+  show("iflet", fromIfLet(&o, &v));
+  show("iflet-none", fromIfLet(&none, &v));
+  let r = &o;
+  show("refref", fromRefRef(&r, &v));
+  let f = &twice;
+  show("param", fromParam(&f, &v));
+  show("doublederef", fromDoubleDeref(&f, &v));
+  show("plain", fromPlain(&twice, &v));
+  let held = &f;
+  show("local", (*held)(&v));
+  let h = Holder(&bump);
+  show("field", fromField(&h, &v));
+  0i32
+}

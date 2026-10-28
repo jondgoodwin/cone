@@ -630,13 +630,16 @@ static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallN
 
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype) {
 
-    // Handle call when we have a derefed pointer to a function
-    if (objfn->tag == DerefTag) {
+    // Handle call when we have a derefed pointer to a function: '(*f)(x)', where
+    // 'f' is a '&fn' or pointer to one, calls through 'f' itself. Where '*f' is
+    // instead a function reference ('f' a '&&fn'), it is called as any other is,
+    // below: '*f' is loaded and called through.
+    INode *fntype = iexpGetTypeDcl(objfn);
+    if (objfn->tag == DerefTag && fntype->tag != RefTag && fntype->tag != PtrTag) {
         INode *fnptr = ((StarNode*)objfn)->vtexp;
         return genlFnPtrCall(gen, genlPointee(((IExpNode*)fnptr)->vtype), genlExpr(gen, fnptr), fnargs, fnargcnt);
     }
     // Handle call when we have a ref or pointer to a function
-    INode *fntype = iexpGetTypeDcl(objfn);
     if (fntype->tag == RefTag || fntype->tag == PtrTag) {
         return genlFnPtrCall(gen, genlPointee(fntype), genlExpr(gen, objfn), fnargs, fnargcnt);
     }
