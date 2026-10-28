@@ -445,6 +445,8 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
             permLockRefused(lval, lvalperm, "write");
         else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagEachVar))
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval: the variable of an 'each' is a new one every pass that nothing can change. To change the items in place, walk src.mutItems()");
+        else if (lvalvar && lvalvar->tag == VarDclTag && (lvalvar->flags & FlagMacroBind))
+            macroParmAssignRefused(lval, (VarDclNode*)lvalvar);
         else
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;

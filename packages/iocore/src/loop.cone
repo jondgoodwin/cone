@@ -1940,6 +1940,14 @@ pub struct Loop {
           associated = false;
           stats.timerExpiries = stats.timerExpiries + 1u64;
         } else {
+          // Lowered before the wake is acted on, as lxDrain does: a poster
+          // after this posts a packet again. A swap, not a store: a store
+          // followed by the loads of what the wake was for can be reordered
+          // (the store buffer), so the loop could read before its 0 is
+          // visible and miss data whose poster's swap then still saw 1 and
+          // posted nothing. The swap is a full read-modify-write and acquires
+          // the poster's release
+          if key == keyWake {port.wakes.swap(0u32);}
           n = n + self.handlePacket(key, (*e).ov, at, out);
         }
         k = k + 1usize;

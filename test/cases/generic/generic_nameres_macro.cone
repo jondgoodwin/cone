@@ -9,6 +9,9 @@
 //
 // Bare names that are not members stay legal in the body: a static function of
 // the type, a global, a function, and the macro's own parameters.
+//
+// A macro parameter's type is resolved here too, so what it may not name is
+// refused here: a function, nothing, or a trait.
 
 mod generic_nameres_macro;
 
@@ -64,5 +67,43 @@ macro typedByAFunction[a: twice] {     //~ ErrorNotType:27 "must be a type"
 }
 
 macro typedByNothing[a: Nonesuch] {    //~ ErrorUnkName:25
+  a
+}
+
+// A macro parameter typed by a trait is refused as not built, as a constraint
+// on a macro's type parameter is ('[T: Ordered]', generic_parse): what either
+// would accept waits for generics. A generic trait's instance is one too. An
+// enum is a closed family whose values a parameter holds, and a reference to
+// a trait is a concrete type, so neither is refused.
+trait Ordered {
+  fn less(self: &, other: &Self) bool;
+}
+
+trait Pile[T] {
+  fn put(self: &mut, v: T);
+}
+
+enum Coin {
+  Heads;
+  Tails;
+}
+
+macro typedByATrait[a: Ordered] {       //~ ErrorGenParmConstr:24 "typed by a trait"
+  a
+}
+
+macro typedByALazyTrait[a: lazy Ordered] {    //~ ErrorGenParmConstr:33 "typed by a trait"
+  a
+}
+
+macro typedByATraitInstance[p: Pile[i64]] {   //~ ErrorGenParmConstr:32 "typed by a trait"
+  p
+}
+
+macro typedByAnEnum[c: Coin] {
+  c
+}
+
+macro typedByATraitRef[a: &Ordered] {
   a
 }
