@@ -255,13 +255,20 @@ fn waitClosed(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, event
 // A connection whose handshake is refused: its request's failure
 fn refused(label: &str, drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &uni List[Event],
     stream: tls.Stream, port: u16, want: &str) {
+  refusedShowing(label, drv, lp, sv, cl, events, stream, port, want, true);
+}
+
+// The same, with the failure's words printed only when 'show' (the OS's
+// verifier has its own words on each system: Windows' text, OpenSSL's)
+fn refusedShowing(label: &str, drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &uni List[Event],
+    stream: tls.Stream, port: u16, want: &str, show: bool) {
   let conn = drv.connectWith(lp, "127.0.0.1", port, Uni[tls.Stream](stream), Sink.Here(tokConn));
   exchange(drv, lp, sv, cl, events, conn, RequestHead.get("/hello", "localhost"), "");
   printStr(label);
   printStr(": ");
   printStr(eventName(cl.last));
   printStr(": ");
-  printStr(cl.failure.view());
+  printStr(if show {cl.failure.view()} else {"(the system's words)"});
   printStr("\n");
   expect(cl.last == EventKind.Failed, label);
   expect(cl.stage == Stage.Tls, "...at the TLS stage");
@@ -401,9 +408,14 @@ fn main() i32 {
   // The OS's verifier, on the pool: the test root is not the machine's
   let platform = client(tls.Verifier.platform());
   let pre = tls.stats();
-  refused("the OS's verifier", &mut drv, &mut lp, &mut sv, &mut cl, &uni events, platform.stream("localhost"),
-    good, "not trusted");
-  expectUInt(u64.from(cl.code), 0x800B0109u64, "the failure carries Windows' CERT_E_UNTRUSTEDROOT");
+  refusedShowing("the OS's verifier", &mut drv, &mut lp, &mut sv, &mut cl, &uni events, platform.stream("localhost"),
+    good, if isWindows() {"not trusted"} else {"unable to get local issuer certificate"}, false);
+  // The failure carries the platform's own number: Windows' CERT_E_UNTRUSTEDROOT, or on Linux OpenSSL's
+  // X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY (the test root is not the system's); the kind is the same
+  expectUInt(u64.from(cl.code), if isWindows() {0x800B0109u64} else {20u64}, "the failure carries the platform's own number");
+  expect(tls.certErrorKind(cl.code) == tls.TlsErrorKind.CertUntrusted, "...which reads as CertUntrusted on either");
+  expect(cl.failure.contains(if isWindows() {"(Windows 0x800b0109)"} else {"(OpenSSL's verify result 20)"})
+    && !cl.failure.contains("Windows error"), "...in the words once, with the number");
   expectUInt(tls.stats().verifications - pre.verifications, 1u64, "one verification, on the pool");
 
   // Every connection ends; nothing is left

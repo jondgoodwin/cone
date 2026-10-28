@@ -17,7 +17,7 @@ pub enum ServerErrorKind {
 // to it answers Closed
 pub struct ServerError {
   cause: ServerErrorKind;
-  pub code: u32;           // Failed: the system's error number when it gave one, else 0
+  pub code: u32;           // Failed: the system's own number when it gave one (Windows' error, the errno on Linux), else 0
   text: String;
 
   pub fn failed(code: u32, text: &str) ServerError {ServerError(ServerErrorKind.Failed, code, String.from(text))}
@@ -28,15 +28,14 @@ pub struct ServerError {
   // The server or the exchange is over
   pub fn isClosed(self: &) bool {cause == ServerErrorKind.Closed}
 
-  // 'could not listen: ... (Windows error ...)', or 'closed'
+  // 'could not listen (address in use, OS error 10048: Only one usage of
+  // each socket address ...)', or 'closed'
   pub fn message(self: &) String {
     if cause == ServerErrorKind.Closed {return String.from("closed");}
     var out = String.from(text.view());
     if code != 0u32 {
-      out.append(" (Windows error ");
-      out.appendUInt(u64.from(code));
-      out.append(": ");
-      out.append(IoError(code).message().view());
+      out.append(" (");
+      out.append(IoError(code).describe().view());
       out.append(")");
     }
     out

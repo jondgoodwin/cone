@@ -572,12 +572,13 @@ pub struct Connection is Move {
     if c.isDone() && c.buf.len() >= 4usize {
       self.verified(readU32(c.buf.base()));
     } else if c.isDone() {
-      self.verified(genericFailure);
+      self.verified(tls.genericFailure());
     } else {
-      let code = if c.code == 0u32 {genericFailure} else {c.code};
+      // The job did not run: iocore's account of it, and its number the system's own
+      let e = c.error();
+      let code = if e.code == 0u32 {tls.genericFailure()} else {e.code};
       var d = String.from("the OS's verifier could not be run: ");
-      let text = IoError(code).message();
-      d.append(text.view());
+      d.append(e.describe().view());
       self.failWith(QuicError(errCrypto, code, d));
       self.verified(code);
     }
@@ -591,16 +592,16 @@ pub struct Connection is Move {
     verifyStage = stageRunning;
     var job = verifyJob(ssl, host.view());
     tls.verifyWork(if offline {1u64} else {0u64}, &mut job);
-    self.verified(if job.len() >= 4usize {readU32(job.base())} else {genericFailure});
+    self.verified(if job.len() >= 4usize {readU32(job.base())} else {tls.genericFailure()});
   }
 
   // Pinning: the server's own key against the pins, now
   fn checkPins(self: &mut) {
     verifyStage = stageRunning;
-    self.verified(if pinMatches(ssl, pins.view()) {0u32} else {certUntrustedRoot});
+    self.verified(if pinMatches(ssl, pins.view()) {0u32} else {pinsRefused()});
   }
 
-  // The verdict: 0 trusted, else Windows' error. It goes in the callback
+  // The verdict: 0 trusted, else the verifier's own number (tls's). It goes in the callback
   // block for verifyChain, and the handshake goes on from where it stopped
   fn verified(self: &mut, code: u32) {
     if verifyStage != stageRunning {return;}

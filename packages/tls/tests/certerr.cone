@@ -1,0 +1,42 @@
+// The platform verifier's own numbers, and what they stand for. A certificate
+// the OS refuses keeps the number its verifier gave, as it is: Windows' error
+// (CERT_E_..., crypt32's) on Windows, OpenSSL's verify result (X509_V_ERR_...)
+// on Linux. What a program matches on is the kind, the same on both:
+// certErrorKind reads each system's number. This checks the table of the
+// system it runs on, number by number, and the words (the OS's text, and the
+// number in the system's own spelling).
+
+mod certerr;
+
+import testing use *;
+import tls;
+
+// The system's number: Windows' or Linux's
+fn n(win: u32, lx: u32) u32 {if isWindows() {win} else {lx}}
+
+fn main() i32 {
+  expect(tls.certErrorKind(n(0x800B0101u32, 10u32)) == tls.TlsErrorKind.CertExpired,
+    "expired: CERT_E_EXPIRED, X509_V_ERR_CERT_HAS_EXPIRED");
+  expect(tls.certErrorKind(n(0x800B010Fu32, 62u32)) == tls.TlsErrorKind.CertNameMismatch,
+    "another name: CERT_E_CN_NO_MATCH, X509_V_ERR_HOSTNAME_MISMATCH");
+  expect(tls.certErrorKind(n(0x800B0109u32, 20u32)) == tls.TlsErrorKind.CertUntrusted,
+    "untrusted: CERT_E_UNTRUSTEDROOT, X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY");
+  expect(tls.certErrorKind(n(0x800B010Au32, 19u32)) == tls.TlsErrorKind.CertUntrusted,
+    "untrusted: CERT_E_CHAINING, X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN");
+  expect(tls.certErrorKind(n(0x80092010u32, 23u32)) == tls.TlsErrorKind.CertRevoked,
+    "revoked: CRYPT_E_REVOKED, X509_V_ERR_CERT_REVOKED");
+  expect(tls.certErrorKind(tls.genericFailure()) == tls.TlsErrorKind.CertOther, "no more specific reason: refused");
+  expect(tls.certErrorKind(n(5u32, 1000u32)) == tls.TlsErrorKind.CertOther, "a number of no table: refused");
+  expect(tls.genericFailure() != 0u32, "the generic failure is no 'trusted'");
+
+  // Each system's number is not the other's: on Linux a Windows number is no verify result
+  expect(isWindows() || tls.certErrorKind(0x800B0109u32) == tls.TlsErrorKind.CertOther,
+    "on Linux, CERT_E_UNTRUSTEDROOT is no verify result");
+
+  // The words: the OS's text, and the number as the system spells it
+  let words = tls.certErrorText(n(0x800B0109u32, 20u32));
+  expect(words.contains(if isWindows() {"(Windows 0x800b0109)"} else {"(OpenSSL's verify result 20)"}), "the number in the words");
+  expect(words.len() > 22usize, "and the OS's text before it");
+  expect(words.contains(if isWindows() {"not trusted"} else {"unable to get local issuer certificate"}), "...the system's own");
+  done()
+}

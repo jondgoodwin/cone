@@ -895,13 +895,15 @@ if e.kind == EventKind.End {
 		<span class="pre">code</span> when the system gave one (Windows' on Windows, the <span class="pre">errno</span> on
 		Linux, which <span class="pre">iocore</span>'s <span class="pre">IoError(code)</span> reads as its
 		<a href="conc-io.html#await-io-errors">kind</a>: a reset reads as 64 or 104, both
-		<span class="pre">ConnectionReset</span>; the system's certificate verifier refusing as
-		<span class="pre">CERT_E_UNTRUSTEDROOT</span> and its kin, on both); an
+		<span class="pre">ConnectionReset</span>; the system's certificate verifier refusing as its own number, Windows'
+		<span class="pre">CERT_E_UNTRUSTEDROOT</span> and its kin or OpenSSL's verify result on Linux, which
+		<span class="pre">tls.certErrorKind(code)</span> reads as a <span class="pre">TlsErrorKind</span>, the same on both); an
 		<span class="pre">HttpError</span> (its kind, detail and <span class="pre">noResponse</span>); and
 		<span class="pre">unsent</span>, no byte of the request reached the socket. A request may be tried again
 		on another connection when it is unsent, or when it is idempotent and has
 		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">message()</span>
-		joins them as <span class="pre">connect: closed: ... (Windows error 10061: ...)</span>.</p>
+		joins them as <span class="pre">connect: closed: ... (connection refused, OS error 10061: ...)</span>: the kind,
+		the system's number and its words (a <span class="pre">Tls</span> stage's words already hold the verifier's).</p>
 
 	<h3 id="httpconn-config">Configuration</h3>
 	<p><span class="pre">Config.make()</span> gives the defaults, each a public field to change:
@@ -1363,7 +1365,7 @@ fn main() {
 	<p>Output:</p>
 <pre>
 trusting client: 200 secure
-asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204809: A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider)
+asking the OS: Failed, tls: closed: certificate untrusted: A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider (Windows 0x800b0109)
 </pre>
 
 	<h3 id="tls-verify">Who verifies the server</h3>
@@ -1386,11 +1388,13 @@ asking the OS: Failed, tls: closed: certificate untrusted (Windows error 2148204
 		<span class="pre">SSL_CERT_DIR</span> name when they are set, else OpenSSL's default places
 		(<span class="pre">/etc/ssl/certs</span> on Ubuntu), read once for the process. It fetches nothing and
 		reads no revocation data, so <span class="pre">offline</span> changes nothing there, and it runs on the same
-		pool lane. Its verdict is reported as the Windows error that stands for it, so a program reads the same
-		<span class="pre">TlsError</span> on both systems: <span class="pre">CERT_E_UNTRUSTEDROOT</span> (0x800B0109)
-		for a chain that ends short of a root the system holds, <span class="pre">CERT_E_CN_NO_MATCH</span>
-		(0x800B010F) for another name, <span class="pre">CERT_E_EXPIRED</span> (0x800B0101) for an expired or
-		not-yet-valid certificate, and <span class="pre">E_FAIL</span> (0x80004005) for any other reason.</li>
+		pool lane. Its verdict is OpenSSL's verify result, kept as it is as the <span class="pre">TlsError</span>'s number
+		(<span class="pre">X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY</span>, 20, for a chain that ends short of a
+		root the system holds, <span class="pre">X509_V_ERR_HOSTNAME_MISMATCH</span>, 62, for another name,
+		<span class="pre">X509_V_ERR_CERT_HAS_EXPIRED</span>, 10, for an expired certificate), where Windows keeps
+		crypt32's (<span class="pre">CERT_E_UNTRUSTEDROOT</span> 0x800B0109, <span class="pre">CERT_E_CN_NO_MATCH</span>
+		0x800B010F, <span class="pre">CERT_E_EXPIRED</span> 0x800B0101). The <span class="pre">kind</span> reads the same on
+		both systems, whichever verifier answered.</li>
 	<li><span class="pre">Verifier.roots(pem)</span>: for development. The chain is checked against these roots
 		alone, and the name; the machine's roots are not used.</li>
 	<li><span class="pre">Verifier.pinnedSha256(hex)</span>: for development. The server is accepted when the SHA-256 of
@@ -1563,11 +1567,16 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		<span class="pre">CertUntrusted</span>, <span class="pre">CertRevoked</span>, <span class="pre">CertOther</span>,
 		<span class="pre">ProtocolVersion</span>, <span class="pre">NoAlpnMatch</span>, <span class="pre">Alert</span>,
 		<span class="pre">Protocol</span>, <span class="pre">Config</span> or <span class="pre">Backend</span>),
-		<span class="pre">code</span> (the back end's or the system's own number), <span class="pre">osError</span>
-		(Windows' error number when the system gave the reason; on Linux the Windows number that OpenSSL's
-		verdict maps to), and <span class="pre">detail</span>.
+<span class="pre">code</span> (the back end's or the system's own number), <span class="pre">osError</span>
+		(the system's own number when it gave the reason: its certificate verifier's, Windows' error on Windows and
+		OpenSSL's verify result on Linux, each as it is), and <span class="pre">detail</span>, the system's words with
+		its number among them.
 		<span class="pre">message()</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
-		<span class="pre">errorName(kind)</span> names a kind.</p>
+		<span class="pre">errorName(kind)</span> names a kind. What a program matches on is the kind;
+		<span class="pre">certErrorKind(osError)</span> reads a bare number kept elsewhere (an httpconn
+		<span class="pre">Failure</span>'s <span class="pre">code</span>, a <span class="pre">QuicError</span>'s
+		<span class="pre">osError</span>) as the kind it stands for, and <span class="pre">certErrorText(osError)</span>
+		gives its words.</p>
 	<p><span class="pre">s.info()</span> gives a <span class="pre">TlsInfo</span> of what a session negotiated:
 		<span class="pre">version</span> and <span class="pre">versionName</span>, <span class="pre">cipher</span>,
 		<span class="pre">alpn</span>, <span class="pre">resumed</span>, <span class="pre">verifiedBy</span>,

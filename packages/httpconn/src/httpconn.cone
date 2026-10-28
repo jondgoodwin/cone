@@ -203,9 +203,13 @@
 // Failure: the stage it failed at (Resolve, Connect, Read, Write, Http --
 // the core refused what came, or its deadline passed -- Tls, the
 // connection's layer failed: a handshake refused, a certificate, a record --
-// Closed, Limit); the Windows error number when the OS gave one (a peer's
-// reset reads as ERROR_NETNAME_DELETED, 64; the OS's certificate verifier
-// refusing, CERT_E_UNTRUSTEDROOT and its kin); an http.HttpError (its kind,
+// Closed, Limit); the system's own number when the OS gave one (Windows'
+// error number, or the errno on Linux: a peer's reset reads as
+// ERROR_NETNAME_DELETED, 64, or ECONNRESET, 104, which iocore's
+// IoError(code).kind() sorts as ConnectionReset on both; the OS's
+// certificate verifier refusing, its own number, Windows' CERT_E_UNTRUSTEDROOT
+// and its kin or OpenSSL's verify result, which tls's certErrorKind reads as
+// a kind); an http.HttpError (its kind,
 // detail, and 'noResponse', no byte of a response arrived); and 'unsent',
 // no byte of the request reached the socket (a layer's own bytes, a TLS
 // handshake's, are not the request's). A request may be retried on
@@ -323,6 +327,7 @@ import time use Instant, Duration;
 import sync use Sender, Mutex;
 import iobuf use IoBuf, Chain;
 import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, KeepAlive, forever, resolveOp, addressesIn;
+import ioerror use IoErrorKind, noAddress;
 import http use *;
 import http1;
 import http2;
@@ -491,7 +496,7 @@ pub fn stageName(s: Stage) &str {
 // Why a request or a connection failed (see the package's header, FAILURES)
 pub struct Failure {
   pub stage: Stage;
-  pub code: u32;           // Windows' error number, or 0
+  pub code: u32;           // the system's own number (Windows' error, the errno on Linux), or 0
   pub error: HttpError;    // its kind, detail, and noResponse
   pub unsent: bool;        // no byte of the request reached the socket
 
@@ -509,16 +514,18 @@ pub struct Failure {
   }
 
   // 'connect: timed out: no connection within connectTimeout'; with the
-  // Windows error's number and text when there is one
+  // system's failure when there is one, its kind, number and text:
+  // 'connect: closed: the connection could not be made (connection refused,
+  // OS error 10061: No connection could be made ...)'. A Tls stage's
+  // number is its certificate verifier's, whose words (the OS's text and
+  // number) the layer's failureText holds already
   pub fn message(self: &) String {
     var out = String.from(stageName(stage));
     out.append(": ");
     out.append(error.message().view());
-    if code != 0u32 {
-      out.append(" (Windows error ");
-      out.appendUInt(u64.from(code));
-      out.append(": ");
-      out.append(IoError(code).message().view());
+    if code != 0u32 && stage != Stage.Tls {
+      out.append(" (");
+      out.append(IoError(code).describe().view());
       out.append(")");
     }
     out
@@ -696,9 +703,10 @@ pub trait Layer {
   // Whether it has failed (a TLS handshake refused, a record broken): the
   // connection then closes, Failed at Stage.Tls
   pub fn failed(self: &) bool;
-  // Windows' error number when the OS gave the reason, else 0
+  // The system's own number when the OS gave the reason (a certificate
+  // verifier's: Windows' error, or OpenSSL's verify result), else 0
   pub fn failureCode(self: &) u32;
-  // Why it failed, in words
+  // Why it failed, in words, the OS's text and number among them
   pub fn failureText(self: &) String;
   // Whether it has work that may block, to run on the blocking pool (a TLS
   // session's certificate check by the OS, which may fetch over the network)

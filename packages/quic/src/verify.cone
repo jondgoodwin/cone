@@ -26,7 +26,8 @@
 // The OS's verifier is tls's, unchanged: tls.verifyWork, a plain function of
 // a buffer that holds the name asked for and the chain the server sent (its
 // layout is in tls's verify.cone), run on the blocking pool (verifyOp) or
-// here (verifyNow), which answers with Windows' error (0: trusted). A
+// here (verifyNow), which answers with the platform verifier's own number (0:
+// trusted; Windows' error, or OpenSSL's verify result on Linux). A
 // pinned key is checked when the chain comes, as tls checks it.
 
 // The verdict in the callback block, which verifyChain reads
@@ -34,9 +35,10 @@ const verdictNone = 0usize;
 const verdictTrusted = 1usize;
 const verdictRefused = 2usize;
 
-// Windows' errors this package reports a refusal with
-const certUntrustedRoot = 0x800B0109u32;      // CERT_E_UNTRUSTEDROOT
-const genericFailure = 0x80004005u32;         // E_FAIL
+// The number a refusal by the pins is given, which only says refused: the
+// platform verifier's own for an untrusted certificate, CERT_E_UNTRUSTEDROOT
+// on Windows, OpenSSL's X509_V_ERR_CERT_UNTRUSTED on Linux
+fn pinsRefused() u32 {if isWindows() {0x800B0109u32} else {27u32}}
 
 // OpenSSL calls this when the server's chain has come, in place of its own
 // check (SSL_CTX_set_cert_verify_callback), for the OS's verifier and
@@ -143,17 +145,14 @@ fn spkiSha256(x: *u8, out: &mut Array[u8, 32]) bool {
 }
 
 // The error for a certificate refused: by its pins, or by the OS's verifier
-// with Windows' error
+// with its own number (osError; tls's certErrorKind reads it as a kind) and
+// words
 fn certRefused(kind: tls.VerifyKind, code: u32) QuicError {
   if kind == tls.VerifyKind.Pinned {
     return QuicError(errCrypto, 0u32, String.from("the server's certificate: no pinned key matches it"));
   }
   var d = String.from("the server's certificate was refused by the OS's verifier: ");
-  let text = IoError(code).message();
-  d.append(text.view());
-  d.append(" (Windows 0x");
-  d.appendHex(u64.from(code), 8usize);
-  d.append(")");
+  d.append(tls.certErrorText(code).view());
   QuicError(errCrypto, code, d)
 }
 

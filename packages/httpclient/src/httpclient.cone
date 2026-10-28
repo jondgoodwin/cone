@@ -199,7 +199,7 @@
 //
 // FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
 // Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
-// the Windows error number when the OS gave one, an http.HttpError (its
+// the system's own number when the OS gave one, an http.HttpError (its
 // kind, detail, and noResponse), 'unsent', and how many attempts were made.
 //
 // DIAGNOSTICS. 'stats()' counts fetches by their final answer, retries,
@@ -424,7 +424,7 @@ pub fn stageName(s: Stage) &str {
 // Why a fetch failed (see the package's header, FAILURES)
 pub struct Failure {
   pub stage: Stage;
-  pub code: u32;           // Windows' error number, or 0
+  pub code: u32;           // the system's own number (Windows' error, the errno on Linux), or 0
   pub error: HttpError;    // its kind, detail, and noResponse
   pub unsent: bool;        // no byte of the last attempt reached the socket
   pub attempts: u32;       // attempts made, retries and redirects among them
@@ -458,17 +458,18 @@ pub struct Failure {
     Failure(st, f.code, e, f.unsent, 0u32)
   }
 
-  // 'connect: closed: the connection could not be made (Windows error
-  // 10061: No connection could be made ...)'
+  // 'connect: closed: the connection could not be made (connection refused,
+  // OS error 10061: No connection could be made ...)': the stage, the
+  // failure's words, and the system's failure (its kind, number and text)
+  // when there is one. A Tls stage's number is its certificate verifier's,
+  // whose words already hold the OS's text and number
   pub fn message(self: &) String {
     var out = String.from(stageName(stage));
     out.append(": ");
     out.append(error.message().view());
-    if code != 0u32 {
-      out.append(" (Windows error ");
-      out.appendUInt(u64.from(code));
-      out.append(": ");
-      out.append(IoError(code).message().view());
+    if code != 0u32 && stage != Stage.Tls {
+      out.append(" (");
+      out.append(IoError(code).describe().view());
       out.append(")");
     }
     out

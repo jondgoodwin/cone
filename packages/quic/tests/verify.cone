@@ -11,7 +11,8 @@
 //   verifier then accepts the server's chain for 'localhost' and for
 //   127.0.0.1, which nothing but that store trusts, and refuses a wrong name,
 //   an expired certificate and a chain from another root, each with the
-//   Windows error tls reports for it. On Windows the verifier is crypt32's,
+//   kind tls reports for it (the error's words and number are the system's
+//   own: here OpenSSL's verify result). On Windows the verifier is crypt32's,
 //   with the machine's own roots, which do not hold the test root and which
 //   no test changes: every chain is refused there, as untrusted (so this test
 //   has its own Windows output, verify.out, and Linux's, verify.linux.out).
@@ -196,10 +197,10 @@ fn pump(c: &mut quic.Connection, s: &mut quic.Connection, cs: &mut Side, ss: &mu
 
 fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
 
-fn hex8(v: u32) String {
-  var s = String.from("0x");
-  s.appendHex(u64.from(v), 8usize);
-  s
+// The kind of the verifier's own number the connection's error holds (Windows'
+// error, or OpenSSL's verify result), the same on both; "none" for no number
+fn certKindName(osError: u32) &str {
+  if osError == 0u32 {"none"} else {tls.errorName(tls.certErrorKind(osError))}
 }
 
 // One connection: the client's verifier against a server, and what came of it
@@ -243,8 +244,8 @@ fn attempt(label: &str, cctx: &quic.Context, sctx: &quic.Context, host: &str, lp
       printStr("client's error: ");
       printStr(e.message().view());
       printStr("\n");
-      printStr("...Windows' error: ");
-      printStr(hex8(e.osError).view());
+      printStr("...the verifier's error, as a kind: ");
+      printStr(certKindName(e.osError));
       printStr("\n");
     }
     case is None[quic.QuicError] {printStr("client's error: none\n");}

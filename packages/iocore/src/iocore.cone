@@ -88,6 +88,7 @@
 //     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), e.message(),
 //     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
 //     IoError(code)  IoError.cancelled()  IoError.timedOut()  IoError.truncated()  IoError.aborted()
+//     IoError.ofKind(kind)  e.describe()
 //   c.error()  answerError(kind, status, code)   an answer that is not Done, as an IoError
 //
 // THE LOOP. A Loop is driven by one thread: that thread submits to it and
@@ -590,7 +591,7 @@ import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
-import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
+import ioerror use IoErrorKind, errorKindName, osKind, gaiNumber, gaiOf, gaiFloor;
 
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
@@ -654,7 +655,8 @@ enum ErrorSource {
   System,
   Cancel,
   Deadline,
-  Cut
+  Cut,
+  Made
 }
 
 // Why something could not be done: its kind, the same on every system, and
@@ -663,11 +665,19 @@ enum ErrorSource {
 // into one), the errno on Linux (a getaddrinfo failure is its EAI_ number,
 // below 0, as a u32). 'IoError(code)' is the system's error of that number,
 // its kind read from the number when asked. A cancel's and a deadline's
-// error is no system's failure: its code is 0. A Truncated error carries the
-// system's number for a datagram too long (WSAEMSGSIZE, EMSGSIZE)
+// error is no system's failure: its code is 0, and so is the code of an error
+// made of a kind ('IoError.ofKind', Rust's io::Error::from(ErrorKind)). A
+// Truncated error carries the system's number for a datagram too long
+// (WSAEMSGSIZE, EMSGSIZE)
 pub struct IoError {
   pub code: u32;
   source: ErrorSource = ErrorSource.System;
+  made: IoErrorKind = IoErrorKind.Other;
+
+  // A failure that is a library's own, not the system's: of that kind, with
+  // no system number (code 0). For a handle that names nothing, say, or an
+  // operation that never answered
+  pub fn ofKind(k: IoErrorKind) IoError {IoError(0u32, ErrorSource.Made, k)}
 
   // A received datagram cut to its buffer's room
   pub fn truncated() IoError {IoError(datagramCut(), ErrorSource.Cut)}
@@ -689,6 +699,7 @@ pub struct IoError {
     if source == ErrorSource.Cancel {return IoErrorKind.Cancelled;}
     if source == ErrorSource.Deadline {return IoErrorKind.TimedOut;}
     if source == ErrorSource.Cut {return IoErrorKind.Truncated;}
+    if source == ErrorSource.Made {return made;}
     osKind(code)
   }
 
@@ -716,7 +727,24 @@ pub struct IoError {
       s.append("deadline passed");
       return s;
     }
+    if source == ErrorSource.Made {return String.from(errorKindName(made));}
     systemText(code)
+  }
+
+  // The kind in words, then the system's number and its text when it gave
+  // one, for a log: 'connection refused, OS error 10061: No connection could
+  // be made because the target machine actively refused it'. A getaddrinfo
+  // failure's number is shown as the EAI_ number it is, below 0. An error
+  // with no system number (a cancel's, a deadline's, one made of a kind)
+  // says its kind alone
+  pub fn describe(self: &) String {
+    var out = String.from(errorKindName(self.kind()));
+    if code == 0u32 {return out;}
+    out.append(", OS error ");
+    if !isWindows() && code >= gaiFloor {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
+    out.append(": ");
+    out.append(systemText(code).view());
+    out
   }
 }
 

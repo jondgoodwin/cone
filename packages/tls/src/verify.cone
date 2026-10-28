@@ -11,13 +11,15 @@
 //   name length, name bytes, certificate count, then for each certificate
 //   its length and its DER bytes, the server's own first
 //
-// and the answer, Done(4): the four bytes of Windows' error (0: trusted).
+// and the answer, Done(4): the four bytes of the verifier's own number (0:
+// trusted).
 //
-// Windows' verifier is crypt32's chain engine. Linux has no such engine, so
+// Windows' verifier is crypt32's chain engine, and its number is Windows'
+// error (CERT_E_UNTRUSTEDROOT and its kin). Linux has no such engine, so
 // there OpenSSL's own check (X509_verify_cert) judges the chain against the
-// system's roots, and its verify result is mapped to the Windows error the
-// package reports for that failure (certError): the same codes, kinds and
-// words on every OS, whichever verifier answered.
+// system's roots, and its number is its verify result (X509_V_ERR_...). Each
+// system's number is kept as it is, for diagnostics; what a program matches
+// on is the kind (certErrorKind), the same on both.
 
 // OpenSSL calls this when the server's chain has come, in place of its own
 // check (SSL_CTX_set_cert_verify_callback). It reads the session's verdict
@@ -131,11 +133,16 @@ const certUntrustedRoot = 0x800B0109u32;      // CERT_E_UNTRUSTEDROOT
 const certChaining = 0x800B010Au32;           // CERT_E_CHAINING
 const certCnNoMatch = 0x800B010Fu32;          // CERT_E_CN_NO_MATCH
 const cryptRevoked = 0x80092010u32;           // CRYPT_E_REVOKED
-const trustNoSigner = 0x800B0100u32;          // TRUST_E_NOSIGNATURE
-const genericFailure = 0x80004005u32;         // E_FAIL
 
-// The OS's verdict on a job: 0 trusted, else Windows' error. On Windows it
-// blocks while the chain engine fetches, unless offline; on Linux it fetches
+// The verifier's own number for a failure with no more specific one, and for
+// a job with no certificate in it: E_FAIL and TRUST_E_NOSIGNATURE on
+// Windows; on Linux OpenSSL's X509_V_ERR_UNSPECIFIED for both
+pub fn genericFailure() u32 {if isWindows() {0x80004005u32} else {1u32}}
+fn trustNoSigner() u32 {if isWindows() {0x800B0100u32} else {1u32}}
+
+// The OS's verdict on a job: 0 trusted, else the verifier's own number
+// (Windows' error; on Linux OpenSSL's verify result). On Windows it blocks
+// while the chain engine fetches, unless offline; on Linux it fetches
 // nothing and reads the system's roots once
 fn osVerify(job: &Array[u8], offline: bool) u32 {
   if isWindows() {
@@ -171,19 +178,19 @@ fn systemStore() *u8 {
 }
 
 // The job's chain judged by OpenSSL for the name asked for, as a server's
-// chain: 0 trusted, else the Windows error that stands for OpenSSL's verify
-// result. The certificates the server sent are untrusted intermediates; only
+// chain: 0 trusted, else OpenSSL's verify result (X509_V_ERR_...), as it is.
+// The certificates the server sent are untrusted intermediates; only
 // the system's roots anchor a chain. No revocation data is read
 fn opensslVerify(job: &Array[u8]) u32 {
-  if job.len < 8usize {return genericFailure;}
+  if job.len < 8usize {return genericFailure();}
   let base = &job[0usize] as *u8;
   let hostLen = usize.from(readU32(base));
-  if 4usize + hostLen + 4usize > job.len {return genericFailure;}
-  if hostLen == 0usize {return certCnNoMatch;}
+  if 4usize + hostLen + 4usize > job.len {return genericFailure();}
+  if hostLen == 0usize {return u32.from(x509HostnameMismatch);}
   var at = 4usize + hostLen;
   let count = readU32(base + at);
   at = at + 4usize;
-  if count == 0u32 {return trustNoSigner;}
+  if count == 0u32 {return trustNoSigner();}
   var leaf = null as *u8;
   let others = OPENSSL_sk_new_null();
   var i = 0u32;
@@ -209,7 +216,7 @@ fn opensslVerify(job: &Array[u8]) u32 {
     at = at + len;
     i = i + 1u32;
   }
-  var code = genericFailure;
+  var code = genericFailure();
   let store = systemStore();
   let ctx = X509_STORE_CTX_new();
   if !bad && leaf as usize != 0usize && store as usize != 0usize && ctx as usize != 0usize {
@@ -228,7 +235,8 @@ fn opensslVerify(job: &Array[u8]) u32 {
       if X509_verify_cert(ctx) == 1i32 {
         code = 0u32;
       } else {
-        code = windowsCodeOfVerifyResult(X509_STORE_CTX_get_error(ctx));
+        let vr = X509_STORE_CTX_get_error(ctx);
+        code = if vr > 0i32 {u32.from(vr)} else {genericFailure()};
       }
     }
   }
@@ -245,25 +253,59 @@ fn opensslVerify(job: &Array[u8]) u32 {
   code
 }
 
-// The Windows error this package reports for an OpenSSL verify result
-// (X509_V_ERR_...). A chain that stops short of a root the system holds is
-// untrusted, as crypt32 says for the test chains whose root it does not know
-fn windowsCodeOfVerifyResult(vr: i32) u32 {
-  if vr == x509Expired || vr == x509NotYetValid {return certExpired;}
-  if vr == x509HostnameMismatch || vr == x509IpMismatch {return certCnNoMatch;}
-  if vr == x509UnableToGetIssuer || vr == x509UnableToGetIssuerLocally ||
-      vr == x509UnableToVerifyLeafSignature || vr == x509DepthZeroSelfSigned ||
-      vr == x509SelfSignedInChain {return certUntrustedRoot;}
-  if vr == x509Revoked {return cryptRevoked;}
-  genericFailure
+// The kind of the platform verifier's own number, as the verifier's answer
+// holds it (VerifyWork's, a Stream's 'failureCode', a TlsError's 'osError'):
+// Windows' error (CERT_E_..., crypt32's) on Windows, OpenSSL's verify result
+// (X509_V_ERR_...) on Linux. The same kinds on both: a chain that stops short
+// of a root the system holds is untrusted (Linux: also a self-signed
+// certificate, and a signature that cannot be checked for want of its issuer),
+// as crypt32 says for the test chains whose root it does not know. A number
+// of neither table is CertOther
+pub fn certErrorKind(code: u32) TlsErrorKind {
+  if isWindows() {
+    if code == certExpired {TlsErrorKind.CertExpired}
+    else if code == certCnNoMatch {TlsErrorKind.CertNameMismatch}
+    else if code == certUntrustedRoot || code == certChaining {TlsErrorKind.CertUntrusted}
+    else if code == cryptRevoked {TlsErrorKind.CertRevoked}
+    else {TlsErrorKind.CertOther}
+  } else {
+    let vr = i32.from(code);
+    if vr == x509Expired || vr == x509NotYetValid {TlsErrorKind.CertExpired}
+    else if vr == x509HostnameMismatch || vr == x509IpMismatch {TlsErrorKind.CertNameMismatch}
+    else if vr == x509UnableToGetIssuer || vr == x509UnableToGetIssuerLocally ||
+        vr == x509UnableToVerifyLeafSignature || vr == x509DepthZeroSelfSigned ||
+        vr == x509SelfSignedInChain {TlsErrorKind.CertUntrusted}
+    else if vr == x509Revoked {TlsErrorKind.CertRevoked}
+    else {TlsErrorKind.CertOther}
+  }
+}
+
+// The platform verifier's words for its own number, and the number: Windows'
+// text and 'Windows 0x800b0109'; on Linux OpenSSL's text and 'OpenSSL's
+// verify result 20'
+pub fn certErrorText(code: u32) String {
+  var d = String.empty();
+  if isWindows() {
+    let text = IoError(code).message();
+    d.append(text.view());
+    d.append(" (Windows 0x");
+    d.appendHex(u64.from(code), 8usize);
+    d.append(")");
+  } else {
+    d.append(cText(X509_verify_cert_error_string(i64.from(code))));
+    d.append(" (OpenSSL's verify result ");
+    d.appendUInt(u64.from(code));
+    d.append(")");
+  }
+  d
 }
 
 // Windows' verdict on a job: the chain engine and the SSL policy above
 fn crypt32Verify(job: &Array[u8], offline: bool) u32 {
-  if job.len < 8usize {return genericFailure;}
+  if job.len < 8usize {return genericFailure();}
   let base = &job[0usize] as *u8;
   let hostLen = usize.from(readU32(base));
-  if 4usize + hostLen + 4usize > job.len {return genericFailure;}
+  if 4usize + hostLen + 4usize > job.len {return genericFailure();}
   // The name, in UTF-16 (a DNS name is ASCII), with its NUL
   var wide = List[u16].empty();
   var k = 0usize;
@@ -275,7 +317,7 @@ fn crypt32Verify(job: &Array[u8], offline: bool) u32 {
   var at = 4usize + hostLen;
   let count = readU32(base + at);
   at = at + 4usize;
-  if count == 0u32 {return trustNoSigner;}
+  if count == 0u32 {return trustNoSigner();}
   let store = CertOpenStore(storeProvMemory, 0u32, 0usize, 0u32, null);
   if store as usize == 0usize {return GetLastError();}
   var leaf = null as *u8;
@@ -304,7 +346,7 @@ fn crypt32Verify(job: &Array[u8], offline: bool) u32 {
   if bad || leaf as usize == 0usize {
     if leaf as usize != 0usize {CertFreeCertificateContext(leaf);}
     CertCloseStore(store, 0u32);
-    return genericFailure;
+    return genericFailure();
   }
   // For a server: its certificate must allow server authentication
   var oid = &"1.3.6.1.5.5.7.3.1" as *u8;
@@ -320,7 +362,7 @@ fn crypt32Verify(job: &Array[u8], offline: bool) u32 {
     let e = GetLastError();
     CertFreeCertificateContext(leaf);
     CertCloseStore(store, 0u32);
-    return if e == 0u32 {genericFailure} else {e};
+    return if e == 0u32 {genericFailure()} else {e};
   }
   var ssl = SslPolicyPara(u32.from(mem.sizeof[SslPolicyPara]()), authTypeServer, 0u32,
     &mut (wide.viewMut())[0usize] as *u16);
@@ -329,7 +371,7 @@ fn crypt32Verify(job: &Array[u8], offline: bool) u32 {
   var code = 0u32;
   if CertVerifyCertificateChainPolicy(policySsl, chain, &pp, &mut ps) == 0i32 {
     code = GetLastError();
-    if code == 0u32 {code = genericFailure;}
+    if code == 0u32 {code = genericFailure();}
   } else {
     code = ps.error;
   }
@@ -344,38 +386,17 @@ fn readU32(p: *u8) u32 {
     (u32.from(*(p + 3usize)) << 24u32)
 }
 
-// A certificate the OS refused: its kind, and its words
+// A certificate the OS refused: its kind, its words and the verifier's own
+// number
 fn certError(code: u32) TlsError {
-  var k: TlsErrorKind = TlsErrorKind.CertOther;
-  if code == certExpired {k = TlsErrorKind.CertExpired;}
-  else if code == certCnNoMatch {k = TlsErrorKind.CertNameMismatch;}
-  else if code == certUntrustedRoot || code == certChaining {k = TlsErrorKind.CertUntrusted;}
-  else if code == cryptRevoked {k = TlsErrorKind.CertRevoked;}
-  var e = osError(code, "");
-  e.kind = k;
-  e
+  TlsError(certErrorKind(code), code, code, certErrorText(code))
 }
 
-// The OS's verifier's job that did not run, as a TlsError: iocore's words
-// for its IoError, and its number, the system's own (Windows' error number,
-// or the errno on Linux; 0 for a cancel or a deadline)
+// The OS's verifier's job that did not run, as a TlsError: iocore's account
+// of its IoError (the kind, and the system's own number: Windows' error
+// number, or the errno on Linux; none for a cancel or a deadline)
 fn jobError(e: &IoError) TlsError {
   var d = String.from("the OS's verifier could not be run: ");
-  let text = e.message();
-  d.append(text.view());
+  d.append(e.describe().view());
   TlsError(TlsErrorKind.CertOther, e.code, e.code, d)
-}
-
-// Windows' error code as a TlsError: its text and its number. On Linux the
-// code is the Windows number the verifier mapped OpenSSL's result to, and
-// iocore's IoError has Windows' words for it
-fn osError(code: u32, what: &str) TlsError {
-  var d = String.from(what);
-  if d.len() > 0usize {d.append(": ");}
-  let text = IoError(code).message();
-  d.append(text.view());
-  d.append(" (Windows 0x");
-  d.appendHex(u64.from(code), 8usize);
-  d.append(")");
-  TlsError(TlsErrorKind.CertOther, code, code, d)
 }
