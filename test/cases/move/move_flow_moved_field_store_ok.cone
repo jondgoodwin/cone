@@ -1,0 +1,165 @@
+// The neighbours move_flow_moved_field_store must not refuse: a field or an
+// element stored into a variable that holds a whole value on every path -- one
+// moved out and then given a whole value again, a branch that moved it and gave
+// it a value again, a loop that gives it one before the next pass -- and a
+// field of a binding by reference, which holds the matched reference. Each
+// value finalizes as it dies and prints its number, so the output is the
+// assertion: a value stored into a field is finalized exactly once, and the
+// moved one never again. An owning reference whose value moved out (hollowed)
+// still owns its allocation and takes a whole value again before a field.
+
+mod move_flow_moved_field_store_ok;
+
+import stdio use *;
+import libc;
+
+struct Inner {
+  pub v: i32;
+  fn final(self: &uni) { printStr("f"); printInt(i64.from(v)); printStr(" "); }
+}
+
+struct Pair {
+  pub a: i32;
+  pub b: Inner;
+}
+
+struct Outer {
+  pub p: Pair;
+  pub n: i32;
+}
+
+enum E {
+  struct A { pub f: Inner; }
+  struct B { pub n: i32; }
+}
+use E;
+
+struct One is RegionRef, Move {
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn free(self: &uni One) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+fn take(p: Pair) { printStr("take "); }
+fn takeOuter(o: Outer) { printStr("takeOuter "); }
+fn takeArr(a: Array[Inner, 2]) { printStr("takeArr "); }
+fn cond(b: bool) bool { b }
+fn line(label: &str) { printStr("| "); printStr(label); printStr("\n"); }
+
+// Moved, given a whole value, then a number field and a finalizing field
+fn wholeThenField() {
+  var p = Pair(1, Inner(2));
+  take(p);
+  p = Pair(4, Inner(5));
+  p.a = 3;
+  p.b = Inner(6);
+  printStr("end ");
+}
+
+// A field of a field
+fn nestedField() {
+  var o = Outer(Pair(1, Inner(2)), 3);
+  takeOuter(o);
+  o = Outer(Pair(4, Inner(5)), 6);
+  o.p.b = Inner(7);
+  printStr("end ");
+}
+
+// A by-value parameter
+fn parameterField(var o: Outer) {
+  takeOuter(o);
+  o = Outer(Pair(4, Inner(5)), 6);
+  o.p.b = Inner(7);
+  printStr("end ");
+}
+
+// An element of an array
+fn elementStore() {
+  var a = [Inner(1), Inner(2)];
+  takeArr(a);
+  a = [Inner(3), Inner(4)];
+  a[0] = Inner(5);
+  printStr("end ");
+}
+
+// Moved on a branch that gives it a value again: stored into on both paths, the
+// old part finalized where the variable still held it
+fn branchRefilled(k: bool) {
+  var p = Pair(1, Inner(2));
+  if cond(k) { take(p); p = Pair(7, Inner(8)); }
+  p.b = Inner(9);
+  printStr("end ");
+}
+
+// Moved in each pass of a loop, given a value again before the next
+fn loopRefilled() {
+  var p = Pair(0, Inner(0));
+  var i = 1;
+  while i < 3 {
+    p.b = Inner(i + 10);
+    take(p);
+    p = Pair(i, Inner(i + 20));
+    i = i + 1;
+  }
+  printStr("end ");
+}
+
+// Moved, then the variable is the target of a whole store in an arm of an 'if'
+// that gives it one on both
+fn bothArmsRefilled(k: bool) {
+  var p = Pair(1, Inner(2));
+  take(p);
+  if cond(k) { p = Pair(3, Inner(4)); } else { p = Pair(5, Inner(6)); }
+  p.b = Inner(7);
+  printStr("end ");
+}
+
+// A match's binding by value, moved, given a whole value again, then a field
+fn bindingRefilled() {
+  var e: E = A(Inner(1));
+  match e {
+    case var A(a) {
+      take2(a);
+      a = A(Inner(2));
+      a.f = Inner(3);
+    }
+    else { }
+  }
+  printStr("end ");
+}
+fn take2(a: A) { printStr("take2 "); }
+
+// A binding by reference holds the matched reference: a field stored through it
+// is the matched value's own
+fn bindingByReference() {
+  var e: E = A(Inner(1));
+  match &mut e {
+    case let &mut A(a) { a.f = Inner(2); }
+    else { }
+  }
+  printStr("end ");
+}
+
+// An owning reference whose value moved out is hollow: it owns the allocation
+// and takes a whole value before a field of it is stored
+fn hollowRefilled() {
+  var b = One[Pair](Pair(1, Inner(2)));
+  let c = *b;
+  b = One[Pair](Pair(3, Inner(4)));
+  b.b = Inner(5);
+  printStr("end ");
+}
+
+fn main() i32 {
+  wholeThenField(); line("a field of a variable moved out and given a whole value");
+  nestedField(); line("a field of a field");
+  parameterField(Outer(Pair(1, Inner(2)), 3)); line("a by-value parameter");
+  elementStore(); line("an element of an array");
+  branchRefilled(true); line("moved on a branch that gave it a value again, taken");
+  branchRefilled(false); line("the same, not taken");
+  loopRefilled(); line("moved in each pass of a loop and given a value before the next");
+  bothArmsRefilled(true); line("given a value in both arms of an if");
+  bindingRefilled(); line("a match's binding by value, given a value again");
+  bindingByReference(); line("a match's binding by reference");
+  hollowRefilled(); line("an owning reference hollowed, given a whole value");
+  0i32
+}

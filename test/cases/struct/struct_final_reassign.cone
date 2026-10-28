@@ -3,7 +3,9 @@
 // otherwise have given it, which it would never get. Where the holder may hold
 // nothing there, it depends on the path, and its drop flag decides
 // (move_drop_flags); where it certainly holds nothing -- moved out -- nothing
-// is finalized, rather than a value another holder now owns.
+// is finalized, rather than a value another holder now owns (the whole
+// variable is given a value again first: a field is not stored into a moved-out
+// variable, move_flow_moved_field_store).
 //
 // - A struct with its own 'final' and a finalizing field; a struct's field; a
 //   field through a '&mut'; an array element; a tuple; an enum; a 'mut'
@@ -13,10 +15,9 @@
 //   values finalizes neither (before, it was refused as a use after a move).
 // - Given a value on one branch, then stored over: finalized on that path
 //   only.
-// - A field stored into a variable that holds nothing -- moved out --
-//   finalizes nothing there. The value stored is not finalized either: the
-//   variable is not taken to hold a value by having one field given, so it
-//   leaks. (A variable never given a value takes no field: move_flow_uninit_borrow.)
+// - Moved out, given a whole value again, then a field stored over: the new
+//   value's field is finalized as it is replaced, and the moved one's is not
+//   finalized again.
 
 mod struct_final_reassign;
 
@@ -57,7 +58,7 @@ fn swapped() { var x = Inner(1); var y = Inner(2); x, y = y, x; printInt(i64.fro
 fn pointedAt(r: &mut Inner) { *r = Inner(2); printStr("stored "); }
 fn throughParam() { var e = Inner(1); pointedAt(&mut e); printStr("end "); }
 fn givenOnOne(c: bool) { var e: Inner; if cond(c) { e = Inner(1); } e = Inner(2); printStr("end "); }
-fn movedBase() { var e = Holder(Inner(1)); take(e); e.inner = Inner(2); printStr("end "); }
+fn movedBase() { var e = Holder(Inner(1)); take(e); e = Holder(Inner(3)); e.inner = Inner(2); printStr("end "); }
 
 fn main() i32 {
   structWithFinal(); line("a struct with its own final");
@@ -74,6 +75,6 @@ fn main() i32 {
   throughParam(); line("through a reference");
   givenOnOne(true); line("given a value on one branch, taken");
   givenOnOne(false); line("given a value on one branch, not taken");
-  movedBase(); line("a field of a moved-out variable");
+  movedBase(); line("a field of a moved-out variable given a value again");
   0i32
 }
