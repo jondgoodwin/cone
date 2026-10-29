@@ -30,7 +30,44 @@ fn main() i32 {
   expectBool(solveLinear(&mut m, &mut b, 2usize), true, "solvable");
   expectFloat(*b[0], 1.0, 0.000000001, "x");
   expectFloat(*b[1], 3.0, 0.000000001, "y");
+  tiesKeepTheirOrder();
   done()
+}
+
+// Equal eigenvalues keep their columns' order: for each of the 81 diagonal 4 x 4 matrices with entries 1, 2 or 3
+// (every way the equal values can be laid out), the eigenvector columns come out sorted by value and, among equal
+// values, by the row of the diagonal they started on.
+fn tiesKeepTheirOrder() {
+  let n = 4usize;
+  var bad = 0;
+  var code = 0usize;
+  while code < 81usize {
+    var d = List[f64].empty();
+    var c = code;
+    var i = 0usize;
+    while i < n { d.push(f64.from(c % 3usize + 1usize)); c = c / 3usize; i += 1usize; }
+    var a = List[f64].empty();
+    i = 0usize;
+    while i < n * n { a.push(if i / n == i % n { *d[i / n] } else { 0.0 }); i += 1usize; }
+    var vals = List[f64].empty();
+    var vecs = List[f64].empty();
+    jacobiEigen(&mut a, n, &mut vals, &mut vecs);
+    // the stable order of the diagonal's rows: by value, then by row
+    var want = List[usize].empty();
+    var v = 1usize;
+    while v <= 3usize {
+      i = 0usize;
+      while i < n { if *d[i] == f64.from(v) { want.push(i); } i += 1usize; }
+      v += 1usize;
+    }
+    var k = 0usize;
+    while k < n {
+      if absd(*vecs[*want[k] * n + k]) < 0.5 { bad += 1; }      // column k should be the axis of row want[k]
+      k += 1usize;
+    }
+    code += 1usize;
+  }
+  expectInt(i64.from(bad), 0, "equal eigenvalues keep the order of their columns");
 }
 
 fn absd(a: f64) f64 { if a < 0.0 { -a } else { a } }
