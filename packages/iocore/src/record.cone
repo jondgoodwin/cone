@@ -54,6 +54,13 @@ const askedNone = 0u32;
 const askedCancel = 1u32;
 const askedDeadline = 2u32;
 
+// Whether a record was issued on another thread than the Loop's (shared.cone,
+// WORKER-SIDE ISSUE): its 'link me' on its way to the Loop, or its kernel
+// completion taken by the Loop before that (kept until the record is linked)
+const linkNone = 0u32;
+const linkTransit = 1u32;
+const linkStashed = 2u32;
+
 // Which list a record in flight is on (its 'side')
 const onNone = 0u32;
 const onReads = 1u32;          // its handle's reads: accept, receive, RecvFrom, ReadAt
@@ -120,6 +127,12 @@ pub struct OpCore {
   gprev: *OpCore = null;                 // the Loop's grouped list
   gnext: *OpCore = null;
   done: usize = 0usize;                  // Linux: a send's bytes sent so far
+  // Issued on a worker (shared.cone): linkNone, linkTransit, linkStashed; and a
+  // completion the Loop took before the record reached it. The Loop's thread only,
+  // but for the issuer's write of linkTransit before its system call
+  link: u32 = linkNone;
+  stashBytes: u32 = 0u32;
+  stashAt: Instant = Instant();
   // A job's part: a pool job's, or an external operation's (pool.cone). While
   // the record is AWAY -- queued on a lane, run by the lane's thread, or held
   // by a Completer, until it is posted home -- the pool's thread owns 'buf',
@@ -161,6 +174,11 @@ pub struct OpCore {
   // Its outcome is the kernel's own when a receive, read or send finished
   // after all (Done, its count, the bytes in its buffer); TimedOut otherwise
   pub fn isLate(self: &) bool {late}
+
+  // Issued on another thread and handed to the Loop in flight (shared.cone):
+  // the kernel holds it, so it is started on the Loop (lp.start links it),
+  // never dissolved unstarted
+  pub fn isIssued(self: &) bool {link != linkNone}
 
   // Whether the Loop holds nothing of it: answered (or never started), off
   // every list of the Loop's -- its handle's in-flight list, the grouped list,

@@ -98,6 +98,7 @@ extern {
   fn @c epoll_ctl(epfd: i32, op: i32, fd: i32, ev: *EpollEvent) i32;
   fn @c epoll_wait(epfd: i32, events: *EpollEvent, max: i32, timeout: i32) i32;
   fn @c eventfd(initial: u32, flags: i32) i32;
+  fn @c getrusage(who: i32, usage: *u8) i32;
   fn @c timerfd_create(clock: i32, flags: i32) i32;
   fn @c timerfd_settime(fd: i32, flags: i32, spec: *ItimerSpec, old: *ItimerSpec) i32;
   fn @c("read") sysRead(fd: i32, buf: *u8, n: usize) i64;
@@ -251,6 +252,23 @@ fn lxWatchOwn(epfd: usize, fd: usize, datum: u32) bool {
   if isWindows() {return false;}
   var ev = EpollEvent(epollIn, datum, 0u32);
   epoll_ctl(fdOf(epfd), epollCtlAdd, fdOf(fd), &mut ev as *EpollEvent) == 0i32
+}
+
+// The calling thread's time so far, in nanoseconds: in user mode, then in
+// the kernel; zeros if the system cannot say (threadTimes). getrusage's
+// RUSAGE_THREAD: a struct rusage of 18 words, its first two timevals these
+fn lxThreadTimes() u64, u64 {
+  if isWindows() {return 0u64, 0u64;}
+  let ru = libc.calloc(18usize, 8usize) as *u64;
+  if ru as usize == 0usize {return 0u64, 0u64;}
+  var user = 0u64;
+  var kernel = 0u64;
+  if getrusage(1i32, ru as *u8) == 0i32 {
+    user = *ru * 1000000000u64 + *(ru + 1usize) * 1000u64;
+    kernel = *(ru + 2usize) * 1000000000u64 + *(ru + 3usize) * 1000u64;
+  }
+  libc.free(ru as *u8);
+  user, kernel
 }
 
 // The epoll instance, an eventfd to wake it by and a timerfd to end its wait
@@ -574,6 +592,22 @@ fn lxQueue(lp: &mut Loop, p: *OpCore, side: u32) u32 {
   0u32
 }
 
+// A send issued on another thread that moved part of its bytes (shared.cone):
+// it waits in its handle's queue and goes on from 'done', which is kept (not
+// lxQueue's fresh start); a handle gone meanwhile fails it, as a try does
+fn lxLinkIssued(lp: &mut Loop, p: *OpCore) {
+  if isWindows() {return;}
+  let r = p as &mut OpCore;
+  let ei = lp.handleIndex(r.handle);
+  if ei == noEntry {
+    lp.decide(p, diag.outcomeFailed, 0usize, noSuchHandle());
+    return;
+  }
+  let side = if writes(r.kind) {onWrites} else {onReads};
+  lp.linkSide(p, side);
+  lxRun(lp, ei, side, Instant.now());
+}
+
 // A Recv or a RecvReady
 fn lxStartRecv(lp: &mut Loop, p: *OpCore, ready: bool) u32 {
   if isWindows() {return errorInvalidParameter;}
@@ -803,6 +837,7 @@ fn lxDequeue(lp: &mut Loop, ms: u32, out: &mut List[Completion]) usize {
   if isWindows() {return 0usize;}
   let timeout = if ms == infinite {0i32 - 1i32} else if ms > 0x7FFFFFFFu32 {0x7FFFFFFFi32} else {i32.from(ms)};
   let got = epoll_wait(fdOf(lp.portHandle), lp.events, i32.from(batch), timeout);
+  lp.stats.passes = lp.stats.passes + 1u64;
   if ms != 0u32 {lp.stats.waits = lp.stats.waits + 1u64;}
   if got <= 0i32 {
     if ms != 0u32 && ms != infinite {lp.stats.waitTimeouts = lp.stats.waitTimeouts + 1u64;}

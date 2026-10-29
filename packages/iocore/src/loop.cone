@@ -72,6 +72,7 @@ struct HEntry {
   pub readsTail: *OpCore;
   pub writes: *OpCore;
   pub writesTail: *OpCore;
+  pub skip: u32;           // Windows: a socket whose completions skip the port on success: one done at once posts none
 }
 
 // An answer a full channel held back, and the channel's sender (a clone of
@@ -134,6 +135,7 @@ pub struct Loop {
   stats: diag.Counters;
   sub: diag.Subscriber;
   subscribed: bool;
+  shared: Shared;          // the handles as other threads see them, once share() has made it (shared.cone)
 
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
@@ -181,7 +183,7 @@ pub struct Loop {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
     let shared = Arc[imm, Port](Port(if isWindows() {port} else {wake}, Atomic[bool].of(false),
-      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32)));
+      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32), Atomic[u64].of(0u64)));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
@@ -192,7 +194,7 @@ pub struct Loop {
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
-      stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false)
+      stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false, shared: Shared.none())
   }
 
   // Its id, unique in the process, as its diagnostics records name it
@@ -212,8 +214,12 @@ pub struct Loop {
   // Operations and timers submitted and not yet answered
   pub fn inFlight(self: &) u64 {stats.inFlight}
 
-  // Its counters, as they are now
-  pub fn counters(self: &) diag.Counters {stats}
+  // Its counters, as they are now: its own, and the posts other threads made
+  pub fn counters(self: &) diag.Counters {
+    var c = stats;
+    c.posted = port.posts.loadOrdered(MemOrder.Relaxed);
+    c
+  }
 
   // Hand every answer delivered here to s, as a diag.OpRecord
   pub fn subscribe(self: &mut, s: diag.Subscriber) {
@@ -482,6 +488,7 @@ pub struct Loop {
     lxCancelAll(self, i);
     lxCancelFiles(self, h);
     let e = handles.at(i) as &HEntry;
+    self.unpublish(i);
     if isWindows() {CancelIoEx(e.raw, null);}
     self.detachLists(i);
     closeRaw(e.kind, e.raw);
@@ -511,6 +518,7 @@ pub struct Loop {
     if (*handles.at(i)).kind != hSocket {return false;}
     lxCancelAll(self, i);
     let e = handles.at(i) as &HEntry;
+    self.unpublish(i);
     if isWindows() {CancelIoEx(e.raw, null);}
     self.detachLists(i);
     resetSocket(e.raw);
@@ -519,8 +527,90 @@ pub struct Loop {
   }
 
   fn register(self: &mut, raw: usize, kind: u32, family: u16) Handle {
-    let s = handles.add(HEntry(raw, kind, family, 0u32, null, null, null, null));
+    // Windows: a socket's completions skip the port when it finishes at once
+    // (its start answers it then: 'finishNow'), where the system allows it
+    var skip = 0u32;
+    if isWindows() && kind != hFile && skipOnSuccess(raw) {skip = 1u32;}
+    let s = handles.add(HEntry(raw, kind, family, 0u32, null, null, null, null, skip));
+    self.publish(s.index);
     Handle(s.index, s.gen)
+  }
+
+  // Whether h's completions skip the port on success
+  fn skips(self: &, h: Handle) bool {
+    let p = handles.get(Slot(h.index, h.gen));
+    p as usize != 0usize && (*p).skip != 0u32
+  }
+
+  // Record p finished by the kernel at once, moving 'bytes', on a socket that
+  // skips the port on success: no packet will come, so it is decided now
+  fn finishNow(self: &mut, p: *OpCore, bytes: u32) {
+    self.finish(p, statusSuccess, bytes, Instant.now());
+  }
+
+  // The handles as other threads see them (shared.cone, WORKER-SIDE ISSUE):
+  // made at the first call, every live handle published then and each one
+  // registered after; the same table at every call. The table is never freed:
+  // it lives as long as the program, one per Loop that calls share() (only
+  // aio's does). On the loop's thread
+  pub fn share(self: &mut) Shared {
+    if shared.isNone() {
+      shared = makeShared();
+      var i = 0u32;
+      while usize.from(i) < handles.bound() {
+        if handles.isLive(i) {self.publish(i);}
+        i = i + 1u32;
+      }
+    }
+    shared
+  }
+
+  // Cell i's handle published in the shared table, if there is one
+  fn publish(self: &, i: u32) {
+    if shared.isNone() {return;}
+    let e = handles.at(i);
+    publishEntry(&shared, i, handles.slotAt(i).gen, (*e).raw, (*e).kind, (*e).skip);
+  }
+
+  // Cell i's handle no longer published: under its entry's lock, so no thread
+  // is issuing on it once this returns. Before its OS handle is closed
+  fn unpublish(self: &, i: u32) {
+    if shared.isNone() {return;}
+    unpublishEntry(&shared, i);
+  }
+
+  // Record p, issued on another thread and handed over in flight (shared.cone):
+  // counted as submitted, and held as begin holds a record the kernel has --
+  // on its handle's list (a handle closed since: on none, its completion still
+  // to come), in its group, with its deadline -- or, on Windows, completed now
+  // if its completion came before it did. Linux: a send that moved part of its
+  // bytes waits in its handle's queue and goes on from them
+  fn linkIssued(self: &mut, p: *OpCore) {
+    let r = p as &mut OpCore;
+    stats.submit();
+    if isWindows() {
+      let stashed = r.link == linkStashed;
+      r.link = linkNone;
+      kernelHeld = kernelHeld + 1u32;
+      if stashed {
+        self.complete(p, r.stashBytes, r.stashAt);
+        return;
+      }
+      if self.handleIndex(r.handle) != noEntry {self.place(p);}
+    } else {
+      r.link = linkNone;
+      lxLinkIssued(self, p);
+      if r.state != stFlight {return;}
+    }
+    var dl = r.deadline;
+    match r.group {
+      case let Some(s) {if s.deadline() < dl {dl = s.deadline();}}
+      else {}
+    }
+    if self.join(p) {self.askCancel(p, askedCancel);}
+    if r.state == stFlight && dl < forever() {
+      r.timer = wheel.insert(dl, self.tokenOf(p));
+    }
   }
 
   // h's entry, or noEntry if h names nothing
@@ -1138,6 +1228,11 @@ pub struct Loop {
   // operation's, or one of the old API's
   pub fn start(self: &mut, p: *OpCore, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     let r = p as &mut OpCore;
+    if r.link != linkNone {
+      // Issued on another thread and in flight: linked, not started
+      self.linkIssued(p);
+      return;
+    }
     if r.state != stTaken && r.state != stDone {
       panic("iocore: lp.start given a record that is in flight, or not taken from a pool", file, line);
     }
@@ -1314,6 +1409,7 @@ pub struct Loop {
         closesocket(s);
         return code;
       }
+      let skip = skipOnSuccess(s);
       r.newSock = s;
       r.raw = s;
       r.family = addr.family();
@@ -1325,6 +1421,8 @@ pub struct Loop {
           r.newSock = invalidHandle;
           return code;
         }
+      } else if skip {
+        self.finishNow(p, 0u32);
       }
       0u32
     } else {
@@ -1346,6 +1444,7 @@ pub struct Loop {
       r.raw = e.raw;
       r.family = e.family;
       let acceptEx = acceptExAddr as *u8 as AcceptExFn;
+      let skip = e.skip != 0u32;
       if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
         let code = wsaError();
         if code != errorIoPending {
@@ -1353,6 +1452,8 @@ pub struct Loop {
           r.newSock = invalidHandle;
           return code;
         }
+      } else if skip {
+        self.finishNow(p, 0u32);
       }
       0u32
     } else {
@@ -1376,9 +1477,12 @@ pub struct Loop {
         r.wsa.buf = r.bufBase() + r.bufLen();
       }
       r.flags = 0u32;
-      if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, p as *u8, null) != 0i32 {
+      var got = 0u32;
+      if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, &mut r.flags, p as *u8, null) != 0i32 {
         let code = wsaError();
         if code != errorIoPending {return code;}
+      } else if self.skips(sock) {
+        self.finishNow(p, got);
       }
       0u32
     } else {
@@ -1395,9 +1499,12 @@ pub struct Loop {
       r.raw = raw;
       r.wsa.len = u32.from(len);
       r.wsa.buf = data;
-      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
+      var sent = 0u32;
+      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, &mut sent as *u32, 0u32, p as *u8, null) != 0i32 {
         let code = wsaError();
         if code != errorIoPending {return code;}
+      } else if self.skips(sock) {
+        self.finishNow(p, sent);
       }
       0u32
     } else {
@@ -1423,9 +1530,12 @@ pub struct Loop {
     if segs == 0usize {
       r.wsa.len = 0u32;
       r.wsa.buf = null;
-      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
+      var none = 0u32;
+      if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, &mut none as *u32, 0u32, p as *u8, null) != 0i32 {
         let code = wsaError();
         if code != errorIoPending {return code;}
+      } else if self.skips(sock) {
+        self.finishNow(p, none);
       }
       return 0u32;
     }
@@ -1451,14 +1561,19 @@ pub struct Loop {
       k = k + 1usize;
     }
     var code = 0u32;
-    if WSASend(raw, bufs, u32.from(n), null, 0u32, p as *u8, null) != 0i32 {
+    var sent = 0u32;
+    var now = false;
+    if WSASend(raw, bufs, u32.from(n), &mut sent as *u32, 0u32, p as *u8, null) != 0i32 {
       code = wsaError();
       if code == errorIoPending {code = 0u32;}
+    } else {
+      now = self.skips(sock);
     }
     if big {
       libc.free(spans as *u8);
       libc.free(bufs as *u8);
     }
+    if now {self.finishNow(p, sent);}
     code
   }
 
@@ -1477,10 +1592,13 @@ pub struct Loop {
       r.flags = 0u32;
       let from = r.sockAddr();
       (*from).size = 28i32;
-      if WSARecvFrom(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, from as *u8,
+      var got = 0u32;
+      if WSARecvFrom(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, &mut r.flags, from as *u8,
           &mut (*from).size, p as *u8, null) != 0i32 {
         let code = wsaError();
         if code != errorIoPending {return code;}
+      } else if self.skips(sock) {
+        self.finishNow(p, got);
       }
       0u32
     } else {
@@ -1499,10 +1617,13 @@ pub struct Loop {
       r.wsa.len = u32.from(r.bufLen());
       r.wsa.buf = r.bufBase();
       let to = r.sockAddr();
-      if WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, to as *u8, (*to).size,
+      var sent = 0u32;
+      if WSASendTo(raw, &mut r.wsa as *WsaBuf, 1u32, &mut sent as *u32, 0u32, to as *u8, (*to).size,
           p as *u8, null) != 0i32 {
         let code = wsaError();
         if code != errorIoPending {return code;}
+      } else if self.skips(sock) {
+        self.finishNow(p, sent);
       }
       0u32
     } else {
@@ -1665,6 +1786,15 @@ pub struct Loop {
   fn complete(self: &mut, p: *OpCore, bytes: u32, at: Instant) {
     if isWindows() {
       let r = p as &mut OpCore;
+      if r.link == linkTransit {
+        // Issued on a worker, and done before its 'link me' has come: kept,
+        // and completed when the record is linked (linkIssued). Only this
+        // thread reads or writes 'link' now
+        r.link = linkStashed;
+        r.stashBytes = bytes;
+        r.stashAt = at;
+        return;
+      }
       kernelHeld = kernelHeld - 1u32;
       self.unlinkSide(p);
       if r.state == stAbandoned {
@@ -1691,8 +1821,18 @@ pub struct Loop {
         self.ended(p, true);
         return;
       }
+      self.finish(p, r.ov.internal & 0xFFFFFFFFusize, bytes, at);
+    }
+  }
+
+  // Record p, in flight and on no list, has ended with this status and count:
+  // decided. From its completion, or from its start when the kernel finished it
+  // at once and posts nothing (a socket that skips the port on success)
+  // (Windows only)
+  fn finish(self: &mut, p: *OpCore, status: usize, bytes: u32, at: Instant) {
+    if isWindows() {
+      let r = p as &mut OpCore;
       r.dequeued = at;
-      let status = r.ov.internal & 0xFFFFFFFFusize;
       let n = usize.from(bytes);
       if status == statusBufferOverflow && r.kind == diag.kindRecvFrom {
         // The datagram was longer than the buffer's room: the room is filled,
@@ -1921,6 +2061,7 @@ pub struct Loop {
     if isWindows() {
       var got = 0u32;
       let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
+      stats.passes = stats.passes + 1u64;
       if ms != 0u32 {stats.waits = stats.waits + 1u64;}
       if ok == 0i32 || got == 0u32 {
         if ms != 0u32 && ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}
@@ -2034,6 +2175,8 @@ pub struct Loop {
     var h = 0u32;
     while usize.from(h) < handles.bound() {
       if handles.isLive(h) {
+        // Unpublished first: nothing is issued on it from another thread after
+        self.unpublish(h);
         if isWindows() {
           CancelIoEx((*handles.at(h)).raw, null);
         } else {

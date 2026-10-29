@@ -1,0 +1,204 @@
+// Under 24 workers, reads and writes in flight on one actor while ANOTHER actor,
+// on whatever worker it runs, cancels them (cancelRead, cancelWrite) or closes
+// the socket: the race between an operation issued on its worker (iocore's
+// WORKER-SIDE ISSUE) and a cancel or close from another thread. Every operation
+// awaited is answered exactly once (an answer lost would leave its round never
+// finished; one given twice is the runtime's panic), and at the end every record
+// is dissolved and every buffer home. A cancel queued before the operation was
+// started does not reach it (the package's header, ONE DIRECTION OF A HANDLE),
+// so the other actor cancels again and again until the operation is answered:
+// its cancels land before, during and after the issue. Each round makes a
+// loopback pair (a, b) and does one of:
+//
+//   0. a read on a, a handed to the other actor, which cancels its reads until
+//      it is answered: Err (nothing was sent);
+//   1. a read on a, a handed over and dropped there (closed): Err;
+//   2. a 4 MiB write on a, nobody reading b, a handed over, which cancels its
+//      writes until it is answered: any answer, Ok or Err;
+//   3. the same write, a dropped there: any answer;
+//   4. a read on a, b handed over, which writes 100 bytes and drops b, while a
+//      is handed over and has its reads cancelled until it is answered: Ok (at
+//      most the 100 bytes) or Err.
+//
+// The opStats show both of the issue's ways were taken: answers on the worker
+// and records handed to the I/O thread.
+
+mod cancelclose;
+
+import testing use *;
+import libc;
+import thread;
+import time use Duration, Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket, IoLimits;
+
+const actorsN = 8u64;
+const roundsEach = 40u64;
+const bigWrite = 4194304usize;
+
+let started: Atomic[u64];     // operations awaited
+let answered: Atomic[u64];    // ...and answered
+let wrong: Atomic[u64];       // an answer the round does not allow
+let finished: Atomic[u64];    // rounds completed
+let skipped: Atomic[u64];     // rounds that found no connection to make
+
+fn @initpure init() {
+  started = Atomic[u64].of(0u64);
+  answered = Atomic[u64].of(0u64);
+  wrong = Atomic[u64].of(0u64);
+  finished = Atomic[u64].of(0u64);
+  skipped = Atomic[u64].of(0u64);
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+fn filled(n: usize) IoBuf {
+  var b = IoBuf(n);
+  b.setLen(n);
+  b
+}
+
+fn isErr(r: Result[IoBuf, IoError]) bool {
+  match r {
+    case is Err {true}
+    else {false}
+  }
+}
+
+// A racer's word: the number of the last round whose operation was answered
+fn answeredRound(at: usize) u64 {mem.atomicLoad[u64](at as *u64, MemOrder.Acquire)}
+
+// The other side of each race: it runs on its own actor, so on any worker
+actor Other {
+  keep: Socket;
+
+  // s's reads (writes) cancelled until the racer's round 'round' is answered
+  pub async fn cancelUntil(self, s: Socket, write: bool, at: usize, round: u64) {
+    while answeredRound(at) < round {
+      if write {s.cancelWrite();} else {s.cancelRead();}
+      let z = await aio.sleep(Duration.fromNanos(200000i64));
+    }
+    keep = s;
+  }
+
+  pub async fn drop(self, s: Socket) {}
+
+  pub async fn writeAndDrop(self, s: Socket) {
+    let w = await s.write(filled(100usize));
+  }
+
+  pub async fn letGo(self) {
+    keep = Socket.none();
+  }
+}
+
+actor Racer {
+  pub async fn run(self, n: u64, start: u64, other: Other, at: usize) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let addr = await ls.localAddr();
+    var port = 0u16;
+    match addr {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    var k = 0u64;
+    while k < n {
+      let c = await aio.connect(SocketAddr.localhost(port));
+      let a = socketOf(c);
+      var ac: Result[Socket, IoError] = Err[Socket, IoError](IoError(0u32));
+      if !a.isNone() {
+        ac = await ls.acceptIn(IoLimits.until(Instant.now() + Duration.fromSeconds(5i64)));
+      }
+      let b = socketOf(ac);
+      let round = k + 1u64;
+      var kind = (k + start) % 5u64;
+      if a.isNone() || b.isNone() {kind = 99u64;}
+      if kind == 99u64 {
+        skipped.add(1u64);
+      } else if kind == 0u64 || kind == 1u64 {
+        let reading = a.read(IoBuf(4096usize));
+        if kind == 0u64 {other.cancelUntil(a, false, at, round);} else {other.drop(a);}
+        started.add(1u64);
+        let r = await reading;
+        answered.add(1u64);
+        if !isErr(r) {wrong.add(1u64);}
+      } else if kind == 2u64 || kind == 3u64 {
+        let writing = a.write(filled(bigWrite));
+        if kind == 2u64 {other.cancelUntil(a, true, at, round);} else {other.drop(a);}
+        started.add(1u64);
+        let w = await writing;
+        answered.add(1u64);
+      } else {
+        let reading = a.read(IoBuf(4096usize));
+        other.writeAndDrop(b);
+        other.cancelUntil(a, false, at, round);
+        started.add(1u64);
+        let r = await reading;
+        answered.add(1u64);
+        match r {
+          case let Ok(buf) {if buf.len() == 0usize || buf.len() > 100usize {wrong.add(1u64);}}
+          else {}
+        }
+      }
+      mem.atomicStore[u64](at as *u64, round, MemOrder.Release);
+      other.letGo();
+      finished.add(1u64);
+      k = k + 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 24u32));
+  // One word a racer: its rounds answered, read by its other actor
+  let words = libc.calloc(usize.from(actorsN), 8usize);
+  var i = 0u64;
+  while i < actorsN {
+    let o = Other(Socket.none());
+    let r = Racer();
+    r.run(roundsEach, i, o, words as usize + usize.from(i) * 8usize);
+    i = i + 1u64;
+  }
+  // Every round finished, or a minute gone: an answer lost leaves its round
+  // waiting for ever
+  let limit = Instant.now() + Duration.fromSeconds(60i64);
+  while finished.load() + skipped.load() < actorsN * roundsEach && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(10i64));
+  }
+  let rounds = finished.load() + skipped.load();
+  // The sockets dropped are closed on the I/O thread: give it time
+  var waited = 0i64;
+  while aio.opStats().inUse > 0u64 && waited < 5000i64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 10i64;
+  }
+  let left = aio.opStats().inUse;
+  let st = aio.opStats();
+  let ops = started.load();
+  let replies = answered.load();
+  finalAll();
+  if skipped.load() > 0u64 {
+    return skip("the system refused connections: its ports are used up by earlier runs");
+  }
+  expectUInt(rounds, actorsN * roundsEach, "every round finished");
+  expectUInt(replies, ops, "every operation awaited was answered");
+  expectUInt(wrong.load(), 0u64, "every answer is one its round allows");
+  expectUInt(left, 0u64, "every record is dissolved");
+  expect(st.answeredHere > 0u64, "some operations were answered on their workers");
+  expect(st.handedOver > 0u64, "and some were handed to the I/O thread");
+  expectUInt(st.started, st.answeredHere + st.handedOver, "each one either");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is home");
+  done()
+}
