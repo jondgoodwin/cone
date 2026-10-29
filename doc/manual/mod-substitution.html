@@ -1158,7 +1158,7 @@ let number = h.finish();
 	<h3 id="iterators"><span id="iterator"></span>Iterator and Iterable</h3>
 	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that is generic over
 		them. A type is an <span class="pre">Iterator[T]</span> by having <span class="pre">next</span>, and an
-		<span class="pre">Iterable[T, I]</span> by having <span class="pre">iter</span>. The cursors of
+		<span class="pre">Iterable[T]</span> by having <span class="pre">iter</span>. The cursors of
 		<span class="pre">str</span> and of every collection have them, and so may a struct of your own
 		(<a href="rec-methods.html#iterator">Method patterns</a> shows how):</p>
 <pre>
@@ -1166,8 +1166,9 @@ pub trait Iterator[T] {
   pub fn next(self: &amp;mut) Option[T];     // the next value, None once there are no more
 }
 
-pub trait Iterable[T, I] where I is Iterator[T] {
-  pub fn iter(self: &amp;) I;                // a cursor over what it holds, without consuming it
+pub trait Iterable[T] {
+  type Cursor: Iterator[T];               // the cursor's type, the type's own choice
+  pub fn iter(self: &amp;) Cursor;           // a cursor over what it holds, without consuming it
 }
 </pre>
 	<p>A function asks for one as a <a href="mod-generativity.html#constraints">bound</a>, decided where it is called
@@ -1196,9 +1197,9 @@ fn total[S: Iterator[&amp;i64]](it: &amp;mut S) i64 {   // a cursor that lends n
   sum
 }
 
-fn walk[T, I, C: Iterable[T, I]](c: &amp;C) usize where I is Iterator[T] {
+fn walk[T, C: Iterable[T]](c: &amp;C) usize {
   var it = c.iter();
-  count[T, I](&amp;mut it)
+  count[T, C.Cursor](&amp;mut it)
 }
 </pre>
 	<p><span class="pre">T</span> is what <span class="pre">next</span> gives, so a cursor that lends its values (a
@@ -1208,9 +1209,10 @@ fn walk[T, I, C: Iterable[T, I]](c: &amp;C) usize where I is Iterator[T] {
 		declares (<span class="pre">Option[&amp;'a V]</span>) meets it, as a method with no other parameter has nothing
 		to store through its receiver. The cursor's own signature is what a bound's call reads, so borrows given by two
 		calls of <span class="pre">next</span> may be held together; through a virtual reference the trait's signature
-		is read, which ties a result to the whole cursor. <span class="pre">Iterable</span> takes its cursor's type as a
-		second argument, <span class="pre">I</span>, because a trait cannot yet name a type its implementer chooses;
-		both arguments are found from the type passed. A type with no <span class="pre">next</span> (or
+		is read, which ties a result to the whole cursor. <span class="pre">Iterable</span>'s cursor is its
+		<a href="#assoc">associated type</a>, <span class="pre">Cursor</span>, what the type's
+		<span class="pre">iter</span> gives, named <span class="pre">C.Cursor</span>; it and
+		<span class="pre">T</span> are found from the type passed. A type with no <span class="pre">next</span> (or
 		<span class="pre">iter</span>), or with one that gives another type, is refused where the function is
 		called.</p>
 	<p id="adapters">Fitting is by shape, and the trait's shared methods come with the declaration. A type that says

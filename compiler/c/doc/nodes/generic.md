@@ -542,7 +542,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    after its receiver.
 
    **An array or a slice given for a parameter bounded by a generic trait** —
-   `xs: &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
+   `xs: &C` with `C: Iterable[A]`, given `&arr` or a `&Array[T]` slice — has no
    struct for `C` to be: a slice names no type there, and an array has no methods
    of its own to read the bound off. `genericInferArrayBound` captures `C` as the
    body `Array[T]` of the element (`fnCallArrayBody`, the instance core declares,

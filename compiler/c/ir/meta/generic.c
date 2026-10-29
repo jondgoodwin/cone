@@ -512,7 +512,7 @@ static INode *genericCapturedType(FnCallNode *gencall, Nodes *genparms, INode *p
 static StructNode *genericNamedGenericTrait(INode *node);
 
 // A slice, or a reference to a fixed-size array, passed for 'xs &C' where C is
-// bounded by a generic trait ('C Iterable[A, I]'), is C's argument as the body
+// bounded by a generic trait ('C: Iterable[A]'), is C's argument as the body
 // 'Array[T]' of its element: the struct whose methods an array and a slice call,
 // so the bound is read off them as for any other type. (An array has no methods
 // of its own, and a slice names no type for C to be.) Answers 1 once the
