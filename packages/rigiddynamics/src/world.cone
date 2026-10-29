@@ -102,7 +102,7 @@ pub struct World {
   // Make a body. A body of a shape with no volume (a triangle mesh, a
   // heightfield) can only be static or kinematic.
   pub fn createBody(self: &mut, def: BodyDef) u32 {
-    let sh = shapes[usize.from(def.shape)];
+    let sh = &shapes[usize.from(def.shape)];
     let mp = sh.massProps();
     var motion = def.motion;
     if motion == MotionDynamic && mp.volume <= 0.000001 { motion = MotionKinematic; }
@@ -159,7 +159,7 @@ pub struct World {
     next.clear();
     k = 0usize;
     while k < cache.len() {
-      let c = cache[k];
+      let c = &cache[k];
       if c.a == id || c.b == id {
         if c.touching { self.emit(if c.sensor { EvSensorExit } else { EvContactRemoved }, c.a, c.b, zero3(), c.normal, 0.); }
       } else {
@@ -433,14 +433,14 @@ pub struct World {
     joints[usize.from(j)].breakTorque = torque;
   }
   // The force and torque joint j carried in the last sub-step, N and N m
-  pub fn jointLoad(self: &, j: u32) (f32, f32) { jointLoadOf(joints[usize.from(j)], substepSeconds) }
+  pub fn jointLoad(self: &, j: u32) (f32, f32) { jointLoadOf(&joints[usize.from(j)], substepSeconds) }
 
   // Remove the breakable joints loaded past their limits in the sub-step just solved
   fn breakJoints(self: &mut, h: f32) {
     var a = 0usize;
     while a < activeJoints.len() {
       let ji = usize.from(*activeJoints[a]);
-      let jt = joints[ji];
+      let jt = &joints[ji];
       if jt.breakForce < 0. && jt.breakTorque < 0. { a = a + 1usize; continue; }
       let load = jointLoadOf(jt, h);
       let byForce = jt.breakForce >= 0. && load.0 > jt.breakForce;
@@ -458,10 +458,10 @@ pub struct World {
       }
     }
   }
-  pub fn hingeAngleOf(self: &, j: u32) f32 { hingeAngle(self, joints[usize.from(j)]) }
+  pub fn hingeAngleOf(self: &, j: u32) f32 { hingeAngle(self, &joints[usize.from(j)]) }
   // How far apart the joint's two anchors are now (zero when it is satisfied), metres
-  pub fn jointError(self: &, j: u32) f32 { jointState(self, joints[usize.from(j)]).d.length() }
-  pub fn sliderOffsetOf(self: &, j: u32) f32 { sliderOffset(self, joints[usize.from(j)]) }
+  pub fn jointError(self: &, j: u32) f32 { jointState(self, &joints[usize.from(j)]).d.length() }
+  pub fn sliderOffsetOf(self: &, j: u32) f32 { sliderOffset(self, &joints[usize.from(j)]) }
 
   fn jointBlocks(self: &, a: u32, b: u32) bool {
     var k = 0usize;
@@ -539,14 +539,14 @@ pub struct World {
   pub fn updateBroadPhase(self: &mut, dt: f32) {
     var i = 0usize;
     while i < bodies.len() {
-      let b = bodies[i];
+      let b = &bodies[i];
       if isAwakeDynamic(b) || isMovingKinematic(b) { bp.update(u32.from(i), self.bodyBox(i, dt)); }
       i = i + 1usize;
     }
   }
 
   fn isMover(self: &, i: usize) bool {
-    let b = bodies[i];
+    let b = &bodies[i];
     isAwakeDynamic(b) || isMovingKinematic(b)
   }
 
@@ -588,7 +588,7 @@ pub struct World {
         let xfA = Rigid(bA.pos - bA.rot * bA.comLocal, bA.rot);
         let xfB = Rigid(bB.pos - bB.rot * bB.comLocal, bB.rot);
         out.clear();
-        collide(shapes[usize.from(bA.shape)], xfA, shapes[usize.from(bB.shape)], xfB, margin, &mut out);
+        collide(&shapes[usize.from(bA.shape)], xfA, &shapes[usize.from(bB.shape)], xfB, margin, &mut out);
         let sensor = bA.sensor || bB.sensor;
         var anyOldTouching = false;
         var g = oldIdx;
@@ -670,7 +670,7 @@ pub struct World {
               if inherit == groupEnd {
                 v = oldIdx;
                 while v < groupEnd {
-                  if sameKey(cache[v], a, b, mf.partA, mf.partB, mf.subA, mf.subB) { inherit = v; break; }
+                  if sameKey(&cache[v], a, b, mf.partA, mf.partB, mf.subA, mf.subB) { inherit = v; break; }
                   v = v + 1usize;
                 }
               }
@@ -789,8 +789,8 @@ pub struct World {
         if !c.sensor && c.count > 0usize {
           let ia = usize.from(c.a);
           let ib = usize.from(c.b);
-          let aw = isAwakeDynamic(bodies[ia]);
-          let bw = isAwakeDynamic(bodies[ib]);
+          let aw = isAwakeDynamic(&bodies[ia]);
+          let bw = isAwakeDynamic(&bodies[ib]);
           if (aw || bw) && !bodies[ia].asleep && !bodies[ib].asleep && ((aw && bw) == (pass == 0)) {
             var used = 0u64;
             if aw { used = used | bodies[ia].color; }
@@ -832,8 +832,8 @@ pub struct World {
       if joints[ji].alive {
         let ja = joints[ji].a;
         let jb = joints[ji].b;
-        let aw = isAwakeDynamic(bodies[usize.from(ja)]);
-        let bw = isAwakeDynamic(bodies[usize.from(jb)]);
+        let aw = isAwakeDynamic(&bodies[usize.from(ja)]);
+        let bw = isAwakeDynamic(&bodies[usize.from(jb)]);
         if aw && bodies[usize.from(jb)].asleep { self.wake(jb); }
         if bw && bodies[usize.from(ja)].asleep { self.wake(ja); }
         if aw || bw { activeJoints.push(u32.from(ji)); }
@@ -848,7 +848,7 @@ pub struct World {
     let maxW = settings.maxAngularSpeed;
     var i = 0usize;
     while i < bodies.len() {
-      if isAwakeDynamic(bodies[i]) {
+      if isAwakeDynamic(&bodies[i]) {
         let b = &mut bodies[i];
         var v = b.linVel + (g * b.gravityFactor + b.force * b.invMass) * h;
         var w = b.angVel + b.invInertia * b.torque * h;
@@ -1013,7 +1013,7 @@ pub struct World {
     if settings.ccd { self.continuous(dt); }
     var i = 0usize;
     while i < bodies.len() {
-      if isAwakeDynamic(bodies[i]) {
+      if isAwakeDynamic(&bodies[i]) {
         bodies[i].force = zero3();
         bodies[i].torque = zero3();
       }
@@ -1046,14 +1046,14 @@ pub struct World {
     }
     i = 0usize;
     while i < bodies.len() {
-      let b = bodies[i];
+      let b = &bodies[i];
       if isAwakeDynamic(b) && !b.sensor {
         let now = Rigid(b.pos - b.rot * b.comLocal, b.rot);
         let disp = now.pos - b.startPos;
         let dist = disp.length();
         let reach = if *jointed[i] { settings.maxSpeculative } else { 0. };
         if dist > settings.ccdThreshold * 2. * b.minExtent && dist > 0.0001 && dist > reach {
-          let sh = shapes[usize.from(b.shape)];
+          let sh = &shapes[usize.from(b.shape)];
           let startXf = Rigid(b.startPos, b.startRot);
           let swept = sh.bounds(startXf).union(sh.bounds(now)).expand(0.01);
           bp.queryBox(swept, b.mask, &mut cands);
@@ -1066,7 +1066,7 @@ pub struct World {
               && (o.motion == MotionStatic || b.bullet);
             if eligible {
               let oxf = Rigid(o.pos - o.rot * o.comLocal, o.rot);
-              let hit = shapeCast(sh, startXf, disp, shapes[usize.from(o.shape)], oxf);
+              let hit = shapeCast(sh, startXf, disp, &shapes[usize.from(o.shape)], oxf);
               // a hit counts if the sweep goes into the surface at more than about 6 degrees: one that
               // grazes it is a body sliding along a surface it rests on, which the contacts handle
               if hit.hit && hit.fraction > 0.0001 && hit.fraction < bestT && hit.normal.dot(disp) > 0.1 * dist { bestT = hit.fraction; }
@@ -1110,7 +1110,7 @@ pub struct World {
     }
     i = 0usize;
     while i < n {
-      let b = bodies[i];
+      let b = &bodies[i];
       if isAwakeDynamic(b) {
         // Box2D's measure: the faster of its speed and its farthest point's speed from spin
         let slow = maxf(b.linVel.length(), b.angVel.length() * b.radius) < settings.sleepSpeed;
@@ -1126,12 +1126,12 @@ pub struct World {
       let c = cache[usize.from(*active[a])];
       let ia = usize.from(c.a);
       let ib = usize.from(c.b);
-      if bodies[ia].motion == MotionDynamic && isMovingKinematic(bodies[ib]) {
+      if bodies[ia].motion == MotionDynamic && isMovingKinematic(&bodies[ib]) {
         let r = usize.from(findSet(&mut parent, c.a));
         minSleep.set(r, 0.);
         bodies[ia].sleepTime = 0.;
       }
-      if bodies[ib].motion == MotionDynamic && isMovingKinematic(bodies[ia]) {
+      if bodies[ib].motion == MotionDynamic && isMovingKinematic(&bodies[ia]) {
         let r = usize.from(findSet(&mut parent, c.b));
         minSleep.set(r, 0.);
         bodies[ib].sleepTime = 0.;
@@ -1143,7 +1143,7 @@ pub struct World {
     while i < n { groups.push(0u32); i = i + 1usize; }
     i = 0usize;
     while i < n {
-      if isAwakeDynamic(bodies[i]) {
+      if isAwakeDynamic(&bodies[i]) {
         let r = usize.from(findSet(&mut parent, u32.from(i)));
         if *minSleep[r] >= settings.timeToSleep {
           if *groups[r] == 0u32 { groups.set(r, nextGroup); nextGroup = nextGroup + 1u32; }
