@@ -13,7 +13,7 @@ typedef struct MacroDclNode {
     Name *namesym;
     // The type parameters, 'macro m[T, U][a: T, b: U]': the first of two bracket
     // lists, NULL when only one is written. A use gives their arguments in its
-    // brackets, 'm[i32, f64](1, 2.)'; inferring them is not built.
+    // brackets, 'm[i32, f64](1, 2.)', or they are inferred from its arguments.
     Nodes *typeparms;
     // The value parameters (GenVarDcl), each typed: 'a: T', 'a: lazy T' (its
     // 'valtype' and FlagLazy), except a macro method's 'self', which is bare
@@ -53,5 +53,20 @@ void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNo
 // Refuse, at 'at', a change to the variable a macro's expansion bound a plain
 // parameter to (FlagMacroBind): an argument the macro assigns to must be 'lazy'
 void macroParmAssignRefused(INode *at, VarDclNode *var);
+
+// How a body changes a place, for macroChangeNameRes: stores to it, swaps it or
+// borrows it '&mut', or changes it in place by an operator such as '+='
+typedef enum {
+    MacroChangePlace,
+    MacroChangeInPlace
+} MacroChange;
+
+// Name resolution of a change to 'place' (reported at 'at'): inside a macro's
+// body, a change to a plain parameter's own storage is refused where the macro
+// is declared, wherever no type is in question
+void macroChangeNameRes(INode *at, INode *place, MacroChange how);
+
+// Refuse an argument whose type does not fit its parameter's, naming it
+void macroArgTypeRefused(INode *arg, Name *parm, int lazy, INode *parmtype);
 
 #endif

@@ -417,3 +417,4 @@ says so, and the object defines the hidden struct's methods, internally
 | `genllvm/genltype.c` | `genlFnStubVtable` | the vtable of a plain function's reference |
 | `shared/error.c` | `errorTrialBegin`, `errorTrialEnd`, `errorLoudBegin`, `errorsOwn` | a trial's diagnostics counted and not printed; the loud window of a declaration it did not make |
 | `ir/exp/closure.c` | `closureTrialOwns` | whether a declaration was made by the trial now open |
+| | `closureTrialArgs` | whether a generic's type arguments name a closure the trial now open made: its instance is the trial's (`genericTrialPurge`); a closure built in a trial does not join the module ([type check](../phases/type-check.md), "What a trial makes is not generated") |

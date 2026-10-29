@@ -358,8 +358,12 @@ depending on its parent — raised by `pgmModuleOrder` before any fold runs,
 [module](../nodes/module.md), "The module order"), `ErrorNoMbr` (a fold naming a member the field's type lacks),
 `ErrorBadFold` (a fold admitting what cannot fold: a static, a macro without
 `self`, the value's own `final` or `clone`, or a source that is not a struct),
-`ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
-`ErrorInvType`.
+`ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm`,
+`ErrorInvType`, and `ErrorMacroParmAssign` (a macro's body changing a plain
+parameter where no type is in question, `macroChangeNameRes`, called from the
+name resolution of an assignment, a swap, a `&mut` borrow and an
+operator-assign; [generic](../nodes/generic.md), "A plain (not `lazy`)
+parameter is evaluated once").
 
 **A failed lookup does not un-resolve a successful one.** On the private
 qualified-name path the declaration stays attached after the diagnostic: it is

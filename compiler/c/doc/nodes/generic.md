@@ -1010,17 +1010,81 @@ unwound, without reporting again: each level the refusal returns through would
 otherwise start its next expansion down to the limit again, and one that
 expands twice a level would report the limit an exponential number of times.
 
-**Macros differ from generics in three ways**: value arguments are never type
-checked before substitution, and never memoized, and the type arguments are
-given at the use — `m[i32](x)`, `x.m[i32](y)`, or `three[i64]` where the macro
-has no value parameters — and checked only for being types (`macroTypeArgsFit`:
-none given to a macro with type parameters, or some to one without, is
-`ErrorMacroTypeArgs`; the wrong number `ErrorArgCount`; a value `ErrorNotType`).
-Brackets after the macro's name fill its first list: its type parameters where
-it declares them, its value parameters where it does not (`twice[x]`, as
-before). `macroExpand` substitutes the type arguments and the `lazy` value
-arguments together, the type parameters first. Inferring the type arguments,
-and checking a `lazy` argument against its parameter's type, are `[planned]`.
+**Macros differ from generics in three ways**: a value argument is never type
+checked in place before it is substituted or bound, an expansion is never
+memoized, and the type arguments are given at the use — `m[i32](x)`,
+`x.m[i32](y)`, or `three[i64]` where the macro has no value parameters — or
+inferred from the value arguments where the use writes none. Written ones are
+checked only for being types (`macroTypeArgsFit`: some given to a macro without
+type parameters is `ErrorMacroTypeArgs`; the wrong number `ErrorArgCount`; a
+value `ErrorNotType`). Brackets after the macro's name fill its first list: its
+type parameters where it declares them, its value parameters where it does not
+(`twice[x]`, as before). `macroExpand` substitutes the type arguments and the
+`lazy` value arguments together, the type parameters first.
+
+**What the arguments are is asked before the body is expanded**, and never by
+checking an argument twice: type checking lowers and replaces nodes, and an
+expression is checked once.
+
+- **The type arguments a use leaves off are inferred from its plain
+  arguments first, then its lazy ones** (`macroInferTypeArgs`). A plain argument is its binding's
+  initializer, and the binding is a declaration, checked once and marked so.
+  So each binding whose parameter's type names a type parameter is checked
+  first, for real, typed by its argument as `let a = arg` is (marked in
+  `early`), and `genericInferMacroParms` matches those types against the
+  parameters' types as written by the function rule, `genericInferFnParms`
+  itself (a `null` and an unsuffixed number literal wait for the others, then
+  take the literal's own type; their bindings are checked with the block,
+  typed by the parameter). A macro has no return type and no bounds, so
+  nothing else has a say. A binding the type arguments then type otherwise is
+  coerced to its parameter's type (`macroEarlyBindingsFit`; `ErrorMacroArgType`
+  where it does not fit). The block the bindings head passes a checked one by.
+  A type parameter the plain arguments leave open is then said by the lazy
+  arguments whose parameters' types name it: each is checked as a copy
+  (`macroArgTrial`, below), wanting nothing, and a second
+  `genericInferMacroParms` matches the copies' types, starting from what the
+  plain arguments said, so a lazy argument disagreeing with another, or with a
+  plain one, is the same conflict. A copy whose type the trial alone has — a
+  closure's struct, an instance made with one (`closureTrialType`) — says
+  nothing, since the real argument's type is another; a type parameter only
+  such a copy could say is `ErrorMacroLazyInfer`, whose remedy is to write the
+  type arguments or make the parameter plain. A lazy argument whose copy does
+  not check on its own is checked in place, reporting its own error, and the
+  use is not expanded.
+  A type parameter no argument says is `ErrorInvType` ("Could not infer the
+  type parameter T of the macro m", `genericMacroMissingParms`), as is one two
+  arguments say differently ("Inconsistent type for the macro m's type
+  parameters"). A type parameter only ever written
+  (`three[i64]()`) is never inferred. A binding that does not check reports its
+  own error, and the use is not expanded. Since a closure given as a plain
+  argument is checked for real, a type parameter inferred from it is that
+  closure's own struct.
+- **A `lazy` argument is checked against its type on a copy**, once the type
+  arguments are known. `macroArgTrial` clones the argument (`cloneDclPush`, so
+  a declaration inside it is the copy's own) and checks the clone inside a
+  trial (`errorTrialBegin`/`End`, error.h, "A trial": its diagnostics counted
+  and dropped), with narrowing's state saved and restored around it
+  (`narrowFnBegin`/`narrowFnEnd`, the current facts restored inside), so the
+  copy's tests, kills and hidden locals reach nothing outside it. The argument
+  itself is untouched, and is checked where the body puts it. A declaration
+  the copy reaches first — a function not yet checked, a generic's instance for
+  the program's types — is the program's, checked loud and once, and is what
+  the real argument reaches too. What the copy makes for itself — a closure's
+  struct, an instance made with it — is the trial's and is never generated
+  ([type check](../phases/type-check.md), "What a trial makes is not
+  generated"); that is also why a copy whose type is one of those infers
+  nothing.
+
+  The check (`macroLazyArgsFit`): the copy is checked wanting
+  the parameter's type with the type arguments substituted
+  (`macroParmTypeAt`), and coerced to it. One that checks but does not fit is
+  refused at the use, naming the parameter (`ErrorMacroArgType`,
+  `macroArgTypeRefused`), and the use is not expanded; `lazy void` takes a
+  block or statement that gives no value, and refuses a value. One whose copy
+  does not check on its own is left to be checked where the body puts it,
+  which reports it, as before. A plain argument's mismatch is the same
+  diagnostic, reported by its binding's check (`varDclTypeCheck`, for a
+  `FlagMacroBind` variable).
 
 **A plain (not `lazy`) parameter is evaluated once.** `macroExpand` binds its
 argument to a variable first, and the expansion is a block,
@@ -1034,14 +1098,27 @@ parameter is hooked to it rather than to the argument, and `cloneNode` copies a
 use hooked to such a variable as a use of it, keeping the use's own place
 (hygiene costs nothing: the use is bound to the declaration, not to a name).
 The argument is checked against the type as any initializer is, by the `let`
-(`ErrorInvType`, "does not match variable's declared type", pointed at the argument), and moved into the
+(`ErrorMacroArgType`, naming the parameter, pointed at the argument), and moved into the
 variable where its type moves. A body that changes the variable — a store into
 it or a part of it, a swap, a borrow to change it, an operator changing it in
-place, a method taking `self: &mut` — is refused with `ErrorMacroParmAssign`
-where the body writes the change (`macroParmAssignRefused`, from the permission
-refusals in `assign.c`, `swap.c` and `borrow.c`), since an argument the macro
-assigns to must be `lazy` [Jon 18 Oct]. A macro with no plain parameter expands
-to its body alone, as before.
+place, a method taking `self: &mut` — is refused with `ErrorMacroParmAssign`,
+since an argument the macro assigns to must be `lazy` [Jon 18 Oct]. Where no
+type is in question it is refused where the macro is declared, so an unused
+macro is refused too: `macroNameRes` sets `macroResolving` for the body, and
+the name resolution of an assignment, a swap, a `&mut` borrow
+(`refNameRes`) and an operator-assign or `<-` (`fnCallNameRes`) calls
+`macroChangeNameRes`, which refuses a change whose place is a plain
+parameter's own storage: the parameter, or a path from it whose every step
+is concretely no reference — a field of a struct value (not a trait, not a
+generic type), an element of an array value (`macroPlaceParm`,
+`macroValueTypeDcl`). An operator changing in place also reaches through a
+reference its operand is, so it is refused there only where the operand's own
+type is such a value. Anything else waits on a type — a step that is a
+reference, a type parameter, an index into anything but an array value, a
+method — and is refused in each expansion where the body writes the change
+(`macroParmAssignRefused`, from the permission refusals in `assign.c`,
+`swap.c` and `borrow.c`). A macro with no plain parameter expands to its body
+alone, as before.
 
 A `lazy` parameter, and a macro method's `self`, are substituted whole: what
 makes `twice[bump()]`, its parameter `lazy`, call `bump()` twice. It is also what

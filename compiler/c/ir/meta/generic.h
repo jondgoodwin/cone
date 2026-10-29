@@ -83,6 +83,24 @@ void genericInstantiateDepthSet(uint32_t depth);
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
+// A macro's type parameters, inferred from its arguments by the rules a
+// generic function's are from a call's. 'parmtypes' and 'args' are paired, a
+// parameter's type as written and its argument type checked, a pair left out
+// where either is NULL. The type arguments, one nothing said left NULL, or
+// NULL once two arguments are reported to disagree. 'prior', or NULL, is what
+// earlier arguments said, which these must agree with.
+Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
+    Nodes *prior, INode *errnode, Name *name);
+// Report the type parameters genericInferMacroParms left NULL in 'typeargs'
+void genericMacroMissingParms(Nodes *typeargs, Nodes *typeparms, Name *name, INode *errnode);
+
+// A generic's instance made inside a trial (error.h) for a type the trial made
+// (a closure's hidden struct) is the trial's: it is memoized while the trial
+// runs, so the trial's own check can find it again, and taken out once the
+// outermost trial has closed, so it is never generated. Called after a trial
+// closes; does its work only when none is open.
+void genericTrialPurge(void);
+
 // The instance of generic method 'genmeth' that a call on a receiver names,
 // its type arguments 'typeargs' or, when NULL, inferred from the call's
 // arguments and from 'expectType', the type its value is wanted as. NULL once

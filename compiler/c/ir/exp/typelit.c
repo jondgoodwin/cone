@@ -852,6 +852,7 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
     errorTrialBegin(&trial, closureSerialNow());
     inodeTypeCheck(pstate, &probe, unknownType);
     int probeok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe);
+    genericTrialPurge();
     FieldDclNode *regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
     // A value that is no region but leads to one ('allocRegion', as an actor's
     // state has) is made the head's region: 'x.allocRegion()' is the head from
@@ -869,6 +870,7 @@ static int typeLitNewInRegion(TypeCheckState *pstate, FnCallNode **nodep, int ha
         errorTrialBegin(&trial, closureSerialNow());
         inodeTypeCheck(pstate, &probe, unknownType);
         probeok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe);
+        genericTrialPurge();
         regionfld = probeok ? typeLitRegionField(((IExpNode*)probe)->vtype) : NULL;
     }
     if (probeok && regionfld == NULL) {

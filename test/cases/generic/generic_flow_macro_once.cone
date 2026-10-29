@@ -1,12 +1,14 @@
-// A macro whose body changes a plain parameter, found by flow analysis.
+// A macro whose body stores into a plain parameter, found by flow analysis,
+// where the macro is used.
 //
 // A plain parameter is evaluated once: the expansion binds its argument to a
 // variable nothing may change, so an argument the macro assigns to must be
-// 'lazy'. Flow analysis is where a store is checked, so here are refused an
-// assignment to the parameter, to a part of it, and a swap on either side,
-// each where the body writes it. What type check refuses -- a mutable borrow,
-// an operator changing its operand, a method taking 'self: &mut' -- is
-// generic_typecheck_macro_once.
+// 'lazy'. A store whose refusal needs no type is refused where the macro is
+// declared (generic_nameres_macro_once). What is left waits on a type, and
+// flow analysis, where a store is checked, refuses it in each expansion: a
+// store into, or a swap of, a part of a parameter typed by a type parameter,
+// and a store another macro's 'lazy' parameter makes when it is given the
+// plain one. What type check refuses is generic_typecheck_macro_once.
 //
 // None of it is refused where the change is through a reference the argument
 // is, or where the parameter is 'lazy'.
@@ -18,44 +20,29 @@ struct Pair {
   pub b: i64;
 }
 
-macro reset[a: i64] {
-  a = 0i64;             //~ ErrorMacroParmAssign:3 "must be lazy"
-  a
-}
-
-macro resetField[p: Pair] {
+macro resetPart[T][p: T] {
   p.a = 0i64;           //~ ErrorMacroParmAssign:4 "must be lazy"
   p.a
 }
 
-macro swapLeft[a: i64, b: lazy i64] {
-  a <-> b;              //~ ErrorMacroParmAssign:3 "must be lazy"
+macro swapPart[T][p: T, b: lazy i64] {
+  p.a <-> b;            //~ ErrorMacroParmAssign:4 "must be lazy"
   b
 }
 
-macro swapRight[a: lazy i64, b: i64] {
-  a <-> b;              //~ ErrorMacroParmAssign:9 "must be lazy"
-  a
+// The plain parameter given to a macro whose lazy parameter is stored into
+macro zero[x: lazy i64] {
+  x = 0i64;
+  x
+}
+
+macro viaZero[a: i64] {
+  zero(a)               //~ ErrorMacroParmAssign:8 "must be lazy"
 }
 
 // Through a reference, and lazy: changed in the caller's place, as written
-macro resetThrough[r: &mut i64] {
-  *r = 0i64;
-  *r
-}
-
-macro resetFieldThrough[p: &mut Pair] {
-  p.a = 0i64;
-  p.a
-}
-
 macro resetLazy[a: lazy i64] {
   a = 0i64;
-  a
-}
-
-macro swapLazy[a: lazy i64, b: lazy i64] {
-  a <-> b;
   a
 }
 
@@ -63,6 +50,6 @@ fn uses() i64 {
   var x = 1i64;
   var y = 2i64;
   var p = Pair(a: 1, b: 2);
-  reset(x) + resetField(p) + swapLeft(x, y) + swapRight(x, y)
-    + resetThrough(&mut x) + resetFieldThrough(&mut p) + resetLazy(x) + swapLazy(x, y)
+  resetPart(p) + swapPart(p, y) + viaZero(x)
+    + resetPart(&mut p) + swapPart(&mut p, y) + resetLazy(x) + zero(x)
 }

@@ -82,6 +82,8 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
     }
     assignTargetNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
+    // In a macro's body, a store to a plain parameter is refused here
+    macroChangeNameRes(node->lval, node->lval, MacroChangePlace);
 }
 
 // Type check a single matched assignment between lval and rval

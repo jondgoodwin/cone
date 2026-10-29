@@ -196,10 +196,11 @@ initial value, which is the case nothing else can serve.
 source order, and `var a = a` inside a function fails at name resolution because
 the name is not yet in scope.
 
-**A trial does not own what it reaches.** Two checks run on a copy to learn
+**A trial does not own what it reaches.** Three checks run on a copy to learn
 whether it checks, with the copy's diagnostics counted and thrown away (`ErrorTrial`,
 `shared/error.h`): a closure's body under a guess at its permissions
-(`closureTry`), and the head of `new a[T](...)` (`typeLitNewInRegion`). The copy's
+(`closureTry`), the head of `new a[T](...)` (`typeLitNewInRegion`), and a macro's
+`lazy` argument against its parameter's type (`macroArgTrial`). The copy's
 names are the program's declarations, and demand checks a declaration the first time
 anything reaches it, trial included. That declaration is checked once, so what it
 reports must not go with the trial: `inodeTypeCheck` opens a loud window
@@ -210,6 +211,19 @@ all made since the outermost trial began, are the trial's). In the window
 diagnostics print and are kept when the trial ends; the trial's own verdict counts
 the rest. A closure's body uses `errorsOwn`, which leaves the window's out, to tell
 its own failure from another declaration's.
+
+**What a trial makes is not generated.** Checking a copy builds what the copy
+holds: a closure's hidden struct and its `()`, an anonymous function, a holder
+for a plain function, and an instance of a generic made with one of those. They
+are the trial's, made to be checked and dropped, so they never reach generation:
+a closure, holder or anonymous function built while a trial is open
+(`errorSilent`, outside a loud window) does not join the module (`closureBuild`,
+`closureFnHolder`, `closureTypeCheck`), and an instance whose type arguments name
+one (`closureTrialArgs`) is memoized while the trial runs, so the trial's own
+check finds it again, and taken out of its generic's `memonodes` once no trial
+is open (`genericTrialPurge`, called as each trial closes). So a closure written
+inside another closure's body, or inside a macro's lazy argument, is generated
+once, as written.
 
 ### Layout before members
 
@@ -569,7 +583,10 @@ are analyzed — each a fresh clone that `genericInstantiate` checks as it build
 memoized on `genericinfo->memonodes`. Macros expand by the same clone-and-check
 path, the expansion a block binding each plain parameter's argument in a `let`
 ahead of the cloned body, so the argument is checked as that `let`'s
-initializer ([generic](../nodes/generic.md), "Macros differ from generics"). So instantiation is demand-driven, and rules 1 to 6 apply to instances
+initializer ([generic](../nodes/generic.md), "Macros differ from generics"). What
+an argument is before the expansion — a `lazy` argument's type, the type
+arguments a use leaves off — is asked of a copy checked as a trial, so the
+argument itself is still checked once, where the expansion puts it. So instantiation is demand-driven, and rules 1 to 6 apply to instances
 rather than templates. A generic's constraints are evaluated against the type
 arguments before an instance is cloned: an unmet requirement refuses the
 instance where it is asked for, and an unmet condition on a generic type's

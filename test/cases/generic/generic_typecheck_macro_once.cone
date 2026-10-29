@@ -1,12 +1,15 @@
-// A macro whose body changes a plain parameter, found at type check.
+// A macro whose body changes a plain parameter, found at type check, where
+// the macro is used.
 //
 // A plain parameter is evaluated once: the expansion binds its argument to a
 // variable nothing may change, so an argument the macro assigns to must be
-// 'lazy'. The changes type check sees are those that lend the parameter to be
-// changed: a mutable borrow written out, an operator that changes its operand in
-// place, and a method that takes 'self: &mut'. Each is refused where the body
-// writes it, in each expansion. A plain assignment and a swap are refused by
-// flow analysis, generic_flow_macro_once.
+// 'lazy'. A change whose refusal needs no type is refused where the macro is
+// declared (generic_nameres_macro_once). What is left waits on a type, and
+// type check refuses it in each expansion, where the body writes it: a method
+// that takes 'self: &mut', and a mutable borrow of, or an operator changing in
+// place, a part of a parameter typed by a type parameter, or the parameter
+// itself when the operator could reach through a reference it holds. A store
+// is refused by flow analysis, generic_flow_macro_once.
 //
 // None of it is refused where the change is through a reference the argument
 // is, or where the parameter is 'lazy'.
@@ -18,24 +21,24 @@ struct Tally {
   pub fn bump(self: &mut) { n = n + 1; }
 }
 
-macro lendIt[a: i64] {
-  let r = &mut a;       //~ ErrorMacroParmAssign:11 "must be lazy"
-  *r
-}
-
-macro addTo[a: i64] {
-  a += 1i64;            //~ ErrorMacroParmAssign:3 "must be lazy"
-  a
-}
-
 macro bumped[t: Tally] {
   t.bump();             //~ ErrorMacroParmAssign:3 "must be lazy"
   t.n
 }
 
-macro lendField[t: Tally] {
+macro lendPart[T][t: T] {
   let r = &mut t.n;     //~ ErrorMacroParmAssign:11 "must be lazy"
   *r
+}
+
+macro addTo[T][a: T] {
+  a += 1i64;            //~ ErrorMacroParmAssign:3 "must be lazy"
+  a
+}
+
+macro addToPart[T][t: T] {
+  t.n += 1i64;          //~ ErrorMacroParmAssign:4 "must be lazy"
+  t.n
 }
 
 // Through a reference, and lazy: changed in the caller's place, as written
@@ -49,11 +52,6 @@ macro bumpedThrough[t: &mut Tally] {
   t.n
 }
 
-macro addToLazy[a: lazy i64] {
-  a += 1i64;
-  a
-}
-
 macro bumpedLazy[t: lazy Tally] {
   t.bump();
   t.n
@@ -62,6 +60,7 @@ macro bumpedLazy[t: lazy Tally] {
 fn uses() i64 {
   var x = 1i64;
   var t = Tally(n: 0);
-  lendIt(x) + addTo(x) + bumped(t) + lendField(t)
-    + addThrough(&mut x) + bumpedThrough(&mut t) + addToLazy(x) + bumpedLazy(t)
+  bumped(t) + lendPart(t) + addTo(x) + addToPart(t)
+    + addThrough(&mut x) + bumpedThrough(&mut t) + bumpedLazy(t)
+    + lendPart(&mut t) + addToPart(&mut t)
 }
