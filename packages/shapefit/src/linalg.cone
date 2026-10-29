@@ -103,7 +103,9 @@ pub fn jacobiEigen(a: &mut List[f64], n: usize, vals: &mut List[f64], vecs: &mut
       sweep += 1;
     }
   }
-  // Sort ascending by eigenvalue (selection sort on the columns, ties keep their order)
+  // Sort ascending by eigenvalue (selection sort on the columns, ties keep their order: the least, the first of
+  // equals, is moved to the front and the columns before it shift along one place; a swap would carry the
+  // column at the front off behind its equals)
   vals.clear();
   i = 0usize;
   while i < n { vals.push(*a[i * n + i]); i += 1usize; }
@@ -113,14 +115,20 @@ pub fn jacobiEigen(a: &mut List[f64], n: usize, vals: &mut List[f64], vecs: &mut
     var j = i + 1usize;
     while j < n { if *vals[j] < *vals[best] { best = j; } j += 1usize; }
     if best != i {
-      vals.swap(i, best);
+      let bestVal = *vals[best];
+      var bestCol = List[f64].empty();
       var r = 0usize;
-      while r < n {
-        let x = *vecs[r * n + i];
-        vecs.set(r * n + i, *vecs[r * n + best]);
-        vecs.set(r * n + best, x);
-        r += 1usize;
+      while r < n { bestCol.push(*vecs[r * n + best]); r += 1usize; }
+      var k = best;
+      while k > i {
+        vals.set(k, *vals[k - 1usize]);
+        r = 0usize;
+        while r < n { vecs.set(r * n + k, *vecs[r * n + k - 1usize]); r += 1usize; }
+        k -= 1usize;
       }
+      vals.set(i, bestVal);
+      r = 0usize;
+      while r < n { vecs.set(r * n + i, *bestCol[r]); r += 1usize; }
     }
     i += 1usize;
   }
