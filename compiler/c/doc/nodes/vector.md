@@ -171,8 +171,11 @@ argument is an LLVM vector to `genlVectorIntrinsic` (genlvector.c). What differs
   `shufflevector` of its vector (with `poison` as the second) at the positions; a pick of a join is
   made from the join's two vectors directly, so `a.join(b).(0, 4, 1, 5)` is the one `shufflevector`
   and the eight-lane one is never emitted (`genlVectorShuffle`). One position is an `extractelement`.
-- `load` and `store` check the span once (`genlSliceSpan`): the slice holds N lanes (`count >= N`)
-  and `at <= count - N`, so no sum overflows; the panic is the index panic with the last lane's index
+- `load` and `store` check the span once (`genlSliceSpan`): `at` below `count - N + 1`, the number of
+  positions the span can start at (0 when `count < N`), so no sum overflows. That limit depends on the
+  slice alone and the optimizer computes it once outside a loop, leaving one comparison for each load.
+  The panic is the
+  index panic with the last lane's index
   (`at + N - 1`, saturating) and the count. The access is one `load <N x T>` or `store` with the
   *lane's* alignment, since a slice promises no more. A vector of 3 lanes touches 3 lanes' bytes, not
   the padded 4.
