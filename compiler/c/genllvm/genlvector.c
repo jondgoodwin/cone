@@ -91,6 +91,108 @@ static LLVMValueRef genlVectorShift(GenState *gen, int16_t op, LLVMValueRef x, L
     return LLVMBuildSelect(gen->builder, inrange, shifted, LLVMConstNull(vectype), "");
 }
 
+// The alignment a lane has in memory, which is all a slice promises its lanes:
+// a load or store of the lanes together is unaligned for the vector
+static unsigned genlLaneAlign(LLVMTypeRef lane) {
+    switch (LLVMGetTypeKind(lane)) {
+    case LLVMHalfTypeKind: return 2;
+    case LLVMFloatTypeKind: return 4;
+    case LLVMDoubleTypeKind: return 8;
+    default: return LLVMGetIntTypeWidth(lane) / 8;
+    }
+}
+
+// The address of the first of 'n' lanes at s[at] of the slice, once all of them
+// are within it: at + n <= the count, checked once for all the lanes with no sum
+// that could overflow, else the index panic with the last lane's index and the count
+static LLVMValueRef genlSliceSpan(GenState *gen, INode *site, LLVMValueRef slice, LLVMValueRef at, unsigned n, LLVMTypeRef lane) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMValueRef ptr = LLVMBuildExtractValue(bld, slice, 0, "sliceptr");
+    LLVMValueRef count = LLVMBuildExtractValue(bld, slice, 1, "count");
+    LLVMValueRef lanes = LLVMConstInt(usize, n, 0);
+    // 'at' must be below the number of positions the span can start at: count - n + 1
+    // when the slice holds n lanes at all, else none. That number depends on the
+    // slice alone, so a loop over the slice has it invariant and the optimizer
+    // computes it once, leaving one comparison of 'at' for each load.
+    LLVMValueRef fits = LLVMBuildICmp(bld, LLVMIntUGE, count, lanes, "spanfits");
+    LLVMValueRef starts = LLVMBuildSub(bld, count, LLVMConstInt(usize, n - 1, 0), "");
+    LLVMValueRef limit = LLVMBuildSelect(bld, fits, starts, LLVMConstInt(usize, 0, 0), "spanstarts");
+    LLVMValueRef inrange = LLVMBuildICmp(bld, LLVMIntULT, at, limit, "spanok");
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef okblk = genlInsertBlock(gen, "spanin");
+    LLVMBuildCondBr(bld, inrange, okblk, panicblk);
+    LLVMPositionBuilderAtEnd(bld, panicblk);
+    LLVMValueRef sat[2] = {at, LLVMConstInt(usize, n - 1, 0)};
+    LLVMValueRef last = genlVecCall(gen, "llvm.uadd.sat", &usize, 1, sat, 2);
+    LLVMValueRef vals[2] = {last, count};
+    genlPanic(gen, site, PanicIndex, vals);
+    LLVMPositionBuilderAtEnd(bld, okblk);
+    return LLVMBuildGEP2(bld, lane, ptr, &at, 1, "lanes");
+}
+
+// 'Vector[T, N].load(s, at)': the N lanes of the slice from 'at' as a vector
+LLVMValueRef genlVectorLoad(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs) {
+    LLVMTypeRef llvmvec = genlType(gen, vectype);
+    LLVMTypeRef lane = LLVMGetElementType(llvmvec);
+    LLVMValueRef slot = genlSliceSpan(gen, site, fnargs[0], fnargs[1], (unsigned)vectorLanes(vectype), lane);
+    LLVMValueRef load = LLVMBuildLoad2(gen->builder, llvmvec, slot, "lanes");
+    LLVMSetAlignment(load, genlLaneAlign(lane));
+    return load;
+}
+
+// 'm[i]': a mask's lane, a bool. The mask is a register value (or, through a
+// reference, loaded), and its lane is taken at a checked index.
+LLVMValueRef genlMaskLane(GenState *gen, FnCallNode *fncall) {
+    INode *objtype = iexpGetTypeDcl(fncall->objfn);
+    LLVMValueRef mask = genlExpr(gen, fncall->objfn);
+    if (objtype->tag == RefTag) {
+        INode *masktype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+        mask = LLVMBuildLoad2(gen->builder, genlType(gen, masktype), mask, "");
+        objtype = masktype;
+    }
+    LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+    genlBoundsCheck(gen, (INode*)fncall, index, LLVMConstInt(genlUsize(gen), vectorLanes(objtype), 0));
+    return LLVMBuildExtractElement(gen->builder, mask, index, "lane");
+}
+
+// 'a.join(b)' and 'v.(3, 2, 1, 0)': one shufflevector. A pick of a join is that
+// join's two vectors picked from directly, not the joined vector picked from.
+// One position is the lane itself, extracted.
+static LLVMValueRef genlVectorShuffle(GenState *gen, FnCallNode *lit, VectorLitKind kind) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+    if (kind == VecLitJoin) {
+        LLVMValueRef a = genlExpr(gen, nodesGet(lit->args, 0));
+        LLVMValueRef b = genlExpr(gen, nodesGet(lit->args, 1));
+        unsigned total = LLVMGetVectorSize(LLVMTypeOf(a)) * 2;
+        LLVMValueRef mask[VectorMaxLanes];
+        for (unsigned i = 0; i < total; ++i)
+            mask[i] = LLVMConstInt(i32, i, 0);
+        return LLVMBuildShuffleVector(bld, a, b, LLVMConstVector(mask, total), "join");
+    }
+    INode *src = nodesGet(lit->args, 0);
+    unsigned count = lit->args->used - 1;
+    if (count == 1) {
+        LLVMValueRef v = genlExpr(gen, src);
+        uint64_t pos = ((ULitNode*)nodesGet(lit->args, 1))->uintlit;
+        return LLVMBuildExtractElement(bld, v, LLVMConstInt(i32, pos, 0), "lane");
+    }
+    LLVMValueRef a, b;
+    if (src->tag == TypeLitTag && ((FnCallNode*)src)->args->used >= 2 && vectorLitKind((FnCallNode*)src) == VecLitJoin) {
+        a = genlExpr(gen, nodesGet(((FnCallNode*)src)->args, 0));
+        b = genlExpr(gen, nodesGet(((FnCallNode*)src)->args, 1));
+    }
+    else {
+        a = genlExpr(gen, src);
+        b = LLVMGetPoison(LLVMTypeOf(a));
+    }
+    LLVMValueRef mask[VectorMaxLanes];
+    for (unsigned i = 0; i < count; ++i)
+        mask[i] = LLVMConstInt(i32, ((ULitNode*)nodesGet(lit->args, i + 1))->uintlit, 0);
+    return LLVMBuildShuffleVector(bld, a, b, LLVMConstVector(mask, count), "pick");
+}
+
 // An operator, method or reduction of a vector, over its first argument's lanes
 LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMValueRef *fnargs, uint32_t fnargcnt) {
     (void)fnargcnt;
@@ -177,6 +279,13 @@ LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMV
         return genlVecCall(gen, "llvm.vector.reduce.or", &vectype, 1, &a, 1);
     case VecAllIntrinsic:
         return genlVecCall(gen, "llvm.vector.reduce.and", &vectype, 1, &a, 1);
+    case VecStoreIntrinsic: {
+        // 'v.store(s, at)': a is the vector, then the slice and the position
+        LLVMValueRef slot = genlSliceSpan(gen, site, fnargs[1], fnargs[2], (unsigned)LLVMGetVectorSize(vectype), lane);
+        LLVMValueRef store = LLVMBuildStore(bld, a, slot);
+        LLVMSetAlignment(store, genlLaneAlign(lane));
+        return store;
+    }
     }
     errorUnreachable(site, "a vector operation generation has no case for");
     return NULL;
@@ -261,7 +370,10 @@ static LLVMValueRef genlVectorArray(GenState *gen, LLVMValueRef val, LLVMTypeRef
 LLVMValueRef genlVectorConvert(GenState *gen, FnCallNode *lit) {
     INode *totype = itypeGetTypeDcl(lit->vtype);
     LLVMBuilderRef bld = gen->builder;
-    if (lit->args->used == 3) {
+    VectorLitKind kind = vectorLitKind(lit);
+    if (kind == VecLitJoin || kind == VecLitPick)
+        return genlVectorShuffle(gen, lit, kind);
+    if (kind == VecLitSelect) {
         LLVMValueRef mask = genlExpr(gen, nodesGet(lit->args, 0));
         LLVMValueRef a = genlExpr(gen, nodesGet(lit->args, 1));
         LLVMValueRef b = genlExpr(gen, nodesGet(lit->args, 2));

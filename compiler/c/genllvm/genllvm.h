@@ -383,8 +383,14 @@ void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRe
 // 'fnargs'; 'site' is where a failed check is reported
 LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMValueRef *fnargs, uint32_t fnargcnt);
 // A vector's conversion or construction: 'Vector[T, N].from(x)', the array a
-// vector comes free from, a number put in every lane, a mask's select
+// vector comes free from, a number put in every lane, a mask's select, and the
+// shufflevector of 'a.join(b)' and of a pick of lanes, 'v.(3, 2, 1, 0)'
 LLVMValueRef genlVectorConvert(GenState *gen, FnCallNode *lit);
+// 'Vector[T, N].load(s, at)', a call of the vector type's function: the lanes of
+// the slice, bounds checked once
+LLVMValueRef genlVectorLoad(GenState *gen, INode *site, INode *vectype, LLVMValueRef *fnargs);
+// 'm[i]', a lane of a mask: a bool read, bounds checked
+LLVMValueRef genlMaskLane(GenState *gen, FnCallNode *fncall);
 // The address of a lane of the vector at 'vecp': bounds checked against its
 // lane count, as an array's index is
 LLVMValueRef genlVectorLane(GenState *gen, INode *site, INode *vectype, LLVMValueRef vecp, LLVMValueRef index);

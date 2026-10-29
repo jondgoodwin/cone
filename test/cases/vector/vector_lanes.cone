@@ -1,0 +1,237 @@
+// Picking a vector's lanes: 'v.(3, 2, 1, 0)' with constant positions (a repeat copies
+// the lane, any width up to 64, one position is the lane itself), the lane names
+// x y z w of a vector of up to four lanes (a place, read and written like 'v[0]'),
+// 'a.join(b)' laying two vectors end to end, and a mask's lanes read as bools.
+//
+// Every value is hand-worked, and printed lane by lane because a pick that
+// compiles is not one that puts each lane in its place.
+
+mod vector_lanes;
+
+import stdio use *;
+
+fn showB(label: &str, b: bool) {
+  printStr(label);
+  printStr(" = ");
+  printStr(if b { "true" } else { "false" });
+  printStr("\n");
+}
+
+fn showF(label: &str, x: f32) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(f64.from(x));
+  printStr("\n");
+}
+
+fn show4(label: &str, v: Vector[f32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn show3(label: &str, v: Vector[f32, 3]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 3usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn show2(label: &str, v: Vector[f32, 2]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 2usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showN(label: &str, v: Vector[i32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showEight(label: &str, v: Vector[i32, 8]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 8usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+// A pick made through a reference, and from a call's result
+fn reversed(v: &Vector[f32, 4]) Vector[f32, 4] {
+  v.(3, 2, 1, 0)
+}
+
+fn make() Vector[f32, 4] {
+  Vector[f32, 4]() <- 5.0, 6.0, 7.0, 8.0
+}
+
+// Where a vector stands: a field, an element, a generic's instance, behind a reference
+struct Holder {
+  pub v: Vector[f32, 4];
+}
+
+fn pf(x: f32) {
+  printFloat(f64.from(x));
+  printStr(" ");
+}
+
+fn pb(x: bool) {
+  printStr(if x { "true " } else { "false " });
+}
+
+fn firstOf[T](v: Vector[T, 4]) T {
+  v.x
+}
+
+fn swapped[T](v: Vector[T, 4]) Vector[T, 2] {
+  v.(w, x)
+}
+
+fn bump(v: &mut Vector[f32, 4]) {
+  v.x = v.x + 1.0;
+  v[1usize] += 2.0;
+}
+
+fn places() {
+  let init = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  var h = Holder(init);
+  pf(h.v.x);                  // 1
+  pf(h.v.(3, 2)[0usize]);     // 4
+  printStr("\n");
+  bump(&mut h.v);             // 2 4 3 4
+  pf(h.v.x);                  // 2
+  pf(h.v.y);                  // 4
+  printStr("\n");
+  let arr: Array[Vector[f32, 4], 2] = [h.v, h.v];
+  pf(arr[1usize].z);          // 3
+  pf(arr[0usize].(w, w)[1usize]);   // 4
+  printStr("\n");
+  pf(firstOf[f32](h.v));      // 2
+  pf(swapped[f32](h.v)[0usize]);    // w is 4
+  printStr("\n");
+  var vi = Vector[i32, 4]() <- 1, 2, 3, 4;
+  vi.x += 10;
+  vi.w <<= 2;
+  printInt(i64.from(vi[0usize]));   // 11
+  printStr(" ");
+  printInt(i64.from(vi[3usize]));   // 16
+  printStr("\n");
+  let r = &h.v;
+  pf(r.x);                    // 2
+  pf(r.(y, z)[1usize]);       // 3
+  printStr("\n");
+  let lo = Vector[f32, 4]() <- 1.0, 5.0, 1.0, 5.0;
+  let m = h.v > lo;           // true false true false
+  let mr = &m;
+  pb(mr[0usize]);
+  pb(mr.x);
+  pb(mr.(1));
+  pb(mr.(2, 3)[1usize]);
+  printStr("\n");
+}
+
+fn main() {
+  let v = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+
+  // picks by position: reversed, a repeat, fewer lanes, one lane
+  show4("reversed", v.(3, 2, 1, 0));
+  show3("repeat", v.(2, 2, 0));
+  show2("two", v.(1, 3));
+  showF("one", v.(1));
+  show4("in place", v.(0, 1, 2, 3));
+  show4("all one lane", v.(3, 3, 3, 3));
+
+  // a pick is a vector like any: it takes the operators and picks again
+  show2("sum of picks", v.(0, 1) + v.(2, 3));
+  show2("pick of pick", v.(3, 2, 1, 0).(0, 3));
+
+  // the names x y z w, as a struct's fields: a lane, or a list of them
+  showF("x", v.x);
+  showF("y", v.y);
+  showF("z", v.z);
+  showF("w", v.w);
+  show3("xyz", v.(x, y, z));
+  show4("wzyx", v.(w, z, y, x));
+  show2("xx", v.(x, x));
+  show2("yw", v.(y, w));
+
+  // a name is a place, as v[0] is
+  var u = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  u.x = 10.0;
+  u.w = u.w + 0.5;
+  u.y += 100.0;
+  show4("written through the names", u);
+
+  // through a reference, and from a call's result
+  show4("through a reference", reversed(&v));
+  show4("from a call", make().(1, 0, 3, 2));
+  showF("name from a call", make().z);
+
+  // a vector of two lanes has x and y
+  let p = Vector[f32, 2]() <- 7.0, 8.0;
+  showF("p.x", p.x);
+  showF("p.y", p.y);
+  show4("p.(y, x, y, x)", p.(y, x, y, x));
+
+  // join: the lanes of a, then those of b, and a pick of it
+  let a = Vector[i32, 4]() <- 0, 1, 2, 3;
+  let b = Vector[i32, 4]() <- 10, 11, 12, 13;
+  showEight("join", a.join(b));
+  showN("zip", a.join(b).(0, 4, 1, 5));
+  showN("high halves", a.join(b).(2, 3, 6, 7));
+  showN("a twice", a.join(a).(7, 6, 1, 0));
+
+  // wide picks: 16 lanes from four, 64 from four, and a join of two 32-lane vectors
+  let bytes = Vector[u8, 4]() <- 1u8, 2u8, 3u8, 4u8;
+  let sixteen = bytes.(0, 1, 2, 3, 3, 2, 1, 0, 0, 1, 2, 3, 3, 2, 1, 0);
+  showB("16 lanes sum to 40", sixteen.sum() == 40u8);
+  showB("16 lanes, lane 4 is 4", sixteen[4usize] == 4u8);
+  let sixtyfour = bytes.(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3);
+  showB("64 lanes sum to 160", sixtyfour.sum() == 160u8);
+  showB("64 lanes, lane 63 is 4", sixtyfour[63usize] == 4u8);
+  let low = Vector[u8, 32]() <- fill 1u8;
+  let high = Vector[u8, 32]() <- fill 2u8;
+  let both = low.join(high);
+  showB("joined to 64 lanes: 32 + 64", both.sum() == 96u8);
+  showB("joined: lane 31 is 1 and lane 32 is 2", both[31usize] == 1u8 && both[32usize] == 2u8);
+
+  // lanes of floats and of a mask
+  let big = Vector[f32, 4]() <- 1.0, 5.0, 3.0, 7.0;
+  let small = Vector[f32, 4]() <- 2.0, 4.0, 6.0, 8.0;
+  let m = big > small;
+  showB("mask lane 0", m[0usize]);
+  showB("mask lane 1", m[1usize]);
+  showB("mask lane 2", m[2usize]);
+  showB("mask lane 3", m[3usize]);
+  let mm = m.(1, 0, 3, 2);
+  showB("picked mask lane 0", mm[0usize]);
+  showB("picked mask lane 1", mm[1usize]);
+  showB("a mask lane picked", m.(1));
+  var k = 1usize;
+  showB("mask lane at a variable index", m[k]);
+  k = 2usize;
+  showB("and at another", m[k]);
+  showB("mask lane in a condition", if m[1usize] { true } else { false });
+  showB("mask lane negated", !m[0usize]);
+  showB("mask lane and mask lane", m[1usize] && !m[2usize]);
+
+  places();
+}

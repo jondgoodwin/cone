@@ -86,8 +86,34 @@ int vectorBroadcastOperand(TypeCheckState *pstate, FnCallNode *callnode);
 // Answers 1 when it handled the call.
 int vectorFromCall(TypeCheckState *pstate, FnCallNode **nodep);
 
-// Index a vector: 'v[i]' is the lane, a place. Type checks the index and
-// gives the node its lane type. Answers 0 when it reported.
+// Index a vector: 'v[i]' is the lane, a place (for a mask, a bool read: no
+// place). Type checks the index and gives the node its lane type. Answers 0
+// when it reported.
 int vectorIndex(FnCallNode *node);
+
+// Is this node an index of a mask, a lane that is read and is not a place?
+int vectorIsMaskLane(INode *node);
+
+// The vector type literals type check makes, told apart by their arguments
+// (vectorLitKind): 'Vector[T, N].from(x)' and a broadcast (one argument), a
+// mask's select (the mask and two vectors), 'a.join(b)' (two vectors) and
+// 'v.(2, 0)' (the vector, then each lane position as a literal)
+typedef enum { VecLitConvert, VecLitSelect, VecLitJoin, VecLitPick } VectorLitKind;
+VectorLitKind vectorLitKind(FnCallNode *lit);
+
+// 'v.x': a lane named x y z w becomes the index 'v[0]' ... 'v[3]'. Answers 1
+// when it handled the call (rewrote it as the index, or refused it).
+int vectorLaneName(FnCallNode *node);
+
+// 'v.(3, 2, 1, 0)': a field list on a vector, lowered to the lanes it picks.
+// Answers 0 when the value is no vector.
+int vectorPickLower(TypeCheckState *pstate, INode **nodep);
+
+// 'Vector[f32, 4].load(s, at)': the call is rewritten to name the vector type's
+// function directly. Answers 1 when it refused the call.
+int vectorStaticCall(TypeCheckState *pstate, FnCallNode *node);
+
+// 'a.join(b)': two vectors of one type laid end to end, a vector of twice the lanes
+int vectorJoinLower(TypeCheckState *pstate, FnCallNode *callnode);
 
 #endif

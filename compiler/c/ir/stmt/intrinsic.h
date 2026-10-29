@@ -94,6 +94,8 @@ enum IntrinsicFn {
     VecSMaxIntrinsic,
     VecAnyIntrinsic,        // mask.any()
     VecAllIntrinsic,        // mask.all()
+    VecLoadIntrinsic,       // Vector[T, N].load(s, at): the lanes at s[at..at+N], bounds checked once
+    VecStoreIntrinsic,      // v.store(s, at)
 
     // The program's stitched lifecycle (genlStitch): every module's 'init' in
     // dependency order, and every module's finalizer in exactly the reverse.

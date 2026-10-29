@@ -815,6 +815,13 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             break;
         }
 
+        // A vector type's load from a slice: the vector it makes is the
+        // intrinsic's type argument, since no argument is one
+        if (stitched == VecLoadIntrinsic) {
+            fncallret = genlVectorLoad(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
+            break;
+        }
+
         // Logic to generate depends on type of first argument
         LLVMTypeRef selftyp = LLVMTypeOf(fnargs[0]);
         LLVMTypeKind selftypkind = LLVMGetTypeKind(selftyp);
@@ -3418,6 +3425,10 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             }
         }
         else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag) {
+            // The one lane a field list on a vector picks, 'v.(1)', is a number made
+            // of the vector and a position (a conversion has the number alone)
+            if (lit->args->used > 1)
+                return genlVectorConvert(gen, lit);
             return genlConvert(gen, nodesGet(lit->args, 0), lit->objfn, 0);
         }
         else if (littype->tag == VectorTag || littype->tag == ArrayTag) {
@@ -3520,6 +3531,10 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlFnCall(gen, (FnCallNode *)termnode);
     case ArrIndexTag:
     {
+        // A mask's lane is no place: the bit is taken from the mask's value
+        if (vectorIsMaskLane(termnode))
+            return genlMaskLane(gen, (FnCallNode *)termnode);
+
         // If no borrowing is involved, just get address of lval, then load value
         if (!(termnode->flags & FlagBorrow))
             return LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(termnode)), genlAddr(gen, termnode), "");

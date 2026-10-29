@@ -447,7 +447,14 @@ file adds to the scalar's lowering:
   lane, a vector to a vector lane by lane (`genlVectorLanes`), a mask's `select`, and a number into every lane.
 - **A lane is an element of the vector in memory** (`genlVectorLane`), so `v[i]` is a load or store of a
   scalar through its address, bounds checked against the lane count; SROA turns it into an
-  `extractelement` or `insertelement` where the vector lives in a register.
+  `extractelement` or `insertelement` where the vector lives in a register. A mask's lane is the exception:
+  its bits have no address, so `m[i]` is an `extractelement` of the mask's value (`genlMaskLane`).
+- **Lanes picked and vectors joined are one `shufflevector`** (`genlVectorShuffle`, a type literal of
+  two arguments or of the vector and literal positions): a pick of a join is a shuffle of the join's
+  two vectors, so `a.join(b).(0, 4, 1, 5)` is one instruction; a single position is an `extractelement`.
+- **A slice's `load` and `store` check their span once** (`genlSliceSpan`: `at` below `count - N + 1`,
+  else the index panic with the last lane's index) and are one `load <N x T>` or `store` of the whole
+  vector at the lane's alignment.
 
 ### C-named functions and the C ABI
 

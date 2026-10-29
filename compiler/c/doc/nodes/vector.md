@@ -9,9 +9,10 @@ built), so everything about it lives in two files, `ir/types/vector.c` and
 **At a glance.** Name resolution lowers the bracketed call on `Vector` into the node
 (`vectorTypeLower`). Type check checks the lane type and the count, makes the mask the type's
 comparisons give, and fills the namespace with the operators its lane type allows
-(`vectorTypeCheck`, `vectorMethods`). Method selection finds them as it finds a number's. Four
-things are not a method and are lowered in `fncall.c`: a number beside a vector, `.from`,
-`select`, and an index. Generation expands each intrinsic on the whole `<N x T>`.
+(`vectorTypeCheck`, `vectorMethods`). Method selection finds them as it finds a number's. Several
+things are not a method and are lowered in `fncall.c` or `destruct.c`: a number beside a vector,
+`.from`, `select`, `join`, an index, a lane name (`v.x`) and a field list (`v.(2, 0)`). Generation
+expands each intrinsic on the whole `<N x T>`.
 
 *Provenance: read from source and measured, October 2026.*
 
@@ -80,7 +81,8 @@ maths goes this way**: a declared number intrinsic given to the vector by `vecAd
 Vec* kind. `intrinsicDclTypeCheck` never sees that vector `typearg` (it is set on a method, not
 inferred at a call of the declared intrinsic), so no check runs there: a number of the wrong type
 beside a vector is caught by `vectorBroadcastOperand` instead (`ErrorVectorMixed`, 1555). `fma`'s
-parameters are named `y` and `z` on a vector as on a number. `min` and
+parameters are named `y` and `z` on a vector as on a number, and the lane-wise `min` and `max`'s
+`other`. `min` and
 `max` are an **overload set by argument count**: the reduction (`VecMinIntrinsic`, no argument) and the
 lane-wise form (`MinIntrinsic`, one vector), each a private candidate joining the public name, so
 `v.min()` is a number and `v.min(w)` a vector. A comparison returns the mask. Because they are
@@ -101,8 +103,35 @@ What `fncall.c` lowers itself, each in a hook of `fnCallLowerMethodOn` or the di
 - **`Vector[T, N].from(x)`** and `Array[T, N].from(v)` (`vectorFromCall`), tried before the number
   types' `from`: an array of the lanes, a vector of the same count, or the vector for an array. The
   call becomes a type literal with the one argument.
-- **`v[i]`** (`fnCallArrIndex` with `vectorIndex`): an `ArrIndexTag` of the lane type. A mask's lane
-  and a borrow or range of a lane are `ErrorVectorIndex`.
+- **`v[i]`** (`fnCallArrIndex` with `vectorIndex`): an `ArrIndexTag` of the lane type. A borrow or
+  range of a lane is `ErrorVectorIndex`. A mask's lane is the same node but **no place**
+  (`vectorIsMaskLane`): `iexpIsLval` says no, so writing it is `ErrorVectorIndex` (`iexpIsLvalError`), and
+  generation extracts the bit from the mask's value (`genlMaskLane`) instead of taking an address (a
+  mask's bits have none).
+- **`v.x`** (`vectorLaneName`, called in `fnCallTypeCheck` once the receiver is checked): a single-letter
+  member named x, y, z or w on a vector becomes the index `v[0]` .. `v[3]` and is checked as one, so it is
+  a place. A vector of more than four lanes, or a name past its count, is `ErrorVectorPick`. A name
+  that is not one of the four is looked up as any member is (and refused as one).
+- **`v.(3, 2, 1, 0)`** (`vectorPickLower`, called from `destructTypeCheck`): the parser makes the field
+  list a `DestructNode` for any value; type check, seeing a vector (or a reference to one, dereferenced
+  here), replaces it with a type literal of the result type whose arguments are the vector and then each
+  position as a `ULitNode`. The result is a vector of that many lanes, made and checked on the spot
+  (`vectorMakeType`, so its type is a fresh node equal by `vectorEqual`), or for one position the lane's
+  own type. Positions are numbers or the names x y z w; a repeated position is allowed (a struct's field
+  list refuses a repeat, so `destructCheckNames` leaves the first repeat for `destructTypeCheck` to report
+  once it knows the type). A pick is a value, never a place.
+- **`a.join(b)`** (`vectorJoinLower`, beside `select` in `fnCallLowerMethodOn`): two vectors of one type
+  become a type literal of two arguments whose type has twice the lanes (`ErrorVectorPick` past 64).
+- **A type literal of a vector type is one of four things**, told by its arguments (`vectorLitKind`):
+  one argument is a conversion or a broadcast; two vectors is a join; the vector then literal positions
+  is a pick; the mask and two vectors is a select.
+- **`Vector[T, N].load(s, at)`** and **`v.store(s, at)`** are declared in the vector's namespace
+  (`vectorSliceMethods`) with signatures over `&Array[T]` and `&mut Array[T]` (checked when made, so
+  a fixed array's borrow coerces to them as it does to any function's slice), and the intrinsic kinds
+  `VecLoadIntrinsic` and `VecStoreIntrinsic`. `load` belongs to the type, not a value: `vectorStaticCall`
+  replaces the type and the name in the call with the name of that declaration, which `fnCallTypeCheck`
+  then calls as it does any function (the declaration is marked type checked, having no body to check).
+  A mask has neither (`ErrorVectorSlice`).
 - **A vector's contents**, `Vector[f32, 4]() <- 1.0, 2.0, ...` (`contentsLowerVector`): lowered as the
   array of the same lane type and count whose contents they are (`contentsArrayLit`: every form an
   array's contents take, a repeated value evaluated once for each lane), converted by a type
@@ -138,6 +167,19 @@ argument is an LLVM vector to `genlVectorIntrinsic` (genlvector.c). What differs
 - an index is the lane's address in the vector's memory (`genlVectorLane`, bounds checked against
   the count with `genlBoundsCheck`), so `v[i] = x` stores a scalar. The optimizer turns that into
   an insert where the vector lives in a register.
+- a join is one `shufflevector` of the two vectors with the mask 0 .. 2N-1, and a pick is a
+  `shufflevector` of its vector (with `poison` as the second) at the positions; a pick of a join is
+  made from the join's two vectors directly, so `a.join(b).(0, 4, 1, 5)` is the one `shufflevector`
+  and the eight-lane one is never emitted (`genlVectorShuffle`). One position is an `extractelement`.
+- `load` and `store` check the span once (`genlSliceSpan`): `at` below `count - N + 1`, the number of
+  positions the span can start at (0 when `count < N`), so no sum overflows. That limit depends on the
+  slice alone and the optimizer computes it once outside a loop, leaving one comparison for each load.
+  The panic is the
+  index panic with the last lane's index
+  (`at + N - 1`, saturating) and the count. The access is one `load <N x T>` or `store` with the
+  *lane's* alignment, since a slice promises no more. A vector of 3 lanes touches 3 lanes' bytes, not
+  the padded 4.
+- a mask's lane is an `extractelement` of the mask's value at the checked index (`genlMaskLane`).
 
 ## Hazards
 

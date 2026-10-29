@@ -674,6 +674,9 @@ int iexpIsLval(INode *lval) {
     case DerefTag:
         return 1;
     case ArrIndexTag:
+        // A mask's lane is a bool read from the mask, not a place in it
+        if (vectorIsMaskLane(lval))
+            return 0;
         return iexpIsLval(((FnCallNode *)lval)->objfn);
     case FldAccessTag:
         return iexpIsLval(((FnCallNode *)lval)->objfn);
@@ -696,7 +699,11 @@ int iexpIsLval(INode *lval) {
 int iexpIsLvalError(INode *lval) {
     if (iexpIsLval(lval))
         return 1;
-    errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+    if (vectorIsMaskLane(lval))
+        errorMsgNode(lval, ErrorVectorIndex,
+            "A mask's lane is read, 'm[i]', and is not a place to write: build the mask with a comparison, or choose lanes with select(a, b).");
+    else
+        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
     return 0;
 }
 

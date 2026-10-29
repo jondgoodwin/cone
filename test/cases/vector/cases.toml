@@ -14,11 +14,15 @@
 # vector_success is the operators and what stands where; vector_numbers the
 # number methods (abs, min and max with an argument, floor, ceil, round, fma) and
 # '%' on float lanes; vector_convert the conversions (each worked by hand,
-# saturation included); the vector_panic_* scenarios the run-time checks, one
+# saturation included); vector_lanes the lanes picked (a field list of positions
+# or of the names x y z w, a join, a mask's lanes read) and vector_slices the loads
+# and stores of a slice; the vector_panic_* scenarios the run-time checks, one
 # each since a panic ends its program: an
 # integer division by zero, the smallest number divided by -1, a remainder by zero,
-# and a lane past the last. vector_genllvm reads the IR (one operation on the
-# whole vector, not one per lane) and vector_c_abi passes vectors to and from C
+# a lane past the last, and a slice load past its end. vector_genllvm reads the IR
+# (one operation on the
+# whole vector, not one per lane; vector_genllvm_pick, one shufflevector for a pick of
+# a join) and vector_c_abi passes vectors to and from C
 # compiled by the platform's C compiler. The refusals are vector_reject_nameres
 # (the bracketed call that is no vector type, which ends the compile) and
 # vector_reject_type, the rest.
@@ -49,6 +53,16 @@ category = "run"
 description = "Vector conversions: an array and a vector in both directions, a float to an integer (toward zero, saturating, NaN as 0), an integer to a narrower, wider, signed and unsigned integer and to a float, float to float, a number into bool, and a mask into numbers and to an array of bool"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.vector_lanes]
+category = "run"
+description = "Picking a vector's lanes: a field list of constant positions (reversed, repeated, fewer lanes, one lane, 16 and 64 lanes), the names x y z w for up to four lanes (read, written, in a list), a pick through a reference, from a call and of a pick, a join of two vectors and a pick of it, and a mask's lanes read as bools at constant and variable indexes"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.vector_slices]
+category = "run"
+description = "Vector[T, N].load(s, at) and v.store(s, at) on a slice: lanes from the start, an odd position and the last that fits, a width of three and of two with integer lanes, a part of an array, a dot product and an in-place scale written with them, a store into the middle of a slice leaving the rest"
+tags = ["typecheck", "genllvm", "runtime"]
+
 # -------- run-time checks --------
 
 [scenario.vector_panic_divzero]
@@ -66,6 +80,12 @@ program_exit = "abort"
 [scenario.vector_panic_remzero]
 category = "run"
 description = "An unsigned 16-lane vector's remainder where one lane of the divisor is zero is a panic naming the line, after a remainder with none ran"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.vector_panic_slice]
+category = "run"
+description = "A vector loaded from a slice whose lanes do not all fit is a panic naming the last lane's index and the slice's count at the line, after the last position that fits loaded"
 tags = ["genllvm", "runtime"]
 program_exit = "abort"
 
@@ -147,6 +167,46 @@ contains = [
 ]
 excludes = ["roundeven", "llvm.vector.reduce.fmin", "llvm.vector.reduce.umin"]
 
+[[scenario.vector_genllvm.check]]
+name = "lanes-are-shuffles-and-extracts-and-slices-one-load-or-store"
+target = "preir"
+contains = [
+  "shufflevector <4 x i32> %a1, <4 x i32> %b2, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>",
+  "shufflevector <4 x float> %a1, <4 x float> poison, <4 x i32> <i32 3, i32 2, i32 1, i32 0>",
+  "extractelement <4 x float> %a1, i32 1",
+  "load <4 x float>, ptr %lanes, align 4",
+  "store <4 x float> %v1, ptr %lanes, align 4",
+  "extractelement <4 x i1> %m1, i64 %i2",
+]
+# one check of the span for each load and store, not one for each lane
+excludes = ["extractelement <4 x float> %a1, i32 0", "load float, ptr %lanes"]
+
+[[scenario.vector_genllvm.check]]
+name = "the-optimizer-keeps-a-load-one-vector-load"
+target = "llvmir"
+contains = ["load <4 x float>, ptr %", "@cone_panicIndex("]
+
+[scenario.vector_genllvm_pick]
+category = "compile"
+description = "A pick of a join, 'a.join(b).(0, 4, 1, 5)', is one shufflevector of the two vectors with that mask, and the join's own eight-lane shufflevector is not made"
+tags = ["genllvm"]
+
+[[scenario.vector_genllvm_pick.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.vector_genllvm_pick.check]]
+name = "one-shufflevector-of-the-two-vectors"
+target = "preir"
+contains = ["%pick = shufflevector <4 x i32> %a1, <4 x i32> %b2, <4 x i32> <i32 0, i32 4, i32 1, i32 5>"]
+excludes = ["%join = shufflevector", "<8 x i32>"]
+
+[[scenario.vector_genllvm_pick.check]]
+name = "the-optimizer-keeps-it-one"
+target = "llvmir"
+contains = ["shufflevector <4 x i32> %0, <4 x i32> %1, <4 x i32> <i32 0, i32 4, i32 1, i32 5>"]
+excludes = ["<8 x i32>"]
+
 [scenario.vector_c_abi]
 category = "run"
 description = "Vector[f32, 4], Vector[i32, 4] and Vector[f64, 2] passed and returned by value between Cone's C-named functions and C compiled by the platform's C compiler as its __m128, __m128i and __m128d, both ways, and among integers, doubles and floats"
@@ -165,5 +225,5 @@ diagnostics = 3
 
 [scenario.vector_reject_type]
 category = "reject"
-description = "A lane type that is no number, a number of lanes outside 1 through 64, Vector alone, lanes of different types or counts, a mask used as numbers or indexed, a lane borrowed, select and from given what they do not take, contents of the wrong count, a mask in a condition, and the methods the lanes have no scalar for"
+description = "A lane type that is no number, a number of lanes outside 1 through 64, Vector alone, lanes of different types or counts, a mask used as numbers, a lane borrowed, a mask's lane written or borrowed, select and from given what they do not take, contents of the wrong count, a mask in a condition, the methods the lanes have no scalar for, picks of a lane the vector has not or of too many, lane names for a vector over four lanes, a join of unlike or too many lanes, and load and store of a mask, of another lane type or without a position"
 tags = ["typecheck"]
