@@ -878,7 +878,7 @@ int vectorJoinLower(TypeCheckState *pstate, FnCallNode *callnode) {
 // namespace and named directly in the call from here on, so the call is checked
 // as any function's is. A mask has none. Answers 1 when it refused the call.
 int vectorStaticCall(TypeCheckState *pstate, FnCallNode *node) {
-    if (node->objfn == NULL || node->objfn->tag != VectorTag || node->methfld == NULL
+    if (node->objfn == NULL || node->objfn->tag != VectorTag || node->methfld == NULL || node->args == NULL
         || !isNameUseNode(node->methfld) || (node->flags & (FlagIndex | FlagOperator)))
         return 0;
     Name *name = ((NameUseNode*)node->methfld)->namesym;
