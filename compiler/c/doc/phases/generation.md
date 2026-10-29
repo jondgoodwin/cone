@@ -2251,7 +2251,10 @@ for it), is caught before its body is expanded, so the module asks for no
 64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
 intrinsics. The CPU is untouched, and the C library is called there. Core's
 `sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
-every target.
+every target, and so are a number's `abs`, `min`, `max`, `floor`, `ceil`, `round`
+and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
+SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
+(`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,

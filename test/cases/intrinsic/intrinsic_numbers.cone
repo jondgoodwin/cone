@@ -1,0 +1,153 @@
+// A number's 'abs', 'min', 'max', 'floor', 'ceil', 'round' and 'fma', as methods
+// ('x.abs()') and as core's mem.abs and the rest, which are the same intrinsics:
+// a signed integer's or float's abs, an integer's or float's min and max, a float's
+// rounding and fma. Everything is printed. Each value is worked by hand; the
+// lanes' counterparts are in vector_numbers.
+//
+// What the cases are chosen to catch:
+//  - an integer's smallest value has no positive twin, so its abs wraps to
+//    itself, as '-x' does (i8, i32 and i64 shown);
+//  - the unsigned integers compare as unsigned: 4000000000 is the larger of
+//    itself and 5 as a u32, though it is negative as an i32;
+//  - a float min or max answers the number where the other is a NaN, in either
+//    order, and a NaN only when both are (shown with x != x, since the text of a
+//    NaN differs by platform);
+//  - round is half away from zero, so 0.5, 2.5 and -2.5 go to 1, 3 and -3 where
+//    round-half-even would give 0, 2 and -2;
+//  - floor and ceil of a negative half, and the sign they keep: ceil(-0.5) is -0;
+//  - fma is x * y + z with one rounding: for x = 1 + 2^-30 the product 1 + 2^-29
+//    + 2^-60 loses its last term when rounded to f64, so x * y + z with z the
+//    negation of 1 + 2^-29 is 0, and fma, which keeps it, is 2^-60 (f32 the
+//    same at x = 1 + 2^-13, the answer 2^-26).
+
+mod intrinsic_numbers;
+
+import stdio use *;
+
+fn showF(label: &str, x: f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(x);
+  printStr("\n");
+}
+
+fn showI(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showB(label: &str, b: bool) {
+  printStr(label);
+  printStr(" = ");
+  printStr(if b { "true" } else { "false" });
+  printStr("\n");
+}
+
+fn main() {
+  // -------- abs --------
+  let neg = -2.5;
+  showF("f64 -2.5 abs", neg.abs());
+  showF("f64 3.25 abs", 3.25.abs());
+  let zero = 0.0;
+  let negzero = -zero;
+  showB("1 / -0.0 is negative", 1.0 / negzero < 0.0);
+  showB("1 / abs(-0.0) is positive", 1.0 / negzero.abs() > 0.0);
+  let nan = zero / zero;
+  showB("abs(nan) is nan", nan.abs() != nan.abs());
+  let half32 = -1.5f32;
+  showF("f32 -1.5 abs", f64.from(half32.abs()));
+  let seven = -7;
+  showI("i32 -7 abs", i64.from(seven.abs()));
+  showI("i32 7 abs", i64.from(7.abs()));
+  showI("i32 0 abs", i64.from(0.abs()));
+  showI("(-3).abs() on a literal", i64.from((-3).abs()));
+  let least32 = -2147483647 - 1;
+  showI("i32 least", i64.from(least32));
+  showI("i32 least abs wraps", i64.from(least32.abs()));
+  let least8 = -127i8 - 1i8;
+  showI("i8 least abs wraps", i64.from(least8.abs()));
+  showI("i8 -100 abs", i64.from((-100i8).abs()));
+  let least64 = -9223372036854775807i64 - 1i64;
+  showI("i64 least abs wraps", least64.abs());
+  showI("i16 -300 abs", i64.from((-300i16).abs()));
+  showI("isize -9 abs", i64.from((-9isize).abs()));
+
+  // -------- min and max --------
+  let three = 3;
+  let minusfour = -4;
+  showI("i32 3 min -4", i64.from(three.min(minusfour)));
+  showI("i32 3 max -4", i64.from(three.max(minusfour)));
+  showI("4.max(5) on a literal", i64.from(4.max(5)));
+  let big = 4000000000u32;
+  showI("u32 4e9 min 5", i64.from(big.min(5u32)));
+  showI("u32 4e9 max 5", i64.from(big.max(5u32)));
+  showI("u8 200 max 100", i64.from(200u8.max(100u8)));
+  showI("u8 200 min 100", i64.from(200u8.min(100u8)));
+  showI("i8 -100 min 100", i64.from((-100i8).min(100i8)));
+  showI("i8 -100 max 100", i64.from((-100i8).max(100i8)));
+  showI("u64 max min 1", i64.from(18446744073709551615u64.min(1u64)));
+  showF("f64 1.5 min 2.5", 1.5.min(2.5));
+  showF("f64 1.5 max 2.5", 1.5.max(2.5));
+  showF("f64 -1.5 min -2.5", (-1.5).min(-2.5));
+  showF("f32 1.5 max 2.5", f64.from(1.5f32.max(2.5f32)));
+  showF("nan min 2", nan.min(2.0));
+  showF("2 min nan", 2.0.min(nan));
+  showF("nan max 2", nan.max(2.0));
+  showF("2 max nan", 2.0.max(nan));
+  let nan32 = 0.0f32 / 0.0f32;
+  showF("f32 nan max 7", f64.from(nan32.max(7.0f32)));
+  showB("nan min nan is nan", nan.min(nan) != nan.min(nan));
+  showB("nan max nan is nan", nan.max(nan) != nan.max(nan));
+
+  // -------- floor, ceil and round --------
+  let halves = [2.5, -2.5, 0.5, -0.5, 1.4, 1.6, -1.4, -1.6, 3.5, 7.0];
+  each i in 0usize ..< 10usize {
+    let x = halves[i];
+    printStr("x = ");
+    printFloat(x);
+    printStr(": floor ");
+    printFloat(x.floor());
+    printStr(" ceil ");
+    printFloat(x.ceil());
+    printStr(" round ");
+    printFloat(x.round());
+    printStr("\n");
+  }
+  showB("ceil(-0.5) is -0", 1.0 / (-0.5).ceil() < 0.0);
+  showF("f32 2.5 round", f64.from(2.5f32.round()));
+  showF("f32 -2.5 round", f64.from((-2.5f32).round()));
+  showF("f32 0.5 round", f64.from(0.5f32.round()));
+  showF("f32 -1.5 floor", f64.from((-1.5f32).floor()));
+  showF("f32 -1.5 ceil", f64.from((-1.5f32).ceil()));
+  showB("nan floor is nan", nan.floor() != nan.floor());
+
+  // -------- fma --------
+  showF("2 fma 3 4", 2.0.fma(3.0, 4.0));
+  let two30 = 1073741824.0;
+  let two29 = 536870912.0;
+  let x = 1.0 + 1.0 / two30;
+  let z = -(1.0 + 1.0 / two29);
+  let unfused = x * x + z;
+  let fused = x.fma(x, z);
+  showB("f64 x * x + z is 0", unfused == 0.0);
+  showB("f64 fma is not 0", fused != 0.0);
+  showB("f64 fma is 2^-60", fused * 1152921504606846976.0 == 1.0);
+  let x32 = 1.0f32 + 1.0f32 / 8192.0f32;
+  let z32 = -(1.0f32 + 1.0f32 / 4096.0f32);
+  let unfused32 = x32 * x32 + z32;
+  let fused32 = x32.fma(x32, z32);
+  showB("f32 x * x + z is 0", unfused32 == 0.0f32);
+  showB("f32 fma is 2^-26", fused32 * 67108864.0f32 == 1.0f32);
+  showF("f32 -1.5 fma 2 3", f64.from((-1.5f32).fma(2.0f32, 3.0f32)));
+
+  // -------- mem's, the same intrinsics --------
+  showI("mem.abs i32", i64.from(mem.abs(seven)));
+  showI("mem.min u8", i64.from(mem.min(9u8, 4u8)));
+  showI("mem.max i64", mem.max(-5, 5i64));
+  showF("mem.floor", mem.floor(-0.5));
+  showF("mem.ceil", mem.ceil(-0.5) + 1.0);
+  showF("mem.round", mem.round(-2.5));
+  showF("mem.fma f32", f64.from(mem.fma(2.0f32, 3.0f32, 1.0f32)));
+}

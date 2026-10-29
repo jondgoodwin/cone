@@ -11,9 +11,11 @@
 # A new group because the manual has a new page, guide-vectors, beside the
 # numbers' and the arrays' (compiler/c/doc/diagnostics/test-suite.md, section 1).
 #
-# vector_success is the operators and what stands where; vector_convert the
-# conversions (each worked by hand, saturation included); the vector_panic_*
-# scenarios the run-time checks, one each since a panic ends its program: an
+# vector_success is the operators and what stands where; vector_numbers the
+# number methods (abs, min and max with an argument, floor, ceil, round, fma) and
+# '%' on float lanes; vector_convert the conversions (each worked by hand,
+# saturation included); the vector_panic_* scenarios the run-time checks, one
+# each since a panic ends its program: an
 # integer division by zero, the smallest number divided by -1, a remainder by zero,
 # and a lane past the last. vector_genllvm reads the IR (one operation on the
 # whole vector, not one per lane) and vector_c_abi passes vectors to and from C
@@ -36,6 +38,11 @@ support = []
 category = "run"
 description = "Vectors: contents, the operators on float and integer lanes, a number beside a vector, assignment forms, shifts past the width, comparisons and masks (any, all, select, & | ^ ~), reductions (the float sum in order, signed and unsigned minimum and maximum, wrapping), math, lanes read and written, and a vector as a parameter, return value, field, element, Sendable field and through a reference, with sizes and alignments"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.vector_numbers]
+category = "run"
+description = "The number methods on a vector's lanes: abs, floor, ceil, round (half away from zero) and fma (a fused result that differs from x * y + z), min and max with an argument as the lane-wise minimum and maximum beside the same names with none as the reductions, a NaN lane losing to a number, a number beside the vector, signed and unsigned integer lanes, and '%' on float lanes"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.vector_convert]
 category = "run"
@@ -123,6 +130,22 @@ contains = [
 name = "a-shift-past-the-width-is-defined-in-each-lane"
 target = "llvmir"
 contains = ["icmp ult <4 x i32> %1, splat (i32 32)", "shl <4 x i32> %0, %1", "select <4 x i1> %shiftinrange"]
+
+[[scenario.vector_genllvm.check]]
+name = "the-number-methods-are-llvms-intrinsics-on-the-vector"
+target = "preir"
+contains = [
+  "@llvm.fabs.v4f32(<4 x float>",
+  "@llvm.abs.v4i32(<4 x i32> %",
+  ", i1 false)",
+  "@llvm.minnum.v4f32(<4 x float>",
+  "@llvm.smax.v4i32(<4 x i32>",
+  "@llvm.umin.v16i8(<16 x i8>",
+  "@llvm.floor.v4f32(", "@llvm.ceil.v4f32(", "@llvm.round.v2f64(",
+  "@llvm.fma.v4f32(<4 x float>",
+  "frem <4 x float>",
+]
+excludes = ["roundeven", "llvm.vector.reduce.fmin", "llvm.vector.reduce.umin"]
 
 [scenario.vector_c_abi]
 category = "run"

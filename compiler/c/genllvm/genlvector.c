@@ -115,6 +115,8 @@ LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMV
         genlDivideCheck(gen, site, kind, a, b);
         return LLVMBuildSDiv(bld, a, b, "");
     case RemIntrinsic:
+        if (isfloat)
+            return LLVMBuildFRem(bld, a, b, "");
         genlDivideCheck(gen, site, kind, a, b);
         return LLVMBuildURem(bld, a, b, "");
     case SRemIntrinsic:

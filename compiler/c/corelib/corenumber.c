@@ -325,6 +325,56 @@ static void nbrBitMethods(NbrNode *nbrtype) {
     }
 }
 
+// A signed integer's or float's 'abs', an integer's or float's 'min' and 'max',
+// a float's 'floor', 'ceil', 'round' and 'fma': core's number intrinsics
+// (mem.abs ...), each the instance the generic declaration's would be for this
+// type, as the bit methods are. A vector has the same, lane by lane
+// (vectorMethods), and one lowering serves both (genlNumberIntrinsic). Unsigned
+// integers have no 'abs'; integers have no rounding or 'fma'.
+static void nbrMathMethods(NbrNode *nbrtype) {
+    int isfloat = nbrtype->tag == FloatNbrTag;
+    int issigned = nbrtype->tag == IntNbrTag;
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    Name *self = nametblFind("self", 4);
+
+    FnSigNode *unarysig = newFnSigNode();
+    unarysig->rettype = (INode*)selftype;
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *binarysig = newFnSigNode();
+    binarysig->rettype = (INode*)selftype;
+    nodesAdd(&binarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&binarysig->parms, (INode *)newVarDclFull(nametblFind("other", 5), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *fmasig = newFnSigNode();
+    fmasig->rettype = (INode*)selftype;
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("y", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("z", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    static struct { char *name; int16_t kind; int floatonly; int nargs; } mathmeths[] = {
+        {"abs", AbsIntrinsic, 0, 1},
+        {"min", MinIntrinsic, 0, 2},
+        {"max", MaxIntrinsic, 0, 2},
+        {"floor", FloorIntrinsic, 1, 1},
+        {"ceil", CeilIntrinsic, 1, 1},
+        {"round", RoundIntrinsic, 1, 1},
+        {"fma", FmaIntrinsic, 1, 3},
+    };
+    for (size_t i = 0; i < sizeof(mathmeths) / sizeof(mathmeths[0]); ++i) {
+        if (mathmeths[i].floatonly && !isfloat)
+            continue;
+        if (mathmeths[i].kind == AbsIntrinsic && !isfloat && !issigned)
+            continue;
+        IntrinsicNode *node = newIntrinsicNode(mathmeths[i].kind);
+        node->typearg = (INode*)selftype;
+        Name *name = nametblFind(mathmeths[i].name, strlen(mathmeths[i].name));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(name, FlagMethFld | FlagPub,
+            (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig : fmasig), (INode *)node));
+    }
+}
+
 // A number type's three-way comparison, 'a <=> b': an i32 -1, 0 or 1. Made once
 // every number type exists, since the answer is an i32. A bool has none, being
 // no quantity; a char has one, as it has the orderings.
@@ -391,6 +441,10 @@ void stdNbrInit(int ptrsize) {
         i8Type, i16Type, i32Type, i64Type, isizeType};
     for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
         nbrBitMethods(integers[i]);
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
+        nbrMathMethods(integers[i]);
+    nbrMathMethods(f32Type);
+    nbrMathMethods(f64Type);
 
     NbrNode *ordered[] = {charType, u8Type, u16Type, u32Type, u64Type, usizeType,
         i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};

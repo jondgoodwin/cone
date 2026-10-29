@@ -64,21 +64,34 @@ NULL and the namespace empty, and the contents of a construction of that type sa
 
 | Lanes | Operators and methods |
 | --- | --- |
-| float | `+ - *` `/`, unary `-`, `== != < <= > >=`, `sqrt sin cos`, `sum product min max` |
-| integer | the above less `sqrt sin cos`, and `%`, `~ & \| ^ << >>` |
+| float | `+ - * / %`, unary `-`, `== != < <= > >=`, `sqrt sin cos`, `floor ceil round fma`, `abs`, `min max` (lane-wise), `sum product min max` (reductions) |
+| integer | the above less `sqrt sin cos floor ceil round fma` (and `abs` for an unsigned lane), and `~ & \| ^ << >>` |
 | `bool` (a mask) | `~ & \| ^ == !=`, `any all` |
 
 Each is a `FnDclNode` of `FlagMethFld | FlagPub` whose value is the same `IntrinsicNode` the
 scalar has (`AddIntrinsic`, `SDivIntrinsic` for a signed lane, `SLtIntrinsic`, and so on) or one of
 the reductions and mask tests (`VecSumIntrinsic` ... `VecAllIntrinsic`, built in C beside the number
 types' rather than declared in `core`, because the type has no Cone declaration to hang a generic
-over). `-` is two overloads, as a number's. A comparison returns the mask. Because they are
+over). `-` is two overloads, as a number's. `abs`, `min` and `max` with one argument, `floor`, `ceil`,
+`round` and `fma` are not Vec* kinds: they are the *declared* number intrinsics (`AbsIntrinsic` ...
+`FmaIntrinsic`, [intrinsic](intrinsic.md)) with the vector type as the node's `typearg`
+(`vecAddLanewise`), so `genlNumberIntrinsic` lowers them for a number and a vector alike. **New vector
+maths goes this way**: a declared number intrinsic given to the vector by `vecAddLanewise`, not a new
+Vec* kind. `intrinsicDclTypeCheck` never sees that vector `typearg` (it is set on a method, not
+inferred at a call of the declared intrinsic), so no check runs there: a number of the wrong type
+beside a vector is caught by `vectorBroadcastOperand` instead (`ErrorVectorMixed`, 1555). `fma`'s
+parameters are named `y` and `z` on a vector as on a number. `min` and
+`max` are an **overload set by argument count**: the reduction (`VecMinIntrinsic`, no argument) and the
+lane-wise form (`MinIntrinsic`, one vector), each a private candidate joining the public name, so
+`v.min()` is a number and `v.min(w)` a vector. A comparison returns the mask. Because they are
 ordinary methods, `fnCallLowerMethod` selects them, and a vector's `+=` is rewritten to `+` as a
 number's is.
 
 What `fncall.c` lowers itself, each in a hook of `fnCallLowerMethodOn` or the dispatch:
 
-- **A number beside a vector**, `v * 2.0` and `2.0 * v` (`vectorBroadcastOperand`). The number is
+- **A number beside a vector**, `v * 2.0` and `2.0 * v` (`vectorBroadcastOperand`; also the numbers
+  among the arguments of `v.min(0.0)`, `v.max(0.0)` and `v.fma(2.0, w)`, where the receiver is the
+  vector). The number is
   coerced to the lane type (a literal takes it, a number of another type is `ErrorVectorMixed`) and
   wrapped in a type literal of the vector type whose one argument it is, so both operands are vectors
   by selection. A mixed pair of vectors is reported by `vectorNoCandidate`.
@@ -109,6 +122,11 @@ argument is an LLVM vector to `genlVectorIntrinsic` (genlvector.c). What differs
 - an integer `/` and `%` compare the divisor with zero and, for signed lanes, the dividend with the
   type's minimum beside the divisor with -1, reduce each to one flag (`llvm.vector.reduce.or`), and
   branch once to a panic (`PanicDivide`, `cone_panicDivide` in conestd) before the `sdiv`;
+- a float `%` is `frem` on the whole vector, with no check, as a scalar float's is;
+- `abs`, lane-wise `min` and `max`, `floor`, `ceil`, `round` and `fma` are LLVM's own intrinsics
+  overloaded on the vector (`llvm.fabs.v4f32`, `llvm.minnum`, `llvm.smin`, `llvm.round`,
+  `llvm.fma`...), chosen from the lane type by `genlNumberIntrinsic` (genlexpr.c), the code a number's
+  call uses;
 - a shift compares each lane's amount with the width and selects, as `genlShift` does a scalar's;
 - `sum` and `product` of floats are `llvm.vector.reduce.fadd` and `fmul` with no `reassoc` flag, so
   they add in lane order, started at -0.0 and 1.0; `min` and `max` of floats are `reduce.fmin` and

@@ -171,7 +171,20 @@ enum IntrinsicFn {
     StorageBarrierIntrinsic,    // storageBarrier()
     // The 128-bit product of two 64-bit numbers, its two halves xored: the
     // mixing step of the wyhash family, one instruction on a 64-bit target
-    MulFoldIntrinsic            // mulFold(a: u64, b: u64) u64
+    MulFoldIntrinsic,           // mulFold(a: u64, b: u64) u64
+    // A number's, and a vector's lane by lane: each is also a method of the
+    // number types it applies to (corenumber.c) and of a vector of them
+    // (vector.c), its node carrying that type, a vector type among them, as its
+    // typearg. 'abs' of a signed integer or a float; 'min' and 'max' of an
+    // integer or a float, the number winning over a NaN; 'floor', 'ceil' and
+    // 'round' (half away from zero) of a float; 'fma', x * y + z fused, of a float
+    AbsIntrinsic,               // abs[T](x: T) T
+    MinIntrinsic,               // min[T](a: T, b: T) T
+    MaxIntrinsic,               // max[T](a: T, b: T) T
+    FloorIntrinsic,             // floor[T](x: T) T
+    CeilIntrinsic,              // ceil[T](x: T) T
+    RoundIntrinsic,             // round[T](x: T) T
+    FmaIntrinsic                // fma[T](x: T, y: T, z: T) T
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
