@@ -1424,6 +1424,12 @@ int itypeRefuseBareGeneric(INode *type) {
     if (dcl == (INode*)arrayTypeDcl)
         errorMsgNode(type, ErrorArrayTypeArgs,
             "Array is a type only with its element type: 'Array[T]' is the body of a run-time length, 'Array[T, n]' the array of n elements, and 'Array[T, n, m]' one with a size for each dimension.");
+    // A trait whose every parameter is an associated type is written bare, and
+    // names one trait only where a type meeting it says them
+    else if (genericWrittenCount(((StructNode*)dcl)->genericinfo) == 0)
+        errorMsgNode(type, ErrorAssocUnsaid,
+            "%s has an associated type, which the type meeting it says, so it is named where a type meets it: a bound, '[C: %s]', or an 'is' entry. A virtual reference to such a trait is not built yet.",
+            &generic->namestr, &generic->namestr);
     else
         errorMsgNode(type, ErrorArgCount,
             "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",

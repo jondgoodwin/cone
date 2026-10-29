@@ -118,7 +118,7 @@ int fnCallHasTypeArgs(FnCallNode *node) {
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
-        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag)))
+        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag) || genericAssocPathIs(*argsp)))
             return 1;
     }
     return 0;
@@ -449,6 +449,11 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
+
+    // 'C.Cursor': an associated type that a bound of the type parameter C
+    // declares, resolved in each instance (generic.c)
+    if (genericAssocPathNameRes(pstate, nodep))
+        return;
 
     // A '.' through a module or a type is a path, and collapses here
     if (fnCallNameResPath(pstate, nodep))
@@ -4252,6 +4257,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
 
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
+
+    // 'C.Cursor' in an instance: the type C's argument says its bound's
+    // associated type is, which stands in its place (genericAssocPathNameRes)
+    if (genericAssocPathTypeCheck(pstate, (INode**)nodep))
+        return;
 
     // '?a' over a parameter that a value was substituted for: not the Option type
     // name resolution could not yet tell it from, so the refusal it deferred

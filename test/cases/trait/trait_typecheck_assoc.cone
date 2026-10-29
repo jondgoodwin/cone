@@ -1,0 +1,78 @@
+// What type check refuses of an associated type: a type whose method gives what
+// the associated type's bound refuses; a type with no method saying it and no
+// alias; a type declaring the trait whose alias the bound refuses, or whose
+// method gives another type than its alias says; and a virtual reference to a
+// trait with an associated type, which is not built (borrowed, owning, and the
+// bare name of a trait whose only parameter is associated), or one written with
+// the associated type as an argument.
+//
+// Verdict: refuse. ErrorWhereUnmet at the call whose bound the argument fails,
+// saying what the argument's method gives; ErrorInvType at a declaration;
+// ErrorAssocUnsaid at a virtual reference; ErrorArgCount where the associated
+// type is written as an argument. Basis: doc/manual/mod-substitution.html,
+// "Associated types".
+
+mod trait_typecheck_assoc;
+
+trait Seq[T] {
+  type Cursor: Iterator[T];
+  pub fn iter(self: &) Cursor;
+}
+
+trait Holder {
+  type Item;
+  pub fn get(self: &) Item;
+}
+
+struct Down is Iterator[i64] {
+  pub n: i64;
+  pub fn next(self: &mut) Option[i64] {
+    if n == 0 { None } else { n = n - 1; Some(n + 1) }
+  }
+}
+
+struct Up is Iterator[i64] {
+  pub n: i64;
+  pub fn next(self: &mut) Option[i64] { None }
+}
+
+// iter gives a number, which is no Iterator
+struct Odd {
+  pub n: i64;
+  pub fn iter(self: &) i64 { n }
+}
+
+// No iter, and no alias
+struct Empty {
+  pub n: i64;
+}
+
+// Says its Cursor is a number, which is no Iterator
+struct Liar is Seq[i64] {     //~ ErrorInvType "For Liar, Seq's Cursor is i64, and Seq requires Cursor is Iterator[i64]"
+  alias Cursor = i64;
+  pub n: i64;
+  pub fn iter(self: &) Down { Down(n) }
+}
+
+// Says its Cursor is an Up, and its iter gives a Down
+struct Mixed is Seq[i64] {    //~ ErrorInvType "Type declares iter, but none of what it declares has the signature Seq requires"
+  alias Cursor = Up;
+  pub n: i64;
+  pub fn iter(self: &) Down { Down(n) }
+}
+
+fn total[T, C: Seq[T]](c: &C) i64 {
+  0i64
+}
+
+fn borrowed(s: &<Seq[i64]) i64 { 0i64 }     //~ ErrorAssocUnsaid "Seq has an associated type (Cursor), which the type meeting it says"
+fn owned(s: Uni[Seq[i64]]) i64 { 0i64 }     //~ ErrorAssocUnsaid "A virtual reference to such a trait is not built yet"
+fn bare(h: &<Holder) i64 { 0i64 }           //~ ErrorAssocUnsaid "Holder has an associated type"
+fn written(s: &<Seq[i64, Down]) i64 { 0i64 }   //~ ErrorArgCount "Seq takes 1 type argument, and this gives 2"
+
+fn main() {
+  let o = Odd(3);
+  total[i64, Odd](&o);      //~ ErrorWhereUnmet "total requires C is Seq[i64], and Odd is not Seq[i64]. For Odd, Seq's Cursor is i64"
+  let e = Empty(3);
+  total[i64, Empty](&e);    //~ ErrorWhereUnmet "Empty does not say what Seq's Cursor is"
+}
