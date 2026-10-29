@@ -237,6 +237,10 @@ enum NodeTags {
 // A macro's value parameter written 'a: lazy T': its argument is substituted
 // whole wherever the parameter appears, rather than evaluated once
 #define FlagLazy      0x0001        // GenVarDcl: a macro parameter marked 'lazy'
+// A trait's associated type, 'type Cursor: Iterator[T];': a parameter of the
+// trait that no use writes, whose argument the type meeting it says, by an
+// alias it declares or by the shape of its methods (generic.c)
+#define FlagAssocType 0x0002        // GenVarDcl: a trait's associated type
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename

@@ -166,6 +166,47 @@ int genericVariantParmUnnamed(StructNode *variant);
 // a member of, or whose name is not a trait
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep);
 
+// Associated types: 'type Cursor: Iterator[T];' in a trait is a parameter of the
+// trait that no use writes (FlagAssocType), after the written ones. A use names
+// the trait with the written arguments alone, 'C: Iterable[T]'; the type meeting
+// it says the rest, by an alias it declares, 'alias Cursor = ListIter[T];', or by
+// the shape of its methods, the one mentioning it ('iter''s return type). Generic
+// code names it through the parameter, 'C.Cursor', resolved in each instance.
+
+// How many of a generic's parameters a use writes: all but its associated types
+uint32_t genericWrittenCount(GenericInfo *info);
+
+// Does this generic (a trait) declare an associated type?
+int genericHasAssoc(GenericInfo *info);
+
+// A trait whose every parameter is an associated type is written bare, 'C:
+// Holder', in a bound or an 'is' list: the name, resolved, is replaced by its use
+// with no written arguments, 'Holder[]', completed as any other use is
+void genericAssocBareUse(INode **nodep);
+
+// 'C.Cursor' in a generic's template, C a type parameter whose bound declares
+// Cursor: rewritten as the path the instance resolves, 'Iterable[T].Cursor(C)',
+// and 1 returned. 'C.Nope', where C's bounds declare associated types but none
+// of that name, is refused (1, reported). 0 for any other path.
+int genericAssocPathNameRes(NameResState *pstate, FnCallNode **nodep);
+
+// Is this the path genericAssocPathNameRes made? Then it stands for a type once
+// its parameter is substituted
+int genericAssocPathIs(INode *node);
+
+// Is it such a path in an instance, its parameter substituted by a type? Then it
+// is a type, which type check replaces with the one it names
+int genericAssocPathIsType(INode *node);
+
+// 'Iterable[i64].Cursor(Bag)' in an instance: the type Bag says its Cursor is,
+// which replaces the node. 0 for any other call.
+int genericAssocPathTypeCheck(TypeCheckState *pstate, INode **nodep);
+
+// An entry of a type's 'is' list naming a trait with associated types,
+// 'is Iterable[i64]': completed with what 'type' says they are, so that it names
+// the trait's instance. 0, reported, where the type does not say them.
+int genericAssocCompleteIs(TypeCheckState *pstate, INode *entry, StructNode *type);
+
 // Resolve and vet the condition on one entry of a generic type's 'is' list,
 // 'is Move if T is Move', once its type parameters 'parms' are hooked: a
 // condition as a 'where' clause writes one, each clause asking about one of
