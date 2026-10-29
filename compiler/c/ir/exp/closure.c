@@ -697,6 +697,10 @@ int closureTrialOwns(INode *dcl) {
     return 0;
 }
 
+int closureTrialType(INode *type) {
+    return errorSilent && closureTrialMentions(type, 0);
+}
+
 int closureTrialArgs(Nodes *args) {
     if (!errorSilent || args == NULL)
         return 0;

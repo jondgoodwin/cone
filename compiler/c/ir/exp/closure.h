@@ -72,6 +72,9 @@ int closureTrialOwns(INode *dcl);
 // Does any of these type arguments name a closure's hidden struct made by a trial
 // now open? An instance made with one is the trial's (genericTrialPurge)
 int closureTrialArgs(Nodes *args);
+// Does this type name a closure's hidden struct a trial now open made, or an
+// instance made with one? A type the trial alone has, which it drops
+int closureTrialType(INode *type);
 // The number of the last hidden struct made: what a trial opens with (errorTrialBegin)
 uint32_t closureSerialNow(void);
 

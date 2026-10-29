@@ -388,13 +388,16 @@ static int macroTypeArgsFit(INode **nodep, MacroDclNode *macro, Nodes *typeargs)
 //   too when it is checked for real. What checking the copy makes for itself
 //   -- a closure's hidden struct, an instance for it -- is the trial's, and
 //   reaches neither the module nor generation (closureBuild, genericTrialPurge).
-//   So a lazy argument infers nothing: what its copy is, is the copy's.
+//   A type parameter the plain arguments leave open may be fixed by a lazy
+//   argument's copy, but never by a type the trial alone has (a closure's, or
+//   an instance made with one): what such a copy is, is the copy's.
 
 // Type check a copy of 'arg' as a trial, wanted as 'expect'. Answers the
 // checked copy, or NULL where it does not check on its own (what it reports is
 // the argument's, said where the argument is checked for real). With 'fits',
-// also whether it coerces to 'expect'.
-static INode *macroArgTrial(TypeCheckState *pstate, INode *arg, INode *expect, int *fits) {
+// also whether it coerces to 'expect'; with 'owned', whether its type is one
+// the trial alone has (closureTrialType).
+static INode *macroArgTrial(TypeCheckState *pstate, INode *arg, INode *expect, int *fits, int *owned) {
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
@@ -410,6 +413,8 @@ static INode *macroArgTrial(TypeCheckState *pstate, INode *arg, INode *expect, i
     int before = errorsOwn();
     inodeTypeCheck(pstate, &probe, expect);
     int checked = errorsOwn() == before && isExpNode(probe) && !inodeIsError(probe);
+    if (checked && owned)
+        *owned = closureTrialType(((IExpNode*)probe)->vtype);
     if (checked && fits)
         *fits = iexpCheckedCoerceIn(pstate, expect, &probe) && errorsOwn() == before;
     errorTrialEnd(&trial);
@@ -477,10 +482,13 @@ static int macroTypeNamesParm(INode *type, Nodes *typeparms, int depth) {
 // that type matched against the parameter's as written. An unsuffixed number
 // literal, or a 'null', for one waits, as a function's does, for what the
 // others say, then takes its own type; its binding is checked with the block,
-// typed by the parameter. A lazy argument says nothing (see above). Answers NULL
-// once reported: a binding that does not check (its own error), two arguments
-// saying a type parameter differently, or one nothing says -- ErrorMacroLazyInfer
-// where a lazy parameter's type names it, since only its argument could have.
+// typed by the parameter. A type parameter the plain arguments leave open is
+// then said by the lazy arguments whose parameters' types name it, each a
+// checked copy (macroArgTrial), by the same rule and agreeing with what the
+// plain ones said -- but not by a copy whose type the trial alone has (a
+// closure's). Answers NULL once reported: a binding that does not check (its
+// own error), two arguments saying a type parameter differently, one only such
+// a copy could say (ErrorMacroLazyInfer), or one nothing says.
 static Nodes *macroInferTypeArgs(TypeCheckState *pstate, INode *use, MacroDclNode *macro, Nodes *args,
         Nodes *bindings, uint8_t *early, INode *selfparm) {
     uint32_t given = args ? args->used : 0;
@@ -509,31 +517,82 @@ static Nodes *macroInferTypeArgs(TypeCheckState *pstate, INode *use, MacroDclNod
     }
     if (errors != before)
         return NULL;
-    Nodes *typeargs = genericInferMacroParms(pstate, macro->typeparms, parmtypes, typed, use, macro->namesym);
+    Nodes *typeargs = genericInferMacroParms(pstate, macro->typeparms, parmtypes, typed, NULL, use, macro->namesym);
+    if (typeargs == NULL)
+        return NULL;
+
+    // The type parameters still open, and the lazy arguments that may say them
+    Nodes *open = newNodes(typeargs->used);
+    for (uint32_t t = 0; t < typeargs->used; ++t)
+        if (nodesGet(typeargs, t) == NULL)
+            nodesAdd(&open, nodesGet(macro->typeparms, t));
+    if (open->used == 0)
+        return typeargs;
+    Nodes *lazytypes = newNodes(given ? given : 1);
+    Nodes *lazytyped = newNodes(given ? given : 1);
+    GenVarDclNode *ownedparm = NULL;
+    int failed = 0;
+    for (uint32_t i = 0; i < given; ++i) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i);
+        INode *parmtype = NULL;
+        INode *argtyped = NULL;
+        if ((INode*)parm != selfparm && (parm->flags & FlagLazy) && parm->valtype && parm->valtype != unknownType
+            && macroTypeNamesParm(parm->valtype, open, 0)) {
+            INode *arg = nodesGet(args, i);
+            int owned = 0;
+            if (litIsUntypedNumber(arg) || litIsUntypedNull(arg))
+                argtyped = arg;
+            else if ((argtyped = macroArgTrial(pstate, arg, unknownType, NULL, &owned)) == NULL)
+                failed = 1;
+            if (owned) {
+                // What the copy is, is the copy's: it says nothing
+                if (ownedparm == NULL)
+                    ownedparm = parm;
+                argtyped = NULL;
+            }
+            if (argtyped)
+                parmtype = parm->valtype;
+        }
+        nodesAdd(&lazytypes, parmtype);
+        nodesAdd(&lazytyped, argtyped);
+    }
+    // A lazy argument that does not check on its own says nothing, and its own
+    // error is the one to report. The use will not be expanded, so it is checked
+    // where it stands.
+    if (failed) {
+        for (uint32_t i = 0; i < given; ++i) {
+            GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i);
+            if ((INode*)parm != selfparm && (parm->flags & FlagLazy) && parm->valtype
+                && macroTypeNamesParm(parm->valtype, open, 0) && nodesGet(lazytyped, i) == NULL)
+                inodeTypeCheckAny(pstate, &nodesGet(args, i));
+        }
+        if (errors != before)
+            return NULL;
+    }
+    typeargs = genericInferMacroParms(pstate, macro->typeparms, lazytypes, lazytyped, typeargs, use, macro->namesym);
     if (typeargs == NULL)
         return NULL;
 
     // A type parameter nothing said
-    int missing = 0;
     for (uint32_t t = 0; t < typeargs->used; ++t) {
         if (nodesGet(typeargs, t) != NULL)
             continue;
-        missing = 1;
-        Nodes *one = newNodes(1);
-        nodesAdd(&one, nodesGet(macro->typeparms, t));
-        for (uint32_t i = 0; i < given; ++i) {
-            GenVarDclNode *parm = (GenVarDclNode*)nodesGet(macro->parms, i);
-            if ((INode*)parm == selfparm || !(parm->flags & FlagLazy) || parm->valtype == NULL
-                || !macroTypeNamesParm(parm->valtype, one, 0))
-                continue;
+        if (ownedparm) {
+            char all[200] = "";
+            size_t used = 0;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(macro->typeparms, cnt, nodesp))
+                if (used + 40 < sizeof(all))
+                    used += snprintf(all + used, sizeof(all) - used, "%s%s", used ? ", " : "",
+                        &((GenVarDclNode*)*nodesp)->namesym->namestr);
             Name *tname = ((GenVarDclNode*)nodesGet(macro->typeparms, t))->namesym;
             errorMsgNode(use, ErrorMacroLazyInfer,
-                "The type parameter %s of the macro %s is named only by the type of a lazy parameter, %s, and a lazy argument fixes no type: it is checked against its parameter's type once that is known. Write the type arguments out, as in '%s[i64](...)'.",
-                &tname->namestr, &macro->namesym->namestr, &parm->namesym->namestr, &macro->namesym->namestr);
+                "The type parameter %s of the macro %s is left to the lazy argument for %s, whose type is a closure's: a lazy argument is checked as a copy, and a copy's closure is its own, so it fixes no type. Write the type arguments out, '%s[%s](...)', or make %s a plain parameter, whose argument's own type fixes it.",
+                &tname->namestr, &macro->namesym->namestr, &ownedparm->namesym->namestr,
+                &macro->namesym->namestr, all, &ownedparm->namesym->namestr);
             return NULL;
         }
-    }
-    if (missing) {
         genericMacroMissingParms(typeargs, macro->typeparms, macro->namesym, use);
         return NULL;
     }
@@ -605,7 +664,7 @@ static int macroLazyArgsFit(TypeCheckState *pstate, INode **nodep, MacroDclNode 
             continue;
         }
         int fits = 1;
-        INode *probe = macroArgTrial(pstate, nodesGet(args, i), parmtype, &fits);
+        INode *probe = macroArgTrial(pstate, nodesGet(args, i), parmtype, &fits, NULL);
         if (probe && !fits) {
             macroArgTypeRefused(probe, parm->namesym, 1, parmtype);
             bad = 1;

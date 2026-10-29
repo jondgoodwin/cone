@@ -729,9 +729,10 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
 // checked (macro.c); a pair is left out where either is NULL. Answers the type
 // arguments, a type parameter nothing said left NULL for the caller to report
 // (genericMacroMissingParms), or NULL once two arguments are reported to
-// disagree.
+// disagree. 'prior', where not NULL, is what earlier arguments said, which
+// these must agree with.
 Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
-        INode *errnode, Name *name) {
+        Nodes *prior, INode *errnode, Name *name) {
     FnSigNode *sig = newFnSigNode();
     Nodes *typedargs = newNodes(args->used ? args->used : 1);
     for (uint32_t i = 0; i < args->used; ++i) {
@@ -748,8 +749,8 @@ Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *p
     uint32_t nparms = typeparms->used;
     FnCallNode *inferred = newFnCallNode(NULL, nparms);
     inodeLexCopy((INode*)inferred, errnode);
-    while (nparms--)
-        nodesAdd(&inferred->args, (INode*)NULL);
+    for (uint32_t t = 0; t < nparms; ++t)
+        nodesAdd(&inferred->args, prior ? nodesGet(prior, t) : (INode*)NULL);
     char what[200];
     snprintf(what, sizeof(what), "the macro %s's type parameters: its arguments must agree on each",
         &name->namestr);

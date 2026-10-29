@@ -12,10 +12,9 @@
 // so what the program prints says the lazy argument still runs once per use
 // and not at all where the body does not reach it.
 //
-// A use that writes no type arguments has them inferred from its plain
-// arguments, as a generic function's call does; one that writes them is as
-// before. A lazy argument fixes no type, so a macro whose type parameter only
-// lazy parameters name is given it written ('pick[i64]').
+// A use that writes no type arguments has them inferred from its arguments, as
+// a generic function's call does: the plain arguments first, then, for what
+// they leave open, the lazy ones' copies. One that writes them is as before.
 
 mod generic_macro_lazy;
 
@@ -53,6 +52,12 @@ macro twiceLazy[a: lazy i64] {
 }
 
 // One of two lazy arguments, by a plain condition: only the one taken runs
+// A plain parameter and a lazy one of one type parameter: the plain argument
+// says it, and the lazy one, a literal included, agrees
+macro keepOr[T][a: T, b: lazy T] {
+  if a > 8 {a} else {b}
+}
+
 macro pick[T][yes: bool, a: lazy T, b: lazy T] {
   if yes {a} else {b}
 }
@@ -75,7 +80,7 @@ macro repeat3[body: lazy void] {
 // parameter: checked against 'T' as each instance has it, i64 in one and f64
 // in the other
 fn choose[T](yes: bool, x: T, y: T) T {
-  pick[T](yes, x, y)
+  pick(yes, x, y)
 }
 
 fn chooseCounted[T](yes: bool, x: T, f: &fn() T) T {
@@ -109,7 +114,7 @@ fn main() {
   show("nested in a body", quadLazy(bump()));
   show("nested in a body ran", calls);
   calls = 0i64;
-  show("nested not taken", pick[i64](false, twiceLazy(bump()), 5i64));
+  show("nested not taken", pick(false, twiceLazy(bump()), 5i64));
   show("nested not taken ran", calls);
 
   // A side-effect block for 'lazy void'
@@ -123,5 +128,8 @@ fn main() {
   showf("inferred f64", larger(2.5, 1.5));
   show("written", larger[i64](4, 2));
   show("written lazy", pick[i64](true, 11, 12));
-  show("written lazy, not taken", pick[i64](false, 11i64, 12i64));
+  show("inferred lazy", pick(true, 1i64, 2i64));
+  show("inferred lazy, not taken", pick(false, 11i64, 12i64));
+  show("plain and lazy agreeing", keepOr(7i64, 9i64));
+  show("plain and lazy, a literal", keepOr(7i64, 9));
 }

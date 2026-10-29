@@ -1027,7 +1027,7 @@ checking an argument twice: type checking lowers and replaces nodes, and an
 expression is checked once.
 
 - **The type arguments a use leaves off are inferred from its plain
-  arguments** (`macroInferTypeArgs`). A plain argument is its binding's
+  arguments first, then its lazy ones** (`macroInferTypeArgs`). A plain argument is its binding's
   initializer, and the binding is a declaration, checked once and marked so.
   So each binding whose parameter's type names a type parameter is checked
   first, for real, typed by its argument as `let a = arg` is (marked in
@@ -1039,12 +1039,22 @@ expression is checked once.
   nothing else has a say. A binding the type arguments then type otherwise is
   coerced to its parameter's type (`macroEarlyBindingsFit`; `ErrorMacroArgType`
   where it does not fit). The block the bindings head passes a checked one by.
+  A type parameter the plain arguments leave open is then said by the lazy
+  arguments whose parameters' types name it: each is checked as a copy
+  (`macroArgTrial`, below), wanting nothing, and a second
+  `genericInferMacroParms` matches the copies' types, starting from what the
+  plain arguments said, so a lazy argument disagreeing with another, or with a
+  plain one, is the same conflict. A copy whose type the trial alone has — a
+  closure's struct, an instance made with one (`closureTrialType`) — says
+  nothing, since the real argument's type is another; a type parameter only
+  such a copy could say is `ErrorMacroLazyInfer`, whose remedy is to write the
+  type arguments or make the parameter plain. A lazy argument whose copy does
+  not check on its own is checked in place, reporting its own error, and the
+  use is not expanded.
   A type parameter no argument says is `ErrorInvType` ("Could not infer the
   type parameter T of the macro m", `genericMacroMissingParms`), as is one two
   arguments say differently ("Inconsistent type for the macro m's type
-  parameters"), and one that only a `lazy` parameter's type names is
-  `ErrorMacroLazyInfer`, whose remedy is to write the type arguments: a lazy
-  argument fixes no type (below). A type parameter only ever written
+  parameters"). A type parameter only ever written
   (`three[i64]()`) is never inferred. A binding that does not check reports its
   own error, and the use is not expanded. Since a closure given as a plain
   argument is checked for real, a type parameter inferred from it is that
@@ -1062,8 +1072,8 @@ expression is checked once.
   the real argument reaches too. What the copy makes for itself — a closure's
   struct, an instance made with it — is the trial's and is never generated
   ([type check](../phases/type-check.md), "What a trial makes is not
-  generated"); that is also why a lazy argument infers nothing, since the
-  copy's type is the copy's.
+  generated"); that is also why a copy whose type is one of those infers
+  nothing.
 
   The check (`macroLazyArgsFit`): the copy is checked wanting
   the parameter's type with the type arguments substituted

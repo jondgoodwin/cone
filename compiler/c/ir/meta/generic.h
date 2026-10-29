@@ -87,9 +87,10 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep, INode *expectT
 // generic function's are from a call's. 'parmtypes' and 'args' are paired, a
 // parameter's type as written and its argument type checked, a pair left out
 // where either is NULL. The type arguments, one nothing said left NULL, or
-// NULL once two arguments are reported to disagree.
+// NULL once two arguments are reported to disagree. 'prior', or NULL, is what
+// earlier arguments said, which these must agree with.
 Nodes *genericInferMacroParms(TypeCheckState *pstate, Nodes *typeparms, Nodes *parmtypes, Nodes *args,
-    INode *errnode, Name *name);
+    Nodes *prior, INode *errnode, Name *name);
 // Report the type parameters genericInferMacroParms left NULL in 'typeargs'
 void genericMacroMissingParms(Nodes *typeargs, Nodes *typeparms, Name *name, INode *errnode);
 
