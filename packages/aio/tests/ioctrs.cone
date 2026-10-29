@@ -5,6 +5,8 @@
 // every submission delivered or in flight, and the Loop having polled and
 // waited in the kernel, other threads having posted to its port, records
 // queued for the I/O thread and taken back, and the I/O thread's own time.
+// The answers are the Loop's and those its workers made where they issued
+// the operation (aio.opStats().answeredHere).
 
 mod ioctrs;
 
@@ -95,7 +97,11 @@ fn main() i32 {
   expectUInt(aio.ioCounters().submitted, 0u64, "the counters are kept when the program ends, not before");
   finalAll();
   let c = aio.ioCounters();
-  expect(c.delivered >= 4u64 * rounds, "at least four answers a round trip were delivered");
+  let o = aio.opStats();
+  // An operation answered where it was issued, on its worker, never reaches the
+  // Loop: the Loop's answers and those make every operation
+  expect(c.delivered + o.answeredHere >= 4u64 * rounds, "at least four answers a round trip, the Loop's and the workers'");
+  expectUInt(o.started, o.answeredHere + o.handedOver, "every record an await started answered on its worker or handed over");
   expectUInt(c.submitted, c.delivered + c.inFlight, "submitted = delivered + in flight");
   expect(c.polls > 0u64, "the Loop polled");
   expect(c.waits > 0u64, "the Loop waited in the kernel");
@@ -103,7 +109,6 @@ fn main() i32 {
   expect(c.dequeued > 0u64, "completions were taken from the kernel's queue");
   expect(c.passes >= c.waits, "each wait a pass into the kernel's queue");
   expect(c.posted > 0u64, "other threads posted to the port");
-  let o = aio.opStats();
   expect(o.queued > 0u64, "records were queued for the I/O thread");
   expect(o.loopDone > 0u64, "and it took records back answered");
   let t = aio.ioThreadTimes();

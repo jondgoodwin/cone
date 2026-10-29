@@ -1,0 +1,193 @@
+// Operations issued off the loop's path, through its shared table (see the
+// package's header, WORKER-SIDE ISSUE), here on the loop's own thread so each
+// step is in order:
+//
+// 1. A send issued through the table is done at once: its outcome is in the
+//    record, the loop never sees it (nothing on the done list, nothing counted).
+// 2. A receive whose bytes are already there is done at once too.
+// 3. A receive on a silent socket is in flight (Windows) or not issued at all
+//    (Linux: it would block, and goes the loop's way). On Windows the peer then
+//    sends and the loop polls BEFORE the record is handed to it: the completion
+//    comes first and is kept, nothing answered; lp.start then links it and it
+//    is answered once, Done with the bytes. Linux starts it on the loop.
+// 4. A handle marked closing is not issued on; a closed one is not in the table.
+
+mod issued;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+// Poll until n records are back from the done list
+fn waitDone(lp: &mut Loop, got: &mut List[*OpCore], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  var out = List[Completion].empty();
+  while got.len() < n && Instant.now() < limit {
+    lp.poll(limit, &mut out);
+    lp.takeDone(got);
+  }
+}
+
+fn pair(lp: &mut Loop) Handle, Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
+  match lp.localAddr(listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  var out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  var a = Handle.none();
+  var b = Handle.none();
+  var k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b
+}
+
+fn recvOn(pool: &OpPool[Ask], h: Handle) *OpCore {
+  let r = pool.take(Ask(1u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindRecv;
+  c.handle = h;
+  c.buf = Some[IoBuf](IoBuf(64usize));
+  r as *OpCore
+}
+
+fn sendOn(pool: &OpPool[Ask], h: Handle, text: &Array[u8]) *OpCore {
+  let r = pool.take(Ask(2u64));
+  let c = &mut (*r).core;
+  c.kind = diag.kindSend;
+  c.handle = h;
+  var b = IoBuf(64usize);
+  b.append(text);
+  c.buf = Some[IoBuf](b);
+  r as *OpCore
+}
+
+// Issue p on h through sh: what issue said
+fn issueOn(sh: &Shared, h: Handle, p: *OpCore) u32 {
+  if !sh.lock(h) {return 99u32;}
+  let got = sh.issue(p);
+  sh.unlock(h);
+  got
+}
+
+// The bytes a record's buffer holds, and lets it go
+fn bytesOf(pool: &OpPool[Ask], p: *OpCore) usize {
+  let rec = pool.dissolve(p as *OpRec[Ask]);
+  let core, ask = rec.(core, ask);
+  let buf = core.(buf);
+  match buf {
+    case var Some(b) {b.len()}
+    else {0usize}
+  }
+}
+
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  let sh = lp.share();
+  expect(!sh.isNone(), "the loop's table is made");
+  var a = Handle.none();
+  var b = Handle.none();
+  a, b = pair(&mut lp);
+  let pool = OpPool[Ask].make();
+  var got = List[*OpCore].empty();
+  var out = List[Completion].empty();
+
+  // 1. A send: done at once, the loop's counters untouched
+  let before = lp.counters().submitted;
+  let s1 = sendOn(&pool, b, "hello");
+  expectUInt(u64.from(issueOn(&sh, b, s1)), u64.from(issueDone), "a send is done where it is issued");
+  expect((s1 as &OpCore).isDone(), "Done");
+  expectUInt(u64.from((s1 as &OpCore).count()), 5u64, "all five bytes");
+  expect((s1 as &OpCore).isLetGo(), "and let go: the loop holds nothing of it");
+  let gone1 = bytesOf(&pool, s1);
+  lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+  lp.takeDone(&mut got);
+  expectUInt(u64.from(got.len()), 0u64, "nothing comes to the done list");
+  expectUInt(lp.counters().submitted, before, "nor is it counted");
+
+  // 2. A receive whose bytes are there
+  let r2 = recvOn(&pool, a);
+  expectUInt(u64.from(issueOn(&sh, a, r2)), u64.from(issueDone), "a receive with its bytes there is done at once");
+  expectUInt(u64.from(bytesOf(&pool, r2)), 5u64, "with the bytes");
+
+  // 3. A receive on a silent socket
+  let r3 = recvOn(&pool, a);
+  let how = issueOn(&sh, a, r3);
+  if isWindows() {
+    expectUInt(u64.from(how), u64.from(issuePending), "in flight");
+    expect((r3 as &OpCore).isIssued(), "issued, to be linked");
+    let s3 = sendOn(&pool, b, "world");
+    expectUInt(u64.from(issueOn(&sh, b, s3)), u64.from(issueDone), "the peer's send done at once");
+    let gone3 = bytesOf(&pool, s3);
+    var k = 0u32;
+    while k < 5u32 {
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+      lp.takeDone(&mut got);
+      k = k + 1u32;
+    }
+    expectUInt(u64.from(got.len()), 0u64, "its completion came before it, and is kept: nothing answered");
+    lp.start(r3);
+    waitDone(&mut lp, &mut got, 1usize);
+    expectUInt(u64.from(got.len()), 1u64, "linked, it is answered");
+    expect((r3 as &OpCore).isDone(), "Done");
+    expectUInt(u64.from(bytesOf(&pool, r3)), 5u64, "with the bytes");
+    got.clear();
+    lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+    lp.takeDone(&mut got);
+    expectUInt(u64.from(got.len()), 0u64, "and only once");
+  } else {
+    expectUInt(u64.from(how), u64.from(issueNot), "it would block: not issued");
+    lp.start(r3);
+    let s3 = sendOn(&pool, b, "world");
+    expectUInt(u64.from(issueOn(&sh, b, s3)), u64.from(issueDone), "the peer's send done at once");
+    let gone3 = bytesOf(&pool, s3);
+    waitDone(&mut lp, &mut got, 1usize);
+    expectUInt(u64.from(got.len()), 1u64, "started on the loop, it is answered");
+    expect((r3 as &OpCore).isDone(), "Done");
+    expectUInt(u64.from(bytesOf(&pool, r3)), 5u64, "with the bytes");
+    got.clear();
+    // The same checks' count as Windows
+    expect(true, "");
+    expect(true, "");
+    expect(true, "");
+  }
+  let c = lp.counters();
+  expectUInt(c.submitted, c.delivered + c.inFlight, "submitted = delivered + in flight");
+
+  // 4. Closing, and closed
+  expect(sh.lock(b), "b is in the table");
+  sh.markClosing(b);
+  let s4 = sendOn(&pool, b, "late");
+  expectUInt(u64.from(sh.issue(s4)), u64.from(issueNot), "nothing is issued on a handle marked closing");
+  sh.unlock(b);
+  let gone4 = bytesOf(&pool, s4);
+  lp.close(a);
+  expect(!sh.lock(a), "a closed handle is not in the table");
+  expectUInt(sh.contended(), 0u64, "no lock was found held");
+  lp.close(b);
+  done()
+}

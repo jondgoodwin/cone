@@ -56,6 +56,7 @@ extern {
   fn @c(system) CloseHandle(h: usize) i32;
   fn @c(system) GetLastError() u32;
   fn @c(system) CancelIoEx(h: usize, ov: *u8) i32;
+  fn @c(system) SetFileCompletionNotificationModes(h: usize, flags: u8) i32;
   fn @c(system) GetCurrentThread() usize;
   fn @c(system) GetThreadTimes(h: usize, created: *u64, exited: *u64, kernel: *u64, user: *u64) i32;
   fn @c(system) CreateFileW(name: *u16, access: u32, share: u32, sa: *u8, disposition: u32,
@@ -275,7 +276,8 @@ fn openPort() u32, usize, usize, usize {
   if isWindows() {
     let ws = winsock();
     if ws != 0u32 {return ws, 0usize, 0usize, 0usize;}
-    let port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 1u32);
+    // Concurrency 0: as many threads as processors may take from it at once
+    let port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 0u32);
     if port == 0usize {return GetLastError(), 0usize, 0usize, 0usize;}
     return 0u32, port, 0usize, 0usize;
   } else {
@@ -319,6 +321,24 @@ fn udpSocket(family: u16) usize {
 }
 
 // Nagle's algorithm off: a small send goes at once
+// A socket's completions made to skip the port when an operation finishes at
+// once (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE):
+// true if they now do. Only where its provider hands out real handles
+// (XP1_IFS_HANDLES in its WSAPROTOCOL_INFOW, 628 bytes, the flags first): a
+// layered provider that does not may still post a packet for an operation that
+// finished at once, which would answer it twice (Windows only)
+fn skipOnSuccess(s: usize) bool {
+  if !isWindows() {return false;}
+  var info = Array[u8, 628]() <- fill 0u8;
+  var len = 628i32;
+  if getsockopt(s, solSocket, soProtocolInfoW, &mut info as *u8, &mut len) != 0i32 {return false;}
+  if (*(&mut info as *u8 as *u32) & xp1IfsHandles) == 0u32 {return false;}
+  SetFileCompletionNotificationModes(s, 3u8) != 0i32
+}
+
+const soProtocolInfoW = 0x2005i32;             // SO_PROTOCOL_INFOW
+const xp1IfsHandles = 0x20000u32;              // XP1_IFS_HANDLES
+
 fn noDelay(s: usize) {
   var one = 1i32;
   setsockopt(s, ipprotoTcp, tcpNoDelay, &mut one as *u8, 4i32);

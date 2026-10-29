@@ -1,0 +1,332 @@
+// A Loop's handles as other threads see them, and an operation issued there
+// (see the package's header, WORKER-SIDE ISSUE).
+//
+// How it is built. 'lp.share()' makes the Loop's SHARED TABLE: a fixed
+// directory of chunks of 256 entries that never move and are never freed (the
+// records' own scheme, record.cone), one entry per handle-table cell, by the
+// Handle's index. The Loop's thread publishes an entry when it registers a
+// handle (its OS handle, kind and skip mode written, then its generation stored
+// with release) and unpublishes it, under the entry's lock, before it closes the
+// OS handle. Any thread finds an entry with a load and a generation check: no
+// lock is taken to look.
+//
+// Each entry has a one-word LOCK, held across an operation's issue and the
+// queueing of what follows it, and taken by a handle's cancel and close
+// (aio's cancelSide and closeHandle), so those keep their order against an
+// operation issued here: a cancel or close queued after the issue finds the
+// operation on the Loop, one queued before it is ahead of it (a close marks
+// the entry 'closing' under the lock, and nothing is issued on it then: the
+// operation goes the Loop's way, behind the close, and is answered as today).
+// It is uncontended in the common case (one exchange, one store); a contended
+// acquisition is counted (Shared.contended), spins a while and then yields its
+// processor, so a holder that was preempted is not spun on for a whole quantum.
+// The Loop's thread holds no other lock while it takes one.
+//
+// ISSUE. 'sh.issue(p)', with the entry of p's handle locked, tries a receive or
+// a send of record p on the calling thread. Windows: WSARecv/WSASend on a
+// socket whose completions skip the port on success; an answer at once fills
+// the record (issueDone: the Loop never sees it), a pending one leaves the
+// record the kernel's (issuePending: its caller hands it to the Loop with
+// lp.start, which links it, and its completion, if it came first, was kept for
+// that). Linux: recv/send on the non-blocking socket; one that would block
+// before anything moved is not issued (issueNot: it goes the Loop's way), a
+// send that moved part of its bytes keeps them ('done') and is handed over in
+// flight (issuePending). Anything else -- another kind, a deadline or a group
+// already done with, a buffer with no room, a handle closing or gone -- is
+// issueNot, and goes the Loop's way unchanged.
+
+// What 'issue' did
+pub const issueNot = 0u32;       // nothing: the record goes the Loop's way, as if never tried
+pub const issueDone = 1u32;      // answered here: the record is the caller's, its outcome in it
+pub const issuePending = 2u32;   // in flight: the caller hands it to the Loop (lp.start)
+
+const shChunk = 256u32;          // entries a chunk
+const shChunks = 4096u32;        // chunks at most: 1,048,576 handles
+const shSpins = 64u32;           // looks at a held lock before each yield
+
+// One handle's entry: 64 bytes, so two handles' locks are not one cache line
+struct SEntry {
+  gen: u32;                // the Handle's generation while published; 0 while not (atomic)
+  lock: u32;               // 1 while a thread holds the entry (atomic)
+  closing: u32;            // its close has been asked: nothing is issued on it (under the lock)
+  kind: u32;               // hSocket, ...
+  skip: u32;               // Windows: its completions skip the port on success
+  spare: u32;
+  raw: usize;              // the OS handle
+  pad: Array[u8, 32];
+}
+
+// The table: the chunk directory and the contended count
+struct Slab {
+  dir: *usize;
+  contended: u64;
+}
+
+// A Loop's shared table, as any thread holds it: Sendable, copied to share
+// (WORKER-SIDE ISSUE)
+pub struct Shared is Sendable {
+  at: usize;               // the Slab, or 0: none
+
+  // No table: nothing is ever issued through it
+  pub fn none() Shared {Shared(0usize)}
+
+  pub fn isNone(self: &) bool {at == 0usize}
+
+  // The lock acquisitions that found the lock held, since the table was made
+  pub fn contended(self: &) u64 {
+    if at == 0usize {return 0u64;}
+    mem.atomicLoad[u64](&(*(at as *Slab)).contended as *u64, MemOrder.Relaxed)
+  }
+
+  // The entry for cell i, or null when no chunk holds it yet
+  fn entry(self: &, i: u32) *SEntry {
+    let ci = i / shChunk;
+    if at == 0usize || ci >= shChunks {return null;}
+    let c = mem.atomicLoad[usize]((*(at as *Slab)).dir + usize.from(ci), MemOrder.Acquire);
+    if c == 0usize {return null;}
+    (c as *SEntry) + usize.from(i % shChunk)
+  }
+
+  // h's entry locked, from any thread: true if h is published (its entry then
+  // held until unlock); false, and nothing held, if it names nothing here
+  pub fn lock(self: &, h: Handle) bool {
+    if at == 0usize || h.isNone() {return false;}
+    let e = self.entry(h.index);
+    if e as usize == 0usize {return false;}
+    if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Acquire) != h.gen {return false;}
+    self.acquire(e);
+    if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Acquire) != h.gen {
+      self.release(e);
+      return false;
+    }
+    true
+  }
+
+  // h's entry let go: h was locked by this thread
+  pub fn unlock(self: &, h: Handle) {
+    self.release(self.entry(h.index));
+  }
+
+  // h's close has been asked: nothing is issued on it from now on. h is
+  // locked by this thread
+  pub fn markClosing(self: &, h: Handle) {
+    (*self.entry(h.index)).closing = 1u32;
+  }
+
+  fn acquire(self: &, e: *SEntry) {
+    let lk = &(*e).lock as *u32;
+    if mem.atomicSwap[u32](lk, 1u32, MemOrder.Acquire) == 0u32 {return;}
+    mem.atomicAdd[u64](&(*(at as *Slab)).contended as *u64, 1u64, MemOrder.Relaxed);
+    var spins = 0u32;
+    while true {
+      if mem.atomicLoad[u32](lk, MemOrder.Relaxed) == 0u32
+          && mem.atomicSwap[u32](lk, 1u32, MemOrder.Acquire) == 0u32 {
+        return;
+      }
+      spins = spins + 1u32;
+      if spins >= shSpins {
+        spins = 0u32;
+        thread.yieldNow();
+      }
+    }
+  }
+
+  fn release(self: &, e: *SEntry) {
+    mem.atomicStore[u32](&(*e).lock as *u32, 0u32, MemOrder.Release);
+  }
+
+  // Try record p's receive or send here (ISSUE above). The entry of p's
+  // handle is locked by this thread. issueNot, issueDone or issuePending
+  pub fn issue(self: &, p: *OpCore) u32 {
+    let r = p as &mut OpCore;
+    let e = self.entry(r.handle.index);
+    if e as usize == 0usize || (*e).closing != 0u32 || (*e).kind != hSocket {return issueNot;}
+    let k = r.kind;
+    if k != diag.kindRecv && k != diag.kindSend {return issueNot;}
+    if k == diag.kindSend && r.isGather() {return issueNot;}
+    if k == diag.kindRecv && r.bufRoom() == 0usize {return issueNot;}
+    if isWindows() && (*e).skip == 0u32 {return issueNot;}
+    // A deadline or a group done with is answered by the Loop, as at a start
+    let now = Instant.now();
+    var dl = r.deadline;
+    var cancelled = false;
+    match r.group {
+      case let Some(s) {
+        if s.deadline() < dl {dl = s.deadline();}
+        cancelled = s.isCancelled();
+      }
+      else {}
+    }
+    if cancelled || dl <= now {return issueNot;}
+    if isWindows() {
+      return winIssue(p, (*e).raw, now);
+    }
+    lxIssue(p, (*e).raw, now)
+  }
+}
+
+// A new table, its directory empty; none if there is no memory for it (then
+// nothing is issued off the Loop's thread)
+fn makeShared() Shared {
+  let s = libc.calloc(1usize, mem.sizeof[Slab]()) as *Slab;
+  let d = libc.calloc(usize.from(shChunks), mem.sizeof[usize]()) as *usize;
+  if s as usize == 0usize || d as usize == 0usize {
+    libc.free(s as *u8);
+    libc.free(d as *u8);
+    return Shared.none();
+  }
+  (*s).dir = d;
+  Shared(s as usize)
+}
+
+// Cell i published for generation gen, on the Loop's thread (the only writer of
+// the directory and of an entry's fields): its fields first, then its
+// generation, released. A cell no chunk could be made for stays unpublished,
+// and its operations go the Loop's way
+fn publishEntry(sh: &Shared, i: u32, gen: u32, raw: usize, kind: u32, skip: u32) {
+  let ci = i / shChunk;
+  if ci >= shChunks {return;}
+  let slot = (*(sh.at as *Slab)).dir + usize.from(ci);
+  var c = mem.atomicLoad[usize](slot, MemOrder.Relaxed);
+  if c == 0usize {
+    c = libc.calloc(usize.from(shChunk), mem.sizeof[SEntry]()) as usize;
+    if c == 0usize {return;}
+    mem.atomicStore[usize](slot, c, MemOrder.Release);
+  }
+  let e = (c as *SEntry) + usize.from(i % shChunk);
+  (*e).raw = raw;
+  (*e).kind = kind;
+  (*e).skip = skip;
+  (*e).closing = 0u32;
+  mem.atomicStore[u32](&(*e).gen as *u32, gen, MemOrder.Release);
+}
+
+// Cell i unpublished, under its lock: a thread issuing on it has finished
+// (and queued what follows) before this returns, and none starts after
+fn unpublishEntry(sh: &Shared, i: u32) {
+  let e = sh.entry(i);
+  if e as usize == 0usize {return;}
+  if mem.atomicLoad[u32](&(*e).gen as *u32, MemOrder.Relaxed) == 0u32 {return;}
+  sh.acquire(e);
+  mem.atomicStore[u32](&(*e).gen as *u32, 0u32, MemOrder.Release);
+  sh.release(e);
+}
+
+// Record p in flight from now, stamped as the Loop's 'stamp' does, but not
+// counted: the Loop counts it if it is handed over (linkIssued)
+fn stampIssued(p: *OpCore, now: Instant) {
+  let r = p as &mut OpCore;
+  r.state = stFlight;
+  r.asked = askedNone;
+  r.hit = false;
+  r.lapses = false;
+  r.early = false;
+  r.late = false;
+  r.submitted = now;
+  r.dequeued = now;
+  r.newSock = invalidHandle;
+  r.newHandle = Handle.none();
+  r.timer = TimerId.none();
+  r.jfd = 0i32 - 1i32;
+  r.status = 0u32;
+  r.n = 0usize;
+  r.code = 0u32;
+  r.done = 0usize;
+  r.ov = Overlapped(0usize, 0usize, 0u32, 0u32, 0usize);
+}
+
+// Record p answered where it was issued: its outcome in it, let go
+fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
+  let r = p as &mut OpCore;
+  r.link = linkNone;
+  r.status = status;
+  r.n = n;
+  r.code = code;
+  r.state = stDone;
+  issueDone
+}
+
+// Windows: the receive or send on raw, whose completions skip the port on
+// success. Pending: the record is the kernel's, marked in transit BEFORE the
+// call, and nothing of it is touched here after
+fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
+  if !isWindows() {return issueNot;}
+  let r = p as &mut OpCore;
+  var data = null as *u8;
+  var len = 0usize;
+  if r.kind == diag.kindSend {
+    data, len = sendData(r);
+    if len > 0xFFFFFFFFusize {return issueNot;}
+  }
+  stampIssued(p, now);
+  r.raw = raw;
+  r.link = linkTransit;
+  var got = 0u32;
+  var rc = 0i32;
+  if r.kind == diag.kindRecv {
+    let room = r.bufRoom();
+    r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(room)};
+    r.wsa.buf = r.bufBase() + r.bufLen();
+    r.flags = 0u32;
+    rc = WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, &mut r.flags, p as *u8, null);
+  } else {
+    r.wsa.len = u32.from(len);
+    r.wsa.buf = data;
+    rc = WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, &mut got as *u32, 0u32, p as *u8, null);
+  }
+  if rc == 0i32 {
+    // Done at once, and no packet will come: the port is skipped on success
+    r.dequeued = Instant.now();
+    if r.kind == diag.kindRecv {r.bufGrow(usize.from(got));}
+    return answeredHere(p, diag.outcomeDone, usize.from(got), 0u32);
+  }
+  let code = wsaError();
+  if code == errorIoPending {return issuePending;}
+  // Refused at once: no packet either, the same answer the Loop's start gives
+  answeredHere(p, diag.outcomeFailed, 0usize, code)
+}
+
+// Linux: the receive or send on the non-blocking descriptor raw
+fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
+  if isWindows() {return issueNot;}
+  let r = p as &mut OpCore;
+  let fd = fdOf(raw);
+  if r.kind == diag.kindRecv {
+    var n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);
+    while n < 0i64 && lastErrno() == eintr {n = sysRecv(fd, r.bufBase() + r.bufLen(), r.bufRoom(), 0i32);}
+    if n < 0i64 && lastErrno() == eagain {return issueNot;}
+    stampIssued(p, now);
+    if n >= 0i64 {
+      r.bufGrow(usize.from(n));
+      return answeredHere(p, diag.outcomeDone, usize.from(n), 0u32);
+    }
+    return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(lastErrno()));
+  }
+  var data = null as *u8;
+  var len = 0usize;
+  data, len = sendData(r);
+  var sent = 0usize;
+  var failed = 0i32;
+  while sent < len && failed == 0i32 {
+    let n = sysSend(fd, data + sent, len - sent, msgNoSignal);
+    if n >= 0i64 {
+      sent = sent + usize.from(n);
+    } else {
+      let e = lastErrno();
+      if e != eintr {failed = e;}
+    }
+  }
+  if failed == eagain && sent == 0usize {return issueNot;}
+  stampIssued(p, now);
+  r.done = sent;
+  if failed == eagain {
+    // Part of it sent: the rest goes on from 'done' on the Loop, never again
+    // from the start (linkIssued keeps it)
+    r.link = linkTransit;
+    return issuePending;
+  }
+  if failed != 0i32 {
+    return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(failed));
+  }
+  answeredHere(p, diag.outcomeDone, len, 0u32)
+}

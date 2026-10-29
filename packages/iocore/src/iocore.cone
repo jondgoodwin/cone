@@ -63,7 +63,9 @@
 //   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
 //   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
-//
+//   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone()
+//     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
+//     core.isIssued()                                    (WORKER-SIDE ISSUE)//
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
 //   Op.SendChain(sock, bufs)            several buffers, one send (a gather)
@@ -109,7 +111,9 @@
 // alive from inside it. A job's post that Windows refuses while its loop
 // still lives (no room for the packet) is tried again every millisecond,
 // since that loop still holds the record. Loops on other threads are other
-// Loops: one per driving thread.
+// Loops: one per driving thread. One exception to "one thread": a receive or
+// a send may be ISSUED on another thread through the loop's shared table and
+// handed to it in flight (WORKER-SIDE ISSUE).
 //
 // OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
 // a borrow: an IoBuf moved in, which the kernel writes into (Recv, ReadAt, at
@@ -505,7 +509,31 @@
 // reset and what was not yet sent dropped. Each handle has a HINT WORD, a u32
 // the loop keeps for the layer that opened it and reads nothing of
 // ('lp.hint(h)', 'lp.setHint(h, v)'; 0 when it is opened, and for a handle
-// that names nothing): aio keeps a socket's read hint there.
+// that names nothing): aio keeps a socket's read hint there. On Windows a
+// socket's completions SKIP THE PORT when an operation finishes at once
+// (SetFileCompletionNotificationModes, where its provider hands out real
+// handles): its start then answers it there, and no packet comes.
+//
+// WORKER-SIDE ISSUE (shared.cone). 'lp.share()' is the loop's SHARED TABLE, a
+// Shared: Sendable, copied to share; the loop's handles as any thread sees them,
+// found with a load and a generation check, each entry with a lock. On another
+// thread, 'sh.lock(h)' (false: h names nothing there), then 'sh.issue(p)' tries
+// record p's receive or send (Recv into a buffer, a Send of one buffer) on that
+// thread: issueDone, answered there, its outcome in the record (state done,
+// let go: the loop never sees it, and its counters do not count it);
+// issuePending, in flight, which the caller hands to the loop's thread, whose
+// 'lp.start(p)' LINKS it (counted, on its handle's list, in its group, its
+// deadline armed) -- the kernel's completion may come first, and is kept until
+// the record is linked, so it is answered once; or issueNot, nothing done, the
+// record started on the loop as ever. Then 'sh.unlock(h)'. Windows issues only
+// on a socket that skips the port on success; Linux tries the non-blocking
+// recv/send, and one that would block before moving a byte is issueNot, a send
+// that moved part of its bytes is issuePending and goes on from them. A cancel
+// or a close of h queued under the lock is ordered against an issue under it;
+// 'sh.markClosing(h)' (under the lock) stops any issue on h after it, so an
+// operation awaited behind a close fails as it does without the table. The
+// loop unpublishes a handle, under its lock, before it closes it. A lock found
+// held spins a while and then yields; 'sh.contended()' counts those.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With

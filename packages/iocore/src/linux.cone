@@ -592,6 +592,22 @@ fn lxQueue(lp: &mut Loop, p: *OpCore, side: u32) u32 {
   0u32
 }
 
+// A send issued on another thread that moved part of its bytes (shared.cone):
+// it waits in its handle's queue and goes on from 'done', which is kept (not
+// lxQueue's fresh start); a handle gone meanwhile fails it, as a try does
+fn lxLinkIssued(lp: &mut Loop, p: *OpCore) {
+  if isWindows() {return;}
+  let r = p as &mut OpCore;
+  let ei = lp.handleIndex(r.handle);
+  if ei == noEntry {
+    lp.decide(p, diag.outcomeFailed, 0usize, noSuchHandle());
+    return;
+  }
+  let side = if writes(r.kind) {onWrites} else {onReads};
+  lp.linkSide(p, side);
+  lxRun(lp, ei, side, Instant.now());
+}
+
 // A Recv or a RecvReady
 fn lxStartRecv(lp: &mut Loop, p: *OpCore, ready: bool) u32 {
   if isWindows() {return errorInvalidParameter;}

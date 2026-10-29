@@ -71,8 +71,10 @@
 //                           flight on the handle (ONE DIRECTION OF A HANDLE); also on a UdpSocket and a File
 //   aio.opStats()           the records in use and made, the operations cancelRead and cancelWrite
 //                           asked to end, the answers taken on the awaiting actor's worker, the
-//                           records queued for the I/O thread and those it took back answered, a
-//                           record's size (ONE RECORD PER OPERATION)
+//                           records queued for the I/O thread and those it took back answered, the
+//                           records awaits started, those answered on their workers and those handed
+//                           to the I/O thread, the handle locks found held, a record's size
+//                           (ONE RECORD PER OPERATION, THE I/O THREAD)
 //   aio.ioCounters()        the I/O thread's Loop counters (a diag.Counters) as they stood when the
 //                           program ended: polls, waits in the kernel, completions taken, answers
 //                           delivered; zero before that, and in a program that never awaited I/O
@@ -196,9 +198,10 @@
 // settled by iocore: the answer is whichever came first (the Done, if the
 // operation had finished), and there is never a second. A socket dropped
 // while an operation on it is in flight ends it Cancelled, as a cancel does.
-// The operation is one the I/O thread starts when the 'await' does, so a
-// cancel from another actor or thread may arrive before it has started: the
-// group's state, not the order of the calls, decides.
+// The operation is one the 'await' starts (on its worker, or by handing it to
+// the I/O thread: THE I/O THREAD), so a cancel from another actor or thread
+// may arrive before it has started: the group's state, not the order of the
+// calls, decides.
 //
 // ONE DIRECTION OF A HANDLE. 's.cancelRead()' and 's.cancelWrite()' (on a
 // Socket, a UdpSocket and a File) end EVERY operation in flight on the
@@ -226,9 +229,10 @@
 // - The call that makes the operation ('conn.read(buf)') takes a record on its
 //   own thread (iocore's 'pool.take', under the pool's lock) and puts in the
 //   request and the buffer. The record is the Awaitable's context
-//   (actors.Awaitable.of: no closure); the 'await' puts the reply in and queues
-//   the record to the I/O thread by its own link; dropped unawaited, the
-//   Awaitable dissolves the record where it is dropped, its buffer home.
+//   (actors.Awaitable.of: no closure); the 'await' puts the reply in and either
+//   issues it on its own worker (a read into a buffer, a write: THE I/O THREAD)
+//   or queues the record to the I/O thread by its own link; dropped unawaited,
+//   the Awaitable dissolves the record where it is dropped, its buffer home.
 // - The I/O thread starts it on the Loop ('lp.start'); its answer comes back
 //   on the Loop's done list, and the I/O thread either starts the same record
 //   again (a read with no buffer's next stage) or SPRINGS the reply: the
@@ -242,8 +246,10 @@
 //   does not (most actors: a slot holds 16 bytes of answer), the answer is
 //   lent and 'take' runs on the awaiting actor's worker as it reaches the
 //   reply, before the behaviour goes on (the record dissolved there, under the
-//   pool's lock). Nothing is allocated for an operation: no closure, no job
-//   block, no hook, no box for the answer, no record of aio's.
+//   pool's lock). An operation issued on its worker and done at once is sprung
+//   there, the same way, and never reaches the I/O thread. Nothing is
+//   allocated for an operation: no closure, no job block, no hook, no box for
+//   the answer, no record of aio's.
 // - A record is lent only once the Loop holds nothing of it: off its handle's
 //   in-flight list, off the grouped list and the done list, its timer
 //   cancelled, no job away (iocore's RECORDS, a record let go). A trust claim:
@@ -281,8 +287,19 @@
 // first job queued for a hosted service), owns the actor runtime's iocore Loop
 // and waits in its poll; it is the one thread that touches the Loop, as iocore
 // asks. The actors' workers never wait on I/O (they could not: an actor's
-// behaviour runs to its 'await' and returns). An 'await' on an operation hands
-// its record to the I/O thread through a QUEUE: records linked by their own
+// behaviour runs to its 'await' and returns). An 'await' on a socket's read
+// into a buffer (read(buf), readIn(buf, lim)) or a write first ISSUES it on its
+// own worker, through the Loop's shared table (iocore's WORKER-SIDE ISSUE),
+// the socket's entry locked across the issue and what follows: done at once
+// (every send that fits the socket, a read whose bytes are there), it is
+// answered there and the actor goes on in the same batch, nothing crossing to
+// the I/O thread; in flight, the record goes to the I/O thread, which links it
+// on the Loop. A cancel and a close are queued under the same lock, so they
+// keep their order against an issue, and a socket dropped marks its entry
+// closing first: an operation awaited after the drop goes behind the close and
+// fails as before. Any other 'await', and one that could not be issued (a
+// deadline or a group already done with, a buffer with no room, a socket
+// closing), hands its record to the I/O thread through a QUEUE: records linked by their own
 // link (and the jobs, a list of their own, and each hosted service's jobs, a
 // list of the service's) under a Mutex, which the I/O thread takes whole after
 // each poll, and a Waker that ends the poll at once. The poll waits until the
@@ -546,7 +563,7 @@ import sync use Mutex;
 import collections use List, String;
 import iobuf use IoBuf;
 import time use Instant, Duration;
-import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes;
+import iocore use Loop, Waker, Op, OpCore, OpRec, OpPool, Completion, Handle, SocketAddr, IoError, CancelGroup, Access, Outcome, Lane, FileStat, forever, resolveOp, addressesIn, statOp, fileStatIn, answerError, threadTimes, Shared, issueDone, issuePending;
 import path use Path;
 import process;
 import actors;
@@ -561,6 +578,7 @@ fn @initpure init() {
   cancelsAsked = Atomic[u64].of(0u64);
   takenAway = Atomic[u64].of(0u64);
   ioEndAt = Atomic[usize].of(0usize);
+  countsAt = Atomic[usize].of(0usize);
 }
 
 // A panic, reported at the line calling 'die'
@@ -655,6 +673,8 @@ fn makePool() usize {
 // globals, set in 'init'
 let cancelsAsked: Atomic[u64];
 let takenAway: Atomic[u64];
+// The threads' blocks of counts (HereCounts), newest first, pushed under ioLock
+let countsAt: Atomic[usize];
 
 // True on the I/O thread alone
 var @threadlocal onIo = false;
@@ -700,12 +720,84 @@ fn recAwaitable[R](p: *OpRec[Ask]) actors.Awaitable[R] {
   actors.Awaitable[R].of(p as *u8, &startRec, &dropRec)
 }
 
-// The seam starts the operation: the reply goes into the record, which goes
-// to the I/O thread by its own queue link
+// The seam starts the operation: the reply goes into the record. A read into
+// a buffer or a write is issued here first, on the awaiting actor's worker
+// (iocore's WORKER-SIDE ISSUE), its handle's entry locked across the issue and
+// what follows: one done at once is answered here, and the actor goes on in the
+// same batch, nothing crossing to the I/O thread; one in flight goes to the I/O
+// thread by its own queue link, which links it. The rest, and what could not be
+// issued, go to the I/O thread unstarted, as before
 fn startRec(ctx: *u8, rp: actors.Reply) {
   let a = &mut (*(ctx as *OpRec[Ask])).ask;
   a.reply = rp;
+  let c = hereCounts();
+  bump(&mut (*c).started as *u64);
+  let w = a.what;
+  if w == opRecv || w == opSend {
+    let sh = sharedNow();
+    let h = (*(ctx as *OpCore)).handle;
+    if sh.lock(h) {
+      let got = sh.issue(ctx as *OpCore);
+      if got == issueDone {
+        sh.unlock(h);
+        bump(&mut (*c).here as *u64);
+        answerRec(ctx as *OpRec[Ask]);
+        return;
+      }
+      if got == issuePending {
+        bump(&mut (*c).over as *u64);
+        enqueueRec(ctx as *OpCore);
+        sh.unlock(h);
+        return;
+      }
+      sh.unlock(h);
+    }
+  }
+  bump(&mut (*c).over as *u64);
   enqueueRec(ctx as *OpCore);
+}
+
+// The I/O thread's Loop's handles as any thread sees them (none before the
+// I/O thread has started)
+fn sharedNow() Shared {
+  let t = io.load();
+  if t == 0usize {
+    return Shared.none();
+  }
+  (*(t as *IoThread)).shared
+}
+
+// Each thread's own counts of the records its awaits started (opStats): a
+// block of its own, made at its first count and listed for opStats to sum.
+// Only its thread writes it, each count a plain add stored whole, so a reader
+// on another thread sees whole values
+struct HereCounts {
+  started: u64;            // records an await started on this thread
+  here: u64;               // ...answered on this thread, where they were issued
+  over: u64;               // ...handed to the I/O thread (in flight, or to start there)
+  next: *HereCounts;
+}
+
+var @threadlocal hereAt = 0usize;
+
+fn hereCounts() *HereCounts {
+  if hereAt != 0usize {
+    return hereAt as *HereCounts;
+  }
+  let c = libc.calloc(1usize, mem.sizeof[HereCounts]()) as *HereCounts;
+  if c as usize == 0usize {
+    die("aio: out of memory for a thread's counts");
+  }
+  ioLock.lock();
+  (*c).next = countsAt.load() as *HereCounts;
+  countsAt.store(c as usize);
+  ioLock.unlock();
+  hereAt = c as usize;
+  c
+}
+
+fn bump(p: *u64) {
+  mem.atomicStore[u64](p, mem.atomicLoad[u64](p, MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
 }
 
 // An Awaitable dropped unawaited: its record dissolved here, on the caller's
@@ -756,6 +848,7 @@ struct IoThread {
   pub queued: u64;              // records queued for it (opStats): under ioLock
   pub loopDone: u64;            // records it took back answered from its Loop (opStats): its own, stored whole
   pub os: thread.Thread[u32];
+  pub shared: Shared;           // its Loop's handles as other threads see them: written before 'ready'
 }
 
 // Guards the queues, 'io', 'ended' and the pool's making
@@ -938,6 +1031,11 @@ fn enqueueRec(p: *OpCore) {
   ioLock.lock();
   if ended.load() {
     ioLock.unlock();
+    // One issued is the kernel's: left to it. Not reached in practice: the
+    // program ends only once no actor is queued or running (final)
+    if (p as &OpCore).isIssued() {
+      return;
+    }
     let gone = dissolveAt(p as *u8);
     return;
   }
@@ -997,6 +1095,7 @@ fn ioMain(arg: IoArg) u32 {
     let born = Instant.now();
     var lp = Loop.mustMake();
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
+    mem.writeRaw[Shared](&(*me).shared as *Shared, lp.share());
     onIo = true;
     (*me).ready.store(1u32);
     sync.futexWake(&(*me).ready);
@@ -1031,7 +1130,7 @@ fn ioMain(arg: IoArg) u32 {
       if stop {
         keepCounters(lp.counters(), born);
         dropJobs(h);
-        dissolveUnstarted(r);
+        endUnstarted(r, &mut lp);
         if hosts.len() != 0usize {
           endAllHosts(&mut hosts, &mut lp);
         }
@@ -1142,12 +1241,18 @@ fn startRecs(first: *OpCore, lp: &mut Loop) {
 }
 
 // The records queued at the program's end: dissolved unstarted, each reply
-// dropped unsent (what awaits it abandoned), each buffer home
-fn dissolveUnstarted(first: *OpCore) {
+// dropped unsent (what awaits it abandoned), each buffer home -- but one issued
+// on a worker and in flight, which the kernel holds: linked to the Loop, whose
+// death cancels it and waits for it, its answer abandoned there
+fn endUnstarted(first: *OpCore, lp: &mut Loop) {
   var p = first;
   while p as usize != 0usize {
     let next = (*p).qnext;
-    let gone = dissolveAt(p as *u8);
+    if (p as &OpCore).isIssued() {
+      lp.start(p);
+    } else {
+      let gone = dissolveAt(p as *u8);
+    }
     p = next;
   }
 }
@@ -1723,6 +1828,14 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
   }
   if w == opRecvAny {
     let stage = (*rp).ask.stage;
+    if stage == stageReady() && (*p).status == diag.outcomeDone && !lp.isOpen((*p).handle) {
+      // Bytes came, but the socket was closed (dropped) before the read could
+      // take them: Cancelled, as the close answers a read in flight
+      (*p).status = diag.outcomeCancelled;
+      (*p).n = 0usize;
+      answerRec(rp);
+      return;
+    }
     if stage == stageReady() && (*p).status == diag.outcomeDone {
       // Bytes have come: a buffer is put in (over None), and the same record
       // takes them. Came quickly or not, the socket's next read starts in the
@@ -2046,6 +2159,10 @@ pub struct OpStats {
   pub queued: u64;         // records queued for the I/O thread: an operation to start, a cancel, a close
   pub loopDone: u64;       // records the I/O thread took back answered from its Loop (each then answered,
                            // or a read with no buffer begun again)
+  pub started: u64;        // records an await started: answeredHere + handedOver
+  pub answeredHere: u64;   // ...issued and answered on the awaiting actor's worker (WORKER-SIDE ISSUE)
+  pub handedOver: u64;     // ...handed to the I/O thread: in flight, or to be started there
+  pub contended: u64;      // handle entry locks that were found held (iocore's Shared.contended)
   pub recordBytes: u64;    // the size of one record (iocore's OpCore and aio's part)
 }
 
@@ -2053,20 +2170,33 @@ pub struct OpStats {
 pub fn opStats() OpStats {
   var queued = 0u64;
   var done = 0u64;
+  var started = 0u64;
+  var here = 0u64;
+  var over = 0u64;
+  var contended = 0u64;
   ioLock.lock();
   let t = io.load() as *IoThread;
   if t as usize != 0usize {
     queued = (*t).queued;
     done = mem.atomicLoad[u64](&(*t).loopDone as *u64, MemOrder.Relaxed);
+    contended = (*t).shared.contended();
+  }
+  var c = countsAt.load() as *HereCounts;
+  while c as usize != 0usize {
+    started = started + mem.atomicLoad[u64](&(*c).started as *u64, MemOrder.Relaxed);
+    here = here + mem.atomicLoad[u64](&(*c).here as *u64, MemOrder.Relaxed);
+    over = over + mem.atomicLoad[u64](&(*c).over as *u64, MemOrder.Relaxed);
+    c = (*c).next;
   }
   ioLock.unlock();
   let at = poolAt.load();
   if at == 0usize {
-    return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), queued, done, u64.from(mem.sizeof[OpRec[Ask]]()));
+    return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), queued, done, started, here, over, contended,
+      u64.from(mem.sizeof[OpRec[Ask]]()));
   }
   let pl = at as *OpPool[Ask] as &OpPool[Ask];
   OpStats(u64.from(pl.inUse()), u64.from(pl.size()), cancelsAsked.load(), takenAway.load(), queued, done,
-    u64.from(mem.sizeof[OpRec[Ask]]()))
+    started, here, over, contended, u64.from(mem.sizeof[OpRec[Ask]]()))
 }
 
 // ---------------------------------------------------------------------------
@@ -2167,23 +2297,42 @@ fn newUdp(h: Handle) UdpSocket {
 
 // A handle's read or write in flight, every one, asked to end (cancelRead,
 // cancelWrite): a small record queued, which the I/O thread turns into
-// iocore's cancelHandle. From any thread
+// iocore's cancelHandle. From any thread. Queued under the handle's entry lock,
+// so an operation a worker is issuing is queued either before it (and found by
+// it) or after it (iocore's WORKER-SIDE ISSUE)
 fn cancelSide(h: Handle, write: bool) {
   if h.isNone() {
     return;
   }
   let p = takeRec(opCancel, 0u32, h, IoLimits.none());
   (*p).ask.write = write;
+  let sh = sharedNow();
+  let held = sh.lock(h);
   enqueueRec(p as *OpCore);
+  if held {
+    sh.unlock(h);
+  }
 }
 
 // A handle closed, its Socket, File or UdpSocket dropped: a small record
-// queued behind the operations queued before it. Nothing awaits it
+// queued behind the operations queued before it. Nothing awaits it. The
+// handle's entry is marked closing first, under its lock: nothing is issued on
+// it after, and an operation awaited after this goes behind the close to the
+// I/O thread, as before (iocore's WORKER-SIDE ISSUE)
 fn closeHandle(h: Handle) {
   if h.isNone() {
     return;
   }
-  enqueueRec(takeRec(opClose, 0u32, h, IoLimits.none()) as *OpCore);
+  let p = takeRec(opClose, 0u32, h, IoLimits.none()) as *OpCore;
+  let sh = sharedNow();
+  let held = sh.lock(h);
+  if held {
+    sh.markClosing(h);
+  }
+  enqueueRec(p);
+  if held {
+    sh.unlock(h);
+  }
 }
 
 // ---------------------------------------------------------------------------
