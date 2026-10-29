@@ -423,6 +423,50 @@ static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, L
     }
 }
 
+// Expand a call to one of a number's methods, abs, min, max, floor, ceil, round
+// and fma, whose type is a number or a vector of them (the vector's methods
+// carry the vector as their typearg), so one lowering serves both: LLVM's
+// intrinsics are overloaded on the whole vector as they are on a number. Which
+// of the number's kinds it is comes from the lane type of the Cone type. A
+// float's minimum and maximum answer the number where the other is a NaN
+// (minnum, maxnum, as the reductions do); an integer's abs wraps its smallest
+// value to itself, as negation does (the flag says that value is not poison).
+static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type, LLVMValueRef *fnargs) {
+    INode *dcl = itypeGetTypeDcl(type);
+    INode *lane = dcl->tag == VectorTag ? itypeGetTypeDcl(vectorElemType(dcl)) : dcl;
+    int isfloat = lane->tag == FloatNbrTag;
+    int issigned = lane->tag == IntNbrTag;
+    LLVMTypeRef llvmtype = genlType(gen, type);
+    LLVMValueRef args[3];
+    args[0] = fnargs[0];
+    switch (kind) {
+    case AbsIntrinsic:
+        if (isfloat)
+            return genlCallLlvmIntrinsic(gen, "llvm.fabs", llvmtype, args, 1);
+        args[1] = LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0);
+        return genlCallLlvmIntrinsic(gen, "llvm.abs", llvmtype, args, 2);
+    case MinIntrinsic:
+        args[1] = fnargs[1];
+        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.minnum" : issigned ? "llvm.smin" : "llvm.umin", llvmtype, args, 2);
+    case MaxIntrinsic:
+        args[1] = fnargs[1];
+        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.maxnum" : issigned ? "llvm.smax" : "llvm.umax", llvmtype, args, 2);
+    case FloorIntrinsic:
+        return genlCallLlvmIntrinsic(gen, "llvm.floor", llvmtype, args, 1);
+    case CeilIntrinsic:
+        return genlCallLlvmIntrinsic(gen, "llvm.ceil", llvmtype, args, 1);
+    case RoundIntrinsic:
+        return genlCallLlvmIntrinsic(gen, "llvm.round", llvmtype, args, 1);
+    case FmaIntrinsic:
+        args[1] = fnargs[1];
+        args[2] = fnargs[2];
+        return genlCallLlvmIntrinsic(gen, "llvm.fma", llvmtype, args, 3);
+    default:
+        errorExit(ExitGen, "Internal error: no generation for number intrinsic %d", (int)kind);
+        return NULL;
+    }
+}
+
 // Expand a call to an intrinsic declared in core with '@intrinsic'. What each
 // one means is the registry's (ir/stmt/intrinsic.c) and the reference manual's
 // (safe-intrinsics.html); this is LLVM's implementation of it. The type it acts on
@@ -506,6 +550,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case ShlMaskedIntrinsic:
     case ShrMaskedIntrinsic:
         return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
+
+    // A number's, or a vector's lane by lane
+    case AbsIntrinsic:
+    case MinIntrinsic:
+    case MaxIntrinsic:
+    case FloorIntrinsic:
+    case CeilIntrinsic:
+    case RoundIntrinsic:
+    case FmaIntrinsic:
+        return genlNumberIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
     // The two halves of a 64 by 64 bit product, xored. With both operands
     // zero-extended, a 64-bit target does the i128 multiply in one instruction

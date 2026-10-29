@@ -16,9 +16,7 @@
 	<p style="margin-left: 40px;"><i>Note: Not built yet: swizzles such as <span class="pre">v.xyz</span>, loading and
 		storing a vector straight from a slice, gather and scatter, a vector in a global, and a generic that takes
 		its lane type or count from the vector it is given: a generic over a vector is written with them,
-		<span class="pre">twice[f32](v)</span>. The numbers have no <span class="pre">abs</span>, <span class="pre">min</span>,
-		<span class="pre">max</span>, <span class="pre">floor</span>, <span class="pre">ceil</span>, <span class="pre">round</span>
-		or <span class="pre">fma</span> to give a vector's lanes yet.</i></p>
+		<span class="pre">twice[f32](v)</span>.</i></p>
 
 	<p>A processor can add four numbers in the time it takes to add one, if the four sit side by side in one of its
 		wide registers. A <b>vector</b>, <span class="pre">Vector[T, N]</span>, is <span class="pre">N</span> numbers of
@@ -116,7 +114,9 @@ v[1] += 3;                  // 0 3 9 0
 	<h2 id="operators">Operators</h2>
 	<p>Every arithmetic operator works on the lanes pair by pair: <span class="pre">+</span>, <span class="pre">-</span>,
 		<span class="pre">*</span> and <span class="pre">/</span>, unary <span class="pre">-</span>, and
-		<span class="pre">%</span> on integers. On integer lanes so do the bitwise operators
+		<span class="pre">%</span>, which on float lanes is the remainder a float has, taking the sign of the lane
+			it divides (<span class="pre">-5.5 % 2.0</span> is <span class="pre">-1.5</span>, and a zero divisor gives a
+			NaN), and on integer lanes is checked as <span class="pre">/</span> is. On integer lanes so do the bitwise operators
 		<span class="pre">&amp;</span>, <span class="pre">|</span>, <span class="pre">^</span>, <span class="pre">~</span>,
 		<span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span>. Each lane does what the number type does: an
 		integer lane wraps as an integer does, and a shift by the width or more gives 0 (the sign for a signed
@@ -172,7 +172,27 @@ fn dot(a: &amp;Array[f32], b: &amp;Array[f32]) f32 {
 
 	<h2 id="math">Math on the lanes</h2>
 	<p>A vector of floats has the floats' <span class="pre">sqrt</span>, <span class="pre">sin</span> and
-		<span class="pre">cos</span>, applied to every lane (<a href="guide-numbers.html#methods">Methods on numbers</a>).</p>
+		<span class="pre">cos</span>, applied to every lane (<a href="guide-numbers.html#methods">Methods on numbers</a>).
+		The numbers' <span class="pre">abs</span>, <span class="pre">floor</span>, <span class="pre">ceil</span>,
+		<span class="pre">round</span>, <span class="pre">min</span>, <span class="pre">max</span> and
+		<span class="pre">fma</span> work on every lane too, each giving a vector:</p>
+<pre>
+let v = Vector[f32, 4]() &lt;- -1.5, 2.5, -0.5, 4.0;
+let w = Vector[f32, 4]() &lt;- 2.0, -2.5, 0.5, 4.0;
+v.abs()                     // 1.5 2.5 0.5 4
+v.round()                   // -2 3 -1 4   (halves go away from zero)
+v.min(w)                    // -1.5 -2.5 -0.5 4
+v.max(0.0)                  // 0 2.5 0 4   (a number is used in every lane)
+v.fma(w, v)                 // -4.5 -3.75 -0.75 20   (v * w + v, rounded once)
+v.min()                     // -1.5: with no argument, the smallest lane (a number)
+</pre>
+	<p><span class="pre">abs</span> is of signed integer lanes and floats (an integer lane's smallest value stays
+		itself, as <span class="pre">-x</span> does); <span class="pre">min</span> and <span class="pre">max</span>
+		are of any lanes, and of floats they take the number where the other lane is a NaN;
+		<span class="pre">floor</span>, <span class="pre">ceil</span>, <span class="pre">round</span> and
+		<span class="pre">fma</span> are of floats. <span class="pre">v.min(w)</span> and <span class="pre">v.min()</span>
+		are different things: given another vector, <span class="pre">min</span> answers a vector, lane by lane; given nothing,
+		it is the reduction above.</p>
 
 	<p>You can now compute on a row of numbers at once. Next comes <span class="pre">String</span>, text that a
 		program builds and changes as it runs.</p>

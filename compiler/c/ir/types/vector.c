@@ -151,6 +151,25 @@ static void vecAddOverload(VectorNode *vec, char *concrete, Name *opsym, FnSigNo
     iNsTypeAddFn((INsTypeNode*)vec, fn);
 }
 
+// A lane-wise method, 'abs', 'min' with an argument, 'floor' and the rest: the
+// number intrinsic of the same name (corenumber.c, nbrMathMethods), its node
+// carrying the vector as its typearg, which is how one lowering
+// (genlNumberIntrinsic) tells a lane's type for a number or a vector. When
+// 'overloadsym' is given, several declarations share the method's name, as
+// 'min' is both the reduction and the lane-wise minimum, told by their arguments.
+static void vecAddLanewise(VectorNode *vec, char *name, Name *overloadsym, FnSigNode *sig, int kind) {
+    IntrinsicNode *node = newIntrinsicNode((int16_t)kind);
+    node->typearg = (INode*)vec;
+    FnDclNode *fn;
+    if (overloadsym) {
+        fn = newFnDclNode(nametblFind(name, strlen(name)), FlagMethFld, (INode*)sig, (INode*)node);
+        fn->overloadsym = overloadsym;
+    }
+    else
+        fn = newFnDclNode(nametblFind(name, strlen(name)), FlagMethFld | FlagPub, (INode*)sig, (INode*)node);
+    iNsTypeAddFn((INsTypeNode*)vec, fn);
+}
+
 // The operators and lane methods a vector's lane type allows, each an intrinsic
 // generation expands on the whole vector. They mirror what the scalar type
 // has (corenumber.c), lane by lane, and a mask has the logical ones. Mixed
@@ -175,18 +194,32 @@ static void vectorMethods(VectorNode *vec, INode *lane) {
         vecAddOverload(vec, "_sub", minusName, binary, SubIntrinsic);
         vecAdd(vec, multName, binary, MulIntrinsic);
         vecAdd(vec, divName, binary, isfloat ? DivIntrinsic : issigned ? SDivIntrinsic : DivIntrinsic);
-        // '%' is for the integers; a float lane has no remainder here
-        if (!isfloat)
-            vecAdd(vec, remName, binary, issigned ? SRemIntrinsic : RemIntrinsic);
+        // A float lane's '%' is the scalar's: frem, the sign of the dividend
+        vecAdd(vec, remName, binary, isfloat ? RemIntrinsic : issigned ? SRemIntrinsic : RemIntrinsic);
         vecAdd(vec, nametblFind("sum", 3), reduce, VecSumIntrinsic);
         vecAdd(vec, nametblFind("product", 7), reduce, VecProductIntrinsic);
-        vecAdd(vec, nametblFind("min", 3), reduce, issigned ? VecSMinIntrinsic : VecMinIntrinsic);
-        vecAdd(vec, nametblFind("max", 3), reduce, issigned ? VecSMaxIntrinsic : VecMaxIntrinsic);
+        // 'min' and 'max' with no argument reduce the lanes to a number; with
+        // one they are the lane-wise minimum and maximum, a vector. The two are
+        // an overload set told by the arguments
+        Name *minsym = nametblFind("min", 3);
+        Name *maxsym = nametblFind("max", 3);
+        vecAddLanewise(vec, "_min_reduce", minsym, reduce, issigned ? VecSMinIntrinsic : VecMinIntrinsic);
+        vecAddLanewise(vec, "_min_lanes", minsym, binary, MinIntrinsic);
+        vecAddLanewise(vec, "_max_reduce", maxsym, reduce, issigned ? VecSMaxIntrinsic : VecMaxIntrinsic);
+        vecAddLanewise(vec, "_max_lanes", maxsym, binary, MaxIntrinsic);
+        if (isfloat || issigned)
+            vecAddLanewise(vec, "abs", NULL, unary, AbsIntrinsic);
     }
     if (isfloat) {
         vecAdd(vec, nametblFind("sqrt", 4), unary, SqrtIntrinsic);
         vecAdd(vec, nametblFind("sin", 3), unary, SinIntrinsic);
         vecAdd(vec, nametblFind("cos", 3), unary, CosIntrinsic);
+        vecAddLanewise(vec, "floor", NULL, unary, FloorIntrinsic);
+        vecAddLanewise(vec, "ceil", NULL, unary, CeilIntrinsic);
+        vecAddLanewise(vec, "round", NULL, unary, RoundIntrinsic);
+        FnSigNode *fma = vecSig(self, self, self);
+        nodesAdd(&fma->parms, (INode*)newVarDclFull(nametblFind("c", 1), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        vecAddLanewise(vec, "fma", NULL, fma, FmaIntrinsic);
     }
     else {
         vecAdd(vec, nametblFind("~", 1), unary, NotIntrinsic);
@@ -332,6 +365,29 @@ static int vectorBroadcast(INode **scalarp, INode *vectype, INode *lexnode) {
 // operand was refused); 0 when selection should go on.
 int vectorBroadcastOperand(TypeCheckState *pstate, FnCallNode *callnode) {
     (void)pstate;
+    // The lane-wise methods that take vectors, 'v.min(0.0)' and 'v.fma(2.0, w)',
+    // broadcast a number among their arguments as an operator's operand is
+    if (!(callnode->flags & FlagOperator) && callnode->args != NULL && callnode->methfld != NULL
+        && isNameUseNode(callnode->methfld) && isExpNode(callnode->objfn) && !inodeIsError(callnode->objfn)
+        && iexpGetDerefTypeDcl(callnode->objfn)->tag == VectorTag) {
+        char *meth = &((NameUseNode*)callnode->methfld)->namesym->namestr;
+        uint32_t nargs = callnode->args->used;
+        if ((nargs == 1 && (strcmp(meth, "min") == 0 || strcmp(meth, "max") == 0)) || (nargs == 2 && strcmp(meth, "fma") == 0)) {
+            INode *vectype = iexpGetDerefTypeDcl(callnode->objfn);
+            for (uint32_t i = 0; i < nargs; ++i) {
+                INode **argp = &nodesGet(callnode->args, i);
+                if (!isExpNode(*argp) || inodeIsError(*argp))
+                    continue;
+                INode *argtype = iexpGetDerefTypeDcl(*argp);
+                if (argtype->tag != VectorTag && (vectorIsNbrType(argtype) || argtype == (INode*)boolType)
+                    && !vectorBroadcast(argp, vectype, (INode*)callnode)) {
+                    callnode->vtype = errorType;
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
     if (!(callnode->flags & FlagOperator) || callnode->args == NULL || callnode->args->used != 1
         || callnode->methfld == NULL || !isNameUseNode(callnode->methfld)
         || !vectorIsOpName(((NameUseNode*)callnode->methfld)->namesym))
@@ -363,7 +419,9 @@ static int vectorNumberMethod(Name *op) {
     return op == plusName || op == minusName || op == multName || op == divName || op == remName
         || op == shlName || op == shrName || op == ltName || op == leName || op == gtName || op == geName
         || strcmp(s, "sqrt") == 0 || strcmp(s, "sin") == 0 || strcmp(s, "cos") == 0
-        || strcmp(s, "sum") == 0 || strcmp(s, "product") == 0 || strcmp(s, "min") == 0 || strcmp(s, "max") == 0;
+        || strcmp(s, "sum") == 0 || strcmp(s, "product") == 0 || strcmp(s, "min") == 0 || strcmp(s, "max") == 0
+        || strcmp(s, "abs") == 0 || strcmp(s, "floor") == 0 || strcmp(s, "ceil") == 0 || strcmp(s, "round") == 0
+        || strcmp(s, "fma") == 0;
 }
 
 // A method the vector does not have. A mask is a vector of bool, whose lanes

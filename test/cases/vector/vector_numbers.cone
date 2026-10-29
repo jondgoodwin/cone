@@ -1,0 +1,163 @@
+// The number methods on a vector's lanes: abs, min and max with an argument,
+// floor, ceil, round and fma, and '%' on float lanes. Each lane is the scalar's
+// answer (intrinsic_numbers has those worked), and every value here is worked
+// by hand beside the call.
+//
+// 'min' and 'max' with no argument are the reductions to one number, and with
+// one argument the lane-wise minimum and maximum, a vector: both are shown, so
+// that neither answers for the other. A number beside the vector ('a.min(0.0)',
+// 'a.fma(2.0, 1.0)') is put in every lane, as it is for '+'.
+//
+// A NaN lane is shown through its mask ('r == r') because the text of a NaN
+// differs by platform.
+
+mod vector_numbers;
+
+import stdio use *;
+
+fn showV(label: &str, v: Vector[f32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showN(label: &str, v: Vector[i32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showU(label: &str, v: Vector[u8, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printUInt(u64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showM(label: &str, m: Vector[bool, 4]) {
+  showU(label, Vector[u8, 4].from(m));
+}
+
+fn showB(label: &str, b: bool) {
+  printStr(label);
+  printStr(" = ");
+  printStr(if b { "true" } else { "false" });
+  printStr("\n");
+}
+
+fn showF(label: &str, x: f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(x);
+  printStr("\n");
+}
+
+fn main() {
+  // -------- abs, min and max on float lanes --------
+  let a = Vector[f32, 4]() <- -1.5, 2.5, -0.25, 4.0;
+  let b = Vector[f32, 4]() <- 2.0, -2.5, 0.5, 4.0;
+  showV("a.abs()", a.abs());                 // 1.5 2.5 0.25 4
+  showV("a.min(b)", a.min(b));               // -1.5 -2.5 -0.25 4
+  showV("a.max(b)", a.max(b));               // 2 2.5 0.5 4
+  showV("a.min(0.0)", a.min(0.0));           // -1.5 0 -0.25 0
+  showV("a.max(0.0)", a.max(0.0));           // 0 2.5 0 4
+  showF("a.min() is the reduction", f64.from(a.min()));   // -1.5
+  showF("a.max() is the reduction", f64.from(a.max()));   // 4
+
+  // A NaN lane loses to a number, in either argument, and stays where both are NaN
+  let zero = Vector[f32, 4]() <- fill 0.0;
+  var n = zero / zero;
+  n[1usize] = 1.0;
+  n[2usize] = 2.0;                           // nan 1 2 nan
+  var q = zero / zero;
+  q[0usize] = 5.0;
+  q[2usize] = 1.0;                           // 5 nan 1 nan
+  let lo = n.min(q);                         // 5 1 1 nan
+  let hi = n.max(q);                         // 5 1 2 nan
+  showM("n.min(q) is a number", lo == lo);   // 1 1 1 0
+  showM("n.max(q) is a number", hi == hi);   // 1 1 1 0
+  showV("n.min(q) lanes", (lo == lo).select(lo, zero));   // 5 1 1 0
+  showV("n.max(q) lanes", (hi == hi).select(hi, zero));   // 5 1 2 0
+
+  // -------- rounding --------
+  let h = Vector[f32, 4]() <- 2.5, -2.5, 0.5, -1.5;
+  showV("h.floor()", h.floor());             // 2 -3 0 -2
+  showV("h.ceil()", h.ceil());               // 3 -2 1 -1
+  showV("h.round()", h.round());             // 3 -3 1 -2   (half away from zero)
+  let k = Vector[f32, 4]() <- -0.5, 1.4, 1.6, 7.0;
+  showV("k.floor()", k.floor());             // -1 1 1 7
+  showV("k.ceil()", k.ceil());               // -0 2 2 7
+  showV("k.round()", k.round());             // -1 1 2 7
+  let d = Vector[f64, 2]() <- 2.5, -0.5;
+  showF("f64 d.round() lane 0", d.round()[0usize]);   // 3
+  showF("f64 d.round() lane 1", d.round()[1usize]);   // -1
+  showF("f64 d.floor() lane 1", d.floor()[1usize]);   // -1
+
+  // -------- fma --------
+  let c = Vector[f32, 4]() <- fill 1.0;
+  showV("a.fma(b, c)", a.fma(b, c));         // -2 -5.25 0.875 17
+  showV("a.fma(2.0, 1.0)", a.fma(2.0, 1.0)); // -2 6 0.5 9
+  // Lane 0: x = 1 + 2^-30, so x * x = 1 + 2^-29 + 2^-60, whose last term rounds
+  // away in f64; with z = -(1 + 2^-29) the product then the sum is 0, the fused
+  // answer 2^-60. Lane 1: 2 * 3 + 1 = 7
+  let x0 = 1.0 + 1.0 / 1073741824.0;
+  let z0 = -(1.0 + 1.0 / 536870912.0);
+  let xs = Vector[f64, 2]() <- x0, 2.0;
+  let ys = Vector[f64, 2]() <- x0, 3.0;
+  let zs = Vector[f64, 2]() <- z0, 1.0;
+  let fused = xs.fma(ys, zs);
+  let unfused = xs * ys + zs;
+  showB("f64 lane 0: x * y + z is 0", unfused[0usize] == 0.0);
+  showB("f64 lane 0: fma is 2^-60", fused[0usize] * 1152921504606846976.0 == 1.0);
+  showF("f64 lane 1: fma", fused[1usize]);   // 7
+
+  // -------- '%' on float lanes --------
+  let f = Vector[f32, 4]() <- 5.5, -5.5, 7.0, 1.0;
+  let g = Vector[f32, 4]() <- 2.0, 2.0, -3.0, 0.0;
+  let r = f % g;                             // 1.5 -1.5 1 nan (the sign of the dividend)
+  showM("f % g is a number", r == r);        // 1 1 1 0
+  showV("f % g lanes", (r == r).select(r, zero));   // 1.5 -1.5 1 0
+  showV("f % 2.0", f % 2.0);                 // 1.5 -1.5 1 1
+  var rem = f;
+  rem %= 2.0;
+  showV("f %= 2.0", rem);                    // 1.5 -1.5 1 1
+  let wide = Vector[f64, 2]() <- 10.25, -10.25;
+  let wideg = Vector[f64, 2]() <- 3.0, 3.0;
+  let widerem = wide % wideg;                // 1.25 -1.25
+  showF("f64 10.25 % 3", widerem[0usize]);
+  showF("f64 -10.25 % 3", widerem[1usize]);
+
+  // -------- integer lanes --------
+  let least = -2147483647 - 1;
+  let i = Vector[i32, 4]() <- -7, 7, 0, least;
+  let j = Vector[i32, 4]() <- 3, 8, -1, 0;
+  showN("i.abs()", i.abs());                 // 7 7 0 -2147483648 (the smallest wraps)
+  showN("i.min(j)", i.min(j));               // -7 7 -1 -2147483648
+  showN("i.max(j)", i.max(j));               // 3 8 0 0
+  showN("i.min(0)", i.min(0));               // -7 0 0 -2147483648
+  showN("i.max(0)", i.max(0));               // 0 7 0 0
+  let reduced = Vector[i32, 4]() <- i.min(), i.max(), 0, 0;
+  showN("i.min(), i.max() are the reductions", reduced);   // -2147483648 7 0 0
+  let x = Vector[u8, 4]() <- 200u8, 100u8, 255u8, 0u8;
+  let y = Vector[u8, 4]() <- 100u8, 200u8, 255u8, 1u8;
+  showU("u8 x.min(y)", x.min(y));            // 100 100 255 0
+  showU("u8 x.max(y)", x.max(y));            // 200 200 255 1
+  showU("u8 x.max(100)", x.max(100u8));      // 200 100 255 100
+  let m8 = -127i8 - 1i8;
+  let s = Vector[i8, 4]() <- m8, -127i8, 127i8, 0i8;
+  showN("i8 abs", Vector[i32, 4].from(s.abs()));   // -128 127 127 0
+  let t = Vector[i8, 4]() <- -100i8, 100i8, -1i8, 5i8;
+  showN("i8 s.min(t)", Vector[i32, 4].from(s.min(t)));   // -128 -127 -1 0
+  showN("i8 s.max(t)", Vector[i32, 4].from(s.max(t)));   // -100 100 127 5
+}

@@ -110,6 +110,48 @@ options = []
 name = "fallback"
 options = ["--intrinsic-fallback", "--debug"]
 
+# A number's methods, abs, min, max, floor, ceil, round and fma, and core's mem
+# ones that are the same intrinsics. They have no fallback body (nothing in Cone
+# rounds a float), so there is no fallback run; release and debug are the two
+# optimization levels. Every value is worked by hand in the source's header.
+[scenario.intrinsic_numbers]
+category = "run"
+description = "abs, min, max, floor, ceil, round and fma of the integers and floats as methods and as mem's: an integer's smallest value wrapping under abs, unsigned min and max, a NaN losing to a number in min and max, round half away from zero at 0.5, 2.5 and -2.5, ceil of -0.5 keeping its sign, and an fma whose fused answer differs from x * y + z; on literals too"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.intrinsic_numbers.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_numbers.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.intrinsic_typecheck_numbers]
+category = "reject"
+description = "abs of an unsigned integer, floor, ceil, round and fma of an integer, min of a bool and max of a char, which have no such method, a method given the wrong arguments, and core's mem versions called at a type outside their class"
+tags = ["typecheck"]
+
+[scenario.intrinsic_genllvm_numbers]
+category = "compile"
+description = "Each number method is the LLVM intrinsic that means it: abs of a float llvm.fabs, of an integer llvm.abs with the smallest value not poison; min and max llvm.minnum and llvm.maxnum for floats and llvm.smin, llvm.umin and the like for integers by signedness; floor, ceil, round and fma their own, round and not roundeven; no call to a function of their own"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_numbers.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.intrinsic_genllvm_numbers.check]]
+name = "each-is-llvms-intrinsic"
+target = "preir"
+contains = [
+  "@llvm.fabs.f64(", "@llvm.abs.i32(i32 %", ", i1 false)",
+  "@llvm.minnum.f32(", "@llvm.maxnum.f64(",
+  "@llvm.smin.i64(", "@llvm.smax.i8(", "@llvm.umin.i32(","@llvm.umax.i16(",
+  "@llvm.floor.f64(", "@llvm.ceil.f32(", "@llvm.round.f64(", "@llvm.fma.f32(",
+]
+excludes = ["roundeven", "call double @abs", "call double @mem"]
+
 # The two have no fallback body, and no type parameter: each is a constant of
 # the call it is. What a panic reports is built on them (exception_caller)
 [scenario.intrinsic_srcloc]

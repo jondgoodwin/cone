@@ -1,0 +1,87 @@
+// An enum whose variants differ in alignment: Small holds a u8 (alignment 1)
+// and Big an f64 (alignment 8), so the enum is aligned and sized for Big. A value
+// built as a Small is a Small until it is used as the enum, and that widening
+// reinterprets it through a stack slot (genlRecast): the slot is written as the
+// variant and read as the enum, so it must be aligned for the enum, the more
+// aligned of the two. The slot once took only the variant's alignment, which a
+// vector payload turned into a crash (vector_success's Shape); this pins the
+// general case with no vector in it, widened from either variant and read back
+// through a match, through a function's result and through an array.
+//
+// Each printed value was checked by hand against the source.
+
+mod enum_variant_align;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label: &str, x: f64) {
+  printStr(label);
+  printStr(" ");
+  printFloat(x);
+  printStr("\n");
+}
+
+enum Cell {
+  Empty;
+  struct Small {pub b: u8; pub c: u8;}
+  struct Big {pub x: f64; pub y: f64;}
+}
+
+// The variant is widened where it is returned
+fn small(b: u8) Cell {
+  let s = Cell.Small(b, b + 1u8);
+  s
+}
+
+fn big(x: f64) Cell {
+  let v = Cell.Big(x, x * 2.0);
+  v
+}
+
+fn widen(c: Cell) Cell {
+  c
+}
+
+fn read(c: Cell) f64 {
+  match c {
+    case Empty { 0.0 }
+    case let Small(s) { f64.from(s.b) + f64.from(s.c) }
+    case let Big(g) { g.x + g.y }
+  }
+}
+
+fn main() {
+  // A variant widened as it is returned, and read back through a match
+  showF("small(7)", read(small(7u8)));        // 7 + 8 = 15
+  showF("big(1.5)", read(big(1.5)));          // 1.5 + 3 = 4.5
+  showF("empty", read(Cell.Empty));           // 0
+
+  // A variant widened as it is passed on, and as it is bound and used
+  let s = Cell.Small(200u8, 100u8);
+  showF("widen(small)", read(widen(s)));      // 300
+  let g = Cell.Big(-2.5, 0.25);
+  showF("widen(big)", read(widen(g)));        // -2.25
+
+  // Widened into the places an enum is held: an array of them, in turn
+  var cells: Array[Cell, 4] = [Cell.Empty, Cell.Empty, Cell.Empty, Cell.Empty];
+  cells[0usize] = Cell.Small(1u8, 2u8);
+  cells[1usize] = Cell.Big(10.0, 20.0);
+  cells[2usize] = small(255u8);
+  cells[3usize] = big(0.5);
+  var total = 0.0;
+  each i in 0usize ..< 4usize {
+    total = total + read(widen(cells[i]));
+  }
+  showF("total of the array", total);         // 3 + 30 + (255 + 0 wraps = 255) + 1.5 = 289.5
+
+  // The size and alignment are Big's
+  show("sizeof Cell", i64.from(mem.sizeof[Cell]()));     // tag padded to 8, then 16 bytes: 24
+  show("alignof Cell", i64.from(mem.alignof[Cell]()));   // 8
+}

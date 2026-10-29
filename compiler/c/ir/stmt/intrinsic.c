@@ -68,7 +68,9 @@ typedef enum {
     ClassSized = 0,     // any type with a size (intrinsicDclTypeCheck)
     ClassInt = 1,       // an integer type of 8 to 64 bits, usize and isize among them
     ClassBool = 2,      // bool
-    ClassPtr = 4        // a raw pointer, to anything
+    ClassPtr = 4,       // a raw pointer, to anything
+    ClassFloat = 8,     // f32 or f64
+    ClassSigned = 16    // a signed integer type of 8 to 64 bits (also ClassInt)
 } IntrinsicClass;
 
 // Where the compiler answers an intrinsic: every one built so far is answered
@@ -201,6 +203,22 @@ static IntrinsicSpec intrinsicRegistry[] = {
     // mixing step. The fallback body works in 32-bit halves
     {"mulFold", MulFoldIntrinsic, "mulFold(a: u64, b: u64) u64",
         0, 2, {ShapeU64, ShapeU64}, ShapeU64, 0, 1, PhaseOperation, 1},
+    // A number's, each also a method of the number types it applies to and, lane
+    // by lane, of a vector of them. No fallback body: nothing in Cone rounds a float
+    {"abs", AbsIntrinsic, "abs[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassSigned | ClassFloat},
+    {"min", MinIntrinsic, "min[T](a: T, b: T) T",
+        1, 2, {ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
+    {"max", MaxIntrinsic, "max[T](a: T, b: T) T",
+        1, 2, {ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
+    {"floor", FloorIntrinsic, "floor[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"ceil", CeilIntrinsic, "ceil[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"round", RoundIntrinsic, "round[T](x: T) T",
+        1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"fma", FmaIntrinsic, "fma[T](x: T, y: T, z: T) T",
+        1, 3, {ShapeT, ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -631,7 +649,9 @@ static int intrinsicClassOf(INode *type) {
         return ClassBool;
     if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && dcl != (INode *)charType
         && ((NbrNode *)dcl)->bits >= 8 && ((NbrNode *)dcl)->bits <= 64)
-        return ClassInt;
+        return dcl->tag == IntNbrTag ? ClassInt | ClassSigned : ClassInt;
+    if (dcl->tag == FloatNbrTag)
+        return ClassFloat;
     if (dcl->tag == PtrTag)
         return ClassPtr;
     return 0;
@@ -642,6 +662,9 @@ static char *intrinsicClassWords(int tclass) {
     case ClassInt:                          return "an integer type of 8 to 64 bits";
     case ClassInt | ClassBool:              return "an integer type of 8 to 64 bits or bool";
     case ClassInt | ClassBool | ClassPtr:   return "an integer type of 8 to 64 bits, bool or a raw pointer";
+    case ClassInt | ClassFloat:             return "an integer type of 8 to 64 bits or a float";
+    case ClassSigned | ClassFloat:          return "a signed integer type of 8 to 64 bits or a float";
+    case ClassFloat:                        return "a float type";
     default:                                return "of another class";
     }
 }
@@ -694,7 +717,7 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
 // Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
 // bool or a raw pointer? What an atomic value may hold (structAtomicValueCheck)
 int intrinsicIsAtomicType(INode *type) {
-    return intrinsicClassOf(type) != 0;
+    return (intrinsicClassOf(type) & (ClassInt | ClassBool | ClassPtr)) != 0;
 }
 
 static char *memOrderNames[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};
