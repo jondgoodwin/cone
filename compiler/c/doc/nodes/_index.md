@@ -324,6 +324,7 @@ phase notes for mechanism rather than restating it:
 | `ir/exp/cast.c` | [cast](cast.md) | three syntaxes plus two injected forms; generation re-checks what type check could not |
 | `ir/stmt/return.c`, `break.h` | [return](return.md) | one struct serves four tags; placement rule and escape check live in three different phases |
 | `ir/exp/block.c` | [block](block.md) | loops are the same node; `blockret` is injected by two phases |
+| `ir/types/vector.c`, `genllvm/genlvector.c` | [vector](vector.md) | a type of the compiler's own that has methods but no declaration: its operators are made when it is checked, its conversions and construction are type literals, and generation expands both |
 | `ir/exp/if.c` | [if](if.md) | a flat alternating list, an identity-compared sentinel, and `match` lowered into it |
 | `ir/exp/narrow.c` | [narrow](narrow.md) | no node of its own: what type check knows of the variant a name holds along a path, read where a member of the variant is named |
 | `ir/exp/closure.c` | [closure](closure.md) | a literal that lives until type check, which makes a struct of it, found by trying the body |

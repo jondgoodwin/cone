@@ -401,6 +401,7 @@ kernels are settled.
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
 | array | nested `LLVMArrayType`; each dimension must be a `ULitTag` |
+| **vector `Vector[T, N]`** | **`<N x T>`** (`LLVMVectorType`). A mask, `Vector[bool, N]`, is `<N x i1>`. Size and alignment are LLVM's: the whole is the alignment (16 for four floats), and a count that is not a power of two is padded up. A vector argument or result of a C-named function is handed to LLVM as it is, which the x86 back end passes as C does `__m128` (section 3, "Vectors"). A vector in memory is its lanes one after another, except a mask's, which is bits and is never read lane by lane |
 
 Every pointer is LLVM's opaque `ptr`, whatever it points at: the table's pointee
 lives in the Cone type, never in the LLVM one (section 4).
@@ -422,6 +423,31 @@ Verified: `&Array[i32]` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yieldin
 **Erased with no representation at all:** lifetimes (`LifetimeTag` has no
 lowering case and would assert), `QuesTag`, `BorrowRegTag`, move semantics,
 thread-binding.
+
+### Vectors
+
+A `Vector[T, N]` ([vector](../nodes/vector.md)) is LLVM's `<N x T>`, so an operator on two is the
+instruction a number's is on the whole value, and `genlFnCallInternal` hands an intrinsic whose first argument
+is an LLVM vector to `genlVectorIntrinsic` (`genlvector.c`) before it asks the other type kinds. What that
+file adds to the scalar's lowering:
+
+- **Division is checked as a whole.** An integer `/` or `%` compares the divisor with zero and, signed, the dividend with the
+  type's minimum beside the divisor with -1; each is reduced to one flag with `llvm.vector.reduce.or`, the two
+  are ORed, and one branch goes to `genlPanic` (`PanicDivide`, which `cone_panicDivide` in `packages/conestd/panic.cone`
+  reports with the line) before the `udiv`/`sdiv`/`urem`/`srem`. On four `i32` lanes that is about eight
+  instructions and one branch (`vector_genllvm`), against four `idiv`s that each cost more.
+- **A shift is defined past the width,** lane by lane, as a scalar's is (`genlVectorShift`).
+- **Reductions are LLVM's vector reductions,** called by name with the vector's type (`llvm.vector.reduce.add`,
+  `.fadd` started at -0.0, `.fmul` from 1.0, `.smin`/`.umin`/`.fmin`, `.or` and `.and` for `any`
+  and `all`). A float sum carries no fast-math flag, so it is the ordered sum: generation marks no float
+  operation reassociable.
+- **A conversion is a type literal** (`TypeLitTag` whose type is a vector or an array,
+  `genlVectorConvert`): an array to a vector and back through a slot of the vector's type (a store
+  of one, a load of the other; the optimizer sees through it), a mask to and from an array of `bool` lane by
+  lane, a vector to a vector lane by lane (`genlVectorLanes`), a mask's `select`, and a number into every lane.
+- **A lane is an element of the vector in memory** (`genlVectorLane`), so `v[i]` is a load or store of a
+  scalar through its address, bounds checked against the lane count; SROA turns it into an
+  `extractelement` or `insertelement` where the vector lives in a register.
 
 ### C-named functions and the C ABI
 
@@ -2505,6 +2531,8 @@ variables.
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiFnType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnPtrCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type (and a `ccall` signature's), its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it and a call through a reference to it, its prologue's parameters and its returns — lowered for a C-named one |
+| `genllvm/genlvector.c` | `genlVectorIntrinsic`, `genlDivideCheck`, `genlVectorShift` | a vector's operator, math or reduction, over its first argument's lanes; the one check before an integer division; a shift defined past the width (section 3, "Vectors") |
+| | `genlVectorConvert`, `genlVectorLanes`, `genlVectorArray`, `genlVectorLane` | a vector's conversion, construction and select (a type literal); a lane type as another over whole vectors; an array as a vector and back; the address of a lane, bounds checked |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |

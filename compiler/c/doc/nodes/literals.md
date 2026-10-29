@@ -30,7 +30,7 @@ constants where it can.
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each; `nsizes`, a type's written sizes or a literal's scalar levels (below) |
-| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
+| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value, or a vector's: the one value a vector or an array is converted from, or a mask's select's three ([vector](vector.md)); `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
 **`FlagUnkType`** is set by `newULitNode` and by `newFLitNode`, only when the lexer gave
 no type suffix (it passes `unknownType`): the node is built an `i32` or an `f64`, the

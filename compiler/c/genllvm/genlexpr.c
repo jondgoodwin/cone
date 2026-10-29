@@ -1801,6 +1801,13 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         }
         // LLVM does not bitcast structs or arrays, so this store/load hack gets around that problem
         LLVMValueRef tempspaceptr = genlAlloca(gen, fromllvm, "");
+        // The slot is read as the other type, whose alignment may be larger than that of the
+        // type stored in it: a variant widened to the enum it belongs to, an enum holding a
+        // vector being aligned for it. The load's alignment is the target's, so the slot is
+        // aligned for both
+        unsigned fromalign = LLVMABIAlignmentOfType(gen->datalayout, fromllvm);
+        unsigned toalign = LLVMABIAlignmentOfType(gen->datalayout, tollvm);
+        LLVMSetAlignment(tempspaceptr, fromalign > toalign ? fromalign : toalign);
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
         return LLVMBuildLoad2(gen->builder, tollvm, castptr, "");
