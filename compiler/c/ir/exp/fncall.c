@@ -1970,6 +1970,12 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         return callnode->vtype == errorType ? -1 : 1;
     }
 
+    // 'a.join(b)' lays two vectors end to end, a vector of twice the lanes
+    if (objdereftype->tag == VectorTag && methsym == joinName) {
+        vectorJoinLower(pstate, callnode);
+        return callnode->vtype == errorType ? -1 : 1;
+    }
+
     // 'self.m()', m one of an actor's behaviours, is a send: its receiver
     // becomes the actor's handle, whose method sends m (selfActorSend)
     int send = selfActorSend(pstate, callnode, objdereftype);
@@ -4423,6 +4429,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if (fnCallRefusePermArg(nodep))
         return;
 
+    // 'Vector[f32, 4].load(s, at)': the vector type's function, named directly
+    // from here on, so it is called as any function is
+    if (vectorStaticCall(pstate, node))
+        return;
+
     // An overload name has no value of its own, so it is only legal here, naming what
     // is called. Skipping the ordinary name-use check leaves that check free to reject
     // the overload name everywhere else.
@@ -4894,6 +4905,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // relowering of a receiver that must write (fnCallIndexAsMut) see the call
     if (derefIsIndexPlace(node->objfn))
         node->objfn = ((StarNode*)node->objfn)->vtexp;
+
+    // 'v.x': a vector's lane named x, y, z or w is the index 'v[0]' ... 'v[3]'
+    if (vectorLaneName(node) && node->vtype == errorType)
+        return;
 
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)

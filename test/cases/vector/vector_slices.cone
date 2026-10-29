@@ -1,0 +1,92 @@
+// A vector's lanes loaded from a slice and stored back: 'Vector[T, N].load(s, at)' and
+// 'v.store(s, at)', the N lanes s[at] ... s[at + N - 1], bounds checked once for all of
+// them, and unaligned (at may be any position, not a multiple of N). The slice is
+// '&Array[T]', and a fixed array's borrow converts to it as it does anywhere.
+//
+// Every value is hand-worked from the data 1 .. 10.
+
+mod vector_slices;
+
+import stdio use *;
+
+fn show4(label: &str, v: Vector[f32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showN(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A dot product of two slices (a multiple of 4 long), four lanes at a time
+fn dot(a: &Array[f32], b: &Array[f32]) f32 {
+  var acc = Vector[f32, 4]() <- fill 0.0;
+  var i = 0usize;
+  while i < a.len {
+    acc = acc + Vector[f32, 4].load(a, i) * Vector[f32, 4].load(b, i);
+    i = i + 4usize;
+  }
+  acc.sum()
+}
+
+// Scale a slice in place, four lanes at a time
+fn scale(s: &mut Array[f32], k: f32) {
+  var i = 0usize;
+  while i < s.len {
+    let v = Vector[f32, 4].load(s, i) * k;
+    v.store(s, i);
+    i = i + 4usize;
+  }
+}
+
+fn main() {
+  let data: Array[f32, 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+
+  // from the start, from an odd position, and the last four
+  show4("load at 0", Vector[f32, 4].load(&data, 0usize));
+  show4("load at 3", Vector[f32, 4].load(&data, 3usize));
+  show4("load at 6", Vector[f32, 4].load(&data, 6usize));
+
+  // a width that is not a power of two, and integer lanes
+  let three = Vector[f32, 3].load(&data, 7usize);
+  showN("three lanes at 7: 8 + 9 + 10", i64.from(three.sum()));
+  let ints: Array[i32, 6] = [10, 20, 30, 40, 50, 60];
+  let iv = Vector[i32, 2].load(&ints, 4usize);
+  showN("two ints at 4: 50 + 60", i64.from(iv.sum()));
+
+  // a slice of part of an array
+  let part = &data[2usize ..< 8usize];
+  show4("load from a part, at 1", Vector[f32, 4].load(part, 1usize));
+
+  // dot of 1 2 3 4 5 6 7 8 with itself: 1 + 4 + 9 + 16 + 25 + 36 + 49 + 64
+  let eight = &data[0usize ..< 8usize];
+  printStr("dot ");
+  printFloat(f64.from(dot(eight, eight)));
+  printStr("\n");
+
+  // store: into the middle of a slice, leaving the rest
+  var out: Array[f32, 10] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  let v = Vector[f32, 4]() <- 1.5, 2.5, 3.5, 4.5;
+  v.store(&mut out, 3usize);
+  show4("out 0..4", Vector[f32, 4].load(&out, 0usize));
+  show4("out 3..7", Vector[f32, 4].load(&out, 3usize));
+  show4("out 6..10", Vector[f32, 4].load(&out, 6usize));
+
+  // scale a slice in place: 1 .. 8 doubled
+  var work: Array[f32, 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+  scale(&mut work, 2.0);
+  show4("scaled 0..4", Vector[f32, 4].load(&work, 0usize));
+  show4("scaled 4..8", Vector[f32, 4].load(&work, 4usize));
+
+  // the last position that fits, 10 - 4 = 6, was loaded above; the whole slice at 0
+  let whole = Vector[f32, 8].load(&work, 0usize);
+  showN("eight lanes sum: 2 + 4 + ... + 16", i64.from(whole.sum()));
+}

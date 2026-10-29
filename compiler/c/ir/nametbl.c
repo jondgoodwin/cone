@@ -232,6 +232,7 @@ void nametblInit() {
     optionName = nametblFind("Option", 6);
     fromName = nametblFind("from", 4);
     selectName = nametblFind("select", 6);
+    joinName = nametblFind("join", 4);
     hashName = nametblFind("hash", 4);
     hashTraitName = nametblFind("Hash", 4);
     hasherName = nametblFind("Hasher", 6);

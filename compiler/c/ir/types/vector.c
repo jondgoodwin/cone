@@ -128,13 +128,54 @@ static INode *vecNbrUse(INode *nbr) {
     return (INode*)use;
 }
 
-static FnSigNode *vecSig(INode *rettype, INode *self, INode *other) {
+// A signature of the vector, and of a second parameter when there is one, which
+// is named 'b' as the operators' are, or 'other' where the second is a method's
+// argument that can be written by name (min, max: as a number's are)
+static FnSigNode *vecSigNamed(INode *rettype, INode *self, INode *other, char *othername) {
     FnSigNode *sig = newFnSigNode();
     sig->rettype = rettype;
     nodesAdd(&sig->parms, (INode*)newVarDclFull(nametblFind("a", 1), VarDclTag, self, newPermUseNode(immPerm), NULL));
     if (other)
-        nodesAdd(&sig->parms, (INode*)newVarDclFull(nametblFind("b", 1), VarDclTag, other, newPermUseNode(immPerm), NULL));
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(nametblFind(othername, strlen(othername)), VarDclTag, other, newPermUseNode(immPerm), NULL));
     return sig;
+}
+
+static FnSigNode *vecSig(INode *rettype, INode *self, INode *other) {
+    return vecSigNamed(rettype, self, other, "b");
+}
+
+// A slice of the lane type, '&[T]' or '&mut [T]', for a parameter of load and store
+static INode *vecSliceType(TypeCheckState *pstate, INode *lane, PermNode *perm) {
+    INode *slice = (INode*)newRefNodeFull(ArrayRefTag, NULL, borrowRef, newPermUseNode(perm), vecNbrUse(lane));
+    itypeTypeCheck(pstate, &slice);
+    return slice;
+}
+
+// 'load' and 'store': the lanes at s[at], s[at+1] ... of a slice of the lane type,
+// bounds checked once for all of them. 'load' belongs to the vector type
+// ('Vector[f32, 4].load(s, at)'), 'store' to the value. Not for a mask, whose
+// lanes are bits in a register and have no memory form of their own.
+static void vectorSliceMethods(TypeCheckState *pstate, VectorNode *vec, INode *lane) {
+    FnSigNode *loadsig = newFnSigNode();
+    loadsig->rettype = (INode*)vec;
+    nodesAdd(&loadsig->parms, (INode*)newVarDclFull(nametblFind("s", 1), VarDclTag, vecSliceType(pstate, lane, roPerm), newPermUseNode(immPerm), NULL));
+    nodesAdd(&loadsig->parms, (INode*)newVarDclFull(nametblFind("at", 2), VarDclTag, (INode*)usizeType, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *loadnode = newIntrinsicNode(VecLoadIntrinsic);
+    loadnode->typearg = (INode*)vec;
+    FnDclNode *loadfn = newFnDclNode(nametblFind("load", 4), FlagPub, (INode*)loadsig, (INode*)loadnode);
+    // Named directly by a call, which would check a declaration that has no body
+    // to check: its signature is checked, here
+    loadfn->flags |= TypeChecked;
+    iNsTypeAddFn((INsTypeNode*)vec, loadfn);
+
+    FnSigNode *storesig = newFnSigNode();
+    storesig->rettype = (INode*)newVoidNode();
+    nodesAdd(&storesig->parms, (INode*)newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)vec, newPermUseNode(immPerm), NULL));
+    nodesAdd(&storesig->parms, (INode*)newVarDclFull(nametblFind("s", 1), VarDclTag, vecSliceType(pstate, lane, mutPerm), newPermUseNode(immPerm), NULL));
+    nodesAdd(&storesig->parms, (INode*)newVarDclFull(nametblFind("at", 2), VarDclTag, (INode*)usizeType, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *storenode = newIntrinsicNode(VecStoreIntrinsic);
+    storenode->typearg = (INode*)vec;
+    iNsTypeAddFn((INsTypeNode*)vec, newFnDclNode(nametblFind("store", 5), FlagMethFld | FlagPub, (INode*)storesig, (INode*)storenode));
 }
 
 static void vecAdd(VectorNode *vec, Name *name, FnSigNode *sig, int kind) {
@@ -175,7 +216,7 @@ static void vecAddLanewise(VectorNode *vec, char *name, Name *overloadsym, FnSig
 // has (corenumber.c), lane by lane, and a mask has the logical ones. Mixed
 // operands (a number beside a vector) are broadcast before selection
 // (vectorBroadcastOperand), so each is declared for vectors alone.
-static void vectorMethods(VectorNode *vec, INode *lane) {
+static void vectorMethods(TypeCheckState *pstate, VectorNode *vec, INode *lane) {
     int ismask = lane == (INode*)boolType;
     int isfloat = lane->tag == FloatNbrTag;
     int issigned = lane->tag == IntNbrTag;
@@ -204,9 +245,11 @@ static void vectorMethods(VectorNode *vec, INode *lane) {
         Name *minsym = nametblFind("min", 3);
         Name *maxsym = nametblFind("max", 3);
         vecAddLanewise(vec, "_min_reduce", minsym, reduce, issigned ? VecSMinIntrinsic : VecMinIntrinsic);
-        vecAddLanewise(vec, "_min_lanes", minsym, binary, MinIntrinsic);
+        // (the argument is named 'other', as a number's min and max name theirs)
+        vecAddLanewise(vec, "_min_lanes", minsym, vecSigNamed(self, self, self, "other"), MinIntrinsic);
         vecAddLanewise(vec, "_max_reduce", maxsym, reduce, issigned ? VecSMaxIntrinsic : VecMaxIntrinsic);
-        vecAddLanewise(vec, "_max_lanes", maxsym, binary, MaxIntrinsic);
+        vecAddLanewise(vec, "_max_lanes", maxsym, vecSigNamed(self, self, self, "other"), MaxIntrinsic);
+        vectorSliceMethods(pstate, vec, lane);
         if (isfloat || issigned)
             vecAddLanewise(vec, "abs", NULL, unary, AbsIntrinsic);
     }
@@ -293,7 +336,7 @@ void vectorTypeCheck(TypeCheckState *pstate, VectorNode *node) {
         node->mask = mask;
         vectorTypeCheck(pstate, mask);
     }
-    vectorMethods(node, lane);
+    vectorMethods(pstate, node, lane);
 }
 
 // ---- Type identity ----------------------------------------------------------
@@ -432,6 +475,12 @@ static int vectorNumberMethod(Name *op) {
 // are logical, not numbers, so the arithmetic and the ordering are refused as
 // such. Answers 1 when it reported.
 int vectorMissingMember(FnCallNode *callnode, INode *vectype, Name *methsym) {
+    if (vectorIsMask(vectype) && strcmp(&methsym->namestr, "store") == 0) {
+        errorMsgNode((INode*)callnode, ErrorVectorSlice,
+            "A mask has no `store`: its lanes are bits, with no form in memory. Convert it for numbers, 'Vector[u8, %llu].from(m)', and store those.",
+            (unsigned long long)vectorLanes(vectype));
+        return 1;
+    }
     if (vectorIsMask(vectype) && vectorNumberMethod(methsym)) {
         errorMsgNode((INode*)callnode, ErrorVectorMask,
             "`%s` is not a mask's: a mask, %s, holds true or false in each lane, not numbers. Its operators are `&`, `|`, `^`, `~`, `==` and `!=`, and `any()`, `all()` and `select(a, b)` use it. Convert it for numbers, 'Vector[u8, %llu].from(m)'.",
@@ -617,12 +666,6 @@ int vectorFromCall(TypeCheckState *pstate, FnCallNode **nodep) {
 // the node's. Checked at run time against the lanes, as an array's index is.
 int vectorIndex(FnCallNode *node) {
     INode *objtype = iexpGetDerefTypeDcl(node->objfn);
-    if (vectorIsMask(objtype)) {
-        errorMsgNode((INode*)node, ErrorVectorIndex,
-            "A mask's lanes are not indexed: test them together with any() and all(), or choose with select(a, b).");
-        node->vtype = errorType;
-        return 0;
-    }
     if (node->flags & (FlagBorrow | FlagRange)) {
         errorMsgNode((INode*)node, ErrorVectorIndex,
             (node->flags & FlagRange)
@@ -633,4 +676,235 @@ int vectorIndex(FnCallNode *node) {
     }
     node->vtype = vectorElemType(objtype);
     return 1;
+}
+
+// Is this an index of a mask? A mask's lane is read, a bool, and is no place.
+int vectorIsMaskLane(INode *node) {
+    if (node->tag != ArrIndexTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (!isExpNode(call->objfn) || inodeIsError(call->objfn))
+        return 0;
+    INode *objtype = iexpGetDerefTypeDcl(call->objfn);
+    return objtype->tag == VectorTag && vectorIsMask(objtype);
+}
+
+// ---- Picking lanes: 'v.(3, 2, 1, 0)', 'v.x', 'a.join(b)' ----------------------
+
+// A vector type of 'lanes' lanes of an already checked lane type, checked
+static VectorNode *vectorMakeType(TypeCheckState *pstate, INode *lexnode, uint64_t lanes, INode *elemtype) {
+    VectorNode *vec = vectorNewTyped(lexnode, lanes, itypeGetTypeDcl(elemtype));
+    vectorTypeCheck(pstate, vec);
+    return vec;
+}
+
+// What a vector type literal made by type check is, told by its arguments: a
+// conversion has one argument; a pick has the vector, then the lane positions
+// as literals; a join has two vectors; a select has the mask and two vectors
+VectorLitKind vectorLitKind(FnCallNode *lit) {
+    if (lit->args->used == 1)
+        return VecLitConvert;
+    if (nodesGet(lit->args, 1)->tag == ULitTag)
+        return VecLitPick;
+    return lit->args->used == 2 ? VecLitJoin : VecLitSelect;
+}
+
+// The lane a name in a field list or after a '.' stands for: x y z w are lanes 0
+// to 3. Answers -1 for any other name.
+static int vectorLaneNamed(Name *name) {
+    char *s = &name->namestr;
+    if (s[0] == '\0' || s[1] != '\0')
+        return -1;
+    switch (s[0]) {
+    case 'x': return 0;
+    case 'y': return 1;
+    case 'z': return 2;
+    case 'w': return 3;
+    default: return -1;
+    }
+}
+
+// A lane position for a name written in a vector's field list or after a '.':
+// a number, or one of the names x y z w for a vector of up to four lanes.
+// Answers 0, having reported, when the vector has no such lane.
+static int vectorLanePosition(INode *vectype, INode *name, uint32_t *at) {
+    uint64_t lanes = vectorLanes(vectype);
+    if (name->tag == ULitTag) {
+        uint64_t pos = ((ULitNode*)name)->uintlit;
+        if (pos >= lanes) {
+            errorMsgNode(name, ErrorVectorPick,
+                "%s has %llu lane%s, numbered 0 to %llu; there is no lane %llu.", itypeName(vectype),
+                (unsigned long long)lanes, lanes == 1 ? "" : "s", (unsigned long long)lanes - 1, (unsigned long long)pos);
+            return 0;
+        }
+        *at = (uint32_t)pos;
+        return 1;
+    }
+    Name *namesym = ((NameUseNode*)name)->namesym;
+    int named = vectorLaneNamed(namesym);
+    if (named < 0) {
+        errorMsgNode(name, ErrorVectorPick,
+            "`%s` is not one of a vector's lanes: number the lanes, 'v.(0, 2)', or for a vector of up to four lanes name them x, y, z, w.",
+            &namesym->namestr);
+        return 0;
+    }
+    if (lanes > 4) {
+        errorMsgNode(name, ErrorVectorPick,
+            "The lane names x, y, z, w are for vectors of up to four lanes, and %s has %llu: number the lane, 'v[%d]' or 'v.(%d, ...)'.",
+            itypeName(vectype), (unsigned long long)lanes, named, named);
+        return 0;
+    }
+    if ((uint64_t)named >= lanes) {
+        errorMsgNode(name, ErrorVectorPick,
+            "%s has %llu lane%s, named %s; there is no lane `%s`.", itypeName(vectype), (unsigned long long)lanes,
+            lanes == 1 ? "" : "s", lanes == 1 ? "x" : lanes == 2 ? "x, y" : lanes == 3 ? "x, y, z" : "x, y, z, w", &namesym->namestr);
+        return 0;
+    }
+    *at = (uint32_t)named;
+    return 1;
+}
+
+// 'v.x': a lane named by one of x y z w, written as the field of a struct is. It
+// becomes 'v[0]' (or 1, 2, 3), so it is a place, read and written like any lane.
+// Answers 0 when the call is no such name on a vector, and 1 when it has been
+// rewritten as the index (to be checked as one) or refused.
+int vectorLaneName(FnCallNode *node) {
+    if ((node->flags & (FlagIndex | FlagOperator | FlagRange)) || node->args != NULL || node->methfld == NULL
+        || !isNameUseNode(node->methfld) || !isExpNode(node->objfn) || inodeIsError(node->objfn))
+        return 0;
+    INode *objtype = iexpGetDerefTypeDcl(node->objfn);
+    if (objtype->tag != VectorTag)
+        return 0;
+    Name *name = ((NameUseNode*)node->methfld)->namesym;
+    if (vectorLaneNamed(name) < 0)
+        return 0;
+    uint32_t at;
+    if (!vectorLanePosition(objtype, node->methfld, &at)) {
+        node->vtype = errorType;
+        return 1;
+    }
+    node->flags |= FlagIndex;
+    node->methfld = NULL;
+    node->args = newNodes(1);
+    nodesAdd(&node->args, (INode*)newULitNodeTC(at, (INode*)usizeType));
+    return 1;
+}
+
+// 'v.(3, 2, 1, 0)': the lanes of a vector at constant positions, in the order
+// written, a repeat copying the lane. One position gives the lane itself, a
+// number; more give a vector of that many lanes (up to 64) of the same lane
+// type. A value, not a place: a pick is read. The node is replaced by a type
+// literal whose arguments are the vector and then each position, which
+// generation turns into a shufflevector (or an extract for one lane).
+// Answers 0 when the value is not a vector (or reaches one only through a
+// pointer), leaving the node as it was.
+int vectorPickLower(TypeCheckState *pstate, INode **nodep) {
+    DestructNode *node = (DestructNode*)*nodep;
+    int derefs = 0;
+    while (iexpGetTypeDcl(node->exp)->tag == RefTag && derefs++ < 8) {
+        if (!derefInject(&node->exp))
+            break;
+    }
+    INode *vectype = iexpGetTypeDcl(node->exp);
+    if (vectype->tag != VectorTag)
+        return 0;
+    uint32_t count = node->names->used;
+    uint32_t *pos = memAllocBlk(count * sizeof(uint32_t));
+    int ok = 1;
+    for (uint32_t i = 0; ok && i < count; ++i)
+        if (!vectorLanePosition(vectype, nodesGet(node->names, i), &pos[i]))
+            ok = 0;
+    if (ok && count > VectorMaxLanes) {
+        errorMsgNode((INode*)node, ErrorVectorPick,
+            "A pick of %u lanes would be a vector wider than the %d lanes a vector has.", count, VectorMaxLanes);
+        ok = 0;
+    }
+    if (!ok) {
+        *nodep = newErrorNode((INode*)node);
+        return 1;
+    }
+    INode *result = count == 1 ? itypeGetTypeDcl(vectorElemType(vectype))
+        : (INode*)vectorMakeType(pstate, (INode*)node, count, vectorElemType(vectype));
+    FnCallNode *lit = vectorNewConvert(result, node->exp, (INode*)node);
+    for (uint32_t i = 0; i < count; ++i)
+        nodesAdd(&lit->args, (INode*)newULitNodeTC(pos[i], (INode*)usizeType));
+    *nodep = (INode*)lit;
+    return 1;
+}
+
+// 'a.join(b)': the lanes of a, then the lanes of b, a vector of twice as many.
+// Both are vectors of one type, and the result may be no wider than a vector is;
+// a type literal of the two, generation's one shufflevector (a pick of a join
+// is the same shufflevector, as 'a.join(b).(0, 4, 1, 5)' writes it).
+int vectorJoinLower(TypeCheckState *pstate, FnCallNode *callnode) {
+    INode *atype = iexpGetDerefTypeDcl(callnode->objfn);
+    callnode->vtype = errorType;
+    if (callnode->args == NULL || callnode->args->used != 1) {
+        errorMsgNode((INode*)callnode, ErrorVectorFrom, "`join` takes one vector: 'a.join(b)' lays the lanes of b after those of a.");
+        return 1;
+    }
+    INode **bp = &nodesGet(callnode->args, 0);
+    if (!isExpNode(*bp) || inodeIsError(*bp))
+        return 1;
+    INode *btype = iexpGetDerefTypeDcl(*bp);
+    if (btype->tag != VectorTag || !itypeIsSame(atype, btype)) {
+        errorMsgNode((INode*)callnode, ErrorVectorMixed,
+            "`join` lays two vectors of the same lanes end to end, and these are %s and %s. Convert one lane by lane, 'Vector[T, N].from(v)'.",
+            itypeName(atype), itypeName(btype));
+        return 1;
+    }
+    uint64_t lanes = vectorLanes(atype) * 2;
+    if (lanes > VectorMaxLanes) {
+        errorMsgNode((INode*)callnode, ErrorVectorPick,
+            "Joining two vectors of %llu lanes makes %llu, and a vector has at most %d.",
+            (unsigned long long)vectorLanes(atype), (unsigned long long)lanes, VectorMaxLanes);
+        return 1;
+    }
+    derefInject(&callnode->objfn);
+    derefInject(bp);
+    VectorNode *result = vectorMakeType(pstate, (INode*)callnode, lanes, vectorElemType(atype));
+    Nodes *args = newNodes(2);
+    nodesAdd(&args, callnode->objfn);
+    nodesAdd(&args, *bp);
+    callnode->args = args;
+    callnode->tag = TypeLitTag;
+    callnode->objfn = (INode*)result;
+    callnode->methfld = NULL;
+    callnode->vtype = (INode*)result;
+    return 1;
+}
+
+// 'Vector[f32, 4].load(s, at)': a function of the vector type, found in its
+// namespace and named directly in the call from here on, so the call is checked
+// as any function's is. A mask has none. Answers 1 when it refused the call.
+int vectorStaticCall(TypeCheckState *pstate, FnCallNode *node) {
+    if (node->objfn == NULL || node->objfn->tag != VectorTag || node->methfld == NULL
+        || !isNameUseNode(node->methfld) || (node->flags & (FlagIndex | FlagOperator)))
+        return 0;
+    Name *name = ((NameUseNode*)node->methfld)->namesym;
+    if (strcmp(&name->namestr, "load") != 0)
+        return 0;
+    if (!itypeTypeCheck(pstate, &node->objfn)) {
+        node->vtype = errorType;
+        return 1;
+    }
+    INode *vectype = itypeGetTypeDcl(node->objfn);
+    if (vectype->tag != VectorTag)
+        return 0;
+    if (vectorIsMask(vectype)) {
+        errorMsgNode((INode*)node, ErrorVectorSlice,
+            "A mask has no `load`: its lanes are bits, with no form in memory. Load the numbers, 'Vector[u8, %llu].load(s, at)', and compare them.",
+            (unsigned long long)vectorLanes(vectype));
+        node->vtype = errorType;
+        return 1;
+    }
+    INode *found = iNsTypeFindFnField((INsTypeNode*)vectype, name);
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    NameUseNode *use = newNameUseNode(name);
+    inodeLexCopy((INode*)use, node->methfld);
+    use->dclnode = found;
+    node->objfn = (INode*)use;
+    node->methfld = NULL;
+    return 0;
 }

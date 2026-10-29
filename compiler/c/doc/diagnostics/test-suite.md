@@ -62,7 +62,7 @@ as that group's own subject requires.
 | 1 | `struct` | Structs, method definition, operator methods, initializers and finalizers, delegated inheritance |
 | 1 | `enum` | Enums in both size varieties, `Option`, `Result`, pattern matching |
 | 1 | `array` | Arrays |
-| 1 | `vector` | SIMD vectors, `Vector[T, N]`: the type, its operators, lanes, masks, reductions and conversions, and the arrays and numbers they meet |
+| 1 | `vector` | SIMD vectors, `Vector[T, N]`: the type, its operators, lanes (picked, named and joined), masks, reductions, conversions and loads and stores of slices, and the arrays and numbers they meet |
 | 1 | `closure` | Closures |
 | 1 | `ref` | Borrowed references, static permissions, lifetime annotations, function references |
 | 1 | `move` | Move types and semantics |

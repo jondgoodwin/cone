@@ -84,6 +84,7 @@ Name *refIndexName;
 Name *optionName;
 Name *fromName;
 Name *selectName;
+Name *joinName;
 Name *hashName;
 Name *hashTraitName;
 Name *iteratorTraitName;

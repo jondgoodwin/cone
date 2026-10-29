@@ -13,10 +13,10 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Not built yet: swizzles such as <span class="pre">v.xyz</span>, loading and
-		storing a vector straight from a slice, gather and scatter, a vector in a global, and a generic that takes
-		its lane type or count from the vector it is given: a generic over a vector is written with them,
-		<span class="pre">twice[f32](v)</span>.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: gather and scatter, assigning to a list of lanes
+		(<span class="pre">v.(0, 1) = w</span>, as a struct's field list cannot be assigned to), a vector in a global,
+		and a generic that takes its lane type or count from the vector it is given: a generic over a vector is
+		written with them, <span class="pre">twice[f32](v)</span>.</i></p>
 
 	<p>A processor can add four numbers in the time it takes to add one, if the four sit side by side in one of its
 		wide registers. A <b>vector</b>, <span class="pre">Vector[T, N]</span>, is <span class="pre">N</span> numbers of
@@ -100,7 +100,7 @@ let i = Vector[u8, 4].from(f);           // 1 0 255 0
 	<p>Lanes of different types are never mixed by an operator: <span class="pre">Vector[f32, 4] + Vector[i32, 4]</span>
 		is refused, and the message names the conversion that makes them one.</p>
 
-	<h2 id="lanes">One lane: v[i]</h2>
+	<h2 id="lanes">One lane: v[i], v.x</h2>
 	<p><span class="pre">v[i]</span> is lane <span class="pre">i</span>, counting from 0, an unsigned integer index. It is a place:
 		it can be read, assigned and changed in place, and an index past the last lane is a panic at the line, as an
 		array's is.</p>
@@ -110,6 +110,41 @@ v[2] = 9;
 v[1] += 3;                  // 0 3 9 0
 </pre>
 	<p>A lane is not borrowed (<span class="pre">&amp;v[i]</span> is refused): it lives in the register. Read it or write it.</p>
+	<p>A vector of up to four lanes also names them <span class="pre">x</span>, <span class="pre">y</span>,
+		<span class="pre">z</span> and <span class="pre">w</span>, lanes 0 to 3, as a struct names its fields. <span class="pre">v.x</span>
+		is <span class="pre">v[0]</span>, a place read and written the same way. A vector of two lanes has
+		<span class="pre">x</span> and <span class="pre">y</span> and a vector of three no <span class="pre">w</span>; a
+		vector of more than four lanes has none of the names and is indexed. There are no <span class="pre">r g b a</span>.</p>
+<pre>
+var p = Vector[f32, 3]() &lt;- 1.0, 2.0, 3.0;
+p.y = p.x + p.z;            // 1 4 3
+</pre>
+
+	<h2 id="pick">Picking lanes: v.(...)</h2>
+	<p>A list of lanes in parentheses after the dot makes a new vector of those lanes, in the order written. It is the field
+		list a struct and a tuple have (<a href="guide-structs.html">Structs</a>,
+		<a href="guide-tuples.html">Tuples</a>), and what it picks here is lanes, by position or by name:</p>
+<pre>
+let v = Vector[f32, 4]() &lt;- 1.0, 2.0, 3.0, 4.0;
+v.(3, 2, 1, 0)              // 4 3 2 1
+v.(x, y, z)                 // a Vector[f32, 3]: 1 2 3
+v.(2, 2, 0)                 // 3 3 1: a lane may be picked again
+v.(1)                       // 2: one lane is the lane itself, as v[1]
+v.(0, 1, 2, 3, 0, 1, 2, 3)  // a Vector[f32, 8]: the result may have any number of lanes, up to 64
+</pre>
+	<p>The positions are written out and checked as the program is compiled: <span class="pre">v.(4)</span> on four lanes is
+		refused, with the lanes the vector has. The list is not assigned to: it makes a new vector, and
+		<span class="pre">v.(0, 1) = w</span> is refused (a struct's field list is no place either). The names and the
+		numbers are not mixed in one list. A pick is one instruction on the whole vector, a shuffle.</p>
+	<p>To pick lanes from two vectors, <span class="pre">join</span> them first. <span class="pre">a.join(b)</span> is the lanes
+		of <span class="pre">a</span> and then those of <span class="pre">b</span>, a vector of twice as many lanes
+		(they must be one type, and it must not pass 64), and a pick from it is still one shuffle of the two:</p>
+<pre>
+let a = Vector[i32, 4]() &lt;- 0, 1, 2, 3;
+let b = Vector[i32, 4]() &lt;- 10, 11, 12, 13;
+a.join(b)                   // 0 1 2 3 10 11 12 13
+a.join(b).(0, 4, 1, 5)      // 0 10 1 11: the two interleaved
+</pre>
 
 	<h2 id="operators">Operators</h2>
 	<p>Every arithmetic operator works on the lanes pair by pair: <span class="pre">+</span>, <span class="pre">-</span>,
@@ -145,8 +180,10 @@ let w = 2.0 * v + 1.0;      // 3 5 7 9
 			<span class="pre">b</span>'s where it is not. <span class="pre">a</span> and <span class="pre">b</span> are vectors of the
 			mask's number of lanes and one type, or one is a number used in every lane.</li>
 	</ul>
-	<p>A mask's lanes are not indexed; test them together, or choose with <span class="pre">select</span>. To count them
-		or use them as numbers, convert: <span class="pre">Vector[u8, 4].from(m)</span> is 1 where true and 0 where not.</p>
+	<p>A mask's lane is read, <span class="pre">m[i]</span>, and is a <span class="pre">bool</span>: not a place, so it
+		is neither assigned nor borrowed (build the mask with a comparison). <span class="pre">m.x</span> and
+		<span class="pre">m.(2, 0)</span> pick lanes as a vector's do. To count the lanes or use them as numbers,
+		convert: <span class="pre">Vector[u8, 4].from(m)</span> is 1 where true and 0 where not.</p>
 
 	<h2 id="reducing">Reducing a vector to one number</h2>
 	<p><span class="pre">sum()</span>, <span class="pre">product()</span>, <span class="pre">min()</span> and
@@ -169,6 +206,35 @@ fn dot(a: &amp;Array[f32], b: &amp;Array[f32]) f32 {
 	<p>This adds the products in eight separate running sums, not one, so its last digits differ from a loop adding
 		them one at a time; nothing in the language reorders a float sum for you, which is also why the compiler
 		cannot turn the plain loop into this one.</p>
+
+	<h2 id="slices">Loading and storing a slice</h2>
+	<p><span class="pre">Vector[T, N].load(s, at)</span> is the <span class="pre">N</span> lanes of the slice
+		<span class="pre">s</span> from position <span class="pre">at</span> on, and <span class="pre">v.store(s, at)</span> writes
+		a vector's lanes into a writable slice from there. Each checks the whole span once, that <span class="pre">at + N</span>
+		is within the slice, and panics at the line otherwise, reporting the last lane's index and the slice's length. They
+		are unaligned: <span class="pre">at</span> is any position, not a multiple of <span class="pre">N</span>. The dot
+		product above, with no conversion to rows:</p>
+<pre>
+fn dot(a: &amp;Array[f32], b: &amp;Array[f32]) f32 {      // a multiple of 8 long
+  var acc = Vector[f32, 8]() &lt;- fill 0.0;
+  var i = 0usize;
+  while i &lt; a.len {
+    acc += Vector[f32, 8].load(a, i) * Vector[f32, 8].load(b, i);
+    i += 8usize;
+  }
+  acc.sum()
+}
+
+fn double(s: &amp;mut Array[f32]) {                      // a multiple of 4 long
+  var i = 0usize;
+  while i &lt; s.len {
+    (Vector[f32, 4].load(s, i) * 2.0).store(s, i);
+    i += 4usize;
+  }
+}
+</pre>
+	<p>A fixed array's borrow is a slice, so <span class="pre">Vector[f32, 4].load(&amp;data, 3)</span> works on an
+		array. A mask has neither: its lanes are bits with no form in memory. Load numbers and compare them.</p>
 
 	<h2 id="math">Math on the lanes</h2>
 	<p>A vector of floats has the floats' <span class="pre">sqrt</span>, <span class="pre">sin</span> and

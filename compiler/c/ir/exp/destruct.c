@@ -59,9 +59,11 @@ static const char *destructNameText(INode *name, char *buf, size_t size) {
     return buf;
 }
 
-// The names must be all fields' or all tuple elements', and none repeated.
-// Answers whether they are fine, after reporting each fault.
-static int destructCheckNames(DestructNode *node) {
+// The names must be all fields' or all tuple elements', and none repeated --
+// but a vector's lanes may be taken again, which only the value's type says, so
+// the first repeat is left in 'dup' for the caller to report. Answers whether
+// they are fine, after reporting each other fault.
+static int destructCheckNames(DestructNode *node, INode **dup) {
     Nodes *names = node->names;
     int ok = 1;
     INode **namep;
@@ -91,16 +93,19 @@ static int destructCheckNames(DestructNode *node) {
             int same = numbered
                 ? ((ULitNode *)prior)->uintlit == ((ULitNode *)name)->uintlit
                 : ((NameUseNode *)prior)->namesym == ((NameUseNode *)name)->namesym;
-            if (same) {
-                char buf[64];
-                errorMsgNode(name, ErrorFldListDup,
-                    "`%s` is named twice. Each field is taken once: name it once, and use the result's value where it is wanted twice.",
-                    destructNameText(name, buf, sizeof(buf)));
-                return 0;
-            }
+            if (same && *dup == NULL)
+                *dup = name;
         }
     }
     return 1;
+}
+
+// A name taken twice in a field list of a struct or tuple
+static void destructDupError(INode *name) {
+    char buf[64];
+    errorMsgNode(name, ErrorFldListDup,
+        "`%s` is named twice. Each field is taken once: name it once, and use the result's value where it is wanted twice.",
+        destructNameText(name, buf, sizeof(buf)));
 }
 
 // Is this expression a place that keeps its value and can be named again
@@ -315,8 +320,11 @@ static int destructNamesCheck(TypeCheckState *pstate, DestructNode *node, INode 
 void destructTypeCheck(TypeCheckState *pstate, INode **nodep) {
     DestructNode *node = (DestructNode *)*nodep;
     node->vtype = errorType;
-    int namesok = destructCheckNames(node);
+    INode *dup = NULL;
+    int namesok = destructCheckNames(node, &dup);
     if (iexpTypeCheckAny(pstate, &node->exp) == 0 || inodeIsError(node->exp) || ((IExpNode *)node->exp)->vtype == errorType) {
+        if (dup)
+            destructDupError(dup);
         *nodep = newErrorNode((INode *)node);
         return;
     }
@@ -325,6 +333,18 @@ void destructTypeCheck(TypeCheckState *pstate, INode **nodep) {
         return;
     }
     INode *type = iexpGetTypeDcl(node->exp);
+    // A vector's lanes, picked by position or by the names x y z w; a lane may be
+    // picked again, so a repeat is no fault here
+    INode *peek = type;
+    while (peek->tag == RefTag)
+        peek = itypeGetTypeDcl(((RefNode *)peek)->vtexp);
+    if (peek->tag == VectorTag && vectorPickLower(pstate, nodep))
+        return;
+    if (dup) {
+        destructDupError(dup);
+        *nodep = newErrorNode((INode *)node);
+        return;
+    }
     int isvalue = type->tag == TTupleTag
         || (type->tag == StructTag && !(type->flags & (TraitType | EnumType)));
     int take = isvalue && !(destructIsPlace(node->exp) && !iexpIsMove(node->exp));

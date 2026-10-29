@@ -1,9 +1,11 @@
 // What a vector refuses, at type check: a lane type that is no number, a number of
 // lanes outside 1 through 64, 'Vector' with no lane type and count, lanes of
-// different types or counts in one operation, a mask used as numbers, a mask's
-// lane indexed, a lane borrowed, 'select' and '.from' given what they do not take,
-// contents of the wrong count, a mask in a condition, and the methods the lane type
-// has no scalar for. A refusal that has a fix names it (the 'from' that converts).
+// different types or counts in one operation, a mask used as numbers, a lane
+// borrowed, a mask's lane written or borrowed, 'select' and '.from' given what they
+// do not take, contents of the wrong count, a mask in a condition, the methods the
+// lane type has no scalar for, picking lanes (a position or name the vector has not,
+// too many positions, names beyond four lanes), 'join', and 'load' and 'store'. A
+// refusal that has a fix names it (the 'from' that converts).
 
 mod vector_reject_type;
 
@@ -43,10 +45,12 @@ fn main() {
   let maskorder = m < m;   //~ ErrorVectorMask
   let masksum = m.sum();   //~ ErrorVectorMask
   let maskplus = m + a;   //~ ErrorVectorMask
-  let maskindex = m[0usize];   //~ ErrorVectorIndex
 
-  // a lane is not borrowed
+  // a lane is not borrowed, and a mask's lane is read, neither written nor borrowed
   let lane = &a[1usize];   //~ ErrorVectorIndex
+  var written = a > a;
+  written[1usize] = true;   //~ ErrorVectorIndex
+  let masklane = &m[1usize];   //~ ErrorVectorIndex
 
   // select, and from
   let notmask = a.select(a, a);   //~ ErrorVectorMask
@@ -83,4 +87,41 @@ fn main() {
   let mincount = a.max(e);   //~ ErrorVectorMixed
   let minscalar = a.min(2.0f64);   //~ ErrorVectorMixed
   let fmascalar = a.fma(2.0f64, a);   //~ ErrorVectorMixed
+
+  // picking lanes: a position past the last, a name the vector has not, a name for
+  // a vector of more than four lanes, a pick wider than a vector can be, names and
+  // numbers in one list, and a pick written to
+  let eight = Vector[f32, 8]() <- fill 1.0;
+  let past = a.(0, 4);   //~ ErrorVectorPick
+  let pastone = a.(4);   //~ ErrorVectorPick
+  let nolane = e.w;   //~ ErrorVectorPick
+  let nolanelist = e.(x, w);   //~ ErrorVectorPick
+  let notaname = a.(x, q);   //~ ErrorVectorPick
+  let widename = eight.x;   //~ ErrorVectorPick
+  let widenames = eight.(x, y);   //~ ErrorVectorPick
+  let toowide = a.(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0);   //~ ErrorVectorPick
+  let mixedlist = a.(0, x);   //~ ErrorFldListForm
+  var target = a;
+  target.(1) = 2.0;   //~ ErrorBadLval
+  let five = 5i32;
+  let number = five.(0);   //~ ErrorFldListType
+
+  // join: the same lanes, and no wider than a vector can be
+  let joinmix = a.join(i);   //~ ErrorVectorMixed
+  let joincount = a.join(e);   //~ ErrorVectorMixed
+  let joinnumber = a.join(1.0);   //~ ErrorVectorMixed
+  let joinnone = a.join();   //~ ErrorVectorFrom
+  let thirtythree = Vector[u8, 33]() <- fill 1u8;
+  let joinwide = thirtythree.join(thirtythree);   //~ ErrorVectorPick
+
+  // load and store: a mask has neither, and the slice is of the lane type
+  let data: Array[f32, 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+  let ints: Array[i32, 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+  var out: Array[f32, 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+  let maskload = Vector[bool, 4].load(&data, 0usize);   //~ ErrorVectorSlice
+  m.store(&mut out, 0usize);   //~ ErrorVectorSlice
+  let loadtype = Vector[f32, 4].load(&ints, 0usize);   //~ ErrorInvType
+  let loadat = Vector[f32, 4].load(&data, 1.5);   //~ ErrorInvType
+  let loadnone = Vector[f32, 4].load(&data);   //~ ErrorFewArgs
+  a.store(&data, 0usize);   //~ ErrorNoCandidate
 }

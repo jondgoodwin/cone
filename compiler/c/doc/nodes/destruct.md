@@ -70,7 +70,14 @@ check from the value's type, as a call's member slot is.
 ## 5. Type check
 
 `destructTypeCheck` checks the names for form (all names or all numbers, none
-twice; `destructCheckNames`), checks the value, then decides what the node is:
+twice; `destructCheckNames`, which leaves a repeat for the type to judge), checks the
+value, then decides what the node is:
+
+0. **A vector** (or a reference to one) is not a struct or a tuple: its list picks lanes,
+   by position or by the names x y z w, and a repeat is allowed. `vectorPickLower`
+   replaces the node with a type literal of the vector and the positions (a number of one
+   lane, a vector of several), a value that is never a place ([vector](vector.md)). For
+   every other type a repeated name is `ErrorFldListDup`, reported here.
 
 1. **What the names are looked up in** is the value's type with references and
    pointers peeled, as `x.a` peels them. A struct (not a trait or an enum) or a

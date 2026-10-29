@@ -119,6 +119,7 @@ extern Name *optionName;   // "Option"
 
 extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
 extern Name *selectName;   // "select", a mask's choice between two vectors: 'm.select(a, b)'
+extern Name *joinName;     // "join", two vectors laid end to end: 'a.join(b)'
 extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
 extern Name *hashTraitName;  // "Hash", core's trait of a value that feeds a hasher
 extern Name *iteratorTraitName; // "Iterator", core's trait of a cursor, whose shared methods come with its declaration
