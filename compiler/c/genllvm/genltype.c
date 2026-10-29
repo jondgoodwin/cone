@@ -825,6 +825,12 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return LLVMStructTypeInContext(gen->context, typerefs, propcount, 0);
     }
 
+    // A vector is LLVM's <N x T>. Its size and alignment are LLVM's: a vector
+    // is aligned as its whole is (16 bytes for four floats), and one whose
+    // lane count is not a power of two is padded up (three floats take 16)
+    case VectorTag:
+        return LLVMVectorType(genlType(gen, vectorElemType(typ)), (unsigned)vectorLanes(typ));
+
     // Build out (potentially) multi-dimensional array type
     case ArrayTag:
     {

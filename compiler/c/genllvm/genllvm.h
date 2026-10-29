@@ -373,8 +373,21 @@ void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest, int trac
 typedef enum {
     PanicIndex,     // an index at or past the count: the index, the count
     PanicSlice,     // a range not within the count: its start, its end, the count
-    PanicAlloc      // a region's 'alloc' answered null: the size asked for
+    PanicAlloc,     // a region's 'alloc' answered null: the size asked for
+    PanicDivide     // an integer divided by zero, or its minimum by -1: 0 for the zero, 1 for the overflow
 } GenlPanicKind;
+// Panic unless index < count, reporting both at 'site'
+void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRef count);
+// A vector's operation on its lanes, once the type of its first argument says
+// it is one (genlvector.c): the operator or reduction 'fndcl' is, over
+// 'fnargs'; 'site' is where a failed check is reported
+LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMValueRef *fnargs, uint32_t fnargcnt);
+// A vector's conversion or construction: 'Vector[T, N].from(x)', the array a
+// vector comes free from, a number put in every lane, a mask's select
+LLVMValueRef genlVectorConvert(GenState *gen, FnCallNode *lit);
+// The address of a lane of the vector at 'vecp': bounds checked against its
+// lane count, as an array's index is
+LLVMValueRef genlVectorLane(GenState *gen, INode *site, INode *vectype, LLVMValueRef vecp, LLVMValueRef index);
 // End the program where a check the compiler inserted has failed, reporting
 // the values the kind names and the source location of 'site'. Leaves the
 // block terminated

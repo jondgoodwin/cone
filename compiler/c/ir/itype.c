@@ -1509,6 +1509,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case VectorTag:
+        return vectorEqual((VectorNode*)node1, (VectorNode*)node2);
     case TTupleTag:
         return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
     case FnSigTag:
@@ -1573,6 +1575,8 @@ int itypeIsRunSame(INode *node1, INode *node2) {
         return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case VectorTag:
+        return vectorEqual((VectorNode*)node1, (VectorNode*)node2);
     case TTupleTag:
         return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
     case FnSigTag:
@@ -1835,6 +1839,15 @@ char *itypeName(INode *type) {
         return "a function signature";
     case ArrayTag:
         return "an array";
+    case VectorTag: {
+        // As it is written: its lane type and number of lanes
+        static char vecnames[4][96];
+        static unsigned vecnext;
+        char *buf = vecnames[vecnext++ & 3];
+        snprintf(buf, sizeof(vecnames[0]), "Vector[%s, %llu]", itypeName(vectorElemType(dcltype)),
+            (unsigned long long)vectorLanes(dcltype));
+        return buf;
+    }
     case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag:
         return "a reference";
     case TTupleTag:

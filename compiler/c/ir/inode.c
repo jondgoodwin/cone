@@ -170,6 +170,8 @@ void inodePrintNode(INode *node) {
     case ArrayTag:
     case ArrayLitTag:
         arrayPrint((ArrayNode *)node); break;
+    case VectorTag:
+        vectorPrint((VectorNode *)node); break;
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
         nbrTypePrint((NbrNode *)node); break;
     case PermTag:
@@ -352,6 +354,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         enumNameRes(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayNameRes(pstate, (ArrayNode *)*node); break;
+    case VectorTag:
+        vectorNameRes(pstate, (VectorNode *)*node); break;
     case TupleTag:
         ttupleNameRes(pstate, (TupleNode *)*node); break;
     case QuesTag:
@@ -608,6 +612,8 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
         enumTypeCheck(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
+    case VectorTag:
+        vectorTypeCheck(pstate, (VectorNode *)*node); break;
     case TTupleTag:
         ttupleTypeCheck(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
@@ -694,6 +700,10 @@ Name *inodeGetName(INode *node) {
         return ((PermNode*)node)->namesym;
     case EnumTag:
         return ((EnumNode*)node)->namesym;
+    // A vector is no declaration, but a type that supports methods, and
+    // is called by the name it is written with
+    case VectorTag:
+        return nametblFind("Vector", 6);
     default:
         errorUnreachable(node, "a request for the name of a node that has none");
         return NULL;
@@ -866,6 +876,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
 
     [FnSigTag] = {TypeGroup, 0, 0},
     [ArrayTag] = {TypeGroup, 0, 0},
+    [VectorTag] = {TypeGroup, 0, 1},
     [RefTag] = {TypeGroup, 0, 0},
     [ArrayRefTag] = {TypeGroup, 0, 0},
     [VirtRefTag] = {TypeGroup, 0, 0},

@@ -83,6 +83,7 @@ Name *indexName;
 Name *refIndexName;
 Name *optionName;
 Name *fromName;
+Name *selectName;
 Name *hashName;
 Name *hashTraitName;
 Name *iteratorTraitName;
@@ -502,6 +503,12 @@ char *nameType(char *bufp, INode *vtype) {
         }
         return bufp;
     }
+    case VectorTag:
+        // 'N', the lane type, the number of lanes in decimal, '_'
+        *bufp++ = 'N';
+        bufp = nameType(bufp, vectorElemType(vtype));
+        bufp += sprintf(bufp, "%llu_", (unsigned long long)vectorLanes(vtype));
+        return bufp;
     case FnSigTag:
     {
         FnSigNode *fnsig = (FnSigNode *)vtype;

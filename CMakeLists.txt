@@ -131,6 +131,7 @@ add_executable(conec
 	compiler/c/ir/types/region.c
 	compiler/c/ir/types/struct.c
 	compiler/c/ir/types/ttuple.c
+	compiler/c/ir/types/vector.c
 	compiler/c/ir/types/void.c
 
 	compiler/c/ir/meta/macro.c
@@ -162,6 +163,7 @@ add_executable(conec
 	compiler/c/genllvm/genlaggcopy.c
 	compiler/c/genllvm/genlgpu.c
 	compiler/c/genllvm/genlgpusync.c
+	compiler/c/genllvm/genlvector.c
 )
 
 target_link_libraries(conec ${llvm_libs})

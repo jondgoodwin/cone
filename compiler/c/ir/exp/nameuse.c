@@ -591,6 +591,13 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
         *((INode**)namep) = newErrorNode((INode*)name);
         return;
     }
+    // 'Vector' likewise: a type only with its lane type and number of lanes
+    if (name->dclnode == (INode*)vectorTypeDcl) {
+        errorMsgNode((INode*)name, ErrorVectorArgs,
+            "Vector is the SIMD vector type only with its lane type and number of lanes: 'Vector[T, N]', as 'Vector[f32, 4]'.");
+        *((INode**)namep) = newErrorNode((INode*)name);
+        return;
+    }
     inodeTypeCheckAny(pstate, &name->dclnode);
     // A type a fold brought in -- a variant a module's 'use' of its enum folded,
     // or a type an import folded -- is named through an alias, which has nothing

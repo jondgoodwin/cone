@@ -115,6 +115,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/yield.h"
 #include "exp/destruct.h"
 #include "exp/closure.h"
+#include "types/vector.h"
 
 #include "export.h"
 

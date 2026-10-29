@@ -138,7 +138,8 @@ static LLVMValueRef genlGpuWord(GenState *gen, LLVMValueRef val) {
 void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value) {
     size_t filelen;
     char *file = genlSrcFileName(site, &filelen);
-    int gpukind = kind == PanicIndex ? GpuFailIndex : kind == PanicSlice ? GpuFailSlice : GpuFailAlloc;
+    int gpukind = kind == PanicIndex ? GpuFailIndex : kind == PanicSlice ? GpuFailSlice
+        : kind == PanicDivide ? GpuFailPanic : GpuFailAlloc;
     LLVMValueRef args[4] = {
         genlI32Const(gen, gpukind),
         genlSrcFileText(gen, file, filelen),

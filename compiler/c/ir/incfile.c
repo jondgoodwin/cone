@@ -577,6 +577,18 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type, ModuleNode *inmod) {
         incBufPuts(buf, "]");
         return 1;
     }
+    // 'Vector[f32, 4]'
+    case VectorTag: {
+        char lanetext[32];
+        if (nodesGet(((VectorNode*)type)->dimens, 0)->tag != ULitTag)
+            return 0;
+        incBufPuts(buf, "Vector[");
+        if (!incTypeText(g, buf, vectorElemType(type), inmod))
+            return 0;
+        snprintf(lanetext, sizeof(lanetext), ", %llu]", (unsigned long long)vectorLanes(type));
+        incBufPuts(buf, lanetext);
+        return 1;
+    }
     default:
         return 0;
     }
@@ -729,6 +741,8 @@ static void incWalkType(IncGen *g, INode *type) {
                 incWalkType(g, *nodesp);
         }
         break;
+    case VectorTag:
+        break;      // its lanes are a number type
     case TTupleTag:
         for (nodesFor(((TupleNode*)type)->elems, cnt, nodesp))
             incWalkType(g, *nodesp);

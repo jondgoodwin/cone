@@ -165,7 +165,8 @@ enum NodeTags {
     // Unnamed type node
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
-    RefTag,         // Reference (could become borrowtag/alloctag)
+    VectorTag,      // SIMD vector, 'Vector[T, N]' (VectorNode): a type that supports methods, lowered to LLVM's <N x T>
+    RefTag,        // Reference (could become borrowtag/alloctag)
     ArrayRefTag,    // Borrowed array reference, the slice ref (could become arrborrow tag)
     VirtRefTag,     // Virtual reference
     ArrayDerefTag,  // De-referenced array reference (the slice itself)

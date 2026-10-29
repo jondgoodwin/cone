@@ -117,6 +117,7 @@ TIERS = {
     "struct": 1,
     "enum": 1,
     "array": 1,
+    "vector": 1,
     "closure": 1,
     "ref": 1,
     "move": 1,

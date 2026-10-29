@@ -12,7 +12,9 @@ they differ in who declares them and in how their meaning is decided.
 | Reference page | none: the number and pointer methods | `doc/manual/safe-intrinsics.html` |
 
 The kinds built in C are left as they are until the number types are rebuilt
-over generics; nothing new is to be added to them. **A new intrinsic is declared
+over generics; nothing new is to be added to them. The one exception is the
+`Vec*` kinds (`VecSum` … `VecAll`), built in C because `Vector` has no Cone
+declaration to hang a declared intrinsic on (`vector.md`). **A new intrinsic is declared
 in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`**
 — or, for one whose meaning depends on its call as well as its instance, as the
 atomic operations' orderings do, in `genlAtomicIntrinsic`, which `genlFnCall`
