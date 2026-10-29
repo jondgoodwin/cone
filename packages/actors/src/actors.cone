@@ -399,8 +399,7 @@
 // 'actors.stats()' answers what the workers have done so far (Stats:
 // workers; messages handled; turns, an actor taken from a queue and run;
 // steals; loop pieces stolen; the idle workers' spins, begun, ended by work
-// and ended by their bound, and their parks: IDLE WORKERS, below; the actors a
-// reply off the workers sent home, taken there or stolen: THE HOME INBOX), counts
+// and ended by their bound, and their parks: IDLE WORKERS, below), counts
 // read without stopping them, safe on any
 // thread at any time, even while the stop frees the runtime (STATS, below);
 // before the first actor, all 0; once stopped, the run's totals.
@@ -598,18 +597,15 @@
 // a mailbox grows without one.
 //
 // The scheduler has one worker thread per 'workers', each with its own run
-// queue, a ring of 1024 actors, and its own inbox (THE HOME INBOX, below),
-// plus one shared inject queue, a list under a Mutex. An actor made runnable
-// by a send from a worker goes on that worker's own queue (so a reply is
-// handled where its sender's data is warm); one made runnable by any other
-// thread goes on the inject queue, unless a reply to its await made it
-// runnable: then it goes to the inbox of the worker it awaited from. A
-// worker takes from the front of its own queue, after moving its inbox onto
-// the back of it, and every 61st turn from the inject queue first, so that
-// the inject queue is not starved; with nothing in its own, it takes a share
-// of the inject queue's (as many as the queue holds per worker, at most 32
-// more), then tries to steal HALF of another worker's queue, or the whole of
-// a busy worker's inbox, starting at one chosen at random. A full queue
+// queue, a ring of 1024 actors, plus one shared inject queue, a list under a
+// Mutex. An actor made runnable by a send from a worker goes on that
+// worker's own queue (so a reply is handled where its sender's data is
+// warm); one made runnable by any other thread goes on the inject queue. A
+// worker takes from the front of its own queue, and every 61st turn from
+// the inject queue first, so that the inject queue is not starved; with
+// nothing in its own, it takes a share of the inject queue's (as many as
+// the queue holds per worker, at most 32 more), then tries to steal HALF of
+// another worker's queue, starting at one chosen at random. A full queue
 // moves half of itself to the inject queue. The owner pushes with a Release
 // store of its tail; the owner and stealers alike take with a
 // compare-and-swap on the head (tokio's local queue, without its
@@ -646,9 +642,7 @@
 // more), looks once more, and sleeps on its park word. A push to the inject
 // queue, and a push to a worker's own queue that already held another, wakes
 // one sleeper, chosen and marked (NOTIFIED) before it is woken, unless a
-// worker is looking already (a push to a worker's inbox wakes that worker, or,
-// it being busy, one as these do: THE HOME INBOX): one spinning (THE SPIN,
-// below), or one woken
+// worker is looking already: one spinning (THE SPIN, below), or one woken
 // earlier and still looking (the 'searching' flag). The one woken takes a
 // share and, if more waits, wakes the next, so that a burst of work spreads
 // across the workers a worker at a time rather than waking them all. A push
@@ -821,86 +815,6 @@
 // 'stats()' counts the spins begun, those that saw work and those that ran to
 // their bound, the parks (a worker published and asleep), and the reparks (a
 // return from the wait with the word still PARKED, slept again at once).
-//
-// THE HOME INBOX. A reply made on a thread that is no worker -- the aio
-// package's I/O thread answering an operation, above all, four times a
-// round trip of a socket's ping-pong -- resumes its actor on the WORKER IT
-// AWAITED FROM, not through the inject queue, where any worker spinning or
-// woken took it (measured: an actor resumed on another worker about half the
-// time, with 2.3 to 3.9 wakes a round trip on 24 workers).
-// - The record: the envelope an await makes (replyFor) carries its HOME, the
-//   index + 1 of the worker making it, in its meta's top 16 bits (0: made off
-//   the workers, or past the 65,535th worker), so an operation's own record,
-//   which holds the Reply, records where it was awaited from.
-// - The reply: answerNowIn, answerLentIn and answered read the home before
-//   they spend the Reply, and the publication that takes the idle mark queues
-//   the actor towards it (scheduleHome): from a worker, on that worker's own
-//   queue as before (a reply an actor sends; the rule is for what went to the
-//   inject queue); off the workers, on the home worker's INBOX.
-// - The inbox is a list of Headers, linked through 'link' as the inject queue
-//   is, pushed with a compare-and-swap of its head (newest first) by any
-//   number of threads, and taken WHOLE with one exchange, by its worker or by
-//   a stealer, and turned round to oldest first. Why not the run queue itself:
-//   that ring is tokio's, one producer, its owner, whose tail is a plain
-//   Release store; a push from the I/O thread would race the owner's. Why not
-//   a Vyukov MPSC queue: it has one consumer, and the inbox needs a second, a
-//   stealer (below). A compare-and-swap stack whose takers only ever take
-//   everything has neither ABA (nothing is popped singly, so no head is
-//   compared after being taken and pushed again) nor a reclamation problem
-//   (its nodes are actors' Headers, held by the scheduler's owner), and its
-//   lists are short (one reply each, mostly). Its own cache line in the
-//   Worker; a look reads it.
-// - Taking: the worker moves its inbox onto the back of its own queue before
-//   it takes from the front (findWork), so replies wait behind what it holds
-//   and starve nothing.
-// - The wake: after the push, if the home worker's park word is PARKED it is
-//   woken, THAT worker (wakeWorker: its bit claimed and its word turned
-//   NOTIFIED, as notify does for the sleeper it chooses, then woken), no
-//   other. If it is not asleep but BUSY -- running an actor's turn or a loop
-//   piece, its 'busy' word 1 -- notify is called, as a push behind a running
-//   actor calls it (localPush), so that a worker looks and STEALS the inbox
-//   (locality never beats progress: an actor whose home runs a long turn is
-//   run elsewhere). A home neither asleep nor busy is awake in its loop or its
-//   spin, and takes the actor itself: no wake at all.
-// - Stealing: a worker that finds nothing in its own queue, the inject queue
-//   or any loop piece looks at every other worker's queue and then its inbox,
-//   and takes an inbox whole only while its worker is busy (homeSteal); and
-//   a look (anyWork: the spin's, and the park's) counts another worker's
-//   inbox as work only while that worker is busy, so that spinners do not
-//   keep looking at an inbox that its free worker is about to take.
-// - 'busy' is set (SeqCst) when the worker begins a turn or a loop piece in
-//   its loop, which then reads its own inbox (SeqCst) and calls notify if it
-//   holds anything; cleared (Release) when the turn ends. A turn costs that
-//   store and that load.
-// NO WAKE IS LOST, for the inbox. homePush's push is a SeqCst
-// compare-and-swap, and it reads the home's park word and then its busy word,
-// SeqCst. The home worker, awake, is in one of three places, and each
-// ends in a SeqCst read of its inbox after a SeqCst store, a Dekker pairing:
-// - Beginning a turn (busyOn): busy stored 1, then the inbox read. Either the
-//   push reads busy 1 and notifies (a stealer is woken, unless one looks
-//   already: a spinner, or a worker woken earlier, both of which steal it while
-//   the home stays busy), or the read sees the push and the worker notifies.
-// - Going to park (idle): PARKED stored (then the bit, the count), then the
-//   look reads the inbox. Either the push reads PARKED and wakes it (or finds
-//   it NOTIFIED or leaving, awake), or the look sees the push and it leaves
-//   the park and takes it.
-// - Anywhere else in its loop (looking, spinning, between a turn's end and the
-//   next): it is awake and not busy, and it reaches either a turn's beginning
-//   or the park's look before it could miss the inbox, each paired as above;
-//   findWork itself takes the inbox first.
-// A busy home with every other worker asleep: the push's notify wakes one, or
-// the turn's beginning did; that worker looks and steals while the home is
-// busy, or finds the home free and the inbox the home's to take (and parks,
-// with the home awake). A woken stealer that finds the inbox already taken
-// parks again as any worker woken for nothing does. The stop finds every inbox
-// empty: an actor in one is an activation begun (the off-worker count) and not
-// ended, so quiescence waits for it.
-// What the inbox does not take: a future's Waiter that a reply off the workers
-// publishes (futures.cone) and a 'parallel each' finished off the workers
-// (parallel.cone) still go to the inject queue; neither is an await's
-// envelope. 'stats()' counts the actors taken from their home's inbox by the
-// home (homeTaken) and by a stealer (homeStolen); tests in the aio package
-// (homestress) stress it with I/O under 24 workers, and hold a home busy.
 //
 // QUIESCENCE is found by counting activations: an actor's time from the send
 // that made it runnable to the worker's marking it idle. Each worker counts,
@@ -2503,8 +2417,7 @@ fn traceRunEnd(h: *Header, id: u64, behaviour: u64) {
 // payload, or too finely aligned, so the answer allocates a box for it),
 // replyOp (the reply of an awaited operation, counted in opsStarted until it
 // is spent) and replySpent (the reply has been answered in place, ANSWERED IN
-// PLACE below: nothing else in 'meta' means anything then, except replyOp);
-// and, in its top 16 bits, the reply's home (THE HOME INBOX).
+// PLACE below: nothing else in 'meta' means anything then, except replyOp).
 pub struct Reply is Sendable {
   to: *Header = null;
   at: *u8 = null;
@@ -2535,30 +2448,9 @@ const replyBoxed = 2u64;
 const replyOp = 4u64;
 const replySpent = 8u64;
 
-// A reply's HOME, the worker its actor awaited from (THE HOME INBOX), is
-// meta's top 16 bits: that worker's index + 1, or 0 for none (an envelope made
-// off the workers, or by a worker past the 65,535th). The size and the flags
-// are the bits below
-const homeShift = 48u64;
-const sizeMask = 0x0000FFFFFFFFFFFFu64;
-
 // A reply's meta, from the value's size and its flags
 fn metaOf(size: usize, flags: u64) u64 {
   u64.from(size) * 16u64 + flags
-}
-
-// The home a reply's meta names: a worker's index + 1, or 0
-fn homeOf(meta: u64) u32 {
-  u32.from(meta >> homeShift)
-}
-
-// The home of an envelope made now: the worker this thread is, or none
-fn homeHere() u64 {
-  let w = me as *Worker;
-  if w as usize == 0usize || (*w).index >= 0xFFFFu32 {
-    return 0u64;
-  }
-  u64.from((*w).index + 1u32) << homeShift
 }
 
 // Whether the reply goes anywhere: to an actor that awaits it, or into a
@@ -2605,7 +2497,7 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   if size > strideOf(h) - slotHead - replyHead || align > 16usize {
     flags = flags | replyBoxed;
   }
-  Reply(to: h, at: run, id: id, meta: metaOf(size, flags) | homeHere())
+  Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
 }
 
 // A reply's slot, claimed in the awaiting actor's ring and its resume record
@@ -2645,7 +2537,7 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
       *((at + 8usize) as **u8) = release;
       at = lent;
     } else {
-      var size = usize.from((r.meta & sizeMask) / 16u64);
+      var size = usize.from(r.meta / 16u64);
       if size == 0usize {size = 1usize;}
       let box = libc.malloc(size);
       if box as usize == 0usize {
@@ -2662,16 +2554,14 @@ fn replyPrepLent(r: &Reply, lent: *u8, release: *u8) Put {
 
 // The value is written: publish the slot. The count the envelope held becomes
 // the scheduler's owner when the publication takes the idle mark, as a
-// send's own would, and the actor is queued towards its home, the worker it
-// awaited from (the envelope's meta, read before it was spent); otherwise the
-// count is let go
-fn replyFinish(h: *Header, p: Put, home: u32) {
+// send's own would; otherwise it is let go
+fn replyFinish(h: *Header, p: Put) {
   if running.load() == 0usize {
     die("actors: a reply sent after the runtime stopped");
   }
   let waited = publish(p.c, p.kind);
   if wakeAfter(h, p.c, waited) {
-    scheduleHome(h, home);
+    schedule(h);
   } else {
     let release = (*h).release;
     release(h);
@@ -2718,11 +2608,10 @@ pub fn answerNowIn[R](rp: &mut Reply, v: R) {
     return;
   }
   let h = rp.to;
-  let home = homeOf(rp.meta);
   let p = replyPrep(rp);
   mem.writeRaw[R](p.at as *R, v);
   spend(rp);
-  replyFinish(h, p, home);
+  replyFinish(h, p);
 }
 
 // A reply answered twice is a program error
@@ -2800,20 +2689,19 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     return;
   }
   let h = rp.to;
-  let home = homeOf(rp.meta);
   if (rp.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
     var tk = take;
     let takep = mem.readRaw[*u8](&mut tk as *(*u8));
     let put = replyPrepLent(rp, p as *u8, takep);
     spend(rp);
-    replyFinish(h, put, home);
+    replyFinish(h, put);
     return;
   }
   let put = replyPrep(rp);
   spend(rp);
   opHold(op);
   take(p as *u8, put.at);
-  replyFinish(h, put, home);
+  replyFinish(h, put);
   opRelease(op);
 }
 
@@ -2890,7 +2778,7 @@ pub fn answered(slot: &mut Answer) {
     slot.claimed = 0u8;
     let h = slot.reply.to;
     slot.reply.to = null;
-    replyFinish(h, slot.put, homeOf(slot.reply.meta));
+    replyFinish(h, slot.put);
     return;
   }
   post(&mut slot.reply);
@@ -3354,8 +3242,7 @@ struct Worker {
   pub tail: u64;                // owner's: the next position to fill
   pub started: u64;             // activations this worker began (SeqCst stores)
   pub ended: u64;               // activations this worker ended (SeqCst stores)
-  pub busy: u32;                // 1 while this worker runs an actor's turn or a loop piece (THE HOME INBOX): set SeqCst, cleared Release
-  pub gap2: Array[u8, 36];
+  pub gap2: Array[u8, 40];
   pub sched: *Sched;
   pub index: u32;
   pub tick: u32;
@@ -3370,8 +3257,6 @@ struct Worker {
   pub gap5: Array[u8, 64];
   pub park: Atomic[u32];        // THE PARK WORD: parkRunning, parkParked or parkNotified, on a line of its own
   pub gap6: Array[u8, 60];
-  pub inbox: *Header;           // THE HOME INBOX: actors made runnable off the workers by a reply awaited here, newest first (atomic), on a line of its own
-  pub gap7: Array[u8, 56];
 }
 
 // A worker's park word (THE PARK WORD, in the header)
@@ -3440,15 +3325,6 @@ fn tally(p: *u64, n: u64) {
 // activation begun, and queue it: on this worker's own queue when a worker
 // sends, else on the inject queue
 fn schedule(h: *Header) {
-  scheduleHome(h, 0u32);
-}
-
-// The same, for an actor made runnable by a reply that names the worker it
-// was awaited from ('home', that worker's index + 1; 0 names none): sent from
-// a thread that is no worker, the actor goes to that worker's inbox (THE HOME
-// INBOX), not to the inject queue. From a worker it goes on the sender's own
-// queue, as any send's actor does
-fn scheduleHome(h: *Header, home: u32) {
   let s = running.load() as *Sched;
   // Every caller has checked that the runtime runs (a send, a reply) or
   // started it (a new actor), so s is 0 here only if the stop finished
@@ -3465,10 +3341,6 @@ fn scheduleHome(h: *Header, home: u32) {
     localPush(w, h);
   } else {
     mem.atomicAdd[u64](&(*s).extStarted as *u64, 1u64, MemOrder.SeqCst);
-    if home != 0u32 && home <= (*s).nworkers {
-      homePush(s, workerAt(s, home - 1u32), h);
-      return;
-    }
     (*h).link = nullHeader();
     injectPush(s, h, h, 1u64);
   }
@@ -3692,140 +3564,6 @@ fn parkedBit(w: *Worker) u64 {
   1u64 << u64.from((*w).index % 64u32)
 }
 
-// ---- THE HOME INBOX (the header): a reply's actor queued on the worker it awaited from ----
-
-// Put h on worker w's inbox, from a thread that is no worker (the I/O thread,
-// above all), then see that it is taken: w woken if it sleeps (that worker,
-// no other), or, if w is busy with a turn, one worker woken to look, as a
-// push behind a running actor wakes one (localPush), so that the actor is
-// stolen if w stays busy. A w neither asleep nor busy is awake and looking,
-// and takes it (the header, NO WAKE IS LOST, for the inbox). The push is a
-// compare-and-swap of the inbox's head, SeqCst: it is the store of both
-// Dekker pairings that follow, with the park's look (the park word read here)
-// and with a turn's start (the busy word read here); and its Release side
-// publishes h's link, and all that made h runnable, to the taker's exchange
-fn homePush(s: *Sched, w: *Worker, h: *Header) {
-  let ip = &(*w).inbox as **Header;
-  var old = mem.atomicLoad[*Header](ip, MemOrder.Relaxed);
-  var pushed = false;
-  while !pushed {
-    (*h).link = old;
-    old, pushed = mem.atomicCompareSwap[*Header](ip, old, h, MemOrder.SeqCst, MemOrder.Relaxed);
-  }
-  if wakeWorker(s, w) {
-    return;
-  }
-  if ld32(&(*w).busy as *u32) != 0u32 {
-    // Busy: stealable, so one looks
-    notify(s);
-  }
-}
-
-// Wake worker w if it is asleep, as notify wakes the sleeper it chooses: its
-// bit claimed, its word turned PARKED to NOTIFIED, then the word woken (THE
-// PARK WORD). True if this woke it. A word that is not PARKED, or that another
-// turns first (a notify's mark, or the worker's own leaving), is a worker
-// awake or being woken, which goes back to its loop and looks: false
-fn wakeWorker(s: *Sched, w: *Worker) bool {
-  let pk = &(*w).park as *u32;
-  if mem.atomicLoad[u32](pk, MemOrder.SeqCst) != parkParked {
-    return false;
-  }
-  mem.atomicAnd[u64](parkedWord(s, (*w).index / 64u32), ~parkedBit(w), MemOrder.SeqCst);
-  var seen = 0u32;
-  var marked = false;
-  seen, marked = mem.atomicCompareSwap[u32](pk, parkParked, parkNotified, MemOrder.SeqCst, MemOrder.SeqCst);
-  if marked {
-    sync.futexWake(&(*w).park);
-    return true;
-  }
-  false
-}
-
-// Take everything in w's inbox, by its owner or a stealer: the list, oldest
-// first, linked through the headers, or 0. One exchange takes the whole list,
-// so takers never race over one entry (no ABA: nothing is taken singly), and
-// its Acquire side pairs with the pushes' Release
-fn inboxTake(w: *Worker) *Header {
-  let ip = &(*w).inbox as **Header;
-  if mem.atomicLoad[*Header](ip, MemOrder.Relaxed) as usize == 0usize {
-    return nullHeader();
-  }
-  var h = mem.atomicSwap[*Header](ip, nullHeader(), MemOrder.AcqRel);
-  // Pushed newest first: turned round
-  var prev = nullHeader();
-  while h as usize != 0usize {
-    let next = (*h).link;
-    (*h).link = prev;
-    prev = h;
-    h = next;
-  }
-  prev
-}
-
-// The worker takes its own inbox onto the back of its own queue, behind what
-// that already holds, in the order the replies came: how many
-fn homeTake(w: *Worker) u64 {
-  var h = inboxTake(w);
-  var n = 0u64;
-  while h as usize != 0usize {
-    let next = (*h).link;
-    (*h).link = nullHeader();
-    localPush(w, h);
-    n = n + 1u64;
-    h = next;
-  }
-  if n != 0u64 {
-    tally(&(*(*w).stat).homeTaken as *u64, n);
-  }
-  n
-}
-
-// Steal v's inbox into w's own queue, if v is busy (a v not busy is awake and
-// takes its own: the actor stays where it awaited): one of them to run, or 0
-fn homeSteal(w: *Worker, v: *Worker) *Header {
-  if mem.atomicLoad[*Header](&(*v).inbox as **Header, MemOrder.Relaxed) as usize == 0usize {
-    return nullHeader();
-  }
-  if ld32(&(*v).busy as *u32) == 0u32 {
-    return nullHeader();
-  }
-  let first = inboxTake(v);
-  if first as usize == 0usize {
-    return nullHeader();
-  }
-  var h = (*first).link;
-  (*first).link = nullHeader();
-  var n = 1u64;
-  while h as usize != 0usize {
-    let next = (*h).link;
-    (*h).link = nullHeader();
-    localPush(w, h);
-    n = n + 1u64;
-    h = next;
-  }
-  tally(&(*(*w).stat).homeStolen as *u64, n);
-  first
-}
-
-// The worker begins a turn or a loop piece: busy, SeqCst, then a look at its
-// own inbox, SeqCst (the pairing with homePush's push and its read of busy):
-// whatever a reply put there meanwhile is stealable while this runs, so one
-// worker is woken to look, unless one looks already (notify)
-fn busyOn(w: *Worker) {
-  mem.atomicStore[u32](&(*w).busy as *u32, 1u32, MemOrder.SeqCst);
-  if mem.atomicLoad[*Header](&(*w).inbox as **Header, MemOrder.SeqCst) as usize != 0usize {
-    // Work waits in the inbox behind this turn: stealable, so one looks
-    notify((*w).sched);
-  }
-}
-
-// The turn or piece is over. Release: a stealer that still reads busy steals
-// what the worker would have taken next, which costs locality only
-fn busyOff(w: *Worker) {
-  mem.atomicStore[u32](&(*w).busy as *u32, 0u32, MemOrder.Release);
-}
-
 // A worker found work away from its own queue: it is no longer the one
 // looking, and if more work is waiting, another is woken to look
 fn foundAway(w: *Worker) {
@@ -3850,8 +3588,6 @@ fn findWork(w: *Worker) *Header {
       return a;
     }
   }
-  // Replies awaited here, onto the back of its own queue (THE HOME INBOX)
-  homeTake(w);
   let mine = queuePop(w);
   if mine as usize != 0usize {
     return mine;
@@ -3884,23 +3620,14 @@ fn stealActor(w: *Worker) *Header {
         foundAway(w);
         return got;
       }
-      let homed = homeSteal(w, v);
-      if homed as usize != 0usize {
-        foundAway(w);
-        return homed;
-      }
     }
     i = i + 1u32;
   }
   nullHeader()
 }
 
-// Whether any queue holds an actor or a loop piece that worker w may take,
-// looked at without taking one: an inbox counts if it is w's own, or its
-// worker is busy (THE HOME INBOX; another's inbox, its worker free, is that
-// worker's to take, and looking at it would keep w from parking for nothing).
-// The inbox is read SeqCst: the park's look in the pairing with homePush
-fn anyWork(s: *Sched, w: *Worker) bool {
+// Whether any queue holds an actor or a loop piece, looked at without taking one
+fn anyWork(s: *Sched) bool {
   if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
     return true;
   }
@@ -3908,10 +3635,6 @@ fn anyWork(s: *Sched, w: *Worker) bool {
   while i < (*s).nworkers {
     let v = workerAt(s, i);
     if ld64(&(*v).tail as *u64) != ld64(&(*v).head as *u64) {
-      return true;
-    }
-    if mem.atomicLoad[*Header](&(*v).inbox as **Header, MemOrder.SeqCst) as usize != 0usize
-        && (v as usize == w as usize || ld32(&(*v).busy as *u32) != 0u32) {
       return true;
     }
     i = i + 1u32;
@@ -3966,7 +3689,7 @@ fn spin(w: *Worker) bool {
   let start = clockTicks();
   var found = false;
   while !found {
-    if anyWork(s, w) {
+    if anyWork(s) {
       found = true;
     } else if clockTicks() - start >= (*s).spinTicks {
       break;
@@ -4113,7 +3836,7 @@ fn idle(w: *Worker) bool {
   if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 4u32);
   }
-  if anyWork(s, w) {
+  if anyWork(s) {
     if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
       parkHoldHere(s, w, 3u32);
     }
@@ -4187,37 +3910,27 @@ fn workerMain(arg: WorkerArg) u32 {
     // another worker's pieces, and then another's actors
     var t = emptyTask();
     if dequePopNewest(tasksOf(w), &mut t as *Task) {
-      busyOn(w);
       runTask(s, t);
-      busyOff(w);
       continue;
     }
     if dequeTakeOldest(extDeque(s), &mut t as *Task) {
       foundAway(w);
-      busyOn(w);
       runTask(s, t);
-      busyOff(w);
       continue;
     }
     let h = findWork(w);
     if h as usize != 0usize {
-      busyOn(w);
       runActor(w, h);
-      busyOff(w);
       continue;
     }
     if stealTask(s, w, &mut t as *Task) {
       foundAway(w);
-      busyOn(w);
       runTask(s, t);
-      busyOff(w);
       continue;
     }
     let a = stealActor(w);
     if a as usize != 0usize {
-      busyOn(w);
       runActor(w, a);
-      busyOff(w);
       continue;
     }
     if !idle(w) {
@@ -4273,8 +3986,6 @@ pub struct Stats {
   pub parks: u64 = 0u64;        // times a worker slept on its park word (THE PARK WORD)
   pub reparks: u64 = 0u64;      // returns from that sleep with nobody having chosen the worker, which slept again at once
   pub marksSpent: u64 = 0u64;   // times a notify chose a worker already leaving the park with work seen: it woke nobody new
-  pub homeTaken: u64 = 0u64;    // actors a reply off the workers made runnable that the worker they awaited from took from its inbox (THE HOME INBOX)
-  pub homeStolen: u64 = 0u64;   // ... that another worker took from that inbox, the worker they awaited from being busy
 }
 
 // What configure set, read when the workers start: atomics, since 'configure'
@@ -4306,9 +4017,7 @@ struct StatSlot {
   pub parks: u64;               // sleeps on the park word
   pub reparks: u64;             // returns from the wait unchosen, slept again at once
   pub marksSpent: u64;          // parks left with work seen after a notify had marked the worker
-  pub homeTaken: u64;           // actors taken from this worker's own inbox (THE HOME INBOX)
-  pub homeStolen: u64;          // actors this worker took from a busy worker's inbox
-  pub gap: Array[u8, 40];       // a slot is two cache lines, so that no two workers' slots share one
+  pub gap: Array[u8, 48];       // a slot is two cache lines, so that no two workers' slots share one
 }
 
 let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
@@ -4558,8 +4267,6 @@ pub fn stats() Stats {
     st.parks = st.parks + mem.atomicLoad[u64](&(*slot).parks as *u64, MemOrder.Relaxed);
     st.reparks = st.reparks + mem.atomicLoad[u64](&(*slot).reparks as *u64, MemOrder.Relaxed);
     st.marksSpent = st.marksSpent + mem.atomicLoad[u64](&(*slot).marksSpent as *u64, MemOrder.Relaxed);
-    st.homeTaken = st.homeTaken + mem.atomicLoad[u64](&(*slot).homeTaken as *u64, MemOrder.Relaxed);
-    st.homeStolen = st.homeStolen + mem.atomicLoad[u64](&(*slot).homeStolen as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
   st

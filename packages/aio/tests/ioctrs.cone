@@ -1,0 +1,104 @@
+// aio.ioCounters: the I/O thread's Loop counters, read after finalAll(). Before
+// any I/O is awaited they are zero; after a loopback ping-pong of 64 bytes
+// (two actors, 200 round trips, each end awaiting a write and a read a round)
+// they show the operations the rounds made: at least four answers a round,
+// every submission delivered or in flight, and the Loop having polled and
+// waited in the kernel.
+
+mod ioctrs;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+const rounds = 200u64;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {}
+  }
+  s
+}
+
+actor Client {
+
+  pub async fn dial(self, port: u16) {
+    let c = await aio.connect(SocketAddr.localhost(port));
+    let s = socketOf(c);
+    var k = 0u64;
+    while k < rounds {
+      var b = IoBuf(64usize);
+      b.setLen(64usize);
+      let w = await s.write(b);
+      let r = await s.read(IoBuf(64usize));
+      k = k + 1u64;
+    }
+  }
+}
+
+actor Server {
+
+  pub async fn serve(self, client: Client, done: OneshotSender[u64]) {
+    let l = await aio.listen(SocketAddr.localhost(0u16));
+    let ls = socketOf(l);
+    let a = await ls.localAddr();
+    var port = 0u16;
+    match a {
+      case let Ok(addr) {port = addr.port();}
+      else {}
+    }
+    client.dial(port);
+    let ac = await ls.accept();
+    let conn = socketOf(ac);
+    var k = 0u64;
+    while k < rounds {
+      var r = await conn.read(IoBuf(64usize));
+      match &mut r {
+        case var &mut Ok(ok) {
+          var b = IoBuf.empty();
+          b <-> *ok;
+          let w = await conn.write(b);
+        }
+        else {}
+      }
+      k = k + 1u64;
+    }
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let before = aio.ioCounters();
+  expectUInt(before.submitted, 0u64, "no I/O awaited yet: the counters are zero");
+  expectUInt(before.polls, 0u64, "and the Loop has not polled");
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let client = Client();
+    let server = Server();
+    server.serve(client, tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the server said it was done");}
+    else {}
+  }
+  expectUInt(aio.ioCounters().submitted, 0u64, "the counters are kept when the program ends, not before");
+  finalAll();
+  let c = aio.ioCounters();
+  expect(c.delivered >= 4u64 * rounds, "at least four answers a round trip were delivered");
+  expectUInt(c.submitted, c.delivered + c.inFlight, "submitted = delivered + in flight");
+  expect(c.polls > 0u64, "the Loop polled");
+  expect(c.waits > 0u64, "the Loop waited in the kernel");
+  expect(c.waits <= c.polls, "and no more often than it polled");
+  expect(c.dequeued > 0u64, "completions were taken from the kernel's queue");
+  done()
+}
