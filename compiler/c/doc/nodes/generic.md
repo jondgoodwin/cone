@@ -146,7 +146,9 @@ is the type of a **value parameter**, NULL for a type parameter: on a generic th
 integer type of `[N: usize]` (below), a compile-time number; on a macro the type
 written after the `:`, `[a: T]`, a run-time value — one bracket slot, two
 meanings, accepted as such [Jon 26 Oct]. A macro's value parameter written
-`a: lazy T` carries `FlagLazy`; a macro method's `self` has no `valtype`.
+`a: lazy T` carries `FlagLazy`; a macro method's `self` has no `valtype`. A
+trait's associated type is a type parameter of the trait marked `FlagAssocType`,
+after the written ones (Associated types, below).
 
 **Why the annotation is one slot, of no fixed meaning.** `[T: ___]` is where a
 parameter will be annotated with more than a constraint: a type, making a value
@@ -494,7 +496,10 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    enum is matched as its enum's instance. A function signature, reached
    through a function reference parameter (`f &fn(a: A) R`), matches the
    signature of the function the argument references, each parameter type and
-   then the return type, provided both have as many parameters. An argument
+   then the return type, provided both have as many parameters. A tuple type,
+   `(P, P)`, matches a tuple of as many elements, element by element (a template
+   holds a tuple of type parameters as a value tuple, so both tags are
+   accepted). An argument
    type naming a generic's own type parameter — the signature of `&half`, a
    generic function not instantiated — captures nothing. Region and permission
    otherwise take no part: the instance's own check of the call judges them. Any other
@@ -523,9 +528,14 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    capture the function's. It fills empty slots only and ignores a disagreement, so
    the constraint, decided afterwards as ever, is what refuses a type whose
    methods contradict one another, naming the method. A slot an argument already
-   filled stays. No associated type is
-   involved: a structural trait has no impl to look an answer up in, so the
-   methods are the only place it can be read. A signature bound, `F: fn() T`, is
+   filled stays. A structural trait has no impl
+   to look an answer up in, so the methods are the only place it can be read;
+   that is also where an associated type is read (Associated types, below), and
+   what its bound says of the trait's other parameters is read in turn off the
+   associated type's own methods (`genericInferFromBoundsDepth`: `Cursor is
+   Iterator[T]` gives T as what the cursor's `next` gives). A method the type
+   has only folded in, a list's `split` lent from its body Array, is matched
+   through its alias (`genericMatchMethodArity`). A signature bound, `F: fn() T`, is
    read the same way off the argument: a function type's signature is matched
    with the bound's whole (`genericInferType`'s signature case), a struct's
    `()` method (the one candidate with the bound's parameters and a receiver)
@@ -771,6 +781,63 @@ array or a slice has the methods of core's body `Array[T]`, found as any call on
 one finds them (`fnCallSliceBodyOf`) and lowered the same way
 (`fnCallLowerSliceMethod`), so `s.m[3]()` on a slice reaches a generic method of
 `Array[T]` taking a number.
+
+### Associated types
+
+**A trait's `type Cursor: Iterator[T];` is a parameter of the trait that no use
+writes.** `parseAssocType` (a trait's body, `type` a contextual word read only
+before a name) appends a `GenVarDclNode` marked `FlagAssocType` after the written
+parameters, creating the trait's `GenericInfo` if it had none, its bound in
+`annot` as a type parameter's is, so `genericConstraintsNameRes` folds it into
+the trait's `where` (`Cursor is Iterator[T]`); a bound is optional (`type
+Piece;`). Inside the trait it is used as any parameter is. Every instance of
+the trait is made at all its arguments, `Iterable[i64, ListIter[i64]]`, and a
+type meets it, as ever, by fitting that instance (`structMatches`); its name in
+a message leaves the associated ones out (`genericTypeNameCat`).
+
+**A use writes the other arguments alone** (`genericWrittenCount`), `C:
+Iterable[T]`, and **what it leaves out is read off the type meeting the trait**
+(`genericAssocRead`): an alias the type declares under the name, `alias Cursor
+= Up;` in its body (an `AliasDclNode` in its namespace and member list, checked
+where it is asked for), else the type's methods matched with the trait's as a
+bound's are (`genericInferTraitMethods`, the loop `genericInferFromBounds` uses):
+the method mentioning it says it, `iter`'s return type. Nothing is built: it is
+the alias's target or what the method gives, a type the program declares. The
+trait's own constraints are then decided at the full arguments, silently, so a
+cursor that is no `Iterator[T]` is a type that does not meet the trait, and
+`genericAssocWhy` holds why. A trait whose every parameter is associated is
+written bare, `C: Holder`, which `genericAssocBareUse` turns into its use with
+no written arguments wherever it is resolved as a bound or an `is` entry.
+
+Where the type is known, the use is completed (`genericAssocComplete`) and then
+checked as the instance: a clause, at the clause's subject
+(`genericClauseCloneFor`, from `genericConditionValue`, which answers false where
+the subject does not say them, and from the unmet-requirement report, which says
+why); an `is` entry, at the declaring type (`genericAssocCompleteIs`, from
+`structTypeCheck`, `ErrorInvType` where it does not). **`genericMemoize` takes a
+trait's full argument list only from a completed use** (`genericAssocCompleted`,
+the node being checked): one written with the other arguments alone has no type
+to say the rest, which is a virtual reference's case, `&<Iterable[i64]`, refused
+as not built (`ErrorAssocUnsaid`; `itypeRefuseBareGeneric` for a bare `&<Holder`),
+and one written with them all would fix them, an equality constraint, refused by
+count (`ErrorArgCount`, as `genericTraitInstanceVet` refuses it in a bound). The
+named form, `Iterable[i64, Cursor = u8]`, is refused by the parser
+(`parseIndexArg`, `ErrorAssocEquality`).
+
+**Generic code names it through the parameter, `C.Cursor`.** Each kept clause
+whose subject is a type parameter and whose trait declares associated types is
+noted (`genericAssocBoundNote`), and `fnCallNameRes`, meeting `C.Cursor` (a path,
+no call) where C's bounds declare `Cursor`, rewrites it to `Iterable[T].Cursor(C)`
+(`genericAssocPathNameRes`): the bound as written, copied as uses of what it names,
+with the parameter as its one argument. A name no bound declares, or one two
+traits each declare, is `ErrorUnkName`; a parameter whose bounds declare none
+keeps the path as before. In the template the path is a provisional type
+(`inodeIsProvisionalType`); in an instance, its argument substituted, it is a type
+(`genericAssocPathIsType`), so the type-or-value votes the clone takes again
+(`cloneTupleNode`, `fnCallHasTypeArgs`) read it as one; and its type check
+(`genericAssocPathTypeCheck`, first in `fnCallTypeCheckNode`) reads the
+associated type off the argument as above and stands that type in its place. It
+is resolved per instance, as cloning substitutes for name resolution.
 
 ### Constraints
 

@@ -908,7 +908,8 @@ int inodeIsExp(INode *node) {
 // check replaces it with the instance it names, and is a type all the while;
 // so is a managed reference type, 'Rc[mut, Node]', until type check lowers it
 int inodeIsType(INode *node) {
-    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node) || itypeIsManagedRefType(node);
+    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node) || itypeIsManagedRefType(node)
+        || genericAssocPathIsType(node);
 }
 
 int inodeIsMeta(INode *node) {
@@ -949,6 +950,9 @@ int inodeIsProvisionalType(INode *node) {
     // 'R[mut, T]', is a type once R is substituted
     case FnCallTag: {
         FnCallNode *call = (FnCallNode*)node;
+        // 'C.Cursor', an associated type named through a type parameter
+        if (genericAssocPathIs(node))
+            return 1;
         if (!(call->flags & FlagIndex) || call->methfld != NULL || call->args == NULL
             || call->args->used == 0 || !nameUseNames(call->objfn, GenVarDclTag))
             return 0;

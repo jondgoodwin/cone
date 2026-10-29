@@ -612,6 +612,14 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   parsed rather than dumped onto the module's statement stream.
 - Each method joins the type through `iNsTypeAddFn`, which records the type as
   its owner; that is what spells its symbol `Type_meth` at generation.
+- **A trait's `type Cursor: Iterator[T];` is an associated type**, a type
+  parameter of the trait that no use writes (`parseAssocType`, `FlagAssocType`),
+  so a trait declaring one is generic even with no brackets. A struct's or a
+  variant's body may declare `alias Cursor = Up;`, a type alias in its namespace
+  and member list, which is how a type says one outright; otherwise the method
+  that mentions it says it ([generic](generic.md), "Associated types"). An entry
+  of an `is` list naming such a trait is completed with what the type says at
+  type check (`genericAssocCompleteIs`), before the instance is made.
 - **`is` takes a comma-separated list.** On a struct or a trait the first name
   becomes `basetrait`; each further one becomes a `FieldDclNode` named `_` flagged
   `IsMixin`, a **placeholder standing for a trait, which name resolution removes

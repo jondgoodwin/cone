@@ -239,6 +239,58 @@ struct Pt is Same {
 			implementations may differ in size, as a trait held by value.</li>
 	</ul>
 
+	<h3 id="assoc">Associated types</h3>
+	<p style="margin-left: 40px;"><i>Note: All of this is implemented, except an associated type fixed in a
+		constraint (an equality constraint, Rust's <span class="pre">Item = u8</span>:
+		<span class="pre">C: Iterable[i64, Cursor = u8]</span>) and a virtual reference to a trait with an associated
+		type (<span class="pre">&amp;&lt;Iterable[i64]</span>), each refused as not built.</i></p>
+	<p>Some traits need a type that each type meeting them chooses for itself: a collection walks itself with a
+		cursor of its own kind. The trait declares it with <span class="pre">type</span>, bounded as a type parameter
+		is, and names it in its methods:</p>
+<pre>
+pub trait Iterable[T] {
+  type Cursor: Iterator[T];
+  pub fn iter(self: &amp;) Cursor;
+}
+</pre>
+	<p>A type meeting the trait says what its <span class="pre">Cursor</span> is by the method that mentions it: a
+		type whose <span class="pre">iter</span> gives a <span class="pre">Countdown</span> has
+		<span class="pre">Countdown</span> as its <span class="pre">Cursor</span>, and needs to say nothing more. It may
+		also say so outright, with an alias in its body, and its methods are then held to what the alias says:</p>
+<pre>
+struct Shelf is Iterable[i64] {
+  alias Cursor = Countdown;
+  pub n: i64;
+  pub fn iter(self: &amp;) Countdown { Countdown(n) }
+}
+</pre>
+	<p>Generic code names it through the type parameter, <span class="pre">C.Cursor</span>, and each instance
+		reads it off the type it is given:</p>
+<pre>
+fn count[T, C: Iterable[T]](c: &amp;C) usize {
+  var it: C.Cursor = c.iter();
+  var n = 0usize;
+  while it.next() is Some { n = n + 1usize; }
+  n
+}
+</pre>
+	<ul>
+		<li><b>A use writes the trait's own parameters only</b>: <span class="pre">C: Iterable[T]</span>. The type
+			given for <span class="pre">C</span> says the rest, and <span class="pre">T</span> is found as what its
+			cursor's <span class="pre">next</span> gives, so <span class="pre">count(&amp;list)</span> needs no type
+			arguments written.</li>
+		<li><b>Its bound is a requirement</b> of every type meeting the trait: a type whose
+			<span class="pre">iter</span> gives no <span class="pre">Iterator[T]</span> does not meet
+			<span class="pre">Iterable[T]</span>, and the error says what its <span class="pre">iter</span> gives. A
+			bound may be left off, <span class="pre">type Piece;</span>.</li>
+		<li><b>It is a type the program declares already</b>, the alias's or what the method gives; nothing new is
+			made for it. <span class="pre">C.Nope</span>, a name no bound of <span class="pre">C</span> declares, is
+			an error.</li>
+		<li><b>A trait whose only parameter is associated is written bare</b>:
+			<span class="pre">trait Holder { type Item; pub fn get(self: &amp;) Item; }</span> is met as
+			<span class="pre">[H: Holder]</span> and declared as <span class="pre">struct Word is Holder</span>.</li>
+	</ul>
+
 	<h2 id="virtref">Virtual references: choosing the part while the program runs</h2>
 	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented. An owning one
 		(<span class="pre">Uni[Shape]</span>) is built, dispatched through, lent as a borrowed one, and finalized and

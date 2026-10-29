@@ -547,6 +547,24 @@ static INode *parseIndexArg(ParseState *parse) {
         }
         return sig;
     }
+    // 'Iterable[i64, Cursor = u8]' in a type: an associated type fixed in a
+    // constraint, an equality constraint, which is not built. Refused at the '=',
+    // and what follows read as the type it would be
+    if (parse->intype && lexIsToken(IdentToken)) {
+        char *p = lex->srcp;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+            ++p;
+        if (*p == '=' && p[1] != '=') {
+            Name *assoc = lex->val.ident;
+            lexNextToken();
+            errorMsgLex(ErrorAssocEquality,
+                "An associated type is said by the type that meets the trait, not fixed in a constraint: '%s = ...' here is an equality constraint (Rust's 'Item = u8'), which is not built.",
+                &assoc->namestr);
+            lexNextToken();
+            parseType(parse);
+            return NULL;
+        }
+    }
     return parseArg(parse);
 }
 

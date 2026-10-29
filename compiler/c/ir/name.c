@@ -39,6 +39,7 @@ Name *finalName;
 Name *enumFinalName;
 Name *initName;
 Name *lazyName;
+Name *typeWordName;
 Name *yieldsName;
 Name *nextName;
 Name *tagName;

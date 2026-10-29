@@ -388,6 +388,26 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         }
         return genericInferType(inferredgencall, genparms, arrayElemType(parmtype), arrayElemType(argtype));
     }
+    case TTupleTag:
+    case VTupleTag: {
+        // A tuple type, '(P, P)', matches a tuple of as many elements, element by
+        // element. In a template a tuple of type parameters is held as a value
+        // tuple, since a parameter is not yet a type (cloneTupleNode)
+        if (argtype->tag != TTupleTag)
+            return 1;
+        Nodes *parmelems = ((TupleNode *)parmtype)->elems;
+        Nodes *argelems = ((TupleNode *)argtype)->elems;
+        if (parmelems->used != argelems->used)
+            return 1;
+        INode **argelemp = &nodesGet(argelems, 0);
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(parmelems, cnt, elemp)) {
+            if (genericInferType(inferredgencall, genparms, *elemp, *argelemp++) == 0)
+                return 0;
+        }
+        return 1;
+    }
     case FnSigTag: {
         // A function signature, reached through a function reference, matches
         // the signature of the function the argument references, parameter by
@@ -820,7 +840,15 @@ static int genericTraitInstanceVet(INode *node) {
     StructNode *trait = genericNamedGenericTrait(node);
     FnCallNode *call = (FnCallNode*)node;
     uint32_t given = call->args ? call->args->used : 0;
-    uint32_t wanted = trait->genericinfo->parms ? trait->genericinfo->parms->used : 0;
+    uint32_t wanted = genericWrittenCount(trait->genericinfo);
+    // An associated type given as an argument would fix it in the constraint,
+    // which only the type meeting the trait says
+    if (given != wanted && genericHasAssoc(trait->genericinfo) && given == trait->genericinfo->parms->used) {
+        errorMsgNode(node, ErrorArgCount,
+            "%s takes %u type argument%s, and this constraint gives %u: its associated types are said by the type that meets it, not by a constraint. (Fixing one in a constraint, as Rust's 'Item = u8', is not built.)",
+            &trait->namesym->namestr, wanted, wanted == 1 ? "" : "s", given);
+        return 0;
+    }
     if (given != wanted) {
         errorMsgNode(node, ErrorArgCount,
             "%s takes %u type argument%s, and this constraint gives %u.",
@@ -840,6 +868,11 @@ static FnDclNode *genericMatchMethod(INode *binding, FnDclNode *traitmeth) {
 
 // The one candidate of this name taking this many parameters (a receiver among them)
 static FnDclNode *genericMatchMethodArity(INode *binding, uint32_t wanted) {
+    // A folded method's binding is an alias; the candidates are its target's
+    // (a list's 'split', lent from its body Array)
+    while (binding && binding->tag == AliasDclTag && !(binding->flags & FlagTypeAlias)
+        && ((AliasDclNode*)binding)->target && isNameUseNode(((AliasDclNode*)binding)->target))
+        binding = ((NameUseNode*)((AliasDclNode*)binding)->target)->dclnode;
     if (binding == NULL)
         return NULL;
     fnCallDemandCandidates(binding);
@@ -876,7 +909,20 @@ static FnDclNode *genericMatchMethodArity(INode *binding, uint32_t wanted) {
 // there, and those are what the bound's arguments come to. It captures only an
 // empty slot, and never contradicts one, so a parameter already inferred stays,
 // and the bound is then decided as ever, by evaluation, on whatever was found.
+static void genericAssocAliases(StructNode *trait, StructNode *type, FnCallNode *traitcall);
+static void genericInferTraitMethods(StructNode *trait, StructNode *type, FnCallNode *traitcall);
+static void genericInferFromBoundsDepth(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall, int depth);
+
 static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall) {
+    genericInferFromBoundsDepth(genparms, where, inferredgencall, 0);
+}
+
+// A trait's associated type is one of its own parameters, read off the methods
+// as the others are; what its bound says of the trait's other parameters is read
+// in turn, off the associated type's own methods ('Cursor is Iterator[T]': T is
+// what the cursor's 'next' gives). 'depth' stops a bound that names its own
+// trait from reading without end.
+static void genericInferFromBoundsDepth(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall, int depth) {
     if (where == NULL || genparms == NULL)
         return;
     INode **argsp;
@@ -927,36 +973,469 @@ static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *in
         }
         FnCallNode *boundcall = (FnCallNode*)clause->typ;
         Nodes *tparms = trait->genericinfo->parms;
-        if (sdcl->tag != StructTag || tparms == NULL || boundcall->args == NULL
-            || tparms->used != boundcall->args->used)
+        uint32_t nwritten = genericWrittenCount(trait->genericinfo);
+        uint32_t given = boundcall->args ? boundcall->args->used : 0;
+        if (sdcl->tag != StructTag || tparms == NULL || given != nwritten)
             continue;
-        // What each of the trait's own parameters is, as the argument's methods say
+        // What each of the trait's own parameters is, as the argument's methods say:
+        // an associated type, as the alias the argument declares for it says first
         FnCallNode *traitcall = newFnCallNode(boundcall->objfn, tparms->used);
         inodeLexCopy((INode*)traitcall, (INode*)boundcall);
         for (uint32_t j = 0; j < tparms->used; ++j)
             nodesAdd(&traitcall->args, (INode*)NULL);
-        INode **nodesp;
-        uint32_t methcnt;
-        for (nodelistFor(&trait->nodelist, methcnt, nodesp)) {
-            if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
-                continue;
-            FnDclNode *traitmeth = (FnDclNode*)*nodesp;
-            FnDclNode *meth = genericMatchMethod(namespaceFind(&((StructNode*)sdcl)->namespace, traitmeth->namesym), traitmeth);
-            if (meth == NULL)
-                continue;
-            FnSigNode *tsig = (FnSigNode*)itypeGetTypeDcl(traitmeth->vtype);
-            FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
-            // The receiver is the first parameter of each; the rest are matched
-            for (uint32_t j = 1; j < tsig->parms->used; ++j)
-                genericInferType(traitcall, tparms, ((VarDclNode*)nodesGet(tsig->parms, j))->vtype,
-                    ((VarDclNode*)nodesGet(msig->parms, j))->vtype);
-            genericInferType(traitcall, tparms, tsig->rettype, msig->rettype);
-        }
-        for (uint32_t j = 0; j < tparms->used; ++j) {
+        genericAssocAliases(trait, (StructNode*)sdcl, traitcall);
+        genericInferTraitMethods(trait, (StructNode*)sdcl, traitcall);
+        if (nwritten < tparms->used && depth < 8)
+            genericInferFromBoundsDepth(tparms, trait->genericinfo->where, traitcall, depth + 1);
+        for (uint32_t j = 0; j < nwritten; ++j) {
             if (nodesGet(traitcall->args, j))
                 genericInferType(inferredgencall, genparms, nodesGet(boundcall->args, j), nodesGet(traitcall->args, j));
         }
     }
+}
+
+// Each method a trait requires, matched with the type's method of the name (the
+// one candidate with as many parameters): every parameter after the receiver,
+// then the return type, captures what the trait's own parameters are there, into
+// the empty slots of 'traitcall', one for each of the trait's parameters
+static void genericInferTraitMethods(StructNode *trait, StructNode *type, FnCallNode *traitcall) {
+    Nodes *tparms = trait->genericinfo->parms;
+    INode **nodesp;
+    uint32_t methcnt;
+    for (nodelistFor(&trait->nodelist, methcnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+        FnDclNode *meth = genericMatchMethod(namespaceFind(&type->namespace, traitmeth->namesym), traitmeth);
+        if (meth == NULL)
+            continue;
+        FnSigNode *tsig = (FnSigNode*)itypeGetTypeDcl(traitmeth->vtype);
+        FnSigNode *msig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+        // The receiver is the first parameter of each; the rest are matched
+        for (uint32_t j = 1; j < tsig->parms->used; ++j)
+            genericInferType(traitcall, tparms, ((VarDclNode*)nodesGet(tsig->parms, j))->vtype,
+                ((VarDclNode*)nodesGet(msig->parms, j))->vtype);
+        genericInferType(traitcall, tparms, tsig->rettype, msig->rettype);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Associated types (generic.h). A trait's 'type Cursor: Iterator[T];' is a
+// parameter of the trait no use writes, after the written ones, so an instance
+// of the trait is made at every argument, 'Iterable[i64, ListIter[i64]]', and a
+// type meets it, as ever, by fitting that instance. What a use leaves out is
+// read off the type meeting the trait, where the use has one: a bound's argument,
+// an 'is' list's type. Nothing is built for it: it is a type the program declares
+// already, the target of the type's alias or what its method gives.
+
+int genericIsAssocParm(INode *parm) {
+    return parm->tag == GenVarDclTag && (parm->flags & FlagAssocType);
+}
+
+uint32_t genericWrittenCount(GenericInfo *info) {
+    if (info == NULL || info->parms == NULL)
+        return 0;
+    uint32_t written = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(info->parms, cnt, nodesp)) {
+        if (!genericIsAssocParm(*nodesp))
+            ++written;
+    }
+    return written;
+}
+
+int genericHasAssoc(GenericInfo *info) {
+    return info != NULL && info->parms != NULL && genericWrittenCount(info) < info->parms->used;
+}
+
+// The trait a use names written out, 'Iterable[T]' (a call of its name), where
+// the trait declares associated types: its template. NULL for anything else.
+static StructNode *genericAssocTraitOf(INode *node) {
+    if (node == NULL || node->tag != FnCallTag || ((FnCallNode*)node)->methfld != NULL)
+        return NULL;
+    INode *objfn = ((FnCallNode*)node)->objfn;
+    if (!isNameUseNode(objfn))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)objfn);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & TraitType)
+        || !genericHasAssoc(((StructNode*)dcl)->genericinfo))
+        return NULL;
+    return (StructNode*)dcl;
+}
+
+void genericAssocBareUse(INode **nodep) {
+    INode *node = *nodep;
+    if (!isNameUseNode(node))
+        return;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & TraitType)
+        || !genericHasAssoc(((StructNode*)dcl)->genericinfo) || genericWrittenCount(((StructNode*)dcl)->genericinfo) != 0)
+        return;
+    FnCallNode *call = newFnCallNode(node, 0);
+    inodeLexCopy((INode*)call, node);
+    call->flags |= FlagIndex;
+    *nodep = (INode*)call;
+}
+
+// The alias a type declares for each of a trait's associated types, into the
+// empty slots of 'traitcall': what it says outright is what the type's methods
+// are then held to
+static void genericAssocAliases(StructNode *trait, StructNode *type, FnCallNode *traitcall) {
+    Nodes *tparms = trait->genericinfo->parms;
+    for (uint32_t j = 0; j < tparms->used; ++j) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(tparms, j);
+        if (!genericIsAssocParm((INode*)parm) || nodesGet(traitcall->args, j) != NULL)
+            continue;
+        INode *alias = namespaceFind(&type->namespace, parm->namesym);
+        if (alias == NULL || alias->tag != AliasDclTag || !(alias->flags & FlagTypeAlias))
+            continue;
+        // Checked where it is asked for, as a member a call reaches is
+        if (!(alias->flags & (TypeChecked | TypeChecking))) {
+            TypeCheckState tstate;
+            tstate.typenode = (INode*)type;
+            tstate.fn = NULL;
+            tstate.scope = 0;
+            tstate.extend = NULL;
+            alias->flags |= TypeChecking;
+            aliasDclTypeCheck(&tstate, (AliasDclNode*)alias);
+            alias->flags = (alias->flags & ~TypeChecking) | TypeChecked;
+        }
+        INode *target = ((AliasDclNode*)alias)->target;
+        if (target == NULL || !isTypeNode(target) || inodeIsError(target))
+            continue;
+        INode *dcl = itypeGetTypeDcl(target);
+        nodesGet(traitcall->args, j) = dcl->tag == StructTag ? newNameUseFromDclNode(dcl, (INode*)traitcall) : target;
+    }
+}
+
+static INode *genericUnmetCondition(INode *generic, Nodes *where, Nodes *parms, Nodes *args);
+static StructNode *genericTemplateOf(StructNode *inst);
+static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth);
+static void genericTemplateNameCat(char *buf, size_t size, INode *node, int depth);
+static void genericConditionCat(char *buf, size_t size, INode *cond, int grouped);
+static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms, Nodes *args);
+static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *args);
+
+// Why the last reading of associated types came to nothing, for a refusal to say
+static char genericAssocWhy[700];
+
+// Every argument of 'trait' (a template declaring associated types), given the
+// written ones, 'written', and the type that meets it, 'type': the written ones,
+// then each associated type, as the type's alias says or else as its methods
+// do. NULL, the reason in genericAssocWhy, where the type says one of them
+// nowhere, or says what the trait's constraints refuse ('Cursor is Iterator[T]').
+static Nodes *genericAssocRead(StructNode *trait, Nodes *written, INode *type) {
+    GenericInfo *info = trait->genericinfo;
+    Nodes *tparms = info->parms;
+    uint32_t nwritten = genericWrittenCount(info);
+    genericAssocWhy[0] = '\0';
+    char typename[256] = "";
+    genericTypeNameCat(typename, sizeof(typename), type, 0);
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != StructTag) {
+        snprintf(genericAssocWhy, sizeof(genericAssocWhy),
+            " %s is not a struct: only a struct says what %s's associated types are, by the methods it has.",
+            typename, &trait->namesym->namestr);
+        return NULL;
+    }
+    FnCallNode *traitcall = newFnCallNode(NULL, tparms->used);
+    for (uint32_t j = 0; j < tparms->used; ++j)
+        nodesAdd(&traitcall->args, (INode*)NULL);
+    genericAssocAliases(trait, (StructNode*)dcl, traitcall);
+    genericInferTraitMethods(trait, (StructNode*)dcl, traitcall);
+    Nodes *full = newNodes(tparms->used);
+    for (uint32_t j = 0; j < tparms->used; ++j) {
+        if (j < nwritten) {
+            nodesAdd(&full, written && j < written->used ? nodesGet(written, j) : NULL);
+            continue;
+        }
+        INode *said = nodesGet(traitcall->args, j);
+        if (said == NULL) {
+            // The methods that would have said it, by name
+            Name *assoc = ((GenVarDclNode*)nodesGet(tparms, j))->namesym;
+            char meths[256] = "";
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+                if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+                    continue;
+                size_t used = strlen(meths);
+                snprintf(meths + used, sizeof(meths) - used, "%s%s", meths[0] ? ", " : "", &((FnDclNode*)*nodesp)->namesym->namestr);
+            }
+            snprintf(genericAssocWhy, sizeof(genericAssocWhy),
+                " %s does not say what %s's %s is: it is said by an alias, 'alias %s = ...;', or by a method %s requires (%s), and %s has neither with the trait's shape.",
+                typename, &trait->namesym->namestr, &assoc->namestr, &assoc->namestr,
+                &trait->namesym->namestr, meths[0] ? meths : "none", typename);
+            return NULL;
+        }
+        nodesAdd(&full, said);
+    }
+    // The trait's own constraints, each associated type's bound among them
+    INode *unmet = genericUnmetCondition((INode*)trait, info->where, tparms, full);
+    if (unmet) {
+        // The clause as it comes to here, 'Cursor is Iterator[i64]', where it can
+        // be made; else as written, with what it turned on
+        char cond[256] = "";
+        INode *inst = unmet->tag == IsTag && isNameUseNode(((CastNode*)unmet)->exp)
+            ? genericClauseCloneChecked((CastNode*)unmet, tparms, full) : NULL;
+        if (inst) {
+            snprintf(cond, sizeof(cond), "%s is ", &((NameUseNode*)((CastNode*)unmet)->exp)->namesym->namestr);
+            genericTypeNameCat(cond, sizeof(cond), inst, 0);
+        }
+        else {
+            genericConditionCat(cond, sizeof(cond), unmet, 0);
+            size_t used = strlen(cond);
+            snprintf(cond + used, sizeof(cond) - used, ", false for ");
+            genericBindingsCat(cond, sizeof(cond), unmet, tparms, full);
+        }
+        char said[600] = "";
+        for (uint32_t j = nwritten; j < tparms->used; ++j) {
+            size_t used = strlen(said);
+            snprintf(said + used, sizeof(said) - used, "%s%s is ", said[0] ? ", " : "",
+                &((GenVarDclNode*)nodesGet(tparms, j))->namesym->namestr);
+            genericTypeNameCat(said, sizeof(said), nodesGet(full, j), 0);
+        }
+        snprintf(genericAssocWhy, sizeof(genericAssocWhy),
+            " For %s, %s's %s, and %s requires %s.",
+            typename, &trait->namesym->namestr, said, &trait->namesym->namestr, cond);
+        return NULL;
+    }
+    return full;
+}
+
+// The call node an instance of a trait with associated types is checked as,
+// once completed: genericMemoize takes its full list of arguments, which a
+// use may not write
+static FnCallNode *genericAssocCompleted = NULL;
+static int genericAssocCheckArgs(TypeCheckState *pstate, FnCallNode *call);
+
+// Complete 'call', a trait with associated types written with its written
+// arguments, 'Iterable[i64]', with what 'type' says they are, ready to be
+// checked as the trait's instance. 0, with genericAssocWhy, where it does not
+// say them.
+static int genericAssocComplete(FnCallNode *call, INode *type) {
+    StructNode *trait = genericAssocTraitOf((INode*)call);
+    Nodes *full = genericAssocRead(trait, call->args, type);
+    if (full == NULL)
+        return 0;
+    call->args = full;
+    genericAssocCompleted = call;
+    return 1;
+}
+
+// The registry of the bounds that may say an associated type a generic's code
+// names through its parameter: each clause of a 'where' list, or of a parameter's
+// annotation, naming a trait with associated types, kept by its subject
+static INode **genericAssocBoundSubj = NULL;
+static INode **genericAssocBoundTrait = NULL;
+static uint32_t genericAssocBoundCnt = 0;
+static uint32_t genericAssocBoundCap = 0;
+
+static void genericAssocBoundNote(INode *cond) {
+    if (cond->tag != IsTag)
+        return;
+    CastNode *clause = (CastNode*)cond;
+    if (!isNameUseNode(clause->exp) || ((NameUseNode*)clause->exp)->dclnode == NULL
+        || ((NameUseNode*)clause->exp)->dclnode->tag != GenVarDclTag || genericAssocTraitOf(clause->typ) == NULL)
+        return;
+    if (genericAssocBoundCnt == genericAssocBoundCap) {
+        uint32_t cap = genericAssocBoundCap ? genericAssocBoundCap * 2 : 16;
+        INode **subj = memAllocBlk(cap * sizeof(INode*));
+        INode **trait = memAllocBlk(cap * sizeof(INode*));
+        if (genericAssocBoundCnt) {
+            memcpy(subj, genericAssocBoundSubj, genericAssocBoundCnt * sizeof(INode*));
+            memcpy(trait, genericAssocBoundTrait, genericAssocBoundCnt * sizeof(INode*));
+        }
+        genericAssocBoundSubj = subj;
+        genericAssocBoundTrait = trait;
+        genericAssocBoundCap = cap;
+    }
+    genericAssocBoundSubj[genericAssocBoundCnt] = ((NameUseNode*)clause->exp)->dclnode;
+    genericAssocBoundTrait[genericAssocBoundCnt++] = clause->typ;
+}
+
+// The associated type of this name a trait declares, or NULL
+static GenVarDclNode *genericAssocNamed(StructNode *trait, Name *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(trait->genericinfo->parms, cnt, nodesp)) {
+        if (genericIsAssocParm(*nodesp) && ((GenVarDclNode*)*nodesp)->namesym == name)
+            return (GenVarDclNode*)*nodesp;
+    }
+    return NULL;
+}
+
+int genericAssocPathNameRes(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || node->args != NULL
+        || (node->flags & (FlagIndex | FlagOperator)) || !isNameUseNode(node->objfn))
+        return 0;
+    INode *parm = ((NameUseNode*)node->objfn)->dclnode;
+    if (parm == NULL || parm->tag != GenVarDclTag || ((GenVarDclNode*)parm)->valtype)
+        return 0;
+    Name *name = ((NameUseNode*)node->methfld)->namesym;
+    INode *bound = NULL;
+    INode *other = NULL;
+    char declared[300] = "";
+    for (uint32_t i = 0; i < genericAssocBoundCnt; ++i) {
+        if (genericAssocBoundSubj[i] != parm)
+            continue;
+        StructNode *trait = genericAssocTraitOf(genericAssocBoundTrait[i]);
+        if (genericAssocNamed(trait, name)) {
+            // The same trait named twice, 'C: Iterable[T]' and 'where C is
+            // Iterable[T]', says one Cursor; two traits each declaring one are two
+            if (bound && genericAssocTraitOf(bound) != trait)
+                other = genericAssocBoundTrait[i];
+            else if (bound == NULL)
+                bound = genericAssocBoundTrait[i];
+        }
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(trait->genericinfo->parms, cnt, nodesp)) {
+            if (!genericIsAssocParm(*nodesp))
+                continue;
+            size_t used = strlen(declared);
+            snprintf(declared + used, sizeof(declared) - used, "%s%s's %s", declared[0] ? ", " : "",
+                &trait->namesym->namestr, &((GenVarDclNode*)*nodesp)->namesym->namestr);
+        }
+    }
+    if (declared[0] == '\0')
+        return 0;   // no bound of the parameter declares one: a path as ever
+    Name *pname = ((GenVarDclNode*)parm)->namesym;
+    if (bound == NULL) {
+        errorMsgNode(node->methfld, ErrorUnkName,
+            "%s.%s names no associated type: the bounds of %s declare %s, and no %s.",
+            &pname->namestr, &name->namestr, &pname->namestr, declared, &name->namestr);
+        *(INode**)nodep = errorType;
+        return 1;
+    }
+    if (other) {
+        errorMsgNode(node->methfld, ErrorUnkName,
+            "%s.%s names no one associated type: %s and %s, both bounds of %s, each declare %s.",
+            &pname->namestr, &name->namestr, &genericAssocTraitOf(bound)->namesym->namestr,
+            &genericAssocTraitOf(other)->namesym->namestr, &pname->namestr, &name->namestr);
+        *(INode**)nodep = errorType;
+        return 1;
+    }
+    // 'Iterable[T].Cursor(C)': the bound as written, its names resolved already,
+    // copied as uses of what they name, with the parameter as its one argument
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, 0, NULL, NULL);
+    INode *traitcopy = cloneNode(&cstate, bound);
+    clonePopState();
+    cloneDclPop(dclpos);
+    FnCallNode *path = newFnCallNode(traitcopy, 1);
+    inodeLexCopy((INode*)path, (INode*)node);
+    path->methfld = node->methfld;
+    nodesAdd(&path->args, node->objfn);
+    *nodep = path;
+    return 1;
+}
+
+// The parts of a path genericAssocPathNameRes made: its trait's template and
+// the associated type it names
+static int genericAssocPathParts(INode *node, StructNode **traitp, GenVarDclNode **assocp) {
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)node;
+    if (call->methfld == NULL || !isNameUseNode(call->methfld) || call->args == NULL || call->args->used != 1)
+        return 0;
+    StructNode *trait = genericAssocTraitOf(call->objfn);
+    if (trait == NULL)
+        return 0;
+    GenVarDclNode *assoc = genericAssocNamed(trait, ((NameUseNode*)call->methfld)->namesym);
+    if (assoc == NULL)
+        return 0;
+    *traitp = trait;
+    *assocp = assoc;
+    return 1;
+}
+
+int genericAssocPathIs(INode *node) {
+    StructNode *trait;
+    GenVarDclNode *assoc;
+    return genericAssocPathParts(node, &trait, &assoc);
+}
+
+int genericAssocPathIsType(INode *node) {
+    StructNode *trait;
+    GenVarDclNode *assoc;
+    return node->tag == FnCallTag && genericAssocPathParts(node, &trait, &assoc)
+        && isTypeNode(nodesGet(((FnCallNode*)node)->args, 0));
+}
+
+int genericAssocPathTypeCheck(TypeCheckState *pstate, INode **nodep) {
+    StructNode *trait;
+    GenVarDclNode *assoc;
+    if (!genericAssocPathParts(*nodep, &trait, &assoc))
+        return 0;
+    FnCallNode *path = (FnCallNode*)*nodep;
+    INode **subjectp = &nodesGet(path->args, 0);
+    // Still the template's parameter: the template is never checked, so this is
+    // a path a template holds, reached through no instance
+    if (nameUseNames(*subjectp, GenVarDclTag) || itypeTypeCheck(pstate, subjectp) == 0) {
+        *nodep = errorType;
+        return 1;
+    }
+    FnCallNode *traitcall = (FnCallNode*)path->objfn;
+    if (!genericAssocCheckArgs(pstate, traitcall)) {
+        *nodep = errorType;
+        return 1;
+    }
+    Nodes *full = genericAssocRead(trait, traitcall->args, *subjectp);
+    if (full == NULL) {
+        // The bound was a requirement of the instance, decided where it was asked
+        // for, so this is reached only where that was not
+        char isname[256] = "";
+        genericTemplateNameCat(isname, sizeof(isname), (INode*)traitcall, 0);
+        errorMsgNode((INode*)path, ErrorWhereUnmet, "%s names %s's %s, and is not %s.%s",
+            &assoc->namesym->namestr, isname, &assoc->namesym->namestr, isname, genericAssocWhy);
+        *nodep = errorType;
+        return 1;
+    }
+    uint32_t idx = 0;
+    while (nodesGet(trait->genericinfo->parms, idx) != (INode*)assoc)
+        ++idx;
+    INode *said = nodesGet(full, idx);
+    INode *dcl = itypeGetTypeDcl(said);
+    *nodep = dcl->tag == StructTag ? newNameUseFromDclNode(dcl, (INode*)path) : said;
+    itypeTypeCheck(pstate, nodep);
+    return 1;
+}
+
+// The written arguments of a use of a trait with associated types, checked as
+// types before they are matched with what a type's methods say. 0 if one is not
+static int genericAssocCheckArgs(TypeCheckState *pstate, FnCallNode *call) {
+    if (call->args == NULL)
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(call->args, cnt, nodesp)) {
+        if (itypeTypeCheck(pstate, nodesp) == 0)
+            return 0;
+    }
+    return 1;
+}
+
+int genericAssocCompleteIs(TypeCheckState *pstate, INode *entry, StructNode *type) {
+    StructNode *trait = genericAssocTraitOf(entry);
+    if (trait == NULL)
+        return 1;
+    FnCallNode *call = (FnCallNode*)entry;
+    uint32_t given = call->args ? call->args->used : 0;
+    if (given != genericWrittenCount(trait->genericinfo))
+        return 1;   // the arity is refused where the instance is asked for
+    if (!genericAssocCheckArgs(pstate, call))
+        return 1;   // reported
+    if (genericAssocComplete(call, (INode*)type))
+        return 1;
+    char isname[256] = "";
+    genericTemplateNameCat(isname, sizeof(isname), entry, 0);
+    errorMsgNode(entry, ErrorInvType, "%s declares it is %s, and so says what its associated types are.%s",
+        &type->namesym->namestr, isname, genericAssocWhy);
+    return 0;
 }
 
 // The type a 'where' clause's name resolved to, where it names a type rather
@@ -1055,6 +1534,7 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
     CastNode *clause = (CastNode*)cond;
     inodeNameRes(pstate, &clause->exp);
     inodeNameRes(pstate, &clause->typ);
+    genericAssocBareUse(&clause->typ);
     NameUseNode *subject = (NameUseNode*)clause->exp;
     int ok = 1;
     if (subject->dclnode == NULL)
@@ -1149,6 +1629,7 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
             INode **annotp;
             uint32_t annotcnt;
             for (nodesFor(parm->annot, annotcnt, annotp)) {
+                genericAssocBareUse(annotp);
                 if ((*annotp)->tag == FnSigTag) {
                     // A signature bound, decided by evaluation (genericSigMeets)
                 }
@@ -1185,6 +1666,12 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
         }
     }
     *wherep = clauses;
+    // A bound naming a trait with associated types may say one the generic's
+    // code names through the parameter, 'C.Cursor'
+    if (clauses) {
+        for (nodesFor(clauses, cnt, nodesp))
+            genericAssocBoundNote(*nodesp);
+    }
 }
 
 // A generic type takes type parameters only. A value parameter on one is
@@ -1426,7 +1913,14 @@ static TypeCheckState *genericCondState = NULL;
 // the same spelling in a signature is, so that it is the instance the program's
 // other uses of it name -- 'Stack[i64]' where T is i64. NULL if it could not be
 // made, which was reported where it failed.
-static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *args) {
+// The use of a trait with associated types whose subject did not say them, as
+// the last clause asked made it at its arguments, for a refusal to name
+static INode *genericAssocUnfitUse = NULL;
+
+// A trait with associated types, 'Iterable[T]', is made at the arguments with
+// what 'subject' says they are (genericAssocComplete). Where it does not say
+// them, NULL, and '*unfit' set: the subject is not the trait.
+static INode *genericClauseCloneFor(CastNode *clause, Nodes *parms, Nodes *args, INode *subject, int *unfit) {
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, genericCondSite ? genericCondSite : clause->typ, NULL, 0, parms, args);
@@ -1445,6 +1939,21 @@ static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *a
     // Whatever the check instantiates decides its own conditions in full
     int svunasked = genericLayoutUnasked;
     genericLayoutUnasked = 0;
+    StructNode *assoctrait = genericAssocTraitOf(copy);
+    if (assoctrait && subject && (((FnCallNode*)copy)->args ? ((FnCallNode*)copy)->args->used : 0)
+            == genericWrittenCount(assoctrait->genericinfo)) {
+        if (!genericAssocCheckArgs(tstate, (FnCallNode*)copy)) {
+            genericLayoutUnasked = svunasked;
+            return NULL;
+        }
+        if (!genericAssocComplete((FnCallNode*)copy, subject)) {
+            genericLayoutUnasked = svunasked;
+            genericAssocUnfitUse = copy;
+            if (unfit)
+                *unfit = 1;
+            return NULL;
+        }
+    }
     inodeTypeCheckAny(tstate, &copy);
     genericLayoutUnasked = svunasked;
     if (inodeIsError(copy) || !isTypeNode(copy))
@@ -1452,14 +1961,20 @@ static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *a
     return copy;
 }
 
+static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *args) {
+    return genericClauseCloneFor(clause, parms, args, NULL, NULL);
+}
+
 // The trait a clause says its subject is, at these arguments: the trait it
 // names, or, where it names an instance of a generic trait, that instance.
-// NULL if the clause names no trait, or the instance could not be made.
-static StructNode *genericClauseTrait(CastNode *clause, Nodes *parms, Nodes *args) {
+// NULL if the clause names no trait, or the instance could not be made. A trait
+// with associated types is made with what 'subject' says they are, and where it
+// does not say them, NULL with '*unfit' set.
+static StructNode *genericClauseTraitFor(CastNode *clause, Nodes *parms, Nodes *args, INode *subject, int *unfit) {
     StructNode *trait = genericNamedTrait(clause->typ);
     if (trait || genericNamedGenericTrait(clause->typ) == NULL)
         return trait;
-    INode *copy = genericClauseCloneChecked(clause, parms, args);
+    INode *copy = genericClauseCloneFor(clause, parms, args, subject, unfit);
     if (copy == NULL)
         return NULL;
     INode *dcl = itypeGetTypeDcl(copy);
@@ -1488,6 +2003,12 @@ static INode *genericClauseType(CastNode *clause, Nodes *parms, Nodes *args, Gen
         }
     }
     return isTypeNode(subject) ? subject : NULL;
+}
+
+// genericClauseTraitFor with the clause's own subject at these arguments
+static StructNode *genericClauseTrait(CastNode *clause, Nodes *parms, Nodes *args) {
+    GenVarDclNode *parm;
+    return genericClauseTraitFor(clause, parms, args, genericClauseType(clause, parms, args, &parm), NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,9 +2242,11 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
             return WhereUnknown;
         if (genericLayoutUnasked)
             return WhereLate;
-        trait = genericClauseTrait((CastNode*)cond, parms, args);
+        // A type that does not say what the trait's associated types are is not it
+        int unfit = 0;
+        trait = genericClauseTraitFor((CastNode*)cond, parms, args, type, &unfit);
         if (trait == NULL)
-            return WhereUnknown;
+            return unfit ? WhereFalse : WhereUnknown;
     }
     INode *named = trait ? NULL : genericNamedType(((CastNode*)cond)->typ);
     // A type written as an instance, 'Uni[str]', is made at these arguments and
@@ -1824,12 +2347,17 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
     Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
     if (args == NULL)
         return;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(args, cnt, nodesp)) {
+    // A trait's instance is named as a use writes it, without its associated types
+    uint32_t shown = args->used;
+    StructNode *template = genericTemplateOf((StructNode*)dcl);
+    if (template && genericHasAssoc(template->genericinfo))
+        shown = genericWrittenCount(template->genericinfo);
+    if (shown == 0)
+        return;
+    for (uint32_t i = 0; i < shown; ++i) {
         used = strlen(buf);
-        snprintf(buf + used, size - used, cnt == args->used ? "[" : ", ");
-        genericTypeNameCat(buf, size, *nodesp, depth + 1);
+        snprintf(buf + used, size - used, i == 0 ? "[" : ", ");
+        genericTypeNameCat(buf, size, nodesGet(args, i), depth + 1);
     }
     used = strlen(buf);
     snprintf(buf + used, size - used, "]");
@@ -2486,13 +3014,23 @@ static int genericRequirementsMetIn(FnCallNode *srcgencall, INode *generic, Gene
     }
     // An instance of a generic trait is the one made at these arguments, and the
     // message says which method of it the argument lacks
-    StructNode *inst = trait ? NULL : genericClauseTrait((CastNode*)cond, parms, srcgencall->args);
+    int unfit = 0;
+    StructNode *inst = trait ? NULL : genericClauseTraitFor((CastNode*)cond, parms, srcgencall->args, arg, &unfit);
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char isname[256] = "";
     genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond, inst);
     char why[1000] = "";
     int layout = 0;
+    // A trait with associated types the argument does not say: named at the
+    // arguments, with what the argument says of them, or fails to
+    if (unfit) {
+        isname[0] = '\0';
+        genericTemplateNameCat(isname, sizeof(isname), genericAssocUnfitUse, 0);
+        errorMsgNode((INode*)srcgencall, ErrorWhereUnmet, "%s requires %s is %s, and %s is not %s.%s",
+            &name->namestr, &parm->namesym->namestr, isname, argname, isname, genericAssocWhy);
+        return 0;
+    }
     // An instance of a generic enum is closed: a type is it only by being it or
     // one of its variants, never by the methods or fields it has, so the clause
     // is named but no fit is explained (its methods are not requirements, and
@@ -3268,6 +3806,36 @@ static INode *genericInstanceArg(INode *generic, GenericInfo *info, uint32_t i, 
 // where the next real diagnostic is.
 INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
+
+    // A trait with associated types is made with them only where a type meeting
+    // it said them (genericAssocComplete): a use writes the other arguments alone,
+    // and that names no one trait
+    int completed = srcgencall == genericAssocCompleted;
+    if (completed)
+        genericAssocCompleted = NULL;
+    if (!completed && nodetoclone->tag == StructTag && genericHasAssoc(genericinfo)) {
+        uint32_t written = genericWrittenCount(genericinfo);
+        StructNode *trait = (StructNode*)nodetoclone;
+        char assocs[256] = "";
+        INode **parmp;
+        uint32_t parmcnt;
+        for (nodesFor(genericinfo->parms, parmcnt, parmp)) {
+            if (!genericIsAssocParm(*parmp))
+                continue;
+            size_t used = strlen(assocs);
+            snprintf(assocs + used, sizeof(assocs) - used, "%s%s", assocs[0] ? ", " : "", &((GenVarDclNode*)*parmp)->namesym->namestr);
+        }
+        uint32_t given = srcgencall->args ? srcgencall->args->used : 0;
+        if (given == written)
+            errorMsgNode((INode*)srcgencall, ErrorAssocUnsaid,
+                "%s has an associated type (%s), which the type meeting it says, so it is named where a type meets it: a bound, '[C: %s[...]]', or an 'is' entry. A virtual reference to such a trait is not built yet.",
+                &trait->namesym->namestr, assocs, &trait->namesym->namestr);
+        else
+            errorMsgNode((INode*)srcgencall, ErrorArgCount,
+                "%s takes %u type argument%s, and this gives %u: its associated types (%s) are said by the type that meets it. (Fixing one in its arguments, as Rust's 'Item = u8', is not built.)",
+                &trait->namesym->namestr, written, written == 1 ? "" : "s", given, assocs);
+        return newErrorNode((INode*)srcgencall);
+    }
 
     // Verify expected number of generic parameters
     uint32_t expected = genericinfo->parms ? genericinfo->parms->used : 0;
