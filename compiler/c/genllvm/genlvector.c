@@ -103,26 +103,24 @@ static unsigned genlLaneAlign(LLVMTypeRef lane) {
 }
 
 // The address of the first of 'n' lanes at s[at] of the slice, once all of them
-// are within it: at + n <= the count, checked once (not at + n - 1 < count per
-// lane), else the index panic with the last lane's index and the count
+// are within it: at + n <= the count, checked once for all the lanes with no sum
+// that could overflow, else the index panic with the last lane's index and the count
 static LLVMValueRef genlSliceSpan(GenState *gen, INode *site, LLVMValueRef slice, LLVMValueRef at, unsigned n, LLVMTypeRef lane) {
     LLVMBuilderRef bld = gen->builder;
     LLVMTypeRef usize = genlUsize(gen);
     LLVMValueRef ptr = LLVMBuildExtractValue(bld, slice, 0, "sliceptr");
     LLVMValueRef count = LLVMBuildExtractValue(bld, slice, 1, "count");
     LLVMValueRef lanes = LLVMConstInt(usize, n, 0);
-    // The slice holds n lanes at all, and 'at' is no further than that leaves room
-    // for. Two branches to one panic, not one branch on both: the first depends on
-    // the slice alone, so a loop over the slice has it loop-invariant and the
-    // optimizer takes it out of the loop, leaving the one comparison of 'at'.
-    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
-    LLVMBasicBlockRef roomblk = genlInsertBlock(gen, "spanroom");
-    LLVMBasicBlockRef okblk = genlInsertBlock(gen, "spanin");
+    // 'at' must be below the number of positions the span can start at: count - n + 1
+    // when the slice holds n lanes at all, else none. That number depends on the
+    // slice alone, so a loop over the slice has it invariant and the optimizer
+    // computes it once, leaving one comparison of 'at' for each load.
     LLVMValueRef fits = LLVMBuildICmp(bld, LLVMIntUGE, count, lanes, "spanfits");
-    LLVMBuildCondBr(bld, fits, roomblk, panicblk);
-    LLVMPositionBuilderAtEnd(bld, roomblk);
-    LLVMValueRef room = LLVMBuildSub(bld, count, lanes, "");
-    LLVMValueRef inrange = LLVMBuildICmp(bld, LLVMIntULE, at, room, "spanok");
+    LLVMValueRef starts = LLVMBuildSub(bld, count, LLVMConstInt(usize, n - 1, 0), "");
+    LLVMValueRef limit = LLVMBuildSelect(bld, fits, starts, LLVMConstInt(usize, 0, 0), "spanstarts");
+    LLVMValueRef inrange = LLVMBuildICmp(bld, LLVMIntULT, at, limit, "spanok");
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef okblk = genlInsertBlock(gen, "spanin");
     LLVMBuildCondBr(bld, inrange, okblk, panicblk);
     LLVMPositionBuilderAtEnd(bld, panicblk);
     LLVMValueRef sat[2] = {at, LLVMConstInt(usize, n - 1, 0)};
