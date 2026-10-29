@@ -1480,8 +1480,11 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
             }
             borrowMutRef(&callnode->objfn, objtype, perm);
         }
+        // A temporary lives to the end of the statement being checked. The isTrue a
+        // coercion to bool injects is lowered with no state of its own (iexpCoerce),
+        // and Option's and Result's borrow their receiver: the check under way is the one
         else
-            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
+            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate ? pstate : inodeCheckState));
         return selected;
     }
     return NULL;
@@ -4298,6 +4301,185 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     }
 }
 
+// The macro method a type's member by an operator's name is, or NULL: a function,
+// a field or nothing. A macro a type holds by folding is reached through its alias.
+static MacroDclNode *fnCallMemberMacro(INode *found) {
+    INode *member = found && found->tag == AliasDclTag ? aliasDclResolve(found) : found;
+    return member && member->tag == MacroDclTag && (member->flags & FlagMethFld) ? (MacroDclNode*)member : NULL;
+}
+
+// Expand the macro method an operator reached, its receiver standing in for
+// 'self' and its operands for the parameters after it, as 'x.m(y)' expands a
+// macro method named on a receiver (macroMethodTypeCheck). An operator has as
+// many operands as it is written with, so a macro declaring another number of
+// parameters after 'self' is refused here, naming the operator.
+static void fnCallOperatorExpand(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, int folded,
+        StructNode *rcvtype, Name *name) {
+    FnCallNode *node = *nodep;
+    uint32_t operands = node->args ? node->args->used : 0;
+    uint32_t parms = macro->parms ? macro->parms->used - 1 : 0;
+    if (operands != parms) {
+        errorMsgNode((INode*)node, ErrorArgCount,
+            "`%s` is written here with %u operand%s besides its receiver, and %s's macro method `%s` declares %u parameter%s after self.",
+            &name->namestr, operands, operands == 1 ? "" : "s", &rcvtype->namesym->namestr,
+            &macro->namesym->namestr, parms, parms == 1 ? "" : "s");
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+    // A folded macro method expands with the field it was folded through as
+    // its self, as a folded method runs with it
+    if (folded)
+        structFoldReceiver(pstate, rcvtype, name, &node->objfn, (INode*)node);
+    macroMethodTypeCheck(pstate, nodep, macro, NULL);
+}
+
+// 'x += y' where the type declares no '+=' and its '+' is a macro method: the
+// rewrite fnCallOpAssgn makes for a '+' that is a function, '{let tmp = &mut x;
+// *tmp = *tmp + y}', with the '+' expanded. The sum is stored back, so it must
+// be what the place holds.
+static void fnCallOpAssgnMacro(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro, int folded,
+        StructNode *rcvtype, Name *basesym) {
+    FnCallNode *callnode = *nodep;
+    Name *opsym = ((NameUseNode*)callnode->methfld)->namesym;
+    INode *objtype = iexpGetTypeDcl(callnode->objfn);
+    if (objtype->tag != RefTag)
+        borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    inodeLexCopy((INode*)tmpvar, (INode*)callnode);
+    // Built checked, as its initializer is: the expansion's 'self' is a use of
+    // it, and checking that use must not check the declaration again
+    tmpvar->flags |= TypeChecked;
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->dclnode = (INode *)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)callnode);
+    INode *derefvar = (INode *)tmpname;
+    derefInject(&derefvar);
+    inodeLexCopy(derefvar, (INode*)callnode);
+    callnode->objfn = derefvar;
+    ((NameUseNode*)callnode->methfld)->namesym = basesym;
+    callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    INode *sum = (INode*)callnode;
+    fnCallOperatorExpand(pstate, (FnCallNode**)&sum, macro, folded, rcvtype, basesym);
+    if (inodeIsError(sum) || !isExpNode(sum) || ((IExpNode*)sum)->vtype == errorType) {
+        *((INode**)nodep) = sum;
+        return;
+    }
+    INode *dereflval = (INode *)tmpname;
+    derefInject(&dereflval);
+    inodeLexCopy(dereflval, (INode*)callnode);
+    if (!iexpCoerce(&sum, ((IExpNode*)dereflval)->vtype)) {
+        errorMsgNode((INode*)callnode, ErrorInvType,
+            "`%s` stores what %s's macro method `%s` gives back into the place it changes, and `%s` gives %s, not the place's %s.",
+            &opsym->namestr, &rcvtype->namesym->namestr, &basesym->namestr, &basesym->namestr,
+            itypeName(((IExpNode*)sum)->vtype), itypeName(((IExpNode*)dereflval)->vtype));
+        *((INode**)nodep) = newErrorNode((INode*)callnode);
+        return;
+    }
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, sum);
+    inodeLexCopy((INode*)tmpassgn, (INode*)callnode);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)callnode);
+    blk->vtype = ((IExpNode*)sum)->vtype;
+    blk->flags |= FlagKeepTemps;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, (INode*)tmpassgn);
+    *((INode**)nodep) = (INode*)blk;
+}
+
+// An operator whose method is a macro method of its receiver's type expands
+// that macro. The receiver is checked first, so the operands stay unchecked
+// until they are substituted, as a macro's arguments must. The method is the
+// one the operator reaches: its own name ('+', '<', '-x', '++', '+=', '<-',
+// 'x[i]'), or, where the type declares none by that name, the method the
+// operator is lowered through when that is a function -- '==' for '!='
+// (fnCallNeFromEq), '+' for '+=' (fnCallOpAssgn). Only an operator whose name,
+// or the name it is lowered through, some type declares a macro method by
+// (macroMethodNamed) is checked receiver first, so where no type does every
+// operator is checked as it always was. A receiver that its operand types,
+// 'None == x' or '(if c {1.} else {2.}) * x', a literal, or a name that is not
+// a value's, is left to the order it has. A pointer's operators are the
+// pointer's own, so they reach no macro.
+// Answers 1 where the operator expanded, or was refused; 0 to go on with it as a
+// call, with '*checked' set where its receiver has been checked.
+static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *checked) {
+    FnCallNode *node = *nodep;
+    Name *opname = NULL;
+    if ((node->flags & FlagOperator) && node->methfld && isNameUseNode(node->methfld))
+        opname = ((NameUseNode*)node->methfld)->namesym;
+    else if (node->methfld == NULL && (node->flags & FlagIndex)
+        && !(node->flags & (FlagBorrow | FlagRange | FlagCtorParen | FlagNew)) && !fnCallIsSetIndex(node))
+        opname = indexName;
+    if (opname == NULL || node->objfn == NULL)
+        return 0;
+    Name *basesym = (node->flags & FlagOpAssgn) ? fnCallOpEqMethod(opname) : NULL;
+    if (!macroMethodNamed(opname) && !(basesym && macroMethodNamed(basesym))
+        && !(opname == neName && macroMethodNamed(eqName)))
+        return 0;
+    INode *rcv = node->objfn;
+    if (rcv->tag == IfTag || rcv->tag == ULitTag || rcv->tag == FLitTag || rcv->tag == StringLitTag
+        || rcv->tag == NullLitTag || rcv->tag == NilLitTag || rcv->tag == NamedValTag
+        || fnCallArgNeedsExpected(rcv))
+        return 0;
+    if (isNameUseNode(rcv) && !nameUseNames(rcv, VarDclTag) && !nameUseNames(rcv, ConstDclTag))
+        return 0;
+    // An index's receiver is a value's name or a member of one: 'x[i]', 'p.items[i]'
+    if (opname == indexName && !isNameUseNode(rcv)
+        && !(rcv->tag == FnCallTag && ((FnCallNode*)rcv)->methfld != NULL && !(rcv->flags & FlagIndex)))
+        return 0;
+
+    inodeTypeCheckAny(pstate, &node->objfn);
+    *checked = 1;
+    if (inodeIsError(node->objfn) || !isExpNode(node->objfn))
+        return 0;
+    INode *rcvtype = iexpGetTypeDcl(node->objfn);
+    if (rcvtype->tag == RefTag)
+        rcvtype = itypeGetTypeDcl(((RefNode*)rcvtype)->vtexp);
+    if (rcvtype->tag != StructTag)
+        return 0;
+    StructNode *strtype = (StructNode*)rcvtype;
+
+    INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, opname);
+    MacroDclNode *macro = fnCallMemberMacro(found);
+    if (macro) {
+        fnCallOperatorExpand(pstate, nodep, macro, found->tag == AliasDclTag, strtype, opname);
+        return 1;
+    }
+    if (found != NULL)
+        return 0;
+
+    // 'a != b' where the type declares no '!=' is 'not (a == b)'
+    if (opname == neName) {
+        INode *eq = iNsTypeFindFnField((INsTypeNode*)rcvtype, eqName);
+        macro = fnCallMemberMacro(eq);
+        if (macro == NULL)
+            return 0;
+        ((NameUseNode*)node->methfld)->namesym = eqName;
+        LogicNode *derivedne = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)derivedne, (INode*)node);
+        derivedne->lexp = (INode*)node;
+        *((INode**)nodep) = (INode*)derivedne;
+        fnCallOperatorExpand(pstate, (FnCallNode**)&derivedne->lexp, macro, eq->tag == AliasDclTag, strtype, eqName);
+        if (inodeIsError(derivedne->lexp) || !isExpNode(derivedne->lexp)
+            || ((IExpNode*)derivedne->lexp)->vtype == errorType)
+            derivedne->vtype = errorType;
+        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+            errorMsgNode(derivedne->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+        return 1;
+    }
+
+    // 'x += y' where the type declares no '+=': through its '+'
+    if (basesym) {
+        INode *base = iNsTypeFindFnField((INsTypeNode*)rcvtype, basesym);
+        macro = fnCallMemberMacro(base);
+        if (macro == NULL)
+            return 0;
+        fnCallOpAssgnMacro(pstate, nodep, macro, base->tag == AliasDclTag, strtype, basesym);
+        return 1;
+    }
+    return 0;
+}
+
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
@@ -4462,6 +4644,18 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     INode *overloadset = NULL;
     if (calleeIsOverload && node->methfld == NULL && !(node->flags & FlagIndex))
         overloadset = nameUseGetDcl((NameUseNode*)node->objfn);
+    // An operator whose method is a macro expands it, its operands unchecked
+    // (fnCallOperatorMacro). One that is not goes on with its receiver checked.
+    int opchecked = 0;
+    if (!calleeIsOverload && fnCallOperatorMacro(pstate, nodep, &opchecked))
+        return;
+    if (opchecked) {
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+    }
     if (node->methfld && isNameUseNode(node->methfld)
         && !(node->flags & FlagOperator) && !calleeIsOverload) {
         if (node->flags & FlagRcvChecked)
@@ -4605,13 +4799,15 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         && fnCallIsNumericOp(argopname);
     if (argopname && (argopname == eqName || argopname == neName || argopname == lessDashName || numericif)
         && node->args && node->args->used == 1 && (numericif || fnCallArgMayInfer(nodesGet(node->args, 0)))
-        && !objfnChecked && !calleeIsOverload
+        && (!objfnChecked || opchecked) && !calleeIsOverload
         && (!isNameUseNode(node->objfn) || nameUseNames(node->objfn, VarDclTag) || nameUseNames(node->objfn, ConstDclTag))) {
-        inodeTypeCheckAny(pstate, &node->objfn);
-        objfnChecked = 1;
-        if (inodeIsError(node->objfn)) {
-            node->vtype = errorType;
-            return;
+        if (!objfnChecked) {
+            inodeTypeCheckAny(pstate, &node->objfn);
+            objfnChecked = 1;
+            if (inodeIsError(node->objfn)) {
+                node->vtype = errorType;
+                return;
+            }
         }
         if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);

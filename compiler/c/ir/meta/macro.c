@@ -950,3 +950,30 @@ void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNo
     nodesInsert(&node->args, node->objfn, 0);
     macroExpand(pstate, (INode**)nodep, macro, typeargs, node->args, nodesGet(macro->parms, 0));
 }
+
+// The names macro methods are declared by, in any type of the program. Few, so
+// a list searched in turn.
+static Name **macroMethodNames = NULL;
+static uint32_t macroMethodNamesUsed = 0;
+static uint32_t macroMethodNamesAvail = 0;
+
+void macroMethodNameNote(Name *name) {
+    if (macroMethodNamed(name))
+        return;
+    if (macroMethodNamesUsed == macroMethodNamesAvail) {
+        uint32_t avail = macroMethodNamesAvail ? macroMethodNamesAvail * 2 : 16;
+        Name **names = (Name**)memAllocBlk(avail * sizeof(Name*));
+        if (macroMethodNamesUsed)
+            memcpy(names, macroMethodNames, macroMethodNamesUsed * sizeof(Name*));
+        macroMethodNames = names;
+        macroMethodNamesAvail = avail;
+    }
+    macroMethodNames[macroMethodNamesUsed++] = name;
+}
+
+int macroMethodNamed(Name *name) {
+    for (uint32_t i = 0; i < macroMethodNamesUsed; ++i)
+        if (macroMethodNames[i] == name)
+            return 1;
+    return 0;
+}

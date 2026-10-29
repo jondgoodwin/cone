@@ -66,6 +66,8 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
 // is no owner to record.
 void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro) {
     nodelistAdd(&type->nodelist, (INode*)macro);
+    if (macro->flags & FlagMethFld)
+        macroMethodNameNote(macro->namesym);
     if (namespaceAdd(&type->namespace, macro->namesym, (INode*)macro) != NULL)
         errorMsgNode((INode*)macro, ErrorDupName,
             "Duplicate name %s: a macro shares its type's namespace with fields and methods.", &macro->namesym->namestr);

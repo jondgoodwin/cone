@@ -69,4 +69,11 @@ void macroChangeNameRes(INode *at, INode *place, MacroChange how);
 // Refuse an argument whose type does not fit its parameter's, naming it
 void macroArgTypeRefused(INode *arg, Name *parm, int lazy, INode *parmtype);
 
+// Note that some type declares a macro method by this name (iNsTypeAddMacro).
+// An operator is checked receiver first only where its method's name is one
+// of these (fnCallOperatorMacro), so a program that declares no operator as a
+// macro checks every operator in the order it always did.
+void macroMethodNameNote(Name *name);
+int macroMethodNamed(Name *name);
+
 #endif

@@ -57,8 +57,13 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
-        if ((foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName)))
-            && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
+        foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
+        // A value of a variant reaches its enum's isTrue that takes the whole enum
+        // ('self: &Option[T]'), as it reaches any such method (fnCallLowerMethod)
+        StructNode *enumdcl;
+        if (foundnode == NULL && (enumdcl = structVariantEnum(fromtype)) != NULL)
+            foundnode = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)enumdcl, istrueName));
+        if (foundnode && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
             return ConvByMeth;
         else
             return NoMatch;
