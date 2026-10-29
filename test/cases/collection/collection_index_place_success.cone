@@ -1,0 +1,106 @@
+// An index through a type's '[]' is a place, as an array's element is (Rust's
+// 'Index'): 'let y = l[i]' copies the element, 'l[i] = v' writes it, and
+// '&l[i]' is the explicit borrow. A copy holds no loan, so the list may be
+// pushed onto while it is still used; a borrow loans the list only until its
+// last use. The same of a List of Lists, a Dict, a Deque and a Pool, a struct
+// element's field, a swap of two elements, and a generic body reading 'self[i]'.
+// A receiver reaches the element through its borrow, as before: 'l[i].x',
+// 'l[i].sum()', 'l[i] + 1', 'l[i][j]'. Each case prints what it read.
+
+mod collection_index_place_success;
+
+import stdio use *;
+import collections use *;
+import pool use *;
+
+struct Pt {
+  pub x: i64;
+  pub y: i64;
+  pub fn sum(self: &) i64 { x + y }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn twice(n: i64) i64 { n * 2 }
+
+// Generic: a body reading an element by value, for any copyable T
+fn firstCopy[T](l: &List[T]) T { l[0usize] }
+
+fn copyOut() {
+  var l = List[i64].empty();
+  l.push(4);
+  l.push(5);
+  let y = l[0usize];
+  l.push(6);                             // the copy holds no loan
+  show("copy-then-push", y + l[2usize]);
+  show("by-value-argument", twice(l[1usize]));
+  show("generic-copy", firstCopy(&l));
+}
+
+fn writeAndBorrow() {
+  var l = List[i64].empty();
+  l.push(1);
+  l.push(2);
+  l[1usize] = 20;
+  l[0usize] += 9;
+  let r = &l[1usize];
+  show("borrow", *r);
+  l.push(3);                             // after the borrow's last use
+  show("written", l[0usize] + l[1usize] + l[2usize]);
+}
+
+fn nested() {
+  var ll = List[List[i64]].empty();
+  ll.push(List[i64].empty());
+  ll[0usize].push(7);
+  ll[0usize].push(8);
+  let v = ll[0usize][1usize];
+  ll[0usize][0usize] = 70;
+  show("nested", v + ll[0usize][0usize]);
+}
+
+fn dictDequePool() {
+  var d = Dict[String, i64].empty();
+  d.insert(String.from("a"), 1);
+  let a = d["a"];
+  d["a"] = a + 10;
+  show("dict", d["a"]);
+
+  var q = Deque[i64].empty();
+  q.push(3);
+  q.pushFront(2);
+  let f = q[0usize];
+  q[1usize] = f * 100;
+  show("deque", f + q[1usize]);
+
+  var p = Pool[Pt].empty();
+  let id = p.add(Pt(1, 2));
+  let c = p[id];
+  p[id].x = 10;
+  show("pool", c.x * 100 + p[id].x);
+}
+
+fn structElement() {
+  var l = List[Pt].empty();
+  l.push(Pt(3, 4));
+  l.push(Pt(5, 6));
+  let p = l[0usize];
+  l[1usize].y = 60;
+  show("field", p.x + l[1usize].y);
+  show("method", l[0usize].sum());
+  l[0usize] <-> l[1usize];
+  show("swapped", l[0usize].x * 10 + l[1usize].x);
+}
+
+fn main() {
+  copyOut();
+  writeAndBorrow();
+  nested();
+  dictDequePool();
+  structElement();
+}
