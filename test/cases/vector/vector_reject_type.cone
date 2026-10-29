@@ -1,0 +1,71 @@
+// What a vector refuses, at type check: a lane type that is no number, a number of
+// lanes outside 1 through 64, 'Vector' with no lane type and count, lanes of
+// different types or counts in one operation, a mask used as numbers, a mask's
+// lane indexed, a lane borrowed, 'select' and '.from' given what they do not take,
+// contents of the wrong count, a mask in a condition, and the methods the lane type
+// has no scalar for. A refusal that has a fix names it (the 'from' that converts).
+
+mod vector_reject_type;
+
+struct Point {
+  pub x: f32;
+}
+
+fn structLanes(v: Vector[Point, 4]) {   //~ ErrorVectorElem
+}
+
+fn charLanes(v: Vector[char, 4]) {   //~ ErrorVectorElem
+}
+
+fn noLanes(v: Vector[f32, 0]) {   //~ ErrorVectorLanes
+}
+
+fn tooManyLanes(v: Vector[f32, 65]) {   //~ ErrorVectorLanes
+}
+
+fn bare(v: Vector) {   //~ ErrorVectorArgs
+}
+
+fn main() {
+  let a = Vector[f32, 4]() <- fill 1.0;
+  let i = Vector[i32, 4]() <- fill 1;
+  let e = Vector[f32, 3]() <- fill 1.0;
+  let m = a > a;
+
+  // lanes of different types or counts
+  let mixedtype = a + i;   //~ ErrorVectorMixed
+  let mixedcount = a + e;   //~ ErrorVectorMixed
+  let mixedcompare = a < i;   //~ ErrorVectorMixed
+  let wrongscalar = a * 2.0f64;   //~ ErrorVectorMixed
+
+  // a mask is not numbers
+  let maskadd = m + m;   //~ ErrorVectorMask
+  let maskorder = m < m;   //~ ErrorVectorMask
+  let masksum = m.sum();   //~ ErrorVectorMask
+  let maskplus = m + a;   //~ ErrorVectorMask
+  let maskindex = m[0usize];   //~ ErrorVectorIndex
+
+  // a lane is not borrowed
+  let lane = &a[1usize];   //~ ErrorVectorIndex
+
+  // select, and from
+  let notmask = a.select(a, a);   //~ ErrorVectorMask
+  let selectcount = m.select(a, e);   //~ ErrorVectorMixed
+  let selecttype = m.select(a, i);   //~ ErrorVectorMixed
+  let selectnone = m.select(1.0, 2.0);   //~ ErrorVectorFrom
+  let selectone = m.select(a);   //~ ErrorVectorFrom
+  let fromnumber = Vector[f32, 4].from(1.5);   //~ ErrorVectorFrom
+  let fromcount = Vector[f32, 4].from(e);   //~ ErrorVectorMixed
+  let fromarray = Vector[f32, 4].from([1.0f, 2.0f]);   //~ ErrorVectorFrom
+  let toarray = Array[f32, 4].from(e);   //~ ErrorVectorFrom
+
+  // contents
+  let short = Vector[f32, 4]() <- 1.0, 2.0;   //~ ErrorArrayContents
+  let initargs = Vector[f32, 4](1.0) <- fill 1.0;   //~ ErrorArrayContents
+
+  // methods and operators the lanes have no scalar for
+  let floatrem = a % a;   //~ ErrorNoMbr
+  let intsqrt = i.sqrt();   //~ ErrorNoMbr
+  let anyofnumbers = a.any();   //~ ErrorNoMbr
+  let maskinif = if m { 1 } else { 2 };   //~ ErrorInvType
+}

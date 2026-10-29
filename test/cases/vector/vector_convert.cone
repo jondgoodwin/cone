@@ -1,0 +1,162 @@
+// Vector conversions: 'Vector[T, N].from(x)' and 'Array[T, N].from(v)'.
+//
+// An array and a vector of the same lane type and size convert for free, in both
+// directions. A vector converts to a vector of the same number of lanes and
+// another lane type, lane by lane exactly as the lane type's own 'from' converts
+// a number: a float to an integer rounds toward zero and, past the integer's
+// range, gives its nearest end (NaN gives 0), a wider integer to a narrower one
+// keeps the low bits, a narrower to a wider extends by the source's signedness,
+// an integer to a float rounds to the nearest, and a number into bool asks
+// whether it is not zero. A mask converts to numbers as 0 and 1, and to and from
+// an array of bool.
+//
+// Every value is hand-worked. A mask is shown as 'Vector[u8, 4].from(mask)'.
+
+mod vector_convert;
+
+import stdio use *;
+
+fn showV(label: &str, v: Vector[f32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showD(label: &str, v: Vector[f64, 2]) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(v[0usize]);
+  printStr(" ");
+  printFloat(v[1usize]);
+  printStr("\n");
+}
+
+fn showN(label: &str, v: Vector[i32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showN2(label: &str, v: Vector[i32, 2]) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(v[0usize]));
+  printStr(" ");
+  printInt(i64.from(v[1usize]));
+  printStr("\n");
+}
+
+fn showU(label: &str, v: Vector[u8, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printUInt(u64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showW(label: &str, v: Vector[u32, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printUInt(u64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showS(label: &str, v: Vector[i8, 4]) {
+  printStr(label);
+  printStr(" =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printInt(i64.from(v[i]));
+  }
+  printStr("\n");
+}
+
+fn showM(label: &str, m: Vector[bool, 4]) {
+  showU(label, Vector[u8, 4].from(m));
+}
+
+fn main() {
+  // -------- an array and a vector --------
+  let arr = [1.0f, 2.0f, 3.0f, 4.0f];
+  let v = Vector[f32, 4].from(arr);
+  showV("array to vector", v);
+  let back = Array[f32, 4].from(v * 2.0);
+  printStr("vector to array =");
+  each i in 0usize ..< 4usize {
+    printStr(" ");
+    printFloat(f64.from(back[i]));
+  }
+  printStr("\n");
+  let bytes = [200u8, 100u8, 255u8, 0u8];
+  showU("u8 array to vector", Vector[u8, 4].from(bytes));
+  let flags = [true, false, true, true];
+  showM("bool array to mask", Vector[bool, 4].from(flags));
+  let flagsback = Array[bool, 4].from(Vector[bool, 4].from(flags));
+  printStr("mask to bool array =");
+  each i in 0usize ..< 4usize {
+    printStr(if flagsback[i] { " true" } else { " false" });
+  }
+  printStr("\n");
+
+  // -------- a float into an integer --------
+  let f = Vector[f32, 4]() <- 1.9, -1.9, 3.0, -0.5;
+  showN("f32 to i32 rounds toward zero", Vector[i32, 4].from(f));
+
+  let zero = Vector[f32, 4]() <- fill 0.0;
+  let nan = zero / zero;
+  let lastbit = Vector[u8, 4]() <- 3 of 0u8, 1u8;
+  let lastlane = Vector[bool, 4].from(lastbit);
+  let wild = Vector[f32, 4]() <- 300.0, -5.0, 255.0, 0.0;
+  showU("f32 to u8 saturates, NaN is 0", Vector[u8, 4].from(lastlane.select(nan, wild)));
+  let wide8 = Vector[f32, 4]() <- 200.0, -200.0, 127.5, -128.5;
+  showS("f32 to i8 saturates", Vector[i8, 4].from(wide8));
+  let huge = Vector[f32, 4]() <- 3.0e9, -3.0e9, 2147483647.0, 1.0;
+  showN("f32 to i32 saturates", Vector[i32, 4].from(huge));
+  let hugeu = Vector[f32, 4]() <- -1.0, 5.0e9, 4294967296.0, 7.9;
+  showW("f32 to u32 saturates", Vector[u32, 4].from(hugeu));
+  let wild64 = Vector[f64, 2]() <- 1.0e10, -2.5;
+  showN2("f64 to i32", Vector[i32, 2].from(wild64));
+
+  // -------- an integer into an integer --------
+  let bits = Vector[u8, 4]() <- 200u8, 100u8, 255u8, 0u8;
+  showS("u8 to i8 keeps the bits", Vector[i8, 4].from(bits));
+  showN("u8 to i32 extends with zeros", Vector[i32, 4].from(bits));
+  showN("i8 to i32 extends the sign", Vector[i32, 4].from(Vector[i8, 4].from(bits)));
+  let wider = Vector[i32, 4]() <- 300, -1, 256, 65;
+  showU("i32 to u8 keeps the low bits", Vector[u8, 4].from(wider));
+  let past = Vector[i32, 4]() <- 70000, -70000, 32768, -32769;
+  showN("i32 to i16 and back", Vector[i32, 4].from(Vector[i16, 4].from(past)));
+
+  // -------- an integer into a float, and float to float --------
+  let counts = Vector[i32, 4]() <- 1, -2, 3, 100000;
+  showV("i32 to f32", Vector[f32, 4].from(counts));
+  showV("u8 to f32", Vector[f32, 4].from(bits));
+  let single = Vector[f32, 2]() <- 0.5, 0.25;
+  showD("f32 to f64", Vector[f64, 2].from(single));
+  let double = Vector[f64, 2]() <- 1.5, 0.25;
+  let narrowed = Vector[f32, 2].from(double);
+  showD("f64 to f32 and back", Vector[f64, 2].from(narrowed));
+
+  // -------- a number into bool, and a mask into numbers --------
+  let somezero = Vector[i32, 4]() <- 0, 5, -1, 0;
+  showM("i32 to bool", Vector[bool, 4].from(somezero));
+  let signs = Vector[f32, 4]() <- 0.0, -0.0, 0.5, 0.0;
+  showM("f32 to bool: zero, -0.0, 0.5, NaN", Vector[bool, 4].from(lastlane.select(nan, signs)));
+  let bits4 = Vector[u8, 4]() <- 1u8, 0u8, 1u8, 1u8;
+  let m = Vector[bool, 4].from(bits4);
+  showN("mask to i32", Vector[i32, 4].from(m));
+  showV("mask to f32", Vector[f32, 4].from(m));
+}

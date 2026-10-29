@@ -539,8 +539,9 @@ int vectorFromCall(TypeCheckState *pstate, FnCallNode **nodep) {
             ok = 1;
         else
             errorMsgNode(*argp, ErrorVectorFrom,
-                "%s.from converts the vector of its elements and size, 'Vector[%s, %llu]'.",
-                itypeName(target), itypeName(arrayElemType(target)), (unsigned long long)arrayDim1(target));
+                "Array[%s, %llu].from converts the vector of its elements and size, 'Vector[%s, %llu]'.",
+                itypeName(arrayElemType(target)), (unsigned long long)arrayDim1(target),
+                itypeName(arrayElemType(target)), (unsigned long long)arrayDim1(target));
     }
     if (!ok)
         return 1;

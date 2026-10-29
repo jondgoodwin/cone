@@ -700,6 +700,10 @@ Name *inodeGetName(INode *node) {
         return ((PermNode*)node)->namesym;
     case EnumTag:
         return ((EnumNode*)node)->namesym;
+    // A vector is no declaration, but a type that supports methods, and
+    // is called by the name it is written with
+    case VectorTag:
+        return nametblFind("Vector", 6);
     default:
         errorUnreachable(node, "a request for the name of a node that has none");
         return NULL;

@@ -834,6 +834,12 @@ static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
 // with the array's: its count is the array's.
 static void contentsLowerVector(TypeCheckState *pstate, FnCallNode **nodep, INode *vectype) {
     FnCallNode *node = *nodep;
+    // A vector type refused (its lane type or count) has been reported, and
+    // has no mask to show it was made: its contents say nothing more of it
+    if (((VectorNode*)vectype)->mask == NULL) {
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
     ArrayNode *arraytype = newArrayNodeTyped((INode*)node, vectorLanes(vectype), vectorElemType(vectype));
     contentsVectorOf = 1;
     INode *lit = contentsArrayLit(pstate, node, (INode*)arraytype);

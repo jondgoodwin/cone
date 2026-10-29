@@ -1,0 +1,146 @@
+# vector - SIMD vectors: the type 'Vector[T, N]' (N lanes of one integer or float
+# type, N from 1 through 64), a vector constructed with its contents as an array
+# is ('Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0'), the operators on its lanes, a
+# number beside a vector, the mask a comparison gives and what it is used for,
+# the reductions, math, a lane indexed, and the conversions to and from arrays
+# and other vectors. Tier 1.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# A new group because the manual has a new page, guide-vectors, beside the
+# numbers' and the arrays' (compiler/c/doc/diagnostics/test-suite.md, section 1).
+#
+# vector_success is the operators and what stands where; vector_convert the
+# conversions (each worked by hand, saturation included); the vector_panic_*
+# scenarios the run-time checks, one each since a panic ends its program: an
+# integer division by zero, the smallest number divided by -1, a remainder by zero,
+# and a lane past the last. vector_genllvm reads the IR (one operation on the
+# whole vector, not one per lane) and vector_c_abi passes vectors to and from C
+# compiled by the platform's C compiler. The refusals are vector_reject_nameres
+# (the bracketed call that is no vector type, which ends the compile) and
+# vector_reject_type, the rest.
+#
+# Left uncovered on purpose:
+#
+# - A vector in a global. A global's initializer is a literal, and a vector has
+#   none: 'var g: Vector[f32, 4] = Vector[f32, 4]() <- ...' is the existing
+#   "may only be initialized with a literal value" (ErrorNotLit).
+# - Lanes of a GPU kernel: vectors are for the CPU targets.
+
+support = []
+
+# -------- success --------
+
+[scenario.vector_success]
+category = "run"
+description = "Vectors: contents, the operators on float and integer lanes, a number beside a vector, assignment forms, shifts past the width, comparisons and masks (any, all, select, & | ^ ~), reductions (the float sum in order, signed and unsigned minimum and maximum, wrapping), math, lanes read and written, and a vector as a parameter, return value, field, element, Sendable field and through a reference, with sizes and alignments"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.vector_convert]
+category = "run"
+description = "Vector conversions: an array and a vector in both directions, a float to an integer (toward zero, saturating, NaN as 0), an integer to a narrower, wider, signed and unsigned integer and to a float, float to float, a number into bool, and a mask into numbers and to an array of bool"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# -------- run-time checks --------
+
+[scenario.vector_panic_divzero]
+category = "run"
+description = "An integer vector divided where any lane of the divisor is zero is a panic naming the line of the division, after a division with none ran"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.vector_panic_divmin]
+category = "run"
+description = "A signed vector dividing the smallest number by -1 in any lane is a panic naming the line, while -1 beside a number, and the smallest number beside another divisor, divide"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.vector_panic_remzero]
+category = "run"
+description = "An unsigned 16-lane vector's remainder where one lane of the divisor is zero is a panic naming the line, after a remainder with none ran"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.vector_panic_index]
+category = "run"
+description = "A lane written past the last of three is a panic naming the index and the count of lanes, after the three lanes were read"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+# -------- code generation --------
+
+# One operation on the whole vector where a scalar has one on a number. A
+# library, so that its public functions are exported (core_genllvm_shift).
+[scenario.vector_genllvm]
+category = "compile"
+description = "An operator on a vector is one instruction on the whole vector, a comparison gives a vector of i1, select is a select, the reductions are LLVM's, a division checks all its lanes with one compare and one test, and a shift is defined past the width lane by lane"
+tags = ["genllvm"]
+
+[[scenario.vector_genllvm.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.vector_genllvm.check]]
+name = "generation-writes-one-operation-on-the-vector"
+target = "preir"
+contains = ["fadd <4 x float>", "mul <8 x i32>"]
+excludes = ["fadd float", "mul i32"]
+
+[[scenario.vector_genllvm.check]]
+name = "the-optimizer-keeps-it-one-operation"
+target = "llvmir"
+contains = [
+  "fadd <4 x float> %0, %1",
+  "mul <8 x i32>",
+  "fmul <4 x float> %0, %splat",
+  "fcmp olt <4 x float> %0, %1",
+  "select <4 x i1> %0, <4 x float> %1, <4 x float> %2",
+  "extractelement <4 x float> %0, i64 2",
+]
+excludes = ["fadd float", "fmul float", "fcmp olt float"]
+
+[[scenario.vector_genllvm.check]]
+name = "reductions-and-math-are-llvms-vector-intrinsics"
+target = "llvmir"
+contains = [
+  "@llvm.vector.reduce.fadd.v4f32(float -0.000000e+00, <4 x float> %0)",
+  "@llvm.vector.reduce.smax.v4i32(<4 x i32> %0)",
+  "@llvm.sqrt.v4f32(<4 x float> %0)",
+]
+
+[[scenario.vector_genllvm.check]]
+name = "a-division-checks-its-lanes-together-once"
+target = "llvmir"
+contains = [
+  "icmp eq <4 x i32> %1, zeroinitializer",
+  "icmp eq <4 x i32> %0, splat (i32 -2147483648)",
+  "sdiv <4 x i32> %0, %1",
+  "@cone_panicDivide(",
+]
+
+[[scenario.vector_genllvm.check]]
+name = "a-shift-past-the-width-is-defined-in-each-lane"
+target = "llvmir"
+contains = ["icmp ult <4 x i32> %1, splat (i32 32)", "shl <4 x i32> %0, %1", "select <4 x i1> %shiftinrange"]
+
+[scenario.vector_c_abi]
+category = "run"
+description = "Vector[f32, 4], Vector[i32, 4] and Vector[f64, 2] passed and returned by value between Cone's C-named functions and C compiled by the platform's C compiler as its __m128, __m128i and __m128d, both ways, and among integers, doubles and floats"
+tags = ["genllvm", "runtime"]
+link = ["cside.c"]
+
+# -------- name resolution --------
+
+[scenario.vector_reject_nameres]
+category = "reject"
+description = "Vector written without its number of lanes, with too many arguments, or with a number where its lane type goes"
+tags = ["nameres"]
+diagnostics = 3
+
+# -------- type check --------
+
+[scenario.vector_reject_type]
+category = "reject"
+description = "A lane type that is no number, a number of lanes outside 1 through 64, Vector alone, lanes of different types or counts, a mask used as numbers or indexed, a lane borrowed, select and from given what they do not take, contents of the wrong count, a mask in a condition, and the methods the lanes have no scalar for"
+tags = ["typecheck"]
