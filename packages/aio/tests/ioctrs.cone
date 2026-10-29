@@ -3,7 +3,8 @@
 // (two actors, 200 round trips, each end awaiting a write and a read a round)
 // they show the operations the rounds made: at least four answers a round,
 // every submission delivered or in flight, and the Loop having polled and
-// waited in the kernel.
+// waited in the kernel, other threads having posted to its port, records
+// queued for the I/O thread and taken back, and the I/O thread's own time.
 
 mod ioctrs;
 
@@ -100,5 +101,12 @@ fn main() i32 {
   expect(c.waits > 0u64, "the Loop waited in the kernel");
   expect(c.waits <= c.polls, "and no more often than it polled");
   expect(c.dequeued > 0u64, "completions were taken from the kernel's queue");
+  expect(c.passes >= c.waits, "each wait a pass into the kernel's queue");
+  expect(c.posted > 0u64, "other threads posted to the port");
+  let o = aio.opStats();
+  expect(o.queued > 0u64, "records were queued for the I/O thread");
+  expect(o.loopDone > 0u64, "and it took records back answered");
+  let t = aio.ioThreadTimes();
+  expect(t.wallNs > 0u64, "the I/O thread's life was measured");
   done()
 }

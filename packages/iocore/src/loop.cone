@@ -181,7 +181,7 @@ pub struct Loop {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
     let shared = Arc[imm, Port](Port(if isWindows() {port} else {wake}, Atomic[bool].of(false),
-      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32)));
+      Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32), Atomic[u64].of(0u64)));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
@@ -212,8 +212,12 @@ pub struct Loop {
   // Operations and timers submitted and not yet answered
   pub fn inFlight(self: &) u64 {stats.inFlight}
 
-  // Its counters, as they are now
-  pub fn counters(self: &) diag.Counters {stats}
+  // Its counters, as they are now: its own, and the posts other threads made
+  pub fn counters(self: &) diag.Counters {
+    var c = stats;
+    c.posted = port.posts.loadOrdered(MemOrder.Relaxed);
+    c
+  }
 
   // Hand every answer delivered here to s, as a diag.OpRecord
   pub fn subscribe(self: &mut, s: diag.Subscriber) {
@@ -1921,6 +1925,7 @@ pub struct Loop {
     if isWindows() {
       var got = 0u32;
       let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
+      stats.passes = stats.passes + 1u64;
       if ms != 0u32 {stats.waits = stats.waits + 1u64;}
       if ok == 0i32 || got == 0u32 {
         if ms != 0u32 && ms != infinite {stats.waitTimeouts = stats.waitTimeouts + 1u64;}

@@ -56,6 +56,8 @@ extern {
   fn @c(system) CloseHandle(h: usize) i32;
   fn @c(system) GetLastError() u32;
   fn @c(system) CancelIoEx(h: usize, ov: *u8) i32;
+  fn @c(system) GetCurrentThread() usize;
+  fn @c(system) GetThreadTimes(h: usize, created: *u64, exited: *u64, kernel: *u64, user: *u64) i32;
   fn @c(system) CreateFileW(name: *u16, access: u32, share: u32, sa: *u8, disposition: u32,
       flags: u32, template: usize) usize;
   fn @c(system) ReadFile(h: usize, buf: *u8, n: u32, done: *u32, ov: *u8) i32;
@@ -280,6 +282,19 @@ fn openPort() u32, usize, usize, usize {
     return lxOpen();
   }
   0u32, 0usize, 0usize, 0usize
+}
+
+// The calling thread's time so far, in nanoseconds: in user mode, then in
+// the kernel; zeros if the system cannot say (threadTimes)
+fn winThreadTimes() u64, u64 {
+  var made = 0u64;
+  var gone = 0u64;
+  var kernel = 0u64;
+  var user = 0u64;
+  if GetThreadTimes(GetCurrentThread(), &mut made, &mut gone, &mut kernel, &mut user) == 0i32 {
+    return 0u64, 0u64;
+  }
+  user * 100u64, kernel * 100u64
 }
 
 // A new TCP socket for the family; invalidHandle on failure. Windows:

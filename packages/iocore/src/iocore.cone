@@ -62,6 +62,7 @@
 //     .count() .isDone() .isEarly() .isLate() .isLetGo() .id()
 //   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
+//   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
 //
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
 //   Op.Recv(sock, buf)  Op.RecvReady(sock)  Op.Send(sock, buf)  Op.SendBytes(sock, bytes)
@@ -514,7 +515,9 @@
 // decided, or waiting for the kernel after an early answer), 'lp.recordsMade()'
 // how many its pool has made. 'recordPools()' is how many pools of records the
 // process holds (made, and not yet freed): a pool let go of while a record of it
-// is away is held until that record is home.
+// is away is held until that record is home. 'threadTimes()' is the calling
+// thread's own time so far, in nanoseconds, in user mode and in the kernel
+// (zeros where the system cannot say): what a loop's driver reports of itself.
 //
 // MEASURED, release, an i7-13700HX on Windows 11 (examples/echo.cone and
 // examples/tick.cone; numbers vary run to run):
@@ -612,6 +615,15 @@ fn @initpure init() {
 
 // An instant that never comes, for 'poll(forever(), out)'
 pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64)}
+
+// The calling thread's time so far, in nanoseconds: in user mode, then in the
+// kernel (DIAGNOSTICS)
+pub fn threadTimes() u64, u64 {
+  if isWindows() {
+    return winThreadTimes();
+  }
+  lxThreadTimes()
+}
 
 // ---------------------------------------------------------------------------
 // Ids and handles
@@ -1069,6 +1081,9 @@ struct Port is Sendable {
   // yet taken it; a wake asked meanwhile posts nothing, the packet already
   // there will end the poll for it too (see 'send')
   wakes: Atomic[u32];
+  // The system calls posting made (a PostQueuedCompletionStatus, an eventfd
+  // write), from any thread: the loop's 'posted' counter
+  posts: Atomic[u64];
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self: &) &mut Port {
@@ -1091,10 +1106,12 @@ struct Port is Sendable {
         // coalesced onto the failed post still returns true, which only
         // happens when the port cannot take a packet at all
         if wakes.swap(1u32) != 0u32 {return true;}
+        posts.addOrdered(1u64, MemOrder.Relaxed);
         if PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32 {return true;}
         wakes.store(0u32);
         return false;
       }
+      posts.addOrdered(1u64, MemOrder.Relaxed);
       PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32
     } else {
       if key == keyWake {
@@ -1102,6 +1119,7 @@ struct Port is Sendable {
         // takes this word
         wakes.store(1u32);
         if pending.swap(1u32) == 0u32 {
+          posts.addOrdered(1u64, MemOrder.Relaxed);
           var one = 1u64;
           sysWrite(fdOf(handle), &mut one as *u8, 8usize);
         }
@@ -1119,6 +1137,7 @@ struct Port is Sendable {
       st.lock.unlock();
       // One write wakes the loop for all the packets queued before it takes them
       if pending.swap(1u32) == 0u32 {
+        posts.addOrdered(1u64, MemOrder.Relaxed);
         var one = 1u64;
         sysWrite(fdOf(handle), &mut one as *u8, 8usize);
       }
@@ -1148,6 +1167,7 @@ struct Port is Sendable {
       if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
       st.jobsTail = p;
       if pending.swap(1u32) == 0u32 {
+        posts.addOrdered(1u64, MemOrder.Relaxed);
         var one = 1u64;
         sysWrite(fdOf(handle), &mut one as *u8, 8usize);
       }

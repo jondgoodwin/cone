@@ -69,7 +69,11 @@
 // without starting (their group cancelled, their deadline passed, a lane's
 // queue full); TimedOut answered promptly while the kernel or a pool thread
 // still held the buffer, and those buffers given back since; jobs handed to
-// the blocking pool. delivered + inFlight = submitted at every moment, which
+// the blocking pool; the calls into the kernel's queue, of any length
+// ('passes': 'waits' and those that only took what was there), and the
+// packets other threads posted to the port, a system call each ('posted': a
+// wake an earlier one still covers posts nothing). delivered + inFlight =
+// submitted at every moment, which
 // is the exactly-once check (iocore's invariant I1).
 //
 // HISTOGRAMS. A Histogram counts values (nanoseconds, by its use here) in
@@ -215,11 +219,15 @@ pub struct Counters {
                             // still held the buffer: the answer carried none
   pub lateReturns: u64;      // ...and those buffers given back to their pools since
   pub jobs: u64;             // operations handed to the blocking pool
+  pub passes: u64;           // calls into the kernel's queue (GetQueuedCompletionStatusEx,
+                            // epoll_wait) of any length: 'waits' and those that did not wait
+  pub posted: u64;           // packets other threads posted to the port, a system call each
+                            // (PostQueuedCompletionStatus; on Linux the eventfd's write)
 
   pub fn zero() Counters {
     Counters(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
       0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64)
+      0u64, 0u64, 0u64, 0u64)
   }
 
   // A reply delivered, with its outcome
@@ -269,6 +277,8 @@ pub struct Counters {
     line(prefix, "promptTimeouts", promptTimeouts);
     line(prefix, "lateReturns", lateReturns);
     line(prefix, "jobs", jobs);
+    line(prefix, "passes", passes);
+    line(prefix, "posted", posted);
   }
 }
 
