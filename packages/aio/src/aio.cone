@@ -72,6 +72,10 @@
 //   aio.opStats()           the records in use and made, the operations cancelRead and cancelWrite
 //                           asked to end, the answers taken on the awaiting actor's worker, a
 //                           record's size (ONE RECORD PER OPERATION)
+//   aio.ioCounters()        the I/O thread's Loop counters (a diag.Counters) as they stood when the
+//                           program ended: polls, waits in the kernel, completions taken, answers
+//                           delivered; zero before that, and in a program that never awaited I/O
+//                           (THE PROGRAM'S END)
 //   aio.testLateQuiet(on)   TEST-ONLY, not for programs (Cone has no test-only visibility, so it is
 //                           public): while on, reads with no buffer that begin with one go through
 //                           the bad case's late path when answered (READS WITH NO BUFFER)
@@ -348,7 +352,7 @@
 // neither; one with an answer waiting in its mailbox, a lent one among them, is
 // queued, so its 'take' has run, and its record is dissolved, before this goes
 // on), then ends the I/O, in this order: the I/O thread stops taking from its
-// queues, and what is queued there and not yet started is dropped or dissolved
+// queues, keeping its Loop's counters for 'ioCounters()', and what is queued there and not yet started is dropped or dissolved
 // unstarted (each reply dropped unsent, each buffer home); every service still
 // hosted (one its package did not end) is ended as 'h.end' ends one, newest
 // first; then its Loop dies, which cancels and drains every operation still in
@@ -556,6 +560,7 @@ fn @initpure init() {
   poolAt = Atomic[usize].of(0usize);
   cancelsAsked = Atomic[u64].of(0u64);
   takenAway = Atomic[u64].of(0u64);
+  ioEndAt = Atomic[usize].of(0usize);
 }
 
 // A panic, reported at the line calling 'die'
@@ -761,6 +766,11 @@ let io: Atomic[usize];
 // The program is ending: nothing is taken from the queues from now on (under
 // ioLock). An atomic held by a 'let' global, set in 'init'
 let ended: Atomic[bool];
+
+// The Loop's counters as they stood when the I/O thread was told to end: a
+// block the thread allocates then and nothing frees, 0 until it does. An
+// atomic held by a 'let' global, set in 'init'
+let ioEndAt: Atomic[usize];
 
 fn nullJob() *JobHead {null}
 fn nullCore() *OpCore {null}
@@ -1015,6 +1025,7 @@ fn ioMain(arg: IoArg) u32 {
       let stop = ended.load();
       ioLock.unlock();
       if stop {
+        keepCounters(lp.counters());
         dropJobs(h);
         dissolveUnstarted(r);
         if hosts.len() != 0usize {
@@ -1043,6 +1054,29 @@ fn ioMain(arg: IoArg) u32 {
   }
   pool.flushHere();
   0u32
+}
+
+// On the I/O thread, when the program ends: the Loop's counters, kept for
+// ioCounters, before the services are ended and the Loop dies. Joining the
+// thread (the finalizer) orders this write before any later read
+fn keepCounters(c: diag.Counters) {
+  let p = libc.calloc(1usize, mem.sizeof[diag.Counters]()) as *diag.Counters;
+  if p as usize == 0usize {
+    return;
+  }
+  mem.writeRaw[diag.Counters](p, c);
+  ioEndAt.store(p as usize);
+}
+
+// The I/O thread's Loop counters as they stood when the program ended (the
+// package's header, THE PROGRAM'S END): read after finalAll(), where the run's
+// totals are. Zero before that, and in a program that never awaited any I/O
+pub fn ioCounters() diag.Counters {
+  let at = ioEndAt.load();
+  if at == 0usize {
+    return diag.Counters.zero();
+  }
+  mem.readRaw[diag.Counters](at as *diag.Counters)
 }
 
 fn runJobs(first: *JobHead, lp: &mut Loop) {
