@@ -817,7 +817,27 @@ below. `&mut x[i]`, `&uni x[i]` and `&imm x[i]` call `` `&[]` `` as before, as
 does an index in set position. A type declaring a `&[]` that takes an index and
 no `[]` is refused where it is declared, `ErrorRefIndexAlone`
 (`structCheckMembers`), as Rust requires `Index` for `IndexMut`; a `&[]` taking
-no index is the whole-value borrow `&[]mut v`, which needs none.
+no index is the whole-value borrow `&[]mut v`, which needs none. In
+`&a[i][j]` the inner link `(&a)[i]` is lowered first; where it lent a read-only
+reference, the outer link calls `[]` too.
+
+**An index through a type's `[]` is a place.** A plain index, `x[i]` (no member
+name, no `FlagBorrow` or `FlagRange`), that `fnCallTypeCheck` lowered to a call
+of a `[]` returning a borrowed reference is wrapped in a dereference marked
+`FlagIndexPlace` (`fnCallIndexPlace`): `x[i]` is `*x.[](i)`, the element itself,
+as Rust's `a[i]` is `*a.index(i)` and as an array's element is a place
+(`ArrIndexTag`). Read, it copies; passed by value, it copies; a non-copyable
+element is not moved out of it (flow's `ErrorMoveElem`); `&x[i]` is the borrow
+(above). The `[]` call's borrow is a statement temporary, so a read holds no loan
+past its statement. An index in set position took `&[]` and is not wrapped; a
+`[]` returning a value is a value. Three places see through the marked
+dereference so nothing else moves: a receiver (`x[i].m()`, `x[i].f`,
+`x[i] + 1`, `x[i][j]`) is reached through the borrow, in `fnCallReadThroughRefs`
+and just before the dispatch, so the method selected and the relowering of a
+receiver that must write (`fnCallIndexAsMut`) see the call as before; and an
+explicit `*` over it (`derefTypeCheck`) takes the injected one's place, so the
+spelling `*x[i]` from when the index was the borrow keeps its meaning during the
+transition, reported as `WarnIndexStar` only under `--warn-index-star`.
 
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
 message of their own. An indexed borrow `&x[i]` that reaches `` `&[]` `` (a

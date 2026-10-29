@@ -59,6 +59,7 @@ enum
     OPT_LINT_LLVM,
     OPT_INTRINSIC_FALLBACK,
     OPT_AWAIT_DIRECT,
+    OPT_WARN_INDEX_STAR,
 
     OPT_BNF,
     OPT_ANTLR,
@@ -107,6 +108,7 @@ static opt_arg_t args[] =
     { "lint-llvm", '\0', OPT_ARG_NONE, OPT_LINT_LLVM },
     { "intrinsic-fallback", '\0', OPT_ARG_NONE, OPT_INTRINSIC_FALLBACK },
     { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
+    { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
 
     OPT_ARGS_FINISH
 };
@@ -192,6 +194,9 @@ static void usage()
         "  --await-direct  Test only: split each actor message holding an\n"
         "                  'await', each seam handing its record straight to\n"
         "                  its second half, the awaited value as the result.\n"
+        "  --warn-index-star\n"
+        "                  Warn at each '*x[i]' over an index through a type's\n"
+        "                  '[]', the spelling indexing as a place retires.\n"
         ,
         "" // "Runtime options for Cone programs (not for use with Cone compiler):\n"
     );
@@ -420,6 +425,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
         case OPT_INTRINSIC_FALLBACK: opt->intrinsic_fallback = 1; break;
         case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
+        case OPT_WARN_INDEX_STAR: opt->warn_index_star = 1; break;
 
         case OPT_VERBOSE:
         {

@@ -93,6 +93,19 @@ static int flowRefuseMoveThrough(INode *node, INode *ref) {
     return 0;
 }
 
+// Refuse a move out of an indexed element reached through a borrow: of a
+// slice, of an array a borrow points at, or the place a type's '[]' lends
+// ('let s = l[0]' of a 'List[String]', FlagIndexPlace). The collection still
+// holds the element, as Rust's "cannot move out of index" says; the remedies
+// are a borrow of it, a swap, or a method taking it out. Returns 1 when it refused.
+static int flowRefuseMoveIndexed(INode *node, INode *ref) {
+    if (!flowIsBorrowedRef(ref))
+        return 0;
+    errorMsgNode(node, ErrorMoveElem,
+        "May not move a value out of an indexed element, which the collection still holds. Borrow it, '&x[i]'; swap a value in, '<->' or 'swap'; or take it out, 'remove'.");
+    return 1;
+}
+
 // *********************
 // Variable state along each path, for the main walk
 //
@@ -687,7 +700,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         if (((FnCallNode*)node)->flags & FlagBorrow)
             break;
         INode *objfn = ((FnCallNode*)node)->objfn;
-        if (flowRefuseMoveThrough(node, objfn))
+        if (flowRefuseMoveIndexed(node, objfn) || flowRefuseMoveThrough(node, objfn))
             return;
         // An element of the array a local or temporary sole owner points at,
         // 'a[0]' or '(*a)[0]': moving it out would leave that array with a hole
@@ -695,7 +708,8 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         // stayed without finalizing them. Only the whole array moves out.
         {
             INode *soleref = objfn->tag == DerefTag ? ((StarNode *)objfn)->vtexp : objfn;
-            if (soleref != objfn && flowRefuseMoveThrough(node, soleref))
+            if (soleref != objfn
+                && (flowRefuseMoveIndexed(node, soleref) || flowRefuseMoveThrough(node, soleref)))
                 return;
             INode *reftype = iexpGetTypeDcl(soleref);
             if (reftype->tag == RefTag
@@ -734,6 +748,8 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     case DerefTag:
     {
         INode *ref = ((StarNode*)node)->vtexp;
+        if ((node->flags & FlagIndexPlace) && flowRefuseMoveIndexed(node, ref))
+            return;
         if (flowRefuseMoveThrough(node, ref))
             return;
         VarDclNode *owner = flowOwningLocal(ref);
