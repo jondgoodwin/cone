@@ -1,0 +1,87 @@
+// Cage.orient pairs faces by their shared edges: where several faces run along one edge (a fin), the faces are
+// paired in the order they were given, whatever the order that equal edge keys happen to sort in. Here a fin of
+// five triangles on the edge 0-1 is given in every one of the 120 orders of its faces; in each, each face must
+// wind opposite to the one given before it along the edge (the chain of pairs), so the result is the same for
+// the same faces in the same order.
+
+mod orient;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import humanbody use *;
+
+// A fin: the edge 0-1 and one triangle (0, 1, apex) for each of 'order', apexes 2.. at distinct places
+fn fin(order: &List[usize]) Cage {
+  var cage = Cage.empty();
+  cage.positions.push(Vec3(0., 0., 0.));
+  cage.positions.push(Vec3(1., 0., 0.));
+  var k = 0usize;
+  while k < order.len() {
+    let a = f32.from(*order[k]);
+    cage.positions.push(Vec3(0.5, 1. + a, 1. - a * 0.3));
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < order.len() {
+    cage.counts.push(3u32);
+    cage.indices.push(0u32);
+    cage.indices.push(1u32);
+    cage.indices.push(u32.from(2usize + *order[k]));
+    k = k + 1usize;
+  }
+  cage
+}
+
+// Whether face f runs from vertex 0 to vertex 1 (else from 1 to 0)
+fn runsUp(cage: &Cage, f: usize) bool {
+  var i = 0usize;
+  while i < 3usize {
+    if *cage.indices[f * 3usize + i] == 0u32 && *cage.indices[f * 3usize + (i + 1usize) % 3usize] == 1u32 { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+// The permutation of 0..n numbered p in the factorial number system
+fn permutation(n: usize, p: usize) List[usize] {
+  var left = List[usize].empty();
+  var i = 0usize;
+  while i < n { left.push(i); i = i + 1usize; }
+  var out = List[usize].empty();
+  var f = 1usize;
+  i = 2usize;
+  while i < n { f = f * i; i = i + 1usize; }      // (n-1)!
+  var rest = p;
+  var m = n;
+  while m > 0usize {
+    let at = rest / f;
+    rest = rest % f;
+    out.push(*left[at]);
+    var j = at;
+    while j + 1usize < left.len() { left.set(j, *left[j + 1usize]); j = j + 1usize; }
+    left.pop();
+    m = m - 1usize;
+    if m > 1usize { f = f / m; } else { f = 1usize; }
+  }
+  out
+}
+
+fn main() i32 {
+  let n = 5usize;
+  var bad = 0;
+  var p = 0usize;
+  while p < 120usize {
+    let order = permutation(n, p);
+    var cage = fin(&order);
+    cage.orient();
+    var f = 0usize;
+    while f + 1usize < n {
+      if runsUp(&cage, f) == runsUp(&cage, f + 1usize) { bad = bad + 1; f = n; }
+      f = f + 1usize;
+    }
+    p = p + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "in every order of a fin's faces, each winds opposite the one given before it");
+  done()
+}
