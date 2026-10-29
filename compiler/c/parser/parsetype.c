@@ -712,6 +712,46 @@ static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what
         &strnode->namesym->namestr, what);
 }
 
+// An associated type in a trait's body, with the lexer on 'type' and a name
+// after it: 'type Cursor: Iterator[T];', or unbounded, 'type Piece;'. It is a
+// parameter of the trait that no use writes (FlagAssocType), appended after the
+// written ones, its bound read as a generic parameter's is, '+'-joined, so name
+// resolution folds it into the trait's constraints as it folds '[T: Ordered]'.
+static void parseAssocType(ParseState *parse, StructNode *strnode) {
+    lexNextToken();     // 'type'
+    GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+    parm->flags |= FlagAssocType;
+    lexNextToken();
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        if (!lexIsToken(IdentToken))
+            errorMsgLexAfter(ErrorNoType, "Expected a trait after ':': an associated type is bounded as a type parameter is, 'type Cursor: Iterator[T];'");
+        else {
+            parm->annot = newNodes(2);
+            nodesAdd(&parm->annot, parseType(parse));
+            while (lexIsToken(PlusToken)) {
+                lexNextToken();
+                nodesAdd(&parm->annot, parseTypeReq(parse, "'+'"));
+            }
+        }
+    }
+    parseEndOfMember();
+    if (strnode->genericinfo == NULL) {
+        strnode->genericinfo = newGenericInfo();
+        strnode->genericinfo->parms = newNodes(2);
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+        if (((GenVarDclNode*)*nodesp)->namesym == parm->namesym) {
+            errorMsgNode((INode*)parm, ErrorDupName, "Duplicate name %s: a trait's associated type is named apart from its type parameters and its other associated types.",
+                &parm->namesym->namestr);
+            return;
+        }
+    }
+    nodesAdd(&strnode->genericinfo->parms, (INode*)parm);
+}
+
 // Parse the '= value' pinning a variant's tag value, if one is written, leaving
 // the tag unassigned when none is. Written where the variant's name is, both for
 // a bare name and for a struct's.
@@ -1266,6 +1306,29 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 if (parseIsFoldClause())
                     parseFoldClause(parse, FoldRecover);
                 parseEndOfStatement();
+            }
+            // 'type Cursor: Iterator[T];' in a trait: an associated type, a type
+            // its implementer chooses and says by the shape of its methods
+            // (generic.c, "Associated types"). 'type' is a contextual word, read
+            // only here and only before a name, so a field named 'type' stays legal
+            else if ((strnode->flags & TraitType) && !isenum && lexIsToken(IdentToken)
+                && lex->val.ident == typeWordName && lexPeekIsIdent()) {
+                parseAssocType(parse, strnode);
+                parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
+            }
+            // 'alias Cursor = ListIter[T];' in a type: a name for a type, in the
+            // type's namespace, which is how a type says an associated type of a
+            // trait it meets outright rather than by the shape of its methods
+            else if (lexIsToken(AliasToken) && !(strnode->flags & TraitType)) {
+                AliasDclNode *alias = parseAlias(parse);
+                if (alias) {
+                    alias->flags |= pubflag;
+                    nodelistAdd(&strnode->nodelist, (INode*)alias);
+                    if (namespaceAdd(&strnode->namespace, alias->namesym, (INode*)alias) != NULL)
+                        errorMsgNode((INode*)alias, ErrorDupName,
+                            "Duplicate name %s: an alias shares its type's namespace with fields and methods.", &alias->namesym->namestr);
+                }
+                parseSpan(parse, &strnode->spans, (INode*)alias, mstart, mkw, SpanMember);
             }
             else if (lexIsDclStart() || lexIsToken(IdentToken)) {
                 int hadperm = lexIsDclStart();

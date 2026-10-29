@@ -487,6 +487,19 @@ parameter's type holds; `ErrorGenValueClash`, a number inferred two ways; and
 `ErrorGenValueArith`, arithmetic over one in an array's size; `||` there, `[T: A || B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
 
+A trait's associated type, `type Cursor: Iterator[T];`, takes two codes of its
+own, each a form not built: `ErrorAssocUnsaid`, the trait named where no type
+meeting it says what its associated types are — a virtual reference to it,
+borrowed or owning (`&<Iterable[i64]`, `Uni[Iterable[i64]]`) — reported at the
+trait's instance; and `ErrorAssocEquality`, one fixed by name in a constraint
+(`C: Iterable[i64, Cursor = u8]`, Rust's equality constraint), reported by the
+parser at the `=`. The rest reuse a code of the same meaning: the associated type
+given as one of the trait's arguments, `Iterable[i64, u8]`, is `ErrorArgCount`;
+`C.Nope`, a name no bound of `C` declares, and `C.Cursor` where two bounds each
+declare one, are `ErrorUnkName`, as `Bag.Nope` is; a type that does not say it,
+or says what its bound refuses, fails the bound as `ErrorWhereUnmet`, or, where
+it declares the trait with `is`, `ErrorInvType`, as an unmet requirement there is.
+
 A condition on one entry of a type's `is` list, `is Move if T is Move`, is written
 as a `where` clause's is, so its form and its clauses are refused under the same
 three codes (`ErrorWhereForm`, `ErrorWhereSubject` -- which also takes a subject

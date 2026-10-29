@@ -62,6 +62,7 @@ extern Name *finalName; // "final": a type's finalizer method, and a module's ow
 extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
 extern Name *lazyName;   // "lazy": before a macro parameter's type, it marks the parameter substituted whole (a contextual word)
+extern Name *typeWordName; // "type": in a trait's body, before a name, it declares an associated type (a contextual word)
 extern Name *yieldsName; // "yields": after a function's parameters, it makes the function a generator (a contextual word)
 extern Name *nextName;  // "next": the method a cursor, and a generator, is walked by
 

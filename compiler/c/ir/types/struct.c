@@ -292,6 +292,15 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         case VarDclTag:
             iNsTypeAddStatic((INsTypeNode*)newnode, cloneVarDclShell((VarDclNode*)*nodesp));
             break;
+        case AliasDclTag: {
+            // A type alias, 'alias Cursor = Rep[T];', whose target names the
+            // instance's arguments: copied whole, with nothing to fill after
+            INode *alias = cloneNode(cstate, *nodesp);
+            alias->flags &= 0xffff - (TypeChecked | TypeChecking);
+            nodelistAdd(&newnode->nodelist, alias);
+            namespaceAdd(&newnode->namespace, ((AliasDclNode*)alias)->namesym, alias);
+            break;
+        }
         default:
             iNsTypeAddFn((INsTypeNode*)newnode, cloneFnDclShell((FnDclNode*)*nodesp));
         }
@@ -306,7 +315,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             continue;
         if ((*nodesp)->tag == VarDclTag)
             cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
-        else if ((*nodesp)->tag != MacroDclTag)
+        else if ((*nodesp)->tag != MacroDclTag && (*nodesp)->tag != AliasDclTag)
             cloneFnDclFill(cstate, (FnDclNode*)*copyp, (FnDclNode*)*nodesp);
         if (late && structMemberAbsent(late, *nodesp)) {
             if (cstate->latepairs == NULL)
@@ -2470,6 +2479,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // check's.
     if (node->basetrait) {
         inodeNameRes(pstate, &node->basetrait);
+        genericAssocBareUse(&node->basetrait);
         StructNode *trait = structNameResTrait(node->basetrait);
         if (trait && (node->flags & HasTagField) == (trait->flags & HasTagField)) {
             FieldDclNode *mixin = newFieldDclNode(trait->namesym, (INode*)immPerm);
@@ -2576,6 +2586,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
         if (field->flags & IsMixin) {
             inodeNameRes(pstate, (INode**)nodesp);
+            genericAssocBareUse(&field->vtype);
             StructNode *trait = structNameResTrait(field->vtype);
             if (trait && structRefuseClosedIs(node, field, trait, enclosing)) {
                 nodelistMakeSpace(&node->fields, fldi, -1);
@@ -4531,6 +4542,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 }
             }
         }
+        // A trait with associated types is made with what this type says they are
+        if (!genericAssocCompleteIs(pstate, node->basetrait, node)) {
+            pstate->typenode = svtypenode;
+            return;
+        }
         if (itypeTypeCheck(pstate, &node->basetrait) == 0) {
             pstate->typenode = svtypenode;
             return;
@@ -4584,6 +4600,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         FieldDclNode *field = (FieldDclNode*)*fldnodesp;
         if (!(field->flags & IsMixin)) {
             inodeTypeCheckAny(pstate, fldnodesp);
+            continue;
+        }
+        // A trait with associated types is made with what this type says they are
+        if (!genericAssocCompleteIs(pstate, field->vtype, node)) {
+            nodelistMakeSpace(&node->fields, fldpos, -1);
             continue;
         }
         if (itypeTypeCheck(pstate, &field->vtype) == 0) {
