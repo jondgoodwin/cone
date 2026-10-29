@@ -152,6 +152,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case ArrayLitTag:
     case ArrayTag:
         node = cloneArrayNode(cstate, (ArrayNode *)nodep); break;
+    case VectorTag:
+        node = cloneVectorNode(cstate, (VectorNode *)nodep); break;
     case FnSigTag:
         node = cloneFnSigNode(cstate, (FnSigNode *)nodep); break;
     case PtrTag:

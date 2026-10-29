@@ -57,6 +57,12 @@ extern INode *neverType;
 // every bracketed use into an array type node (arrayTypeLower)
 extern StructNode *arrayTypeDcl;
 
+// 'Vector', the name the SIMD vector type is written with, 'Vector[T, N]'
+// (stdlibInit): a struct with no fields that only names it, as 'Array' does,
+// since name resolution lowers every bracketed use into a vector type node
+// (vectorTypeLower)
+extern StructNode *vectorTypeDcl;
+
 // The compiler's own 'Array' struct, when module 'mod' is core declaring 'Array[T]'
 // for the first time, so that core's declaration makes it the generic body of a
 // run-time length instead of a second struct of the name; else NULL.

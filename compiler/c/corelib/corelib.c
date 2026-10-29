@@ -19,6 +19,7 @@ INode *elseCond;
 INode *borrowRef;
 INode *neverType;
 StructNode *arrayTypeDcl;
+StructNode *vectorTypeDcl;
 StructNode *strTypeDcl;
 static int strTypeAdopted;
 static int arrayTypeAdopted;
@@ -239,6 +240,14 @@ void stdlibInit(int ptrsize) {
     arrayTypeDcl = newStructNode(nametblFind("Array", 5));
     arrayTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
     arrayTypeDcl->namesym->node = (INode*)arrayTypeDcl;
+
+    // 'Vector', which names the SIMD vector type: 'Vector[f32, 4]'. Like
+    // 'Array' it looks generic and is the compiler's: a bracketed use is
+    // lowered into the vector type node (vectorTypeLower), and any other use
+    // is refused (nameUseTypeCheckType). A name every module reaches.
+    vectorTypeDcl = newStructNode(nametblFind("Vector", 6));
+    vectorTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
+    vectorTypeDcl->namesym->node = (INode*)vectorTypeDcl;
 
     // 'str', the dynamically sized body of bytes. It has no fields and no size
     // of its own, so it is held only through a reference, which carries the

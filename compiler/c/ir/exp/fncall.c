@@ -522,6 +522,11 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
             && node->args != NULL && node->args->used == 1))
         arrayTypeLower(pstate, (INode**)nodep);
 
+    // 'Vector[f32, 4]' is the SIMD vector type, lowered here for the same reason
+    else if ((node->flags & FlagIndex) && node->methfld == NULL
+        && isNameUseNode(node->objfn) && nameUseGetDcl((NameUseNode*)node->objfn) == (INode*)vectorTypeDcl)
+        vectorTypeLower(pstate, (INode**)nodep);
+
     // 'None[i32]' standing as a value term constructs that empty variant
     if ((*nodep)->tag == FnCallTag && ((*nodep)->flags & FlagValueTermCall))
         fnCallVariantTermNameRes(pstate, (INode**)nodep);
@@ -680,6 +685,10 @@ void fnCallArrIndex(FnCallNode *node) {
     case ArrayTag:
         node->vtype = arrayElemType(objtype);
         break;
+    case VectorTag:
+        if (!vectorIndex(node))
+            return;
+        break;
     case RefTag: {
         // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
         // this call was an index at all. Reading the tag off the unresolved
@@ -689,6 +698,10 @@ void fnCallArrIndex(FnCallNode *node) {
         INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
         if (vtype->tag == ArrayTag)
             node->vtype = arrayElemType(vtype);
+        else if (vtype->tag == VectorTag) {
+            if (!vectorIndex(node))
+                return;
+        }
         else if (vtype->tag == ArrayDerefTag)
             node->vtype = ((RefNode*)vtype)->vtexp;
         else {
@@ -1918,6 +1931,10 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
 // The same, finding the method in 'bodytype' where that is not NULL, the type
 // whose methods a receiver that has none of its own (an array) reaches
 static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INode *bodytype) {
+    // A number beside a vector in an operator is broadcast to a vector of its
+    // lane type, on whichever side it is, so both are vectors from here on
+    if (bodytype == NULL && vectorBroadcastOperand(pstate, callnode))
+        return -1;
     INode *obj = callnode->objfn;
     // An ASCII character literal beside a byte is that byte, whichever side it is on
     if (callnode->flags & FlagOperator)
@@ -1944,6 +1961,13 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     INode *objdereftype = bodytype ? bodytype : iexpGetDerefTypeDcl(obj);
     if (!isMethodType(objdereftype)) {
         return 0;
+    }
+
+    // 'mask.select(a, b)' chooses between two vectors of any lane type, which
+    // no signature can say
+    if (objdereftype->tag == VectorTag && methsym == selectName) {
+        vectorSelectLower(pstate, callnode);
+        return callnode->vtype == errorType ? -1 : 1;
     }
 
     // 'self.m()', m one of an actor's behaviours, is a send: its receiver
@@ -2066,6 +2090,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             return -1;
         }
         if (foundnode == NULL && parallelViewNotFound(callnode, objdereftype, methsym))
+            return -1;
+        if (foundnode == NULL && objdereftype->tag == VectorTag && vectorMissingMember(callnode, objdereftype, methsym))
             return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
@@ -2242,7 +2268,9 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             permLockRefused(obj, ((RefNode*)objtype)->perm, "call a method on the value");
         }
         else if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
-            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
+            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status)
+            && !(objdereftype->tag == VectorTag && status == OverloadNone
+                && vectorNoCandidate(callnode, objdereftype, methsym)))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         // Every path here has reported: the call is a bad value from now on, so
         // what takes it as an argument or an initializer says nothing more of it
@@ -4457,6 +4485,9 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
                 calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
             }
         }
+        // 'Vector[f32, 4].from(a)': a vector's conversion, from an array or a vector
+        else if (vectorFromCall(pstate, nodep))
+            return;
         // 'u64.from(count)': a number type's conversion
         else if (fnCallNumberFrom(pstate, nodep))
             return;
@@ -4995,6 +5026,20 @@ dispatch:
         }
         break;
 
+    // SIMD vector type: indexed for a lane, else its operators and methods
+    case VectorTag:
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else {
+            if (node->methfld == NULL)
+                node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objtype));
+            if (fnCallLowerMethod(pstate, node) == 0)
+                errorMsgNode((INode*)node, ErrorNoMeth,
+                    "No method/field named %s found that matches the call's arguments.",
+                    &((NameUseNode*)node->methfld)->namesym->namestr);
+        }
+        break;
+
     // Tuple type
     case TTupleTag:
         if (fnCallLowerIntField(node) == 0)
@@ -5048,7 +5093,8 @@ dispatch:
         }
 
         // Handle indexing an array
-        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
+        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag
+            || objdereftype->tag == VectorTag))
             fnCallArrIndex(node);
 
         // Handle method call to some other type

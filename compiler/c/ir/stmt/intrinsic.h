@@ -82,6 +82,19 @@ enum IntrinsicFn {
     SinIntrinsic,
     CosIntrinsic,
 
+    // A vector's reductions and mask tests, over its lanes: built in C beside the
+    // number types' (Vector[T, N] has no Cone declaration, being a type of the
+    // compiler's own), and decided by the LLVM vector type of the argument.
+    // The signed minimum and maximum are told apart from the unsigned
+    VecSumIntrinsic,        // v.sum()
+    VecProductIntrinsic,    // v.product()
+    VecMinIntrinsic,        // v.min()
+    VecSMinIntrinsic,
+    VecMaxIntrinsic,        // v.max()
+    VecSMaxIntrinsic,
+    VecAnyIntrinsic,        // mask.any()
+    VecAllIntrinsic,        // mask.all()
+
     // The program's stitched lifecycle (genlStitch): every module's 'init' in
     // dependency order, and every module's finalizer in exactly the reverse.
     // Functions of no parameters, not methods, so no first argument decides them

@@ -757,6 +757,15 @@ enum ErrorCode {
     ErrorTryMix = 1537,         // A `?` in a `try` block taking an Option where another `?` of the block, or the type the block is wanted as, is a Result, or the reverse. The message names `okOr(error)` and `ok()`, which convert one into the other. Pointed at the '?'
     ErrorLifecycleNamed = 1540, // A module's `init` or `final` named in an expression, by its bare name in its own module or by a path from another: called, borrowed or otherwise used. The program runs each once, so a use would run it a second time. Folding one is ErrorBadFold. Pointed at the name
 
+    // SIMD vectors, Vector[T, N]
+    ErrorVectorArgs = 1552,     // `Vector` written without its lane type and number of lanes, or with others: it is `Vector[T, N]`. Pointed at the type
+    ErrorVectorElem = 1553,     // A vector's lane type that is no integer, float or bool type (a struct, a char, a reference). Pointed at the lane type
+    ErrorVectorLanes = 1554,    // A vector's number of lanes that is no integer literal from 1 through 64. Pointed at the count
+    ErrorVectorMixed = 1555,    // Lanes of different types or counts in one operation, or a number of another type beside a vector, with no `.from` to convert them. The message names the conversion. Pointed at the operation
+    ErrorVectorMask = 1556,     // A mask (`Vector[bool, N]`) used as numbers: arithmetic or an ordering on it, or beside a vector of numbers. Pointed at the operation
+    ErrorVectorIndex = 1557,    // A mask's lane indexed, or a lane of a vector borrowed or sliced. Pointed at the index
+    ErrorVectorFrom = 1558,     // `.from`, a vector's contents or `select` given a value of a type they do not convert or take. Pointed at the value
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

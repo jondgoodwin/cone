@@ -765,6 +765,14 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         LLVMTypeRef selftyp = LLVMTypeOf(fnargs[0]);
         LLVMTypeKind selftypkind = LLVMGetTypeKind(selftyp);
 
+        // A vector's operators, math and reductions are LLVM's, over the whole
+        // vector; the division and shift edge cases, and the reductions, are
+        // genlvector.c's
+        if (selftypkind == LLVMVectorTypeKind) {
+            fncallret = genlVectorIntrinsic(gen, objfn, ((IntrinsicNode *)fndcl->value)->intrinsicFn, fnargs, fnargcnt);
+            break;
+        }
+
         // Pointer intrinsics. What the pointer points at comes from its Cone
         // type, as an LLVM pointer does not say: '++' through a reference to a
         // number adds to it and through one to a pointer steps that pointer,
@@ -2539,8 +2547,8 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
 // The runtime's entry for each failure the compiler checks for
 // (packages/conestd/panic.cone), and how many values it reports before the
 // location
-static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc"};
-static unsigned genlPanicValCnt[] = {2, 3, 1};
+static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc", "cone_panicDivide"};
+static unsigned genlPanicValCnt[] = {2, 3, 1, 1};
 
 // End the program where a check the compiler inserted has failed: a call to
 // the runtime's entry for the failure, handed the values it reports (each a
@@ -2767,8 +2775,20 @@ static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
             // address of. The bounds are the array type's own dimensions, so
             // they are compile-time constants as for any fixed array.
             ArrayNode *arraytype = (ArrayNode*)itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+            // A reference to a vector: its lane, in the memory the reference holds
+            if (arraytype->tag == VectorTag) {
+                LLVMValueRef vecp = genlExpr(gen, fncall->objfn);
+                LLVMValueRef index = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
+                return genlVectorLane(gen, (INode*)fncall, (INode*)arraytype, vecp, index);
+            }
             assert(arraytype->tag == ArrayTag);
             return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn), pre);
+        }
+        // A lane of a vector in memory, a local's or a field's
+        case VectorTag: {
+            LLVMValueRef vecp = genlAddr(gen, fncall->objfn);
+            LLVMValueRef index = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
+            return genlVectorLane(gen, (INode*)fncall, objtype, vecp, index);
         }
         // An element of a slice, or of what a pointer points at, is reached by
         // arithmetic, which a kernel folds into an access chain or refuses
@@ -2891,7 +2911,7 @@ static LLVMValueRef genlAddrIn(GenState *gen, INode *lval) {
         return genlTempKeep(gen, (TempNode *)lval, genlExpr(gen, ((TempNode *)lval)->exp));
     default: {
         INode *type = iexpGetTypeDcl(lval);
-        if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag) {
+        if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag || type->tag == VectorTag) {
             // LLVM provides no useful way to get the address of an array not stored in memory,
             // such as an array returned by a function (an array literal is handled above)
             // So we hack it by storing in an unnamed local variable and return that address
@@ -3338,6 +3358,9 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         }
         else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag) {
             return genlConvert(gen, nodesGet(lit->args, 0), lit->objfn, 0);
+        }
+        else if (littype->tag == VectorTag || littype->tag == ArrayTag) {
+            return genlVectorConvert(gen, lit);
         }
         else {
             errorMsgNode((INode*)lit, ErrorBadTerm, "Unknown literal type to generate");

@@ -650,6 +650,10 @@ static int contentsArrayShape(ArrayNode *arraydcl, INode *lexnode, uint32_t *lev
     return 1;
 }
 
+// Set while the contents of a vector are lowered as the array they stand for
+// (contentsLowerVector), so the messages name a vector
+static int contentsVectorOf;
+
 // An array's contents are its elements: 'Array[f32, 4]() <- 1.0, fill 0.0'.
 // An array has no '<-' and no 'init', and its size is fixed, so the contents
 // must give exactly that many values, every count known at compile time. They
@@ -671,8 +675,12 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
     FnCallNode *ctor = (FnCallNode*)node->objfn;
     ArrayNode *arraydcl = (ArrayNode*)itypeGetTypeDcl(arraytype);
     if (ctor->args && ctor->args->used > 0) {
-        errorMsgNode((INode*)ctor, ErrorArrayContents,
-            "An array has no init to take arguments: its contents follow '<-', as 'Array[f32, 4]() <- fill 0.0'.");
+        if (contentsVectorOf)
+            errorMsgNode((INode*)ctor, ErrorArrayContents,
+                "A vector has no init to take arguments: its contents follow '<-', as 'Vector[f32, 4]() <- fill 0.0'.");
+        else
+            errorMsgNode((INode*)ctor, ErrorArrayContents,
+                "An array has no init to take arguments: its contents follow '<-', as 'Array[f32, 4]() <- fill 0.0'.");
         return NULL;
     }
     uint32_t levels;
@@ -727,6 +735,10 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *
             errorMsgNode((INode*)node, ErrorArrayContents,
                 "These contents give %llu values, and the array holds %llu scalars of %s: an array written with several sizes is filled exactly, with its scalars, row by row.",
                 (unsigned long long)(given + filled), (unsigned long long)size, itypeName(elemtype));
+        else if (contentsVectorOf)
+            errorMsgNode((INode*)node, ErrorArrayContents,
+                "These contents give %llu values, and the vector holds %llu lanes: a vector's contents fill it exactly.",
+                (unsigned long long)(given + filled), (unsigned long long)size);
         else
             errorMsgNode((INode*)node, ErrorArrayContents,
                 "These contents give %llu values, and the array holds %llu: an array's contents fill it exactly.",
@@ -813,6 +825,22 @@ static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
     *((INode**)nodep) = lit ? lit : newErrorNode((INode*)*nodep);
 }
 
+// A vector's contents are its lanes, written as an array's are ('Vector[f32,
+// 4]() <- 1.0, 3 of 0.0', 'fill x'): they lower to the array literal of the
+// lanes, an array of the vector's lane type and count, and the vector is that
+// array converted, which costs nothing (genlVectorConvert). So every form an
+// array's contents take, and the way an entry repeating a value evaluates it
+// once for each element, are the vector's. A vector has no size to disagree
+// with the array's: its count is the array's.
+static void contentsLowerVector(TypeCheckState *pstate, FnCallNode **nodep, INode *vectype) {
+    FnCallNode *node = *nodep;
+    ArrayNode *arraytype = newArrayNodeTyped((INode*)node, vectorLanes(vectype), vectorElemType(vectype));
+    contentsVectorOf = 1;
+    INode *lit = contentsArrayLit(pstate, node, (INode*)arraytype);
+    contentsVectorOf = 0;
+    *((INode**)nodep) = lit ? (INode*)vectorNewConvert(vectype, lit, (INode*)node) : newErrorNode((INode*)node);
+}
+
 // An allocation of an array with its contents, 'Rc[mut, Array[i32, 4]]() <-
 // fill 0', is the allocation whose value is the literal of those contents,
 // which generation fills in place in the region's memory once it is had, an
@@ -875,6 +903,8 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
             contentsRefuseTryNew(pstate, nodep, built);
         else if (built && built->tag == ArrayTag)
             contentsLowerArray(pstate, nodep);
+        else if (built && built->tag == VectorTag)
+            contentsLowerVector(pstate, nodep, built);
         else
             contentsLowerConstruction(pstate, nodep);
         return;

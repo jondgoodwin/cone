@@ -46,7 +46,8 @@ int typeLitIsConstruction(INode *node) {
 // Serialize a type literal: a construction, a variant's or an allocation's
 // value, and a number's conversion, each as it was written
 void typeLitPrint(FnCallNode *node) {
-    int conversion = node->vtype && typeLitIsNbrType(itypeGetTypeDcl(node->vtype));
+    int conversion = node->vtype && (typeLitIsNbrType(itypeGetTypeDcl(node->vtype))
+        || itypeGetTypeDcl(node->vtype)->tag == VectorTag || itypeGetTypeDcl(node->vtype)->tag == ArrayTag);
     int paren = conversion || (node->flags & (FlagNew | FlagCtorParen));
     if (node->flags & FlagNew)
         inodeFprint("new ");
@@ -78,6 +79,9 @@ void typeLitNameRes(NameResState *pstate, FnCallNode *arrlit) {
 int typeLitIsLiteral(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
+    // A vector, or the array a vector converts to, is built where it is used
+    if (node->vtype && (itypeGetTypeDcl(node->vtype)->tag == VectorTag || itypeGetTypeDcl(node->vtype)->tag == ArrayTag))
+        return 0;
     for (nodesFor(node->args, cnt, nodesp)) {
         INode *arg = *nodesp;
         if (arg->tag == NamedValTag)
