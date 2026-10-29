@@ -967,7 +967,7 @@ pub struct Renderer {
     if !meshes.alive(h.slot) { return false; }
     let n = m.positions.len();
     {
-      let slot = meshes[h.slot];
+      let slot = &meshes[h.slot];
       if slot.dynamicVertices == 0u32 || n > usize.from(slot.dynamicVertices)
           || m.indices.len() > usize.from(slot.dynamicIndices) {
         return false;
@@ -1259,7 +1259,7 @@ pub struct Renderer {
       if rt.len() == 0usize { rt.push(RtScene.create(device)); }
       if !rt[0usize].isValid() { return false; }
       var traced = SceneCapture.create(device, colorFormat, depthFormat, &frameLayout, &pbrMaterialLayout,
-        &environmentLayout, &reflections, rt[0usize]);
+        &environmentLayout, &reflections, &rt[0usize]);
       if !traced.isValid() { return false; }
       traced.forceAll = ext[0usize].forceAll;
       traced.setCaustics(device, &causticVolume);
@@ -1417,7 +1417,7 @@ pub struct Renderer {
     entries.push(BindGroupEntry.buffer(0u32, &uniforms));
     t = 0u32;
     while t < count {
-      entries.push(BindGroupEntry.texture(t + 1u32, views[usize.from(t)]));
+      entries.push(BindGroupEntry.texture(t + 1u32, &views[usize.from(t)]));
       t = t + 1u32;
     }
     entries.push(BindGroupEntry.sampler(count + 1u32, &sampler));
@@ -1432,7 +1432,7 @@ pub struct Renderer {
   // (its textures stay those it was made with): a water's time, say
   pub fn setCustomParams(self: &mut, device: &mut Device, h: MaterialHandle, params: &Array[f32]) bool {
     if !materials.alive(h.slot) { return false; }
-    let slot = materials[h.slot];
+    let slot = &materials[h.slot];
     if slot.kind != MATERIAL_CUSTOM { return false; }
     self.writeParams(device, &slot.uniforms, slot.uniforms.size, params);
     true
@@ -1472,7 +1472,7 @@ pub struct Renderer {
   // ahead of the next submission: a field that changes frame by frame
   pub fn writeFieldTexture(self: &mut, device: &mut Device, h: TextureHandle, values: &Array[f32]) bool {
     if !textures.alive(h.slot) { return false; }
-    let slot = textures[h.slot];
+    let slot = &textures[h.slot];
     let width = slot.texture.width;
     if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT || values.len < usize.from(width * slot.texture.height) {
       return false;
@@ -1491,7 +1491,7 @@ pub struct Renderer {
   pub fn writeFieldRegion(self: &mut, device: &mut Device, h: TextureHandle, x: u32, y: u32, width: u32, height: u32,
       values: &Array[f32]) bool {
     if !textures.alive(h.slot) { return false; }
-    let slot = textures[h.slot];
+    let slot = &textures[h.slot];
     if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT || x + width > slot.texture.width
         || y + height > slot.texture.height || values.len < usize.from(width * height) || values.len == 0usize {
       return false;
@@ -1776,7 +1776,7 @@ pub struct Renderer {
       let first = *keys[usize.from(batch.first)];
       let item = drawList.items[usize.from(first.item)];
       // gatherSet kept only items whose mesh (and material) are alive
-      let slot = meshes[item.mesh.slot];
+      let slot = &meshes[item.mesh.slot];
       let m = slot.current();
       let lines = batch.layer == LAYER_LINES;
       let blend = batch.layer == LAYER_BLEND;
@@ -1803,10 +1803,10 @@ pub struct Renderer {
         pass.setImmediates(0u32, &immediates as *u8, IMMEDIATE_BYTES);
       } else {
         // The material's kind chooses the pipeline
-        let mslot = materials[item.material.slot];
+        let mslot = &materials[item.material.slot];
         if mslot.kind == MATERIAL_CUSTOM {
           if bound != BOUND_CUSTOM || !(boundPipeline == mslot.pipeline.slot) {
-            let ps = pipelines[mslot.pipeline.slot];
+            let ps = &pipelines[mslot.pipeline.slot];
             pass.setPipeline(&ps.pipeline);
             pass.setBindGroup(0u32, &frameGroup);
             if ps.environment { pass.setBindGroup(2u32, &environment.group); }
@@ -1915,7 +1915,7 @@ pub struct Renderer {
         } else if batch.occ != 0u32 {
           // A batch the pyramid culls: the survivors' count is the GPU's, an indirect draw (hiz.cone);
           // 'triangles' counts all its candidates, an upper bound
-          let hz = hiz[0usize];
+          let hz = &hiz[0usize];
           let draw = u64.from(*hz.batchData[usize.from(batch.occ - 1u32) * 4usize + 2usize]) + u64.from(g);
           let offset = (u64.from(phase) * u64.from(hz.drawCount) + draw) * 20u64;
           pass.drawIndexedIndirect(&hz.args, offset);
@@ -1990,7 +1990,7 @@ pub struct Renderer {
     var volume = 0.f;
     var i = 0usize;
     while i < probes.len() {
-      let s = probes[i];
+      let s = &probes[i];
       if s.ready && p.x >= s.boxMin.x && p.x <= s.boxMax.x && p.y >= s.boxMin.y && p.y <= s.boxMax.y
           && p.z >= s.boxMin.z && p.z <= s.boxMax.z {
         if found == 0u32 || s.volume < volume {
@@ -2009,7 +2009,7 @@ pub struct Renderer {
     while i < list.items.len() {
       let item = list.items[i];
       if materials.alive(item.material.slot) {
-        let mslot = materials[item.material.slot];
+        let mslot = &materials[item.material.slot];
         if mslot.kind == MATERIAL_PBR { return true; }
         if mslot.kind == MATERIAL_CUSTOM && pipelines.alive(mslot.pipeline.slot) {
           if pipelines[mslot.pipeline.slot].environment { return true; }
@@ -2042,7 +2042,7 @@ pub struct Renderer {
     var setKeys = List[DrawKey].withCapacity(itemEnd - itemFirst);
     var i = itemFirst;
     while i < itemEnd {
-      let item = list.items[i];
+      let item = &list.items[i];
       let cast = if item.castsShadow { 1u32 } else { 0u32 };
       if meshes.alive(item.mesh.slot) {
         let m = meshes[item.mesh.slot].current();
@@ -2058,7 +2058,7 @@ pub struct Renderer {
             setKeys.push(DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), 0u32, d, 0u32));
           } else if materials.alive(item.material.slot) {
             let probe = self.probeFor(item.model.translation());
-            let mslot = materials[item.material.slot];
+            let mslot = &materials[item.material.slot];
             let extended = mslot.kind == MATERIAL_PBR;
             if mslot.blend {
               let d = (item.model * m.center).distanceSquared(eye);
@@ -2209,7 +2209,7 @@ pub struct Renderer {
   fn appendCasters(self: &, frame: &mut DrawList, list: &DrawList) {
     var k = 0usize;
     while k < list.items.len() {
-      let it = list.items[k];
+      let it = &list.items[k];
       if it.castsShadow { frame.items.push(*it); }
       k = k + 1usize;
     }
