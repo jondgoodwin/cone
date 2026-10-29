@@ -28,6 +28,30 @@ fn show(label: &str, n: i64) {
 
 fn twice(n: i64) i64 { n * 2 }
 
+// A non-copyable element (a String inside)
+enum Tag { Named(String), Plain }
+
+// Matching an index place moves nothing unless an arm binds by value: the
+// list's element stays, and is matched again. A binding that only reads goes
+// through the borrow, 'match &l[i]' (the move is collection_flow_index_move)
+fn matchPlace() {
+  var l = List[Tag].empty();
+  l.push(Tag.Named(String.from("abc")));
+  l.push(Tag.Plain);
+  var named = 0i64;
+  var i = 0usize;
+  while i < l.len() {
+    match l[i] {
+      case is Named { named = named + 1; }
+      case is Plain { }
+    }
+    i = i + 1usize;
+  }
+  let again = match l[0usize] { case is Named { 10i64 } else { 0i64 } };
+  let len = match &l[0usize] { case let Named(s) { i64.from(s.len()) } else { 0i64 } };
+  show("match-place", named + again + len * 100);
+}
+
 // Generic: a body reading an element by value, for any copyable T
 fn firstCopy[T](l: &List[T]) T { l[0usize] }
 
@@ -105,4 +129,5 @@ fn main() {
   nested();
   dictDequePool();
   structElement();
+  matchPlace();
 }
