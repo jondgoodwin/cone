@@ -1,0 +1,147 @@
+// An operator whose method is a macro method expands the macro.
+//
+// The operator's receiver stands in for 'self', as it is, and its operands for
+// the parameters after it, with a macro's typing: a plain operand is evaluated
+// once, and a 'lazy' one is put in whole where the body uses it, so not at all
+// where the body does not. The method an operator reaches is its own name's,
+// or, where the type declares none by that name, the one it is lowered
+// through: '!=' through '==', '+=' through '+'. An operator whose method is a
+// function is called as it always was.
+//
+// Every operand that has a side effect counts itself, so what the program
+// prints says how many times each one ran.
+
+mod generic_macro_operator;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn said(label: &str, b: bool) {
+  printStr(label);
+  printStr(if b {" = true\n"} else {" = false\n"});
+}
+
+var @threadlocal calls = 0i64;
+
+// Each call counts, and makes a V of its argument
+fn mk(n: i64) V {
+  calls = calls + 1i64;
+  V(x: n)
+}
+
+struct V {
+  pub x: i64;
+
+  // A plain operand: bound once, though the body names it twice
+  macro `+`[self, o: V] {
+    V(x: self.x + o.x + o.x)
+  }
+
+  // A lazy operand: only where the body reaches it
+  macro `*`[self, o: lazy V] {
+    if self.x == 0 { V(x: 0) } else { V(x: self.x * o.x) }
+  }
+
+  // Unary: no operand after self
+  macro `-`[self] {
+    V(x: 0 - self.x)
+  }
+
+  macro `<`[self, o: V] {
+    self.x < o.x
+  }
+
+  // No '!=' is declared: 'a != b' is 'not (a == b)', through this macro
+  macro `==`[self, o: V] {
+    self.x == o.x
+  }
+
+  // A compound assignment declared as a macro changes its receiver, which
+  // stands in for 'self' as it is
+  macro `-=`[self, o: V] {
+    self.x = self.x - o.x
+  }
+
+  // No '*=' or '+=' is declared: 'v += w' is 'v = v + w' through the macro '+'
+
+  macro `++`[self] {
+    self.x = self.x + 100
+  }
+
+  macro `[]`[self, i: i64] {
+    self.x * i
+  }
+}
+
+// A generic type's macro operator is its instance's
+struct Pair[T] {
+  pub a: T;
+  pub b: T;
+
+  macro `+`[self, o: Pair[T]] {
+    Pair[T](a: self.a + o.a, b: self.b + o.b)
+  }
+}
+
+// A function operator method, called as it always was
+struct W {
+  pub x: i64;
+  fn `+`(self, o: W) W {
+    W(x: self.x + o.x)
+  }
+}
+
+fn main() {
+  let a = V(x: 1);
+  let b = V(x: 2);
+  show("plus", (a + b).x);
+
+  calls = 0i64;
+  show("plus once", (a + mk(5)).x);
+  show("plus once ran", calls);
+
+  calls = 0i64;
+  let zero = V(x: 0);
+  show("lazy unused", (zero * mk(7)).x);
+  show("lazy unused ran", calls);
+  show("lazy used", (b * mk(7)).x);
+  show("lazy used ran", calls);
+
+  show("negate", (-a).x);
+  said("less", a < b);
+  said("not less", b < a);
+  said("equal", a == mk(1));
+  said("derived not equal", a != b);
+  said("derived not equal, equal", a != mk(1));
+
+  var c = V(x: 10);
+  c -= b;
+  show("minus-assign", c.x);
+  calls = 0i64;
+  c += mk(3);
+  show("plus-assign through plus", c.x);
+  show("plus-assign ran", calls);
+  ++c;
+  show("increment", c.x);
+  show("index", a[7]);
+
+  // Through a reference, the receiver is the reference as it is
+  let r = &b;
+  show("through a reference", (r + a).x);
+  // A construction as the receiver, and one expansion the receiver of the next
+  show("constructed receiver", (V(x: 5) + a).x);
+  show("chained", (a + b + b).x);
+
+  let p = Pair[i64](a: 1, b: 2) + Pair[i64](a: 10, b: 20);
+  show("generic a", p.a);
+  show("generic b", p.b);
+
+  let w = W(x: 3) + W(x: 4);
+  show("function plus", w.x);
+}

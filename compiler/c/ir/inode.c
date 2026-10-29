@@ -537,6 +537,8 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
     // it into the body, is checked as part of that body.
     case FldAccessTag:
     case ArrIndexTag:
+    // So is a type literal ('V(x: 1)'), which only a check makes of a call
+    case TypeLitTag:
         break;
     case VTupleTag:
         vtupleTypeCheck(pstate, (TupleNode *)*node); break;
