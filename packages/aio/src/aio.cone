@@ -560,8 +560,6 @@ fn @initpure init() {
   poolAt = Atomic[usize].of(0usize);
   cancelsAsked = Atomic[u64].of(0u64);
   takenAway = Atomic[u64].of(0u64);
-  queuedRecs = Atomic[u64].of(0u64);
-  loopDone = Atomic[u64].of(0u64);
   ioEndAt = Atomic[usize].of(0usize);
 }
 
@@ -657,10 +655,6 @@ fn makePool() usize {
 // globals, set in 'init'
 let cancelsAsked: Atomic[u64];
 let takenAway: Atomic[u64];
-// ...and records queued for the I/O thread (enqueueRec), and those it took back
-// answered from its Loop (doneRec)
-let queuedRecs: Atomic[u64];
-let loopDone: Atomic[u64];
 
 // True on the I/O thread alone
 var @threadlocal onIo = false;
@@ -759,6 +753,8 @@ struct IoThread {
   pub ftail: *HostHead;
   pub waker: Waker;
   pub ready: Atomic[u32];       // 1 once the thread has put its waker here
+  pub queued: u64;              // records queued for it (opStats): under ioLock
+  pub loopDone: u64;            // records it took back answered from its Loop (opStats): its own, stored whole
   pub os: thread.Thread[u32];
 }
 
@@ -938,7 +934,6 @@ fn enqueue(job: *u8) {
 // instead, here: its reply dropped unsent (what awaits it abandoned), its
 // buffer home
 fn enqueueRec(p: *OpCore) {
-  queuedRecs.addOrdered(1u64, MemOrder.Relaxed);
   (*p).qnext = nullCore();
   ioLock.lock();
   if ended.load() {
@@ -950,6 +945,7 @@ fn enqueueRec(p: *OpCore) {
     startIo();
   }
   let t = io.load() as *IoThread;
+  (*t).queued = (*t).queued + 1u64;
   if (*t).rtail as usize == 0usize {
     (*t).rhead = p;
   } else {
@@ -1697,7 +1693,9 @@ fn timeSleep(rp: *OpRec[Ask]) {
 
 // A record the Loop has answered (lp.takeDone), on the I/O thread
 fn doneRec(lp: &mut Loop, p: *OpCore) {
-  loopDone.addOrdered(1u64, MemOrder.Relaxed);
+  // Counted by its one writer, this thread: a plain add, stored whole for opStats
+  let done = &mut (*(io.load() as *IoThread)).loopDone as *u64;
+  mem.atomicStore[u64](done, mem.atomicLoad[u64](done, MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
   let rp = p as *OpRec[Ask];
   let w = (*rp).ask.what;
   // A read with no buffer begun with one, ended by its own quiet deadline: not
@@ -2053,14 +2051,22 @@ pub struct OpStats {
 
 // The pool's counts, and the two above: zero before the first record is taken
 pub fn opStats() OpStats {
+  var queued = 0u64;
+  var done = 0u64;
+  ioLock.lock();
+  let t = io.load() as *IoThread;
+  if t as usize != 0usize {
+    queued = (*t).queued;
+    done = mem.atomicLoad[u64](&(*t).loopDone as *u64, MemOrder.Relaxed);
+  }
+  ioLock.unlock();
   let at = poolAt.load();
   if at == 0usize {
-    return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), queuedRecs.load(), loopDone.load(),
-      u64.from(mem.sizeof[OpRec[Ask]]()));
+    return OpStats(0u64, 0u64, cancelsAsked.load(), takenAway.load(), queued, done, u64.from(mem.sizeof[OpRec[Ask]]()));
   }
   let pl = at as *OpPool[Ask] as &OpPool[Ask];
-  OpStats(u64.from(pl.inUse()), u64.from(pl.size()), cancelsAsked.load(), takenAway.load(), queuedRecs.load(),
-    loopDone.load(), u64.from(mem.sizeof[OpRec[Ask]]()))
+  OpStats(u64.from(pl.inUse()), u64.from(pl.size()), cancelsAsked.load(), takenAway.load(), queued, done,
+    u64.from(mem.sizeof[OpRec[Ask]]()))
 }
 
 // ---------------------------------------------------------------------------
