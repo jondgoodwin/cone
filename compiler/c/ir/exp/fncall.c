@@ -1196,10 +1196,71 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
     }
 }
 
+// Answer whether every '[]' a type declares lends a borrow: returns a borrowed
+// reference, as Rust's 'Index' does, so that 'x[i]' names a place the borrow
+// reaches. A '[]' returning a value (String's byte) names no place.
+static int fnCallIndexLends(INode *held) {
+    while (held->tag == RefTag)
+        held = itypeGetTypeDcl(((RefNode*)held)->vtexp);
+    if (held->tag != StructTag)
+        return 0;
+    INode *index = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)held, indexName));
+    INode **candp;
+    uint32_t ncand;
+    if (index == NULL)
+        return 0;
+    if (index->tag == FnDclTag) {
+        candp = &index;
+        ncand = 1;
+    }
+    else if (index->tag == FnOverloadDclTag) {
+        Nodes *overloads = ((FnOverloadDclNode*)index)->overloads;
+        candp = &nodesGet(overloads, 0);
+        ncand = overloads->used;
+    }
+    else
+        return 0;
+    for (uint32_t i = 0; i < ncand; ++i) {
+        INode *sig = ((FnDclNode*)candp[i])->vtype;
+        if (sig == NULL || sig->tag != FnSigTag)
+            return 0;
+        INode *ret = ((FnSigNode*)sig)->rettype;
+        // A generic '[]' (an arena's, '`[]`[T]') keeps its signature as written
+        // until an instance is made: a written '&T' is still the borrow node
+        if (((FnDclNode*)candp[i])->genericinfo && ret->tag == BorrowTag)
+            continue;
+        ret = itypeGetTypeDcl(ret);
+        if ((ret->tag != RefTag && ret->tag != ArrayRefTag && ret->tag != VirtRefTag)
+            || itypeGetTypeDcl(((RefNode*)ret)->region) != borrowRef)
+            return 0;
+    }
+    return 1;
+}
+
+// The method an index or a call that names none calls: '()' for a call; for an
+// index '[]', or '&[]' where the element is wanted as a place that may be
+// written. '&x[i]' with no permission written is the read-only borrow of the
+// place '[]' lends ('Index'), as '&*x.`[]`(i)'; '&mut x[i]', '&uni x[i]',
+// '&imm x[i]' and an index in set position ('x[i] = v', fnCallIsSetIndex)
+// borrow through '&[]' ('IndexMut'). Where the type's '[]' gives a value, it
+// names no place, and '&x[i]' keeps '&[]', which such a type refuses as before.
+static Name *fnCallImplicitName(FnCallNode *node, INode *objtype) {
+    if (!(node->flags & FlagIndex))
+        return parensName;
+    if (!(node->flags & FlagBorrow))
+        return indexName;
+    if (node->objfn->tag == BorrowTag && ((RefNode*)node->objfn)->perm == unknownType
+        && fnCallIndexLends(objtype))
+        return indexName;
+    return refIndexName;
+}
+
 // '&x[i]' hands the type's '&[]' a read-only borrow of 'x' as its receiver,
 // which a '&[]' declaring 'self: &mut' refuses. That refusal is the rule; what
 // this adds is the reason and the spellings that work, reported in place of the
 // bare no-candidate message where a '&mut' receiver would have been accepted.
+// A plain '&x[i]' reaches '&[]' only where the type's '[]' gives a value, not
+// a place (fnCallImplicitName), and '&imm x[i]' always does.
 // The probe alters nothing. Answer whether it reported.
 static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *methsym, enum OverloadMatch status) {
     if (status != OverloadNone || methsym != refIndexName || !(callnode->flags & FlagIndex))
@@ -4883,8 +4944,7 @@ dispatch:
     case FloatNbrTag:
         // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
         if (node->methfld == NULL)
-            node->methfld = (INode*)newMemberUseNode(
-                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
+            node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objtype));
         // Lower to a field access or function call
         if (fnCallLowerMethod(pstate, node) == 0) {
             errorMsgNode((INode*)node, ErrorNoMeth,
@@ -4952,10 +5012,8 @@ dispatch:
         // Handle method call to some other type
         else {
             // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
-            if (node->methfld == NULL) {
-                Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
-                node->methfld = (INode*)newMemberUseNode(methname);
-            }
+            if (node->methfld == NULL)
+                node->methfld = (INode*)newMemberUseNode(fnCallImplicitName(node, objdereftype));
             if (fnCallIsValueCompare(opname))
                 fnCallLowerRefCompare(pstate, node);
             else if (fnCallLowerPtrMethod(node, refType) == 0) {

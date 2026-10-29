@@ -354,7 +354,7 @@ by value, an array and a function go on to the table's own rows.
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
-| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
+| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
@@ -801,11 +801,30 @@ type declares no `&[]`, or the place below it may not be borrowed mutably (a
 refused as before. Rust chooses `IndexMut` the same way; a dynamic arena's
 `ar[key] = v` is the case it was built for.
 
+**A borrowed index, `&x[i]`.** `borrowReassocIndex` makes it the index
+`(&x)[i]` with `FlagBorrow`, and `fnCallImplicitName` chooses its method, as
+Rust chooses between `Index` and `IndexMut`. A borrow written with no permission,
+`&x[i]` (its `perm` is still `unknownType` when the method is named), is a
+read-only borrow of the element, so it calls `` `[]` ``, whose result is that
+borrow: `&*x.[](i)`. It needs no more than a read-only receiver, so it works
+through a `&` parameter, a `let` and a generic body alike, and its loan is the one
+any borrow a method returns holds. This holds only where every `[]` the type
+declares returns a borrowed reference (`fnCallIndexLends`; a generic `[]`, whose
+signature is unresolved until an instance is made, by a written `&` return). A
+`[]` returning a value, a `String`'s byte or a user type's `i32`, names no
+place, and `&x[i]` of it keeps `` `&[]` ``, refused as a missing method or as
+below. `&mut x[i]`, `&uni x[i]` and `&imm x[i]` call `` `&[]` `` as before, as
+does an index in set position. A type declaring a `&[]` that takes an index and
+no `[]` is refused where it is declared, `ErrorRefIndexAlone`
+(`structCheckMembers`), as Rust requires `Index` for `IndexMut`; a `&[]` taking
+no index is the whole-value borrow `&[]mut v`, which needs none.
+
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
-message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
-read-only receiver `&x`, and where a `&mut` receiver would have been accepted
-the message says the method takes `self: &mut` and names `x[i]` and
-`&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
+message of their own. An indexed borrow `&x[i]` that reaches `` `&[]` `` (a
+`[]` giving a value, or `&imm x[i]`) hands it the read-only receiver `&x`, and
+where a `&mut` receiver would have been accepted the message says the method
+takes `self: &mut` and names `x[i]` and `&mut x[i]` (`fnCallRefIndexWantsMut`,
+still `ErrorNoCandidate`). An operator
 or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
 (`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. The same probe
