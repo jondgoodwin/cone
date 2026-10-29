@@ -1,0 +1,50 @@
+// '&x[i]' borrows an element through the type's '[]' (Rust's 'Index'): the
+// borrow loans the collection read-only while it is still to be used, as the
+// borrow any method returns does (collection_flow_freeze), so the collection
+// may not be changed meanwhile: a list pushed onto, a Dict's entry removed, a
+// pool's value removed, and an element written by 'x[i] = v' (through '&[]').
+// After the borrow's last use each is allowed (collection_index_borrow_success).
+
+mod collection_flow_index_borrow;
+
+import collections use *;
+import pool use *;
+
+struct Pt { pub x: i64; pub y: i64; }
+
+// Pushed onto while '&l[0]' is still to be used
+fn pushWhileHeld() i64 {
+  var l = List[i64].empty();
+  l.push(1);
+  let r = &l[0usize];
+  l.push(2);                    //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *r
+}
+
+// An element written while '&l[0]' is still to be used
+fn writeWhileHeld() i64 {
+  var l = List[i64].empty();
+  l.push(1);
+  l.push(2);
+  let r = &l[0usize];
+  l[1usize] = 3;                //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *r
+}
+
+// An entry removed while '&d[k]' is still to be used
+fn removeEntryWhileHeld() i64 {
+  var d = Dict[String, i64].empty();
+  d.insert(String.from("a"), 1);
+  let r = &d["a"];
+  d.remove("a");                //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *r
+}
+
+// A value removed from a pool while '&p[id]' is still to be used
+fn removeWhileHeld() i64 {
+  var p = Pool[Pt].empty();
+  let id = p.add(Pt(1, 2));
+  let r = &p[id];
+  p.remove(id);                 //~ ErrorFrozen:3 "may not be borrowed mutably"
+  r.x
+}

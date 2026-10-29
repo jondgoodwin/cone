@@ -4247,6 +4247,27 @@ static void structCheckMembers(StructNode *node) {
             fnOverloadDclTypeCheck(&tstate, (FnOverloadDclNode*)binding);
     }
 
+    // A '&[]' taking an index borrows an element mutably (Rust's 'IndexMut');
+    // the element is read, and borrowed read-only by '&x[i]', through '[]'
+    // ('Index'), which a type declaring that '&[]' must declare too
+    // (fnCallImplicitName). A '&[]' taking no index is the whole-value borrow
+    // '&[]mut v' (borrowRefIndexDispatches), which needs no '[]'.
+    INode *refindex = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)node, refIndexName));
+    if (refindex && iNsTypeFindFnField((INsTypeNode*)node, indexName) == NULL) {
+        Nodes *cands = refindex->tag == FnOverloadDclTag ? ((FnOverloadDclNode*)refindex)->overloads : NULL;
+        uint32_t ncand = cands ? cands->used : refindex->tag == FnDclTag ? 1 : 0;
+        for (uint32_t i = 0; i < ncand; ++i) {
+            INode *cand = cands ? nodesGet(cands, i) : refindex;
+            INode *sig = ((FnDclNode*)cand)->vtype;
+            if (sig && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used > 1) {
+                errorMsgNode(cand, ErrorRefIndexAlone,
+                    "%s declares `&[]` but no `[]`: an element is read, and borrowed with `&x[i]`, through `[]`, which returns a borrow of it. Declare `[]` too.",
+                    &node->namesym->namestr);
+                break;
+            }
+        }
+    }
+
     structCheckTraitReqs(node);
     structGcTraceElementsCheck(node);
 

@@ -1,0 +1,104 @@
+// '&x[i]', a read-only borrow of an element, calls the type's '[]' (Rust's
+// 'Index'), whose result is that borrow: '&l[i]' of a List, '&d[k]' of a Dict,
+// '&p[r]' of a Pool, '&a[key]' of a DynArena, a user type's '[]', and a generic
+// function's 'fn first[T](l: &List[T]) &T { &l[0] }'. A read-only receiver
+// is enough, so '&x[i]' works through a '&' parameter as through a 'var'.
+// '&mut x[i]' still calls '&[]' ('IndexMut'), and is used beside each to show
+// that the two borrow the same element. The borrow keeps the collection loaned
+// only until its last use: the list is pushed onto after it (the refusal while
+// it is still to be used is collection_flow_index_borrow). Each case prints
+// what it read through the borrow.
+
+mod collection_index_borrow_success;
+
+import stdio use *;
+import collections use *;
+import pool use *;
+import arena use *;
+
+struct Pt { pub x: i64; pub y: i64; }
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A type of its own declaring both: '[]' lends the element, '&[]' lends it to change
+struct Bag {
+  pub var items: Array[i64, 3];
+  pub fn `[]`(self: &, i: usize) &i64 { &items[i] }
+  pub fn `&[]`(self: &mut, i: usize) &mut i64 { &mut items[i] }
+}
+
+fn first[T](l: &List[T]) &T { &l[0usize] }
+
+fn sum(l: &List[i64]) i64 {
+  let a = &l[0usize];
+  let b = &l[1usize];
+  *a + *b
+}
+
+fn listBorrow() {
+  var l = List[i64].empty();
+  l.push(4);
+  l.push(5);
+  let r = &l[1usize];
+  show("list-borrow", *r);
+  show("list-param-borrow", sum(&l));
+  let m = &mut l[0usize];
+  *m = 40;
+  show("list-after-mut", *first(&l));
+  l.push(6);
+  show("list-pushed-after-last-use", *l[2usize]);
+}
+
+fn listOfPoints() {
+  var l = List[Pt].empty();
+  l.push(Pt(1, 2));
+  let p = &l[0usize];
+  show("point-field", p.x + p.y);
+  show("generic-first", first(&l).y);
+}
+
+fn dictBorrow() {
+  var d = Dict[String, i64].empty();
+  d.insert(String.from("a"), 7);
+  let k = String.from("a");
+  let r = &d[&k];
+  let s = &d["a"];
+  show("dict-borrow", *r + *s);
+}
+
+fn poolBorrow() {
+  var p = Pool[Pt].empty();
+  let id = p.add(Pt(7, 8));
+  let r = &p[id];
+  show("pool-borrow", r.x * 10 + r.y);
+}
+
+fn arenaBorrow() {
+  var a = DynArena.empty();
+  let k = a.alloc(Pt(3, 4));
+  let r = &a[k];
+  show("arena-borrow", r.x * 10 + r.y);
+}
+
+fn userBorrow() {
+  var b = Bag(items: [1, 2, 3]);
+  let r = &b[2usize];
+  show("user-borrow", *r);
+  let m = &mut b[0usize];
+  *m = 9;
+  show("user-after-mut", *b[0usize]);
+}
+
+fn main() {
+  listBorrow();
+  listOfPoints();
+  dictBorrow();
+  poolBorrow();
+  arenaBorrow();
+  userBorrow();
+}

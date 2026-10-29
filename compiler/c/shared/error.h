@@ -79,6 +79,7 @@ enum ErrorCode {
     ErrorBadMeth = 1043,   // Methods/fields not supported
     ErrorNotTyped = 1044,  // Expected a value that has a type
     ErrorBadIndex = 1045,  // Bad index/slice on array/ref
+    ErrorRefIndexAlone = 1550, // A type declaring `&[]` (the mutable borrow of an element, Rust's `IndexMut`) and no `[]` (its read, `Index`): `x[i]` read and `&x[i]` call `[]`. Pointed at the `&[]`
     ErrorBadArray = 1046,  // Bad array
     // 1047 was ErrorBadSlice; borrowing a slice of a non-array is a one-element
     // slice by design (borrow.c), so there is no bad-slice-type condition
