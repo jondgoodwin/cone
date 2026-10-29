@@ -217,8 +217,12 @@ static void vectorMethods(VectorNode *vec, INode *lane) {
         vecAddLanewise(vec, "floor", NULL, unary, FloorIntrinsic);
         vecAddLanewise(vec, "ceil", NULL, unary, CeilIntrinsic);
         vecAddLanewise(vec, "round", NULL, unary, RoundIntrinsic);
-        FnSigNode *fma = vecSig(self, self, self);
-        nodesAdd(&fma->parms, (INode*)newVarDclFull(nametblFind("c", 1), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        // Named as a number's 'fma' is (corenumber.c), since named arguments are part of the surface
+        FnSigNode *fma = newFnSigNode();
+        fma->rettype = self;
+        nodesAdd(&fma->parms, (INode*)newVarDclFull(nametblFind("self", 4), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        nodesAdd(&fma->parms, (INode*)newVarDclFull(nametblFind("y", 1), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        nodesAdd(&fma->parms, (INode*)newVarDclFull(nametblFind("z", 1), VarDclTag, self, newPermUseNode(immPerm), NULL));
         vecAddLanewise(vec, "fma", NULL, fma, FmaIntrinsic);
     }
     else {

@@ -75,7 +75,12 @@ types' rather than declared in `core`, because the type has no Cone declaration 
 over). `-` is two overloads, as a number's. `abs`, `min` and `max` with one argument, `floor`, `ceil`,
 `round` and `fma` are not Vec* kinds: they are the *declared* number intrinsics (`AbsIntrinsic` ...
 `FmaIntrinsic`, [intrinsic](intrinsic.md)) with the vector type as the node's `typearg`
-(`vecAddLanewise`), so `genlNumberIntrinsic` lowers them for a number and a vector alike. `min` and
+(`vecAddLanewise`), so `genlNumberIntrinsic` lowers them for a number and a vector alike. **New vector
+maths goes this way**: a declared number intrinsic given to the vector by `vecAddLanewise`, not a new
+Vec* kind. `intrinsicDclTypeCheck` never sees that vector `typearg` (it is set on a method, not
+inferred at a call of the declared intrinsic), so no check runs there: a number of the wrong type
+beside a vector is caught by `vectorBroadcastOperand` instead (`ErrorVectorMixed`, 1555). `fma`'s
+parameters are named `y` and `z` on a vector as on a number. `min` and
 `max` are an **overload set by argument count**: the reduction (`VecMinIntrinsic`, no argument) and the
 lane-wise form (`MinIntrinsic`, one vector), each a private candidate joining the public name, so
 `v.min()` is a number and `v.min(w)` a vector. A comparison returns the mask. Because they are
