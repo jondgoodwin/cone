@@ -692,7 +692,7 @@ class Scenarios(unittest.TestCase):
               items: List[Pt];
 
               pub fn empty() Bag { Bag(List[Pt].empty()) }
-              pub fn first(self: &) &Pt { items[0usize] }
+              pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
 
@@ -701,7 +701,7 @@ class Scenarios(unittest.TestCase):
               items: List[Pt];
 
               pub fn empty() Shelf { Shelf(List[Pt].empty()) }
-              pub fn first(self: &) &Pt { items[0usize] }
+              pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
 
