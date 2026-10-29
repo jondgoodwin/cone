@@ -18,6 +18,14 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node);
 // Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
 int derefInject(INode **node);
 
+// Is this the dereference that makes a plain index through a type's '[]' a
+// place (FlagIndexPlace)?
+#define derefIsIndexPlace(node) ((node)->tag == DerefTag && ((node)->flags & FlagIndexPlace))
+
+// '--warn-index-star': warn at each explicit '*x[i]' over an index place, the
+// transitional spelling (silent by default; a migration's site list)
+extern int derefWarnIndexStar;
+
 // Perform data flow analysis on deref node
 void derefFlow(FlowState *fstate, StarNode **node);
 

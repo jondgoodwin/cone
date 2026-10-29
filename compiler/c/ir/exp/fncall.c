@@ -1252,6 +1252,15 @@ static Name *fnCallImplicitName(FnCallNode *node, INode *objtype) {
     if (node->objfn->tag == BorrowTag && ((RefNode*)node->objfn)->perm == unknownType
         && fnCallIndexLends(objtype))
         return indexName;
+    // '&a[i][j]': the receiver is the inner link of the same borrow, '(&a)[i]',
+    // already lowered; where it lent read-only through '[]', so does this link
+    INode *inner = node->objfn;
+    if (inner->tag == FnCallTag && (inner->flags & FlagIndex) && (inner->flags & FlagBorrow)) {
+        INode *innertype = iexpGetTypeDcl(inner);
+        if (innertype->tag == RefTag && !(permGetFlags(((RefNode*)innertype)->perm) & MayWrite)
+            && fnCallIndexLends(objtype))
+            return indexName;
+    }
     return refIndexName;
 }
 
@@ -3873,6 +3882,10 @@ static int fnCallClosureArgs(TypeCheckState *pstate, FnCallNode *node, FnDclNode
 // that reaches it is typed with the permission of that step, and every use
 // after it -- a field written, a method wanting 'self: &mut' -- is held to it.
 static void fnCallReadThroughRefs(FnCallNode *node) {
+    // An index place as a receiver is reached through its borrow (as at the
+    // dispatch), before the levels below it are read through
+    if (node->objfn && derefIsIndexPlace(node->objfn))
+        node->objfn = ((StarNode*)node->objfn)->vtexp;
     if (!isExpNode(node->objfn) || (node->flags & FlagOperator))
         return;
     // A borrowed or ranged index has the borrow the parser put round its receiver
@@ -4200,14 +4213,36 @@ static int fnCallVariantCall(TypeCheckState *pstate, FnCallNode *node) {
 // alone (fnCallExpectFor) and the checks of the arguments, which run inside, put it back.
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType);
 
+// A plain index, 'x[i]', lowered to a call of the type's '[]' that lends a
+// borrow, is the place that borrow reaches, '*x.`[]`(i)', as an array's element
+// is (Rust's 'Index': 'a[i]' is '*a.index(i)'): read, it copies; a non-copyable
+// element is not moved out of it (flowMoveSource); '&x[i]' is the borrow
+// (fnCallImplicitName). An index in set position took '&[]' (FlagBorrow) and is
+// stored through where it is written; a '[]' returning a value is a value.
+static void fnCallIndexPlace(INode **nodep) {
+    FnCallNode *call = (FnCallNode*)*nodep;
+    if (call->tag != FnCallTag || !(call->flags & FlagIndex) || (call->flags & FlagBorrow)
+        || !isNameUseNode(call->objfn) || call->vtype == NULL || call->vtype == errorType)
+        return;
+    INode *rettype = iexpGetTypeDcl((INode*)call);
+    if (rettype->tag != RefTag || itypeGetTypeDcl(((RefNode*)rettype)->region) != borrowRef)
+        return;
+    if (derefInject(nodep))
+        (*nodep)->flags |= FlagIndexPlace;
+}
+
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *savednode = fnCallExpectNode;
     INode *savedtype = fnCallExpectType;
     fnCallExpectNode = *nodep;
     fnCallExpectType = expectType;
+    int plainindex = ((*nodep)->flags & FlagIndex) && (*nodep)->methfld == NULL
+        && !((*nodep)->flags & (FlagBorrow | FlagRange));
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    if (plainindex)
+        fnCallIndexPlace((INode**)nodep);
     // A call may store another variant over an enum reached through a reference others
     // may share (narrow.h). A field, an element and a number's operator cannot.
     INode *done = *(INode**)nodep;
@@ -4821,6 +4856,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
 
     // Text of different kinds compared: a lending operand is its borrow
     fnCallLentOperands(pstate, node);
+
+    // A receiver that is an index place, 'x[i].m()', 'x[i].f', 'x[i] + 1' or
+    // 'x[i][j]', is reached through the borrow '[]' lent, as any receiver
+    // held by reference is: the method, field or operator selected and the
+    // relowering of a receiver that must write (fnCallIndexAsMut) see the call
+    if (derefIsIndexPlace(node->objfn))
+        node->objfn = ((StarNode*)node->objfn)->vtexp;
 
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)

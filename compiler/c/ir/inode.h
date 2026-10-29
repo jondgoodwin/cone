@@ -412,6 +412,10 @@ enum NodeTags {
 #define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
+// The dereference fnCallTypeCheck puts round a plain index lowered to a type's
+// '[]' that lends a borrow: 'x[i]' is the place '*x.`[]`(i)', as an array's
+// element is a place (fncall.md, "An index through a type's '[]' is a place")
+#define FlagIndexPlace 0x0001       // Deref: injected over a '[]' call's borrow
 
 #define FlagLockGive  0x0001        // DropFlag: a statement giving a lock's guard back at its borrow's last use
 

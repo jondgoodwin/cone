@@ -345,7 +345,7 @@ enum ErrorCode {
 
     // Moving out of a field
     ErrorMoveField = 1166,      // A move-typed value moved out of a field -- a struct's or a tuple's, or what an owning reference held in one points at -- which would leave the struct with a hole in it
-    ErrorMoveElem = 1121,       // A move-typed value moved out of an indexed element of an array held by value -- a variable's, a parameter's or a temporary's -- which would leave the array with a hole in it
+    ErrorMoveElem = 1121,       // A move-typed value moved out of an indexed element: of an array held by value -- a variable's, a parameter's or a temporary's -- which would leave the array with a hole in it; of a slice or an array reached through a borrow; or of a type's `[]` place (`let s = l[0]` on a `List[String]`). The message names `&x[i]`, `<->` / `swap` and `remove`
 
     // The built-in traits 'Move' and 'Copy'
     ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
@@ -765,6 +765,7 @@ enum ErrorCode {
     WarnLoop = 3004,       // Infinite loop with no break
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
+    WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
 
     // Uncounted
     Uncounted = 9000,
