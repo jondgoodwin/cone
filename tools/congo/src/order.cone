@@ -30,12 +30,12 @@ fn holds(list: &List[usize], v: usize) bool {
 fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, String] {
   var mods = scanned;
   var deps = List[usize].empty();
-  let pkg = reg.packages[p];
+  let pkg = &reg.packages[p];
   let order = walkOrder(&mods);
   var w = 0usize;
   while w < order.len() {
     let m = *order[w];
-    let imports = importsOf(mods[m]);
+    let imports = importsOf(&mods[m]);
     // A module of gpu/ is compiled for the GPU without src/, so it may not
     // use src/: not a sister there, and not a name of the root [Jon 3 Oct]
     let fromGpu = mods[m].gpu && mods[m].hasParent && !mods[mods[m].parent].gpu;
@@ -45,7 +45,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
     }
     var i = 0usize;
     while i < imports.len() {
-      let imp = imports[i];
+      let imp = &imports[i];
       if !imp.hasName {
         let place = imp.location();
         return Err[Unit, String](cat(place.view(), ": import ", imp.written.view(),
@@ -103,7 +103,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
     if pkg.gpu || mods[m].gpu {
       var f = 0usize;
       while f < mods[m].files.len() && !kernels {
-        match holdsKernel(mods[m].files[f]) {
+        match holdsKernel(&mods[m].files[f]) {
           case let Ok(ok) { kernels = ok; }
           case let Err(e) { return Err[Unit, String](e.copy()); }
         }
@@ -136,7 +136,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
 fn gpuUsesSrc(pkg: &Package, imp: &Import, verb: &str, mods: &List[Module], isSister: bool, sister: usize) String {
   var what = String.empty();
   if isSister {
-    let place = shown(mods[sister].files[0usize]);
+    let place = shown(&mods[sister].files[0usize]);
     what <- mods[sister].name.view(), " is a module of ", pkg.name.view(), "'s src/ (", place.view(), ")";
   }
   else {
@@ -218,7 +218,7 @@ struct Plan {
     let name = reg.packages[p].name.view();
     state.insert(String.from(name), visiting);
     var scanned = List[Module].empty();
-    match scanPackage(reg.packages[p]) {
+    match scanPackage(&reg.packages[p]) {
       case var Ok(ok) { scanned <-> ok; }
       case let Err(e) { return Err[void, String](e.copy()); }
     }
@@ -230,7 +230,7 @@ struct Plan {
     units.push(unit);
     let u = units.len() - 1usize;
     stack.push(u);
-    let deps = depsOf(units[u]);
+    let deps = depsOf(&units[u]);
     var d = 0usize;
     while d < deps.len() {
       let dep = *deps[d];
@@ -242,7 +242,7 @@ struct Plan {
         var text = String.empty();
         var j = at;
         while j < stack.len() {
-          let unitHere = units[*stack[j]];
+          let unitHere = &units[*stack[j]];
           let here = reg.packages[unitHere.pkg].name.view();
           let next = if j + 1usize < stack.len() {reg.packages[units[*stack[j + 1usize]].pkg].name.view()} else {depName};
           chain <- here, " -> ";
@@ -402,7 +402,7 @@ fn conePath(p: &Path) String {
 // files of the packages it imports are in. Its lines end as Python's
 // write_text ends them on Windows, in '\r\n'.
 fn description(reg: &Registry, unit: &Unit, mode: &str, output: &str, out: &Path, packages: &List[usize]) String {
-  let pkg = reg.packages[unit.pkg];
+  let pkg = &reg.packages[unit.pkg];
   let label = pkg.label();
   var text = String.empty();
   text <- "// The build description of ", label.view(), ", written by Congo for conec;\r\n";
@@ -417,7 +417,7 @@ fn description(reg: &Registry, unit: &Unit, mode: &str, output: &str, out: &Path
   // own modules import only what their own lines, below, give them
   var i = 0usize;
   while i < packages.len() {
-    let dep = reg.packages[*packages[i]];
+    let dep = &reg.packages[*packages[i]];
     let incl = includeFor(dep, out);
     let place = conePath(&incl);
     text <- "import ", dep.name.view(), ": \"", place.view(), "\"\r\n";
@@ -435,21 +435,21 @@ fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &
     pad <- "    ";
     d = d + 1usize;
   }
-  let module = unit.mods[m];
+  let module = &unit.mods[m];
   // The names are copied before they are appended: 'text' and 'unit' are both reached
   // through references, and nothing shows 'text' is none of the Strings 'unit' holds
   let moduleName = module.name.copy();
   text <- pad.view(), moduleName.view(), ": {\r\n";
   var i = 0usize;
   while i < module.files.len() {
-    let place = conePath(module.files[i]);
+    let place = conePath(&module.files[i]);
     text <- pad.view(), "    \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }
   i = 0usize;
   while i < module.lines.len() {
-    let line = module.lines[i];
-    let incl = includeFor(reg.packages[line.pkg], out);
+    let line = &module.lines[i];
+    let incl = includeFor(&reg.packages[line.pkg], out);
     let place = conePath(&incl);
     let importName = line.name.copy();
     text <- pad.view(), "    import ", importName.view(), ": \"", place.view(), "\"\r\n";
