@@ -1252,6 +1252,15 @@ static Name *fnCallImplicitName(FnCallNode *node, INode *objtype) {
     if (node->objfn->tag == BorrowTag && ((RefNode*)node->objfn)->perm == unknownType
         && fnCallIndexLends(objtype))
         return indexName;
+    // '&a[i][j]': the receiver is the inner link of the same borrow, '(&a)[i]',
+    // already lowered; where it lent read-only through '[]', so does this link
+    INode *inner = node->objfn;
+    if (inner->tag == FnCallTag && (inner->flags & FlagIndex) && (inner->flags & FlagBorrow)) {
+        INode *innertype = iexpGetTypeDcl(inner);
+        if (innertype->tag == RefTag && !(permGetFlags(((RefNode*)innertype)->perm) & MayWrite)
+            && fnCallIndexLends(objtype))
+            return indexName;
+    }
     return refIndexName;
 }
 

@@ -37,10 +37,22 @@ void derefPrint(StarNode *node) {
     inodePrintNode(node->vtexp);
 }
 
+int derefWarnIndexStar = 0;
+
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
+
+    // '*x[i]' over an index place, the spelling from when 'x[i]' was the borrow
+    // '[]' lends: during the transition it keeps that meaning, the written '*'
+    // taking the place of the injected one, so it is the element as before
+    if (derefIsIndexPlace(node->vtexp)) {
+        if (derefWarnIndexStar)
+            errorMsgNode((INode*)node, WarnIndexStar,
+                "`x[i]` is now the element itself, a place, as an array's is: write `x[i]`, not `*x[i]`.");
+        node->vtexp = ((StarNode*)node->vtexp)->vtexp;
+    }
 
     INode *ptype = iexpGetTypeDcl(node->vtexp);
     derefRefuseKey((INode*)node, ptype);

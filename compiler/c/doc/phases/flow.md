@@ -347,9 +347,16 @@ left with a hole in it, and the elements that stayed would never be finalized
 (a sole owner's hollow death frees without finalizing). The refused move
 deactivates nothing, so the array stays usable. An array reached through a
 field, a dereference or another element is refused by the arm that walks it
-(`ErrorMoveField`, `ErrorMoveOut`, or this one at the inner element); an element
-read straight through a borrowed or shared owning reference is refused by the
-rules below.
+(`ErrorMoveField`, `ErrorMoveOut`, or this one at the inner element). An element
+reached through a borrow is an indexed element too, which the collection still
+holds (Rust's "cannot move out of index"): an element of a slice or of an array a
+borrow points at (the index arm), and the place a type's `[]` lends, `l[0]` of a
+`List[String]` (the dereference arm, on the `FlagIndexPlace` dereference type
+check puts round the `[]` call: [fncall](../nodes/fncall.md), "An index through a
+type's `[]` is a place"), are refused with `ErrorMoveElem` by
+`flowRefuseMoveIndexed`, whose message names `&x[i]`, a swap and `remove`. An
+element read straight through a shared owning reference is refused by the rules
+below.
 
 **Nothing moves out of a field.** The walk's field arm walks no further: a
 move-typed value that is a field — of a struct or a tuple, wherever the struct
@@ -2151,7 +2158,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorMoveOut` | `flowHandleMove`, `flowResultMove` | move out through a borrowed reference, or through a shared (aliasable) owning one |
 | `ErrorMoveRawPtr` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveThrough`) | move out through a raw pointer — `*p`, `p[i]`, a field list `(*p).(a)` — outside an `@intrinsic` function's body; the message names `mem.readRaw(p)` |
 | `ErrorMoveField` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveField`) | move out of a field — a struct's or a tuple's — or out of what is reached through one |
-| `ErrorMoveElem` | `flowHandleMove`, `flowResultMove` (the `ArrIndexTag` arm of `flowMoveSource`) | move out of an element of an array held by value — a variable's, a parameter's or a temporary's — or of the array a local or temporary sole owner points at |
+| `ErrorMoveElem` | `flowHandleMove`, `flowResultMove` (the `ArrIndexTag` arm of `flowMoveSource`; `flowRefuseMoveIndexed` there and in the `DerefTag` arm) | move out of an element of an array held by value — a variable's, a parameter's or a temporary's — or of the array a local or temporary sole owner points at; of a slice's element or of an array reached through a borrow; of the place a type's `[]` lends |
 | `ErrorInvType` | `assignBorrowLifetimeCheck`, from `assignlvalrtype` and `swapFlow` | lval — a global, or a place reached through a reference — outlives the borrowed reference stored into it, or swapped into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
