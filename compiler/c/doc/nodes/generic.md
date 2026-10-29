@@ -1224,7 +1224,15 @@ or as the bare member (`x.name`); `x.name[i]` indexes what the member names,
 except where the macro declares type parameters and what is in the brackets
 are types: `x.name[i32](args)` is then its use, given them, as a generic
 method's is (`fnCallMethodTypeArgs`, for a macro declared in the receiver's type
-itself; one folded in from a field is not reached that way).
+itself; one folded in from a field is not reached that way). An operator reaches a
+macro method the same way, `a + b` expanding the type's `` macro `+`[self, o: T] ``
+with `a` for `self` and `b` bound once (`fnCallOperatorMacro`,
+[fncall](fncall.md), "Type check"); so does `!=` through a macro `==` and `+=`
+through a macro `+` where the type declares no method by the operator's own
+name. The receiver is checked before it is substituted, so its clone is checked
+again inside the body: a node that check lowered into a tag it does not walk
+again (`FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, `inodeTypeCheckWalkNode`) is
+passed by as complete.
 Three things follow the method it stands in for. A bare `name` or `name(args)`
 inside a method of the type is rewritten to `self.name…` from the enclosing
 method's parameter 0, and where no method encloses it — a static function of the

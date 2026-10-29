@@ -168,7 +168,10 @@ the base's privates, and its base's variants', through any value
 construction through a private `init`.
 
 A call to `isTrue` that a coercion to `bool` injects (`iexpCoerce`) is lowered
-with no type check state, so only a receiver named `self` reaches a private one;
+with no type check state (a temporary receiver an `isTrue` taking `self: &`
+borrows, Option's or Result's, takes its scope from `inodeCheckState`,
+`fnCallBorrowReceiver`; a variant's value reaches its enum's whole-enum `isTrue`,
+`iexpMatches`), so only a receiver named `self` reaches a private one;
 every other is refused, in the module too. The state is not threaded through
 `iexpCoerce`'s callers.
 

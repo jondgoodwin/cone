@@ -967,6 +967,37 @@ fn tester(m: &amp;imm Maybe) i32 {
 		uses the macro, so it may reach the type's private members through <span class="pre">self</span> just as a method
 		would, wherever it is used. Inside a method of the same type, a macro method may itself be named bare, as a
 		method may, and means <span class="pre">self.name</span>.</p>
+	<p id="opmacros">An <a href="rec-methods.html#operators">operator's method</a> may be a macro method. Where the
+		operator's receiver has a type whose method by the operator's name is a macro, the operator expands it: the
+		receiver stands for <span class="pre">self</span>, as it is, and the operands for the parameters after it, with
+		the same typing, a plain one evaluated once and a <span class="pre">lazy</span> one put in only where the logic
+		uses it:</p>
+<pre>
+struct Cells {
+  pub n: i64;
+  macro `+`[self, o: Cells] {    // o evaluated once
+    Cells(n: self.n + o.n)
+  }
+  macro `*`[self, o: lazy Cells] {    // o evaluated only when self.n is not 0
+    if self.n == 0 { Cells(n: 0) } else { Cells(n: self.n * o.n) }
+  }
+}
+</pre>
+	<p>This holds for every operator that calls a method: arithmetic, logic and shifts, the comparisons and
+		<span class="pre">&lt;=&gt;</span>, the unary <span class="pre">-</span> and <span class="pre">~</span>,
+		<span class="pre">++</span> and <span class="pre">--</span>, the operators that change a variable
+		(<span class="pre">+=</span> and its kin, and <span class="pre">&lt;-</span>), and an index,
+		<span class="pre">x[i]</span>. Where the type declares no method by the operator's name, the operator reaches the
+		method it is always worked out through, and that one may be a macro: <span class="pre">a != b</span> is
+		<span class="pre">not (a == b)</span> through <span class="pre">`==`</span>, and <span class="pre">a += b</span> is
+		<span class="pre">a = a + b</span> through <span class="pre">`+`</span>, whose answer must be the type
+		<span class="pre">a</span> holds. A macro operator takes exactly the operands the operator is written with: a
+		<span class="pre">`-`</span> declared with one parameter after <span class="pre">self</span> serves
+		<span class="pre">a - b</span>, and <span class="pre">-a</span> is then refused. An operator whose method is a
+		function calls it, as before.</p>
+	<p style="margin-left: 40px;"><i>Note: Not built yet: the logic operators <span class="pre">||</span> and
+		<span class="pre">&amp;&amp;</span> as methods of their left operand's type, and a macro operator declared twice,
+		once for each number of operands.</i></p>
 
 	<h2 id="meta">Metaprogramming (not built)</h2>
 	<p style="margin-left: 40px;"><i>Not built yet: none of this is implemented. The compiler reports a word

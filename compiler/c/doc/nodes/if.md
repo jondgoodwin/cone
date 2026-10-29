@@ -180,7 +180,11 @@ retagging happens inside the arms.
 
 **Pass 1**, per pair: check the condition; if it is an `is`, run
 `ifExhaustCheck`; if it is not `elseCond`, coerce it to `bool` — which is where
-an implicit `.isTrue` reaches a conditional. An `elseCond` sets `hasElse`, and
+an implicit `.isTrue` reaches a conditional (an Option or a Result through core's,
+true on `Some` or `Ok`). A match's case whose condition is an Option or a Result
+— `case using f()` with an `f` giving one — is refused before the coercion, as
+it was before they answered `isTrue`: a case that only tests wants a function
+giving a bool. An `elseCond` sets `hasElse`, and
 must be last. Then check the arm against `expectType` and fold its type into the
 type in common — **unless the arm jumps away** (`ifBlockJumps`: it ends in a
 `return`, `break` or `continue`, a call returning `Never` among them, since
