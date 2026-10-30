@@ -116,6 +116,19 @@ int regionTracedAnywhere(void) {
     return regionTracedDeclared;
 }
 
+// Whether any struct of this compile declares 'Traced' without 'ActorLocal': a
+// region whose references a collector may have to find on a stack (a Gc). Until
+// one does, an erased value holds nothing a stack's roots need find.
+static int regionCollectedDeclared = 0;
+
+void regionCollectedSeen(void) {
+    regionCollectedDeclared = 1;
+}
+
+int regionCollectedAnywhere(void) {
+    return regionCollectedDeclared;
+}
+
 int regionIsTraced(INode *region) {
     StructNode *strnode = regionDcl(region);
     return strnode != NULL && structDeclaresTrait(strnode, tracedTrait) && regionStructIsRegionRef(strnode);

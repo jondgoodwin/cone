@@ -35,6 +35,8 @@ arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
 into a chain that `mem.traceRoots` walks, handing each to its region's `mark`.
+A reference into an `ActorLocal` region is no root: its collector runs between
+one actor's messages and finds it from the actor's state.
 Every allocation, `Gc[mut, Node](1)`, runs in one order: the value
 init's arguments, `alloc` (memory only), the region's `init` filling the
 header in place, a dynamic permission's `init`, the value's `init` filling

@@ -1,0 +1,114 @@
+// Roots, for a traced region that is 'ActorLocal': a stack slot whose type holds
+// only references into such a region is no root. Its collector (an ActorGc's)
+// finds them from the actor's state and its parked records, never from a stack,
+// so a function holding nothing else pushes no frame; a slot holding a reference
+// into a traced region that is not 'ActorLocal' (a Gc) is a root as before, and
+// so is a slot of a type holding both kinds, whose whole value is traced.
+//
+// 'Loc' is a toy actor-local traced region, 'Col' a toy collected one, both
+// counting marks, and 'roots' traces the roots, then prints every object that
+// was marked, newest first, with how many roots reach it where more than one
+// does ('5x2'), and clears the counts. Objects are numbered in the order made.
+//
+// Each section is a function of its own (main holds no traced reference, so it
+// has no frame):
+//   local only:           (nothing) plain's Loc 1 is no root; plain has no frame
+//   mixed: 3              Loc 2 is no root, Col 3 is; mixed's frame holds one slot
+//   together: 5x2 4       p holds both kinds, so its slot is a root and its record's
+//                         trace marks Loc 4 and Col 5; the birth of Col 5 is a root
+//                         too, the birth of Loc 4 is not
+//   params: 7x2           takes' parameter b is a root, a is not; calls' birth of
+//                         Col 7 is one too (Loc 6's is not)
+
+mod region_roots_actorlocal;
+
+import stdio use *;
+import libc;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal head = 0usize;
+
+struct Loc is RegionRef, Traced, ActorLocal {
+  pub id: i64;
+  pub next: usize;
+  pub marks: i64;
+
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Loc, Loc(nextId, head, 0));
+    nextId = nextId + 1;
+    head = p as usize;
+    p
+  }
+  fn mark(self: &uni Loc, slot: *usize) {
+    marks = marks + 1;
+  }
+}
+
+struct Col is RegionRef, Traced {
+  pub id: i64;
+  pub next: usize;
+  pub marks: i64;
+
+  fn alloc(size: usize, ty: *TypeRecord) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Col, Col(nextId, head, 0));
+    nextId = nextId + 1;
+    head = p as usize;
+    p
+  }
+  fn mark(self: &uni Col, slot: *usize) {
+    marks = marks + 1;
+  }
+}
+
+// The two headers are laid out alike, so one walk reads either
+fn roots(label: &str) {
+  mem.traceRoots(0u32);
+  printStr(label); printStr(":");
+  var at = head;
+  while at != 0usize {
+    let hdr = at as &mut Col;
+    if hdr.marks > 0 {
+      printStr(" "); printInt(hdr.id);
+      if hdr.marks > 1 { printStr("x"); printInt(hdr.marks); }
+      hdr.marks = 0;
+    }
+    at = hdr.next;
+  }
+  printStr("\n");
+}
+
+struct Leaf { pub n: i64; }
+struct Both { pub x: Loc[mut, Leaf]; pub y: Col[mut, Leaf]; }
+
+fn plain() {
+  let a = Loc[mut, Leaf](1);
+  roots("local only");
+}
+
+fn mixed() {
+  let a = Loc[mut, Leaf](2);
+  let b = Col[mut, Leaf](3);
+  roots("mixed");
+}
+
+fn together() {
+  let p = Both(Loc[mut, Leaf](4), Col[mut, Leaf](5));
+  roots("together");
+}
+
+fn takes(a: Loc[mut, Leaf], b: Col[mut, Leaf]) i64 {
+  roots("params");
+  a.n + b.n
+}
+fn calls() {
+  takes(Loc[mut, Leaf](6), Col[mut, Leaf](7));
+}
+
+fn main() {
+  plain();
+  mixed();
+  together();
+  calls();
+}

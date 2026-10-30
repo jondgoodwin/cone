@@ -1556,7 +1556,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     int traced = regionIsTraced(region);
     LLVMValueRef fillroot = NULL;
-    if (traced && gen->fn) {
+    if (traced && gen->fn && itypeHoldsRooted((INode*)reftype)) {
         fillroot = genlAlloca(gen, reftypellvm, "filling");
         genlRootNote(gen, fillroot, (INode*)reftype);
         LLVMBuildStore(gen->builder, fat ? genlFatRef(gen, reftypellvm, valuep, count) : valuep, fillroot);

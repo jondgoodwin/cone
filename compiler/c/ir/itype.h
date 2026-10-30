@@ -107,8 +107,18 @@ int itypeHoldsBarriered(INode *type);
 // Does a value of this type hold, where itypeHoldsTraced looks, a reference into
 // a traced region that is not 'ActorLocal': one whose collector runs whenever
 // and wherever a program says, and so is unsafe in an actor or a 'parallel each'
-// (ErrorGcStopgap)? Not remembered: asked of a declaration or a node once.
+// (ErrorGcStopgap)? Not remembered: asked of a declaration or a node once. Core's
+// Erased is not one here (itypeHoldsRooted says it is).
 int itypeHoldsCollected(INode *type);
+
+// Does a value of this type need a slot in a function's root frame: does it hold
+// a collected reference (itypeHoldsCollected), one a stack's roots must find? An
+// Erased value does wherever a traced region that is not 'ActorLocal' is declared
+// (regionCollectedAnywhere). An actor-local reference is found from the actor's
+// state, never from a stack. Where the walk could not finish, yes. Roots only: a
+// type's trace, its record's Traced flag and a parked record's fields still ask
+// itypeHoldsTraced.
+int itypeHoldsRooted(INode *type);
 
 // Does a value of this type hold a traced reference where a collector must find
 // it, as itypeHoldsTraced looks, but for an actor's state, which the actors
