@@ -1481,8 +1481,8 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
             borrowMutRef(&callnode->objfn, objtype, perm);
         }
         // A temporary lives to the end of the statement being checked. The isTrue a
-        // coercion to bool injects is lowered with no state of its own (iexpCoerce),
-        // and Option's and Result's borrow their receiver: the check under way is the one
+        // coercion to bool injects is lowered with the state of the check under way
+        // (iexpCoerceCondition), and Option's and Result's borrow their receiver by it
         else
             borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
