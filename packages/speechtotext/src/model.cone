@@ -262,9 +262,8 @@ pub struct Parakeet {
     var fb = List[f32].empty();
     match st.floats(bytes, "mel.window") { case var Some(w) { window = w; } case is None {} }
     match st.floats(bytes, "mel.fb") { case var Some(w) { fb = w; } case is None {} }
-    var frontend: Frontend = match Frontend.make(window.view(), fb.view()) {
-      case var Some(f) { f }
-      case is None { return Err[Parakeet, String](String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257")); }
+    var Some(frontend) = Frontend.make(window.view(), fb.view()) else {
+      return Err[Parakeet, String](String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257"));
     };
     // the matrices, placed in buffers; everything else into 'small'
     var specs = List[Spec].empty();
@@ -455,10 +454,8 @@ pub struct Parakeet {
 
   // Transcribe 16 kHz mono samples
   pub fn transcribe(self: &mut, device: &mut Device, samples: &Array[f32]) Result[Transcript, String] {
-    match self.run(device, samples, false) {
-      case var Ok(r) { Ok[Transcript, String](r.(transcript)) }
-      case let Err(e) { Err[Transcript, String](e.copy()) }
-    }
+    var r = self.run(device, samples, false)?;
+    Ok[Transcript, String](r.(transcript))
   }
 
   // ...and, with 'trace', keep what the tests compare with NeMo's: the features, the encoder's intermediate outputs and
@@ -474,10 +471,8 @@ pub struct Parakeet {
     var frames = 0usize;
     var t2 = t1;
     if feats.frames >= 2usize {
-      match encode(self, device, &feats.data, feats.frames, trace) {
-        case var Ok(e) { frames, enc = e.(frames, trace); }
-        case let Err(m) { return Err[Run, String](m.copy()); }
-      }
+      var e = encode(self, device, &feats.data, feats.frames, trace)?;
+      frames, enc = e.(frames, trace);
       t2 = Instant.now();
       match decodeGreedy(self, device, frames, &mut steps, trace, &mut tokens, &mut times) {
         case let Some(m) { return Err[Run, String](m.copy()); }

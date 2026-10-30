@@ -34,7 +34,7 @@ fn load(name: &str) String {
   }
 }
 
-fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+fn clean(p: &str) { _ = fs.removeAll(&Path.from(p)); }
 
 fn modeOf(p: &str) u32 {
   var c = String.from(p);
@@ -70,19 +70,16 @@ fn entry(modified: i64, mode: u32) EntryOptions {
 // Folders come before the files in them, as archive tools write them
 fn build() List[u8] {
   var w = ZipWriter.make();
-  w.addDir("bin", &entry(1400000000i64, 448u32));
-  w.add("bin/run.sh", "#!/bin/sh\necho hi\n", &entry(1600000000i64, 493u32));
-  w.add("bin/suid.sh", "#!/bin/sh\n", &entry(1610000000i64, 2541u32));
-  w.addDir("data", &entry(1450000000i64, 493u32));
-  w.add("data/plain.txt", "plain\n", &entry(1700000000i64, 420u32));
-  w.add("data/ro.txt", "readonly\n", &entry(1500000000i64, 292u32));
-  w.addDir("locked", &entry(1350000000i64, 320u32));
-  w.add("locked/f.txt", "inside\n", &entry(1360000000i64, 420u32));
-  w.add("old.txt", "old\n", &EntryOptions.stored());
-  match w.bytes() {
-    case let Ok(b) { b }
-    case let Err(e) { List[u8].empty() }
-  }
+  require(w.addDir("bin", &entry(1400000000i64, 448u32)) is Ok, "a folder entry is added");
+  require(w.add("bin/run.sh", "#!/bin/sh\necho hi\n", &entry(1600000000i64, 493u32)) is Ok, "an entry is added");
+  require(w.add("bin/suid.sh", "#!/bin/sh\n", &entry(1610000000i64, 2541u32)) is Ok, "an entry is added");
+  require(w.addDir("data", &entry(1450000000i64, 493u32)) is Ok, "a folder entry is added");
+  require(w.add("data/plain.txt", "plain\n", &entry(1700000000i64, 420u32)) is Ok, "an entry is added");
+  require(w.add("data/ro.txt", "readonly\n", &entry(1500000000i64, 292u32)) is Ok, "an entry is added");
+  require(w.addDir("locked", &entry(1350000000i64, 320u32)) is Ok, "a folder entry is added");
+  require(w.add("locked/f.txt", "inside\n", &entry(1360000000i64, 420u32)) is Ok, "an entry is added");
+  require(w.add("old.txt", "old\n", &EntryOptions.stored()) is Ok, "an entry is added");
+  w.bytes() || List[u8].empty()
 }
 
 fn extractTo(data: &Array[u8], dest: &str, opts: &ExtractOptions) Option[Extracted] {
@@ -115,7 +112,7 @@ fn contentIs(p: &str, text: &str) bool {
 }
 
 // So the folder can be removed: a read-only file or a folder without write permission is made writable
-fn unlock(p: &str) { fs.chmod(&Path.from(p), 0x1FFu32); }
+fn unlock(p: &str) { _ = fs.chmod(&Path.from(p), 0x1FFu32); }
 
 fn main() i32 {
   let archive = build();
@@ -167,8 +164,8 @@ fn main() i32 {
 
   // ---------------- overwrite replaces a read-only file ----------------
   unlock("rs-c/data/ro.txt");
-  fs.writeFile(&Path.from("rs-c/data/ro.txt"), "changed\n");
-  fs.chmod(&Path.from("rs-c/data/ro.txt"), 292u32);
+  require(fs.writeFile(&Path.from("rs-c/data/ro.txt"), "changed\n") is Ok, "a fixture file is written");
+  _ = fs.chmod(&Path.from("rs-c/data/ro.txt"), 292u32);
   unlock("rs-c/locked");
   var overModes = ExtractOptions.safe();
   overModes.restoreMode = true;

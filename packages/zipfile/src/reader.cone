@@ -313,69 +313,61 @@ pub struct EntryReader {
 
 // A reader for entry 'i'
 fn openEntry(ar: &Archive, data: &Array[u8], i: usize) Result[EntryReader, ZipError] {
-  match locate(ar, data, i) {
-    case let Err(e) { Err[EntryReader, ZipError](e) }
-    case let Ok(loc) {
-      let e = ar.entry(i);
-      var inf = deflate.Inflater.make(deflate.Format.Raw);
-      inf.setLimit(e.size);
-      // The output may not pass the entry's size; 0 is a real limit to a Decompressor (an empty entry)
-      var zd = zstd.Decompressor.make();
-      zd.setLimit(e.size);
-      Ok[EntryReader, ZipError](EntryReader(e.name.copy(), e.method, e.flags, loc.start, loc.end, e.size, e.crc,
-        e.compressedSize, 0u64, 0u32, deflate.Crc32.make(), inf, zd, false, false, false, None[ZipError]))
-    }
-  }
+  let loc = locate(ar, data, i)?;
+  let e = ar.entry(i);
+  var inf = deflate.Inflater.make(deflate.Format.Raw);
+  inf.setLimit(e.size);
+  // The output may not pass the entry's size; 0 is a real limit to a Decompressor (an empty entry)
+  var zd = zstd.Decompressor.make();
+  zd.setLimit(e.size);
+  Ok[EntryReader, ZipError](EntryReader(e.name.copy(), e.method, e.flags, loc.start, loc.end, e.size, e.crc,
+    e.compressedSize, 0u64, 0u32, deflate.Crc32.make(), inf, zd, false, false, false, None[ZipError]))
 }
 
 // The whole data of entry 'i'
 fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
   if i < ar.count() && ar.entry(i).method == methodZstd() { return readZstdEntry(ar, data, i); }
-  match locate(ar, data, i) {
-    case let Err(e) { return Err[List[u8], ZipError](e); }
-    case let Ok(loc) {
-      let e = ar.entry(i);
-      let from = usize.from(loc.start);
-      let to = usize.from(loc.end);
-      var out = List[u8].empty();
-      if e.method == 0u16 {
-        out.appendSlice(&data[from..<to]);
-      } else {
-        // A size of 0 would mean 'no limit' to inflate, so a one-byte limit stands in for it
-        let expected = if e.size == 0u64 { 1usize } else { usize.from(e.size) };
-        var used = 0usize;
-        match deflate.inflate(&data[from..<to], 0usize, expected, &mut used) {
-          case let Err(de) {
-            if de.kind == deflate.ErrorKind.TooLarge {
-              return refusal[List[u8]](ErrorKind.TooLarge, loc.start,
-                about("the entry", e.name.view(), "inflates to more than its header says").view());
-            }
-            var why = about("the compressed data of", e.name.view(), "is bad: ");
-            why.append(de.reason.view());
-            return refusal[List[u8]](ErrorKind.BadData, loc.start, why.view());
-          }
-          case let Ok(bytes) { out = bytes; }
+  let loc = locate(ar, data, i)?;
+  let e = ar.entry(i);
+  let from = usize.from(loc.start);
+  let to = usize.from(loc.end);
+  var out = List[u8].empty();
+  if e.method == 0u16 {
+    out.appendSlice(&data[from..<to]);
+  } else {
+    // A size of 0 would mean 'no limit' to inflate, so a one-byte limit stands in for it
+    let expected = if e.size == 0u64 { 1usize } else { usize.from(e.size) };
+    var used = 0usize;
+    match deflate.inflate(&data[from..<to], 0usize, expected, &mut used) {
+      case let Err(de) {
+        if de.kind == deflate.ErrorKind.TooLarge {
+          return refusal[List[u8]](ErrorKind.TooLarge, loc.start,
+            about("the entry", e.name.view(), "inflates to more than its header says").view());
         }
+        var why = about("the compressed data of", e.name.view(), "is bad: ");
+        why.append(de.reason.view());
+        return refusal[List[u8]](ErrorKind.BadData, loc.start, why.view());
       }
-      if u64.from(out.len()) != e.size {
-        var why = about("the entry", e.name.view(), "gives ");
-        why.appendUInt(u64.from(out.len()));
-        why.append(" bytes, its header says ");
-        why.appendUInt(e.size);
-        return refusal[List[u8]](ErrorKind.BadChecksum, loc.start, why.view());
-      }
-      let table = deflate.Crc32.make();
-      if table.update(0u32, out.view(), 0usize, out.len()) != e.crc {
-        return refusal[List[u8]](ErrorKind.BadChecksum, loc.start,
-          about("the CRC-32 of the data of", e.name.view(), "does not match the entry's").view());
-      }
-      match descriptorFault(e.name.view(), e.flags, e.crc, e.compressedSize, e.size, data, loc.end) {
-        case let Some(fault) { return Err[List[u8], ZipError](fault); }
-        case is None {}
-      }
-      return Ok[List[u8], ZipError](out);
+      case let Ok(bytes) { out = bytes; }
     }
   }
+  if u64.from(out.len()) != e.size {
+    var why = about("the entry", e.name.view(), "gives ");
+    why.appendUInt(u64.from(out.len()));
+    why.append(" bytes, its header says ");
+    why.appendUInt(e.size);
+    return refusal[List[u8]](ErrorKind.BadChecksum, loc.start, why.view());
+  }
+  let table = deflate.Crc32.make();
+  if table.update(0u32, out.view(), 0usize, out.len()) != e.crc {
+    return refusal[List[u8]](ErrorKind.BadChecksum, loc.start,
+      about("the CRC-32 of the data of", e.name.view(), "does not match the entry's").view());
+  }
+  match descriptorFault(e.name.view(), e.flags, e.crc, e.compressedSize, e.size, data, loc.end) {
+    case let Some(fault) { return Err[List[u8], ZipError](fault); }
+    case is None {}
+  }
+  Ok[List[u8], ZipError](out)
 }
 
 // The whole data of a zstd entry (method 93). It goes through the entry's own EntryReader, a megabyte at a
@@ -383,24 +375,20 @@ fn readEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError
 // the same size and CRC-32 checks, the same data descriptor check. (A one-shot zstd.decompress would
 // not apply the window limit.)
 fn readZstdEntry(ar: &Archive, data: &Array[u8], i: usize) Result[List[u8], ZipError] {
-  match openEntry(ar, data, i) {
-    case let Err(e) { Err[List[u8], ZipError](e) }
-    case var Ok(r) {
-      var out = List[u8].empty();
-      // Room for the size the header gives, but a header can claim anything: the list grows from there
-      let want = r.size();
-      out.reserve(if want < 1048576u64 { usize.from(want) } else { 1048576usize });
-      while true {
-        let s = r.pull(data, &mut out, 1048576usize);
-        if s == Status.Done { break; }
-        if s == Status.Failed {
-          match r.error() {
-            case let Some(fault) { return Err[List[u8], ZipError](fault); }
-            case is None { return refusal[List[u8]](ErrorKind.BadData, 0u64, "the zstd data is bad"); }
-          }
-        }
+  var r = openEntry(ar, data, i)?;
+  var out = List[u8].empty();
+  // Room for the size the header gives, but a header can claim anything: the list grows from there
+  let want = r.size();
+  out.reserve(if want < 1048576u64 { usize.from(want) } else { 1048576usize });
+  while true {
+    let s = r.pull(data, &mut out, 1048576usize);
+    if s == Status.Done { break; }
+    if s == Status.Failed {
+      match r.error() {
+        case let Some(fault) { return Err[List[u8], ZipError](fault); }
+        case is None { return refusal[List[u8]](ErrorKind.BadData, 0u64, "the zstd data is bad"); }
       }
-      Ok[List[u8], ZipError](out)
     }
   }
+  Ok[List[u8], ZipError](out)
 }

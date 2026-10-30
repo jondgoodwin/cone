@@ -268,11 +268,7 @@ fn makePlan(model: &gguf.Model, info: &ModelInfo, options: &LoadOptions, binding
     m <- " is more";
     return Err[Plan, String](m);
   }
-  var specs = List[Spec].empty();
-  match collectSpecs(model, shape) {
-    case var Ok(s) { specs = s; }
-    case let Err(e) { return Err[Plan, String](e.copy()); }
-  }
+  var specs = collectSpecs(model, shape)?;
   var limit = WEIGHT_BUFFER_BYTES;
   if bindingSize < limit { limit = bindingSize; }
   var s = 0usize;
@@ -305,17 +301,9 @@ pub fn planModel(path: &Path, options: &LoadOptions, bindingSize: u64, deviceLoc
       let parsed = gguf.parse(file.view());
       match parsed {
         case var Ok(model) {
-          let described = readInfo(&model);
-          match described {
-            case var Ok(info) {
-              let planned = makePlan(&model, &info, options, bindingSize, deviceLocal);
-              match planned {
-                case var Ok(p) { Ok[PlanSummary, String](PlanSummary(p.sizes.len(), p.specs.len(), p.budget)) }
-                case let Err(e) { Err[PlanSummary, String](e.copy()) }
-              }
-            }
-            case let Err(e) { Err[PlanSummary, String](e.copy()) }
-          }
+          let info = readInfo(&model)?;
+          let p = makePlan(&model, &info, options, bindingSize, deviceLocal)?;
+          Ok[PlanSummary, String](PlanSummary(p.sizes.len(), p.specs.len(), p.budget))
         }
         case let Err(e) {
           var m = String.from("llmrun: ");
@@ -443,20 +431,14 @@ pub struct Engine {
   }
 
   fn described(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, options: &LoadOptions) Result[Engine, String] {
-    let described = readInfo(&model);
-    match described {
-      case var Ok(i) { Engine.placed(device, mapped, model, i, options) }
-      case let Err(e) { Err[Engine, String](e.copy()) }
-    }
+    let info = readInfo(&model)?;
+    Engine.placed(device, mapped, model, info, options)
   }
 
   fn placed(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, info: ModelInfo, options: &LoadOptions) Result[Engine, String] {
     let shape = info.shape.copy();
-    let planned = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes);
-    let specs, sizes = match planned {
-      case var Ok(p) { p.(specs, sizes) }
-      case let Err(e) { return Err[Engine, String](e.copy()); }
-    };
+    var plan = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes)?;
+    let specs, sizes = plan.(specs, sizes);
 
     // the weights
     var resident = List[Buffer].empty();
@@ -483,34 +465,26 @@ pub struct Engine {
     // the norms
     let fileBytes = mapped.view();
     var layers = List[LayerRefs].withCapacity(shape.layers);
-    var outNorm = 0u32;
-    match norm(&model, fileBytes, device, "output_norm.weight", shape.dim) {
-      case var Ok(nb) { outNorm = u32.from(resident.len()); resident.push(nb); }
-      case let Err(e) { return Err[Engine, String](e.copy()); }
-    }
+    let outNb = norm(&model, fileBytes, device, "output_norm.weight", shape.dim)?;
+    let outNorm = u32.from(resident.len());
+    resident.push(outNb);
     var l = 0usize;
     while l < shape.layers {
-      var attnNorm = 0u32;
       var qNorm = 0u32;
       var kNorm = 0u32;
-      var ffnNorm = 0u32;
-      match norm(&model, fileBytes, device, layerName(l, "attn_norm.weight").view(), shape.dim) {
-        case var Ok(nb) { attnNorm = u32.from(resident.len()); resident.push(nb); }
-        case let Err(e) { return Err[Engine, String](e.copy()); }
-      }
-      match norm(&model, fileBytes, device, layerName(l, "ffn_norm.weight").view(), shape.dim) {
-        case var Ok(nb) { ffnNorm = u32.from(resident.len()); resident.push(nb); }
-        case let Err(e) { return Err[Engine, String](e.copy()); }
-      }
+      let attnNb = norm(&model, fileBytes, device, layerName(l, "attn_norm.weight").view(), shape.dim)?;
+      let attnNorm = u32.from(resident.len());
+      resident.push(attnNb);
+      let ffnNb = norm(&model, fileBytes, device, layerName(l, "ffn_norm.weight").view(), shape.dim)?;
+      let ffnNorm = u32.from(resident.len());
+      resident.push(ffnNb);
       if shape.qkNorm {
-        match norm(&model, fileBytes, device, layerName(l, "attn_q_norm.weight").view(), shape.headDim) {
-          case var Ok(nb) { qNorm = u32.from(resident.len()); resident.push(nb); }
-          case let Err(e) { return Err[Engine, String](e.copy()); }
-        }
-        match norm(&model, fileBytes, device, layerName(l, "attn_k_norm.weight").view(), shape.headDim) {
-          case var Ok(nb) { kNorm = u32.from(resident.len()); resident.push(nb); }
-          case let Err(e) { return Err[Engine, String](e.copy()); }
-        }
+        let qNb = norm(&model, fileBytes, device, layerName(l, "attn_q_norm.weight").view(), shape.headDim)?;
+        qNorm = u32.from(resident.len());
+        resident.push(qNb);
+        let kNb = norm(&model, fileBytes, device, layerName(l, "attn_k_norm.weight").view(), shape.headDim)?;
+        kNorm = u32.from(resident.len());
+        resident.push(kNb);
       }
       let base = 1usize + 7usize * l;
       let kCache = u32.from(resident.len());
@@ -595,10 +569,7 @@ pub struct Engine {
       var m = tokens.len - i;
       if m > chunk { m = chunk; }
       let last = i + m == tokens.len;
-      match self.forward(device, &tokens[i..<i + m], pos, wantLogits && last) {
-        case var Ok(l) { logits = l; }
-        case let Err(e) { return Err[List[f32], String](e.copy()); }
-      }
+      logits = self.forward(device, &tokens[i..<i + m], pos, wantLogits && last)?;
       pos = pos + m;
       i = i + m;
     }

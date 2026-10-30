@@ -125,10 +125,7 @@ fn ioFault(e: &fs.FsError) ZipError {
 // the refusal.
 fn checkEntry(ar: &Archive, data: &Array[u8], i: usize) Result[String, ZipError] {
   let e = ar.entry(i);
-  let clean = match safeName(e.name.view()) {
-    case let Err(err) { return Err[String, ZipError](err); }
-    case let Ok(s) { s }
-  };
+  let clean = safeName(e.name.view())?;
   if e.isSymlink() {
     return refusal[String](ErrorKind.SymlinkEntry, e.offset, about("the entry", e.name.view(), "is a symbolic link; links are not extracted").view());
   }
@@ -136,10 +133,7 @@ fn checkEntry(ar: &Archive, data: &Array[u8], i: usize) Result[String, ZipError]
   if clean.len() == 0usize {
     return refusal[String](ErrorKind.UnsafePath, e.offset, about("the entry", e.name.view(), "names no file").view());
   }
-  match locate(ar, data, i) {
-    case let Err(err) { return Err[String, ZipError](err); }
-    case is Ok {}
-  }
+  locate(ar, data, i)?;
   Ok[String, ZipError](clean)
 }
 
@@ -251,7 +245,7 @@ fn writeOne(ar: &Archive, data: &Array[u8], i: usize, clean: &str, base: &Path, 
     }
     // A file this package made read-only (a restored mode) would refuse the new data; the entry's own mode
     // is put back after. Only where the entry has a mode to put back.
-    if opts.restoreMode && e.unixMode() != 0u32 { fs.chmod(&walk, 0x180u32); }
+    if opts.restoreMode && e.unixMode() != 0u32 { _ = fs.chmod(&walk, 0x180u32); }
   }
   let wrote = writeData(ar, data, i, &walk, got);
   if wrote is Some { return wrote; }
@@ -282,7 +276,7 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
         piece.clear();
         let s = r.pull(data, &mut piece, 1048576usize);
         if s == Status.Failed {
-          if !first { fs.removeFile(path); }
+          if !first { _ = fs.removeFile(path); }
           match r.error() {
             case let Some(e) { return Some[ZipError](e); }
             case is None { return Some[ZipError](ZipError.make(ErrorKind.Corrupt, 0u64, "the entry failed")); }
@@ -293,7 +287,7 @@ fn writeData(ar: &Archive, data: &Array[u8], i: usize, path: &Path, got: &mut Ex
         let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
         match wrote {
           case let Err(fe) {
-            fs.removeFile(path);
+            _ = fs.removeFile(path);
             return Some[ZipError](ioFault(&fe));
           }
           case is Ok {}
@@ -317,10 +311,7 @@ fn baseOf(dest: &Path) Result[Path, ZipError] {
 }
 
 fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOptions) Result[Extracted, ZipError] {
-  let base = match baseOf(dest) {
-    case let Err(e) { return Err[Extracted, ZipError](e); }
-    case let Ok(p) { p }
-  };
+  let base = baseOf(dest)?;
   // First every entry is looked at, and nothing is written
   var plan = List[String].withCapacity(ar.count());
   var seen = Set[String]();
@@ -329,35 +320,31 @@ fn extractEntries(ar: &Archive, data: &Array[u8], dest: &Path, opts: &ExtractOpt
   var i = 0usize;
   while i < ar.count() {
     let e = ar.entry(i);
-    match checkEntry(ar, data, i) {
-      case let Err(err) { return Err[Extracted, ZipError](err); }
-      case let Ok(clean) {
-        // A link on the entry's way, seen now, refuses the extraction with nothing written (it is looked
-        // for again as each entry is written)
-        match linkOnWay(&base, clean.view(), &mut looked) {
-          case let Some(f) { return Err[Extracted, ZipError](f); }
-          case is None {}
+    let clean = checkEntry(ar, data, i)?;
+    // A link on the entry's way, seen now, refuses the extraction with nothing written (it is looked
+    // for again as each entry is written)
+    match linkOnWay(&base, clean.view(), &mut looked) {
+      case let Some(f) { return Err[Extracted, ZipError](f); }
+      case is None {}
+    }
+    if !e.isDir() {
+      if opts.maxTotal > 0u64 && (e.size > opts.maxTotal || total > opts.maxTotal - e.size) {
+        return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "takes the entries past the limit on the total size").view());
+      }
+      total += e.size;
+      if !opts.overwrite && clean.len() > 0usize {
+        // Two entries for one file would be the second finding the first (a name differing only in
+        // case is not seen here; the second then fails as Exists where the system folds case)
+        if !seen.insert(clean.copy()) {
+          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the name", e.name.view(), "is used by a second entry").view());
         }
-        if !e.isDir() {
-          if opts.maxTotal > 0u64 && (e.size > opts.maxTotal || total > opts.maxTotal - e.size) {
-            return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "takes the entries past the limit on the total size").view());
-          }
-          total += e.size;
-          if !opts.overwrite && clean.len() > 0usize {
-            // Two entries for one file would be the second finding the first (a name differing only in
-            // case is not seen here; the second then fails as Exists where the system folds case)
-            if !seen.insert(clean.copy()) {
-              return refusal[Extracted](ErrorKind.Exists, e.offset, about("the name", e.name.view(), "is used by a second entry").view());
-            }
-            let target = base.join(clean.view());
-            if fs.exists(&target) {
-              return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", target.view(), "is already there").view());
-            }
-          }
+        let target = base.join(clean.view());
+        if fs.exists(&target) {
+          return refusal[Extracted](ErrorKind.Exists, e.offset, about("the file", target.view(), "is already there").view());
         }
-        plan.push(clean);
       }
     }
+    plan.push(clean);
     i += 1usize;
   }
   match fs.makeDirAll(&base) {
@@ -383,15 +370,9 @@ fn extractIndex(ar: &Archive, data: &Array[u8], i: usize, dest: &Path, opts: &Ex
   if i >= ar.count() {
     return refusal[Extracted](ErrorKind.NotFound, 0u64, "there is no entry with that index");
   }
-  let base = match baseOf(dest) {
-    case let Err(e) { return Err[Extracted, ZipError](e); }
-    case let Ok(p) { p }
-  };
+  let base = baseOf(dest)?;
   let e = ar.entry(i);
-  let clean = match checkEntry(ar, data, i) {
-    case let Err(err) { return Err[Extracted, ZipError](err); }
-    case let Ok(s) { s }
-  };
+  let clean = checkEntry(ar, data, i)?;
   if opts.maxTotal > 0u64 && !e.isDir() && e.size > opts.maxTotal {
     return refusal[Extracted](ErrorKind.TooLarge, e.offset, about("the entry", e.name.view(), "is larger than the limit").view());
   }

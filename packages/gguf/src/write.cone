@@ -142,10 +142,7 @@ pub struct Writer {
       return Err[usize, GgufError](badInput("the number of values is not the tensor's element count"));
     }
     var bytes = List[u8].empty();
-    match quantize(&kind, values, &mut bytes) {
-      case let Err(e) {return Err[usize, GgufError](e);}
-      case is Ok {}
-    }
+    quantize(&kind, values, &mut bytes)?;
     self.addTensor(name, kind, dims, bytes)
   }
 
@@ -155,12 +152,10 @@ pub struct Writer {
     var alignment = 32u64;
     each e in meta {
       if e.key.view() == "general.alignment" {
-        match e.value.asU64() {
-          case let Some(a) { alignment = a; }
-          case is None {
-            return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
-          }
-        }
+        let Some(a) = e.value.asU64() else {
+          return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
+        };
+        alignment = a;
       }
     }
     if alignment == 0u64 || (alignment & (alignment - 1u64)) != 0u64 || alignment > maxAlignment() {

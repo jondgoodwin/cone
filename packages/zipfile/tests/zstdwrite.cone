@@ -79,27 +79,23 @@ fn fileIs(p: &str, want: &Array[u8]) bool {
 
 // The whole entry through an EntryReader, 'piece' bytes a pull
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize) Result[List[u8], ZipError] {
-  match ar.reader(data, i) {
-    case let Err(e) { return Err[List[u8], ZipError](e); }
-    case var Ok(r) {
-      var all = List[u8].empty();
-      var chunk = List[u8].empty();
-      while true {
-        chunk.clear();
-        let s = r.pull(data, &mut chunk, piece);
-        var k = 0usize;
-        while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
-        if s == Status.Failed {
-          match r.error() {
-            case let Some(e) { return Err[List[u8], ZipError](e); }
-            case is None { expect(false, "a failed reader has an error"); }
-          }
-        }
-        if s == Status.Done { break; }
+  var r = ar.reader(data, i)?;
+  var all = List[u8].empty();
+  var chunk = List[u8].empty();
+  while true {
+    chunk.clear();
+    let s = r.pull(data, &mut chunk, piece);
+    var k = 0usize;
+    while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
+    if s == Status.Failed {
+      match r.error() {
+        case let Some(e) { return Err[List[u8], ZipError](e); }
+        case is None { expect(false, "a failed reader has an error"); }
       }
-      return Ok[List[u8], ZipError](all);
     }
+    if s == Status.Done { break; }
   }
+  Ok[List[u8], ZipError](all)
 }
 
 // The entry's local header says this "version needed to extract"
@@ -136,8 +132,8 @@ fn check(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) u32 {
 }
 
 fn main() i32 {
-  fs.removeAll(&Path.from("zstdw-src"));
-  fs.makeDirAll(&Path.from("zstdw-src/sub"));
+  _ = fs.removeAll(&Path.from("zstdw-src"));
+  require(fs.makeDirAll(&Path.from("zstdw-src/sub")) is Ok, "a fixture folder is made");
 
   // ---------------- every size at every level ----------------
   let sizes: Array[usize, 11] = [0usize, 1usize, 13usize, 100usize, 4095usize, 65535usize, 65536usize, 65537usize,
@@ -333,7 +329,7 @@ fn main() i32 {
             expectUInt(u64.from(check(&ar, arc.view(), "h-big.txt", big.view())), 93u64, "mixed: h is zstd");
             // 13 bytes of text do not shrink under a zstd frame's own header and checksum
             expectUInt(u64.from(check(&ar, arc.view(), "i-zstd-again.txt", hello.view())), 0u64, "mixed: i (13 bytes) is stored");
-            fs.removeAll(&Path.from("x-zstdw-mixed"));
+            _ = fs.removeAll(&Path.from("x-zstdw-mixed"));
             match ar.extractAll(arc.view(), &Path.from("x-zstdw-mixed"), &ExtractOptions.safe()) {
               case let Err(e) { expect(false, why("mixed: extractAll", &e).view()); }
               case let Ok(got) {
@@ -350,7 +346,7 @@ fn main() i32 {
             expect(fileIs("x-zstdw-mixed/sub/g-deflate.txt", big.view()), "mixed: g extracted");
             expect(fileIs("x-zstdw-mixed/h-big.txt", big.view()), "mixed: h extracted");
             expect(fileIs("x-zstdw-mixed/i-zstd-again.txt", hello.view()), "mixed: i extracted");
-            fs.removeAll(&Path.from("x-zstdw-mixed"));
+            _ = fs.removeAll(&Path.from("x-zstdw-mixed"));
           }
         }
       }
@@ -416,10 +412,10 @@ fn main() i32 {
   // ---------------- addTree and addFile carry the method ----------------
   {
     let root = Path.from("zstdw-tree");
-    fs.removeAll(&root);
-    fs.makeDirAll(&Path.from("zstdw-tree/sub"));
-    fs.writeFile(&Path.from("zstdw-tree/top.txt"), texty(20000usize).view());
-    fs.writeFile(&Path.from("zstdw-tree/sub/low.bin"), noise(5000usize, 3u64).view());
+    _ = fs.removeAll(&root);
+    require(fs.makeDirAll(&Path.from("zstdw-tree/sub")) is Ok, "a fixture folder is made");
+    require(fs.writeFile(&Path.from("zstdw-tree/top.txt"), texty(20000usize).view()) is Ok, "a fixture file is written");
+    require(fs.writeFile(&Path.from("zstdw-tree/sub/low.bin"), noise(5000usize, 3u64).view()) is Ok, "a fixture file is written");
     var z = ZipWriter.make();
     expect(z.addTree(&root, "pack/", &EntryOptions.zstd(2i32)) is Ok, "tree: addTree");
     expect(z.addFile("extra.txt", &Path.from("zstdw-tree/top.txt"), &EntryOptions.zstd(1i32)) is Ok, "tree: addFile");
@@ -436,7 +432,7 @@ fn main() i32 {
         }
       }
     }
-    fs.removeAll(&root);
+    _ = fs.removeAll(&root);
   }
 
   // ---------------- other methods are still refused ----------------
