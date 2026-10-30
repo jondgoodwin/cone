@@ -75,7 +75,6 @@ const HALF_VIEW = 4.3676f;
 
 fn near(a: f32, b: f32, within: f32) bool { (if a > b { a - b } else { b - a }) <= within }
 
-fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
 // Channel 0 of the pixel (x, y) of the target at 'p'
 fn px(p: *u8, x: usize, y: usize) f32 { f32.from(*(p + (y * SIDEZ + x) * 4usize)) }
@@ -198,7 +197,7 @@ fn cpuChecks() {
       let sy = if (corner & 4u32) == 0u32 { -1.f } else { 1. };
       let world = eye + forward * d + right * (sx * d * tanY * aspect) + up * (sy * d * tanY);
       let clip = set.matrices[c] * world;
-      if absf(clip.x) > 1. || absf(clip.y) > 1. || clip.z < 0. || clip.z > 1. { inside = false; }
+      if clip.x.abs() > 1. || clip.y.abs() > 1. || clip.z < 0. || clip.z > 1. { inside = false; }
       corner = corner + 1u32;
     }
     c = c + 1usize;
@@ -237,7 +236,7 @@ fn cpuChecks() {
   let fa = free1.matrices[1] * probe;
   let fb = free2.matrices[1] * probe;
   let fu = (fb.x - fa.x) * half;
-  expect(absf(fu - libc.floorf(fu + 0.5)) > 0.05, "unsnapped, the same move shifts the point by a fraction of a texel (the shimmer)");
+  expect((fu - libc.floorf(fu + 0.5)).abs() > 0.05, "unsnapped, the same move shifts the point by a fraction of a texel (the shimmer)");
 }
 
 // ---- The scene of 5 ----
@@ -304,7 +303,7 @@ fn boxShadow(renderer: &mut Renderer, device: &mut Device, color: &Texture, dept
   let farError = worldX(far) - (-3.);
   eprint <- "measured "; eprintStr(label as &str); eprint <- ": the far edge at x = "; eprint <- worldX(far);
   eprint <- " (error "; eprint <- farError; eprint <- ", texel "; eprint <- texel; eprint <- ", cascade "; eprint <- u64.from(c); eprint <- ")\n";
-  expect(absf(farError) <= texel, label);
+  expect(farError.abs() <= texel, label);
   // The sides: column x = -2, rows from the top down to the middle, the
   // shadow beginning at z = -1; and from the bottom up to the middle, ending at z = 1
   let col = usize.from(u32.from(columnOf(-2.)));
@@ -315,8 +314,8 @@ fn boxShadow(renderer: &mut Renderer, device: &mut Device, color: &Texture, dept
   let errB = worldZ(sideB) - 1.;
   eprint <- "measured "; eprintStr(label as &str); eprint <- ": the sides at z = "; eprint <- worldZ(sideA); eprint <- " and ";
   eprint <- worldZ(sideB); eprint <- "\n";
-  expect(absf(errA) <= texel, label);
-  expect(absf(errB) <= texel, label);
+  expect(errA.abs() <= texel, label);
+  expect(errB.abs() <= texel, label);
   // The shadow is darker than the lit ground by about the sun's share
   // lit 0.5 x (0.1 + 0.8 x 0.7071) = 0.3328 -> 84.9; shadow 0.05 -> 12.75 (the lit material)
 }
@@ -327,7 +326,7 @@ fn maxDifference(a: &List[u8], b: *u8) f32 {
   var worst = 0.f;
   var i = 0usize;
   while i < 262144usize {
-    let d = absf(f32.from(*a[i]) - f32.from(*(b + i)));
+    let d = (f32.from(*a[i]) - f32.from(*(b + i))).abs();
     if d > worst { worst = d; }
     i = i + 1usize;
   }
@@ -447,8 +446,8 @@ fn seams(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &
       let found = crossRow(p, usize.from(u32.from(row)), usize.from(u32.from(u - 10.)), usize.from(u32.from(u + 10.)), mid, true);
       if found > 0. {
         let err = found - u;
-        if absf(err) > worstError { worstError = absf(err); }
-        if havePrevious && absf(err - previous) > worstJump { worstJump = absf(err - previous); }
+        if err.abs() > worstError { worstError = err.abs(); }
+        if havePrevious && (err - previous).abs() > worstJump { worstJump = (err - previous).abs(); }
         previous = err;
         havePrevious = true;
         count = count + 1u32;

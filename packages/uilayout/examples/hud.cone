@@ -69,7 +69,7 @@ struct Canvas {
     if x < 0 || y < 0 || x >= w || y >= h || cov <= 0. {return;}
     let c = clip();
     if f32.from(x) + 0.5 < c.min.x || f32.from(x) + 0.5 >= c.max.x || f32.from(y) + 0.5 < c.min.y || f32.from(y) + 0.5 >= c.max.y {return;}
-    let a = f32.from(colorA(color)) / 255. * minf(cov, 1.);
+    let a = f32.from(colorA(color)) / 255. * cov.min(1.);
     let i = usize.from(y * w + x);
     let dst = *px[i];
     let dr = f32.from((dst >> 16u32) & 255u32);
@@ -90,19 +90,19 @@ struct Canvas {
 // The signed distance from a point to a rounded box (negative inside)
 fn sdRound(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) f32 {
   let rr = minf(r, minf(hw, hh));
-  let qx = absf(px - cx) - (hw - rr);
-  let qy = absf(py - cy) - (hh - rr);
-  let ox = maxf(qx, 0.);
-  let oy = maxf(qy, 0.);
-  (ox * ox + oy * oy).sqrt() + minf(maxf(qx, qy), 0.) - rr
+  let qx = (px - cx).abs() - (hw - rr);
+  let qy = (py - cy).abs() - (hh - rr);
+  let ox = qx.max(0.);
+  let oy = qy.max(0.);
+  (ox * ox + oy * oy).sqrt() + maxf(qx, qy).min(0.) - rr
 }
 
 fn fillRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32) {
   let clip = c.clip();
-  let x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
-  let x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
-  let y0 = i32.from(floorf(maxf(y - 1., clip.min.y)));
-  let y1 = i32.from(ceilf(minf(y + h + 1., clip.max.y)));
+  let x0 = i32.from(maxf(x - 1., clip.min.x).floor());
+  let x1 = i32.from(minf(x + w + 1., clip.max.x).ceil());
+  let y0 = i32.from(maxf(y - 1., clip.min.y).floor());
+  let y1 = i32.from(minf(y + h + 1., clip.max.y).ceil());
   var py = y0;
   while py < y1 {
     var pxl = x0;
@@ -117,10 +117,10 @@ fn fillRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32)
 
 fn strokeRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, thick: f32, color: u32) {
   let clip = c.clip();
-  let x0 = i32.from(floorf(maxf(x - 1., clip.min.x)));
-  let x1 = i32.from(ceilf(minf(x + w + 1., clip.max.x)));
-  let y0 = i32.from(floorf(maxf(y - 1., clip.min.y)));
-  let y1 = i32.from(ceilf(minf(y + h + 1., clip.max.y)));
+  let x0 = i32.from(maxf(x - 1., clip.min.x).floor());
+  let x1 = i32.from(minf(x + w + 1., clip.max.x).ceil());
+  let y0 = i32.from(maxf(y - 1., clip.min.y).floor());
+  let y1 = i32.from(minf(y + h + 1., clip.max.y).ceil());
   var py = y0;
   while py < y1 {
     var pxl = x0;
@@ -135,13 +135,13 @@ fn strokeRound(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, thick: f3
 }
 
 fn drawLine(c: &mut Canvas, ax: f32, ay: f32, ex: f32, ey: f32, thick: f32, color: u32) {
-  let x0 = i32.from(floorf(minf(ax, ex) - thick - 1.));
-  let x1 = i32.from(ceilf(maxf(ax, ex) + thick + 1.));
-  let y0 = i32.from(floorf(minf(ay, ey) - thick - 1.));
-  let y1 = i32.from(ceilf(maxf(ay, ey) + thick + 1.));
+  let x0 = i32.from((minf(ax, ex) - thick - 1.).floor());
+  let x1 = i32.from((maxf(ax, ex) + thick + 1.).ceil());
+  let y0 = i32.from((minf(ay, ey) - thick - 1.).floor());
+  let y1 = i32.from((maxf(ay, ey) + thick + 1.).ceil());
   let dx = ex - ax;
   let dy = ey - ay;
-  let len2 = maxf(dx * dx + dy * dy, 0.0001);
+  let len2 = (dx * dx + dy * dy).max(0.0001);
   var py = y0;
   while py < y1 {
     var pxl = x0;
@@ -161,10 +161,10 @@ fn drawLine(c: &mut Canvas, ax: f32, ay: f32, ex: f32, ey: f32, thick: f32, colo
 
 // An annular sector (thick > 0) or a pie (thick 0), angles clockwise on the screen from +x
 fn drawArc(c: &mut Canvas, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, thick: f32, color: u32) {
-  let x0 = i32.from(floorf(cx - r - 2.));
-  let x1 = i32.from(ceilf(cx + r + 2.));
-  let y0 = i32.from(floorf(cy - r - 2.));
-  let y1 = i32.from(ceilf(cy + r + 2.));
+  let x0 = i32.from((cx - r - 2.).floor());
+  let x1 = i32.from((cx + r + 2.).ceil());
+  let y0 = i32.from((cy - r - 2.).floor());
+  let y1 = i32.from((cy + r + 2.).ceil());
   let tau = 6.2831855f;
   let sweep = a1 - a0;
   var py = y0;
@@ -184,7 +184,7 @@ fn drawArc(c: &mut Canvas, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, thick: f3
       if inside {
         var cov = 0.f;
         if thick <= 0. {cov = clampf(r + 0.5 - dist, 0., 1.);}
-        else {cov = clampf(thick * 0.5 + 0.5 - absf(dist - r), 0., 1.);}
+        else {cov = clampf(thick * 0.5 + 0.5 - (dist - r).abs(), 0., 1.);}
         c.plot(pxl, py, color, cov);
       }
       pxl = pxl + 1;
@@ -205,7 +205,7 @@ fn glyphOf(ch: u8) u32 {
 }
 
 fn textScale(size: f32) i32 {
-  let s = i32.from(floorf(size / 7. + 0.5));
+  let s = i32.from((size / 7. + 0.5).floor());
   if s < 1 {1} else {s}
 }
 
@@ -237,7 +237,7 @@ fn drawText(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, t: &str, size: f32, 
           while sy < s {
             var sx = 0;
             while sx < s {
-              c.plot(i32.from(floorf(gx)) + sx, i32.from(floorf(gy)) + sy, color, 1.);
+              c.plot(i32.from(gx.floor()) + sx, i32.from(gy.floor()) + sy, color, 1.);
               sx = sx + 1;
             }
             sy = sy + 1;
@@ -255,7 +255,7 @@ fn drawText(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, t: &str, size: f32, 
 fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
   if tex == 7u32 {
     let h = sin(u * 31.) + sin(v * 23.) * 0.8 + sin((u + v) * 17.) * 0.6 + sin((u - v) * 11.);
-    let road = absf(sin((u * 0.8 + v * 1.3) * 29.));
+    let road = sin((u * 0.8 + v * 1.3) * 29.).abs();
     if h < -1.4 {return rgb(40u32, 78u32, 130u32);}
     if h < -0.9 {return rgb(70u32, 110u32, 160u32);}
     if road < 0.05 {return rgb(180u32, 160u32, 110u32);}
@@ -275,25 +275,25 @@ fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
     let qx = u - 0.5;
     let qy = v - 0.66;
     if (qx * qx + qy * qy).sqrt() < 0.26 {return rgb(220u32, 50u32, 70u32);}
-    if absf(qx) < 0.07 && v > 0.18 && v < 0.45 {return rgb(200u32, 220u32, 235u32);}
-    if absf(qx) < 0.1 && v > 0.12 && v <= 0.18 {return rgb(160u32, 110u32, 70u32);}
+    if qx.abs() < 0.07 && v > 0.18 && v < 0.45 {return rgb(200u32, 220u32, 235u32);}
+    if qx.abs() < 0.1 && v > 0.12 && v <= 0.18 {return rgb(160u32, 110u32, 70u32);}
     return 0u32;
   }
   if tex == 103u32 {                       // a sword
-    let d = absf((u + v) - 1.);
+    let d = ((u + v) - 1.).abs();
     if d < 0.07 && u > 0.22 && u < 0.82 {return rgb(215u32, 220u32, 228u32);}
-    let h = absf(u - v);
+    let h = (u - v).abs();
     if h < 0.07 && u > 0.30 && u < 0.40 {return rgb(150u32, 110u32, 60u32);}
     if d < 0.09 && u > 0.16 && u <= 0.22 {return rgb(130u32, 90u32, 50u32);}
     return 0u32;
   }
   if tex == 105u32 || tex == 106u32 {      // a bag
-    let rx = absf(dx) - 0.18;
+    let rx = dx.abs() - 0.18;
     let ry = dy - 0.06;
-    if rx < 0.14 && ry < 0.26 && ry > -0.26 && (absf(dx) < 0.30) {
+    if rx < 0.14 && ry < 0.26 && ry > -0.26 && (dx.abs() < 0.30) {
       return if tex == 105u32 {rgb(150u32, 100u32, 60u32)} else {rgb(120u32, 78u32, 120u32)};
     }
-    if absf(dx) < 0.09 && dy < -0.2 && dy > -0.36 {return rgb(200u32, 170u32, 90u32);}
+    if dx.abs() < 0.09 && dy < -0.2 && dy > -0.36 {return rgb(200u32, 170u32, 90u32);}
     return 0u32;
   }
   if tex == 110u32 {                       // fireball
@@ -303,13 +303,13 @@ fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
     return 0u32;
   }
   if tex == 111u32 {                       // frost
-    let a = absf(dx) + absf(dy);
+    let a = dx.abs() + dy.abs();
     if a < 0.34 {return rgb(150u32, 210u32, 255u32);}
     return 0u32;
   }
   if tex == 112u32 {                       // heal
-    if absf(dx) < 0.09 && absf(dy) < 0.32 {return rgb(90u32, 220u32, 120u32);}
-    if absf(dy) < 0.09 && absf(dx) < 0.32 {return rgb(90u32, 220u32, 120u32);}
+    if dx.abs() < 0.09 && dy.abs() < 0.32 {return rgb(90u32, 220u32, 120u32);}
+    if dy.abs() < 0.09 && dx.abs() < 0.32 {return rgb(90u32, 220u32, 120u32);}
     return 0u32;
   }
   rgb(200u32, 80u32, 200u32)
@@ -317,10 +317,10 @@ fn sampleTexture(tex: u32, u: f32, v: f32) u32 {
 
 fn drawImage(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, tex: u32, u0: f32, v0: f32, u1: f32, v1: f32, radius: f32) {
   let clip = c.clip();
-  let xa = i32.from(floorf(maxf(x, clip.min.x)));
-  let xb = i32.from(ceilf(minf(x + w, clip.max.x)));
-  let ya = i32.from(floorf(maxf(y, clip.min.y)));
-  let yb = i32.from(ceilf(minf(y + h, clip.max.y)));
+  let xa = i32.from(maxf(x, clip.min.x).floor());
+  let xb = i32.from(minf(x + w, clip.max.x).ceil());
+  let ya = i32.from(maxf(y, clip.min.y).floor());
+  let yb = i32.from(minf(y + h, clip.max.y).ceil());
   var py = ya;
   while py < yb {
     var pxl = xa;

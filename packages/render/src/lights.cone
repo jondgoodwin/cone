@@ -555,8 +555,8 @@ pub struct LightSet {
   pub fn clusterAt(self: &, world: Vec3, x: f32, y: f32) u32 {
     let depth = (world - eye).dot(forward);
     let s = self.sliceOf(depth);
-    var tx = u32.from(lmax(x, 0.) / targetWidth * f32.from(LIGHT_GRID_X));
-    var ty = u32.from(lmax(y, 0.) / targetHeight * f32.from(LIGHT_GRID_Y));
+    var tx = u32.from(x.max(0.) / targetWidth * f32.from(LIGHT_GRID_X));
+    var ty = u32.from(y.max(0.) / targetHeight * f32.from(LIGHT_GRID_Y));
     if tx > LIGHT_GRID_X - 1u32 { tx = LIGHT_GRID_X - 1u32; }
     if ty > LIGHT_GRID_Y - 1u32 { ty = LIGHT_GRID_Y - 1u32; }
     (s * LIGHT_GRID_Y + ty) * LIGHT_GRID_X + tx
@@ -676,7 +676,7 @@ pub struct LightSet {
     if zc + r < 0. || zc - r > farPlane { return 0u32; }
     let nx = f32.from(LIGHT_GRID_X);
     let ny = f32.from(LIGHT_GRID_Y);
-    let s0 = self.sliceOf(lmax(zc - r, 0.));
+    let s0 = self.sliceOf((zc - r).max(0.));
     let s1 = self.sliceOf(zc + r);
     var reached = 0u32;
     var s = s0;
@@ -687,7 +687,7 @@ pub struct LightSet {
         // The sphere's box projected through the depths [dlo, dhi]: a clip
         // coordinate x m0 / d moves one way with d, so its least and most are
         // at the ends
-        let dn = lmax(dlo, 0.0001);
+        let dn = dlo.max(0.0001);
         var x0 = 0.f;
         var x1 = 0.f;
         var y0 = 0.f;
@@ -715,10 +715,10 @@ pub struct LightSet {
           y1 = lmax(lmax(ya / dn, ya / dhi), lmax(yb / dn, yb / dhi));
         }
         if x1 >= -1. && x0 <= 1. && y1 >= -1. && y0 <= 1. {
-          let tx0 = u32.from(lmax(libc.floorf((lmax(x0, -1.) + 1.) * 0.5 * nx), 0.));
-          let tx1 = u32.from(lmin(libc.floorf((lmin(x1, 1.) + 1.) * 0.5 * nx), nx - 1.));
-          let ty0 = u32.from(lmax(libc.floorf((1. - lmin(y1, 1.)) * 0.5 * ny), 0.));
-          let ty1 = u32.from(lmin(libc.floorf((1. - lmax(y0, -1.)) * 0.5 * ny), ny - 1.));
+          let tx0 = u32.from(libc.floorf((x0.max(-1.) + 1.) * 0.5 * nx).max(0.));
+          let tx1 = u32.from(lmin(libc.floorf((x1.min(1.) + 1.) * 0.5 * nx), nx - 1.));
+          let ty0 = u32.from(libc.floorf((1. - y1.min(1.)) * 0.5 * ny).max(0.));
+          let ty1 = u32.from(lmin(libc.floorf((1. - y0.max(-1.)) * 0.5 * ny), ny - 1.));
           var ty = ty0;
           while ty <= ty1 {
             var tx = tx0;
@@ -742,9 +742,9 @@ pub struct LightSet {
   // 'cluster''s box
   pub fn sphereTouchesBox(self: &, cluster: usize, c: Vec3, r: f32) bool {
     let b = cluster * 6usize;
-    let dx = lmax(lmax(*boxes[b] - c.x, c.x - *boxes[b + 3usize]), 0.);
-    let dy = lmax(lmax(*boxes[b + 1usize] - c.y, c.y - *boxes[b + 4usize]), 0.);
-    let dz = lmax(lmax(*boxes[b + 2usize] - c.z, c.z - *boxes[b + 5usize]), 0.);
+    let dx = lmax(*boxes[b] - c.x, c.x - *boxes[b + 3usize]).max(0.);
+    let dy = lmax(*boxes[b + 1usize] - c.y, c.y - *boxes[b + 4usize]).max(0.);
+    let dz = lmax(*boxes[b + 2usize] - c.z, c.z - *boxes[b + 5usize]).max(0.);
     dx * dx + dy * dy + dz * dz <= r * r
   }
 
@@ -802,7 +802,7 @@ pub struct LightSet {
     targetWidth = f32.from(width);
     targetHeight = f32.from(height);
     let farPlane = camera.far;
-    let near = lmax(camera.near, 0.001);
+    let near = camera.near.max(0.001);
     var reach = farPlane;
     if clusterFar > near * 2. && clusterFar < farPlane { reach = clusterFar; }
     if reach < near * 1.01 { reach = near * 1.01; }

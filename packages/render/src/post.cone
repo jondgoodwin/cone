@@ -127,8 +127,8 @@ pub struct Post {
     let samplerDesc = SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
       addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     var sampler = device.createSampler(&samplerDesc);
-    let w = umax(width, 2u32);
-    let h = umax(height, 2u32);
+    let w = width.max(2u32);
+    let h = height.max(2u32);
     let levels = bloomLevels(w, h);
     var hdr = frameTexture(device, w, h);
     var bloomDown = chainTexture(device, w, h, levels);
@@ -205,8 +205,8 @@ pub struct Post {
   // Make the frame and the chain again at 'width' by 'height', if that is
   // not their size (after the GPU is idle, as their finalizers wait)
   pub fn resize(self: &mut, device: &mut Device, width: u32, height: u32) {
-    let w = umax(width, 2u32);
-    let h = umax(height, 2u32);
+    let w = width.max(2u32);
+    let h = height.max(2u32);
     if w == self.width && h == self.height { return; }
     groups = List[BindGroup].empty();
     self.width = w;
@@ -375,20 +375,18 @@ fn identityTable(device: &mut Device, size: u32) Texture {
 // The levels of a bloom chain from half of 'width' by 'height': down to 4
 // pixels on the shorter side, at most BLOOM_LEVELS, at least 2
 fn bloomLevels(width: u32, height: u32) u32 {
-  var side = umin(width, height) / 2u32;
+  var side = width.min(height) / 2u32;
   var levels = 1u32;
   while levels < BLOOM_LEVELS && side >= 8u32 {
     side = side / 2u32;
     levels = levels + 1u32;
   }
-  umax(levels, 2u32)
+  levels.max(2u32)
 }
 
-fn umax(a: u32, b: u32) u32 { if a > b { a } else { b } }
-fn umin(a: u32, b: u32) u32 { if a < b { a } else { b } }
 
 // A level's size, from 'size' at level 0
-fn levelSize(size: u32, level: u32) u32 { umax(size >> level, 1u32) }
+fn levelSize(size: u32, level: u32) u32 { (size >> level).max(1u32) }
 
 fn frameTexture(device: &mut Device, width: u32, height: u32) Texture {
   let desc = TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
@@ -398,8 +396,8 @@ fn frameTexture(device: &mut Device, width: u32, height: u32) Texture {
 
 // A chain of 'levels' levels from half of 'width' by 'height'
 fn chainTexture(device: &mut Device, width: u32, height: u32, levels: u32) Texture {
-  let desc = TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
-    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, umax(levels, 1u32));
+  let desc = TextureDescriptor((width / 2u32).max(1u32), (height / 2u32).max(1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, levels.max(1u32));
   device.createTexture(&desc)
 }
 
