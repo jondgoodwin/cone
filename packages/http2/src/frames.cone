@@ -385,7 +385,7 @@ struct BlockStart {
 // checked: a frame too short for its fields is FRAME_SIZE_ERROR, and padding
 // longer than what is left PROTOCOL_ERROR, each on the connection, a field
 // block's frame touching the connection's HPACK state (section 4.2)
-fn blockStart(h: FrameHeader, p: &'p Array[u8]) Result[BlockStart, FrameError] {
+fn blockStart(h: FrameHeader, p: &Array[u8]) Result[BlockStart, FrameError] {
   var at = 0usize;
   var pad = 0usize;
   if h.has(flagPadded) {
@@ -419,7 +419,7 @@ fn blockStart(h: FrameHeader, p: &'p Array[u8]) Result[BlockStart, FrameError] {
 
 // A SETTINGS frame's parameters, each checked (section 6.5.2; RFC 8441,
 // section 3; RFC 9218, section 2.1), appended to values
-fn parseSettings(p: &'p Array[u8], client: bool, values: &'v mut List[Setting]) Option[FrameError] {
+fn parseSettings(p: &Array[u8], client: bool, values: &mut List[Setting]) Option[FrameError] {
   var i = 0usize;
   while i < p.len {
     let id = readU16(p, i);
@@ -446,7 +446,7 @@ fn parseSettings(p: &'p Array[u8], client: bool, values: &'v mut List[Setting]) 
 
 // A whole PRIORITY, RST_STREAM, SETTINGS, PING, GOAWAY or WINDOW_UPDATE
 // payload p, its length already checked
-fn parseControl(h: FrameHeader, p: &'p Array[u8], client: bool) Result[Frame, FrameError] {
+fn parseControl(h: FrameHeader, p: &Array[u8], client: bool) Result[Frame, FrameError] {
   if h.kind == typePriority {
     let d = readU32(p, 0usize);
     let spec = PrioritySpec((d & 0x80000000u32) != 0u32, d & maxStreamId, p[4usize]);
@@ -556,9 +556,8 @@ pub struct FrameReader {
   // The next frame from input, consuming its bytes; NeedData when it has not
   // all arrived (nothing is consumed but what a refused frame leaves to
   // skip); Failed for a frame refused. The chain must be able to hold
-  // frameHeaderLen + maxFrameSize bytes. The lifetimes are named apart from
-  // the result's so a caller knows the frame borrows neither
-  pub fn next(self: &'r mut, input: &'c mut Chain) Parsed {
+  // frameHeaderLen + maxFrameSize bytes
+  pub fn next(self: &mut, input: &mut Chain) Parsed {
     match &failed {
       case let &Some(e) {return Parsed.Failed(e.copy());}
       else {}
@@ -734,7 +733,7 @@ pub struct FrameReader {
 
   // A whole DATA frame, its header consumed: the data copied into a buffer
   // of its own, the padding checked and dropped (section 6.1)
-  fn data(self: &'r mut, input: &'c mut Chain, h: FrameHeader) Parsed {
+  fn data(self: &mut, input: &mut Chain, h: FrameHeader) Parsed {
     var at = 0usize;
     var pad = 0usize;
     if h.has(flagPadded) {
@@ -753,7 +752,7 @@ pub struct FrameReader {
   // A stream error from the frame's header alone: the header consumed and
   // the payload skipped as it arrives. A DATA frame's length still counts
   // against the connection's window
-  fn refuse(self: &'r mut, input: &'c mut Chain, h: FrameHeader, code: ErrorCode, why: &'static str) Parsed {
+  fn refuse(self: &mut, input: &mut Chain, h: FrameHeader, code: ErrorCode, why: &'static str) Parsed {
     input.advance(frameHeaderLen);
     discard = h.length;
     let flow = if h.kind == typeData {h.length} else {0usize};
@@ -761,7 +760,7 @@ pub struct FrameReader {
   }
 
   // A connection error: reading ends, and every later call repeats it
-  fn fail(self: &'r mut, e: FrameError) Parsed {
+  fn fail(self: &mut, e: FrameError) Parsed {
     failed = Some[FrameError](e.copy());
     Parsed.Failed(e)
   }

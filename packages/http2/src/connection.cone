@@ -159,8 +159,6 @@ fn kindOfCode(code: ErrorCode) ErrorKind {
   else {ErrorKind.Malformed}
 }
 
-fn minI64(a: i64, b: i64) i64 {if a < b {a} else {b}}
-
 // ---------------------------------------------------------------------------
 // The connection
 // ---------------------------------------------------------------------------
@@ -813,19 +811,16 @@ pub struct Connection is Move {
     // table and ours must stay in step (section 4.3)
     fields.clear();
     var tooLarge = false;
-    match decoder.decode(block.view(), &mut fields) {
-      case let Ok(n) {}
-      case let Err(e) {
-        if e.kind == HpackErrorKind.Abandoned {
-          self.connError(ErrorCode.EnhanceYourCalm, "a header list past headerListAbortSize");
-          return;
-        }
-        if e.isConnectionError() {
-          self.connError(ErrorCode.CompressionError, "a field block HPACK cannot decode");
-          return;
-        }
-        tooLarge = true;
+    if let Err(e) = decoder.decode(block.view(), &mut fields) {
+      if e.kind == HpackErrorKind.Abandoned {
+        self.connError(ErrorCode.EnhanceYourCalm, "a header list past headerListAbortSize");
+        return;
       }
+      if e.isConnectionError() {
+        self.connError(ErrorCode.CompressionError, "a field block HPACK cannot decode");
+        return;
+      }
+      tooLarge = true;
     }
     let slot = self.slotOf(id);
     if !slot.isNone() {
@@ -1092,7 +1087,7 @@ pub struct Connection is Move {
     if s.outBytes > 0usize || s.finishing {self.makeReady(s);}
   }
 
-  fn onSettings(self: &mut, ack: bool, values: &'v Array[Setting]) {
+  fn onSettings(self: &mut, ack: bool, values: &Array[Setting]) {
     if ack {
       if settingsOut > 0u32 {
         settingsOut = settingsOut - 1u32;
@@ -1171,7 +1166,7 @@ pub struct Connection is Move {
   // The peer is going away (section 6.8): every request of ours above its
   // last stream was not processed, refused (safe to retry elsewhere), and
   // so is every one still waiting; those at or below it go on
-  fn onGoAway(self: &mut, last: u32, code: ErrorCode, debug: &'d Array[u8]) {
+  fn onGoAway(self: &mut, last: u32, code: ErrorCode, debug: &Array[u8]) {
     if !peerGoAway || last < peerLast {peerLast = last;}
     peerGoAway = true;
     var i = 0u32;
@@ -1507,7 +1502,7 @@ pub struct Connection is Move {
         return 0u32;
       }
       if connSend <= 0i64 {return 3u32;}
-      let room = minI64(minI64(s.sendWindow, connSend), i64.from(writer.peerMaxFrameSize()));
+      let room = s.sendWindow.min(connSend).min(i64.from(writer.peerMaxFrameSize()));
       let buf = self.chunk(s, usize.from(room));
       let n = buf.len();
       s.sendWindow = s.sendWindow - i64.from(n);
