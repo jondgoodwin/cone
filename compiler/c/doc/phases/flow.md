@@ -774,7 +774,9 @@ its statement's end all the same. **A temporary a raw pointer outlives is
 kept**, since nothing follows a pointer. Once a statement that made a
 temporary is walked, `blockTempEscape` walks it again (`flowTempEscape`),
 carrying down how the value at each node goes out of the statement — a
-variable's initializer, an assignment's value, a returned, broken-out or
+variable's initializer, an assignment's value (not a `_` target's: nothing
+leaves the statement, so every temporary the value's expression made dies at its
+end), a returned, broken-out or
 handed-back value — through values that can hold a borrow or a raw pointer
 (`flowTempOut`: `itypeCarriesBorrow`, or a pointer within a few levels): a
 call's arguments when its result can, every argument of a call that could
