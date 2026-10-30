@@ -75,6 +75,19 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
         name->node = NULL;
     }
 
+    // A macro under a name this module already gives a macro joins that name's
+    // overload set; under a name it gives a function, it is refused, as is a
+    // function under a macro's: a set holds all macros or all functions
+    INode *prior = namespaceFind(&mod->namespace, name);
+    if (prior && prior != node && (node->tag == MacroDclTag || prior->tag == MacroDclTag)
+        && (node->tag == MacroDclTag || node->tag == FnDclTag) && (prior->tag == MacroDclTag || prior->tag == FnDclTag)) {
+        if (node->tag == MacroDclTag && prior->tag == MacroDclTag)
+            macroSetAdd((MacroDclNode*)prior, (MacroDclNode*)node);
+        else
+            macroMixedRefused(node, prior);
+        return;
+    }
+
     // Hook into global name table (and add to namednodes), if not already there.
     // The declaration of core's 'str' is the node the name already holds
     // (stdlibAdoptStr)
@@ -1193,6 +1206,9 @@ static void modInstanceFill(CloneState *cstate, ModuleNode *template, ModuleNode
         {
             INode *macro = cloneNode(cstate, node);
             memcpy(copy, macro, sizeof(MacroDclNode));
+            // The set it belongs to: the next member's shell, made with the others
+            if (((MacroDclNode*)node)->more)
+                ((MacroDclNode*)copy)->more = (MacroDclNode*)cloneDclFix((INode*)((MacroDclNode*)node)->more);
             break;
         }
         }

@@ -1,0 +1,179 @@
+// Macros overload by repeating the name: no 'overload' clause and no separate
+// name. Two or more macros declared under one name in one scope (a module, or
+// one type) form a set, and a use picks the one whose parameters accept its
+// arguments, by the rule a call of overloaded functions follows: each
+// candidate is asked, none wins for fitting better, and exactly one must fit.
+//
+// The candidates are asked without touching the use: an argument is checked
+// once on a copy, so only the macro chosen expands, and a 'lazy' argument runs
+// only where the chosen body reaches it. Each argument that has a side effect
+// counts itself, so what the program prints says how many times it ran.
+//
+// - Free macros picked by the type of an argument ('i32', 'bool', a struct),
+//   by how many arguments there are, and with a type parameter of their own.
+// - A string literal that a candidate takes as the '&str' it is wins over a
+//   candidate that makes a type from it ('fromLiteral'); where no candidate
+//   takes it as it is, the one that makes the type from it is picked.
+// - Macro methods of one type, picked by the argument after the receiver.
+// - Operator macros overloaded the same way: '+' for two right operands, and
+//   '+=' through whichever '+' the right operand picks.
+// - A lazy parameter in a set: the rejected candidates' arguments are not run.
+//
+// Every printed value was checked by hand against the source.
+
+mod generic_macro_overload;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+var @threadlocal calls = 0i64;
+
+fn flag(b: bool) bool {
+  calls = calls + 1i64;
+  b
+}
+
+fn num(n: i64) i64 {
+  calls = calls + 1i64;
+  n
+}
+
+// By the type of the argument
+macro kind[a: i32] { 1 }
+macro kind[a: bool] { 2 }
+macro kind[a: f64] { 3 }
+
+// By how many arguments there are
+macro sum[a: i64] { a }
+macro sum[a: i64, b: i64] { a + b }
+macro sum[a: i64, b: i64, c: i64] { a + b + c }
+
+// A type parameter of its own: the same-type pair, beside a single value
+macro same[T][a: T, b: T] { if a == b { 10 } else { 20 } }
+macro same[a: bool] { 30 }
+
+// An argument that waits to be told its type ('None') is asked of each parameter
+macro opt[a: Option[i64]] { 1 }
+macro opt[a: i64] { 2 }
+
+// Type arguments written pick among the candidates that declare type
+// parameters of that count; the brackets of a use with none are for a candidate
+// that takes values there
+macro many[T][a: T, b: T] { 5 }
+macro many[T, U][a: T, b: U] { 6 }
+macro none[T][] { 7 }
+macro none[a: i64] { 8 }
+
+// A struct, and a string literal that makes one
+struct Tag {
+  pub n: i64;
+  pub fn fromLiteral(s: &str) Tag { Tag(i64.from(s.len)) }
+}
+macro describe[a: &str] { 100 }
+macro describe[a: i64] { 200 }
+macro text[a: &Tag] { a.n }
+macro text[a: i64] { 0 - a }
+
+// A lazy parameter in a set: the candidate for the type chosen reaches it or not
+macro gate[c: bool, v: lazy i64] { if c { v } else { 0 } }
+macro gate[c: bool, v: lazy bool] { if c { if v { 1 } else { 2 } } else { 0 } }
+
+struct V {
+  pub x: i64;
+
+  // Methods of one type, picked by the argument after the receiver
+  macro add[self, o: V] { V(x: self.x + o.x) }
+  macro add[self, o: i64] { V(x: self.x + o) }
+  macro add[self, o: i64, p: i64] { V(x: self.x + o + p) }
+
+  // Operators: '+' for two right operands
+  macro `+`[self, o: V] { V(x: self.x + o.x) }
+  macro `+`[self, o: i64] { V(x: self.x + o + o) }
+
+  // One operator declared once for each number of operands
+  macro `-`[self] { V(x: 0 - self.x) }
+  macro `-`[self, o: V] { V(x: self.x - o.x) }
+
+  // A lazy operand in a set
+  macro `*`[self, o: lazy V] { if self.x == 0 { V(x: 0) } else { V(x: self.x * o.x) } }
+  macro `*`[self, o: lazy i64] { if self.x == 0 { V(x: 0) } else { V(x: self.x * o) } }
+}
+
+fn mkv(n: i64) V {
+  calls = calls + 1i64;
+  V(x: n)
+}
+
+fn main() {
+  show("kind i32", i64.from(kind(1i32)));
+  show("kind bool", i64.from(kind(true)));
+  show("kind f64", i64.from(kind(2.5f64)));
+
+  show("sum 1", sum(5i64));
+  show("sum 2", sum(5i64, 6i64));
+  show("sum 3", sum(5i64, 6i64, 7i64));
+
+  show("same equal", same(4i64, 4i64));
+  show("same different", same(4i64, 5i64));
+  show("same bool", same(true));
+  show("same written", same[i64](4i64, 4i64));
+
+  show("opt none", opt(None));
+  show("opt some", opt(Some(3i64)));
+  show("opt number", opt(3i64));
+  show("many one type", many[i64](1i64, 2i64));
+  show("many two types", many[i64, f64](1i64, 2.5f64));
+  show("none written", none[i64]());
+  show("none valued", none(1i64));
+  show("none bracketed", none[2i64]);
+
+  show("literal as str", describe("hello"));
+  show("number", describe(9i64));
+  show("literal made a Tag", text("hello"));
+  show("number text", text(9i64));
+
+  calls = 0i64;
+  show("gate i64 taken", gate(true, num(7i64)));
+  show("gate i64 taken ran", calls);
+  calls = 0i64;
+  show("gate i64 not taken", gate(false, num(7i64)));
+  show("gate i64 not taken ran", calls);
+  calls = 0i64;
+  show("gate bool taken", gate(true, flag(false)));
+  show("gate bool taken ran", calls);
+  calls = 0i64;
+  show("gate bool not taken", gate(false, flag(true)));
+  show("gate bool not taken ran", calls);
+
+  let a = V(x: 1);
+  show("method V", a.add(V(x: 5)).x);
+  show("method i64", a.add(7i64).x);
+  show("method two", a.add(7i64, 8i64).x);
+  show("operator V", (a + V(x: 5)).x);
+  show("operator i64", (a + 7i64).x);
+  show("operator unary", (-a).x);
+  show("operator binary", (a - V(x: 5)).x);
+
+  var c = V(x: 10);
+  c += V(x: 2);
+  show("plus-assign V", c.x);
+  c += 3i64;
+  show("plus-assign i64", c.x);
+
+  calls = 0i64;
+  show("lazy V unused", (V(x: 0) * mkv(9)).x);
+  show("lazy V unused ran", calls);
+  show("lazy V used", (a * mkv(9)).x);
+  show("lazy V used ran", calls);
+  calls = 0i64;
+  show("lazy i64 unused", (V(x: 0) * num(9i64)).x);
+  show("lazy i64 unused ran", calls);
+  show("lazy i64 used", (a * num(9i64)).x);
+  show("lazy i64 used ran", calls);
+}

@@ -18,6 +18,7 @@ MacroDclNode *newMacroDclNode(Name *namesym) {
     gennode->vtype = NULL;
     gennode->namesym = namesym;
     gennode->typeparms = NULL;
+    gennode->more = NULL;
     gennode->parms = newNodes(4);
     gennode->body = NULL;
     gennode->memonodes = newNodes(4);
@@ -50,6 +51,8 @@ static GenVarDclNode *cloneMacroParm(CloneState *cstate, GenVarDclNode *old) {
 INode *cloneMacroDclNode(CloneState *cstate, MacroDclNode *node) {
     MacroDclNode *newnode = memAllocBlk(sizeof(MacroDclNode));
     memcpy(newnode, node, sizeof(MacroDclNode));
+    // The copy's set is made as the copies are added to their scope
+    newnode->more = NULL;
 
     INode **nodesp;
     uint32_t cnt;
@@ -675,6 +678,303 @@ static int macroLazyArgsFit(TypeCheckState *pstate, INode **nodep, MacroDclNode 
     return !bad;
 }
 
+// ---------------------------------------------------------------------------
+// Overloading by repeated name. Macros declared under one name in one scope (a
+// module, or one type) form a set: the first is what the name is bound to, and
+// the rest are chained after it (MacroDclNode.more). A use picks the one macro
+// whose parameters accept its arguments, by the rule a call of overloaded
+// functions follows (iNsTypeFindMethod): every candidate is asked, none is
+// preferred for fitting better, and exactly one must fit. Nothing of the use is
+// touched while asking: each argument is checked once on a copy (macroArgTrial),
+// and a candidate fits when that copy's type is accepted by its parameter's type
+// as a call's argument would be (iexpMatches, Coercion), so a 'lazy' argument
+// runs and binds nothing for a candidate that is not chosen. A string literal
+// is also offered as the temporary a type that declares 'fromLiteral' makes,
+// but only once no candidate takes it as it is (slitBorrowFallback).
+
+void macroSetAdd(MacroDclNode *first, MacroDclNode *more) {
+    while (first->more)
+        first = first->more;
+    first->more = more;
+}
+
+int macroSetTypeParms(MacroDclNode *first) {
+    for (; first; first = first->more)
+        if (first->typeparms)
+            return 1;
+    return 0;
+}
+
+void macroMixedRefused(INode *later, INode *earlier) {
+    Name *name = inodeGetName(later);
+    char *laterkind = later->tag == MacroDclTag ? "macro" : "function";
+    char *earlierkind = earlier->tag == MacroDclTag ? "macro" : "function";
+    errorMsgNode(later, ErrorMacroMixedSet,
+        "`%s` is declared here as a %s, and also as a %s (reported next). A name holds all macros or all functions, never both.",
+        &name->namestr, laterkind, earlierkind);
+    errorMsgNode(earlier, ErrorMacroMixedSet,
+        "This is the %s `%s` declared beside the %s of its name.", earlierkind, &name->namestr, laterkind);
+}
+
+static void macroTypeSpell(char *buf, size_t size, INode *type);
+
+// A parameter's type as it was written, appended to 'buf': a declaration's type
+// has not been checked, so its permission may be unsaid and its names unbound
+static void macroWrittenSpell(char *buf, size_t size, INode *type, int depth) {
+    size_t used = strlen(buf);
+    if (type == NULL || depth > 6) {
+        snprintf(buf + used, size - used, "?");
+        return;
+    }
+    switch (type->tag) {
+    case NameUseTag:
+        snprintf(buf + used, size - used, "%s", &((NameUseNode*)type)->namesym->namestr);
+        return;
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode*)type;
+        macroWrittenSpell(buf, size, call->objfn, depth + 1);
+        used = strlen(buf);
+        snprintf(buf + used, size - used, "[");
+        INode **nodesp;
+        uint32_t cnt;
+        if (call->args)
+            for (nodesFor(call->args, cnt, nodesp)) {
+                macroWrittenSpell(buf, size, *nodesp, depth + 1);
+                if (cnt > 1) {
+                    used = strlen(buf);
+                    snprintf(buf + used, size - used, ", ");
+                }
+            }
+        used = strlen(buf);
+        snprintf(buf + used, size - used, "]");
+        return;
+    }
+    case RefTag:
+    case BorrowTag:
+    case ArrayRefTag: {
+        RefNode *ref = (RefNode*)type;
+        snprintf(buf + used, size - used, "&");
+        if (ref->perm && ref->perm != unknownType && ref->perm->tag == NameUseTag) {
+            used = strlen(buf);
+            snprintf(buf + used, size - used, "%s ", &((NameUseNode*)ref->perm)->namesym->namestr);
+        }
+        macroWrittenSpell(buf, size, ref->vtexp, depth + 1);
+        return;
+    }
+    case PtrTag:
+        snprintf(buf + used, size - used, "*");
+        macroWrittenSpell(buf, size, ((StarNode*)type)->vtexp, depth + 1);
+        return;
+    case VoidTag:
+        snprintf(buf + used, size - used, "void");
+        return;
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case StructTag:
+        snprintf(buf + used, size - used, "%s", &inodeGetName(type)->namestr);
+        return;
+    default:
+        snprintf(buf + used, size - used, "?");
+        return;
+    }
+}
+
+// A candidate spelled as it is declared, 'twice[a: i32, b: lazy i32]', without its 'self'
+static void macroSigSpell(char *buf, size_t size, MacroDclNode *c) {
+    size_t used = snprintf(buf, size, "%s", &c->namesym->namestr);
+    INode **nodesp;
+    uint32_t cnt;
+    if (c->typeparms) {
+        used += snprintf(buf + used, size - used, "[");
+        for (nodesFor(c->typeparms, cnt, nodesp))
+            if (used + 40 < size)
+                used += snprintf(buf + used, size - used, "%s%s", &((GenVarDclNode*)*nodesp)->namesym->namestr, cnt > 1 ? ", " : "");
+        used += snprintf(buf + used, size - used, "]");
+    }
+    used += snprintf(buf + used, size - used, "[");
+    uint32_t i = 0;
+    int first = 1;
+    for (nodesFor(c->parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+        if (i++ == 0 && (c->flags & FlagMethFld))
+            continue;
+        char type[120];
+        type[0] = '\0';
+        if (parm->valtype && parm->valtype != unknownType)
+            macroWrittenSpell(type, sizeof(type), parm->valtype, 0);
+        if (used + 160 < size)
+            used += snprintf(buf + used, size - used, "%s%s: %s%s", first ? "" : ", ", &parm->namesym->namestr,
+                (parm->flags & FlagLazy) ? "lazy " : "", type);
+        first = 0;
+    }
+    snprintf(buf + used, size - used, "]");
+}
+
+// Does this candidate accept the use? 'typeargs' are the type arguments written
+// and 'args' the value arguments, the receiver first for a macro method. Asked
+// in a trial, so nothing is reported. 'probes' holds each argument's own check,
+// a copy (NULL where it does not check without being told its type), which is
+// what a call of functions would match the parameters against.
+static int macroCandidateFits(TypeCheckState *pstate, INode *use, MacroDclNode *c, Nodes *typeargs, Nodes *args,
+        INode **probes, int method) {
+    uint32_t given = args ? args->used : 0;
+    if ((c->parms ? c->parms->used : 0) != given)
+        return 0;
+    if (typeargs) {
+        if (!c->typeparms || typeargs->used != c->typeparms->used)
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(typeargs, cnt, nodesp))
+            if (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp))
+                return 0;
+    }
+    else if (c->typeparms == NULL && given == 0)
+        return 1;
+
+    int fits = 1;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerialNow());
+    // The type parameters not written are said by the arguments, as a use of
+    // the macro alone would have them (macroInferTypeArgs)
+    Nodes *ta = typeargs;
+    if (c->typeparms && ta == NULL) {
+        Nodes *parmtypes = newNodes(given ? given : 1);
+        Nodes *typed = newNodes(given ? given : 1);
+        for (uint32_t i = 0; i < given; ++i) {
+            GenVarDclNode *parm = (GenVarDclNode*)nodesGet(c->parms, i);
+            INode *parmtype = NULL;
+            INode *argtyped = NULL;
+            if (!(method && i == 0) && parm->valtype && macroTypeNamesParm(parm->valtype, c->typeparms, 0)) {
+                INode *arg = nodesGet(args, i);
+                if (litIsUntypedNumber(arg) || litIsUntypedNull(arg))
+                    argtyped = arg;
+                else if (probes[i] && !closureTrialType(((IExpNode*)probes[i])->vtype))
+                    argtyped = probes[i];
+                if (argtyped)
+                    parmtype = parm->valtype;
+            }
+            nodesAdd(&parmtypes, parmtype);
+            nodesAdd(&typed, argtyped);
+        }
+        ta = genericInferMacroParms(pstate, c->typeparms, parmtypes, typed, NULL, use, c->namesym);
+        if (ta == NULL)
+            fits = 0;
+        else
+            for (uint32_t t = 0; t < ta->used; ++t)
+                if (nodesGet(ta, t) == NULL)
+                    fits = 0;
+    }
+    for (uint32_t i = 0; fits && i < given; ++i) {
+        GenVarDclNode *parm = (GenVarDclNode*)nodesGet(c->parms, i);
+        if ((method && i == 0) || parm->valtype == NULL || parm->valtype == unknownType)
+            continue;
+        INode *parmtype = macroParmTypeAt(pstate, use, c, ta, parm);
+        if (parmtype == NULL) {
+            fits = 0;
+            break;
+        }
+        if (probes[i])
+            fits = iexpMatches(&probes[i], parmtype, Coercion) != NoMatch;
+        else {
+            // An argument that waits to be told its type ('None', a closure): asked of the parameter's
+            int coerces = 0;
+            fits = macroArgTrial(pstate, nodesGet(args, i), parmtype, &coerces, NULL) != NULL && coerces;
+        }
+    }
+    errorTrialEnd(&trial);
+    genericTrialPurge();
+    return fits;
+}
+
+// The macro of a set a use picks, or NULL once reported, the use an error node.
+// 'method' is a use on a receiver (args[0]), which only a macro method answers;
+// otherwise only a macro that is not a method does. With 'bracketed' the use
+// wrote 'm[...]' with no parentheses, and 'args' holds what is in the brackets:
+// a candidate that declares type parameters takes them as its type arguments,
+// one that does not takes them as its value arguments.
+static MacroDclNode *macroSelect(TypeCheckState *pstate, INode **nodep, MacroDclNode *first, Nodes *typeargs,
+        Nodes *args, int method, int bracketed) {
+    MacroDclNode *only = NULL;
+    uint32_t considered = 0;
+    for (MacroDclNode *c = first; c; c = c->more) {
+        if (((c->flags & FlagMethFld) != 0) != (method != 0))
+            continue;
+        only = c;
+        ++considered;
+    }
+    if (considered <= 1)
+        return only ? only : first;
+
+    uint32_t given = args ? args->used : 0;
+    // Each argument as it checks by itself, once, whichever candidate asks
+    INode **probes = (INode**)memAllocBlk((given ? given : 1) * sizeof(INode*));
+    Nodes *probed = newNodes(given ? given : 1);
+    for (uint32_t i = 0; i < given; ++i) {
+        if (method && i == 0)
+            continue;
+        probes[i] = macroArgTrial(pstate, nodesGet(args, i), unknownType, NULL, NULL);
+        // A string literal is known once checked
+        if (probes[i])
+            nodesAdd(&probed, probes[i]);
+    }
+
+    MacroDclNode *found[2] = {NULL, NULL};
+    uint32_t nfound = 0;
+    for (int pass = 0; pass < 2 && nfound == 0; ++pass) {
+        if (pass == 1) {
+            if (!slitAnyText(NULL, probed))
+                break;
+            slitBorrowFallback(1);
+        }
+        for (MacroDclNode *c = first; c; c = c->more) {
+            if (((c->flags & FlagMethFld) != 0) != (method != 0))
+                continue;
+            Nodes *ta = typeargs;
+            Nodes *va = args;
+            if (bracketed) {
+                ta = c->typeparms ? args : NULL;
+                va = c->typeparms ? NULL : args;
+            }
+            if (!macroCandidateFits(pstate, *nodep, c, ta, va, probes, method))
+                continue;
+            if (nfound < 2)
+                found[nfound] = c;
+            ++nfound;
+        }
+        if (pass == 1)
+            slitBorrowFallback(0);
+    }
+    if (nfound == 1)
+        return found[0];
+
+    char one[300], two[300];
+    if (nfound > 1) {
+        macroSigSpell(one, sizeof(one), found[0]);
+        macroSigSpell(two, sizeof(two), found[1]);
+        errorMsgNode(*nodep, ErrorAmbigCandidate,
+            "More than one macro declared by `%s` accepts these arguments (`%s` and `%s`). Convert an argument, or write the type arguments.",
+            &first->namesym->namestr, one, two);
+    }
+    else {
+        char all[900];
+        size_t used = 0;
+        all[0] = '\0';
+        for (MacroDclNode *c = first; c; c = c->more) {
+            if (((c->flags & FlagMethFld) != 0) != (method != 0))
+                continue;
+            macroSigSpell(one, sizeof(one), c);
+            if (used + 340 < sizeof(all))
+                used += snprintf(all + used, sizeof(all) - used, "%s`%s`", used ? ", " : "", one);
+        }
+        errorMsgNode(*nodep, ErrorNoCandidate,
+            "No macro declared by `%s` accepts these arguments. The candidates are %s.", &first->namesym->namestr, all);
+    }
+    *nodep = newErrorNode(*nodep);
+    return NULL;
+}
+
 // Expand a macro in place of the node that used it, substituting 'typeargs'
 // for its type parameters, binding each plain value parameter's argument to a
 // variable and substituting each 'lazy' one's, then type check what it
@@ -853,6 +1153,12 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
         return;
     }
 
+    // A name that is a set: the one that takes no arguments
+    if (macrodcl->more) {
+        macrodcl = macroSelect(pstate, (INode**)gennode, macrodcl, NULL, NULL, 0, 0);
+        if (macrodcl == NULL)
+            return;
+    }
     uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
     if (expected > 0) {
         errorMsgNode((INode*)*gennode, ErrorNoArgs, "Generic or macro expects arguments to be provided");
@@ -888,7 +1194,16 @@ void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // Through the alias where a fold is what bound the name here: the binding
     // carried the visibility, and the macro is what it stands for
     MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)(*nodep)->objfn);
-    if (((*nodep)->flags & FlagIndex) && macrodcl->typeparms)
+    // A name that is a set: the brackets mean type arguments to a candidate that
+    // declares type parameters, and value arguments to one that does not. A macro
+    // method's set is picked from once its receiver is known (macroMethodTypeCheck)
+    int bracketed = ((*nodep)->flags & FlagIndex) != 0;
+    if (macrodcl->more && !(macrodcl->flags & FlagMethFld)) {
+        macrodcl = macroSelect(pstate, (INode**)nodep, macrodcl, NULL, (*nodep)->args, 0, bracketed);
+        if (macrodcl == NULL)
+            return;
+    }
+    if (bracketed && macrodcl->typeparms)
         macroUseExpand(pstate, nodep, macrodcl, (*nodep)->args, NULL);
     else
         macroUseExpand(pstate, nodep, macrodcl, NULL, (*nodep)->args);
@@ -901,6 +1216,11 @@ void macroCallTypeArgsTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)index->objfn);
     Nodes *typeargs = index->args ? index->args : newNodes(1);
     (*nodep)->objfn = index->objfn;
+    if (macrodcl->more && !(macrodcl->flags & FlagMethFld)) {
+        macrodcl = macroSelect(pstate, (INode**)nodep, macrodcl, typeargs, (*nodep)->args, 0, 0);
+        if (macrodcl == NULL)
+            return;
+    }
     macroUseExpand(pstate, nodep, macrodcl, typeargs, (*nodep)->args);
 }
 
@@ -948,6 +1268,12 @@ void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNo
     if (node->args == NULL)
         node->args = newNodes(1);
     nodesInsert(&node->args, node->objfn, 0);
+    // A name that is a set: the candidate the receiver and arguments pick
+    if (macro->more) {
+        macro = macroSelect(pstate, (INode**)nodep, macro, typeargs, node->args, 1, 0);
+        if (macro == NULL)
+            return;
+    }
     macroExpand(pstate, (INode**)nodep, macro, typeargs, node->args, nodesGet(macro->parms, 0));
 }
 

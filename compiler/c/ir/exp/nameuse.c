@@ -189,6 +189,10 @@ void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
         nameUseMarkOne(pstate, dcl);
         break;
     case MacroDclTag:
+        // A use may expand any macro of the name's set, so an importer needs them all
+        for (MacroDclNode *m = (MacroDclNode*)dcl; m; m = m->more)
+            exportReachAdd(pstate->expander, (INode*)m);
+        break;
     case ConstDclTag:
         exportReachAdd(pstate->expander, dcl);
         break;

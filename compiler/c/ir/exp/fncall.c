@@ -472,7 +472,7 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     INode *instmember = node->args && (node->flags & FlagIndex) && node->methfld == NULL
         ? fnCallGenModMember(node->objfn) : NULL;
     if (instmember && (instmember->tag == StructTag || genericGetInfo(instmember) != NULL
-            || (instmember->tag == MacroDclTag && ((MacroDclNode*)instmember)->typeparms != NULL))) {
+            || (instmember->tag == MacroDclTag && macroSetTypeParms((MacroDclNode*)instmember)))) {
         for (nodesFor(node->args, cnt, argsp)) {
             if ((*argsp)->tag == NameUseTag)
                 (*argsp)->flags &= ~FlagValueTermName;
@@ -483,7 +483,7 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     if (node->args && (node->flags & FlagIndex) && node->methfld == NULL && isNameUseNode(node->objfn)) {
         INode *calleedcl = nameUseGetDcl((NameUseNode*)node->objfn);
         if (calleedcl && (isTypeNode(node->objfn) || genericGetInfo(calleedcl) != NULL
-                || (calleedcl->tag == MacroDclTag && ((MacroDclNode*)calleedcl)->typeparms != NULL))) {
+                || (calleedcl->tag == MacroDclTag && macroSetTypeParms((MacroDclNode*)calleedcl)))) {
             for (nodesFor(node->args, cnt, argsp)) {
                 if ((*argsp)->tag == NameUseTag)
                     (*argsp)->flags &= ~FlagValueTermName;
@@ -4318,7 +4318,8 @@ static void fnCallOperatorExpand(TypeCheckState *pstate, FnCallNode **nodep, Mac
     FnCallNode *node = *nodep;
     uint32_t operands = node->args ? node->args->used : 0;
     uint32_t parms = macro->parms ? macro->parms->used - 1 : 0;
-    if (operands != parms) {
+    // A set's candidates each declare their own count: the selection judges them
+    if (operands != parms && macro->more == NULL) {
         errorMsgNode((INode*)node, ErrorArgCount,
             "`%s` is written here with %u operand%s besides its receiver, and %s's macro method `%s` declares %u parameter%s after self.",
             &name->namestr, operands, operands == 1 ? "" : "s", &rcvtype->namesym->namestr,
@@ -4431,7 +4432,11 @@ static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *
         || rcv->tag == NullLitTag || rcv->tag == NilLitTag || rcv->tag == NamedValTag
         || fnCallArgNeedsExpected(rcv))
         return 0;
-    if (isNameUseNode(rcv) && !nameUseNames(rcv, VarDclTag) && !nameUseNames(rcv, ConstDclTag))
+    // A bare field name inside a method is 'self.field', which checking it makes
+    // of it: the operator is the field's, as it is written through 'self'
+    int barefield = isNameUseNode(rcv) && nameUseNames(rcv, FieldDclTag)
+        && (nameUseGetDcl((NameUseNode*)rcv)->flags & FlagMethFld) && !(rcv->flags & FlagQualified);
+    if (isNameUseNode(rcv) && !nameUseNames(rcv, VarDclTag) && !nameUseNames(rcv, ConstDclTag) && !barefield)
         return 0;
     // An index's receiver is a value's name or a member of one: 'x[i]', 'p.items[i]'
     if (opname == indexName && !isNameUseNode(rcv)

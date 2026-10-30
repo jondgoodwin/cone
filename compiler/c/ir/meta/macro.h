@@ -20,6 +20,10 @@ typedef struct MacroDclNode {
     Nodes *parms;
     INode *body;             // The body of the generic
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
+    // The next macro declared under this name in the same scope (a module, or
+    // one type), forming the name's overload set. Only the first is bound to
+    // the name; a use picks among the chain (macroSelect). NULL for the last.
+    struct MacroDclNode *more;
 } MacroDclNode;
 
 // Create a new macro declaraction node
@@ -68,6 +72,16 @@ void macroChangeNameRes(INode *at, INode *place, MacroChange how);
 
 // Refuse an argument whose type does not fit its parameter's, naming it
 void macroArgTypeRefused(INode *arg, Name *parm, int lazy, INode *parmtype);
+
+// A macro declared under a name another macro already holds in that scope joins
+// its set: appended after 'first' (macroSetAdd). Whether any macro of the set
+// declares type parameters (a bracket list's meaning depends on it).
+void macroSetAdd(MacroDclNode *first, MacroDclNode *more);
+int macroSetTypeParms(MacroDclNode *first);
+
+// Refuse a macro and a function declared under one name in one scope: a set of
+// same-named declarations holds all macros or all functions
+void macroMixedRefused(INode *later, INode *earlier);
 
 // Note that some type declares a macro method by this name (iNsTypeAddMacro).
 // An operator is checked receiver first only where its method's name is one

@@ -23,7 +23,10 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt) {
 // declares an overload name, to that name's separate FnOverloadDclNode.
 // Two functions/methods declaring the same concrete name are a duplicate name error.
 void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
-    if (namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode) != NULL)
+    INode *prior = namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
+    if (prior != NULL && prior->tag == MacroDclTag)
+        macroMixedRefused((INode*)fnnode, prior);
+    else if (prior != NULL)
         errorMsgNode((INode*)fnnode, ErrorDupName,
             "Duplicate name %s: every function/method needs its own name.", &fnnode->namesym->namestr);
 
@@ -61,14 +64,23 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
 }
 
 // Add a macro to type's dictionary and owned list. It shares the one namespace
-// with fields and methods, so it duplicates anything already bound there, and
-// it takes part in no overload set. A macro leaves no symbol behind, so there
-// is no owner to record.
+// with fields and methods, so it duplicates anything already bound there, except
+// another macro: macros declared under one name in one type form a set, the
+// first bound to the name and the rest chained after it (macroSetAdd). A macro
+// beside a function of its name is refused, since a set holds all macros or all
+// functions. A macro leaves no symbol behind, so there is no owner to record.
 void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro) {
     nodelistAdd(&type->nodelist, (INode*)macro);
     if (macro->flags & FlagMethFld)
         macroMethodNameNote(macro->namesym);
-    if (namespaceAdd(&type->namespace, macro->namesym, (INode*)macro) != NULL)
+    INode *prior = namespaceAdd(&type->namespace, macro->namesym, (INode*)macro);
+    if (prior == NULL)
+        return;
+    if (prior->tag == MacroDclTag)
+        macroSetAdd((MacroDclNode*)prior, macro);
+    else if (prior->tag == FnDclTag)
+        macroMixedRefused((INode*)macro, prior);
+    else
         errorMsgNode((INode*)macro, ErrorDupName,
             "Duplicate name %s: a macro shares its type's namespace with fields and methods.", &macro->namesym->namestr);
 }
