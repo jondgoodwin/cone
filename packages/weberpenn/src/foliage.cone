@@ -141,7 +141,7 @@ fn mapleRadius(th: f32) f32 {
     let phi = if k == 0 { 0.f } else if k == 1 { 55. } else { -55. };
     let a = if k == 0 { 1.f } else { 0.8 };
     let w = if k == 0 { 42.f } else { 36. };
-    let x = absf(th - phi) / w;
+    let x = (th - phi).abs() / w;
     if x < 1. {
       let b = a * libc.powf(libc.cosf(1.5707963 * x), 1.5);
       if b > best { best = b; }
@@ -178,7 +178,7 @@ fn addMapleBlade(m: &mut mesh.Mesh, fp: &FoliageParams, at: Vec3, fy: Vec3, fz: 
     var i = 0usize;
     while i < pu.len() {
       let q = *pu[i];
-      let zz = fp.fold * absf(q.x) * 0.5 - fp.droop * q.y * q.y * 0.5 * (if i == 0usize { 0. } else { 1. });
+      let zz = fp.fold * q.x.abs() * 0.5 - fp.droop * q.y * q.y * 0.5 * (if i == 0usize { 0. } else { 1. });
       let p = at + fx * (q.x * size) + fy * (q.y * size) + fz * (zz * size);
       let radial = unitv(p - centre);
       let nf = if side == 0 { fz } else { fz * -1. };
@@ -328,8 +328,8 @@ fn addCard(m: &mut mesh.Mesh, a: Vec3, b: Vec3, c: Vec3, d: Vec3, u0: f32, u1: f
 }
 
 // The u range of paint cell 'cell' of 'cells', held a hair in from its neighbours'
-fn cellU0(fp: &FoliageParams, cell: i32) f32 { (f32.from(cell) + 0.012) / f32.from(maxi(1, fp.cells)) }
-fn cellU1(fp: &FoliageParams, cell: i32) f32 { (f32.from(cell) + 0.988) / f32.from(maxi(1, fp.cells)) }
+fn cellU0(fp: &FoliageParams, cell: i32) f32 { (f32.from(cell) + 0.012) / f32.from(fp.cells.max(1)) }
+fn cellU1(fp: &FoliageParams, cell: i32) f32 { (f32.from(cell) + 0.988) / f32.from(fp.cells.max(1)) }
 
 // A tuft still to be made
 struct Tuft {
@@ -359,7 +359,7 @@ fn addPads(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
       // a twig's pads are narrower and single
       let limb = st.level == fp.tuftFromLevel;
       let narrow = if limb { 1.f } else { 0.7 };
-      let count = maxi(1, i32.from(libc.ceilf((1. - fp.padStart) * L / (fp.padLength * 0.7))));
+      let count = i32.from(libc.ceilf((1. - fp.padStart) * L / (fp.padLength * 0.7))).max(1);
       var k = 0;
       while k < count {
         let ta = fp.padStart + (1. - fp.padStart) * f32.from(k) / f32.from(count);
@@ -475,7 +475,7 @@ fn addSprays(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) 
     if !st.dead && st.level >= fp.sprayFromLevel && st.points.len() >= 2usize && st.length > 0.15 {
       let L = st.length;
       let step = fp.sprayLength * 0.67;
-      let count = maxi(1, i32.from(libc.ceilf((1. - fp.sprayStart) * L / step)));
+      let count = i32.from(libc.ceilf((1. - fp.sprayStart) * L / step)).max(1);
       var k = 0;
       while k < count {
         let ta = fp.sprayStart + (1. - fp.sprayStart) * f32.from(k) / f32.from(count);
@@ -535,7 +535,7 @@ fn buildHull(tree: &Tree) Hull {
     var i = 0usize;
     while i < trunk.points.len() {
       let q = *trunk.points[i];
-      let d = absf(q.y - yc);
+      let d = (q.y - yc).abs();
       if d < best { best = d; bx = q.x; bz = q.z; }
       i = i + 1usize;
     }
@@ -597,7 +597,7 @@ fn hullNormal(h: &Hull, p: Vec3, depth: &mut f32) Vec3 {
   let rh = if len < 0.001 { v3(1., 0., 0.) } else { v3(dx / len, 0., dz / len) };
   let dy = h.top / f32.from(HULL_BINS);
   let slope = clampf((hullRadius(h, p.y + dy) - hullRadius(h, p.y - dy)) / (2. * dy), -3., 3.);
-  *depth = clampf(1. - len / maxf(hullRadius(h, p.y), 0.3), 0., 1.);
+  *depth = clampf(1. - len / hullRadius(h, p.y).max(0.3), 0., 1.);
   unitv(v3(rh.x, 0. - slope, rh.z))
 }
 
@@ -605,7 +605,7 @@ fn hullNormal(h: &Hull, p: Vec3, depth: &mut f32) Vec3 {
 // vertex's normal bent to the hull; 'row' picks the paint's shade row
 fn addBentCard(m: &mut mesh.Mesh, hull: &Hull, fp: &FoliageParams, pl: Array[Vec3, 3], pr: Array[Vec3, 3], plane: Vec3,
     u0: f32, u1: f32, row: i32) {
-  let rows = maxi(1, fp.brShadeRows);
+  let rows = fp.brShadeRows.max(1);
   let first = u32.from(m.positions.len());
   var side = 0;
   while side < 2 {
@@ -647,7 +647,7 @@ fn addBentCard(m: &mut mesh.Mesh, hull: &Hull, fp: &FoliageParams, pl: Array[Vec
 
 fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut Rng) {
   let hull = buildHull(tree);
-  let rows = maxi(1, fp.brShadeRows);
+  let rows = fp.brShadeRows.max(1);
   let top = maxf(1., tree.height);
   let up = v3(0., 1., 0.);
   var s = 1usize;
@@ -659,7 +659,7 @@ fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut R
       let scale = if limb { 1.f } else { 0.65 };
       let cardLen = fp.brLength * scale;
       let step = maxf(0.05, fp.brStep) * cardLen;
-      let count = maxi(1, i32.from(libc.ceilf((1. - fp.brStart) * L / step)));
+      let count = i32.from(libc.ceilf((1. - fp.brStart) * L / step)).max(1);
       var k = 0;
       while k < count {
         let ta = fp.brStart + (1. - fp.brStart) * (f32.from(k) + 0.4 * rng.unit()) / f32.from(count);
@@ -687,7 +687,7 @@ fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut R
           let cell = if alt { fp.brAlt } else { fp.brCell };
           let u0 = if flip { cellU1(fp, cell) } else { cellU0(fp, cell) };
           let u1 = if flip { cellU0(fp, cell) } else { cellU1(fp, cell) };
-          let cards = maxi(1, fp.brCards);
+          let cards = fp.brCards.max(1);
           var c = 0;
           while c < cards {
             let roll = fp.brHang + (f32.from(c) - 0.5 * f32.from(cards - 1)) * fp.brRoll + 9. * rng.signed();
@@ -701,7 +701,7 @@ fn addBranchlets(m: &mut mesh.Mesh, tree: &Tree, fp: &FoliageParams, rng: &mut R
               let ww = width * (if r == 0usize { 0.7 } else if r == 1usize { 1. } else { 0.5 });
               let centre = if r == 0usize { p0 } else if r == 1usize { p1 } else { p2 };
               // edges fall: the more horizontal the cross-direction, the more
-              let fall = up * (0. - fp.brDroop * ww * (1. - absf(w.y)));
+              let fall = up * (0. - fp.brDroop * ww * (1. - w.y.abs()));
               pl[r] = centre - w * ww + fall;
               pr[r] = centre + w * ww + fall;
               r = r + 1usize;

@@ -82,7 +82,7 @@ pub fn headDistance(p: Vec3, s: &HeadShape, ft: &Features, neckR: f32, neckZ: f3
   let b = s.sB;
   let l = s.sL;
   let f = s.sF;
-  let ax = absf(p.x);
+  let ax = p.x.abs();
   let q = Vec3(ax, p.y, p.z);          // the face is symmetric: one side's forms, mirrored
   let brow = 0.6 + 0.8 * s.brow;
   // THE BASE: the cranium, the forehead, the lower face (a tapered mass from the cheekbones' breadth down
@@ -160,7 +160,7 @@ pub fn headDistance(p: Vec3, s: &HeadShape, ft: &Features, neckR: f32, neckZ: f3
 // associative, so a chain of many forms swells by at most k ln n where n of them meet, not by k at each
 pub fn softUnion(a: f32, b: f32, k: f32) f32 {
   let m = minf(a, b);
-  m - k * libc.logf(1. + libc.expf(0. - absf(a - b) / k))
+  m - k * libc.logf(1. + libc.expf(0. - (a - b).abs() / k))
 }
 
 // The head's field as an sdf Shape in model space, for meshing it to look at (the stages' pictures)
@@ -199,7 +199,7 @@ fn columnAngles(n: usize) List[f32] {
   while i <= steps {
     cdf.push(acc);
     let th = -pi + 2. * pi * f32.from(i) / f32.from(steps);
-    let e = (absf(th) - 0.40) / 0.17;
+    let e = (th.abs() - 0.40) / 0.17;
     let rho = 0.45 + 1.4 * libc.expf(-(th / 0.85) * (th / 0.85)) + 0.9 * libc.expf(-e * e);
     acc = acc + rho;
     i = i + 1usize;
@@ -261,7 +261,7 @@ fn snapRow(rows: &mut List[f32], y: f32) usize {
   var best = 0usize;
   var i = 1usize;
   while i < rows.len() {
-    if absf(*rows[i] - y) < absf(*rows[best] - y) { best = i; }
+    if (*rows[i] - y).abs() < (*rows[best] - y).abs() { best = i; }
     i = i + 1usize;
   }
   rows.set(best, y);
@@ -299,7 +299,7 @@ fn rayExit(o: Vec3, d: Vec3, s: &HeadShape, ft: &Features, neckR: f32, neckZ: f3
 // the lower's (negative); both meet at the corners, the outer corner higher than the inner
 fn lidEdges(dx: f32, ft: &Features) Vec2 {
   let qx = dx / ft.lidHW;
-  let h = if absf(qx) < 1. { libc.powf(1. - qx * qx, 0.6) } else { 0. };
+  let h = if qx.abs() < 1. { libc.powf(1. - qx * qx, 0.6) } else { 0. };
   let tilt = 0.0014 * qx;
   // the upper lid's highest point is inward of the middle, the lower's outward
   let hu = ft.lidHU * h * (1. - 0.18 * qx);
@@ -315,7 +315,7 @@ fn lidWarp(y: f32, cy: f32, dx: f32, ft: &Features) f32 {
   if t <= 0. - z || t >= z { return y; }
   // past the corners the rows that ran between the margins open out again to their level spacing (left pinched,
   // they draw a crease out from each corner to the temple and the nose)
-  let past = smoothstep(1.05, 2.0, absf(dx) / ft.lidHW);
+  let past = smoothstep(1.05, 2.0, dx.abs() / ft.lidHW);
   let e0 = lidEdges(dx, ft);
   let e = Vec2(e0.x + (ft.lidHU - e0.x) * past, e0.y + (0. - ft.lidHL - e0.y) * past);
   let u = maxf(e.x, e.y + 0.0004);
@@ -324,7 +324,7 @@ fn lidWarp(y: f32, cy: f32, dx: f32, ft: &Features) f32 {
   if t < 0. - ft.lidHL { out = 0. - z + (t + z) * (lo + z) / (z - ft.lidHL); }
   else if t > ft.lidHU { out = u + (t - ft.lidHU) * (z - u) / (z - ft.lidHU); }
   else { out = lo + (t + ft.lidHL) * (u - lo) / (ft.lidHU + ft.lidHL); }
-  let w = 1. - smoothstep(ft.lidHW * 1.0, ft.lidHW * 2.5, absf(dx));
+  let w = 1. - smoothstep(ft.lidHW * 1.0, ft.lidHW * 2.5, dx.abs());
   cy + t + (out - t) * w
 }
 
@@ -342,15 +342,15 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32, ft: &Features) Vec3 {
   let rr = minf(r, zone0);
   // (past the lids the shell falls back, so it never stands in front of the cheek and the brow: held level there it
   // pulled a ring of face forward round each eye, a puff with a crease at its rim)
-  var zShell = c.z - (ft.shell * ft.shell - rr * rr).sqrt() + 0.9 * maxf(r - zone0, 0.);
+  var zShell = c.z - (ft.shell * ft.shell - rr * rr).sqrt() + 0.9 * (r - zone0).max(0.);
   // the margin's roll, and the fold above the upper lid
   if e < 0. {
-    let along = 1. - smoothstep(0.65, 0.95, absf(dx) / ft.lidHW);
+    let along = 1. - smoothstep(0.65, 0.95, dx.abs() / ft.lidHW);
     zShell = zShell - 0.0005 * along * libc.expf(0. - (e / 0.0009) * (e / 0.0009));
   }
-  if absf(dx) < ft.lidHW {
+  if dx.abs() < ft.lidHW {
     let k = (dy - (edges.x + 0.0050)) / 0.0020;
-    let along = 1. - smoothstep(0.5, 1.0, absf(dx) / ft.lidHW);
+    let along = 1. - smoothstep(0.5, 1.0, dx.abs() / ft.lidHW);
     zShell = zShell + 0.0007 * along * libc.expf(0. - k * k);
   }
   let zIn = c.z - 0.005;
@@ -358,7 +358,7 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32, ft: &Features) Vec3 {
   // and the lids come out from under it: a deep-set eye, no fold where shell and face meet
   // past the corners there are no lids: the face is the surface (the shell pulled the rows packed into each corner
   // forward by different amounts, thin fins standing out from the corners)
-  let inLid = 1. - smoothstep(0.9, 1.3, absf(dx) / ft.lidHW);
+  let inLid = 1. - smoothstep(0.9, 1.3, dx.abs() / ft.lidHW);
   let zLid = p.z + (softUnion(zShell, p.z, 0.0010) - p.z) * inLid;
   let z = zLid * (1. - w) + zIn * w;
   let bl = smoothstep(zone0, zone1, r);
@@ -368,11 +368,11 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32, ft: &Features) Vec3 {
 // 'rowY' the height the point's row was cast at: the smooth brush may have moved the point a millimetre or two along
 // the lips' curved surface, and the slot must take the whole mouth's row, not only where the brush left it level
 fn mouthOp(p: Vec3, rowY: f32, ft: &Features) Vec3 {
-  let ax = absf(p.x);
+  let ax = p.x.abs();
   let taper = 1. - smoothstep(ft.mouthHW - 0.006, ft.mouthHW + 0.002, ax);
   let front = smoothstep(-0.02, -0.06, p.z);
   let dy = (rowY - ft.yg) / 0.0006;
-  if absf(dy) > 4.5 { return p; }
+  if dy.abs() > 4.5 { return p; }
   let g = libc.expf(-0.5 * dy * dy);
   Vec3(p.x, p.y, p.z + 0.012 * g * taper * front)
 }
@@ -381,11 +381,11 @@ fn mouthOp(p: Vec3, rowY: f32, ft: &Features) Vec3 {
 // nose's tip, fully elsewhere
 fn smoothWeight(p: Vec3, ft: &Features, cR: Vec3, cL: Vec3) f32 {
   if p.z > -0.035 { return 1.; }
-  let ex = minf(absf(p.x - cR.x), absf(p.x - cL.x)) / (ft.lidHW * 1.9);
-  let ey = absf(p.y - cR.y) / 0.015;
+  let ex = minf((p.x - cR.x).abs(), (p.x - cL.x).abs()) / (ft.lidHW * 1.9);
+  let ey = (p.y - cR.y).abs() / 0.015;
   let eye = smoothstep(0.75, 1.15, maxf(ex, ey));
-  let mx = absf(p.x) / (ft.mouthHW * 1.15);
-  let my = absf(p.y - ft.yg) / 0.013;
+  let mx = p.x.abs() / (ft.mouthHW * 1.15);
+  let my = (p.y - ft.yg).abs() / 0.013;
   let mouth = 0.15 + 0.85 * smoothstep(0.8, 1.2, maxf(mx, my));
   minf(eye, mouth)
 }
@@ -651,7 +651,7 @@ pub fn buildHead(m: &Measures, seamY: f32) Head {
     let rowY = if v < nr * nc && (*rays[v / nc]).kind == 1u32 { (*rays[v / nc]).value } else { p.y };
     let sd = n.dot(Vec3(0., rowY - ft.yg, maxf(p.z, ft.lipZ) - ft.lipZ));
     // (sharp between the lips, broad over the cheeks, so an open jaw stretches the cheek smoothly, not along a fold)
-    let width = 0.0009 + 0.018 * smoothstep(0.012, 0.036, absf(p.x));
+    let width = 0.0009 + 0.018 * smoothstep(0.012, 0.036, p.x.abs());
     let jt = smoothstep(-1., 1., (0. - sd) / width);
     let low = 1. - smoothstep(ft.menton - 0.004, ft.menton - 0.045, p.y);
     let back = 1. - smoothstep(0.03, 0.06, p.z - pivot.z);

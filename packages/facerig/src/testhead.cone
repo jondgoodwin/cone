@@ -106,11 +106,11 @@ fn profileAt(y: f32) Vec3 {
     out[k] = (2. * t3 - 3. * t2 + 1.) * v0 + (t3 - 2. * t2 + t) * m0 + (-2. * t3 + 3. * t2) * v1 + (t3 - t2) * m1;
     k = k + 1usize;
   }
-  Vec3(fmax(out[0], 0.), fmax(out[1], 0.), fmax(out[2], 0.))
+  Vec3(out[0].max(0.), out[1].max(0.), out[2].max(0.))
 }
 
 fn signedPow(v: f32, e: f32) f32 {
-  let a = libc.powf(absf(v), e);
+  let a = libc.powf(v.abs(), e);
   if v < 0. { return -a; }
   a
 }
@@ -147,7 +147,7 @@ fn ridge(x: f32, y: f32, x0: f32, y0: f32, x1: f32, y1: f32, sigma: f32, a0: f32
 }
 
 fn featureHeight(x: f32, y: f32, yg: f32) f32 {
-  let ax = absf(x);
+  let ax = x.abs();
   var b = 0.f;
   // the nose
   b = b + ridge(ax, y, 0., 0.032, 0., -0.030, 0.0085, 0.0008, 0.0140);
@@ -193,7 +193,7 @@ fn eyeCentre(side: f32) Vec3 { Vec3(side * EYE_X, EYE_Y, EYE_Z) }
 // the centre line and the lower edge's (negative, below); both 0 where the opening ends
 fn lidEdges(dx: f32) Vec2 {
   let q = dx / LID_HW;
-  let h = if absf(q) < 1. { (1. - q * q).sqrt() } else { 0. };
+  let h = if q.abs() < 1. { (1. - q * q).sqrt() } else { 0. };
   Vec2(LID_HU * h + LID_TILT * q * h, -LID_HL * h + LID_TILT * q * h)
 }
 
@@ -211,10 +211,10 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32) Vec3 {
   var zShell = c.z - (EYE_SHELL * EYE_SHELL - rr * rr).sqrt();
   // the rim's roll, and the crease above the upper lid
   if e < 0. {
-    let along = 1. - smoothstep(0.80, 1.0, absf(dx) / LID_HW);
+    let along = 1. - smoothstep(0.80, 1.0, dx.abs() / LID_HW);
     zShell = zShell - 0.0005 * along * libc.expf(-(e / 0.0009) * (e / 0.0009));
   }
-  if absf(dx) < LID_HW {
+  if dx.abs() < LID_HW {
     let k = (dy - (edges.x + 0.0045)) / 0.0022;
     zShell = zShell + 0.0008 * libc.expf(-k * k);
   }
@@ -225,11 +225,11 @@ fn eyeOp(p: Vec3, c: Vec3, side: f32) Vec3 {
 }
 
 fn mouthOp(p: Vec3, yg: f32) Vec3 {
-  let ax = absf(p.x);
+  let ax = p.x.abs();
   let taper = 1. - smoothstep(0.018, 0.026, ax);
   let front = smoothstep(-0.02, -0.06, p.z);
   let dy = (p.y - yg) / 0.0006;
-  if absf(dy) > 4.5 { return p; }
+  if dy.abs() > 4.5 { return p; }
   let g = libc.expf(-0.5 * dy * dy);
   Vec3(p.x, p.y, p.z + GROOVE_DEPTH * g * taper * front)
 }
@@ -258,7 +258,7 @@ fn jawWeightAt(p: Vec3, yg: f32, pivot: Vec3, lipZ: f32) f32 {
   let len = (dy * dy + dz * dz).sqrt();
   let n = Vec3(0., dz / len, -dy / len);
   let s = n.dot(Vec3(0., p.y - yg, p.z - lipZ));
-  let ax = absf(p.x);
+  let ax = p.x.abs();
   let width = 0.0009 + 0.010 * smoothstep(0.012, 0.032, ax);
   // below the plane (s < 0) the jaw
   let t = smoothstep(-1., 1., -s / width);
@@ -475,7 +475,7 @@ pub fn makeTestHead(rows: usize, cols: usize) TestHead {
   let halfW = [0.0050f, 0.0036, 0.0042, 0.0042, 0.0036, 0.0050];
   var t = 0usize;
   while t < 6usize {
-    let ax = absf(xs[t]);
+    let ax = xs[t].abs();
     let zc = -0.0715 + (ax / 0.019) * (ax / 0.019) * 0.0075;
     var tu = makeSphere(halfW[t], 0.0052, 0.0042, Vec3(xs[t], yg + 0.0044, zc), 12);
     upper.append(&tu);

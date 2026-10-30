@@ -79,7 +79,6 @@ pub const TEXTURE = 32768u32;
 pub const ALL = 65535u32;
 
 pub fn v(x: f32, y: f32, z: f32) Vec3 { Vec3(x, y, z) }
-pub fn absf(a: f32) f32 { libc.fabsf(a) }
 pub fn minf(a: f32, b: f32) f32 { if a < b { a } else { b } }
 pub fn maxf(a: f32, b: f32) f32 { if a > b { a } else { b } }
 pub fn clampf(a: f32, lo: f32, hi: f32) f32 { minf(maxf(a, lo), hi) }
@@ -111,7 +110,7 @@ fn foldedBlade(p: Vec3, a: Vec3, m: Vec3, b: Vec3, tip: Vec3, half: f32, rib: f3
 // 'd' raised by 'amp' times ridged fBm (three octaves from GRAIN, gain 0.6);
 // within 4 amp of the surface only
 fn relief(p: Vec3, d: f32, amp: f32, seed: u32) f32 {
-  if absf(d) > 4. * amp { return d; }
+  if d.abs() > 4. * amp { return d; }
   d - amp * noise.ridged3(v(p.x * STRETCH, p.y, p.z) * GRAIN, SEED + seed, 3, 2., 0.6).value
 }
 
@@ -153,7 +152,7 @@ pub struct HeadFrame {
   // Head space, mirrored across its own mid-plane
   pub fn toHead(self: &, p: Vec3) Vec3 {
     let d = p - o;
-    v(d.dot(x), d.dot(y), absf(d.dot(z)))
+    v(d.dot(x), d.dot(y), d.dot(z).abs())
   }
   pub fn world(self: &, l: Vec3) Vec3 { o + (x * l.x + y * l.y + z * l.z) * HEAD_SCALE }
 }
@@ -365,7 +364,7 @@ pub struct ShipData {
 
   // The signed distance: the membranes alone, or the frame
   pub fn distance(self: &, p: Vec3) f32 {
-    let q = v(p.x, p.y, absf(p.z));
+    let q = v(p.x, p.y, p.z.abs());
     let w = wingSpace(p);
     if skinOnly != 0u32 {
       if !self.on(SKIN) { return 1.; }
@@ -426,7 +425,7 @@ struct Ribbing['a] {
     let r = ship.ribR[usize.from(index)];
     let k = ship.ribK[usize.from(index)];
     let has = ship.has;
-    let l = if ship.swap != 0u32 { v(absf(q.x), q.y * ship.up, q.z) } else { v(absf(q.y), q.x * ship.up, q.z) };
+    let l = if ship.swap != 0u32 { v(q.x.abs(), q.y * ship.up, q.z) } else { v(q.y.abs(), q.x * ship.up, q.z) };
     var d: f32 = 3.4028235e38;
     // The ribbing: a short rib down each flank from beside the spine to the
     // torso's side, leaning back a little; varied in reach and lean
@@ -584,7 +583,7 @@ pub fn @compute(64) blocks(inv: Invocation, s: Sweep, ships: &Array[ShipData], c
   let half = 0.5 * cs * sqrtExact(sx * sx + sy * sy + sz * sz);
   let d = ships[0usize].distance(centre);
   centres[usize.from(b)] = d;
-  far[usize.from(b)] = if absf(d) > half * 1.01 { 1u32 } else { 0u32 };
+  far[usize.from(b)] = if d.abs() > half * 1.01 { 1u32 } else { 0u32 };
 }
 
 // The blocks holding sample coordinate 'x' along an axis of 'cells' cells:
