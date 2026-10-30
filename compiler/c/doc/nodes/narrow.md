@@ -27,7 +27,7 @@ order, and the environment follows.
 | Where | What it does |
 | --- | --- |
 | `ifTypeCheck` | each condition is checked knowing the earlier ones were false; its block knows it was true (`narrowAssume`); the blocks that do not leave (`ifBlockJumps`), and the path that went by every condition when there is no `else`, are joined after the `if` (`narrowJoin`); a block that leaves takes its changes with it unless it continues a loop |
-| `logicTypeCheck` | the right operand of `&&` knows the left was true, of `||` that it was false; afterwards either path may hold (`narrowAssumeLocal`) |
+| `logicTypeCheck` | the right operand of a bool's `&&` knows the left was true, of `||` that it was false; afterwards either path may hold (`narrowAssumeLocal`). A left operand that is not a bool is a method call, which narrows nothing |
 | `blockTypeCheck` | a loop block is a frame (`narrowLoopEnter`, `narrowLoopExit`) |
 | `fnDclTypeCheck` | a function body starts with nothing known and gives back what it was given (`narrowFnBegin`); a closure's `()` is its own function |
 | `assignTypeCheck`, `swapTypeCheck` | `narrowAssigned`: the name is changed; a variant stored over a name held by value is a narrowing to it (`state = State.Run(2)`) |

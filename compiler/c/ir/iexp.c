@@ -50,6 +50,11 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 // before isTrue existed on them.
 static int iexpInCondition = 0;
 
+// The check state under way where a coercion is asked for with one (iexpCoerceIn,
+// iexpCoerceCondition), which the isTrue a coercion to bool injects is lowered with: it
+// lends a temporary receiver (a returned Option) for the statement being checked
+static TypeCheckState *iexpCoerceState = NULL;
+
 // Is the expression's type Option or Result, or a variant of one?
 int iexpIsOptionOrResult(INode *node) {
     if (!isExpNode(node))
@@ -63,10 +68,10 @@ int iexpIsOptionOrResult(INode *node) {
 
 // Coerce a condition's operand to bool: the one place, with '!', where an
 // Option or Result converts to it
-int iexpCoerceCondition(INode **from) {
+int iexpCoerceCondition(TypeCheckState *pstate, INode **from) {
     int saved = iexpInCondition;
     iexpInCondition = 1;
-    int ok = iexpCoerce(from, (INode*)boolType);
+    int ok = iexpCoerceIn(pstate, from, (INode*)boolType);
     iexpInCondition = saved;
     return ok;
 }
@@ -463,7 +468,7 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
-            success = fnCallLowerMethod(NULL, istrue) == 1;
+            success = fnCallLowerMethod(iexpCoerceState, istrue) == 1;
         if (success) {
             *from = (INode*)istrue;
             return 1;
@@ -500,7 +505,11 @@ int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *totype) {
     if (pstate && pstate->scope >= 2 && totype != unknownType && totype != noCareType
         && slitBorrowMatches(*from, itypeGetTypeDcl(totype)))
         return slitBorrowCoerce(pstate, from, totype);
-    return iexpCoerce(from, totype);
+    TypeCheckState *saved = iexpCoerceState;
+    iexpCoerceState = pstate;
+    int ok = iexpCoerce(from, totype);
+    iexpCoerceState = saved;
+    return ok;
 }
 
 // iexpTypeCheckCoerce for a node already type checked: ensure it is an

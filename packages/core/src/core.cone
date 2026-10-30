@@ -31,8 +31,32 @@ pub enum Option[T] {
   // THE HELPERS. Each takes the whole Option (its receiver names the enum), so it
   // is called on an Option or on a Some or None alike. Those that take 'self' by
   // value consume it: what Some holds moves into the answer. The 'is_*' tests are
-  // 'is' ('opt is Some'), and the fallbacks are '||' and '&&'
-  // (WI error-handling, issue 4).
+  // 'is' ('opt is Some'), and the fallbacks are '||' and '&&', below.
+
+  // '||' and '&&' are methods of the left operand's type: an Option is true when it
+  // is a Some, and the right operand is 'lazy', so it is not evaluated unless it is
+  // the answer. The receiver is bound once, as the body names it twice.
+
+  // The first that holds a value: itself when it is a Some, else the right operand
+  pub macro `||`[self, other: lazy Option[T]] {
+    let first: Option[T] = self;
+    if first { first } else { other }
+  }
+
+  // What Some holds, else the right operand: 'opt || 0' unwraps
+  pub macro `||`[self, other: lazy T] {
+    let first: Option[T] = self;
+    match first {
+      case let Some(v) { v }
+      case is None { other }
+    }
+  }
+
+  // The first that is empty: itself when it is None, else the right operand
+  pub macro `&&`[self, other: lazy Option[T]] {
+    let first: Option[T] = self;
+    if first { other } else { first }
+  }
 
   // Whether it holds a value: true on Some. A condition asks it, 'if opt { ... }',
   // as it asks a number's. The Option is lent, not consumed
@@ -140,6 +164,30 @@ pub enum @mustUse Result[T,E] {
 
   // THE HELPERS, as Option's are: each takes the whole Result, and those that take
   // 'self' by value consume it
+
+  // '||' and '&&', as Option's are: a Result is true when it is an Ok, and the right
+  // operand is 'lazy'
+
+  // The first that succeeded: itself when it is an Ok, else the right operand
+  pub macro `||`[self, other: lazy Result[T, E]] {
+    let first: Result[T, E] = self;
+    if first { first } else { other }
+  }
+
+  // What Ok holds, else the right operand: 'parse(s) || 0' unwraps
+  pub macro `||`[self, other: lazy T] {
+    let first: Result[T, E] = self;
+    match first {
+      case let Ok(v) { v }
+      case is Err { other }
+    }
+  }
+
+  // The first that failed: itself when it is an Err, else the right operand
+  pub macro `&&`[self, other: lazy Result[T, E]] {
+    let first: Result[T, E] = self;
+    if first { other } else { first }
+  }
 
   // Whether it succeeded: true on Ok. A condition asks it, 'while res { ... }'.
   // The Result is lent, not consumed

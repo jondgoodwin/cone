@@ -32,6 +32,11 @@ void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node);
 void logicNameRes(NameResState *pstate, LogicNode *node);
 
 // Type check logic node
-void logicTypeCheck(TypeCheckState *pstate, LogicNode *node);
+void logicTypeCheck(TypeCheckState *pstate, LogicNode **nodep);
+
+// '||' and '&&' as methods of the left operand's (checked) type. Answers 0 where the left is a
+// bool, whose primitives the logic node is; 1 where the node was replaced by the expansion of
+// a macro method, the call of a function method, or an error
+int fnCallLogicMethod(TypeCheckState *pstate, LogicNode **nodep);
 
 #endif

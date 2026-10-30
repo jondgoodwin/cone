@@ -110,6 +110,14 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     if (!ischar)
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(istrueName, FlagMethFld | FlagPub,(INode *)istruesig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
 
+    // A bool's '&&' and '||' are compiler primitives declared here: the logic node is their body.
+    // ⚑ LATER: they move to the library with the number types' operators (Jon, 26 Oct), where they
+    // become macros like Option's and Result's
+    if (bits == 1) {
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(logicAndName, FlagMethFld | FlagPub,(INode *)binsig, (INode *)newIntrinsicNode(LogicAndIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(logicOrName, FlagMethFld | FlagPub,(INode *)binsig, (INode *)newIntrinsicNode(LogicOrIntrinsic)));
+    }
+
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;

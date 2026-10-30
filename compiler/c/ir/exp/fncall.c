@@ -1484,7 +1484,7 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
         // coercion to bool injects is lowered with no state of its own (iexpCoerce),
         // and Option's and Result's borrow their receiver: the check under way is the one
         else
-            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate ? pstate : inodeCheckState));
+            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
     }
     return NULL;
@@ -4478,7 +4478,7 @@ static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *
         if (inodeIsError(derivedne->lexp) || !isExpNode(derivedne->lexp)
             || ((IExpNode*)derivedne->lexp)->vtype == errorType)
             derivedne->vtype = errorType;
-        else if (!iexpCoerceCondition(&derivedne->lexp))
+        else if (!iexpCoerceCondition(pstate, &derivedne->lexp))
             errorMsgNode(derivedne->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         return 1;
     }
@@ -4493,6 +4493,102 @@ static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *
         return 1;
     }
     return 0;
+}
+
+// '||' and '&&' are methods of the left operand's type. A bool's are the primitives declared
+// on bool (corenumber.c), whose body is the logic node itself: answer 0 and the node goes on
+// as it always has. Any other type needs the method: a macro method expands in the node's
+// place, the left operand standing for 'self' and the right for the parameter after it, as
+// for any operator macro; a function method is called, the right operand evaluated first as
+// for any call. A type with neither is refused (ErrorNoLogicMethod).
+int fnCallLogicMethod(TypeCheckState *pstate, LogicNode **nodep) {
+    LogicNode *node = *nodep;
+    INode *left = node->lexp;
+    if (inodeIsError(left) || !isExpNode(left))
+        return 0;
+    INode *lefttype = iexpGetTypeDcl(left);
+    // A left operand that failed to check has been reported
+    if (lefttype == errorType || lefttype == unknownType || lefttype == noCareType)
+        return 0;
+    if (lefttype->tag == RefTag)
+        lefttype = itypeGetTypeDcl(((RefNode*)lefttype)->vtexp);
+    if (lefttype == (INode*)boolType)
+        return 0;
+    Name *opname = node->tag == AndLogicTag ? logicAndName : logicOrName;
+    INode *found = NULL;
+    if (lefttype->tag == PtrTag)
+        found = iNsTypeFindFnField(ptrType, opname);
+    else if (isMethodType(lefttype)) {
+        found = iNsTypeFindFnField((INsTypeNode*)lefttype, opname);
+        // A value of a variant reaches the methods of its enum
+        StructNode *enumdcl;
+        if (found == NULL && (enumdcl = structVariantEnum(lefttype)) != NULL)
+            found = iNsTypeFindFnField((INsTypeNode*)enumdcl, opname);
+    }
+    INode *member = found && found->tag == AliasDclTag ? aliasDclResolve(found) : found;
+    if (member == NULL) {
+        const char *spelled = itypeName(iexpGetTypeDcl(left));
+        errorMsgNode(left, ErrorNoLogicMethod,
+            "`%s` is a method of its left operand's type, and %s declares none. bool, Option and Result have `||` and `&&`; test this value first, as in `n != 0 && ...`, `p != null || ...` or `x is Some && ...`.",
+            &opname->namestr, spelled);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return 1;
+    }
+    // A bool's primitive: the logic node is its body
+    if (member->tag == FnDclTag && ((FnDclNode*)member)->value && ((FnDclNode*)member)->value->tag == IntrinsicTag
+        && (((IntrinsicNode*)((FnDclNode*)member)->value)->intrinsicFn == LogicAndIntrinsic
+            || ((IntrinsicNode*)((FnDclNode*)member)->value)->intrinsicFn == LogicOrIntrinsic))
+        return 0;
+    // The right operand of a macro method is substituted into the body, where a wait cannot be cut
+    MacroDclNode *macro = fnCallMemberMacro(found);
+    if (macro && awaitWithin(node->rexp)) {
+        errorMsgNode(node->rexp, ErrorMacroAwait,
+            "`%s` through %s's macro method cannot take an `await` in its right operand yet: the operand is substituted into the macro's body, where the wait cannot be cut. Await into a local first, `let v = await ...; x %s v`.",
+            &opname->namestr, itypeName(lefttype), &opname->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return 1;
+    }
+    // The left operand is checked, and a checked tree is not checked again (a call in it is
+    // already lowered). It is held in a variable, once, and the method is used on that:
+    // '{let tmp = left; tmp.||(right)}'. The right operand is not checked, and so a macro's
+    // 'lazy' parameter takes it whole
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)left)->vtype, (INode*)immPerm, left);
+    inodeLexCopy((INode*)tmpvar, (INode*)node);
+    tmpvar->flags |= TypeChecked;
+    tmpvar->scope = (uint16_t)(pstate->scope + 1);
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->dclnode = (INode*)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)node);
+    FnCallNode *call = newFnCallOpnameLower((INode*)node, (INode*)tmpname, opname, 1);
+    nodesAdd(&call->args, node->rexp);
+    INode *callnode = (INode*)call;
+    // The block the variable is held in is a level in
+    ++pstate->scope;
+    if (macro) {
+        StructNode *strtype = (StructNode*)lefttype;
+        if (strtype->tag != StructTag) {
+            StructNode *enumdcl = structVariantEnum(lefttype);
+            strtype = enumdcl ? enumdcl : strtype;
+        }
+        fnCallOperatorExpand(pstate, (FnCallNode**)&callnode, macro, found->tag == AliasDclTag, strtype, opname);
+    }
+    // A function method: an ordinary call
+    else
+        inodeTypeCheckAny(pstate, &callnode);
+    --pstate->scope;
+    if (inodeIsError(callnode) || !isExpNode(callnode)) {
+        *((INode**)nodep) = callnode;
+        return 1;
+    }
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)node);
+    blk->vtype = ((IExpNode*)callnode)->vtype;
+    blk->flags |= FlagKeepTemps;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, callnode);
+    *((INode**)nodep) = (INode*)blk;
+    return 1;
 }
 
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
@@ -5433,7 +5529,7 @@ tagtested:
     if (derivedne) {
         if (node->vtype == unknownType || node->vtype == errorType)
             derivedne->vtype = errorType;
-        else if (!iexpCoerceCondition(&derivedne->lexp))
+        else if (!iexpCoerceCondition(pstate, &derivedne->lexp))
             errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     }
 }

@@ -38,8 +38,9 @@ int iexpCharNumberMismatch(INode *from, INode *totypedcl);
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
 // Coerce a condition's operand to bool. Only here, and under '!', does an Option
-// or Result convert to bool (through isTrue)
-int iexpCoerceCondition(INode **from);
+// or Result convert to bool (through isTrue). The check state is the one under way:
+// the isTrue it injects borrows a temporary receiver for the statement being checked
+int iexpCoerceCondition(TypeCheckState *pstate, INode **from);
 // Type check an operand of '!' and coerce it to bool, as a condition
 int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from);
 // Is the expression's type Option or Result, or a variant of one?

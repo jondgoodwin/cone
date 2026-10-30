@@ -50,6 +50,15 @@ registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them.
 type outside the class is refused for `mem.abs[T]` and the rest by `intrinsicClassCheck`
 as for the bit operations; a method asked of a type that lacks it is `ErrorNoMbr`.
 
+**A bool's `&&` and `||` are methods with no function behind them.** `newNbrTypeNode`
+(`corenumber.c`) declares both on `bool` alone, valued `LogicAndIntrinsic` and
+`LogicOrIntrinsic` (kinds built in C, below `FirstDeclaredIntrinsic`). They are never
+generated and never called: `fnCallLogicMethod` finds them on the left operand's type and
+leaves the `LogicNode` as it is, whose code the operators have always been, so narrowing,
+folding and generation do not change. They exist so that the operators are methods of the
+left operand's type for every type, bool's included. ⚑ They move to the library, as macros
+like Option's and Result's, when the number types' operators do.
+
 **An integer's and bool's `hash` is a method with no function behind it.**
 `nbrAddHashMethods` (`corenumber.c`), called when name resolution reaches core's
 `Hasher`, gives `bool` and every integer type `hash(self, h &mut Hasher)`, the

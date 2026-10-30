@@ -185,8 +185,10 @@ conditional (an Option or a Result through core's, true on `Some` or `Ok`). That
 is the one place, with the operand of `!` (`logicNotTypeCheck`,
 `fnCallNeFromEq`'s derived `!`), where an Option or a Result converts: `iexpMatches`
 refuses them elsewhere (`let b: bool = opt`, an argument, a return) as it did
-before they answered `isTrue`, and `logicTypeCheck` refuses them as an operand of
-`||` or `&&` (1561) until those become methods on them (PR 6). A match's case whose condition is an Option or a Result
+before they answered `isTrue`, and `logicTypeCheck` refuses them as the right operand of a bool's
+`||` or `&&` (1561); as the left operand they are the receiver of their own `||` and `&&`
+(`fnCallLogicMethod`, [fncall](fncall.md)). The coercion is given the state of the check under way, which
+lends a temporary receiver (`if f()` on a returned Option) for the statement being checked. A match's case whose condition is an Option or a Result
 — `case using f()` with an `f` giving one — is refused before the coercion, as
 it was before they answered `isTrue`: a case that only tests wants a function
 giving a bool. An `elseCond` sets `hasElse`, and

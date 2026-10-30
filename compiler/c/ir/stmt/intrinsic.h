@@ -59,6 +59,13 @@ enum IntrinsicFn {
     // generated: type check replaces the call.
     NoEqIntrinsic,
 
+    // A bool's '&&' and '||', declared on bool so that the operators are methods of the
+    // left operand's type like any other's. The logic node stays their body (logicTypeCheck
+    // finds these and goes on with it), so narrowing, folding and code generation are
+    // the node's. Never generated: no call of them is made
+    LogicAndIntrinsic,
+    LogicOrIntrinsic,
+
     // An integer's or bool's 'hash': what core's Hash requires of every type that
     // is Hash, declared on each of them so that 'key.hash(h)' on a generic's key
     // reaches a method. Never generated: the call is rewritten at type check to
