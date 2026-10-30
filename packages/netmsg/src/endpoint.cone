@@ -416,16 +416,9 @@ fn start(server: bool, bind: SocketAddr, remote: SocketAddr, cfg: NetConfig, h: 
   var rx: OneshotReceiver[Result[SocketAddr, IoError]];
   tx, rx = Oneshot[Result[SocketAddr, IoError]].make();
   ep.open(bind, tx);
-  match rx.recv() {
-    case let Some(answer) {
-      match &answer {
-        case let &Ok(a) { return Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), *a)); }
-        case let &Err(e) { return Err[BoundEndpoint, IoError](*e); }
-      }
-    }
-    case is None[Result[SocketAddr, IoError]] {}
-  }
-  Err[BoundEndpoint, IoError](IoError.aborted())
+  let Some(answer) = rx.recv() else {return Err[BoundEndpoint, IoError](IoError.aborted());};
+  let a = answer?;
+  Ok[BoundEndpoint, IoError](BoundEndpoint(ep, a.port(), a))
 }
 
 // What a client binds its UDP socket to, port 0, for a server at 'server': the
