@@ -63,7 +63,10 @@
 // region's 'mark' reference by reference; 'mark' copies the object it finds
 // into new chunks and rewrites the slot the reference was stored in; the new
 // chunks are scanned in order, each object's references marked in turn, until
-// nothing is left to scan. The old chunks are then freed whole. A large
+// nothing is left to scan. The old chunks are then kept whole on a SPARE list,
+// up to twice the bytes that survived, and the rest freed; the next chunk a region needs is
+// drawn from the list before the raw blocks layer, so a steady region does not fault fresh pages
+// in every cycle. A large
 // object is marked in place and scanned from a list; the unmarked ones are
 // freed. There is no write barrier: nothing runs while it does.
 //
@@ -233,6 +236,7 @@ pub struct GcStats {
   pub allocated: usize;      // bytes allocated since the last collection
   pub survived: usize;       // bytes that survived the last collection
   pub blocks: usize;         // bytes held now in the blocks of collections made in the region
+  pub spare: usize;          // bytes of old chunks kept for the next allocations (the SPARE list)
 }
 
 // An actor's region: its chunks, its large objects, its final list, and what
@@ -266,6 +270,8 @@ pub struct ActorRegion {
   nlarge: usize = 0usize;
   nchunks: usize = 0usize;
   bytes: usize = 0usize;
+  spare: *Chunk = null;           // old chunks kept for reuse, linked by 'next' (the SPARE list)
+  nspare: usize = 0usize;         // their bytes
   ncollections: usize = 0usize;
   ncopied: usize = 0usize;
   nfinalized: usize = 0usize;
@@ -306,7 +312,7 @@ pub struct ActorRegion {
   // What the region holds and has done, for tests and tuning
   pub fn stats(self: &) GcStats {
     GcStats(self.ncollections, self.nobjects, self.bytes, self.nchunks, self.nlarge, self.ncopied,
-      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks)
+      self.nfinalized, self.nfreed, self.allocated, self.live, self.blocks, self.nspare)
   }
 
   // ---- A collection's block: the region's allocate, resize and release ----
@@ -408,10 +414,16 @@ pub struct ActorRegion {
     if size < need {
       size = ActorRegion.roundUp(need, 4096usize);
     }
-    let c = RawBlocks.alloc(size, 16usize) as *Chunk;
+    var c = self.takeSpare(size);
     if c == null {
-      return null;
+      c = RawBlocks.alloc(size, 16usize) as *Chunk;
+      if c == null {
+        return null;
+      }
+    } else {
+      size = (c as &Chunk).bytes;
     }
+    // A fresh chunk and a reused one are set up alike: nothing in it counts as used
     mem.writeRaw(c, Chunk(null, size, mem.sizeof[Chunk](), 0usize));
     if self.last == null {
       self.first = c;
@@ -422,6 +434,69 @@ pub struct ActorRegion {
     self.nchunks = self.nchunks + 1usize;
     self.bytes = self.bytes + size;
     c
+  }
+
+  // The spare chunk that fits 'want' bytes best (the smallest at least that
+  // large), off the list, or null
+  fn takeSpare(self: &mut, want: usize) *Chunk {
+    var best: *Chunk = null;
+    var bestPrev: *Chunk = null;
+    var prev: *Chunk = null;
+    var c = self.spare;
+    while c != null {
+      let b = (c as &Chunk).bytes;
+      if b >= want && (best == null || b < (best as &Chunk).bytes) {
+        best = c;
+        bestPrev = prev;
+      }
+      prev = c;
+      c = (c as &Chunk).next;
+    }
+    if best == null {
+      return null;
+    }
+    let next = (best as &Chunk).next;
+    if bestPrev == null {
+      self.spare = next;
+    } else {
+      (bestPrev as &mut Chunk).next = next;
+    }
+    self.nspare = self.nspare - (best as &Chunk).bytes;
+    best
+  }
+
+  // The old chunks of a collection, 'oldChunks' and the next ones linked after
+  // it, join the spare list; then the list is cut to 'keep' bytes (the rest is
+  // given back to the raw blocks layer), so a region that shrank gives memory back
+  fn spareOld(self: &mut, oldChunks: *Chunk, keep: usize) {
+    var c = oldChunks;
+    while c != null {
+      let next = (c as &Chunk).next;
+      (c as &mut Chunk).next = self.spare;
+      self.spare = c;
+      self.nspare = self.nspare + (c as &Chunk).bytes;
+      c = next;
+    }
+    var kept = 0usize;
+    var tail: *Chunk = null;
+    c = self.spare;
+    while c != null {
+      let next = (c as &Chunk).next;
+      let b = (c as &Chunk).bytes;
+      if kept + b <= keep {
+        kept = kept + b;
+        tail = c;
+      } else {
+        if tail == null {
+          self.spare = next;
+        } else {
+          (tail as &mut Chunk).next = next;
+        }
+        RawBlocks.release(c as *u8);
+      }
+      c = next;
+    }
+    self.nspare = kept;
   }
 
   // A new object: 'size' is the compiler's, the header and the value. Null if
@@ -529,6 +604,7 @@ pub struct ActorRegion {
     h.link = dst as usize;
     self.liveNow = self.liveNow + bytes;
     self.ncopied = self.ncopied + 1usize;
+    self.nobjects = self.nobjects + 1usize;
   }
 
   // Hand the references the object at 'header' holds to the region's 'mark'
@@ -658,6 +734,8 @@ pub struct ActorRegion {
     self.nchunks = 0usize;
     self.bytes = 0usize;
     self.liveNow = 0usize;
+    // Objects are counted as they are kept: each copy here, and below the large ones
+    self.nobjects = 0usize;
     // The state: its type's trace hands every reference it holds, among them
     // the records parked by 'await', to 'mark'
     let r = rec as &TypeRecord;
@@ -690,37 +768,15 @@ pub struct ActorRegion {
       at = next;
     }
     self.nlarge = nlive;
-    // The old chunks, whole
-    var c = oldChunks;
-    while c != null {
-      let next = (c as &Chunk).next;
-      RawBlocks.release(c as *u8);
-      c = next;
-    }
+    // The old chunks, whole, nothing points into them now: kept for the next
+    // allocations up to twice what survived (the copy to come and the allocation
+    // before the next collection), the rest given back
+    self.spareOld(oldChunks, self.liveNow * 2usize);
     self.ncollections = self.ncollections + 1usize;
     self.live = self.liveNow + self.blocks;
     self.allocated = 0usize;
-    // Objects: those copied this collection, the large ones and the revived ones
-    // are counted as they were kept
-    self.nobjects = self.countObjects();
+    self.nobjects = self.nobjects + self.nlarge;
     curActorRegion = null;
-  }
-
-  // The objects the region holds: those in the chunks, found by walking them,
-  // and the large ones
-  fn countObjects(self: &mut) usize {
-    var n = self.nlarge;
-    var c = self.first;
-    while c != null {
-      var at = mem.sizeof[Chunk]();
-      let used = (c as &Chunk).used;
-      while at < used {
-        at = at + usize.from(((c as usize + at) as &ActorGc).size);
-        n = n + 1usize;
-      }
-      c = (c as &Chunk).next;
-    }
-    n
   }
 
   // The actor has died, its state finalized: every object on the final list
@@ -741,6 +797,14 @@ pub struct ActorRegion {
       RawBlocks.release(c as *u8);
       c = next;
     }
+    c = self.spare;
+    while c != null {
+      let next = (c as &Chunk).next;
+      RawBlocks.release(c as *u8);
+      c = next;
+    }
+    self.spare = null;
+    self.nspare = 0usize;
     var at = self.large;
     while at != 0usize {
       let next = (at as &ActorGc).link;
