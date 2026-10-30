@@ -1,0 +1,91 @@
+// A '?' inside a macro expanded inside a 'try' block is captured by that block,
+// as one written in the block is (Rust's behaviour; #766's judgement call 6).
+// The expansion is cloned into the use site, so its '?' belongs to whatever
+// surrounds the use: the innermost try block of the function, else the
+// function itself. enum_try pins the '?' written in the block.
+//
+// 'inBlock' returns an i32, not a Result: were the macro's '?' not captured it
+// would return from 'inBlock' and the function would not type-check. The
+// output asserts the rest: a failure leaves the block with the error and the
+// steps after it do not run ('noisy'), a macro using another macro, an Option,
+// and a macro outside a try block, whose '?' returns from the function.
+
+mod enum_try_macro;
+
+import stdio use *;
+
+struct IoErr { pub code: i32; }
+
+fn num(n: i64) { printInt(n); printStr(" "); }
+fn end() { printStr("|\n"); }
+
+fn readNum(n: i32) Result[i32, IoErr] {
+  if n < 0 { return Err(IoErr(n)); }
+  Ok(n * 2)
+}
+fn opt(n: i32) Option[i32] {
+  if n < 0 { None } else { Some(n) }
+}
+fn noisy(n: i32) Result[i32, IoErr] {
+  printStr("noisy");
+  printInt(i64.from(n));
+  printStr(" ");
+  readNum(n)
+}
+
+fn showR(r: Result[i32, IoErr]) {
+  match r {
+    case let Ok(v) { printStr("ok "); num(i64.from(v)); }
+    case let Err(e) { printStr("err "); num(i64.from(e.code)); }
+  }
+}
+fn showO(o: Option[i32]) {
+  match o {
+    case let Some(v) { printStr("some "); num(i64.from(v)); }
+    case is None { printStr("none "); }
+  }
+}
+
+// The macros: each has a '?' in its body
+macro bump[r: Result[i32, IoErr]] { r? + 1 }
+macro need[o: Option[i32]] { o? }
+macro both[a: Result[i32, IoErr], b: Result[i32, IoErr]] { bump(a) + bump(b) }
+
+// The failure ends the try block, not the function: a function returning i32
+fn inBlock(n: i32) i32 {
+  let r = try { bump(readNum(n)) * 2 };
+  match r { case let Ok(v) { v } case let Err(e) { 0 - 1000 - e.code } }
+}
+
+// Outside a try block the macro's '?' returns from the function
+fn viaFn(n: i32) Result[i32, IoErr] {
+  let v = bump(readNum(n));
+  Ok(v * 10)
+}
+
+fn main() {
+  // The try block takes the macro's '?'
+  num(i64.from(inBlock(3)));
+  num(i64.from(inBlock(-5)));
+  end();
+
+  // What follows the first failure does not run
+  showR(try { bump(noisy(-1)) + bump(noisy(2)) });
+  showR(try { bump(noisy(1)) + bump(noisy(2)) });
+  end();
+
+  // A macro on an Option
+  showO(try { need(opt(3)) * need(opt(4)) });
+  showO(try { need(opt(-1)) * need(opt(4)) });
+  end();
+
+  // A macro using another macro
+  showR(try { both(readNum(1), readNum(2)) });
+  showR(try { both(readNum(1), readNum(-2)) });
+  end();
+
+  // No try block: the function's own
+  showR(viaFn(2));
+  showR(viaFn(-9));
+  end();
+}

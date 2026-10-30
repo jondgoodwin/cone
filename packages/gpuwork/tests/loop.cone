@@ -18,7 +18,7 @@
 //    with its buffers back. A job whose group was cancelled before it was
 //    submitted: answered Cancelled at once, not run; its Completion not ok,
 //    its buffers back.
-// 5. A refused job: Failed, gpuwork.ERROR_JOB_REFUSED; not ok, its buffer
+// 5. A refused job: Failed, JobFault.Refused (kind InvalidInput); not ok, its buffer
 //    back.
 // 6. A Here job beside a Loop job in one Works: each delivered its way. A
 //    Loop job waited for with 'waitFor', as a tool would: its Completion,
@@ -51,7 +51,15 @@ import gpuwork use *;
 import iocore;
 import iobuf use IoBuf;
 import diag;
+import ioerror use IoErrorKind;
 import noise use pcg;
+
+fn faultIs(c: &iocore.Completion, want: JobFault) bool {
+  match faultOf(c) {
+    case let Some(f) { f == want }
+    case is None { false }
+  }
+}
 
 extern {
   fn @c(system) GetCurrentProcess() usize;
@@ -264,7 +272,8 @@ fn main() i32 {
   waitIo(&mut lp, &mut io, 1usize);
   require(io.len() == 1usize, "the refused job's answer");
   expectUInt(u64.from(io[0usize].status), u64.from(diag.outcomeFailed), "Failed");
-  expectUInt(u64.from(io[0usize].code), u64.from(ERROR_JOB_REFUSED), "ERROR_JOB_REFUSED");
+  expect(faultIs(&io[0usize], JobFault.Refused) && io[0usize].error().kind() == IoErrorKind.InvalidInput
+    && JobFault.Refused.kind() == IoErrorKind.InvalidInput, "JobFault.Refused, its kind InvalidInput on every system");
   io.clear();
   expectUInt(u64.from(works.waitAll(&mut device, &mut got)), 1u64, "its Completion");
   expect(!got[0usize].ok && got[0usize].count() == 1u32 && got[0usize].buffers[0usize].isValid(), "not ok, its buffer back");

@@ -194,6 +194,7 @@ import posix;
 import collections use String, List, Error;
 import path use Path;
 import time;
+import ioerror use osKind;
 
 // ---------------------------------------------------------------------------
 // Windows: kernel32, and shell32's command-line parser. Everything the
@@ -432,7 +433,15 @@ pub struct ProcessError is Error {
     }
     out.append(": ");
     let text = systemText(code);
-    out.append(text.view());
+    // A number the system has no text for: the kind and the number, in the
+    // words iocore's IoError.describe() gives ('other, OS error 12345')
+    if text.isEmpty() {
+      out.append(osKind(code).name());
+      out.append(", OS error ");
+      out.appendUInt(u64.from(code));
+    } else {
+      out.append(text.view());
+    }
     out
   }
 
@@ -452,13 +461,13 @@ fn failure(op: &str, program: &str, dir: &Path, code: u32) ProcessError {
 }
 
 // The system's text for an error number: Windows' own (in English where it
-// has it), or on POSIX the C library's strerror
+// has it; empty where it has none), or on POSIX the C library's strerror
 fn systemText(code: u32) String {
   if isWindows() {windowsText(code)} else {String.from(libc.strerror(i32.from(code)).view())}
 }
 
 // Windows' text for an error number, in English where the system has it,
-// with no line end or full stop; 'Windows error N' where it has none
+// with no line end or full stop; empty where it has none
 fn windowsText(code: u32) String {
   var buf = Array[u16, 512]() <- fill 0u16;
   let bp: *u16 = &[]buf as *u16;
@@ -467,11 +476,7 @@ fn windowsText(code: u32) String {
     n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
   }
   var out = String.empty();
-  if n == 0u32 {
-    out.append("Windows error ");
-    out.appendUInt(u64.from(code));
-    return out;
-  }
+  if n == 0u32 {return out;}
   let text = narrow(bp, i32.from(n));
   let trimmed = text.trim();
   out.append(trimmed.view());

@@ -624,7 +624,7 @@ import iobuf use IoBuf, Bytes, Chain;
 import path use Path;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
-import ioerror use IoErrorKind, errorKindName, osKind, gaiNumber, gaiOf, gaiFloor;
+import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
@@ -757,7 +757,8 @@ pub struct IoError is Error {
 
   // The OS's text for it: Windows' in English where the system has it, the
   // C library's (strerror, gai_strerror) on Linux; a cancel's and a
-  // deadline's error says so
+  // deadline's error says so; a number the system has no text for, its
+  // 'describe'
   pub fn message(self: &) String {
     if origin == ErrorSource.Cancel {
       var s = String.empty();
@@ -769,8 +770,10 @@ pub struct IoError is Error {
       s.append("deadline passed");
       return s;
     }
-    if origin == ErrorSource.Made {return String.from(errorKindName(made));}
-    systemText(code)
+    if origin == ErrorSource.Made {return String.from(made.name());}
+    let text = systemText(code);
+    if text.isEmpty() {return self.describe();}
+    text
   }
 
   // The kind in words, then the system's number and its text when it gave
@@ -778,14 +781,18 @@ pub struct IoError is Error {
   // be made because the target machine actively refused it'. A getaddrinfo
   // failure's number is shown as the EAI_ number it is, below 0. An error
   // with no system number (a cancel's, a deadline's, one made of a kind)
-  // says its kind alone
+  // says its kind alone, and one the system has no text for says its number
+  // alone: 'other, OS error 12345'
   pub fn describe(self: &) String {
-    var out = String.from(errorKindName(self.kind()));
+    var out = String.from(self.kind().name());
     if code == 0u32 {return out;}
     out.append(", OS error ");
     if !isWindows() && code >= gaiFloor {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
-    out.append(": ");
-    out.append(systemText(code).view());
+    let text = systemText(code);
+    if !text.isEmpty() {
+      out.append(": ");
+      out.append(text.view());
+    }
     out
   }
 }

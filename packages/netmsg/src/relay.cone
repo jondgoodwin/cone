@@ -38,10 +38,12 @@ actor Relay {
   legs: List[Leg];
   group: CancelGroup;
   stopped: bool;
+  failed: Option[IoError];    // why the front socket stopped receiving: a client's leg that could not bind its socket
 
   fn init(self: &new, server: SocketAddr, toServer: LinkConfig, toClient: LinkConfig, seed: u64) {
     *self = Self(server: server, toServer: toServer, toClient: toClient, seed: seed,
-      front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false);
+      front: UdpSocket.none(), legs: List[Leg].empty(), group: CancelGroup.make(), stopped: false,
+      failed: None[IoError]);
   }
 
   // Bind the front socket (on loopback, a port of the system's choice), say
@@ -51,11 +53,10 @@ actor Relay {
     let made = await aio.bindUdp(SocketAddr.localhost(0u16));
     match made {
       case let Ok(ok) { front = ok; }
-      else {}
-    }
-    if front.isNone() {
-      tx.send(Err[SocketAddr, IoError](IoError.ofKind(IoErrorKind.Other)));
-      return;
+      case let Err(e) {
+        tx.send(Err[SocketAddr, IoError](e));
+        return;
+      }
     }
     var bound = SocketAddr.localhost(0u16);
     let la = await front.localAddr();
@@ -76,6 +77,16 @@ actor Relay {
     front = UdpSocket.none();
     legs = List[Leg].empty();
     tx.send(1u32);
+  }
+
+  // Why the front socket stopped receiving, if it did: the error of the bind of
+  // a client's leg
+  async fn failure(self, up: OneshotSender[Option[IoError]]) {
+    var tx = up;
+    match &failed {
+      case let &Some(e) { tx.send(Some[IoError](*e)); }
+      else { tx.send(None[IoError]); }
+    }
   }
 
   // Datagrams from clients: each goes through its leg's link to the server
@@ -108,9 +119,11 @@ actor Relay {
           var up = UdpSocket.none();
           match made {
             case let Ok(ok) { up = ok; }
-            else {}
+            case let Err(e) {
+              failed = Some[IoError](e);
+              return;
+            }
           }
-          if up.isNone() {return;}
           let n = u64.from(legs.len());
           legs.push(Leg(client, key, up,
             LinkSim.make(toServer, seed + 2u64 * n), LinkSim.make(toClient, seed + 2u64 * n + 1u64)));
@@ -155,7 +168,7 @@ actor Relay {
   // One datagram out of leg n: to the server (upstream) or to the client
   async fn out(self, n: usize, upstream: bool, data: List[u8]) {
     if stopped || n >= legs.len() {return;}
-    var b = IoBuf(max(data.len(), 1usize));
+    var b = IoBuf(data.len().max(1usize));
     b.append(data.view());
     if upstream {
       let r = await legs[n].up.sendTo(server, b);
@@ -194,6 +207,16 @@ pub struct LossyRelay {
   pub port: u16;
   relay: Relay;
 
+  // The error that stopped the relay receiving, if one did: a client's socket to
+  // the server that could not be bound. None while the relay runs well
+  pub fn failure(self: &mut) Option[IoError] {
+    var tx: OneshotSender[Option[IoError]];
+    var rx: OneshotReceiver[Option[IoError]];
+    tx, rx = Oneshot[Option[IoError]].make();
+    relay.failure(tx);
+    rx.recv() || None[IoError]
+  }
+
   // Stop the relay and wait for it
   pub fn stop(self: &mut) {
     var tx: OneshotSender[u32];
@@ -218,7 +241,11 @@ pub fn startLossyRelay(server: SocketAddr, toServer: LinkConfig, toClient: LinkC
     case let Some(answer) {
       match &answer {
         case let &Ok(a) { return LossyRelay(a.port(), relay); }
-        else {}
+        case let &Err(e) {
+          var why = String.from("netmsg: the relay could not start: ");
+          why.append(e.describe().view());
+          panic(why.view());
+        }
       }
     }
     case is None[Result[SocketAddr, IoError]] {}

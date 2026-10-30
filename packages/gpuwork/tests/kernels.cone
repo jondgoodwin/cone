@@ -28,7 +28,7 @@
 //    by its place in the job; one kernel dispatched twice in a job, each
 //    with its own zeroed error buffer; a job after a failure is clean.
 // 4. A Loop job whose kernel fails: its iocore answer Failed,
-//    ERROR_KERNEL_FAILED, and its Completion the failure; a clean one Done.
+//    JobFault.KernelFailed (kind Other), and its Completion the failure; a clean one Done.
 // 5. Atomics and workgroup memory: 'compact' claims output slots with an
 //    '&mut Array[Atomic[u32]]' counter, on the GPU and on two twins (direct, and
 //    through Words' 'atomicU32s'), the count and the sorted values compared,
@@ -2922,7 +2922,8 @@ fn main() i32 {
     while io.len() < 1usize && Instant.now() < limit { lp.poll(limit, &mut io); }
     require(io.len() == 1usize, "the failing Loop job's answer");
     expectBool(io[0usize].isDone(), false, "not Done");
-    expectUInt(u64.from(io[0usize].code), u64.from(ERROR_KERNEL_FAILED), "Failed, ERROR_KERNEL_FAILED");
+    expect(faultIs(&io[0usize], JobFault.KernelFailed) && io[0usize].error().kind().name() == "other",
+      "Failed, JobFault.KernelFailed, its kind Other on every system");
     io.clear();
     works.poll(&device, &mut got);
     require(got.len() == 1usize, "its Completion in the Works' poll");
@@ -3091,4 +3092,12 @@ fn main() i32 {
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done()
+}
+
+// Whether a Loop job's answer is Failed with this fault
+fn faultIs(c: &iocore.Completion, want: JobFault) bool {
+  match faultOf(c) {
+    case let Some(f) { f == want }
+    case is None { false }
+  }
 }

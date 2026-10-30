@@ -710,8 +710,7 @@ pub fn makeDirAll(path: &Path) Result[void, FsError] {
   if kind != 0u16 { return fail[void]("makeDirAll", path, posix.ENOTDIR); }
   let up = path.parent();
   if !up.isEmpty() && up.view() != path.view() {
-    let made = makeDirAll(&up);
-    if made is Err { return made; }
+    makeDirAll(&up)?;
   }
   var c = cText(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
@@ -792,13 +791,7 @@ pub fn readDir(path: &Path) Result[List[DirEntry], FsError] {
 // folder that cannot be read ends the walk with its error.
 pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
   var out = List[DirEntry].empty();
-  let went = walkInto(root, &mut out);
-  match went {
-    case let Err(e) {
-      return Err[List[DirEntry], FsError](e);
-    }
-    case is Ok {}
-  }
+  walkInto(root, &mut out)?;
   Ok[List[DirEntry], FsError](out)
 }
 
@@ -815,8 +808,7 @@ fn walkInto(dir: &Path, out: &mut List[DirEntry]) Result[void, FsError] {
         let entry = &entries[i];
         out.push(DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
         if entry.isDir {
-          let below = walkInto(&entry.path, out);
-          if below is Err { return below; }
+          walkInto(&entry.path, out)?;
         }
         i = i + 1usize;
       }
@@ -874,8 +866,7 @@ fn removeTree(path: &Path, kind: u16) Result[void, FsError] {
       while i < entries.len() {
         let entry = &entries[i];
         let childKind = if entry.isLink {posix.S_IFLNK} else if entry.isDir {posix.S_IFDIR} else {posix.S_IFREG};
-        let gone = removeTree(&entry.path, childKind);
-        if gone is Err { return gone; }
+        removeTree(&entry.path, childKind)?;
         i = i + 1usize;
       }
     }
