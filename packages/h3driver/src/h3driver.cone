@@ -414,6 +414,23 @@ pub struct Failure is Error {
     Failure(stage, code, HttpError.make(kind, 0u16, detail), false)
   }
 
+  // A UDP socket that could not be bound (what '?' makes of the IoError of
+  // 'bindUdp'): the connect stage, the system's number, and its text
+  pub fn bindFailure overload from(e: IoError) Failure {
+    var detail = String.from("the UDP socket could not be bound: ");
+    detail.append(e.message().view());
+    Failure.make(Stage.Connect, e.code, ErrorKind.Closed, detail.view())
+  }
+
+  // A connection QUIC could not make (what '?' makes of newClient's error): the
+  // TLS stage, the verifier's number if it refused the certificate, and QUIC's
+  // words; no byte of a request reached it
+  pub fn quicFailure overload from(e: quic.QuicError) Failure {
+    var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, e.message().view());
+    f.unsent = true;
+    f
+  }
+
   // Nothing: a connection that has not failed
   pub fn none() Failure {Failure(Stage.Closed, 0u32, HttpError.empty(), false)}
 

@@ -346,13 +346,7 @@ pub struct Driver {
       return Err[ConnId, Failure](Failure.make(Stage.Connect, 0u32, ErrorKind.Unsupported, "only IPv4 addresses (quic's Addr)"));
     };
     let bindAt = if addr.isLoopback() {SocketAddr.localhost(0u16)} else {SocketAddr.v4(0u8, 0u8, 0u8, 0u8, 0u16)};
-    var handle = Handle.none();
-    match lp.bindUdp(bindAt) {
-      case let Ok(h) {handle = h;}
-      case let Err(e) {
-        return Err[ConnId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the connection's UDP socket could not be bound"));
-      }
-    }
+    let handle = lp.bindUdp(bindAt)?;
     var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
     match lp.localAddr(handle) {
       case let Ok(a) {
@@ -385,9 +379,7 @@ pub struct Driver {
       }
       case let Err(e) {
         lp.close(handle);
-        var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, e.message().view());
-        f.unsent = true;
-        return Err[ConnId, Failure](f);
+        return Err[ConnId, Failure](Failure.from(e));
       }
     }
   }
@@ -417,13 +409,7 @@ pub struct Driver {
     if !ctx.isServer() {
       return Err[ListenerId, Failure](Failure.make(Stage.Tls, 0u32, ErrorKind.Unsupported, "listen takes a server's Context"));
     }
-    var handle = Handle.none();
-    match lp.bindUdp(addr) {
-      case let Ok(h) {handle = h;}
-      case let Err(e) {
-        return Err[ListenerId, Failure](Failure.make(Stage.Connect, e.code, ErrorKind.Closed, "the UDP socket could not be bound"));
-      }
-    }
+    let handle = lp.bindUdp(addr)?;
     var localQ = quic.Addr.v4(0u8, 0u8, 0u8, 0u8, 0u16);
     match lp.localAddr(handle) {
       case let Ok(a) {

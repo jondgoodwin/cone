@@ -1,0 +1,44 @@
+// A borrow written &'static to immutable data is Sendable, as Rust's &'static str is
+// Send: an error holding one (http3's FrameError holds its detail so) is Sendable,
+// and '?' converts it into an AnyError, which crosses between actors. A struct
+// holding it meets a 'Sendable' bound.
+
+mod enum_propagate_static_str;
+
+import stdio use *;
+import collections use *;
+
+struct FrameLike is Error {
+  pub code: u64;
+  pub detail: &'static str;
+
+  pub fn message(self: &) String {
+    var out = String.from(detail);
+    out.append(" (code ");
+    out.appendUInt(code);
+    out.append(")");
+    out
+  }
+}
+
+fn frame(fail: bool) Result[i32, FrameLike] {
+  if fail { Err[i32, FrameLike](FrameLike(7u64, "the frame is cut off")) } else { Ok[i32, FrameLike](1i32) }
+}
+
+fn run() Result[i32, AnyError] {
+  let v = frame(true)?;
+  Ok[i32, AnyError](v)
+}
+
+fn sendable[T: Sendable](v: T) T { v }
+
+fn main() {
+  match run() {
+    case let Ok(v) { printInt(i64.from(v)); }
+    case let Err(e) { printStr(e.message().view()); }
+  }
+  printStr("\n");
+  let f = sendable[FrameLike](FrameLike(9u64, "carried"));
+  printStr(f.detail);
+  printStr("\n");
+}
