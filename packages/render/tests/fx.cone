@@ -73,7 +73,6 @@ fn shot(p: *u8, name: &str) {
   image.save(&filepath.Path.from(path.view()));
 }
 
-fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
 
 fn scatter(n: u32) f32 {
   var x = n * 747796405u32 + 2891336453u32;
@@ -484,7 +483,7 @@ fn movingObjects(device: &mut Device) {
       eprint <- "measured: velocity at the sphere "; eprint <- halfToFloat(*(vp + at)); eprint <- ", "; eprint <- halfToFloat(*(vp + at + 1usize));
       eprint <- ", marker "; eprint <- halfToFloat(*(vp + at + 3usize)); eprint <- "\n";
       // 0.1 along x at the sphere's near side (5 away, the view 2 x 5 tan 20 = 3.64 wide): 0.1 / 3.64
-      expect(absf(halfToFloat(*(vp + at)) + 0.0275) < 0.002 && absf(halfToFloat(*(vp + at + 1usize))) < 0.001
+      expect((halfToFloat(*(vp + at)) + 0.0275).abs() < 0.002 && halfToFloat(*(vp + at + 1usize)).abs() < 0.001
         && halfToFloat(*(vp + at + 3usize)) > 0.5, "the velocity pass wrote the sphere's motion in uv: 0.1 along x is -0.0275");
     }
     if run == 0usize { shot(p, "moving-rigid-told"); }
@@ -695,7 +694,7 @@ fn fogTest(device: &mut Device) {
   let absorbed = px(p, 64usize, 64usize, 1usize);
   let want = bare * libc.expf(-0.1 * 12.);
   eprint <- "measured: fog: ground "; eprint <- bare; eprint <- ", through 12 m of extinction 0.1 "; eprint <- absorbed; eprint <- " (Beer-Lambert says "; eprint <- want; eprint <- ")\n";
-  expect(absf(absorbed / want - 1.) < 0.05, "fog dims what is behind it by Beer-Lambert's law, within 5%");
+  expect((absorbed / want - 1.).abs() < 0.05, "fog dims what is behind it by Beer-Lambert's law, within 5%");
   // Scattering: with albedo 1 and only ambient light of radiance 1, what is
   // scattered in is 1 x (1 - T) and the ground is dimmed by T
   s.fog.albedo = Color(1., 1., 1., 1.);
@@ -705,13 +704,13 @@ fn fogTest(device: &mut Device) {
   let t = libc.expf(-0.1 * 12.);
   let wantScatter = bare * t + 1. * (1. - t);
   eprint <- "measured: fog with scattering "; eprint <- lit; eprint <- ", the formula "; eprint <- wantScatter; eprint <- "\n";
-  expect(absf(lit / wantScatter - 1.) < 0.05, "and scatters the ambient light in: ground x T + radiance x (1 - T)");
+  expect((lit / wantScatter - 1.).abs() < 0.05, "and scatters the ambient light in: ground x T + radiance x (1 - T)");
   // Nothing behind the camera's far end: the sky takes the whole volume's
   var empty = DrawList.empty();
   drawScene(device, &mut rig, &camera, &ambientOnly, &empty);
   let skyFog = px(p, 64usize, 64usize, 1usize);
   let tFar = libc.expf(-0.1 * 60.);
-  expect(absf(skyFog / (1. - tFar) - 1.) < 0.05, "the sky is fogged by the whole volume's");
+  expect((skyFog / (1. - tFar) - 1.).abs() < 0.05, "the sky is fogged by the whole volume's");
 
   // God rays: a plate high above the ground casts its shadow through the fog
   var shadows = ShadowSettings.high();
@@ -739,7 +738,7 @@ fn fogTest(device: &mut Device) {
   eprint <- "measured: fog god rays: in the shaft "; eprint <- *shaded[inShaft] / *unshaded[inShaft]; eprint <- " of what it is without the shadow, far from it ";
   eprint <- *shaded[outside] / *unshaded[outside]; eprint <- "\n";
   expect(*shaded[inShaft] < *unshaded[inShaft] * 0.93, "the plate's shadow darkens the fog it falls through (a shaft of light is dimmer where it is shaded)");
-  expect(absf(*shaded[outside] / *unshaded[outside] - 1.) < 0.03, "and fog the shadow does not reach is as bright as without it");
+  expect((*shaded[outside] / *unshaded[outside] - 1.).abs() < 0.03, "and fog the shadow does not reach is as bright as without it");
 }
 
 // ---- 8. Depth of field ----
@@ -812,9 +811,9 @@ fn depthOfField(device: &mut Device) {
   eprint <- "measured: depth of field: the lamp in focus peak "; eprint <- nearPeakOn / nearPeak; eprint <- " of what it was, the far one's peak ";
   eprint <- farPeakOn / farPeak; eprint <- ", its energy "; eprint <- farSumOn / farSum; eprint <- "\n";
   expect(nearPeakOn > nearPeak * 0.9, "the lamp at the focus distance stays sharp");
-  expect(absf(nearSumOn / nearSum - 1.) < 0.08, "and keeps its light");
+  expect((nearSumOn / nearSum - 1.).abs() < 0.08, "and keeps its light");
   expect(farPeakOn < farPeak * 0.5, "the lamp far behind it is blurred: its peak falls");
-  expect(absf(farSumOn / farSum - 1.) < 0.12, "by spreading its light, not losing it");
+  expect((farSumOn / farSum - 1.).abs() < 0.12, "by spreading its light, not losing it");
 }
 
 // ---- 7. Decals ----
@@ -860,7 +859,7 @@ fn decalTest(device: &mut Device) {
   let at = (64usize * SIDEZ + 79usize) * 3usize;
   expect(*withDecal[at] > 0.8 && *withDecal[at + 1usize] < 0.1, "a decal paints the floor in its box red");
   let outside = (64usize * SIDEZ + 40usize) * 3usize;
-  expect(absf(*withDecal[outside] - *baseline[outside]) < 0.002 && absf(*withDecal[outside + 1usize] - *baseline[outside + 1usize]) < 0.002,
+  expect((*withDecal[outside] - *baseline[outside]).abs() < 0.002 && (*withDecal[outside + 1usize] - *baseline[outside + 1usize]).abs() < 0.002,
     "and leaves the floor outside its box as it was");
   // Where the box's edges land: x = 0 and 2 on the middle row, z = -1 and 1 on the middle column, within a pixel
   var left = -1.f;
@@ -877,8 +876,8 @@ fn decalTest(device: &mut Device) {
     x = x + 1usize;
   }
   eprint <- "measured: the decal's edges on the middle row at columns "; eprint <- left; eprint <- " and "; eprint <- right; eprint <- "\n";
-  expect(absf(left - 64.) < 1.5, "the left edge lands at the projected pixel (x = 0)");
-  expect(absf(right - 93.3) < 1.5, "and the right (x = 2)");
+  expect((left - 64.).abs() < 1.5, "the left edge lands at the projected pixel (x = 0)");
+  expect((right - 93.3).abs() < 1.5, "and the right (x = 2)");
   shot(p, "decal-red");
   // A fade of a half: halfway between the floor and the red
   rig.fx.decals.clear();
@@ -886,7 +885,7 @@ fn decalTest(device: &mut Device) {
   rig.fx.decals.add(d);
   drawScene(device, &mut rig, &camera, &light, &list);
   let faded = grab(p);
-  expect(absf(*faded[at] - 0.75) < 0.04 && absf(*faded[at + 1usize] - 0.25) < 0.04, "a fade of 0.5 shows half of it");
+  expect((*faded[at] - 0.75).abs() < 0.04 && (*faded[at + 1usize] - 0.25).abs() < 0.04, "a fade of 0.5 shows half of it");
   // A decal whose up is sideways does not take a floor facing up
   rig.fx.decals.clear();
   var sideways = Decal.at(material, Mat4.fromTrs(Vec3(1., 0., 0.), Quat.angleAxis(-1.5707964, Vec3(0., 0., 1.)), Vec3(1., 2., 2.)));
@@ -980,26 +979,26 @@ fn finish(device: &mut Device) {
   let base = Color(0.3, 0.3, 0.3, 1.);
   drawFlat(device, &mut rig, base);
   let plain = px(p, 64usize, 64usize, 0usize);
-  expect(absf(plain - 0.3) < 0.003, "no finish: the frame is shown as it is");
+  expect((plain - 0.3).abs() < 0.003, "no finish: the frame is shown as it is");
   let srgb = 1.055 * libc.powf(0.3, 1. / 2.4) - 0.055;
   // Gain 1.2 on red: in display-encoded values
   rig.post.finish.grade = true;
   rig.post.finish.gain = Vec3(1.2, 1., 1.);
   drawFlat(device, &mut rig, base);
-  expect(absf(px(p, 64usize, 64usize, 0usize) - decode(srgb * 1.2)) < 0.004, "gain scales the whites (red, in display-encoded values)");
-  expect(absf(px(p, 64usize, 64usize, 1usize) - 0.3) < 0.003, "and the other channels are left");
+  expect((px(p, 64usize, 64usize, 0usize) - decode(srgb * 1.2)).abs() < 0.004, "gain scales the whites (red, in display-encoded values)");
+  expect((px(p, 64usize, 64usize, 1usize) - 0.3).abs() < 0.003, "and the other channels are left");
   rig.post.finish.gain = Vec3(1., 1., 1.);
   rig.post.finish.lift = Vec3(0.1, 0.1, 0.1);
   drawFlat(device, &mut rig, base);
-  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(srgb + 0.1 * (1. - srgb))) < 0.004, "lift raises the blacks: v + lift (1 - v)");
+  expect((px(p, 64usize, 64usize, 1usize) - decode(srgb + 0.1 * (1. - srgb))).abs() < 0.004, "lift raises the blacks: v + lift (1 - v)");
   rig.post.finish.lift = Vec3(0., 0., 0.);
   rig.post.finish.gamma = Vec3(2., 2., 2.);
   drawFlat(device, &mut rig, base);
-  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(libc.sqrtf(srgb))) < 0.004, "gamma 2 brightens the middle: v^(1/2)");
+  expect((px(p, 64usize, 64usize, 1usize) - decode(libc.sqrtf(srgb))).abs() < 0.004, "gamma 2 brightens the middle: v^(1/2)");
   rig.post.finish.gamma = Vec3(1., 1., 1.);
   rig.post.finish.saturation = 0.;
   drawFlat(device, &mut rig, Color(0.6, 0.2, 0.1, 1.));
-  expect(absf(px(p, 64usize, 64usize, 0usize) - px(p, 64usize, 64usize, 2usize)) < 0.004, "saturation 0: red and blue come out the same (grey)");
+  expect((px(p, 64usize, 64usize, 0usize) - px(p, 64usize, 64usize, 2usize)).abs() < 0.004, "saturation 0: red and blue come out the same (grey)");
   rig.post.finish.saturation = 1.;
   // The table: a size-2 table that inverts display-encoded values
   var table = List[u8].empty();
@@ -1023,7 +1022,7 @@ fn finish(device: &mut Device) {
   rig.post.setTable(device, 2u32, tv);
   rig.post.finish.tableStrength = 1.;
   drawFlat(device, &mut rig, base);
-  expect(absf(px(p, 64usize, 64usize, 1usize) - decode(1. - srgb)) < 0.004, "a table that inverts, read at the display-encoded colour");
+  expect((px(p, 64usize, 64usize, 1usize) - decode(1. - srgb)).abs() < 0.004, "a table that inverts, read at the display-encoded colour");
   rig.post.finish.tableStrength = 0.;
   rig.post.finish.grade = false;
   // Vignette: the corners darker, the middle not
@@ -1031,7 +1030,7 @@ fn finish(device: &mut Device) {
   drawFlat(device, &mut rig, base);
   let middle = px(p, 64usize, 64usize, 0usize);
   let corner = px(p, 0usize, 0usize, 0usize);
-  expect(absf(middle - 0.3) < 0.003, "the vignette leaves the middle");
+  expect((middle - 0.3).abs() < 0.003, "the vignette leaves the middle");
   expect(corner < middle * 0.72 && corner > middle * 0.6, "and darkens the corner by about a third");
   rig.post.finish.vignette = 0.;
   // Grain: a spread about the same mean
@@ -1055,10 +1054,10 @@ fn finish(device: &mut Device) {
   let mean = sum / n;
   let spread = (sumSquares / n - mean * mean).sqrt();
   eprint <- "measured: grain 0.05: mean "; eprint <- mean; eprint <- " spread "; eprint <- spread; eprint <- "\n";
-  expect(absf(mean - 0.3) < 0.006 && spread > 0.01, "film grain spreads the values and keeps the mean");
+  expect((mean - 0.3).abs() < 0.006 && spread > 0.01, "film grain spreads the values and keeps the mean");
   rig.post.finish.grain = 0.;
   drawFlat(device, &mut rig, base);
-  expect(absf(px(p, 10usize, 10usize, 1usize) - px(p, 90usize, 70usize, 1usize)) < 0.0001, "and with the grain off the frame is uniform again");
+  expect((px(p, 10usize, 10usize, 1usize) - px(p, 90usize, 70usize, 1usize)).abs() < 0.0001, "and with the grain off the frame is uniform again");
 }
 
 // The linear light of a display-encoded value
@@ -1086,13 +1085,13 @@ fn exposure(device: &mut Device) {
     let level = levels[k];
     let e = settle(device, &mut rig, &back, level, &s, 3u32, 1.);
     let want = exposureFor(level, 0.18, 0.);
-    let error = absf(e[0] / want - 1.);
+    let error = (e[0] / want - 1.).abs();
     if error > worst { worst = error; }
     expect(error < 0.03, "the settled exposure is 0.18 / L, within the histogram's bin");
     // And the tone map used it: the picture is the middle grey 0.18 (the
     // tone map is off, the frame L times the exposure)
     let shown = px(p, 64usize, 64usize, 1usize);
-    expect(absf(shown / 0.18 - 1.) < 0.04, "and the picture shows it: the frame's average is a middle grey");
+    expect((shown / 0.18 - 1.).abs() < 0.04, "and the picture shows it: the frame's average is a middle grey");
     k = k + 1usize;
   }
   eprint <- "measured: worst exposure error against 0.18 / L "; eprint <- worst; eprint <- "\n";
@@ -1100,17 +1099,17 @@ fn exposure(device: &mut Device) {
   var c = s;
   c.compensationEv = 1.;
   let plus = settle(device, &mut rig, &back, 0.4, &c, 3u32, 1.);
-  expect(absf(plus[0] / exposureFor(0.4, 0.18, 1.) - 1.) < 0.03, "a compensation of +1 stop doubles the exposure");
+  expect((plus[0] / exposureFor(0.4, 0.18, 1.) - 1.).abs() < 0.03, "a compensation of +1 stop doubles the exposure");
   // The clamps
   var clamped = s;
   clamped.maxEv = 1.;
   let high = settle(device, &mut rig, &back, 0.05, &clamped, 3u32, 1.);
-  expect(absf(high[0] / 2. - 1.) < 0.001, "the exposure is held at the greatest, +1 stop");
-  expect(absf(high[2] / 2. - 1.) < 0.001, "and its target with it");
+  expect((high[0] / 2. - 1.).abs() < 0.001, "the exposure is held at the greatest, +1 stop");
+  expect((high[2] / 2. - 1.).abs() < 0.001, "and its target with it");
   clamped.maxEv = 10.;
   clamped.minEv = -1.;
   let low = settle(device, &mut rig, &back, 11., &clamped, 3u32, 1.);
-  expect(absf(low[0] / 0.5 - 1.) < 0.001, "and at the least, -1 stop");
+  expect((low[0] / 0.5 - 1.).abs() < 0.001, "and at the least, -1 stop");
   // Adaptation: from the exposure for L = 0.4 to the one for 2.0 over a
   // tenth of a second at a speed of 3 a second, in log space
   var slow = s;
@@ -1123,7 +1122,7 @@ fn exposure(device: &mut Device) {
   let evWant = evBefore + (evTarget - evBefore) * (1. - libc.expf(-0.1 * 3.));
   let evGot = log2of(after[0]);
   eprint <- "measured: adaptation, want "; eprint <- evWant; eprint <- " stops, got "; eprint <- evGot; eprint <- "\n";
-  expect(absf(evGot - evWant) < 0.05, "the exposure moves towards the target as the exponential in log space says");
+  expect((evGot - evWant).abs() < 0.05, "the exposure moves towards the target as the exponential in log space says");
 }
 
 fn main() i32 {

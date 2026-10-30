@@ -76,8 +76,6 @@ const SIDEZ = 256usize;
 const HEIGHT = 6.f;
 const HALF_VIEW = 2.18382f;
 
-fn absf(x: f32) f32 { if x < 0. { 0. - x } else { x } }
-fn minf(a: f32, b: f32) f32 { if a < b { a } else { b } }
 fn maxf(a: f32, b: f32) f32 { if a > b { a } else { b } }
 
 // A number from 0 to 1 from the state 's', which moves on
@@ -117,7 +115,7 @@ fn topDown() Camera {
 fn dark() Light { Light.directional(Vec3(0., -1., 0.), Color.gray(0.), Color.gray(0.)) }
 
 fn expectNear(got: f32, want: f32, within: f32, label: &Array[u8]) {
-  if !expect(absf(got - want) <= within, label) {
+  if !expect((got - want).abs() <= within, label) {
     eprint <- "  got "; eprint <- got; eprint <- ", want "; eprint <- want; eprint <- " (within "; eprint <- within; eprint <- ")\n";
   }
 }
@@ -283,9 +281,9 @@ fn clusterChecks(renderer: &mut Renderer, device: &mut Device) {
       var radius = 0.f;
       renderer.lights.lightSphere(l, &mut center, &mut radius);
       let v = view * center;
-      let dx = maxf(maxf(lo.x - v.x, v.x - hi.x), 0.);
-      let dy = maxf(maxf(lo.y - v.y, v.y - hi.y), 0.);
-      let dz = maxf(maxf(lo.z - v.z, v.z - hi.z), 0.);
+      let dx = maxf(lo.x - v.x, v.x - hi.x).max(0.);
+      let dy = maxf(lo.y - v.y, v.y - hi.y).max(0.);
+      let dz = maxf(lo.z - v.z, v.z - hi.z).max(0.);
       let touchesBox = dx * dx + dy * dy + dz * dz <= radius * radius;
       let listed = k < count && renderer.lights.clusterLight(c, k) == u32.from(l);
       if listed { k = k + 1u32; }
@@ -597,7 +595,7 @@ fn lightChecks(renderer: &mut Renderer, device: &mut Device, color: &Texture, de
     let want = 0.8 / pi * 8. * cosine * pointFalloff(d2, 10., 0.) * spotFalloff(cosine, scale, offset);
     let got = ch(p, x, 128usize, 0usize);
     expectNear(got, want, maxf(1.5 / 255., 0.015 * want), "the spot's row against the formula");
-    if absf(got - want) > worst { worst = absf(got - want); }
+    if (got - want).abs() > worst { worst = (got - want).abs(); }
     x = x + 1usize;
   }
   eprint <- "measured the spot's row: the largest difference "; eprint <- worst * 255.; eprint <- " of 255\n";
@@ -795,7 +793,7 @@ fn crowd(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &
         // The ray meets the plane y = 0 somewhere along its line; it is seen at this pixel if the
         // point is in front of the camera and inside its depth range
         let hit = vp * Vec4(world.x, world.y, world.z, 1.);
-        if absf(dir.y) > 0.001 && hit.w > 0. && hit.z / hit.w > 0. && hit.z / hit.w < 1. && world.x >= minX {
+        if dir.y.abs() > 0.001 && hit.w > 0. && hit.z / hit.w > 0. && hit.z / hit.w < 1. && world.x >= minX {
           var expected = 0.f;
           var l = 0usize;
           while l < 200usize {
@@ -808,7 +806,7 @@ fn crowd(renderer: &mut Renderer, device: &mut Device, color: &Texture, depth: &
           if expected > peak { peak = expected; }
           if pass == 1u32 && expected < 0.98 {
             let got = ch(p, pxl, pyl, 0usize);
-            let err = absf(got - expected);
+            let err = (got - expected).abs();
             compared = compared + 1u32;
             if err > worst { worst = err; }
             if err > maxf(2. / 255., 0.02 * expected) { bad = bad + 1u32; }
