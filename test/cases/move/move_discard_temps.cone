@@ -1,0 +1,98 @@
+// '_ = expr;' finishes its statement as a bare expression statement does: the
+// temporaries the expression made and lent (an argument written '&T()') die at
+// its end, and so does the value discarded.
+//
+// 'T' counts its finalizations in a global. Each section runs its statement once
+// and prints how many T died; the whole output is the assertion.
+//
+// - a bare call, the form that always worked: one temporary
+// - '_ = f(&T());': the temporary, and the value f returns (a plain number)
+// - '_ = x.m(&T());': a method call, whose receiver is a variable also holding a T
+// - '_ = f(g(&T()));': a temporary inside an argument expression
+// - '_ = makeT();': the discarded value is itself a T
+// - '_ = h(&T())' where h returns a T: the temporary and the discarded value
+// - '_ = f(&T(), &T());': two temporaries
+// - '_ = fails(&T());' where the result holds a String (a raw pointer inside):
+//   flow keeps a temporary a stored value may point into, and nothing is stored
+// - a block with a local, and a statement in a loop: each pass kills what it made
+
+mod move_discard_temps;
+
+import stdio use *;
+import collections use String;
+
+var @threadlocal dead: i32 = 0;
+
+struct T {
+  pub n: i32;
+  fn final(self: &uni) { dead = dead + 1; }
+}
+
+fn f(t: &T) i32 { t.n }
+fn two(a: &T, b: &T) i32 { a.n + b.n }
+fn g(t: &T) &T { t }
+fn makeT() T { T(5) }
+fn h(t: &T) T { T(t.n) }
+
+// A result holding a String: a value that holds a raw pointer, which flow must
+// not take for something the lent temporary could be pointed into
+struct Why { pub text: String; }
+fn fails(t: &T) Result[void, Why] { Err(Why(String.from("no"))) }
+fn works(t: &T) Result[void, Why] { Ok[void, Why](nil) }
+
+struct X {
+  pub keep: T;
+  fn m(self: &, t: &T) i32 { t.n + keep.n }
+}
+
+fn report(label: &str, expected: i32) {
+  printStr(label);
+  printStr(": ");
+  printInt(i64.from(dead));
+  printStr(if dead == expected { " ok" } else { " WRONG" });
+  printStr("\n");
+  dead = 0;
+}
+
+fn main() {
+  f(&T(1));
+  report("bare call", 1);
+
+  _ = f(&T(1));
+  report("discard f(&T())", 1);
+
+  let x = X(T(2));
+  _ = x.m(&T(1));
+  report("discard x.m(&T()), x alive", 1);
+
+  _ = f(g(&T(1)));
+  report("discard f(g(&T()))", 1);
+
+  _ = makeT();
+  report("discard makeT()", 1);
+
+  _ = h(&T(1));
+  report("discard h(&T()) returning T", 2);
+
+  _ = two(&T(1), &T(2));
+  report("discard two(&T(), &T())", 2);
+
+  _ = fails(&T(1));
+  report("discard fails(&T()), a result holding a String", 1);
+
+  _ = works(&T(1));
+  report("discard works(&T()), the same result Ok", 1);
+
+  _ = {
+    let t = T(3);
+    f(&t)
+  };
+  report("discard block with a local", 1);
+
+  var i = 0;
+  while i < 3 {
+    _ = f(&T(i));
+    i = i + 1;
+  }
+  report("discard in a loop, three passes", 3);
+}

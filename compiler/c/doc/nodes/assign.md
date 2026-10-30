@@ -85,7 +85,10 @@ resolution leaves unbound (`assignTargetNameRes`), so it has no declaration:
 before reaching for the declaration. Its type is the type of the value it takes
 (`assignAnonTypes`). Flow treats it as any target for the value: the value is
 moved or counted (`flowHandleMoveOrCopy`) and nothing about a variable changes
-(`assignlvalrtype` returns early). Generation drops the value at the statement's
+(`assignlvalrtype` returns early). Nothing leaves a discarding statement, so
+`flowTempEscape` keeps none of the temporaries its value's expression made (a
+borrow `&T()` lent to the call): they, and the value, die at the statement's end
+as a bare expression statement's do. Generation drops the value at the statement's
 end: `genlStore` hands it to `genlDiscard`, which keeps it in a temporary's slot
 (`genlTempKeep`) so it is finalized with the statement's other temporaries, newest
 first. `_ = f();` is one target taking the whole value, a tuple included. `let _ =

@@ -1419,7 +1419,9 @@ void flowTempEscape(INode *node, int out) {
         return;
     case AssignTag:
         flowTempEscape(((AssignNode *)node)->lval, TempOutNone);
-        flowTempEscape(((AssignNode *)node)->rval, TempOutBorrow);
+        // A '_' target keeps nothing: the value dies with the statement
+        flowTempEscape(((AssignNode *)node)->rval,
+            assignIsAnon(((AssignNode *)node)->lval) ? TempOutNone : TempOutBorrow);
         return;
     case RefCountTag:
         flowTempEscape(((RefCountNode *)node)->exp, out);
