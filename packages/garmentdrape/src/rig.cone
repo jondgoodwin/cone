@@ -42,14 +42,14 @@ pub fn proxyDistance(pr: &Proxy, model: &Transform3, p: Vec3) f32 {
   let c = model.transformPoint(pr.a);
   let q = model.rotation * pr.rotation;
   let loc = q.conjugate() * (p - c);
-  let dx = fabsf(loc.x) - pr.b.x;
-  let dy = fabsf(loc.y) - pr.b.y;
-  let dz = fabsf(loc.z) - pr.b.z;
-  let ox = fmaxf(dx, 0.);
-  let oy = fmaxf(dy, 0.);
-  let oz = fmaxf(dz, 0.);
+  let dx = loc.x.abs() - pr.b.x;
+  let dy = loc.y.abs() - pr.b.y;
+  let dz = loc.z.abs() - pr.b.z;
+  let ox = dx.max(0.);
+  let oy = dy.max(0.);
+  let oz = dz.max(0.);
   let outside = (ox * ox + oy * oy + oz * oz).sqrt();
-  outside + fminf(fmaxf(dx, fmaxf(dy, dz)), 0.)
+  outside + fmaxf(dx, fmaxf(dy, dz)).min(0.)
 }
 
 // The three eigenvectors of a symmetric 3 x 3 matrix, longest first
@@ -69,15 +69,15 @@ fn eigen3(c00: f32, c01: f32, c02: f32, c11: f32, c12: f32, c22: f32) Eigen3 {
     sweep = sweep + 1;
     var p = 0usize;
     var q = 1usize;
-    var big = fabsf(a[1]);
-    if fabsf(a[2]) > big { p = 0usize; q = 2usize; big = fabsf(a[2]); }
-    if fabsf(a[5]) > big { p = 1usize; q = 2usize; big = fabsf(a[5]); }
+    var big = a[1].abs();
+    if a[2].abs() > big { p = 0usize; q = 2usize; big = a[2].abs(); }
+    if a[5].abs() > big { p = 1usize; q = 2usize; big = a[5].abs(); }
     if big < 1e-14 { sweep = 1000; continue; }
     let app = a[p * 3usize + p];
     let aqq = a[q * 3usize + q];
     let apq = a[p * 3usize + q];
     let theta = (aqq - app) / (2. * apq);
-    let t = (if theta < 0. { -1. } else { 1. }) / (fabsf(theta) + (theta * theta + 1.).sqrt());
+    let t = (if theta < 0. { -1. } else { 1. }) / (theta.abs() + (theta * theta + 1.).sqrt());
     let c = 1. / (t * t + 1.).sqrt();
     let s = t * c;
     // A' = J^T A J with J the rotation in the (p, q) plane
@@ -123,7 +123,6 @@ fn eigen3(c00: f32, c01: f32, c02: f32, c11: f32, c12: f32, c22: f32) Eigen3 {
     Vec3(v[order[2]], v[3usize + order[2]], v[6usize + order[2]]))
 }
 
-pub fn fabsf(a: f32) f32 inline { libc.fabsf(a) }
 pub fn fminf(a: f32, b: f32) f32 inline { if a < b { a } else { b } }
 pub fn fmaxf(a: f32, b: f32) f32 inline { if a > b { a } else { b } }
 pub fn fclampf(v: f32, lo: f32, hi: f32) f32 inline { if v < lo { lo } else if v > hi { hi } else { v } }
@@ -374,14 +373,14 @@ fn fitProxies(skeleton: &Skeleton, models: &List[Transform3], mesh: &Mesh, skin:
           r = fmaxf(r, perp.length());
           i = i + 1usize;
         }
-        let half = fmaxf(halves[ax] - r, 0.);
+        let half = (halves[ax] - r).max(0.);
         // points past the cylinder must still be within r of the end point
         var rr = r;
         i = 0usize;
         while i < pts.len() {
           let d = *pts[i] - centre;
           let s = d.dot(dir);
-          let over = fabsf(s) - half;
+          let over = s.abs() - half;
           if over > 0. {
             let perp = d - dir * s;
             rr = fmaxf(rr, (perp.lengthSquared() + over * over).sqrt());

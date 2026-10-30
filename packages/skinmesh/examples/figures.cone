@@ -78,10 +78,10 @@ struct Canvas {
 
   // A triangle in screen space with depths, filled
   fn triangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, col: Vec3) {
-    let minx = imax(cx0, i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
-    let maxx = imin(cx1 - 1, i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
-    let miny = imax(cy0, i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
-    let maxy = imin(cy1 - 1, i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let minx = cx0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (cx1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = cy0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (cy1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
     let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if den > -0.0000001 && den < 0.0000001 { return; }
     var y = miny;
@@ -106,7 +106,7 @@ struct Canvas {
   fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32, thick: i32) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let steps = i32.from(fmax3(absf(dx), absf(dy), 1.)) + 1;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
     var i = 0;
     while i <= steps {
       let t = f32.from(i) / f32.from(steps);
@@ -127,9 +127,6 @@ struct Canvas {
   }
 }
 
-fn absf(a: f32) f32 { if a < 0. {-a} else {a} }
-fn imax(a: i32, b: i32) i32 { if a > b {a} else {b} }
-fn imin(a: i32, b: i32) i32 { if a < b {a} else {b} }
 fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
 fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
 
@@ -306,7 +303,7 @@ fn save(cv: &Canvas, name: &str) {
   var full = String.from("C:/src/skinmesh-shots/");
   full.append(name);
   let op = Path.from(full.view());
-  fs.writeFile(&op, png.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e.message().view(), "\n"; return; }
   printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
 }
 
@@ -511,7 +508,7 @@ fn report(name: &str, s: &Skin) bool {
 
 fn main() i32 {
   let dir = Path.from("C:/src/skinmesh-shots");
-  fs.makeDirAll(&dir);
+  if let Err(e) = fs.makeDirAll(&dir) { print <- "could not make C:/src/skinmesh-shots: ", e.message().view(), "\n"; return 1; }
   var ok = true;
   let names = ["human", "creature", "hand", "tree"];
   var graphs = List[SkinGraph].empty();

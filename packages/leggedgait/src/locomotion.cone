@@ -195,7 +195,7 @@ pub struct Locomotion {
       if d > radius { radius = d; }
       i = i + 1usize;
     }
-    let veff = fmaxf3(speed, 0.5 * absf(yawRate) * radius);
+    let veff = fmaxf3(speed, 0.5 * yawRate.abs() * radius);
     if moving { if veff < set.stopSpeed { moving = false; } }
     else { if veff > set.startSpeed { moving = true; } }
     froude = veff * veff / (g * h);
@@ -228,11 +228,11 @@ pub struct Locomotion {
     var minSlack = 1.0e9f;
     i = 0usize;
     while i < n { if legs.legs[i].slack < minSlack { minSlack = legs.legs[i].slack; } i = i + 1usize; }
-    let fr = fmaxf3(froude, 0.0001);
+    let fr = froude.max(0.0001);
     var rel = 2.3 * libc.powf(fr, 0.3);
     if rel < 1.0 { rel = 1.0; }
     var stride = strideScale * h * rel;
-    let cap = maxExcursion * 2. * minSlack / fmaxf3(duty, 0.2);
+    let cap = maxExcursion * 2. * minSlack / duty.max(0.2);
     if stride > cap { stride = cap; }
     strideLength = stride;
     if moving && started && dt > 0. { cycle = cycle + veff * dt / stride; }
@@ -241,7 +241,7 @@ pub struct Locomotion {
     let cs = cos(yaw);
     let sn = sin(yaw);
     // ---- 4. phase and feet
-    let period = stride / fmaxf3(veff, 0.0001);
+    let period = stride / veff.max(0.0001);
     i = 0usize;
     while i < n {
       let lg = legs.legs[i];
@@ -275,7 +275,7 @@ pub struct Locomotion {
             if off > 0.97 * lg.slack {
               st.swinging = true;
               st.timed = true;
-              st.tdur = fmaxf3(0.5 * (1. - duty) * period, 0.12);
+              st.tdur = (0.5 * (1. - duty) * period).max(0.12);
               st.liftoff = true;
               st.lift = st.foot;
               st.u0 = 0.;
@@ -415,7 +415,7 @@ pub struct Locomotion {
       self.buildPose(rig, ground, true);
     } else if drop > 0. {
       // Let it rise again, slowly, as far as the legs now allow
-      drop = fmaxf3(drop - 0.5 * dt, 0.);
+      drop = (drop - 0.5 * dt).max(0.);
       let again = self.worstExcess(rig, ground);
       if again > 0. { drop = drop + again; }
       self.buildPose(rig, ground, true);
@@ -442,7 +442,7 @@ pub struct Locomotion {
     while m < set.motions.len() {
       let mo = set.motions[m];
       let amp = *amps[m];
-      if absf(amp) > 0.00001 && mo.kind != KIND_LEG {
+      if amp.abs() > 0.00001 && mo.kind != KIND_LEG {
         let axis = if mo.axis == AXIS_PITCH { Vec3(1., 0., 0.) } else if mo.axis == AXIS_YAW { Vec3(0., 1., 0.) } else { Vec3(0., 0., 1.) };
         var c = 0usize;
         while c < rig.chains.len() {
