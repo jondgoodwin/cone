@@ -58,10 +58,9 @@ void logicNameRes(NameResState *pstate, LogicNode *node) {
     inodeNameRes(pstate, &node->rexp);
 }
 
-// An operand of '||' or '&&' that is an Option or Result is refused, on either side,
-// until a later PR defines those operators on them: written now, 'opt || flag' would
-// change meaning silently. They convert to bool in a condition and under '!' only.
-// Answer whether it refused.
+// The right operand of a bool's '||' or '&&' is a bool: an Option or Result converts to
+// bool in a condition and under '!' only, and is refused here ('flag && res'). Their own
+// '||' and '&&' are the methods of the left operand's type. Answer whether it refused.
 static int logicOptionOperand(INode *operand) {
     if (!iexpIsOptionOrResult(operand))
         return 0;
@@ -70,21 +69,27 @@ static int logicOptionOperand(INode *operand) {
         dcl = (StructNode*)iexpGetDerefTypeDcl(operand);
     int option = dcl->namesym == optionName;
     errorMsgNode(operand, ErrorOptionLogic,
-        "%s cannot be an operand of '||' or '&&' yet: they are not defined on it. It converts to bool in a condition ('if', 'while') and under '!', but here the meaning is not yet decided. Test it with 'x is %s' (or 'x is %s').",
+        "%s cannot be the right operand of a bool's '||' or '&&': they take a bool, and it converts to bool only in a condition ('if', 'while') and under '!'. Test it with 'x is %s' (or 'x is %s').",
         option ? "An Option" : "A Result", option ? "Some" : "Ok", option ? "None" : "Err");
     return 1;
 }
 
-// Type check an operand of '||' or '&&' and coerce it to bool
+// Coerce a checked operand of a bool's '||' or '&&' to bool
 static int logicOperandCoerce(TypeCheckState *pstate, INode **operand) {
-    inodeTypeCheck(pstate, operand, (INode*)boolType);
     if (logicOptionOperand(*operand))
         return 1;
     return iexpCheckedCoerceIn(pstate, (INode*)boolType, operand);
 }
 
-// Analyze logic node
-void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
+// Analyze logic node. '||' and '&&' are methods of the left operand's type, so the left
+// operand is checked first and its type says which: a bool's are the primitives declared
+// on bool, whose body is this node, and a macro method (Option's, Result's) expands in
+// its place (fnCallLogicMethod)
+void logicTypeCheck(TypeCheckState *pstate, LogicNode **nodep) {
+    LogicNode *node = *nodep;
+    inodeTypeCheck(pstate, &node->lexp, (INode*)boolType);
+    if (fnCallLogicMethod(pstate, nodep))
+        return;
     if (0 == logicOperandCoerce(pstate, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     // The right operand runs only when the left is true (for '&&'), or false (for
@@ -92,6 +97,7 @@ void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
     // operand changes may or may not happen, so afterwards either path may hold.
     NarrowEnv *left = narrowSave();
     narrowAssumeLocal(node->lexp, node->tag == AndLogicTag);
+    inodeTypeCheck(pstate, &node->rexp, (INode*)boolType);
     if (0 == logicOperandCoerce(pstate, &node->rexp))
         errorMsgNode(node->rexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     narrowRestore(narrowJoin(left, narrowSave()));

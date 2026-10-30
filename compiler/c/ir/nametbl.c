@@ -206,6 +206,8 @@ void nametblInit() {
     remName = nametblFind("%", 1);
     orName = nametblFind("|", 1);
     andName = nametblFind("&", 1);
+    logicOrName = nametblFind("||", 2);
+    logicAndName = nametblFind("&&", 2);
     xorName = nametblFind("^", 1);
     shlName = nametblFind("<<", 2);
     shrName = nametblFind(">>", 2);

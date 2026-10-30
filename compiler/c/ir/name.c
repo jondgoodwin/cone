@@ -62,6 +62,8 @@ Name *divName;
 Name *remName;
 Name *orName;
 Name *andName;
+Name *logicOrName;
+Name *logicAndName;
 Name *xorName;
 Name *shlName;
 Name *shrName;
@@ -162,7 +164,7 @@ static struct NameOperator {
     {&plusName, "pl"},    {&minusName, "mi"},   {&multName, "ml"},    {&divName, "dv"},
     {&remName, "rm"},     {&eqName, "eq"},      {&neName, "ne"},      {&ltName, "lt"},
     {&leName, "le"},      {&gtName, "gt"},      {&geName, "ge"},      {&andName, "an"},
-    {&orName, "or"},      {&xorName, "eo"},     {&shlName, "ls"},     {&shrName, "rs"},
+    {&orName, "or"},      {&logicAndName, "aa"}, {&logicOrName, "oo"}, {&xorName, "eo"},     {&shlName, "ls"},     {&shrName, "rs"},
     {&indexName, "ix"},   {&parensName, "cl"},  {&incrName, "pp"},    {&decrName, "mm"},
     {&plusEqName, "pL"},  {&minusEqName, "mI"}, {&multEqName, "mL"},  {&divEqName, "dV"},
     {&remEqName, "rM"},   {&andEqName, "aN"},   {&orEqName, "oR"},    {&xorEqName, "eO"},

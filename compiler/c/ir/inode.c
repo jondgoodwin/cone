@@ -568,7 +568,7 @@ static void inodeTypeCheckWalkNode(TypeCheckState *pstate, INode **node, INode *
     case NotLogicTag:
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
-        logicTypeCheck(pstate, (LogicNode *)*node); break;
+        logicTypeCheck(pstate, (LogicNode **)node); break;
     case AwaitTag:
         awaitTypeCheck(pstate, (AwaitNode *)*node, expectType); break;
     case YieldTag:

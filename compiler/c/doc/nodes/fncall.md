@@ -249,6 +249,19 @@ declares a macro method by the name, nothing here runs, and every operator is
 checked as it always was; where one does, an operator by that name whose method
 is a function goes on with its receiver already checked, `==`'s, `!=`'s, `<-`'s
 and a number operator's expected argument type still taken from it.
+**`||` and `&&` are methods of the left operand's type** (`fnCallLogicMethod`, called by
+`logicTypeCheck` once the left operand is checked). A left operand of type `bool` (or a
+reference to one) finds the primitives declared on `bool` (`LogicAndIntrinsic`,
+`LogicOrIntrinsic`, [intrinsic](intrinsic.md)) and the `LogicNode` goes on as it always has:
+narrowing, folding, constant evaluation and code generation are the node's. Any other type
+needs the method: a macro method expands in the node's place, a function method is called
+(its right operand evaluated first, as for any call), and a type with neither is
+`ErrorNoLogicMethod` (1564), naming the operator and the type. The left operand is checked,
+and a checked tree is not checked again (a lowered call in it fails the second check), so it is
+held once in a hidden variable and the method is used on that, `{let tmp = left; tmp.||(right)}`;
+the right operand is not checked, so a macro's `lazy` parameter takes it whole. Option's and
+Result's are macros in core. A bool's right operand that is an Option or a Result is
+`ErrorOptionLogic` (1561).
 Then, for a member access by name that is not an operator, the **receiver is
 checked ahead of the arguments** and its type asked what the name binds. **A
 receiver that is a number type with the member `from`** — named directly,
@@ -705,8 +718,9 @@ receiver is granted it when the function being checked is written in the module
 that declares the receiver's type — `dclInfoGetModule` of `pstate->fn` and of the
 type agree — or in an extension of the receiver's enum (`structSeesPrivate`,
 `structEnumSeesPrivate`). Every other receiver gets `ErrorNotPublic`. An `isTrue`
-a coercion injects is lowered with no state (`iexpCoerce` passes none), so only
-`self` reaches a private one.
+a coercion injects is lowered with the state of the check under way
+(`iexpCoerceIn`, `iexpCoerceCondition`), so it reaches a private one as an explicit
+call does: from the module that declares it.
 
 ⚠ **Visible is not reachable through a vtable.** A call or field access with
 `FlagVDisp` reads the member's slot, and a private member has none

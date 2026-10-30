@@ -767,9 +767,10 @@ enum ErrorCode {
     ErrorVectorFrom = 1558,     // `.from`, a vector's contents or `select` given a value of a type they do not convert or take. Pointed at the value
     ErrorVectorPick = 1559,     // A vector's lane picked that it has not: a position past its last lane (`v.(5)` of four), a lane name it has not (`v.w` of three lanes, `v.x` of a vector over four lanes, a name that is not x, y, z or w), or a pick or `join` whose result would be wider than 64 lanes. Pointed at the position or name
     ErrorVectorSlice = 1560,    // A vector `load` or `store` of a mask, which has no memory form; a mask is loaded as numbers and compared. Pointed at the call
-    ErrorOptionLogic = 1561,    // An Option or Result as an operand of `||` or `&&`, on either side. They convert to bool in a condition and under `!`, and are refused here until a later PR defines those operators on them. Pointed at the operand
-    ErrorMacroAwait = 1562,     // A compound assignment through a macro method, `x += await f()`, whose operand holds an `await`: the operand is substituted into the macro's body, where the wait cannot be cut. Pointed at the operand
+    ErrorOptionLogic = 1561,    // An Option or Result as the RIGHT operand of a bool's `||` or `&&`: a bool's operators take a bool, and an Option or Result converts to bool only in a condition and under `!`. Pointed at the operand
+    ErrorMacroAwait = 1562,     // A compound assignment through a macro method, `x += await f()`, or the right operand of a macro method's `||` or `&&`, `opt || await f()`, that holds an `await`: the operand is substituted into the macro's body, where the wait cannot be cut. Pointed at the operand
     ErrorMacroMixedSet = 1563,  // A macro and a function declared under one name in one scope or one type: a set of same-named declarations holds all macros or all functions. Pointed at the later declaration, and again at the earlier
+    ErrorNoLogicMethod = 1564,  // `||` or `&&` written with a left operand whose type declares no `||`/`&&` (a number, a pointer, a struct without them): they are methods of the left operand's type, and bool, Option and Result have them. Pointed at the left operand
 
     // Warnings
     WarnCode = 3000,
