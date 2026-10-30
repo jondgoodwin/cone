@@ -60,7 +60,7 @@
 //   cs.collect() the rest gathered into a ChatReply        Result[ChatReply, ChatError]
 //   Delta: id model role content finishReason usage
 //   ChatError: e.kind e.status e.detail e.errorType e.code  e.message()                (ERRORS)
-//     e.isCancelled() e.isTimedOut() e.isRetryable();  ChatErrorKind;  errorKindName(k)
+//     e.isCancelled() e.isTimedOut() e.isRetryable();  ChatErrorKind (k.name())
 //   For a program that drives the pieces itself (sans IO, and for a synchronous program):
 //   httpRequest(ep, req, stream)    the httpclient.Request that posts req        Result[httpclient.Request, ChatError]
 //   replyOfResponse(resp)           an httpclient.Response read as a whole reply Result[ChatReply, ChatError]
@@ -182,19 +182,21 @@ pub enum ChatErrorKind {
   TimedOut,      // its deadline passed
   Api,           // the server answered with an error status: status, and the API's error object
   Decode,        // a reply or a chunk is not what the API says
-  Stream        // a stream broke: an error chunk, or it ended before the reply was whole
-}
+  Stream;        // a stream broke: an error chunk, or it ended before the reply was whole
 
-// The name of a kind, in lower case
-pub fn errorKindName(k: ChatErrorKind) &str {
-  if k == ChatErrorKind.NoKey {"nokey"}
-  else if k == ChatErrorKind.Request {"request"}
-  else if k == ChatErrorKind.Transport {"transport"}
-  else if k == ChatErrorKind.Cancelled {"cancelled"}
-  else if k == ChatErrorKind.TimedOut {"timedout"}
-  else if k == ChatErrorKind.Api {"api"}
-  else if k == ChatErrorKind.Decode {"decode"}
-  else {"stream"}
+  // The name of a kind, in lower case
+  pub fn name(self: ChatErrorKind) &str {
+    match self {
+      case NoKey {"nokey"}
+      case Request {"request"}
+      case Transport {"transport"}
+      case Cancelled {"cancelled"}
+      case TimedOut {"timedout"}
+      case Api {"api"}
+      case Decode {"decode"}
+      case Stream {"stream"}
+    }
+  }
 }
 
 // Why a call has no reply. Nothing in it is ever the API key
@@ -225,7 +227,7 @@ pub struct ChatError is Error {
 
   // One line: 'api: 401 invalid_api_key: Incorrect API key provided'
   pub fn message(self: &) String {
-    var out = String.from(errorKindName(kind));
+    var out = String.from(kind.name());
     out.append(": ");
     if kind == ChatErrorKind.Api {
       out.appendUInt(u64.from(status));

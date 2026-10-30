@@ -78,12 +78,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, body: &Arra
   }
 }
 
-fn number(s: &str) u64 {
-  match collections.parseUInt(s) {
-    case let Some(v) {v}
-    case is None[u64] {0u64}
-  }
-}
+fn number(s: &str) u64 { collections.parseUInt(s) || 0u64 }
 
 fn dropStream(sv: &mut Srv, j: usize) {
   let last = sv.streams.len() - 1usize;
@@ -345,14 +340,14 @@ actor Prober {
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
     // The plain ones
-    say("get", await client.get(url(port, "/hello").view()));
+    _ = say("get", await client.get(url(port, "/hello").view()));
     var post = Request.make("POST", url(port, "/echo").view());
     post.body = String.from("ping");
     post.headers.add("Content-Type", "text/plain");
-    say("post", await client.send(post));
-    say("head", await client.send(Request.make("HEAD", url(port, "/hello").view())));
-    say("no body", await client.get(url(port, "/nobody").view()));
-    say("not found", await client.get(url(port, "/status/404").view()));
+    _ = say("post", await client.send(post));
+    _ = say("head", await client.send(Request.make("HEAD", url(port, "/hello").view())));
+    _ = say("no body", await client.get(url(port, "/nobody").view()));
+    _ = say("not found", await client.get(url(port, "/status/404").view()));
     // The redirect: two hops to the final URL, which the response names
     let final = url(port, "/redirect/0");
     let hop = say("redirect", await client.get(url(port, "/redirect/2").view()));
@@ -364,55 +359,55 @@ actor Prober {
       let k = await client.get(url(port, "/hello").view());
       n = n + 1u32;
     }
-    say("accepts so far", await client.get(url(port, "/conns").view()));
+    _ = say("accepts so far", await client.get(url(port, "/conns").view()));
 
     // A big body, whole; and past a limit of 1000
     let big = say("big", await client.get(url(port, "/big/300000").view()));
     note("  and every byte is right", bigRight(big));
     let small = Client.make(Config.make(), 1000usize);
-    say("big past the limit", await small.get(url(port, "/big/300000").view()));
-    say("small enough", await small.get(url(port, "/hello").view()));
+    _ = say("big past the limit", await small.get(url(port, "/big/300000").view()));
+    _ = say("small enough", await small.get(url(port, "/hello").view()));
 
     // Not fetches at all
-    say("bad url", await client.get("not a url"));
-    say("not http", await client.get("ftp://127.0.0.1/x"));
-    say("refused", await client.get("http://127.0.0.1:1/"));
+    _ = say("bad url", await client.get("not a url"));
+    _ = say("not http", await client.get("ftp://127.0.0.1/x"));
+    _ = say("refused", await client.get("http://127.0.0.1:1/"));
 
     // A group cancelled by a message, while the fetch is paused
     let g1 = CancelGroup.make();
     let r1 = client.getIn(url(port, "/hang").view(), IoLimits.within(g1));
     selfactor.stop(g1);
-    say("cancel while paused", await r1);
+    _ = say("cancel while paused", await r1);
 
     // A group cancelled before the fetch starts: answered at once
     let g2 = CancelGroup.make();
     g2.cancel();
-    say("cancelled before it starts", await client.getIn(url(port, "/hang").view(), IoLimits.within(g2)));
+    _ = say("cancelled before it starts", await client.getIn(url(port, "/hang").view(), IoLimits.within(g2)));
 
     // A deadline of its own, ahead
     let t3 = Instant.now();
-    say("deadline ahead", await client.getIn(url(port, "/hang").view(), IoLimits.until(t3 + Duration.fromMillis(100i64))));
+    _ = say("deadline ahead", await client.getIn(url(port, "/hang").view(), IoLimits.until(t3 + Duration.fromMillis(100i64))));
     note("  and it had passed", waitedAtLeast(t3, 90i64));
 
     // A deadline already past: answered at once
-    say("deadline past", await client.getIn(url(port, "/hang").view(), IoLimits.until(Instant.now())));
+    _ = say("deadline past", await client.getIn(url(port, "/hang").view(), IoLimits.until(Instant.now())));
 
     // A group made with a deadline
     let t5 = Instant.now();
     let g5 = CancelGroup.until(t5 + Duration.fromMillis(100i64));
-    say("group with a deadline", await client.getIn(url(port, "/hang").view(), IoLimits.within(g5)));
+    _ = say("group with a deadline", await client.getIn(url(port, "/hang").view(), IoLimits.within(g5)));
     note("  and it had passed", waitedAtLeast(t5, 90i64));
 
     // A child's deadline is the tighter of its own and its parent's, both ways
     let t6 = Instant.now();
     let p6 = CancelGroup.until(t6 + Duration.fromSeconds(30i64));
     let k6 = p6.childUntil(t6 + Duration.fromMillis(100i64));
-    say("child's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k6)));
+    _ = say("child's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k6)));
     note("  and the parent's 30 s did not pass", !waitedAtLeast(t6, 5000i64));
     let t7 = Instant.now();
     let p7 = CancelGroup.until(t7 + Duration.fromMillis(100i64));
     let k7 = p7.childUntil(t7 + Duration.fromSeconds(30i64));
-    say("parent's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k7)));
+    _ = say("parent's deadline the tighter", await client.getIn(url(port, "/hang").view(), IoLimits.within(k7)));
     note("  and the child's 30 s did not pass", !waitedAtLeast(t7, 5000i64));
 
     // A parent's cancel reaches its child's fetch
@@ -420,28 +415,28 @@ actor Prober {
     let k8 = p8.child();
     let r8 = client.getIn(url(port, "/hang").view(), IoLimits.within(k8));
     selfactor.stop(p8);
-    say("parent cancelled", await r8);
+    _ = say("parent cancelled", await r8);
 
     // A request's own deadline, and an IoLimits beside it: the tighter wins
     var own = Request.get(url(port, "/hang").view());
     own.deadline = Instant.now() + Duration.fromMillis(100i64);
     let t9 = Instant.now();
-    say("own deadline", await client.sendIn(own, IoLimits.until(t9 + Duration.fromSeconds(30i64))));
+    _ = say("own deadline", await client.sendIn(own, IoLimits.until(t9 + Duration.fromSeconds(30i64))));
     note("  and it had passed", waitedAtLeast(t9, 90i64));
     note("  and the 30 s did not", !waitedAtLeast(t9, 5000i64));
 
     // Finished before the cancel: done, and the cancel after it does nothing
     let g10 = CancelGroup.make();
-    say("finished before the cancel", await client.getIn(url(port, "/hello").view(), IoLimits.within(g10)));
+    _ = say("finished before the cancel", await client.getIn(url(port, "/hello").view(), IoLimits.within(g10)));
     note("  cancel() found the group live", g10.cancel());
     note("  and its second cancel found it cancelled already", !g10.cancel());
 
     // The first handle dropped: a clone goes on
     let twin = client.clone();
     client = Client.none();
-    say("clone after the first is dropped", await twin.get(url(port, "/hello").view()));
+    _ = say("clone after the first is dropped", await twin.get(url(port, "/hello").view()));
     client = twin.clone();
-    say("and another clone", await client.get(url(port, "/hello").view()));
+    _ = say("and another clone", await client.get(url(port, "/hello").view()));
 
     var d = done;
     d.send(1u64);
@@ -486,7 +481,7 @@ actor Dropper {
   }
 
   pub async fn run(self, port: u16, done: OneshotSender[u64]) {
-    say("client dropped under a fetch", await client.get(url(port, "/hang").view()));
+    _ = say("client dropped under a fetch", await client.get(url(port, "/hang").view()));
     var d = done;
     d.send(1u64);
   }

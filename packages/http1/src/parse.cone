@@ -60,24 +60,15 @@ fn readRequest(h: &Array[u8], cfg: &Config) Result[RequestRead, HttpError] {
   if first > cfg.maxLineBytes {
     return bad[RequestRead](ErrorKind.TooLarge, 414u16, "the request line is longer than maxLineBytes");
   }
-  var head = match parseRequestLine(&h[0usize ..< first]) {
-    case var Ok(r) {r}
-    case var Err(e) {return Err[RequestRead, HttpError](e);}
-  };
-  let fields = match parseFields(h, lineNext(h, first), cfg, true, true) {
-    case var Ok(f) {f}
-    case var Err(e) {return Err[RequestRead, HttpError](e);}
-  };
+  var head = parseRequestLine(&h[0usize ..< first])?;
+  let fields = parseFields(h, lineNext(h, first), cfg, true, true)?;
   let headers, host, hosts = fields.(headers, host, hosts);
   head.headers = headers;
   let http10 = head.version == Version.Http10;
   if hosts > 1usize {return bad[RequestRead](ErrorKind.Malformed, 400u16, "the request has more than one Host");}
   if hosts == 0usize && !http10 {return bad[RequestRead](ErrorKind.Malformed, 400u16, "an HTTP/1.1 request has no Host");}
   if head.method == Method.Connect {return bad[RequestRead](ErrorKind.Unsupported, 501u16, "CONNECT is not supported");}
-  let framing = match framingOf(&head.headers, true, http10) {
-    case var Ok(f) {f}
-    case var Err(e) {return Err[RequestRead, HttpError](e);}
-  };
+  let framing = framingOf(&head.headers, true, http10)?;
   head.authority = host;
   Ok[RequestRead, HttpError](RequestRead(head, framing))
 }
@@ -89,22 +80,13 @@ fn readResponse(h: &Array[u8], cfg: &Config) Result[ResponseRead, HttpError] {
   if first > cfg.maxLineBytes {
     return bad[ResponseRead](ErrorKind.TooLarge, 0u16, "the status line is longer than maxLineBytes");
   }
-  var head = match parseStatusLine(&h[0usize ..< first]) {
-    case var Ok(r) {r}
-    case var Err(e) {return Err[ResponseRead, HttpError](e);}
-  };
-  let fields = match parseFields(h, lineNext(h, first), cfg, false, false) {
-    case var Ok(f) {f}
-    case var Err(e) {return Err[ResponseRead, HttpError](e);}
-  };
+  var head = parseStatusLine(&h[0usize ..< first])?;
+  let fields = parseFields(h, lineNext(h, first), cfg, false, false)?;
   head.headers = fields.(headers);
   if head.status == 101u16 {
     return bad[ResponseRead](ErrorKind.Unsupported, 0u16, "101 Switching Protocols: upgrades are not supported");
   }
-  let framing = match framingOf(&head.headers, false, head.version == Version.Http10) {
-    case var Ok(f) {f}
-    case var Err(e) {return Err[ResponseRead, HttpError](e);}
-  };
+  let framing = framingOf(&head.headers, false, head.version == Version.Http10)?;
   Ok[ResponseRead, HttpError](ResponseRead(head, framing))
 }
 

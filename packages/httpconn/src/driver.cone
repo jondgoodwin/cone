@@ -930,10 +930,7 @@ pub struct Driver {
   // The request on a stream of connection i, or noEntry
   fn reqOfStream(self: &, i: u32, stream: u32) u32 {
     let c = self.connAt(i) as &Conn;
-    match c.streams.getCopy(&stream) {
-      case let Some(ri) {ri}
-      else {noEntry}
-    }
+    c.streams.getCopy(&stream) || noEntry
   }
 
   // A client's waiting requests go on as streams while the peer allows more
@@ -1453,13 +1450,8 @@ pub struct Driver {
       }
       else {}
     }
-    var f = match own {
-      case var Some(cf) {cf}
-      else {
-        if waiting {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent")}
-        else {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended")}
-      }
-    };
+    var f = own || if waiting {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the request was sent")}
+      else {Failure.make(Stage.Closed, 0u32, ErrorKind.Closed, "the connection closed before the exchange ended")};
     // HTTP/2: a send after the request went to the core carried its HEADERS
     let wrote = r.wrote || (r.stream != 0u32 && c.sendSeq > r.txAt);
     f.unsent = waiting || !wrote;
@@ -1890,11 +1882,7 @@ pub struct Driver {
   // makes (see LAYERS)
   pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, make: Uni[LayerMaker + ShapeKeeping], sink: Sink) Result[ListenerId, IoError] {
     self.stamp(lp);
-    var h = Handle.none();
-    match lp.listen(addr) {
-      case let Ok(r) {h = r;}
-      case let Err(e) {return Err[ListenerId, IoError](e);}
-    }
+    let h = lp.listen(addr)?;
     let k = u32.from(listeners.len());
     listeners.push(Lst(1u32, true, h, sink, make, 0u32));
     self.armAccepts(lp, k);
