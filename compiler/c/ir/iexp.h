@@ -37,6 +37,13 @@ int iexpCharNumberMismatch(INode *from, INode *totypedcl);
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
+// Coerce a condition's operand to bool. Only here, and under '!', does an Option
+// or Result convert to bool (through isTrue)
+int iexpCoerceCondition(INode **from);
+// Type check an operand of '!' and coerce it to bool, as a condition
+int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from);
+// Is the expression's type Option or Result, or a variant of one?
+int iexpIsOptionOrResult(INode *node);
 
 // A 'var' declaration (variable or field) that takes its type from a type checked
 // initializer which is a variant of an enum ('var st = Status.Done') holds the

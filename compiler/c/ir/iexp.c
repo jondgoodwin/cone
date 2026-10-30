@@ -41,6 +41,47 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
+// Set only around the coercion of a condition operand (iexpCoerceCondition).
+// An Option or Result converts to bool through isTrue there and under '!', and
+// nowhere else. In particular not as an operand of '||' or '&&' (logicTypeCheck
+// refuses those, with its own message): PR 6 makes those operators methods on
+// Option and Result, so 'opt || flag' written now would silently change meaning.
+// Elsewhere ('let b: bool = opt', an argument, a return) they stay refused, as
+// before isTrue existed on them.
+static int iexpInCondition = 0;
+
+// Is the expression's type Option or Result, or a variant of one?
+int iexpIsOptionOrResult(INode *node) {
+    if (!isExpNode(node))
+        return 0;
+    INode *type = iexpGetDerefTypeDcl(node);
+    StructNode *enumdcl = structVariantEnum(type);
+    if (enumdcl == NULL && type != NULL && type->tag == StructTag)
+        enumdcl = (StructNode*)type;
+    return enumdcl != NULL && (enumdcl->namesym == optionName || enumdcl->namesym == resultName);
+}
+
+// Coerce a condition's operand to bool: the one place, with '!', where an
+// Option or Result converts to it
+int iexpCoerceCondition(INode **from) {
+    int saved = iexpInCondition;
+    iexpInCondition = 1;
+    int ok = iexpCoerce(from, (INode*)boolType);
+    iexpInCondition = saved;
+    return ok;
+}
+
+// iexpTypeCheckCoerce to bool for the operand of '!'; the check is outside the
+// window, so a condition nested in the operand is judged on its own
+int iexpTypeCheckCoerceCondition(TypeCheckState *pstate, INode **from) {
+    inodeTypeCheck(pstate, from, (INode*)boolType);
+    int saved = iexpInCondition;
+    iexpInCondition = 1;
+    int ok = iexpCheckedCoerceIn(pstate, (INode*)boolType, from);
+    iexpInCondition = saved;
+    return ok;
+}
+
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
@@ -57,6 +98,8 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
+        if (!iexpInCondition && iexpIsOptionOrResult(*from))
+            return NoMatch;
         foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName));
         // A value of a variant reaches its enum's isTrue that takes the whole enum
         // ('self: &Option[T]'), as it reaches any such method (fnCallLowerMethod)

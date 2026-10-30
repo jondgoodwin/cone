@@ -1,0 +1,40 @@
+// An Option or a Result converts to bool in a condition ('if', 'while') and
+// under '!', and nowhere else.
+//
+// As an operand of '||' or '&&', on either side, it is refused for now: a later
+// PR defines those operators as methods on Option and Result, and 'opt || flag'
+// written today would silently change meaning then. The message points at
+// 'x is Some' ('x is Ok'), which says what the test is.
+//
+// Where a bool is wanted otherwise -- a 'let' of type bool, a bool argument, a
+// return -- it is refused as it was before Option and Result had an isTrue.
+
+mod enum_typecheck_option_bool;
+
+fn takes(b: bool) bool { b }
+
+fn half(n: i64) Option[i64] {
+  if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn viaReturn(o: Option[i64]) bool {  //~ ErrorInvType:30 "declared function's return type"
+  o                               //~ ErrorInvType:3
+}
+
+fn main() {
+  let opt: Option[i64] = Some(1);
+  let res: Result[i64, i64] = Ok(1);
+  let flag = true;
+
+  let l = opt || flag;               //~ ErrorOptionLogic:11 "x is Some"
+  let r = flag && res;               //~ ErrorOptionLogic:19 "x is Ok"
+  let c = takes(half(2));            //~ ErrorInvType:21
+  let b: bool = opt;                 //~ ErrorInvType:17
+
+  // Refused in a condition too: it is the operand of '&&' there
+  if opt && flag {}                  //~ ErrorOptionLogic:6 "x is Some"
+
+  // Allowed: a condition, and '!'
+  if opt {}
+  let n = !res;
+}

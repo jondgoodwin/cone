@@ -867,7 +867,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             INode *given = isExpNode(*nodesp) ? iexpGetTypeDcl(*nodesp) : NULL;
             int caseoptional = (ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag
                 && (((StructNode*)given)->namesym == optionName || ((StructNode*)given)->namesym == resultName);
-            if (caseoptional || 0 == iexpCoerce(nodesp, (INode*)boolType)) {
+            if (caseoptional || 0 == iexpCoerceCondition(nodesp)) {
                 if ((ifnode->flags & (FlagIfMatch | FlagIfMatchTail)) && given && given->tag == StructTag && ((StructNode*)given)->namesym == optionName)
                     errorMsgNode(*nodesp, ErrorUsingForm,
                         "A case that only tests with a function's pattern, 'case using f()', needs a function giving a bool, and this one gives an Option. An Option is bound: 'case let x using f()'.");

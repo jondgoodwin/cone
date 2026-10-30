@@ -4341,6 +4341,16 @@ static void fnCallOpAssgnMacro(TypeCheckState *pstate, FnCallNode **nodep, Macro
         StructNode *rcvtype, Name *basesym) {
     FnCallNode *callnode = *nodep;
     Name *opsym = ((NameUseNode*)callnode->methfld)->namesym;
+    // 'x += await f()' made first: a function '+' has its operand taken out into a
+    // local before the seam (fnCallOpAssgn), which an expansion, with the operand
+    // substituted where the body uses it, cannot do. Refused rather than cut wrongly.
+    if (callnode->args && callnode->args->used == 1 && awaitWithin(nodesGet(callnode->args, 0))) {
+        errorMsgNode(nodesGet(callnode->args, 0), ErrorMacroAwait,
+            "`%s` through %s's macro method `%s` cannot take an `await` in its operand yet: the operand is substituted into the macro's body, where the wait cannot be cut. Await into a local first, `let v = await ...; x %s v`.",
+            &opsym->namestr, &rcvtype->namesym->namestr, &basesym->namestr, &opsym->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)callnode);
+        return;
+    }
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
     if (objtype->tag != RefTag)
         borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
@@ -4463,7 +4473,7 @@ static int fnCallOperatorMacro(TypeCheckState *pstate, FnCallNode **nodep, int *
         if (inodeIsError(derivedne->lexp) || !isExpNode(derivedne->lexp)
             || ((IExpNode*)derivedne->lexp)->vtype == errorType)
             derivedne->vtype = errorType;
-        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+        else if (!iexpCoerceCondition(&derivedne->lexp))
             errorMsgNode(derivedne->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         return 1;
     }
@@ -5418,7 +5428,7 @@ tagtested:
     if (derivedne) {
         if (node->vtype == unknownType || node->vtype == errorType)
             derivedne->vtype = errorType;
-        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+        else if (!iexpCoerceCondition(&derivedne->lexp))
             errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     }
 }
