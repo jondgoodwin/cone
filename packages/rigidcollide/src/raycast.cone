@@ -50,7 +50,7 @@ fn rayBox(o: Vec3, d: Vec3, h: Vec3, maxT: f32) RayHit {
     let oa = vecGet(o, ax);
     let da = vecGet(d, ax);
     let ha = vecGet(h, ax);
-    if absf(da) < 1.0e-12 {
+    if da.abs() < 1.0e-12 {
       if oa < -ha || oa > ha { return noHit(); }
     } else {
       let inv = 1. / da;
@@ -78,14 +78,14 @@ fn rayCylinderSide(o: Vec3, d: Vec3, r: f32, hy: f32, maxT: f32) RayHit {
   let t = (-b - disc.sqrt()) / a;
   if t < 0. || t > maxT { return noHit(); }
   let p = o + d * t;
-  if absf(p.y) > hy { return noHit(); }
+  if p.y.abs() > hy { return noHit(); }
   hitAt(t, Vec3(p.x, 0., p.z).normalize())
 }
 
 fn rayCylinder(o: Vec3, d: Vec3, r: f32, hy: f32, maxT: f32) RayHit {
-  if o.x * o.x + o.z * o.z <= r * r && absf(o.y) <= hy { return hitAt(0., -d.normalize()); }
+  if o.x * o.x + o.z * o.z <= r * r && o.y.abs() <= hy { return hitAt(0., -d.normalize()); }
   var best = rayCylinderSide(o, d, r, hy, maxT);
-  if absf(d.y) > 1.0e-12 {
+  if d.y.abs() > 1.0e-12 {
     var k = 0usize;
     while k < 2usize {
       let y = if k == 0usize { hy } else { -hy };
@@ -121,7 +121,7 @@ fn rayHull(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
     let f = p.faces[i];
     let denom = f.normal.dot(d);
     let dist = f.d - f.normal.dot(o);       // positive: the origin is inside this plane
-    if absf(denom) < 1.0e-12 {
+    if denom.abs() < 1.0e-12 {
       if dist < 0. { return noHit(); }
     } else {
       let t = dist / denom;
@@ -144,7 +144,7 @@ fn rayTriangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3, maxT: f32) RayHit {
   let e2 = c - a;
   let pv = d.cross(e2);
   let det = e1.dot(pv);
-  if absf(det) < 1.0e-12 { return noHit(); }
+  if det.abs() < 1.0e-12 { return noHit(); }
   let inv = 1. / det;
   let s = o - a;
   let u = s.dot(pv) * inv;
@@ -176,8 +176,8 @@ fn rayBoxEnter(o: Vec3, inv: Vec3, lo: Vec3, hi: Vec3, maxT: f32) f32 {
 fn rayMesh(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
   var best = noHit();
   if p.bvh.len() == 0usize { return best; }
-  let inv = Vec3(if absf(d.x) > 1.0e-20 { 1. / d.x } else { 1.0e20 }, if absf(d.y) > 1.0e-20 { 1. / d.y } else { 1.0e20 },
-                     if absf(d.z) > 1.0e-20 { 1. / d.z } else { 1.0e20 });
+  let inv = Vec3(if d.x.abs() > 1.0e-20 { 1. / d.x } else { 1.0e20 }, if d.y.abs() > 1.0e-20 { 1. / d.y } else { 1.0e20 },
+                     if d.z.abs() > 1.0e-20 { 1. / d.z } else { 1.0e20 });
   var stack = List[usize].empty();
   stack.push(0usize);
   while stack.len() > 0usize {
@@ -216,13 +216,13 @@ fn rayHeightfield(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
   // Clip the footprint to the grid box (in t)
   var t0 = 0.f;
   var t1 = maxT;
-  if absf(dx) < 1.0e-12 { if gx < 0. || gx > f32.from(cw) { return best; } }
+  if dx.abs() < 1.0e-12 { if gx < 0. || gx > f32.from(cw) { return best; } }
   else {
     let ta = (0. - gx) / dx;
     let tb = (f32.from(cw) - gx) / dx;
     t0 = maxf(t0, minf(ta, tb)); t1 = minf(t1, maxf(ta, tb));
   }
-  if absf(dz) < 1.0e-12 { if gz < 0. || gz > f32.from(ch) { return best; } }
+  if dz.abs() < 1.0e-12 { if gz < 0. || gz > f32.from(ch) { return best; } }
   else {
     let ta = (0. - gz) / dz;
     let tb = (f32.from(ch) - gz) / dz;
@@ -239,10 +239,10 @@ fn rayHeightfield(p: &Prim, o: Vec3, d: Vec3, maxT: f32) RayHit {
   if cj < 0i32 { cj = 0i32; }
   let stepX = if dx > 0. { 1i32 } else { -1i32 };
   let stepZ = if dz > 0. { 1i32 } else { -1i32 };
-  var nextX = if absf(dx) < 1.0e-12 { bigNumber } else { (f32.from(if dx > 0. { ci + 1i32 } else { ci }) - gx) / dx };
-  var nextZ = if absf(dz) < 1.0e-12 { bigNumber } else { (f32.from(if dz > 0. { cj + 1i32 } else { cj }) - gz) / dz };
-  let deltaX = if absf(dx) < 1.0e-12 { bigNumber } else { absf(1. / dx) };
-  let deltaZ = if absf(dz) < 1.0e-12 { bigNumber } else { absf(1. / dz) };
+  var nextX = if dx.abs() < 1.0e-12 { bigNumber } else { (f32.from(if dx > 0. { ci + 1i32 } else { ci }) - gx) / dx };
+  var nextZ = if dz.abs() < 1.0e-12 { bigNumber } else { (f32.from(if dz > 0. { cj + 1i32 } else { cj }) - gz) / dz };
+  let deltaX = if dx.abs() < 1.0e-12 { bigNumber } else { (1. / dx).abs() };
+  let deltaZ = if dz.abs() < 1.0e-12 { bigNumber } else { (1. / dz).abs() };
   var guard = 0u32;
   while ci >= 0i32 && ci < cw && cj >= 0i32 && cj < ch && guard < 100000u32 {
     guard = guard + 1u32;

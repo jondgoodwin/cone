@@ -83,10 +83,10 @@ struct Canvas {
 
   // A triangle in screen space with depths, its normals and colours interpolated and lit per pixel
   fn triangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, na: Vec3, nb: Vec3, nc: Vec3, ca: Vec3, cb: Vec3, cc: Vec3) {
-    let minx = imax(cx0, i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
-    let maxx = imin(cx1 - 1, i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
-    let miny = imax(cy0, i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
-    let maxy = imin(cy1 - 1, i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let minx = cx0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (cx1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = cy0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (cy1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
     let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if den > -0.0000001 && den < 0.0000001 { return; }
     let light = Vec3(-0.35, 0.55, 0.75).normalize();
@@ -117,7 +117,7 @@ struct Canvas {
   fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let steps = i32.from(fmax3(absf(dx), absf(dy), 1.)) + 1;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
     var i = 0;
     while i <= steps {
       let t = f32.from(i) / f32.from(steps);
@@ -127,9 +127,6 @@ struct Canvas {
   }
 }
 
-fn absf(a: f32) f32 { if a < 0. {-a} else {a} }
-fn imax(a: i32, b: i32) i32 { if a > b {a} else {b} }
-fn imin(a: i32, b: i32) i32 { if a < b {a} else {b} }
 fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
 fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
 
@@ -273,7 +270,7 @@ fn save(cv: &Canvas, name: &str) {
   var full = String.from("C:/src/sculptmultires-shots/");
   full.append(name);
   let op = path.Path.from(full.view());
-  fs.writeFile(&op, png.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e.message().view(), "\n"; return; }
   printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
 }
 
@@ -728,7 +725,7 @@ fn operatorSheet(cv: &mut Canvas) bool {
   while v < disp.vertexCount() {
     let h = disp.float(hc, u32.from(v));
     heights.push(h);
-    if absf(h) > lim { lim = absf(h); }
+    if h.abs() > lim { lim = h.abs(); }
     v = v + 1usize;
   }
   printStr("height between levels 0 and 3: greatest "); print <- lim; printStr("\n");
@@ -806,7 +803,7 @@ fn storageSheet(cv: &mut Canvas) bool {
 
 fn main() i32 {
   let dir = path.Path.from("C:/src/sculptmultires-shots");
-  fs.makeDirAll(&dir);
+  if let Err(e) = fs.makeDirAll(&dir) { print <- "could not make C:/src/sculptmultires-shots: ", e.message().view(), "\n"; return 1; }
   var ok = timing();
   var cv = Canvas.make(2560, 1440);
   ok = figureSheet(&mut cv) && ok;

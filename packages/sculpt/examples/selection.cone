@@ -30,7 +30,6 @@ import sculpt use *;
 import fs;
 import path use Path as FilePath;
 
-fn absf(a: f32) f32 {if a < 0. {-a} else {a}}
 fn clampf(v: f32, lo: f32, hi: f32) f32 {if v < lo {lo} else if v > hi {hi} else {v}}
 
 // ======== a small rasteriser ========
@@ -83,7 +82,7 @@ struct Canvas {
     full.append("/");
     full.append(name);
     let op = FilePath.from(full.view());
-    fs.writeFile(&op, png.view());
+    if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e.message().view(), "\n"; return; }
     print <- "wrote "; printStr(full.view()); print <- "\n";
   }
 }
@@ -159,11 +158,11 @@ fn edgeFn(a: Vec3, b: Vec3, px: f32, py: f32) f32 {(b.x - a.x) * (py - a.y) - (b
 
 fn drawTri(c: &mut Canvas, t: &Tile, a: Vec3, b: Vec3, d: Vec3, ca: Vec3, cb: Vec3, cd: Vec3, shade: f32) {
   let area = edgeFn(a, b, d.x, d.y);
-  if absf(area) < 0.000001 { return; }
-  let minx = fmaxi(i32.from(libc.floorf(fminf3(a.x, b.x, d.x))), t.x0);
-  let maxx = fmini(i32.from(libc.ceilf(fmaxf3(a.x, b.x, d.x))), t.x0 + t.w - 1);
-  let miny = fmaxi(i32.from(libc.floorf(fminf3(a.y, b.y, d.y))), t.y0);
-  let maxy = fmini(i32.from(libc.ceilf(fmaxf3(a.y, b.y, d.y))), t.y0 + t.h - 1);
+  if area.abs() < 0.000001 { return; }
+  let minx = i32.from(libc.floorf(fminf3(a.x, b.x, d.x))).max(t.x0);
+  let maxx = i32.from(libc.ceilf(fmaxf3(a.x, b.x, d.x))).min(t.x0 + t.w - 1);
+  let miny = i32.from(libc.floorf(fminf3(a.y, b.y, d.y))).max(t.y0);
+  let maxy = i32.from(libc.ceilf(fmaxf3(a.y, b.y, d.y))).min(t.y0 + t.h - 1);
   var y = miny;
   while y <= maxy {
     var x = minx;
@@ -184,8 +183,6 @@ fn drawTri(c: &mut Canvas, t: &Tile, a: Vec3, b: Vec3, d: Vec3, ca: Vec3, cb: Ve
   }
 }
 
-fn fmini(a: i32, b: i32) i32 {if a < b {a} else {b}}
-fn fmaxi(a: i32, b: i32) i32 {if a > b {a} else {b}}
 fn fminf3(a: f32, b: f32, c: f32) f32 {
   let m = if a < b {a} else {b};
   if m < c {m} else {c}
@@ -197,8 +194,8 @@ fn fmaxf3(a: f32, b: f32, c: f32) f32 {
 
 // A line in pixels, depth z (or flat over everything with a large z)
 fn drawLine(c: &mut Canvas, t: &Tile, a: Vec3, b: Vec3, col: Vec3, bias: f32) {
-  let dx = absf(b.x - a.x);
-  let dy = absf(b.y - a.y);
+  let dx = (b.x - a.x).abs();
+  let dy = (b.y - a.y).abs();
   let steps = i32.from(if dx > dy {dx} else {dy}) + 1;
   var i = 0;
   while i <= steps {
@@ -225,7 +222,7 @@ fn drawMesh(c: &mut Canvas, t: &Tile, m: &PolyMesh, cam: &Cam, vcol: &List[Vec3]
   while f < m.faceCount() {
     let vs = m.faceVertices(u32.from(f));
     let n = cam.turn(m.faceNormal(u32.from(f))) - cam.turn(Vec3(0., 0., 0.));
-    let shade = 0.35 + 0.65 * absf(n.z);
+    let shade = 0.35 + 0.65 * n.z.abs();
     var k = 1usize;
     while k + 1usize < vs.len() {
       let a = usize.from(*vs[0usize]);

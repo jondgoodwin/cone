@@ -68,7 +68,7 @@ pub struct Heightfield {
       } else {
         if c.smin < smin { smin = c.smin; }
         if c.smax > smax { smax = c.smax; }
-        if iabs(smax - c.smax) <= mergeThreshold {
+        if (smax - c.smax).abs() <= mergeThreshold {
           if c.area > area { area = c.area; }
         }
         // drop the merged span
@@ -183,8 +183,8 @@ pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, are
   let worldH = f32.from(hf.h) * hf.cs;
   if tmax.x < bmin.x || tmin.x > bmin.x + worldW || tmax.z < bmin.z || tmin.z > bmin.z + worldH { return; }
   if tmax.y < bmin.y || tmin.y > bmin.y + hf.yRange { return; }
-  var z0 = i32.from(floorf((tmin.z - bmin.z) * ics));
-  var z1 = i32.from(floorf((tmax.z - bmin.z) * ics));
+  var z0 = i32.from(((tmin.z - bmin.z) * ics).floor());
+  var z1 = i32.from(((tmax.z - bmin.z) * ics).floor());
   z0 = iclamp(z0, -1i32, hf.h - 1i32);
   z1 = iclamp(z1, 0i32, hf.h - 1i32);
   sc.tri.clear();
@@ -206,8 +206,8 @@ pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, are
       if vx > maxX { maxX = vx; }
       k = k + 3usize;
     }
-    var x0 = i32.from(floorf((minX - bmin.x) * ics));
-    var x1 = i32.from(floorf((maxX - bmin.x) * ics));
+    var x0 = i32.from(((minX - bmin.x) * ics).floor());
+    var x1 = i32.from(((maxX - bmin.x) * ics).floor());
     if x1 < 0i32 || x0 >= hf.w { continue; }
     x0 = iclamp(x0, -1i32, hf.w - 1i32);
     x1 = iclamp(x1, 0i32, hf.w - 1i32);
@@ -234,8 +234,8 @@ pub fn rasterizeTriangle(hf: &mut Heightfield, v0: Vec3, v1: Vec3, v2: Vec3, are
       if smax < 0. || smin > hf.yRange { continue; }
       if smin < 0. { smin = 0.; }
       if smax > hf.yRange { smax = hf.yRange; }
-      let ismin = iclamp(i32.from(floorf(smin * ich)), 0i32, MaxHeight);
-      let ismax = iclamp(i32.from(ceilf(smax * ich)), ismin + 1i32, MaxHeight);
+      let ismin = iclamp(i32.from((smin * ich).floor()), 0i32, MaxHeight);
+      let ismax = iclamp(i32.from((smax * ich).ceil()), ismin + 1i32, MaxHeight);
       hf.addSpan(x - 1i32, z - 1i32, ismin, ismax, area, mergeThr);
     }
   }
@@ -247,14 +247,14 @@ pub fn rasterizeObstacle(hf: &mut Heightfield, o: &Obstacle, mergeThr: i32) {
   let e = o.extent();
   let ics = 1. / hf.cs;
   let ich = 1. / hf.ch;
-  let x0 = iclamp(i32.from(floorf((e.x - hf.bmin.x) * ics)), 0i32, hf.w - 1i32);
-  let x1 = iclamp(i32.from(floorf((e.z - hf.bmin.x) * ics)), 0i32, hf.w - 1i32);
-  let z0 = iclamp(i32.from(floorf((e.y - hf.bmin.z) * ics)), 0i32, hf.h - 1i32);
-  let z1 = iclamp(i32.from(floorf((e.w - hf.bmin.z) * ics)), 0i32, hf.h - 1i32);
+  let x0 = iclamp(i32.from(((e.x - hf.bmin.x) * ics).floor()), 0i32, hf.w - 1i32);
+  let x1 = iclamp(i32.from(((e.z - hf.bmin.x) * ics).floor()), 0i32, hf.w - 1i32);
+  let z0 = iclamp(i32.from(((e.y - hf.bmin.z) * ics).floor()), 0i32, hf.h - 1i32);
+  let z1 = iclamp(i32.from(((e.w - hf.bmin.z) * ics).floor()), 0i32, hf.h - 1i32);
   if e.z < hf.bmin.x || e.x > hf.bmin.x + f32.from(hf.w) * hf.cs { return; }
   if e.w < hf.bmin.z || e.y > hf.bmin.z + f32.from(hf.h) * hf.cs { return; }
-  let ismin = iclamp(i32.from(floorf((o.ymin - hf.bmin.y) * ich)), 0i32, MaxHeight);
-  let ismax = iclamp(i32.from(ceilf((o.ymax - hf.bmin.y) * ich)), ismin + 1i32, MaxHeight);
+  let ismin = iclamp(i32.from(((o.ymin - hf.bmin.y) * ich).floor()), 0i32, MaxHeight);
+  let ismax = iclamp(i32.from(((o.ymax - hf.bmin.y) * ich).ceil()), ismin + 1i32, MaxHeight);
   var z = z0;
   while z <= z1 {
     var x = x0;
@@ -285,7 +285,7 @@ pub fn filterLowHangingObstacles(hf: &mut Heightfield, climb: i32) {
       let sp = *hf.spans[usize.from(s)];
       let walkable = sp.area != AreaNull;
       if !walkable && prevWalkable {
-        if iabs(sp.smax - prevMax) <= climb {
+        if (sp.smax - prevMax).abs() <= climb {
           hf.spans.set(usize.from(s), Span(sp.smin, sp.smax, prevArea, sp.next));
         }
       }
@@ -322,7 +322,7 @@ pub fn filterLedgeSpans(hf: &mut Heightfield, height: i32, climb: i32) {
             let dx = x + dirX(dir);
             let dz = z + dirZ(dir);
             if dx < 0i32 || dz < 0i32 || dx >= w || dz >= h {
-              minh = imin(minh, -climb - bot);
+              minh = minh.min(-climb - bot);
               dir = dir + 1i32;
               continue;
             }
@@ -330,16 +330,16 @@ pub fn filterLedgeSpans(hf: &mut Heightfield, height: i32, climb: i32) {
             // from minus infinity to the first span
             var nbot = -climb;
             var ntop = if ns >= 0i32 { (*hf.spans[usize.from(ns)]).smin } else { MaxHeight };
-            if imin(top, ntop) - imax(bot, nbot) > height {
-              minh = imin(minh, nbot - bot);
+            if top.min(ntop) - bot.max(nbot) > height {
+              minh = minh.min(nbot - bot);
             }
             while ns >= 0i32 {
               let n = *hf.spans[usize.from(ns)];
               nbot = n.smax;
               ntop = if n.next >= 0i32 { (*hf.spans[usize.from(n.next)]).smin } else { MaxHeight };
-              if imin(top, ntop) - imax(bot, nbot) > height {
-                minh = imin(minh, nbot - bot);
-                if iabs(nbot - bot) <= climb {
+              if top.min(ntop) - bot.max(nbot) > height {
+                minh = minh.min(nbot - bot);
+                if (nbot - bot).abs() <= climb {
                   if nbot < asmin { asmin = nbot; }
                   if nbot > asmax { asmax = nbot; }
                 }

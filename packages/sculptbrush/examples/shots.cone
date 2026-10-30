@@ -34,9 +34,6 @@ import skinmesh use *;
 import sculpt use *;
 import sculptbrush use *;
 
-fn absf(a: f32) f32 { if a < 0. {-a} else {a} }
-fn imax(a: i32, b: i32) i32 { if a > b {a} else {b} }
-fn imin(a: i32, b: i32) i32 { if a < b {a} else {b} }
 fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
 fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
 fn v3(x: f32, y: f32, z: f32) Vec3 { Vec3(x, y, z) }
@@ -107,10 +104,10 @@ struct Canvas {
 
   // A triangle in screen space with a depth at each corner, a normal and a colour
   fn shaded(self: &mut, a: Vec3, b: Vec3, c: Vec3, na: Vec3, nb: Vec3, nc: Vec3, ca: Vec3, cb: Vec3, cc: Vec3) {
-    let minx = imax(cx0, i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
-    let maxx = imin(cx1 - 1, i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
-    let miny = imax(cy0, i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
-    let maxy = imin(cy1 - 1, i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let minx = cx0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (cx1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = cy0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (cy1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
     let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if den > -0.0000001 && den < 0.0000001 { return; }
     let light = Vec3(-0.45, 0.55, 0.70).normalize();
@@ -140,7 +137,7 @@ struct Canvas {
   fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let steps = i32.from(fmax3(absf(dx), absf(dy), 1.)) + 1;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
     var i = 0;
     while i <= steps {
       let t = f32.from(i) / f32.from(steps);
@@ -352,7 +349,7 @@ fn save(cv: &Canvas, name: &str) {
   var full = String.from("C:/src/sculptbrush-shots/");
   full.append(name);
   let op = FilePath.from(full.view());
-  fs.writeFile(&op, png.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e.message().view(), "\n"; return; }
   printStr("wrote "); printStr(full.view()); printStr(" ("); print <- png.len(); printStr(" bytes)\n");
 }
 
@@ -538,7 +535,7 @@ fn drawPair(cv: &mut Canvas, base: &PolyMesh, i: i32, s: &Spot, x0: i32, y0: i32
   }
   let after = sc.finish();
   // The camera: from the normal side, tilted so relief shows
-  let up = if absf(s.n.y) > 0.9 {v3(0., 0., -1.)} else {v3(0., 1., 0.)};
+  let up = if s.n.y.abs() > 0.9 {v3(0., 0., -1.)} else {v3(0., 1., 0.)};
   let eye = s.n * 0.55 + s.n.cross(s.t) * 0.8;
   let sc0 = f32.from(h) * 0.5 / (s.u * 3.6);
   let viewA = View.look(s.c, eye, up, sc0, f32.from(x0 + w / 2), f32.from(y0 + h / 2));
@@ -894,7 +891,7 @@ fn topoSheet(fig: &PolyMesh) {
 
 fn main() i32 {
   let dir = FilePath.from("C:/src/sculptbrush-shots");
-  fs.makeDirAll(&dir);
+  if let Err(e) = fs.makeDirAll(&dir) { print <- "could not make C:/src/sculptbrush-shots: ", e.message().view(), "\n"; return 1; }
   // The sphere
   let cube = PolyMesh.cube(1.);
   let rough = subdivide(&cube, 5u32);
