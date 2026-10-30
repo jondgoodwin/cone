@@ -159,27 +159,23 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   let clean = speechText(text.bytes());
   if clean.len() == 0usize { return Ok[bool, String](false); }
   let t0 = Instant.now();
-  match tts.speak(device, clean.view(), voice, speed) {
-    case let Ok(raw) {
-      let spent = seconds(Instant.now(), t0);
-      // the silence Kokoro puts at both ends is cut to 80 ms before and 150 ms after (see trimPads)
-      let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
-      out.queue(samples.view());
-      out.flush();
-      if !stats.spoken {
-        stats.spoken = true;
-        stats.sentenceAt = t0;
-        stats.queuedAt = Instant.now();
-        stats.firstKokoro = spent;
-      }
-      stats.sentences = stats.sentences + 1usize;
-      stats.kokoro = stats.kokoro + spent;
-      stats.samples = stats.samples + samples.len();
-      marks.push(Mark(at, out.samplesQueued()));
-      Ok[bool, String](true)
-    }
-    case let Err(m) { Err[bool, String](m.copy()) }
+  let raw = tts.speak(device, clean.view(), voice, speed)?;
+  let spent = seconds(Instant.now(), t0);
+  // the silence Kokoro puts at both ends is cut to 80 ms before and 150 ms after (see trimPads)
+  let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
+  out.queue(samples.view());
+  out.flush();
+  if !stats.spoken {
+    stats.spoken = true;
+    stats.sentenceAt = t0;
+    stats.queuedAt = Instant.now();
+    stats.firstKokoro = spent;
   }
+  stats.sentences = stats.sentences + 1usize;
+  stats.kokoro = stats.kokoro + spent;
+  stats.samples = stats.samples + samples.len();
+  marks.push(Mark(at, out.samplesQueued()));
+  Ok[bool, String](true)
 }
 
 // Read what the microphone has into the detector. This loop is blocked for a second or more at a time while Qwen reads
