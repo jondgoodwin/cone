@@ -64,6 +64,11 @@ int regionMarkTakesContext(INode *region);
 void regionTracedSeen(void);
 int regionTracedAnywhere(void);
 
+// The same, for a traced struct not declaring 'ActorLocal': noted beside
+// regionTracedSeen. Until one does, nothing needs a root frame.
+void regionCollectedSeen(void);
+int regionCollectedAnywhere(void);
+
 // May a trace pass through an owning reference into this region, to the value it
 // holds: it is single-owner (Move), or declares 'visit'?
 int regionCanPassTrace(INode *region);

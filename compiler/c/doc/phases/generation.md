@@ -1017,13 +1017,22 @@ own.
 
 ### Roots: the shadow stack
 
-**Every function holding a traced reference on its stack links a frame of them
+**Every function holding a collected reference on its stack links a frame of them
 into one chain** while it runs, so a collector can find every live one:
 `mem.traceRoots(mode)` is a call to conestd's `cone_traceRoots`
 (`packages/conestd/roots.cone`), which walks the chain from its head,
 `cone_gcframes`, and calls each root's record's trace. A **root** is a stack
-slot whose type holds a traced reference (`itypeHoldsTraced`), noted as it is
-made (`genlRootNote`, on `gen->roots`):
+slot whose type holds a collected reference (`itypeHoldsRooted`: a traced one,
+`itypeHoldsTraced`, that is not into an `ActorLocal` region, as
+`itypeHoldsCollected` finds), noted as it is made (`genlRootNote`, on
+`gen->roots`). A type holding only actor-local references (an `ActorGc`'s) is
+no root, and a function holding nothing else has no frame: the actor's collector
+finds them from the actor's state and its parked records and scans no stack. A
+type holding both kinds has its frame, for the `Gc` part. Core's `Erased`
+holds a collected reference wherever a traced region that is not `ActorLocal` is
+declared (`regionCollectedAnywhere`), and so is a root there only. Only the
+roots ask this: the type's trace, its record's Traced flag, a parked record's
+traced fields and `holdsTraced` still ask `itypeHoldsTraced`.
 
 - a **local's or a parameter's** alloca (`genlLocalVar`, `genlParmVar`, and an
   inline function's parameters, which are its caller's slots and so in its
@@ -1046,7 +1055,7 @@ made (`genlRootNote`, on `gen->roots`):
 
 Once the body is generated, `genlRootFrame` builds the frame of a function
 with any root. One with none gets nothing, which is why a program with no
-traced region generates exactly what it did before roots existed.
+collected region generates exactly what it did before roots existed.
 
 ```llvm
 @cone.roots.<k> = private constant { i64, [n x ptr] } { i64 n, [n x ptr] [<each root's record>] }

@@ -295,10 +295,12 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 //
 // each 'rec' the type record of the root at the same position, whose trace
 // hands what the slot holds to 'mark'. A function with no root has no frame
-// and generates exactly what it did before roots existed.
+// and generates exactly what it did before roots existed. A type holding only
+// actor-local references (an ActorGc's) is no root: the actor's collector finds
+// them from the state and the parked records (itypeHoldsRooted).
 
 void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
-    if (!itypeHoldsTraced(vtype))
+    if (!itypeHoldsRooted(vtype))
         return;
     GenRoots *roots = &gen->roots;
     if (roots->cnt == roots->max) {
@@ -320,6 +322,8 @@ void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
 // One slot per site: a site run again (in a loop) overwrites what it stored
 // last time, and what it stored stays rooted until then or the return
 void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype) {
+    if (!itypeHoldsRooted(vtype))
+        return;
     LLVMValueRef slot = genlAlloca(gen, genlType(gen, vtype), "birth");
     genlRootNote(gen, slot, vtype);
     LLVMBuildStore(gen->builder, val, slot);

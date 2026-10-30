@@ -1136,7 +1136,7 @@ static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest
         dest = genlAlloca(gen, valtype, "new");
         genlRootNote(gen, dest, fncall->vtype);
     }
-    if (itypeHoldsTraced(fncall->vtype))
+    if (itypeHoldsRooted(fncall->vtype))
         LLVMBuildStore(gen->builder, LLVMConstNull(valtype), dest);
     genlNewFill(gen, fncall, fnargs, dest);
     return temp ? LLVMBuildLoad2(gen->builder, valtype, dest, "") : NULL;
@@ -3240,7 +3240,7 @@ static int genlIsBirth(INode *node) {
         break;
     // A traced reference made from something that holds none: a raw pointer
     case CastTag:
-        if (itypeHoldsTraced(((IExpNode *)((CastNode *)node)->exp)->vtype))
+        if (itypeHoldsRooted(((IExpNode *)((CastNode *)node)->exp)->vtype))
             return 0;
         break;
     case ArrIndexTag:
@@ -3251,7 +3251,7 @@ static int genlIsBirth(INode *node) {
     default:
         return 0;
     }
-    return itypeHoldsTraced(((IExpNode *)node)->vtype);
+    return itypeHoldsRooted(((IExpNode *)node)->vtype);
 }
 
 static LLVMValueRef genlTerm(GenState *gen, INode *termnode);

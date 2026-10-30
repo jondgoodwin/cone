@@ -1261,20 +1261,30 @@ int itypeHoldsTraced(INode *type) {
     }
 }
 
-// itypeHoldsTraced's walk, in two other senses. Collected: looking for a
-// reference into a traced region that is not actor-local. Placed: looking for
+// itypeHoldsTraced's walk, in three other senses. Collected: looking for a
+// reference into a traced region that is not actor-local. Rooted: the same, and
+// an Erased value holds one wherever such a region is declared. Placed: looking for
 // any traced reference, but passing over an actor's state, which the actors
 // runtime hands to the actor's collector between messages wherever it keeps it
 // (an Arc's block, raw memory): a traced reference held there is found. Not
 // remembered, so a struct reached again is passed over.
 typedef enum {
     HoldsWalkCollected,
-    HoldsWalkPlaced
+    HoldsWalkPlaced,
+    HoldsWalkRooted
 } HoldsWalk;
 
+// Set when a walk gave up for want of room to remember structs (more than 60
+// distinct ones): its "no" is then not known (itypeHoldsRooted)
+static int itypeHoldsExhausted = 0;
+
 static int itypeHoldsWalkAt(INode *type, HoldsWalk walk, INode **seen, uint32_t *nseen) {
-    if (type == NULL || *nseen > 60)
+    if (type == NULL)
         return 0;
+    if (*nseen > 60) {
+        itypeHoldsExhausted = 1;
+        return 0;
+    }
     switch (type->tag) {
     case NameUseTag:
         return isTypeNode(type) ? itypeHoldsWalkAt(itypeGetTypeDcl(type), walk, seen, nseen) : 0;
@@ -1301,6 +1311,13 @@ static int itypeHoldsWalkAt(INode *type, HoldsWalk walk, INode **seen, uint32_t 
         return 0;
     }
     case StructTag: {
+        // Core's Erased may hold anything, a collected reference too, wherever
+        // one is declared (as itypeHoldsTraced finds, for any traced one): so a
+        // stack's roots must have it, where the refusal of a collected reference
+        // in an actor (itypeHoldsCollected) must not, or an actor's state holding
+        // one (the actors package's Pending) would be refused beside any Gc
+        if (walk == HoldsWalkRooted && coreIsErased(type))
+            return regionCollectedAnywhere();
         for (uint32_t i = 0; i < *nseen; ++i) {
             if (seen[i] == type)
                 return 0;
@@ -1333,6 +1350,22 @@ int itypeHoldsCollected(INode *type) {
     INode *seen[64];
     uint32_t nseen = 0;
     return itypeHoldsWalkAt(type, HoldsWalkCollected, seen, &nseen);
+}
+
+// Does a value of this type need a slot in a function's root frame: does it hold
+// a traced reference (itypeHoldsTraced) that a stack's roots must find, a
+// collected one, as itypeHoldsCollected finds (and an Erased value, wherever one
+// is declared)? An actor-local reference is found from the actor's state and its
+// parked records, never from a stack. Where the walk ran out of room, a spare
+// frame is the safe answer.
+int itypeHoldsRooted(INode *type) {
+    if (!itypeHoldsTraced(type))
+        return 0;
+    INode *seen[64];
+    uint32_t nseen = 0;
+    itypeHoldsExhausted = 0;
+    int holds = itypeHoldsWalkAt(type, HoldsWalkRooted, seen, &nseen);
+    return holds || itypeHoldsExhausted;
 }
 
 int itypeHoldsTracedPlaced(INode *type) {

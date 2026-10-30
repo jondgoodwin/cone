@@ -405,6 +405,44 @@ options = []
 name = "debug"
 options = ["--debug"]
 
+# A traced region declaring 'ActorLocal' (an ActorGc's) is collected from its
+# actor's state, never from a stack: a slot holding only its references is no
+# root and a function holding nothing else pushes no frame, while a slot holding
+# a reference into a traced region that is not actor-local, or a type holding
+# both kinds, is a root as before. The .out file is the runtime assertion, each
+# line hand-checked in the source. The check pins the frames: 'plain' pushes none
+# (its Loc local is the only thing it holds), 'takes' a frame of one slot (b),
+# 'mixed' and 'calls' of two (a Col local or birth, and the slot a Col
+# allocation is rooted in while it is filled) and 'together' of three (p, the
+# birth of Col 5 and the allocation's slot); a Loc local, birth, parameter or
+# allocation has no slot, where each was one before (frames of 2, 4, 4, 2, 5 slots).
+[scenario.region_roots_actorlocal]
+category = "run"
+description = "Roots and ActorLocal: a stack slot holding only references into a traced region declaring ActorLocal is no root and its function pushes no frame; a local of a Gc-like region is a root, and a struct holding both kinds is one root whose trace marks both"
+tags = ["genllvm", "runtime"]
+
+[[scenario.region_roots_actorlocal.check]]
+name = "frames-of-collected-roots-only"
+target = "preir"
+contains = [
+  "%gcframe = alloca { ptr, ptr, [1 x ptr] }, align 8",
+  "%gcframe = alloca { ptr, ptr, [2 x ptr] }, align 8",
+  "%gcframe = alloca { ptr, ptr, [3 x ptr] }, align 8",
+  "store ptr %gcframe, ptr @cone_gcframes, align 8",
+]
+excludes = [
+  "%gcframe = alloca { ptr, ptr, [4 x ptr] }",
+  "%gcframe = alloca { ptr, ptr, [5 x ptr] }",
+]
+
+[[scenario.region_roots_actorlocal.run]]
+name = "release"
+options = []
+
+[[scenario.region_roots_actorlocal.run]]
+name = "debug"
+options = ["--debug"]
+
 # Roots across objects: a package compiled on its own holds traced references
 # in its own frames while it calls back into the program, and the program's
 # frames and the package's are links of the one chain whose head conestd

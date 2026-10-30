@@ -2711,8 +2711,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         node->flags |= MoveType;
     structLendsDeclared(node);
     structCarriesRegionCheck(node);
-    if (structDeclaresTrait(node, tracedTrait))
+    if (structDeclaresTrait(node, tracedTrait)) {
         regionTracedSeen();
+        if (!structDeclaresTrait(node, actorLocalTrait))
+            regionCollectedSeen();
+    }
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
