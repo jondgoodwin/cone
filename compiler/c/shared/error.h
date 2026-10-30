@@ -769,6 +769,7 @@ enum ErrorCode {
     ErrorVectorSlice = 1560,    // A vector `load` or `store` of a mask, which has no memory form; a mask is loaded as numbers and compared. Pointed at the call
     ErrorOptionLogic = 1561,    // An Option or Result as an operand of `||` or `&&`, on either side. They convert to bool in a condition and under `!`, and are refused here until a later PR defines those operators on them. Pointed at the operand
     ErrorMacroAwait = 1562,     // A compound assignment through a macro method, `x += await f()`, whose operand holds an `await`: the operand is substituted into the macro's body, where the wait cannot be cut. Pointed at the operand
+    ErrorMacroMixedSet = 1563,  // A macro and a function declared under one name in one scope or one type: a set of same-named declarations holds all macros or all functions. Pointed at the later declaration, and again at the earlier
 
     // Warnings
     WarnCode = 3000,

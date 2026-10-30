@@ -1253,6 +1253,41 @@ only `FnDcl` defaults, so an enum's macro is found on the enum's own namespace,
 which is what lets a `match` on its receiver see the enum rather than one
 variant.
 
+**Macros overload by repeating the name** [Jon 26 Oct]. A macro declared under
+a name another macro holds in the same scope — a module (`modAddNamedNode`) or
+one type's namespace (`iNsTypeAddMacro`) — joins that name's set instead of
+being a duplicate: the name stays bound to the first, and `MacroDclNode.more`
+chains the rest in declaration order (a type's instance, and a generic module's,
+rebuild the chain as they copy their members). A name use finds the first, and
+everything that expands a macro asks `macroSelect` first when `more` is set:
+`macroNameTypeCheck`, `macroCallTypeCheck`, `macroCallTypeArgsTypeCheck` and
+`macroMethodTypeCheck`, so an operator reaches it too. The selection is
+`iNsTypeFindMethod`'s rule applied to macros: every candidate of the use's kind
+(a macro method for a use on a receiver, any other for a use without) is asked,
+none wins for fitting better, and exactly one must fit — no fit is
+`ErrorNoCandidate` listing the candidates, more than one `ErrorAmbigCandidate`
+naming two. A candidate is asked in a trial (`macroCandidateFits`), touching
+nothing of the use: each argument is checked once on a copy with no expected
+type (`macroArgTrial`, the same mechanism a `lazy` argument's check uses), and
+the candidate fits when its parameter's type — made as the expansion will make
+it (`macroParmTypeAt`), the type parameters written or inferred from the copies
+by `genericInferMacroParms` — accepts that copy by `iexpMatches` with
+`Coercion`, as a call's argument is matched to a function's parameter. An
+argument that does not check without being told its type (`None`, a closure) is
+asked of each parameter instead. A string literal is also offered as the
+temporary of a type declaring `fromLiteral` (`slitBorrowFallback`), but in a
+second pass, only when no candidate took the arguments in the first. The
+brackets of `m[...]` with no parentheses are type arguments to a candidate that
+declares type parameters and value arguments to one that does not, so
+`macroSetTypeParms` is what name resolution asks. A single candidate of the
+use's kind is not tried: it is expanded, and its own refusals apply. Only the
+chosen macro expands, so a `lazy` argument of a rejected candidate is never
+substituted. A set exports whole: a body that names one reaches every macro of
+the name (`nameUseMarkOne`/`exportReachAdd`). A macro and a function under one
+name are refused, `ErrorMacroMixedSet`, at the second declaration and again at
+the first; a set holds all macros or all functions (whether a mix should ever be
+allowed is open).
+
 ## Flow
 
 **Templates are never flowed** — the only `blockFlow` entry point is the tail of

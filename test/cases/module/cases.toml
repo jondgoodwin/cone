@@ -37,7 +37,7 @@ support = ["modulesub.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulehide.cone", "modulehidelate.cone", "modselfnamed",
-           "modulemacro.cone", "moduledeclared.cone",
+           "modulemacro.cone", "modulemacro_overload.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modulepkgfiles", "modtree",
            "moduleinline.cone", "moduleextern.cone",
@@ -1397,7 +1397,7 @@ excludes = ["shapes.Has", "shapes.Box"]
 
 [scenario.module_generic_macro]
 category = "run"
-description = "A macro inside a generic module, its parameter of type T and its body naming the instance's global, expanded in the module's own function and named through the instance"
+description = "A macro inside a generic module, its parameter of type T and its body naming the instance's global, expanded in the module's own function and named through the instance, and a second macro of that name, which the instance's copy holds as the set"
 tags = ["nameres", "typecheck", "runtime"]
 
 [scenario.module_generic_fold]
@@ -1641,6 +1641,20 @@ excludes = ["declare anon"]
 name = "folded-macro-expands-into-its-use"
 target = "preir"
 contains = ["(i64 4)"]
+
+[scenario.module_imports_macro_overload]
+category = "compile"
+description = "A wildcard import of a module declaring macros overloaded by repeating the name: each use picks among the whole set, and a public macro's body that uses a private overloaded pair expands in the importer"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# Each use expanded the body its argument picked: the i64 pick's '+ 1000', the
+# bool pick's 2000 and 3000 branches, and outer's body with both of the private
+# pair's bodies, '+ 4000' for the i64 and the 5000 and 6000 branches for the
+# bool. Pre-optimization IR, because the optimizer folds the sums.
+[[scenario.module_imports_macro_overload.check]]
+name = "each-use-expands-the-macro-its-argument-picks"
+target = "preir"
+contains = ["add i64 %a1, 1000", "[ 2000, %ifblk ], [ 3000, %ifnext ]", "add i64 %a7, 4000", "[ 5000, %ifblk11 ], [ 6000, %ifnext10 ]"]
 
 [scenario.module_qualified]
 category = "compile"

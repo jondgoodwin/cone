@@ -239,8 +239,12 @@ expansion, coerced to `bool`; a `+=` becomes `fnCallOpAssgn`'s
 `{let tmp = &mut x; *tmp = *tmp + y}` with the `+` expanded, its answer
 coerced to the place's type or `ErrorInvType` (`fnCallOpAssgnMacro`). An operand
 count other than the macro's parameter count after `self` is `ErrorArgCount`,
-naming the operator. A receiver its operand types (`None == x`, an `if`), a
-literal, or a name that is not a value's keeps the order below. Where no type
+naming the operator, where the name holds one macro; a name that holds several
+(overloaded by repeating it, [generic](generic.md), "Type check") picks by the
+operands, their number included. A receiver its operand types (`None == x`, an
+`if`), a literal, or a name that is not a value's keeps the order below. A bare
+field name is a receiver of its operator as `self.field` is: checking it makes
+it that. Where no type
 declares a macro method by the name, nothing here runs, and every operator is
 checked as it always was; where one does, an operator by that name whose method
 is a function goes on with its receiver already checked, `==`'s, `!=`'s, `<-`'s

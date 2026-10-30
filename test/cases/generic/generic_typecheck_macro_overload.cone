@@ -1,0 +1,36 @@
+// A use of macros overloaded by repeating the name, refused where it is used
+// when it picks no one macro: no candidate's parameters accept the arguments
+// (the diagnostic lists the candidates), or more than one does, two literals
+// fitting both of a pair of number types as they do for overloaded functions
+// (it names the two). The same for a macro method and for an operator macro.
+
+mod generic_typecheck_macro_overload;
+
+macro kind[a: i32] { 1 }
+macro kind[a: bool] { 2 }
+
+macro wide[a: i32] { 1 }
+macro wide[a: f64] { 2 }
+
+struct V {
+  pub x: i64;
+
+  macro add[self, o: V] { V(x: self.x + o.x) }
+  macro add[self, o: bool] { V(x: self.x) }
+
+  macro `+`[self, o: V] { V(x: self.x + o.x) }
+  macro `+`[self, o: bool] { V(x: self.x) }
+
+  macro `*`[self, o: i32] { V(x: self.x) }
+  macro `*`[self, o: f64] { V(x: self.x) }
+}
+
+fn main() {
+  let a = V(x: 1);
+  let none = kind("text");                    //~ ErrorNoCandidate:18 "The candidates are `kind[a: i32]`, `kind[a: bool]`"
+  let ambiguous = wide(3);                    //~ ErrorAmbigCandidate:23 "(`wide[a: i32]` and `wide[a: f64]`)"
+  let arity = kind(1i32, 2i32);               //~ ErrorNoCandidate:19 "`kind`"
+  let method = a.add("text");                 //~ ErrorNoCandidate:17 "`add[o: V]`, `add[o: bool]`"
+  let operator = a + 3.5;                     //~ ErrorNoCandidate:20 "`+[o: V]`, `+[o: bool]`"
+  let both = a * 2;                           //~ ErrorAmbigCandidate:16 "(`*[o: i32]` and `*[o: f64]`)"
+}
