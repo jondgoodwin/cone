@@ -107,11 +107,9 @@ pub struct ZipWriter {
           var name = String.from(prefix);
           name.append(item.name.view());
           if item.isDir {
-            let made = self.addDir(name.view(), opts);
-            if made is Err { return made; }
+            self.addDir(name.view(), opts)?;
             name.append("/");
-            let below = self.addTree(&item.path, name.view(), opts);
-            if below is Err { return below; }
+            self.addTree(&item.path, name.view(), opts)?;
           } else if item.isFile {
             var stamp = opts.modified;
             match fs.stat(&item.path) {
@@ -119,8 +117,7 @@ pub struct ZipWriter {
               case is Err {}
             }
             let o = EntryOptions(opts.method, opts.level, stamp, opts.mode, opts.zip64, opts.comment.copy());
-            let made = self.addFile(name.view(), &item.path, &o);
-            if made is Err { return made; }
+            self.addFile(name.view(), &item.path, &o)?;
           }
           k += 1usize;
         }
@@ -313,11 +310,7 @@ pub struct ZipWriter {
   // Finishes the archive and answers all of its bytes
   pub fn bytes(self: &mut) Result[List[u8], ZipError] {
     if !finished {
-      let ended = self.finish();
-      match ended {
-        case let Err(e) { return Err[List[u8], ZipError](e); }
-        case is Ok {}
-      }
+      self.finish()?;
     }
     var all = List[u8].empty();
     var s = Status.MoreOutput;
@@ -328,11 +321,7 @@ pub struct ZipWriter {
   // Finishes the archive and writes it to the file 'path' (made, or replaced), a megabyte at a time
   pub fn saveTo(self: &mut, path: &Path) Result[void, ZipError] {
     if !finished {
-      let ended = self.finish();
-      match ended {
-        case let Err(e) { return Err[void, ZipError](e); }
-        case is Ok {}
-      }
+      self.finish()?;
     }
     var piece = List[u8].empty();
     var first = true;

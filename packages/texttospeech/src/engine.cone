@@ -96,10 +96,7 @@ pub struct Engine {
 
   // Load the model and its tables from 'dir' (the folder that holds kokoro-v1_0.safetensors and vocab.tsv)
   pub fn open(device: &mut Device, dir: &str) Result[Engine, String] {
-    let loaded = match Weights.load(device, dir) {
-      case var Ok(w) { w }
-      case let Err(m) { return Err[Engine, String](m.copy()); }
-    };
+    let loaded = Weights.load(device, dir)?;
     let weights, buf = loaded;
     var vocab = Dict[String, u32].empty();
     var path = String.from(dir);
@@ -692,10 +689,7 @@ pub struct Engine {
 
   // The weights' buffer, for a job to hold
   fn takeHeld(self: &mut, device: &mut Device) Buffer {
-    match held.pop() {
-      case var Some(b) { b }
-      case is None { zeroed(device, 1usize) }
-    }
+    held.pop() || zeroed(device, 1usize)
   }
 
   // Say a string of phonemes in a voice's style (256 floats) at a speed (1.0 normal, more is faster). 'noise' is the
@@ -773,17 +767,11 @@ pub struct Engine {
     self.gpuNanos = self.gpuNanos + t5.since(t4).nanos();
     if !okB { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)")); }
     appendProbes(&mut probes, probesB);
-    let f0 = match backsB.pop() {
-      case var Some(b) { b }
-      case is None { List[f32].empty() }
-    };
+    let f0 = backsB.pop() || List[f32].empty();
 
     // ---- the source, on the CPU ----
     let samples = 600usize * f;
-    var source = match noise {
-      case var Some(n) { n }
-      case is None { drawNoise(rng, samples) }
-    };
+    var source = noise || drawNoise(rng, samples);
     var pitch = f0.view();
     if f0ForSource.len() == f0.len() { pitch = f0ForSource.view(); }
     let harSource = harmonicSource(pitch, &source, weights.harmonicWeights.view(), weights.harmonicBias);
@@ -828,10 +816,7 @@ pub struct Engine {
 
 // The last buffer of a list (an empty one if it has none, which a stage's own count rules out)
 fn popBuffer(l: &mut List[Buffer], device: &mut Device) Buffer {
-  match l.pop() {
-    case var Some(b) { b }
-    case is None { zeroed(device, 1usize) }
-  }
+  l.pop() || zeroed(device, 1usize)
 }
 
 fn appendProbes(target: &mut List[Probe], extra: List[Probe]) {

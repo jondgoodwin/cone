@@ -61,22 +61,13 @@ fn main() i32 {
   var modelPath = Path.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f32.safetensors");
   var haveModel = fs.exists(&modelPath);
   if !haveModel { return skip("the converted model is not at C:\\src\\speech-models"); }
-  var mapped = match fs.mapFile(&modelPath) {
-    case var Ok(f) { f }
-    case is Err { return skip("the model file cannot be mapped"); }
-  };
-  var st = match parseSafetensors(mapped.view()) {
-    case var Ok(s) { s }
-    case is Err { expect(false, "the model file parses"); return done(); }
-  };
+  var Ok(mapped) = fs.mapFile(&modelPath) else { return skip("the model file cannot be mapped"); };
+  var Ok(st) = parseSafetensors(mapped.view()) else { expect(false, "the model file parses"); return done(); };
   var window = List[f32].empty();
   var fb = List[f32].empty();
   match st.floats(mapped.view(), "mel.window") { case var Some(w) { window = w; } case is None { expect(false, "mel.window is there"); } }
   match st.floats(mapped.view(), "mel.fb") { case var Some(w) { fb = w; } case is None { expect(false, "mel.fb is there"); } }
-  var fe = match Frontend.make(window.view(), fb.view()) {
-    case var Some(f) { f }
-    case is None { expect(false, "the tables have the sizes of 128 bands and 400 samples"); return done(); }
-  };
+  var Some(fe) = Frontend.make(window.view(), fb.view()) else { expect(false, "the tables have the sizes of 128 bands and 400 samples"); return done(); };
 
   // properties that need no reference: too short, silence, and the length rule (1 + N / 160 STFT frames, N / 160 valid)
   var few = List[f32].empty();
@@ -100,10 +91,10 @@ fn main() i32 {
     let wavPath = pathOf("C:\\src\\speech-models\\librispeech-clips\\", id, ".wav");
     let refPath = pathOf("C:\\src\\speech-models\\reference\\", id, ".ref.safetensors");
     if !fs.exists(&wavPath) || !fs.exists(&refPath) { continue; }
-    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Err { continue; } };
-    var rf = match fs.mapFile(&refPath) { case var Ok(f) { f } case is Err { continue; } };
-    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Err { expect(false, "the clip decodes"); continue; } };
-    let rst = match parseSafetensors(rf.view()) { case var Ok(s) { s } case is Err { expect(false, "the reference parses"); continue; } };
+    var Ok(wav) = fs.mapFile(&wavPath) else { continue; };
+    var Ok(rf) = fs.mapFile(&refPath) else { continue; };
+    let Ok(sound) = decodeWav(wav.view()) else { expect(false, "the clip decodes"); continue; };
+    let Ok(rst) = parseSafetensors(rf.view()) else { expect(false, "the reference parses"); continue; };
     any = true;
     expectUInt(u64.from(sound.rate), 16000u64, "the clip is 16 kHz");
     let refLog = rst.floats(rf.view(), "logmel");

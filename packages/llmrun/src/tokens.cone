@@ -89,16 +89,14 @@ fn appendBytes(out: &mut List[u8], b: &Array[u8]) {
 // what llama.cpp matches in a text. Only the byte-level BPE of the GPT-2 family is built (`tokenizer.ggml.model` =
 // "gpt2"); a SentencePiece vocabulary is refused.
 pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
-  match model.text("tokenizer.ggml.model") {
-    case let Some(kind) {
-      if kind != "gpt2" {
-        var m = String.from("llmrun: the tokenizer is '");
-        m <- kind;
-        m <- "'; only the byte-level BPE ('gpt2') is built here";
-        return Err[ModelTokens, String](m);
-      }
-    }
-    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model")); }
+  let Some(kind) = model.text("tokenizer.ggml.model") else {
+    return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model"));
+  };
+  if kind != "gpt2" {
+    var m = String.from("llmrun: the tokenizer is '");
+    m <- kind;
+    m <- "'; only the byte-level BPE ('gpt2') is built here";
+    return Err[ModelTokens, String](m);
   }
   var pre = bpetokenize.PreTokenizer.Gpt2;
   match model.text("tokenizer.ggml.pre") {
@@ -121,10 +119,8 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
     case let Some(items) {
       var i = 0usize;
       while i < items.len() {
-        match items.text(i) {
-          case let Some(t) { tokens.push(String.from(t)); }
-          case is None { return Err[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); }
-        }
+        let Some(t) = items.text(i) else { return Err[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); };
+        tokens.push(String.from(t));
         i = i + 1usize;
       }
       match model.list("tokenizer.ggml.token_type") {
@@ -151,10 +147,8 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
     case let Some(items) {
       var i = 0usize;
       while i < items.len() {
-        match items.text(i) {
-          case let Some(t) { merges.push(String.from(t)); }
-          case is None { return Err[ModelTokens, String](String.from("llmrun: a merge is not text")); }
-        }
+        let Some(t) = items.text(i) else { return Err[ModelTokens, String](String.from("llmrun: a merge is not text")); };
+        merges.push(String.from(t));
         i = i + 1usize;
       }
     }
@@ -185,10 +179,7 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
 const NO_TOKEN = 0xFFFFFFFFu32;
 
 fn tokenOr(tok: &bpetokenize.Tokenizer, text: &str) u32 {
-  match tok.tokenId(text) {
-    case let Some(id) { id }
-    case is None { NO_TOKEN }
-  }
+  tok.tokenId(text) || NO_TOKEN
 }
 
 fn addStop(stops: &mut List[u32], id: u32) {
@@ -211,7 +202,8 @@ pub struct TextStream {
   pub fn push(self: &mut, tokens: &bpetokenize.Tokenizer, id: u32, showSpecial: bool) List[u8] {
     var one = List[u32].empty();
     one.push(id);
-    tokens.decodeInto(one.view(), !showSpecial, &mut pending);
+    // An id outside the tokenizer's vocabulary adds no bytes (decodeInto refuses it and leaves 'pending' as it was)
+    _ = tokens.decodeInto(one.view(), !showSpecial, &mut pending);
     let whole = bpetokenize.utf8Complete(pending.view());
     var out = List[u8].withCapacity(whole);
     var i = 0usize;

@@ -101,16 +101,13 @@ fn fileIs(p: &str, want: &Array[u8]) bool {
   }
 }
 
-fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+fn clean(p: &str) { _ = fs.removeAll(&Path.from(p)); }
 
 // A one-entry archive with that name
 fn archiveOf(name: &str) List[u8] {
   var w = ZipWriter.make();
-  w.add(name, "evil\n", &EntryOptions.stored());
-  match w.bytes() {
-    case let Ok(b) { b }
-    case let Err(e) { List[u8].empty() }
-  }
+  _ = w.add(name, "evil\n", &EntryOptions.stored());
+  w.bytes() || List[u8].empty()
 }
 
 fn main() i32 {
@@ -144,8 +141,8 @@ fn main() i32 {
   }
 
   // Existing files: refused before anything is written; replaced with overwrite
-  fs.writeFile(&Path.from("x-basic/deeper/still/hello.txt"), "changed\n");
-  fs.removeFile(&Path.from("x-basic/deeper/still/dir/empty.txt"));
+  _ = fs.writeFile(&Path.from("x-basic/deeper/still/hello.txt"), "changed\n");
+  _ = fs.removeFile(&Path.from("x-basic/deeper/still/dir/empty.txt"));
   expect(isKind(extractKind(basic.view(), "x-basic/deeper/still", &safe), ErrorKind.Exists), "an existing file is Exists");
   expect(!exists("x-basic/deeper/still/dir/empty.txt"), "and nothing was written (the removed file is still gone)");
   expect(fileIs("x-basic/deeper/still/hello.txt", "changed\n"), "and the existing file is as it was");
@@ -156,11 +153,11 @@ fn main() i32 {
   expect(exists("x-basic/deeper/still/dir/empty.txt"), "and the missing one is back");
   // A folder where a file goes is never replaced
   clean("x-basic/deeper/still/hello.txt");
-  fs.makeDirAll(&Path.from("x-basic/deeper/still/hello.txt/inner"));
+  _ = fs.makeDirAll(&Path.from("x-basic/deeper/still/hello.txt/inner"));
   expect(isKind(extractKind(basic.view(), "x-basic/deeper/still", &over), ErrorKind.Exists), "a folder in a file's way is Exists");
   // A file where a folder goes
   clean("x-basic2");
-  fs.writeFile(&Path.from("x-basic2"), "a file\n");
+  _ = fs.writeFile(&Path.from("x-basic2"), "a file\n");
   expect(extractKind(basic.view(), "x-basic2", &safe) is Some, "a file where the destination should be is refused");
   clean("x-basic2");
 
@@ -198,8 +195,8 @@ fn main() i32 {
     var w = ZipWriter.make();
     let big = texty(2621440usize);
     let rnd = noise(1500000usize, 5u64);
-    w.add("big/deflated.txt", big.view(), &EntryOptions.deflated(1i32));
-    w.add("big/stored.bin", rnd.view(), &EntryOptions.stored());
+    _ = w.add("big/deflated.txt", big.view(), &EntryOptions.deflated(1i32));
+    _ = w.add("big/stored.bin", rnd.view(), &EntryOptions.stored());
     match w.bytes() {
       case let Err(e) { expect(false, "big: bytes"); }
       case let Ok(arc) {
@@ -258,8 +255,8 @@ fn main() i32 {
     let okNames: Array[&str, 8] = ["./a.txt", "a//b.txt", "a/./c.txt", "a/..d", "..e/f", "...x", "COM10.txt", "CONX"];
     var w = ZipWriter.make();
     var i = 0usize;
-    while i < 8usize { w.add(okNames[i], "fine\n", &EntryOptions.stored()); i += 1usize; }
-    w.addDir("./", &EntryOptions.stored());
+    while i < 8usize { _ = w.add(okNames[i], "fine\n", &EntryOptions.stored()); i += 1usize; }
+    _ = w.addDir("./", &EntryOptions.stored());
     match w.bytes() {
       case let Err(e) { expect(false, "ok names: bytes"); }
       case let Ok(arc) {
@@ -343,9 +340,9 @@ fn main() i32 {
   // ---------------- an entry that goes bad half way ----------------
   {
     var w = ZipWriter.make();
-    w.add("first.txt", "first\n", &EntryOptions.stored());
-    w.add("second.bin", noise(3000000usize, 7u64).view(), &EntryOptions.stored());
-    w.add("third.txt", "third\n", &EntryOptions.stored());
+    _ = w.add("first.txt", "first\n", &EntryOptions.stored());
+    _ = w.add("second.bin", noise(3000000usize, 7u64).view(), &EntryOptions.stored());
+    _ = w.add("third.txt", "third\n", &EntryOptions.stored());
     match w.bytes() {
       case let Err(e) { expect(false, "bad: bytes"); }
       case let Ok(arc) {
@@ -373,11 +370,11 @@ fn main() i32 {
   {
     clean("lk-dest");
     clean("lk-target");
-    fs.makeDirAll(&Path.from("lk-dest"));
-    fs.makeDirAll(&Path.from("lk-target"));
+    _ = fs.makeDirAll(&Path.from("lk-dest"));
+    _ = fs.makeDirAll(&Path.from("lk-target"));
     var args = List[String].empty();
-    let target = match fs.absolute(&Path.from("lk-target")) { case let Ok(p) { p } case let Err(e) { Path.from("lk-target") } };
-    let link = match fs.absolute(&Path.from("lk-dest/inside")) { case let Ok(p) { p } case let Err(e) { Path.from("lk-dest/inside") } };
+    let target = fs.absolute(&Path.from("lk-target")) || Path.from("lk-target");
+    let link = fs.absolute(&Path.from("lk-dest/inside")) || Path.from("lk-dest/inside");
     if isWindows() {
       // mklink wants backslashes
       var wl = String.from(link.view());
@@ -418,7 +415,7 @@ fn main() i32 {
       var wl = String.from(link.view());
       wl.replaceByte('/', '\\');
       rm.push(wl);
-      process.run(rm.view(), process.Options());
+      _ = process.run(rm.view(), process.Options());
     }
     clean("lk-dest");
     clean("lk-target");

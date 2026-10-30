@@ -127,10 +127,10 @@ fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f6
     let wavPath = path4(MODELS, "librispeech-clips\\", id, ".wav");
     let refPath = path4(MODELS, "reference\\", id, ".ref.safetensors");
     let txtPath = path4(MODELS, "reference\\", id, ".nemo.txt");
-    var wav = match fs.mapFile(&wavPath) { case var Ok(f) { f } case is Err { continue; } };
-    var rf = match openSafetensors(&refPath) { case var Ok(f) { f } case is Err { continue; } };
+    var Ok(wav) = fs.mapFile(&wavPath) else { continue; };
+    var Ok(rf) = openSafetensors(&refPath) else { continue; };
     let nemoText = match fs.readFile(&txtPath) { case let Ok(t) { trimmed(t.view()) } case is Err { continue; } };
-    let sound = match decodeWav(wav.view()) { case var Ok(s) { s } case is Err { expect(false, "the clip decodes"); continue; } };
+    let Ok(sound) = decodeWav(wav.view()) else { expect(false, "the clip decodes"); continue; };
     let r = match p.run(device, sound.samples.view(), true) {
       case var Ok(r) { r }
       case let Err(m) { expect(false, id); expectStr(m.view(), "", "why the run failed"); continue; }
@@ -230,8 +230,8 @@ fn check(device: &mut Device, modelName: &str, encoderBound: f64, logitBound: f6
     case is Err { expect(true, "audio past the limit is refused"); }
   }
   p.limitFrames(5000usize);
-  var again = match fs.mapFile(&path4(MODELS, "librispeech-clips\\", "7176-92135-0019", ".wav")) { case var Ok(f) { f } case is Err { return same; } };
-  let snd = match decodeWav(again.view()) { case var Ok(s) { s } case is Err { return same; } };
+  var Ok(again) = fs.mapFile(&path4(MODELS, "librispeech-clips\\", "7176-92135-0019", ".wav")) else { return same; };
+  let Ok(snd) = decodeWav(again.view()) else { return same; };
   var texts = List[String].empty();
   var rep = 0usize;
   while rep < 3usize {
@@ -284,7 +284,7 @@ fn main() i32 {
           case is Ok { expect(false, "a vocabulary that is not 1024 pieces is refused"); }
           case is Err { expect(true, "a vocabulary that is not 1024 pieces is refused"); }
         }
-        fs.removeFile(&shortVocab);
+        _ = fs.removeFile(&shortVocab);
       }
       case is Err { expect(false, "the short vocabulary is written"); }
     }
@@ -304,7 +304,7 @@ fn main() i32 {
           case is Ok { expect(false, "a file without the model's tensors is refused"); }
           case is Err { expect(true, "a file without the model's tensors is refused"); }
         }
-        fs.removeFile(&tinyPath);
+        _ = fs.removeFile(&tinyPath);
       }
       case is Err { expect(false, "the tiny model is written"); }
     }

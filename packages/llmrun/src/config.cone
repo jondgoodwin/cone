@@ -49,21 +49,17 @@ fn optionalCount(model: &gguf.Model, arch: &String, suffix: &str, fallback: usiz
 
 fn optionalFloat(model: &gguf.Model, arch: &String, suffix: &str, fallback: f64) f64 {
   let k = keyOf(arch, suffix);
-  match model.float(k.view()) {
-    case let Some(x) { x }
-    case is None { fallback }
-  }
+  model.float(k.view()) || fallback
 }
 
 // The shape of the model a file holds, or why this build cannot run it. Only the architectures 'qwen3' and 'llama'
 // are run; a model that scales its rotary embedding (llama 3.1's rope scaling, YaRN) is refused, since the rotation
 // here is the plain one.
 pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
-  var arch = String.empty();
-  match model.text("general.architecture") {
-    case let Some(a) { arch = String.from(a); }
-    case is None { return Err[ModelInfo, String](String.from("llmrun: the file has no general.architecture")); }
-  }
+  let Some(archName) = model.text("general.architecture") else {
+    return Err[ModelInfo, String](String.from("llmrun: the file has no general.architecture"));
+  };
+  let arch = String.from(archName);
   let isQwen3 = arch.view() == "qwen3";
   if !isQwen3 && arch.view() != "llama" {
     var m = String.from("llmrun: the architecture is '");
@@ -83,14 +79,10 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
     }
     case is None {}
   }
-  var layers = 0usize;
-  var dim = 0usize;
-  var ffDim = 0usize;
-  var nHeads = 0usize;
-  match needCount(model, &arch, "block_count") { case let Ok(n) { layers = n; } case let Err(e) { return Err[ModelInfo, String](e.copy()); } }
-  match needCount(model, &arch, "embedding_length") { case let Ok(n) { dim = n; } case let Err(e) { return Err[ModelInfo, String](e.copy()); } }
-  match needCount(model, &arch, "feed_forward_length") { case let Ok(n) { ffDim = n; } case let Err(e) { return Err[ModelInfo, String](e.copy()); } }
-  match needCount(model, &arch, "attention.head_count") { case let Ok(n) { nHeads = n; } case let Err(e) { return Err[ModelInfo, String](e.copy()); } }
+  let layers = needCount(model, &arch, "block_count")?;
+  let dim = needCount(model, &arch, "embedding_length")?;
+  let ffDim = needCount(model, &arch, "feed_forward_length")?;
+  let nHeads = needCount(model, &arch, "attention.head_count")?;
   let nKvHeads = optionalCount(model, &arch, "attention.head_count_kv", nHeads);
   let headDim = optionalCount(model, &arch, "attention.key_length", dim / nHeads);
   let valueDim = optionalCount(model, &arch, "attention.value_length", headDim);
@@ -103,16 +95,13 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
   let trainedLength = optionalCount(model, &arch, "context_length", 2048usize);
 
   // the vocabulary is the token table's row count; the output is tied when the file has no output matrix
-  var vocab = 0usize;
-  match model.find("token_embd.weight") {
-    case let Some(t) {
-      if t.dims.len() != 2usize || usize.from(*t.dims[0usize]) != dim {
-        return Err[ModelInfo, String](String.from("llmrun: token_embd.weight is not [embedding_length, vocabulary]"));
-      }
-      vocab = usize.from(*t.dims[1usize]);
-    }
-    case is None { return Err[ModelInfo, String](String.from("llmrun: the file has no token_embd.weight")); }
+  let Some(embd) = model.find("token_embd.weight") else {
+    return Err[ModelInfo, String](String.from("llmrun: the file has no token_embd.weight"));
+  };
+  if embd.dims.len() != 2usize || usize.from(*embd.dims[0usize]) != dim {
+    return Err[ModelInfo, String](String.from("llmrun: token_embd.weight is not [embedding_length, vocabulary]"));
   }
+  let vocab = usize.from(*embd.dims[1usize]);
   var tied = true;
   match model.find("output.weight") {
     case is Some { tied = false; }

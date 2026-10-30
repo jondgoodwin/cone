@@ -108,30 +108,26 @@ fn expectData(ar: &Archive, data: &Array[u8], name: &str, want: &Array[u8]) {
 
 // The whole entry through an EntryReader, 'piece' bytes a pull, none over the piece
 fn streamAll(ar: &Archive, data: &Array[u8], i: usize, piece: usize, pulls: &mut usize) Result[List[u8], ZipError] {
-  match ar.reader(data, i) {
-    case let Err(e) { return Err[List[u8], ZipError](e); }
-    case var Ok(r) {
-      var all = List[u8].empty();
-      var chunk = List[u8].empty();
-      while true {
-        chunk.clear();
-        let s = r.pull(data, &mut chunk, piece);
-        *pulls += 1usize;
-        if chunk.len() > piece { expect(false, "a pull gave more than it was allowed"); }
-        var k = 0usize;
-        while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
-        if s == Status.Failed {
-          match r.error() {
-            case let Some(e) { return Err[List[u8], ZipError](e); }
-            case is None { expect(false, "a failed reader has an error"); }
-          }
-        }
-        if s == Status.Done { break; }
+  var r = ar.reader(data, i)?;
+  var all = List[u8].empty();
+  var chunk = List[u8].empty();
+  while true {
+    chunk.clear();
+    let s = r.pull(data, &mut chunk, piece);
+    *pulls += 1usize;
+    if chunk.len() > piece { expect(false, "a pull gave more than it was allowed"); }
+    var k = 0usize;
+    while k < chunk.len() { all.push(*chunk[k]); k += 1usize; }
+    if s == Status.Failed {
+      match r.error() {
+        case let Some(e) { return Err[List[u8], ZipError](e); }
+        case is None { expect(false, "a failed reader has an error"); }
       }
-      expectUInt(r.delivered(), u64.from(all.len()), "the reader counts what it delivered");
-      return Ok[List[u8], ZipError](all);
     }
+    if s == Status.Done { break; }
   }
+  expectUInt(r.delivered(), u64.from(all.len()), "the reader counts what it delivered");
+  Ok[List[u8], ZipError](all)
 }
 
 fn kindOf(r: &Result[List[u8], ZipError]) Option[ErrorKind] {
@@ -200,7 +196,7 @@ fn fileIs(p: &str, want: &Array[u8]) bool {
   }
 }
 
-fn clean(p: &str) { fs.removeAll(&Path.from(p)); }
+fn clean(p: &str) { _ = fs.removeAll(&Path.from(p)); }
 
 fn main() i32 {
   let hello = bytesOf("Hello, zstd!\n");
