@@ -173,7 +173,8 @@ for anything else.
    a named constant holding one, or a char any other way made, is a `char`. An
    unsuffixed integer literal is no `char` either (`litAdoptNumberType` leaves
    it, as it leaves `bool`).
-2. **Target is `bool`**: look for an `isTrue` method on the source type.
+2. **Target is `bool`**: look for an `isTrue` method on the source type, or,
+   for a variant's value, its enum's (Option's and Result's take the whole enum).
    This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and

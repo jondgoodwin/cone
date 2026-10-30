@@ -225,7 +225,27 @@ a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
 (`fnCallLowerManagedRef`, [references](references.md), "The managed reference
 type") ahead of the struct-literal pass below, which would take its head for a
 literal's struct; and a permission in the brackets of anything else, refused
-(`fnCallRefusePermArg`). Then, for a member access by name that is not an operator, the **receiver is
+(`fnCallRefusePermArg`). **An operator whose method is a macro method expands
+it** (`fnCallOperatorMacro`): an operator node, or a plain index `x[i]` (not
+borrowed, a range or in set position), whose name — or the name it is lowered
+through, `==` for a `!=`, `+` for a `+=` — some type declares a macro method by
+(`macroMethodNamed`, noted by `iNsTypeAddMacro`) has its receiver checked first,
+and where the receiver's type (or the type a reference to it refers to; not a
+pointer's) binds that name to a macro, `macroMethodTypeCheck` expands it with the
+operands unchecked. The method reached is the operator's own name's, else, where
+the type declares none by that name, the one `fnCallNeFromEq` or
+`fnCallOpAssgn` would call: a derived `!=` becomes the `!` of the `==`
+expansion, coerced to `bool`; a `+=` becomes `fnCallOpAssgn`'s
+`{let tmp = &mut x; *tmp = *tmp + y}` with the `+` expanded, its answer
+coerced to the place's type or `ErrorInvType` (`fnCallOpAssgnMacro`). An operand
+count other than the macro's parameter count after `self` is `ErrorArgCount`,
+naming the operator. A receiver its operand types (`None == x`, an `if`), a
+literal, or a name that is not a value's keeps the order below. Where no type
+declares a macro method by the name, nothing here runs, and every operator is
+checked as it always was; where one does, an operator by that name whose method
+is a function goes on with its receiver already checked, `==`'s, `!=`'s, `<-`'s
+and a number operator's expected argument type still taken from it.
+Then, for a member access by name that is not an operator, the **receiver is
 checked ahead of the arguments** and its type asked what the name binds. **A
 receiver that is a number type with the member `from`** — named directly,
 through an alias, or as the argument a type parameter has in an instance — is a

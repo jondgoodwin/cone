@@ -605,7 +605,7 @@ Depth is the only thing that distinguishes an expansion that terminates from one
 that does not, so `genericInstantiateEnter` counts it and refuses past
 `TypeCheckLoopMax` (256) with `ErrorInstDepth`. All three macro expansion paths
 — a parameterless name standing for its body, a call substituting arguments, and
-a macro method called on a receiver — go through `macroExpand` and are bounded
+a macro method called on a receiver or reached by an operator — go through `macroExpand` and are bounded
 the same way. Past the limit it is the C stack that gives out, with no
 diagnostic at all: measured, the generic form reaches depth ~702 and the macro
 form ~2282 before it does, while the deepest legitimate expansion in the test

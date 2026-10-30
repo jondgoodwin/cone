@@ -1,0 +1,49 @@
+// An operator whose method is a macro method, refused where it is used: the
+// macro declares a different number of parameters after 'self' than the
+// operator has operands; an operand whose type does not fit its parameter's,
+// plain or lazy; and a compound assignment through a macro '+' that gives back
+// something other than what the place holds.
+
+mod generic_typecheck_macro_operator;
+
+struct V {
+  pub x: i64;
+
+  // Binary, so '-a' has too few operands
+  macro `-`[self, o: V] {
+    V(x: self.x - o.x)
+  }
+
+  // Unary, so 'a + b' has one operand too many
+  macro `+`[self] {
+    V(x: self.x)
+  }
+
+  macro `*`[self, o: lazy V] {
+    V(x: self.x * o.x)
+  }
+
+  macro `<`[self, o: V] {
+    self.x < o.x
+  }
+}
+
+struct S {
+  pub x: i64;
+
+  // Gives an i64: 's += t' has no S to store back
+  macro `+`[self, o: S] {
+    self.x + o.x
+  }
+}
+
+fn main() {
+  let a = V(x: 1);
+  let b = V(x: 2);
+  let n = -a;                        //~ ErrorArgCount:11
+  let m = a + b;                     //~ ErrorArgCount:13
+  let lt = a < 3;                    //~ ErrorMacroArgType:16 "the macro's parameter o is 'o: V'"
+  let p = a * "text";                //~ ErrorMacroArgType:15 "'o: lazy V'"
+  var s = S(x: 1);
+  s += S(x: 2);                      //~ ErrorInvType:5 "not the place's S"
+}
