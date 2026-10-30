@@ -101,12 +101,7 @@ fn processId() u32 {
 fn out(s: &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
 fn err(s: &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
 
-fn number(s: &String) u64 {
-  match parseUInt(s.view()) {
-    case let Some(n) { n }
-    case is None { 0u64 }
-  }
-}
+fn number(s: &String) u64 { parseUInt(s.view()) || 0u64 }
 
 fn isAscii(s: &Array[u8]) bool {
   var i = 0usize;
@@ -219,7 +214,10 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     var id = String.empty();
     id.appendUInt(u64.from(processId()));
     let idPath = Path.from(a[3usize].view());
-    fs.writeFile(&idPath, id.view());
+    if fs.writeFile(&idPath, id.view()) is Err {
+      out("the grandchild could not write its id\n");
+      return 3i32;
+    }
     pause(u32.from(number(&a[4usize])));
     return 0i32;
   }
@@ -598,7 +596,7 @@ fn workingFolder(exe: &str, root: &Path) {
 
   // A UTF-8 name
   let utf = root.join("dossier é 日本");
-  fs.makeDir(&utf);
+  require(fs.makeDir(&utf) is Ok, "the UTF-8 folder made");
   let u = ran(process.run(c.view(), process.Options(), &utf), "cwd UTF-8");
   expectStr(u.stdout.view(), utf.view(), "a folder named in UTF-8");
 
@@ -892,7 +890,7 @@ fn main(argc: i32, argv: **u8) i32 {
     case is Err { require(false, "currentExe"); }
   }
   let root = makeRoot("cone-process-test");
-  if fs.exists(&root) { fs.removeAll(&root); }
+  if fs.exists(&root) { _ = fs.removeAll(&root); }
   require(fs.makeDir(&root) is Ok, "the test's folder made");
 
   me(&exe);

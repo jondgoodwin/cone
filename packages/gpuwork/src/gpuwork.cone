@@ -43,8 +43,8 @@
 //   works.flush(device)  works.waitFor(device, ticket, out)  works.waitAll(device, out)
 //   works.inFlight()
 //   Target.Loop(token, completer)  onLoop(lp, to, token)          (DELIVERY INTO AN IOCORE LOOP)
-//   onLoopIn(lp, to, group, deadline, token)  ERROR_JOB_REFUSED  ERROR_JOB_LOST
-//   ERROR_KERNEL_FAILED
+//   onLoopIn(lp, to, group, deadline, token)  JobFault: Refused Lost KernelFailed
+//   faultOf(c) (a Failed answer's JobFault)  fault.kind() (its portable IoErrorKind)
 //   Target.Here(token)  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
 //     c.submitted c.completed c.failures, c.words(slot) c.count() c.buffersIn(slots)
 //     c.bufferIn(slot)  (ANSWERS)
@@ -196,9 +196,10 @@
 // target (Here, Post, Chan, Once or Status), waking a loop asleep in poll:
 // a frame loop sleeps in iocore's poll and learns of the GPU's work as of
 // any I/O. The answer is Done with the job's ticket number ('c.n'); Failed
-// with ERROR_JOB_REFUSED for a job that did not run, ERROR_JOB_LOST for
-// one whose fence could not be waited for, or ERROR_KERNEL_FAILED for one in
-// which a Cone kernel failed on the GPU; and Cancelled for a job whose
+// with the JobFault Refused for a job that did not run, Lost for
+// one whose fence could not be waited for, or KernelFailed for one in
+// which a Cone kernel failed on the GPU ('faultOf(&c)' reads it, and
+// 'c.error().kind()' is the portable kind, the same on every system); and Cancelled for a job whose
 // cancel was asked (lp.cancel, a Request, its group) while it ran. A job on
 // the GPU cannot be stopped, so a cancel never makes the answer come early:
 // it comes when the GPU has finished, saying the cancel was asked. A job
@@ -252,7 +253,7 @@
 // invocation's globalId (words 4 to 6), the index out of bounds or the
 // range's end (word 7), and how many invocations failed. A Loop job in
 // which a kernel failed answers its iocore operation Failed, with
-// ERROR_KERNEL_FAILED. A failure on the GPU is reported, not raised: the
+// the JobFault KernelFailed. A failure on the GPU is reported, not raised: the
 // program goes on, its job's buffers back, and decides what the failure
 // means (a CPU panic is one thing it may do).
 //
@@ -356,6 +357,8 @@ import thread;
 import sync use Arc, Sender, Receiver, Channel;
 import iobuf use IoBuf;
 import iocore;
+import diag;
+import ioerror use IoErrorKind;
 import gpu use *;
 import fs;
 import path use Path;

@@ -15,7 +15,7 @@ mod errors;
 import testing use *;
 import diag;
 import iocore use IoError, answerError;
-import ioerror use IoErrorKind, errnoKind, errorKindName, osKind;
+import ioerror use IoErrorKind, errnoKind, osKind;
 
 // The system's number: Windows' or Linux's
 fn n(win: u32, lx: u32) u32 {if isWindows() {win} else {lx}}
@@ -96,6 +96,10 @@ fn main() i32 {
   expect(IoError.cancelled().describe().view() == "cancelled", "a cancel's describe is its kind alone");
   expect(IoError.timedOut().describe().view() == "timed out", "a deadline's too");
   expect(IoError(n(11001u32, 0xFFFFFFFEu32)).describe().startsWith("not found, OS error "), "a lookup's failure too");
+  let odd = IoError(12345678u32);
+  expect(odd.describe().contains("other, OS error 12345678") && odd.message().contains("12345678")
+    && !odd.describe().contains("Windows error") && !odd.message().contains("Windows error"),
+    "a number the system has no text for says the number, in no system's name");
 
   // An answer that is not Done, read
   expect(answerError(diag.kindRecv, diag.outcomeCancelled, 0u32).isCancelled(), "a Cancelled answer is Cancelled");
@@ -115,7 +119,7 @@ fn main() i32 {
   expect(errnoKind(if isWindows() {105i32} else {125i32}) == IoErrorKind.Cancelled, "errno: ECANCELED, the C library's own");
 
   // A kind's words
-  expect(errorKindName(IoErrorKind.ConnectionRefused) == "connection refused", "a kind's name");
-  expect(errorKindName(IoError(n(31u32, 71u32)).kind()) == "other", "Other's name");
+  expect(IoErrorKind.ConnectionRefused.name() == "connection refused", "a kind's name");
+  expect(IoError(n(31u32, 71u32)).kind().name() == "other", "Other's name");
   done()
 }

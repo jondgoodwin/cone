@@ -38,18 +38,45 @@ pub fn onLoopIn(lp: &mut iocore.Loop, to: iocore.Target, group: iocore.CancelGro
   Target.Loop(token, lp.externalIn(to, IoBuf.empty(), group, deadline))
 }
 
-// The Windows error number of a Loop job's iocore answer, Failed, for a job
-// something was refused in (or submitted in a later frame), which did not
-// run: ERROR_INVALID_PARAMETER
-pub const ERROR_JOB_REFUSED = 87u32;
+// Why a Loop job's iocore answer is Failed. 'kind()' is the portable kind
+// 'c.error().kind()' gives for it, the same on every system; the
+// system's own number kept in the answer is the one of that kind (Windows'
+// ERROR_INVALID_PARAMETER, GEN_FAILURE, PROCESS_ABORTED; Linux's EINVAL,
+// ENODEV, EIO), and 'faultOf' reads it back
+pub enum JobFault {
+  Refused,        // something was refused in the job (or it was submitted in a later frame): it did not run
+  Lost,           // the watcher could not wait for the job's fence (the device lost)
+  KernelFailed;   // it ran, and a Cone kernel failed on the GPU (its Completion's 'failures' say how)
 
-// ...and for a job whose fence the watcher could not wait for (the device
-// lost): ERROR_GEN_FAILURE
-pub const ERROR_JOB_LOST = 31u32;
+  // InvalidInput for a refused job (the answer is a bad argument), Other for
+  // the others (the GPU's own failure, which no kind names)
+  pub fn kind(self: JobFault) IoErrorKind {
+    match self {
+      case Refused {IoErrorKind.InvalidInput}
+      case Lost {IoErrorKind.Other}
+      case KernelFailed {IoErrorKind.Other}
+    }
+  }
+}
 
-// ...and for a job that ran, in which a Cone kernel failed on the GPU (its
-// Completion's 'failures' say how): ERROR_PROCESS_ABORTED
-pub const ERROR_KERNEL_FAILED = 1067u32;
+// The system's own number that stands for a fault in a Failed answer
+fn faultCode(f: JobFault) u32 {
+  match f {
+    case Refused {if isWindows() {87u32} else {22u32}}          // ERROR_INVALID_PARAMETER, EINVAL
+    case Lost {if isWindows() {31u32} else {19u32}}             // ERROR_GEN_FAILURE, ENODEV
+    case KernelFailed {if isWindows() {1067u32} else {5u32}}    // ERROR_PROCESS_ABORTED, EIO
+  }
+}
+
+// The fault a Loop job's answer carries: None for an answer that is not
+// Failed, or whose number is not one of the three
+pub fn faultOf(c: &iocore.Completion) Option[JobFault] {
+  if c.status != diag.outcomeFailed { return None; }
+  if c.code == faultCode(JobFault.Refused) { return Some[JobFault](JobFault.Refused); }
+  if c.code == faultCode(JobFault.Lost) { return Some[JobFault](JobFault.Lost); }
+  if c.code == faultCode(JobFault.KernelFailed) { return Some[JobFault](JobFault.KernelFailed); }
+  None
+}
 
 // A job's one answer: its ticket and token; whether it ran and every
 // invocation of it succeeded ('ok': false for a job something was refused
@@ -153,10 +180,7 @@ pub struct Completion {
   // slot it does not have)
   pub fn bufferIn(self, slot: u32) Buffer {
     var one = self.buffersIn(&[slot]);
-    match one.pop() {
-      case var Some(b) { b }
-      case is None { Buffer.none() }
-    }
+    one.pop() || Buffer.none()
   }
 
   // The words of the buffer in slot 'slot', one the job read back
@@ -268,11 +292,11 @@ fn settle(w: Watch, state: Arc[imm, WatchState]) {
   match &mut to {
     case var &mut Loop(l) {
       if !ran {
-        l.completer.fail(ERROR_JOB_REFUSED);
+        l.completer.fail(faultCode(JobFault.Refused));
       } else if !signalled {
-        l.completer.fail(ERROR_JOB_LOST);
+        l.completer.fail(faultCode(JobFault.Lost));
       } else if kernelFailed {
-        l.completer.fail(ERROR_KERNEL_FAILED);
+        l.completer.fail(faultCode(JobFault.KernelFailed));
       } else if l.completer.isCancelRequested() {
         l.completer.cancelled();
       } else {
