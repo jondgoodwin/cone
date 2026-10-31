@@ -797,6 +797,15 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // values, front to back, each lent to be changed in place
   pub fn viewMut(self: &mut) DequeMutItems[T] { DequeMutItems[T](self, 0usize) }
 
+  // The values moved out one at a time, front to back, which 'each x in deque'
+  // walks when they move: 'x' is the value itself. The deque is left empty at once,
+  // and a value the loop does not reach is finalized with the cursor
+  pub fn drain(self: &mut) DequeDrain[T] {
+    let n = used;
+    used = 0usize;
+    DequeDrain[T](self, n, 0usize)
+  }
+
   // The slot of the value at position i, which may be the one just past the last
   // when the caller is about to fill it
   fn slot(self: &, i: usize) usize {
@@ -866,6 +875,30 @@ pub struct DequeMutItems['a, T] is Iterator[&mut T] {
     let i = pos;
     pos = i + 1usize;
     Some[&mut T]((deque.ptr + deque.slot(i)) as &mut T)
+  }
+}
+
+// A cursor over the values a deque gave up, front to back: 'next' moves each out in
+// turn. It borrows the deque mutably, which may not be touched while the cursor is
+// used. Its death finalizes the values not moved out.
+pub struct DequeDrain['a, T] is Iterator[T] {
+  deque: &'a mut Deque[T];
+  end: usize;
+  pos: usize;
+
+  pub fn next(self: &mut) Option[T] {
+    if pos >= end { return None; }
+    let i = pos;
+    pos = i + 1usize;
+    Some[T](mem.readRaw(deque.ptr + deque.slot(i)))
+  }
+
+  fn final(self: &uni) {
+    if mem.needsFinal[T]() {
+      var i = pos;
+      while i < end { mem.finalize(deque.ptr + deque.slot(i)); i = i + 1usize; }
+    }
+    deque.head = 0usize;
   }
 }
 
@@ -1670,6 +1703,11 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // A key is never lent to be written: it is hashed where it sits.
   pub fn viewMut(self: &mut) DictMutPairs[K, V] { DictMutPairs[K, V](self, 0usize) }
 
+  // The pairs moved out one at a time, which 'each k, v in dict' walks when they
+  // move: 'k' and 'v' are the key and value themselves. Each bucket is emptied as its
+  // pair leaves, so the dictionary's death finalizes the pairs the loop did not reach
+  pub fn drain(self: &mut) DictDrain[K, V] { DictDrain[K, V](self, 0usize) }
+
   // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
   // not 'key': a Uni[str] or Rc[str] key is a reference itself, and a method
   // call reads through one reference only, so it is read through to its text
@@ -1891,6 +1929,25 @@ pub struct DictPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
     Some[(&K, &V)]((&dict.slots[i].key, &dict.slots[i].value))
+  }
+}
+
+// A cursor over the pairs a dictionary gives up: 'next' moves a key and its value out
+// as a tuple, in the table's order. It borrows the dictionary mutably.
+pub struct DictDrain['a, K: Hash, V] is Iterator[(K, V)] {
+  dict: &'a mut Dict[K, V];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[(K, V)] {
+    let i = nextFull(dict.ctrl, dict.mask, pos);
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
+    pos = i + 1usize;
+    let slot = (dict.slots + i) as &mut DictEntry[K, V];
+    let k = mem.readRaw(&slot.key as *K);
+    let v = mem.readRaw(&slot.value as *V);
+    if ctrlErase(dict.ctrl, dict.mask, i) { dict.left = dict.left + 1usize; }
+    dict.items = dict.items - 1usize;
+    Some[(K, V)]((k, v))
   }
 }
 
@@ -2156,6 +2213,19 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
 
   // The cursor a written '&mut' walks by (see Dict.viewMut)
   pub fn viewMut(self: &mut) OrderedMutPairs[K, V] { OrderedMutPairs[K, V](self, 0usize) }
+
+  // The pairs moved out one at a time, in the order of insertion (see Dict.drain). The
+  // dictionary is left empty at once, and a pair the loop does not reach is finalized
+  // with the cursor
+  pub fn drain(self: &mut) OrderedDrain[K, V] {
+    let n = count;
+    if ctrl != null {
+      libc.memset(ctrl, 255i32, mask + 1usize + 8usize);
+      left = bucketsCapacity(mask + 1usize);
+    }
+    count = 0usize;
+    OrderedDrain[K, V](self, dense, n, 0usize)
+  }
 
   // The hash of a key: the key fed to this dictionary's hasher
   fn hashOf[B](self: &, key: &B) u64 {
@@ -2434,6 +2504,32 @@ pub struct OrderedPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
   }
 }
 
+// A cursor over the pairs an OrderedDict gave up, in the order of insertion: 'next'
+// moves a key and its value out as a tuple. Its death finalizes the pairs not moved out.
+pub struct OrderedDrain['a, K: Hash, V] is Iterator[(K, V)] {
+  dict: &'a mut OrderedDict[K, V];
+  ptr: *OrderedEntry[K, V];
+  end: usize;
+  pos: usize;
+
+  pub fn next(self: &mut) Option[(K, V)] {
+    if pos >= end { return None; }
+    let i = pos;
+    pos = i + 1usize;
+    let e = (ptr + i) as &mut OrderedEntry[K, V];
+    let k = mem.readRaw(&e.key as *K);
+    let v = mem.readRaw(&e.value as *V);
+    Some[(K, V)]((k, v))
+  }
+
+  fn final(self: &uni) {
+    if mem.needsFinal[OrderedEntry[K, V]]() {
+      var i = pos;
+      while i < end { mem.finalize(ptr + i); i = i + 1usize; }
+    }
+  }
+}
+
 // A cursor over an OrderedDict's pairs, to change the values in place, in the
 // order of insertion (see DictMutPairs)
 pub struct OrderedMutPairs['a, K: Hash, V] is Iterator[(&K, &mut V)] {
@@ -2529,6 +2625,10 @@ pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
   // table's order, until it answers None
   pub fn items(self: &) SetItems[T] { SetItems[T](dict.keys()) }
 
+  // The elements moved out one at a time, which 'each x in set' walks when they
+  // move: 'x' is the element itself
+  pub fn drain(self: &mut) SetDrain[T] { SetDrain[T](dict.drain()) }
+
   // The same cursor under the name 'each x in set' walks it by
   pub fn iter(self: &) SetItems[T] { SetItems[T](dict.keys()) }
 }
@@ -2538,6 +2638,21 @@ pub struct SetItems['a, T: Hash] is Iterator[&T] {
   inner: DictKeys['a, T, Member];
 
   pub fn next(self: &mut) Option[&'a T] { inner.next() }
+}
+
+// A cursor over the elements a set gave up: 'next' moves each out
+pub struct SetDrain['a, T: Hash] is Iterator[T] {
+  inner: DictDrain['a, T, Member];
+
+  pub fn next(self: &mut) Option[T] {
+    match inner.next() {
+      case let Some(pair) {
+        let k, m = pair;
+        Some[T](k)
+      }
+      case is None { None }
+    }
+  }
 }
 
 // -------- capability traits --------

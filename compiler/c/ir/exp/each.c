@@ -259,12 +259,6 @@ static int eachCheckItem(INode *cursortype, uint32_t nvars, INode *lexnode, INod
             (int)nvars, (int)nvars, itypeName(cursortype), itypeName(item));
         return 0;
     }
-    if (nvars > 1 && itypeIsMove(item)) {
-        errorMsgNode(lexnode, ErrorEachItem,
-            "The items of %s are %s, a type that moves, and several 'each' variables cannot take its elements out one by one. Use one variable to take the item whole.",
-            itypeName(cursortype), itypeName(item));
-        return 0;
-    }
     return 1;
 }
 
@@ -285,9 +279,29 @@ static uint32_t eachVarCount(BlockNode *loop) {
 // The pass's variables take the pass's item: one variable is the item, and
 // several unpack a tuple item through a variable of the pass's own.
 // 'item' builds the item's expression. 'scope' is the loop's.
-static void eachBindVars(BlockNode *loop, uint32_t nvars, INode *item, uint16_t scope, INode *lexnode) {
+static void eachBindVars(BlockNode *loop, uint32_t nvars, INode *item, uint16_t scope, INode *lexnode, int movetuple) {
     if (nvars == 1) {
         ((VarDclNode*)nodesGet(loop->stmts, 0))->value = item;
+        return;
+    }
+    if (movetuple) {
+        // A tuple item that moves is taken apart by the assignment 'k, v = item', which moves
+        // each element into its variable (a tuple holds no field to move out of)
+        TupleNode *targets = newTupleNode((int)nvars);
+        targets->tag = VTupleTag;
+        inodeLexCopy((INode*)targets, lexnode);
+        for (uint32_t k = 0; k < nvars; ++k) {
+            VarDclNode *var = (VarDclNode*)nodesGet(loop->stmts, k);
+            var->flags |= FlagDestructDcl;
+            NameUseNode *use = newNameUseNode(var->namesym);
+            inodeLexCopy((INode*)use, lexnode);
+            use->dclnode = (INode*)var;
+            nodesAdd(&targets->elems, (INode*)use);
+        }
+        AssignNode *assign = newAssignNode(NormalAssign, (INode*)targets, item);
+        inodeLexCopy((INode*)assign, lexnode);
+        assign->flags |= FlagDestructAssign;
+        nodesInsert(&loop->stmts, (INode*)assign, nvars);
         return;
     }
     VarDclNode *whole = eachVar(immPerm, item, scope, lexnode);
@@ -296,6 +310,108 @@ static void eachBindVars(BlockNode *loop, uint32_t nvars, INode *item, uint16_t 
         VarDclNode *var = (VarDclNode*)nodesGet(loop->stmts, k + 1);
         var->value = (INode*)eachTupleElem(eachUse(whole, lexnode), k, (INode*)var);
     }
+}
+
+static Name *eachDrainName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("drain", 5);
+    return name;
+}
+
+// The variables an 'each' consumed, so that a later use of one can say what happened
+static INode **eachMoved = NULL;
+static uint32_t eachMovedCnt = 0, eachMovedCap = 0;
+
+int eachMovedVar(INode *dcl) {
+    for (uint32_t i = 0; i < eachMovedCnt; ++i)
+        if (eachMoved[i] == dcl)
+            return 1;
+    return 0;
+}
+
+// The variable at the root of a source that an 'each' takes the items out of
+static void eachMarkMoved(INode *src) {
+    while (src->tag == FldAccessTag || src->tag == ArrIndexTag)
+        src = ((FnCallNode*)src)->objfn;
+    if (!isNameUseNode(src) || ((NameUseNode*)src)->dclnode == NULL || ((NameUseNode*)src)->dclnode->tag != VarDclTag)
+        return;
+    INode *dcl = ((NameUseNode*)src)->dclnode;
+    if (eachMovedVar(dcl))
+        return;
+    if (eachMovedCnt == eachMovedCap) {
+        eachMovedCap = eachMovedCap ? eachMovedCap * 2 : 16;
+        eachMoved = realloc(eachMoved, eachMovedCap * sizeof(INode*));
+    }
+    eachMoved[eachMovedCnt++] = dcl;
+}
+
+// A source that is a name, fields named from one, or the dereference of either, as written
+static int eachSpelled(INode *node, char *out, size_t size) {
+    if (isNameUseNode(node)) {
+        Name *name = ((NameUseNode*)node)->namesym;
+        if (name == NULL || (size_t)name->namesz + 1 > size)
+            return 0;
+        memcpy(out, &name->namestr, name->namesz);
+        out[name->namesz] = '\0';
+        return 1;
+    }
+    // (a reference reached for a field is dereferenced for it by type check)
+    if (node->tag == DerefTag)
+        return eachSpelled(((StarNode*)node)->vtexp, out, size);
+    if (node->tag == FldAccessTag) {
+        FnCallNode *field = (FnCallNode*)node;
+        Name *name = field->methfld && isNameUseNode(field->methfld) ? ((NameUseNode*)field->methfld)->namesym : NULL;
+        if (name == NULL || !eachSpelled(field->objfn, out, size))
+            return 0;
+        size_t used = strlen(out);
+        if (used + 1 + name->namesz + 1 > size)
+            return 0;
+        out[used] = '.';
+        memcpy(out + used + 1, &name->namestr, name->namesz);
+        out[used + 1 + name->namesz] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+// A plain 'each' over what lies behind a borrow, whose items move
+void eachBehindError(INode *src, INode *base, int refish) {
+    char spelled[96];
+    if (!eachSpelled(src, spelled, sizeof(spelled)))
+        strcpy(spelled, "src");
+    errorMsgNode(src, ErrorEachBehindBorrow,
+        "An 'each' over %s hands out its items as 'let x = item' would, and these items move, which a borrow cannot give up. To walk them where they are, write 'each x in &%s%s'.",
+        itypeName(base), refish ? "*" : "", spelled);
+}
+
+// For 'parallel each' over an array, slice or list that is not a written borrow: 0 when
+// the item type is not settled or the source is borrowed, 1 when its items copy (each
+// pass takes a copy), 2 when they move and the source is its own (refused: a parallel
+// each does not consume), 3 when they move behind a borrow (refused)
+int eachParallelKind(INode *src, INode *type, INode *base, int refish, int isslice, int isarray, int islent) {
+    if (src->tag == BorrowTag || src->tag == ArrayBorrowTag || (src->flags & FlagBorrow))
+        return 0;
+    INode *celem = isslice ? ((RefNode*)type)->vtexp : isarray ? arrayElemType(base)
+        : islent ? itypeLenBodyElem((INode*)structLentBody((StructNode*)base)) : NULL;
+    celem = celem ? itypeGetTypeDcl(celem) : NULL;
+    if (celem == NULL || celem == unknownType || celem == errorType)
+        return 0;
+    if (!itypeIsMove(celem))
+        return 1;
+    return refish || (iexpIsLval(src) && iexpPathThroughBorrow(src)) ? 3 : 2;
+}
+
+// A Deque, Set, Dict or OrderedDict of the collections package
+static int eachBuiltinCollection(INode *base) {
+    if (base->tag != StructTag)
+        return 0;
+    ModuleNode *mod = dclInfoGetModule(base);
+    if (mod == NULL || mod->namesym != nametblFind("collections", 11))
+        return 0;
+    Name *n = ((StructNode*)base)->namesym;
+    return n == nametblFind("Deque", 5) || n == nametblFind("Set", 3) || n == nametblFind("Dict", 4)
+        || n == nametblFind("OrderedDict", 11);
 }
 
 INode *eachWrittenPerm(INode *src, INode *type) {
@@ -388,6 +504,49 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     }
     int place = eachRecheckable(src);
 
+    // A plain 'each' (a source that is not a written borrow) hands out each item as
+    // 'let x = item' would: a copy where the item copies, the item itself where it
+    // moves, which takes it out of the source and so consumes it. What cannot be
+    // consumed (a reference, a slice, what lies behind a borrow) is refused, naming the
+    // borrow to write. A written borrow, a cursor, and a type's own 'iter' are walked as
+    // they were: they hand out what their cursor lends.
+    int unwritten = src->tag != BorrowTag && src->tag != ArrayBorrowTag && !(src->flags & FlagBorrow);
+    int refish = isref || isslice;
+    int behind = unwritten && (refish || (iexpIsLval(src) && iexpPathThroughBorrow(src)));
+    int copyelems = 0;
+    int consumed = 0;
+    Name *drainName = eachDrainName();
+    if (unwritten && (isslice || isarray || islent)) {
+        INode *celem = isslice ? ((RefNode*)type)->vtexp : isarray ? arrayElemType(base)
+            : itypeLenBodyElem((INode*)structLentBody((StructNode*)base));
+        celem = celem ? itypeGetTypeDcl(celem) : NULL;
+        if (celem == NULL || celem == unknownType || celem == errorType)
+            ;
+        else if (!itypeIsMove(celem))
+            copyelems = 1;
+        else if (behind) {
+            eachBehindError(src, base, refish);
+            return;
+        }
+        else if (isarray || !eachHasMethod(base, drainName)) {
+            char spelled[96];
+            if (!eachSpelled(src, spelled, sizeof(spelled)))
+                strcpy(spelled, "src");
+            errorMsgNode(src, ErrorEachNoDrain,
+                "%s holds items that move, and no cursor consumes an array yet: walk a borrow of it, '&%s', or move the items into a List first.",
+                itypeName(base), spelled);
+            return;
+        }
+        else {
+            consumed = 1;
+            place = 0;
+            islent = 0;
+            hasiter = 1;
+            itername = drainName;
+            eachMarkMoved(src);
+        }
+    }
+
     // The cursor a slice gives (core's ArrayIter, ArrayIndexed, and ArrayMutItems,
     // MutItemsIndexed which lend '&mut'), made for this loop, is the slice and a count
     // it starts from: walked as the slice is, by a counted loop, rather than through
@@ -408,7 +567,9 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     // The cursor the loop walks, and what it gives, are checked before the loop
     // is built: what is wrong with either is said here, in the loop's terms,
     // rather than by the statements built from it
-    if ((hasnext || hasiter) && !itemskind) {
+    INode *copyitem = NULL;
+    INode *itemtype = NULL;     // what the cursor's 'next' gives, where its signature says
+    for (int round = 0; (hasnext || hasiter) && !itemskind; ++round) {
         INode *cursortype = base;
         if (hasiter) {
             FnDclNode *iterfn = eachMethod(base, itername);
@@ -434,9 +595,38 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             }
             cursortype = given;
         }
-        INode *item;
+        INode *item = NULL;
         if (cursortype != NULL && !eachCheckItem(cursortype, nvars, src, nodesGet(loop->stmts, 0), &item))
             return;
+        itemtype = item;
+        // A Deque, Set, Dict or OrderedDict walked by a plain 'each' hands out each item as
+        // 'let x = item' would: copied if it copies (the cursor lends '&T', or '(&K, &V)'),
+        // otherwise taken out, which consumes the collection, so its 'drain' is walked instead
+        if (round == 0 && unwritten && hasiter && item != NULL && eachBuiltinCollection(base)) {
+            int anymove = 0;
+            if (item->tag == TTupleTag) {
+                Nodes *elems = ((TupleNode*)item)->elems;
+                for (uint32_t e = 0; e < elems->used; ++e) {
+                    INode *et = itypeGetTypeDcl(nodesGet(elems, e));
+                    if (et->tag == RefTag && itypeIsMove(itypeGetTypeDcl(((RefNode*)et)->vtexp)))
+                        anymove = 1;
+                }
+            }
+            else if (item->tag == RefTag && itypeIsMove(itypeGetTypeDcl(((RefNode*)item)->vtexp)))
+                anymove = 1;
+            if (anymove) {
+                if (behind) {
+                    eachBehindError(src, base, refish);
+                    return;
+                }
+                itername = eachDrainName();
+                place = 0;
+                eachMarkMoved(src);
+                continue;
+            }
+            copyitem = item;
+        }
+        break;
     }
 
     if (isslice || isarray || islent || itemskind) {
@@ -503,7 +693,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)borrow;
         }
         else
-            ((VarDclNode*)nodesGet(loop->stmts, 0))->value = (INode*)borrow;
+            ((VarDclNode*)nodesGet(loop->stmts, 0))->value = copyelems ? (INode*)elem : (INode*)borrow;
         FnCallNode *step = newFnCallOpnameLower(lexnode, eachUse(index, lexnode), incrPostName, 0);
         step->flags |= FlagLvalOp;
         nodesInsert(&loop->stmts, (INode*)step, nvars);
@@ -539,8 +729,30 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         nodesAdd(&outer->stmts, (INode*)cursordcl);
         cursor = eachUse(cursordcl, lexnode);
     }
-    eachBindVars(loop, nvars, eachNextItem(cursor, loop, elseblk, (uint16_t)(scope + 2), lexnode),
-        (uint16_t)(scope + 1), lexnode);
+    INode *nextitem = eachNextItem(cursor, loop, elseblk, (uint16_t)(scope + 2), lexnode);
+    if (copyitem != NULL && copyitem->tag == RefTag && nvars == 1)
+        nextitem = eachDeref(nextitem, lexnode);
+    if (copyitem != NULL && copyitem->tag == TTupleTag && nvars == 1) {
+        // One variable takes the pair as a tuple of copies: '(*k, *v)'
+        Nodes *elems = ((TupleNode*)copyitem)->elems;
+        VarDclNode *whole = eachVar(immPerm, nextitem, (uint16_t)(scope + 1), lexnode);
+        nodesInsert(&loop->stmts, (INode*)whole, 0);
+        TupleNode *pair = newTupleNode((int)elems->used);
+        pair->tag = VTupleTag;
+        inodeLexCopy((INode*)pair, lexnode);
+        for (uint32_t k = 0; k < elems->used; ++k)
+            nodesAdd(&pair->elems, eachDeref((INode*)eachTupleElem(eachUse(whole, lexnode), k, lexnode), lexnode));
+        ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)pair;
+    }
+    else
+        eachBindVars(loop, nvars, nextitem, (uint16_t)(scope + 1), lexnode,
+            nvars > 1 && itemtype != NULL && copyitem == NULL && itypeIsMove(itemtype));
+    if (copyitem != NULL && nvars > 1) {
+        for (uint32_t k = 0; k < nvars; ++k) {
+            VarDclNode *var = (VarDclNode*)nodesGet(loop->stmts, k + 1);
+            var->value = eachDeref(var->value, lexnode);
+        }
+    }
     nodesAdd(&outer->stmts, (INode*)loop);
 }
 

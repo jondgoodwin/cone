@@ -652,7 +652,12 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
             return;
         lastMovedAt = node->srcp;
         lastMovedVar = vardclnode;
-        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+        if (eachMovedVar((INode*)vardclnode))
+            errorMsgNode((INode*)node, ErrorMove,
+                "This variable's value was moved into an 'each' over it: its items move, so the loop takes them out and the variable is gone. To walk it and keep it, write 'each x in &%s'.",
+                &vardclnode->namesym->namestr);
+        else
+            errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
     }
 }
 
@@ -673,6 +678,12 @@ void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
             "self holds no value until '*self = value' fills it, on every path before this borrow.");
     if (!(vardclnode->flowtempflags & VarInitialized) && !flowNewSelf((INode*)node))
         errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to borrow.");
-    else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
-        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+    else if (vardclnode->flowtempflags & (VarMoved | VarHollow)) {
+        if (eachMovedVar((INode*)vardclnode))
+            errorMsgNode((INode*)node, ErrorMove,
+                "This variable's value was moved into an 'each' over it: its items move, so the loop takes them out and the variable is gone. To walk it and keep it, write 'each x in &%s'.",
+                &vardclnode->namesym->namestr);
+        else
+            errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+    }
 }

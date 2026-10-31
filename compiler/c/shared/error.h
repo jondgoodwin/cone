@@ -771,6 +771,8 @@ enum ErrorCode {
     ErrorMacroMixedSet = 1563,  // A macro and a function declared under one name in one scope or one type: a set of same-named declarations holds all macros or all functions. Pointed at the later declaration, and again at the earlier
     ErrorNoLogicMethod = 1564,  // `||` or `&&` written with a left operand whose type declares no `||`/`&&` (a number, a pointer, a struct without them): they are methods of the left operand's type, and bool, Option and Result have them. Pointed at the left operand
     ErrorEachBorrowPerm = 1566, // An 'each' source written '&mut src' or '&uni src' whose type walks through an 'iter' that lends '&' only (a Deque, a Set, a Dict): there are no items to change in place, so the permission written cannot be given. Pointed at the source
+    ErrorEachBehindBorrow = 1567, // An 'each' over a source reached through a borrow (a reference, a field of one, a slice) whose items move: a plain 'each' hands out each item as `let x = item` would, which a borrow cannot give up. Names the borrow to write, `&l` or `&*r`. Pointed at the source
+    ErrorEachNoDrain = 1568,    // An 'each' over an owned array whose items move: no cursor consumes a fixed array yet. Pointed at the source
 
     // Warnings
     WarnCode = 3000,
