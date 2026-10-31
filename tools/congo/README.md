@@ -1085,7 +1085,7 @@ Congo is being ported to Cone, in stages, so that nothing needs Python. The
 port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
 `src/congo.cone` (the only file that imports) and the files joining its module
 (`commands.cone`, `header.cone`, `paths.cone`, `registry.cone`, `modules.cone`,
-`index.cone`, `order.cone`, `linker.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
+`index.cone`, `order.cone`, `linker.cone`, `msvcenv.cone`, `cache.cone`, `build.cone`, `gpu.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
 builds it first:
 
 ```
@@ -1104,11 +1104,12 @@ build folder while it runs from it; `congo.py clean` can. Windows only, as its
 
 **It does everything `congo.py` does:** `congo new` (the manifest and the
 template, byte for byte), `congo build` (debug and `--release`, `-D`, a
-program linked or a library's object, the build folder, the descriptions),
+program linked or a library's object, the build folder, the descriptions, the
+build cache and `--no-cache`, and the kept Visual Studio environment),
 `congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
 compared with its `.out`, `.exit` and `.err`, a `.debug` test skipped in a
-release test, `--bless`, the name filter, the
+release test, a test that skips itself, `--bless`, the name filter, the
 examples built, a folder of packages), a marked package's kernels and a
 `gpu/` folder's (above, "Kernels for the GPU"), and `congo clean` of either, matching
 `congo.py` message for message, file for file and exit status for exit status
@@ -1117,9 +1118,9 @@ examples built, a folder of packages), a marked package's kernels and a
 loop refusals, the registries (the repository's `packages/` and the machine
 config's folders, every manifest in them read and checked), the build order
 and its loop refusals, `conec`, `[link]`, the linker found through
-`vcvars64.bat`, and the program run with its exit status passed back. Unlike
-`congo.py`, it builds the whole of a build every time (above, "What a build
-does"). The repository is the
+`vcvars64.bat`, and the program run with its exit status passed back. It keeps
+the build cache of "What a build does" (above) and the Visual Studio
+environment file `congo.py` writes (`msvc-env.json`). The repository is the
 nearest folder above the executable holding `packages/core`, as `conec` finds
 its packages folder.
 
@@ -1136,7 +1137,10 @@ package is compiled into the build folder once, and the linker is found once.
 $env:CONGO_EXE = "tools\congo\build\debug\congo.exe"; python tools/congo/test_congo.py
 ```
 
-runs every scenario against the Cone Congo.
+runs every scenario against the Cone Congo. Without it, `test_congo.py` still
+builds the Cone Congo and runs it over the scenarios where it once fell behind
+`congo.py` (the build cache, a test that skips itself, the kept Visual Studio
+environment): `ConeCongoParity` and `ConeCongoMsvcEnvironment`.
 
 Where it differs from `congo.py`:
 
@@ -1201,4 +1205,4 @@ Where it differs from `congo.py`:
   on any system with git.
 - Of incremental builds: a cache for each set of `-D` defines (a build with
   other defines compiles everything again in the same folder); compiles in
-  parallel; and the Cone Congo's, which builds the whole of a build every time.
+  parallel.

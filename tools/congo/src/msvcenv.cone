@@ -1,0 +1,327 @@
+// What vcvars64.bat does to an environment, captured once and kept in the
+// Congo home, <Congo home>/msvc-env.json, so that a link needs no run of it
+// (congo.py's MsvcEnvironment): each run takes seconds, and every build
+// folder's link needed one. The file is the one congo.py writes and reads.
+//
+// The file holds, for each variable vcvars64.bat sets or changes, its value as
+// a TEMPLATE in which <congo:base> stands for the variable's value before
+// vcvars64.bat ran: so PATH, LIB and the rest keep whatever the environment
+// Congo starts from lists (SDL3's lib folder on LIB, say) behind or around
+// Visual Studio's, as a run of vcvars64.bat would. The list variables are
+// given a marker for their value while it runs, so that where it puts the
+// base is found even where there was none.
+//
+// The file is KEYED by vcvars64.bat's path and the content of the files that
+// decide what it sets: vcvars64.bat, vcvarsall.bat, VsDevCmd.bat, the default
+// tools version files beside vcvars64.bat, and the Windows SDK versions
+// installed. A Visual Studio update changes the key, and the environment is
+// captured again. One whose LIB names a folder that is gone, or in which no
+// Microsoft link.exe is found, or with which a link fails the way a broken
+// environment does (Linker.environmental), is captured again once.
+// '--no-cache' captures it again too. Used only where Congo runs
+// vcvars64.bat itself: an inherited x64 environment is used as it is, and an
+// x86 Developer Command Prompt's is converted by a run, as before.
+
+const msvcFile = "msvc-env.json";
+const msvcFormat = 1i64;
+const baseMark = "<congo:base>";
+// What a list variable holds while vcvars64.bat runs, so that where it puts
+// the variable's old value is found
+const probeMark = "C:\\congo-msvc-environment-base";
+
+// The lists vcvars64.bat adds its folders to; PATH is one too, and is never empty
+fn isListVariable(upper: &str) bool {
+  upper == "LIB" || upper == "LIBPATH" || upper == "INCLUDE" || upper == "EXTERNAL_INCLUDE"
+}
+
+// The variables vcvars64.bat set, each as a template
+struct Templates {
+  pub names: List[String];
+  pub values: List[String];
+}
+
+fn noTemplates() Templates { Templates(List[String].empty(), List[String].empty()) }
+
+fn msvcFilePath() Path {
+  let home = congoHome();
+  home.join(msvcFile)
+}
+
+// The key of the environment vcvars64.bat makes: its path, and the content of
+// the files that decide what it sets
+fn msvcKey(vcvars: &Path) String {
+  let build = vcvars.parent();
+  var files = List[Path].empty();
+  files.push(vcvars.copy());
+  files.push(build.join("vcvarsall.bat"));
+  if fs.isDir(&build) {
+    match fs.readDir(&build) {
+      case let Ok(entries) {
+        var i = 0usize;
+        while i < entries.len() {
+          let name = entries[i].name.view();
+          if name.startsWith("Microsoft.VCToolsVersion") && name.endsWith(".txt") && fs.isFile(&entries[i].path) {
+            files.push(entries[i].path.copy());
+          }
+          i = i + 1usize;
+        }
+      }
+      case is Err {}
+    }
+  }
+  let aux = build.parent();
+  let vc = aux.parent();
+  let install = vc.parent();
+  files.push(install.join("Common7/Tools/VsDevCmd.bat"));
+  var text = String.from("format 1");
+  var spelled = native(vcvars);
+  spelled.lowerAscii();
+  text <- "\nvcvars ", spelled.view();
+  var i = 0usize;
+  while i < files.len() {
+    var hash = String.from("absent");
+    if fs.isFile(&files[i]) { hash = contentHash(&files[i]); }
+    text <- "\n", files[i].name(), " ", hash.view();
+    i = i + 1usize;
+  }
+  let programs = envOr("ProgramFiles(x86)", "C:\\Program Files (x86)");
+  let pf = Path.from(programs.view());
+  let kits = pf.join("Windows Kits/10/Lib");
+  text <- "\nsdks";
+  if fs.isDir(&kits) {
+    match fs.readDir(&kits) {
+      case let Ok(entries) {
+        var k = 0usize;
+        while k < entries.len() {
+          if fs.isDir(&entries[k].path) { text <- " ", entries[k].name.view(); }
+          k = k + 1usize;
+        }
+      }
+      case is Err {}
+    }
+  }
+  textHash(text.view())
+}
+
+// The vcvars64.bat the file was captured from, where it is still there: so
+// that a link need not ask vswhere where Visual Studio is. Empty otherwise.
+fn recordedVcvars() Path {
+  let file = msvcFilePath();
+  var doc = json.Json.Null;
+  if !readEnvironmentFile(&file, &mut doc) { return Path.from(""); }
+  match doc.getText("vcvars") {
+    case let Some(v) {
+      let there = Path.from(v);
+      if fs.isFile(&there) { return there; }
+    }
+    case is None {}
+  }
+  Path.from("")
+}
+
+// The file's JSON, or false where it is absent or not JSON
+fn readEnvironmentFile(file: &Path, doc: &mut json.Json) bool {
+  if !fs.isFile(file) { return false; }
+  match fs.readFile(file) {
+    case let Ok(data) {
+      match json.parse(data.view()) {
+        case var Ok(parsed) {
+          *doc <-> parsed;
+          return doc.isObject();
+        }
+        case is Err { return false; }
+      }
+    }
+    case is Err { return false; }
+  }
+}
+
+// The templates the file holds for key; false where there are none: another
+// key, a file not in the shape written, or a folder LIB names that is gone
+// (an SDK removed)
+fn loadTemplates(key: &str, found: &mut Templates) bool {
+  let file = msvcFilePath();
+  var doc = json.Json.Null;
+  if !readEnvironmentFile(&file, &mut doc) { return false; }
+  var same = false;
+  match doc.getText("key") {
+    case let Some(k) { same = k == key; }
+    case is None {}
+  }
+  if !same { return false; }
+  match doc.get("variables") {
+    case let Some(vars) {
+      if !vars.isObject() { return false; }
+      var i = 0usize;
+      while i < vars.len() {
+        var name = String.empty();
+        match vars.keyAt(i) {
+          case let Some(n) { name = String.from(n); }
+          case is None { return false; }
+        }
+        match vars.valueAt(i) {
+          case let Some(v) {
+            match v.asText() {
+              case let Some(t) {
+                found.names.push(name);
+                found.values.push(String.from(t));
+              }
+              case is None { return false; }
+            }
+          }
+          case is None { return false; }
+        }
+        i = i + 1usize;
+      }
+    }
+    case is None { return false; }
+  }
+  var i = 0usize;
+  while i < found.names.len() {
+    var upper = found.names[i].copy();
+    upper.upperAscii();
+    if upper.equals("LIB") {
+      let entries = splitText(found.values[i].view(), ';');
+      var e = 0usize;
+      while e < entries.len() {
+        let entry = entries[e].view();
+        if entry.len() > 0usize && entry != baseMark {
+          let folder = Path.from(entry);
+          if !fs.isDir(&folder) { return false; }
+        }
+        e = e + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Written whole or not at all; a home that cannot be written keeps nothing,
+// and the next link runs vcvars64.bat again
+fn saveTemplates(key: &str, vcvars: &Path, templates: &Templates) {
+  var variables = json.Json.newObject();
+  var i = 0usize;
+  while i < templates.names.len() {
+    variables.set(templates.names[i].view(), json.Json.fromText(templates.values[i].view()));
+    i = i + 1usize;
+  }
+  var doc = json.Json.newObject();
+  doc.set("format", json.Json.fromI64(msvcFormat));
+  doc.set("key", json.Json.fromText(key));
+  let vcvarsText = native(vcvars);
+  doc.set("vcvars", json.Json.fromText(vcvarsText.view()));
+  doc.set("variables", variables);
+  match doc.toPretty(1usize) {
+    case let Ok(text) {
+      let file = msvcFilePath();
+      let fileText = native(&file);
+      let partial = Path.fromString(cat(fileText.view(), ".partial"));
+      let home = file.parent();
+      _ = fs.makeDirAll(&home);
+      match fs.writeFile(&partial, text.view()) {
+        case is Ok {
+          removeQuietly(&file);
+          _ = fs.rename(&partial, &file);
+        }
+        case is Err {}
+      }
+    }
+    case is Err {}
+  }
+}
+
+fn removeQuietly(file: &Path) {
+  _ = fs.removeFile(file);
+}
+
+// Run vcvars64.bat over the environment Congo has, with the list variables
+// given a marker, and fill in the templates of what it set. Answers the run.
+fn captureTemplates(vcvars: &Path, found: &mut Templates) Result[Vcvars, String] {
+  var changes = noChanges();
+  changes.set("LIB", probeMark);
+  changes.set("LIBPATH", probeMark);
+  changes.set("INCLUDE", probeMark);
+  changes.set("EXTERNAL_INCLUDE", probeMark);
+  match runVcvarsAt(vcvars, &mut changes) {
+    case let Ok(run) {
+      var i = 0usize;
+      while i < run.setNames.len() {
+        var upper = run.setNames[i].copy();
+        upper.upperAscii();
+        let before = run.setBefores[i].view();
+        var value = run.setValues[i].copy();
+        // What a run keeps of the environment it started in, to undo it
+        if !upper.startsWith("__VSCMD_PREINIT") && value.view() != before {
+          if isListVariable(upper.view()) { value.replace(probeMark, baseMark); }
+          else if before.len() > 0usize { value.replace(before, baseMark); }
+          found.names.push(run.setNames[i].copy());
+          found.values.push(value);
+        }
+        i = i + 1usize;
+      }
+      changes.restore();
+      var result = noVcvars();
+      result.ran = true;
+      result.file = run.file.copy();
+      result.printed = run.printed.copy();
+      Ok[Vcvars, String](result)
+    }
+    case let Err(e) {
+      changes.restore();
+      Err[Vcvars, String](e.copy())
+    }
+  }
+}
+
+// The linker's environment, from the templates: each with Congo's own value of
+// the variable in place of <congo:base>, an empty one taken out with its ';'
+fn setTemplates(linker: &mut Linker, templates: &Templates) {
+  linker.names.clear();
+  linker.values.clear();
+  var i = 0usize;
+  while i < templates.names.len() {
+    let now = envOr(templates.names[i].view(), "");
+    var value = templates.values[i].copy();
+    if !now.isEmpty() { value.replace(baseMark, now.view()); }
+    else {
+      let before = cat(";", baseMark);
+      let after = cat(baseMark, ";");
+      value.replace(before.view(), "");
+      value.replace(after.view(), "");
+      value.replace(baseMark, "");
+    }
+    linker.names.push(templates.names[i].copy());
+    linker.values.push(value);
+    i = i + 1usize;
+  }
+}
+
+// vcvars64.bat's environment over Congo's own, as the linker's: the file's
+// where it is current (and 'fresh' is false), else captured from a run of
+// vcvars64.bat and kept. Sets linker.cached where the file's was used.
+fn msvcEnvironment(linker: &mut Linker, fresh: bool) Result[void, String] {
+  if !fresh {
+    let recorded = recordedVcvars();
+    if !recorded.isEmpty() {
+      let key = msvcKey(&recorded);
+      var templates = noTemplates();
+      if loadTemplates(key.view(), &mut templates) {
+        setTemplates(linker, &templates);
+        linker.cached = true;
+        return succeeded();
+      }
+    }
+  }
+  let vcvars = findVcvars();
+  if vcvars.isEmpty() { return Err[void, String](String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
+  var templates = noTemplates();
+  match captureTemplates(&vcvars, &mut templates) {
+    case var Ok(run) { linker.ran <-> run; }
+    case let Err(e) { return Err[void, String](e.copy()); }
+  }
+  let key = msvcKey(&vcvars);
+  saveTemplates(key.view(), &vcvars, &templates);
+  setTemplates(linker, &templates);
+  succeeded()
+}

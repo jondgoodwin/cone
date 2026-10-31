@@ -3534,6 +3534,99 @@ class MsvcEnvironmentCache(unittest.TestCase):
         self.assertEqual(file.stat().st_mtime_ns, stamp)
 
 
+# The Cone Congo, built here once, for the classes below. The default run of
+# this file drives congo.py alone, so a Cone Congo that lost a feature of
+# congo.py (the build cache, the kept Visual Studio environment, the skipped
+# test), or no longer compiled (A5 and A6, 7 Oct), went unseen until someone
+# ran the whole file with CONGO_EXE set: these classes build it and run it
+# over the scenarios where it once fell behind. Set CONGO_EXE and they stand
+# aside: every scenario of the file already drives the Cone Congo then.
+_CONE_CONGO: list[Path] = []
+
+
+def built_cone_congo() -> Path:
+    """tools/congo/build/debug/congo.exe, built by congo.py (which skips what
+    its cache holds, so a second call costs seconds). A build that fails is an
+    error: it is the thing under test."""
+    if CONGO_EXE:
+        raise unittest.SkipTest("CONGO_EXE drives every scenario against the Cone Congo")
+    if not IS_WINDOWS:
+        raise unittest.SkipTest("the Cone Congo links on Windows only, for now")
+    if not congo.REPO_CONEC.is_file():
+        raise unittest.SkipTest(f"no conec at {congo.REPO_CONEC}: python test/run.py --build")
+    if not _CONE_CONGO:
+        built = subprocess.run([sys.executable, str(HERE / "congo.py"), "build"], cwd=HERE,
+                               capture_output=True, text=True)
+        if built.returncode != 0:
+            raise AssertionError(f"the Cone Congo does not build:\n{built.stdout}{built.stderr}")
+        _CONE_CONGO.append(HERE / "build" / "debug" / "congo.exe")
+    exe = _CONE_CONGO[0]
+    assert exe.is_file(), f"congo.py build wrote no {exe}"
+    return exe
+
+
+class ConeCongoParity(unittest.TestCase):
+    """The Cone Congo run where it fell behind congo.py (Bug 3, 30 Oct 2026):
+    the build cache (a second build compiles nothing, and a changed input
+    compiles what reads it), the cache of a test program, and a test that
+    skips itself (status 77). The scenarios are those of BuildCache and
+    Testing, driven through the Cone Congo."""
+
+    @classmethod
+    def setUpClass(cls):
+        global CONGO
+        exe = built_cone_congo()
+        cls.saved = CONGO
+        CONGO = [str(exe)]
+
+    @classmethod
+    def tearDownClass(cls):
+        global CONGO
+        CONGO = cls.saved
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+    registry = Scenarios.registry
+    LEAF = BuildCache.LEAF
+    ALL = BuildCache.ALL
+    chain = BuildCache.chain
+    set_leaf = BuildCache.set_leaf
+    set_app = BuildCache.set_app
+    run_app = BuildCache.run_app
+    test_only_what_reads_a_change_is_compiled_again = (
+        BuildCache.test_only_what_reads_a_change_is_compiled_again)
+    test_a_test_program_is_compiled_only_when_it_changes = (
+        BuildCache.test_a_test_program_is_compiled_only_when_it_changes)
+    test_a_test_that_skips_itself = Testing.test_a_test_that_skips_itself
+
+
+@unittest.skipUnless(IS_WINDOWS, "vcvars64.bat is Visual Studio's, on Windows")
+class ConeCongoMsvcEnvironment(unittest.TestCase):
+    """The Cone Congo keeps the environment vcvars64.bat sets in the Congo home
+    (msvc-env.json, the file congo.py writes), and captures it again for a
+    link that fails the way a stale environment makes one fail."""
+
+    @classmethod
+    def setUpClass(cls):
+        global CONGO
+        exe = built_cone_congo()
+        cls.saved = CONGO
+        CONGO = [str(exe)]
+
+    @classmethod
+    def tearDownClass(cls):
+        global CONGO
+        CONGO = cls.saved
+
+    setUp = MsvcEnvironmentCache.setUp
+    tearDown = MsvcEnvironmentCache.tearDown
+    edit = MsvcEnvironmentCache.edit
+    test_a_link_that_fails_for_the_environment_captures_it_again = (
+        MsvcEnvironmentCache.test_a_link_that_fails_for_the_environment_captures_it_again)
+
+
 @unittest.skipUnless(shutil.which("git"), "Congo fetches packages with git")
 class IndexRegistries(unittest.TestCase):
     """A package fetched by name from an index registry: a git repository of one
