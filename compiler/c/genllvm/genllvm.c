@@ -144,6 +144,41 @@ static int genlIsEntryMain(GenState *gen, FnDclNode *fnnode, const char *symbol)
 
 static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode);
 
+// The size of a function just generated, in LLVM instructions, before any
+// optimisation: the compiler's estimate of what inlining it would cost. Counted
+// from the body, the one place its size is known before LLVM reshapes it.
+static unsigned genlFnSize(LLVMValueRef fn) {
+    unsigned size = 0;
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
+            ++size;
+    return size;
+}
+
+// Whether a shared generic instance, now generated, is small enough to be this
+// object's own copy. A release program (no library, whose instances other
+// objects might link against) in a described build shares an instance across
+// its objects only so that it exists once. A small one costs less than the call
+// it forces: kept shared, LLVM leaves it out of line, so each use calls out,
+// spills what it passes, and loses its constants (drop glue taken out of line
+// was a 2.6x loss on one benchmark). Debug code
+// keeps one copy, which compiles faster and keeps a breakpoint in one place. A
+// large instance stays shared, so a program is not made to carry a copy per
+// object. Only a function is decided here: a generic's static, and a vtable,
+// stay shared whatever their size, as address identity requires.
+static int genlInstanceIsPrivate(GenState *gen, FnDclNode *fnnode, LLVMValueRef fn) {
+    ConeOptions *opt = gen->opt;
+    if (!opt->release || opt->library || !opt->described || opt->privateinst == 0
+        || opt->wasm || opt->gpu)
+        return 0;
+    if (LLVMGetLinkage(fn) != LLVMLinkOnceODRLinkage)
+        return 0;
+    // A split method is several functions, one the others call by address
+    if (gen->seams != NULL || fnDclIsCompute(fnnode))
+        return 0;
+    return genlFnSize(fn) <= (unsigned)opt->privateinst;
+}
+
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Only a concrete declaration has an implementation. An overload name is a
@@ -153,7 +188,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
         return;
 
     genlNameAnonFn(gen, fnnode->llvmvar);
-    genlComdat(gen, fnnode->llvmvar);
+    // Its COMDAT waits for the body: its size decides whether it is shared
     genlBorrowDeref(gen, fnnode);
 
     LLVMValueRef svfn = gen->fn;
@@ -228,6 +263,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 	// erase temporary dummy alloca inserted earlier
     if (LLVMGetInstructionParent(allocaPoint))
         LLVMInstructionEraseFromParent(allocaPoint);
+
+    if (genlInstanceIsPrivate(gen, fnnode, fnnode->llvmvar))
+        LLVMSetLinkage(fnnode->llvmvar, LLVMInternalLinkage);
+    genlComdat(gen, fnnode->llvmvar);
 
     LLVMDisposeBuilder(gen->builder);
 
