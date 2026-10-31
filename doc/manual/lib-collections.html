@@ -68,7 +68,7 @@ fn main() i32 {
     case is None {print &lt;- "no seventh\n";}
   }
   var total = 0;
-  each x in xs {                 // walks the slice the list lends
+  each x in &amp;xs {                // walks the slice the list lends
     total += *x;
   }
   print &lt;- total;
@@ -134,7 +134,7 @@ import collections use *;
 fn main() i32 {
   var counts = Dict[String, i64]();
   let words = ["to", "be", "or", "not", "to", "be"];
-  each w in words {
+  each w in &amp;words {
     *counts.getOrInsert(String.from(*w), 0i64) += 1i64;   // one search; the String moves in
   }
   print &lt;- counts.len();
@@ -221,7 +221,7 @@ fn main() i32 {
   headers &lt;- String.from("Host"): String.from("example.org");
   headers &lt;- String.from("Accept"): String.from("text/html");
   headers &lt;- String.from("Host"): String.from("cone.dev");   // replaced where it stands
-  each key, value in headers {
+  each key, value in &amp;headers {
     print &lt;- key.view();
     print &lt;- ": ";
     print &lt;- value.view();
@@ -272,7 +272,7 @@ fn main() i32 {
   var seen = Set[String]();
   let words = ["to", "be", "or", "not", "to", "be"];
   var repeats = 0;
-  each w in words {
+  each w in &amp;words {
     if !seen.insert(String.from(*w)) {      // insert answers whether the element was new
       repeats += 1;
     }
@@ -325,7 +325,7 @@ fn main() i32 {
   }
   print &lt;- *line[1usize];             // counted from the front
   print &lt;- "\n";
-  each v in line {
+  each v in &amp;line {
     print &lt;- *v;
     print &lt;- " ";
   }
@@ -409,14 +409,14 @@ xs &lt;- fill -1;                // -1 until xs.len() is xs.capacity()
 tx &lt;- job, 2 of next();       // a channel's '&lt;-' sends each
 let copy = List[i32]() &lt;- each xs;                          // every item of xs
 let evens = List[i32]() &lt;- each x in xs if x % 2 == 0 yield x * 10;
-let older = Dict[i32, i32]() &lt;- each id, age in ages yield *id: age + 1;
+let older = Dict[i32, i32]() &lt;- each id, age in &amp;ages yield *id: age + 1;
 let tens = List[i32]() &lt;- each xs.iter().filter(x =&gt; *x &gt; 2).map(x =&gt; *x * 10);   // a chain of adapters
 xs &lt;- 9, each other.drain(), 8;      // items that move are handed over, not copied
 let doubled = List[i32]() &lt;- parallel each x in xs yield x * 2;   // at the same time, in order
 </pre>
 	<p>The loop reads its source while the list is appended to, so the two may not be the
 		same list: <span class="pre">xs &lt;- each xs</span> is refused as
-		<span class="pre">each x in xs { xs.push(*x); }</span> is, since the list could
+		<span class="pre">each x in &amp;xs { xs.push(*x); }</span> is, since the list could
 		move what the loop is reading. An array's contents may not use <span class="pre">each</span>:
 		its size is fixed, and a loop's count is not known when it is compiled.</p>
 	<p>The words <span class="pre">of</span> and <span class="pre">fill</span> mean
@@ -464,7 +464,7 @@ let names = Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 		and a <span class="pre">yield</span> in the place of a block says what each pass appends:</p>
 <pre>
 let copy = List[i32]() &lt;- each other;                     // every item of other
-let big = List[i32]() &lt;- each x in other if x &gt; 9 yield *x;
+let big = List[i32]() &lt;- each x in &amp;other if x &gt; 9 yield *x;
 let squares = List[i32]() &lt;- each i in 1 ..= 5 yield i * i;    // 1 4 9 16 25
 let index = Dict[i32, str]() &lt;- each p in people yield p.id: p.name;
 xs &lt;- 0, each x in other yield x + 1, 99;               // in the middle of a list
@@ -609,7 +609,7 @@ each x in [4, 3, 8, 2] {
 }
 
 var chars = 0usize;
-each name in names {      // a List[String]: name is a &amp;String
+each name in &amp;names {     // a List[String]: name is a &amp;String
   chars += name.len;
 }
 </pre>
@@ -638,8 +638,8 @@ each x in list.mutItems() {
 			each item as a <span class="pre">&amp;mut</span> and <span class="pre">each x in &amp;uni list</span> as a
 			<span class="pre">&amp;uni</span>, over a list or an array, in <span class="pre">parallel each</span>
 			and in <span class="pre">&lt;- each</span> too. Through a reference the borrow is written on what it
-			points at: <span class="pre">each x in &amp;mut *r</span>. A Deque, a Set and a Dict lend their items to be
-			read, so only <span class="pre">&amp;</span> is written over them.</p>
+			points at: <span class="pre">each x in &amp;mut *r</span> (for a slice parameter too: <span class="pre">&amp;*s</span>). A Deque lends each item as a &amp;mut, and a Dict and an OrderedDict each value, with the key to read. A Set lends its items
+			to read only, since a changed item would no longer hash, and none lends <span class="pre">&amp;uni</span> items: those are refused.</p>
 <h4 id="drain">Taking items out: <span class="pre">drain</span></h4>
 	<p><span class="pre">list.drain()</span> gives the values up one at a time, <b>moving</b> each out of the list
 		into the loop's variable, which then holds the value itself (not a borrow of it), so it works for

@@ -38,6 +38,7 @@ void derefPrint(StarNode *node) {
 }
 
 int derefWarnIndexStar = 0;
+StarNode *derefSliceBorrowed = NULL;
 
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
@@ -60,6 +61,10 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
         node->vtype = ((RefNode*)ptype)->vtexp;
     else if (ptype->tag == PtrTag)
         node->vtype = ((StarNode*)ptype)->vtexp;
+    // A slice reference's pointee, the array it borrows: a place only to be borrowed again
+    // ('&*s', '&mut *s', '&uni *s'), which borrowTypeCheck allows by naming the node
+    else if (ptype->tag == ArrayRefTag && node == derefSliceBorrowed)
+        node->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)ptype);
     else
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");
 }

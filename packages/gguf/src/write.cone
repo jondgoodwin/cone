@@ -47,7 +47,7 @@ fn putValue(out: &mut List[u8], v: &Value, depth: u32) Option[GgufError] {
       }
       putLe32(out, x.elem.code());
       putLe64(out, u64.from(x.items.len()));
-      each e in x.items {
+      each e in &x.items {
         if e.valueType().code() != x.elem.code() {
           return Some[GgufError](badInput("an array holds a value of a type other than its element type"));
         }
@@ -116,7 +116,7 @@ pub struct Writer {
     if u64.from(data.len()) != geo.bytes {
       return Err[usize, GgufError](badInput("the tensor's bytes are not the number its type and dimensions need"));
     }
-    each p in tensors {
+    each p in &tensors {
       if p.name.view() == name {
         return Err[usize, GgufError](GgufError.make(ErrorKind.DuplicateTensor, 0u64, "a tensor name is added twice"));
       }
@@ -150,7 +150,7 @@ pub struct Writer {
   pub fn finish(self: &) Result[List[u8], GgufError] {
     // The alignment: general.alignment if put, else 32
     var alignment = 32u64;
-    each e in meta {
+    each e in &meta {
       if e.key.view() == "general.alignment" {
         let Some(a) = e.value.asU64() else {
           return Err[List[u8], GgufError](GgufError.make(ErrorKind.BadAlignment, 0u64, "general.alignment is not an unsigned integer"));
@@ -170,7 +170,7 @@ pub struct Writer {
     putLe32(&mut out, 3u32);
     putLe64(&mut out, u64.from(tensors.len()));
     putLe64(&mut out, u64.from(meta.len()));
-    each e in meta {
+    each e in &meta {
       putStr(&mut out, e.key.view());
       putLe32(&mut out, e.value.valueType().code());
       match putValue(&mut out, &e.value, 0u32) {
@@ -180,10 +180,10 @@ pub struct Writer {
     }
     // The table
     var offset = 0u64;
-    each p in tensors {
+    each p in &tensors {
       putStr(&mut out, p.name.view());
       putLe32(&mut out, u32.from(p.dims.len()));
-      each d in p.dims { putLe64(&mut out, *d); }
+      each d in &p.dims { putLe64(&mut out, *d); }
       putLe32(&mut out, p.kind.code());
       offset = alignUp(offset, alignment);
       putLe64(&mut out, offset);
@@ -192,9 +192,9 @@ pub struct Writer {
     // The data
     while u64.from(out.len()) % alignment != 0u64 { out.push(0u8); }
     let start = out.len();
-    each p in tensors {
+    each p in &tensors {
       while u64.from(out.len() - start) % alignment != 0u64 { out.push(0u8); }
-      each b in p.data { out.push(*b); }
+      each b in &p.data { out.push(*b); }
     }
     Ok[List[u8], GgufError](out)
   }
