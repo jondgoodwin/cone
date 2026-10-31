@@ -927,9 +927,13 @@ ChunkSink { pub async fn accept(self, c: Chunk); }` is read as a trait body with
 its behaviours noted, as an actor's body is (`ParseState.dcltexts`), and kept as a
 private trait of the requirements (`ChunkSink.behaviours`, an `ActorTraitInfo`'s
 `body`); a field, a `fn`, a body, a behaviour that is not `pub` or has no `self`,
-a macro, a static, a type parameter and an `is` are refused
+a macro, a static, a lifetime among its type parameters and an `is` are refused
 (`ErrorActorTraitMember`), and a parameter that cannot cross threads is refused as
-an actor's is. Written as source and parsed, as the actor's are: an ordinary trait
+an actor's is. The trait may be generic, `actor trait Subscriber[Event]`: the
+parameters are kept as written (`DclTexts.tparms`, which `parseStruct` records) and
+declared again on the virtual trait and the handle, so the handle is a generic
+struct and each of its instances has its own methods, table and `wrap`. Written as
+source and parsed, as the actor's are: an ordinary trait
 `ChunkSink.vt` declaring, for each behaviour, the three methods an actor's handle
 has for it (the send, and for one returning a value the awaited send and the
 future-giving one, by the same private names); `ChunkSink.fat`, the two words of a
@@ -937,7 +941,8 @@ virtual reference; the handle under the trait's name, `is Sendable`, whose field
 are the mailbox, `Arc[opaq, actors.Mailbox[u8]]` (the type erased: the allocation's
 first part is the Mailbox, which names no message, and the handle's copy and drop
 count it without saying which actor it is), and `table`, the virtual reference's
-vtable word; and `ChunkSink.wrap`. A method of the handle sends through the
+vtable word, and, as a function of the handle's own, `ChunkSink.wrap`, which is how
+an instance of a generic trait's handle has one at its own arguments. A method of the handle sends through the
 virtual reference rebuilt from the mailbox's place in the handle (an actor's
 handle is that one field) and the table, so a send through the trait's handle is
 one indirect call of the actor's own handle method that sends the message. The
@@ -956,7 +961,21 @@ conversion needs a check state, as a string literal lent as a borrow does. The
 include file keeps the trait whole, as it does an actor, and walks its body
 (`incSeedActors`). `actorMessageOfSend` finds a trait's handle's methods as it does
 an actor's, so `await`, a kept call's future and the thread check
-(`actorCheckAll`) treat a call through the trait as they do a direct one.
+(`actorCheckAll`) treat a call through the trait as they do a direct one. For an
+instance of a generic trait's handle the messages are made of the instance's own
+methods, once (`actorTraitMessages`): what the trait asks is read off its send and
+future-giving methods at the instance's arguments, and what an `await` on one
+gives is what the future holds (`actorMessageReturns`); a generic trait's
+parameters are judged where each actor that conforms is, not at the trait.
+
+**A bound may name an actor trait.** `fn connect[S: ChunkSink](s: S)` and
+`[S: Subscriber[Click]]` read as a type, not a trait, since an actor trait's name is
+its handle, a struct (`genericNamedActorTrait`, so the bound is kept as a condition
+and not refused as `ErrorGenParmConstr`). A type is met by itself alone, and an
+actor's handle that conforms meets it too (`actorTraitMeets`, the same check as the
+conversion's, silent); a generic body is cloned at its arguments, so it calls the
+actor's own methods directly, and no handle and no table are made.
+An actor that does not conform is `ErrorWhereUnmet`, as for any bound.
 
 **It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
 yields &Node { ... yield n; ... }` is read as a function, `yields` being a word
