@@ -1,0 +1,105 @@
+// A pointer to a nullable-pointer enum, stepped. An Option of a reference, an Rc,
+// an Arc or a Uni is a single LLVM pointer, so a pointer to one reads like a
+// pointer to a pointer; but the Option points at nothing in Cone, and '+' on the
+// pointer steps by the Option's size without asking what it points at. A List of
+// such an Option steps its storage this way.
+//
+// - a List of an Option of each owning pointer, filled, read and walked;
+// - the same through a type that reaches itself ('Tcb' holds an Option of an Rc
+//   of itself, and a List of those is a field of another struct);
+// - a List of an Option of a reference.
+
+mod intrinsic_pointer_to_nullable_enum;
+
+import stdio use *;
+import collections use *;
+import sync use Arc;
+
+fn say(n: i64) {
+  printInt(n);
+  printStr("\n");
+}
+
+struct Tcb {
+  pub link: Option[Rc[mut, Tcb]];
+  pub prio: i64;
+}
+
+struct Sched {
+  pub n: i64;
+  pub table: List[Option[Rc[mut, Tcb]]];
+}
+
+struct Cell {
+  pub v: i64;
+}
+
+fn sumRef(cells: &List[Option[&Cell]]) i64 {
+  var s = 0i64;
+  each c in cells {
+    match c {
+      case let Some(x) { s = s + x.v; }
+      else { s = s + 1000; }
+    }
+  }
+  s
+}
+
+fn main() {
+  // Uni
+  var us = List[Option[Uni[i64]]].empty();
+  us.push(Some(Uni[i64](5)));
+  us.push(None);
+  us.push(Some(Uni[i64](7)));
+  say(i64.from(us.len()));
+  var usum = 0i64;
+  each u in &us {
+    match u {
+      case let Some(x) { usum = usum + **x; }
+      else { usum = usum + 1000; }
+    }
+  }
+  say(usum);
+
+  // Rc, mutable and immutable
+  var rs = List[Option[Rc[mut, i64]]].empty();
+  rs.push(Some(Rc[mut, i64](3)));
+  rs.push(None);
+  say(i64.from(rs.len()));
+  var ris = List[Option[Rc[imm, i64]]].empty();
+  ris.push(None);
+  ris.push(Some(Rc[imm, i64](9)));
+  say(i64.from(ris.len()));
+
+  // Arc
+  var as_ = List[Option[Arc[imm, i64]]].empty();
+  as_.push(Some(Arc[imm, i64](11)));
+  as_.push(None);
+  say(i64.from(as_.len()));
+
+  // A type reaching itself through the Option, a List of them in a field
+  let t1 = Rc[mut, Tcb](None[Rc[mut, Tcb]], 5);
+  let t2 = Rc[mut, Tcb](Some(t1), 6);
+  var s = Sched(0, List[Option[Rc[mut, Tcb]]].empty());
+  s.table.push(Some(t2));
+  s.table.push(None);
+  s.table.push(Some(t1));
+  say(i64.from(s.table.len()));
+  var psum = 0i64;
+  each e in &s.table {
+    match e {
+      case let Some(t) { psum = psum + t.prio; }
+      else { psum = psum + 1000; }
+    }
+  }
+  say(psum);
+
+  // A reference
+  let c1 = Cell(20);
+  let c2 = Cell(22);
+  var refs = List[Option[&Cell]].empty();
+  refs.push(Some(&c1));
+  refs.push(None);
+  refs.push(Some(&c2));
+  say(sumRef(&refs));
+}

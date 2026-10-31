@@ -1823,9 +1823,12 @@ class Linker:
         return with_set_output(base, variables), (vcvars, printed + err)
 
     def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
-                paths: list[Path] = ()) -> list[str]:
+                paths: list[Path] = (), release: bool = False) -> list[str]:
         """The link line: the objects, conestd, then the C libraries the packages'
-        [link] tables name, each searched for first in their [link] paths."""
+        [link] tables name, each searched for first in their [link] paths. A
+        release link folds identical functions (/OPT:ICF), the net under the
+        compiler's size gate on generic instances: the copies each object keeps
+        for itself that came out the same are one again in the program."""
         if IS_WINDOWS:
             # The C runtime's own libraries are the toolchain's and stay here;
             # the Windows SDK's import libraries a package calls (sync's
@@ -1834,7 +1837,7 @@ class Linker:
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib"]
+                    "legacy_stdio_definitions.lib", *(["/OPT:REF,ICF"] if release else [])]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]
@@ -2490,7 +2493,7 @@ class Session:
         exe.unlink(missing_ok=True)
 
         def run_link() -> tuple[list[str], int | None, str]:
-            command = linker.command(linked, exe, libraries, paths)
+            command = linker.command(linked, exe, libraries, paths, release=self.mode == "release")
             try:
                 result = subprocess.run(command, env=linker.env, capture_output=True)
             except OSError as exc:
