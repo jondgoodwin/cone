@@ -16,6 +16,9 @@ pub struct Quat {
   pub z: f32;
   pub w: f32;
 
+  // The four components in a vector's lanes, x y z w
+  fn lanes(self) Vector[f32, 4] inline {Vector[f32, 4]() <- x, y, z, w}
+
   // No rotation at all
   pub fn identity() Quat inline {Quat(0., 0., 0., 1.)}
 
@@ -149,16 +152,17 @@ pub struct Quat {
     let sqrT = t * t;
     let sqrD = topp * topp;
     // Each series is 1 + b0 (1 + b1 (1 + ... (1 + b7))), summed from the inside
-    var ct: f32 = 1.;
-    var cd: f32 = 1.;
+    // The two series (for t and for 1 - t) run side by side in two lanes
+    let sq = Vector[f32, 2]() <- sqrT, sqrD;
+    var c = Vector[f32, 2]() <- 1f, 1f;
     var i = 8usize;
     while i > 0usize {
       i = i - 1usize;
-      ct = 1. + (slerpU[i] * sqrT - slerpV[i]) * dm1 * ct;
-      cd = 1. + (slerpU[i] * sqrD - slerpV[i]) * dm1 * cd;
+      c = 1f + (slerpU[i] * sq - slerpV[i]) * dm1 * c;
     };
-    ct = sign * t * ct;
-    cd = topp * cd;
-    Quat(cd * x + ct * to.x, cd * y + ct * to.y, cd * z + ct * to.z, cd * w + ct * to.w)
+    let ct = sign * t * c.x;
+    let cd = topp * c.y;
+    let r = lanes() * cd + to.lanes() * ct;
+    Quat(r.x, r.y, r.z, r.w)
   }
 }
