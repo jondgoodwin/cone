@@ -563,6 +563,10 @@ LLVMTypeRef genlCAbiFnType(GenState *gen, FnSigNode *fnsig);
 // Call through a function pointer or reference, in the convention its pointee
 // signature is marked for
 LLVMValueRef genlFnPtrCall(GenState *gen, INode *pointee, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt);
+// The string attribute on a slice parameter of a unique ("uni") or immutable
+// ("imm") borrow (genlBorrowAttrs): genlAggCopies, which passes a slice as its
+// pointer and its count, puts 'noalias' on the pointer
+#define GenlSliceBorrow "cone-slice-borrow"
 // Mark a just-declared function's hidden result slot ('sret'), if it has one
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
 // Call a declared function with Cone argument values, returning its Cone value

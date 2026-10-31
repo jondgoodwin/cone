@@ -847,20 +847,20 @@ LLVMMetadataRef genlDiFile(GenState *gen, INode *node) {
 }
 
 // Which borrow does a parameter of this type take, as far as LLVM's 'noalias'
-// is concerned: 1 a thin borrow of unique permission (no other live reference
-// reaches what it points at), 2 a thin borrow of immutable permission whose
+// is concerned: 1 a borrow, thin or a slice, of unique permission (no other live
+// reference reaches what it points at), 2 one of immutable permission whose
 // pointee holds no atomic inline (nobody writes it; an atomic is written through
 // an immutable borrow by design, as Rust's UnsafeCell is), 0 anything else:
-// shared-mutable and read-only borrows, which others may change, a fat
-// reference, an owning or virtual reference, a pointer, a value, a lock's guard
+// shared-mutable and read-only borrows, which others may change, an owning or
+// virtual reference, a pointer, a value, a lock's guard
 static int genlBorrowKind(GenState *gen, INode *parmtype) {
     if (gen->opt->no_noalias || gen->opt->gpu)
         return 0;
     INode *type = itypeGetTypeDcl(parmtype);
-    if (type->tag != RefTag)
+    if (type->tag != RefTag && type->tag != ArrayRefTag)
         return 0;
     RefNode *ref = (RefNode*)type;
-    if (refIsFat(ref) || (ref->region && regionIsRegionRef(ref->region)))
+    if (ref->region && regionIsRegionRef(ref->region))
         return 0;
     INode *perm = itypeGetTypeDcl(ref->perm);
     if (perm == (INode*)uniPerm)
@@ -868,6 +868,12 @@ static int genlBorrowKind(GenState *gen, INode *parmtype) {
     if (perm == (INode*)immPerm && !permIsLock(perm) && !itypeHoldsAtomic(ref->vtexp))
         return 2;
     return 0;
+}
+
+// Is a borrowed parameter of this type a slice, a pointer with a count?
+static int genlBorrowFat(INode *parmtype) {
+    INode *type = itypeGetTypeDcl(parmtype);
+    return type->tag == ArrayRefTag || refIsFat((RefNode*)type);
 }
 
 // Tell LLVM what the permissions of a function's borrowed parameters already
@@ -886,8 +892,16 @@ static void genlBorrowAttrs(GenState *gen, FnDclNode *glofn, LLVMValueRef fn) {
     INode **nodesp;
     unsigned idx = 1;
     for (nodesFor(fnsig->parms, cnt, nodesp)) {
-        int kind = genlBorrowKind(gen, ((IExpNode*)*nodesp)->vtype);
-        if (kind) {
+        INode *parmtype = ((IExpNode*)*nodesp)->vtype;
+        int kind = genlBorrowKind(gen, parmtype);
+        if (kind && genlBorrowFat(parmtype)) {
+            // A slice is passed as its pointer and its count (genlAggCopies),
+            // which puts the attributes on the pointer; 'nonnull' not among
+            // them, since an empty slice's pointer may be null
+            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateStringAttribute(gen->context, GenlSliceBorrow,
+                (unsigned)strlen(GenlSliceBorrow), kind == 1 ? "uni" : "imm", 3));
+        }
+        else if (kind) {
             LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
                 LLVMGetEnumAttributeKindForName("noalias", 7), 0));
             LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
@@ -911,7 +925,7 @@ static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode) {
     unsigned idx = 1;
     for (nodesFor(fnsig->parms, cnt, nodesp)) {
         INode *parmtype = ((IExpNode*)*nodesp)->vtype;
-        if (genlBorrowKind(gen, parmtype)) {
+        if (genlBorrowKind(gen, parmtype) && !genlBorrowFat(parmtype)) {
             LLVMTypeRef pointee = genlType(gen, ((RefNode*)itypeGetTypeDcl(parmtype))->vtexp);
             if (LLVMTypeIsSized(pointee)) {
                 unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, pointee);

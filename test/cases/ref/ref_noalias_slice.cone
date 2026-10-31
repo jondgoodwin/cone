@@ -1,0 +1,128 @@
+// A slice parameter of a function Cone defines is passed as two scalars, its pointer then its count,
+// so that the pointer can carry what the slice's permission says (ref_noalias): 'noalias' on a
+// '&uni' slice's, 'noalias readonly' on an '&imm' one's (and on a '&str', which is one), nothing on
+// a '&mut' or '&' slice's. The pointer is never 'nonnull': an empty slice's may be null. The
+// signatures are pinned in cases.toml; what is run is every way a slice is passed on, and the
+// functions called through a function reference and a virtual reference, which pass it the same
+// two. Every value is worked out in the comments.
+
+mod ref_noalias_slice;
+
+import stdio use *;
+import collections use *;
+
+struct Big {
+  pub x: i64;
+  pub y: i64;
+  pub z: i64;
+  pub w: i64;
+}
+
+fn addUni(c: &uni Array[i64], b: &imm Array[i64]) {
+  each j in 0usize ..< c.len() { c[j] += b[j]; }
+}
+
+fn addMut(c: &mut Array[i64], b: &Array[i64]) {
+  each j in 0usize ..< c.len() { c[j] += b[j]; }
+}
+
+fn total(s: &imm Array[i64]) i64 {
+  var t = 0i64;
+  each x in s { t += *x; }
+  t
+}
+
+fn label(s: &str) i64 {
+  i64.from(s.len())
+}
+
+// A slice reborrowed down a chain, and used again after
+fn leaf(s: &uni Array[i64], k: i64) { s[0usize] += k; }
+fn mid(s: &uni Array[i64], k: i64) { leaf(s, k); s[0usize] *= 2; leaf(s, k); }
+
+// Slices beside a large argument and a large result: the result slot and the argument's pointer
+// come first, and each slice is its two
+fn grow(c: &uni Array[i64], big: Big, p: &imm Array[i64]) Big {
+  c[0usize] += big.x;
+  Big(big.x + p[0usize], big.y + c[0usize], big.z, big.w + total(p))
+}
+
+// A function reference to one taking a slice
+fn applyTo(f: &fn(s: &uni Array[i64], k: i64), s: &uni Array[i64], k: i64) {
+  f(s, k);
+  f(s, k);
+}
+
+fn bump(s: &uni Array[i64], k: i64) { s[0usize] += k; }
+
+// A virtual reference to a method taking slices, beside a '&uni' self
+trait Sink {
+  pub fn put(self: &uni, s: &imm Array[i64], t: &uni Array[i64]);
+  pub fn count(self: &imm, s: &imm Array[i64]) i64;
+}
+
+struct Adder is Sink {
+  pub n: i64;
+  pub fn put(self: &uni, s: &imm Array[i64], t: &uni Array[i64]) { n = n + total(s); t[0usize] = n; }
+  pub fn count(self: &imm, s: &imm Array[i64]) i64 { n + total(s) }
+}
+
+struct Doubler is Sink {
+  pub n: i64;
+  pub fn put(self: &uni, s: &imm Array[i64], t: &uni Array[i64]) { n = n + 2 * total(s); t[0usize] = n; }
+  pub fn count(self: &imm, s: &imm Array[i64]) i64 { n * 2 + total(s) }
+}
+
+fn feed(k: &<uni Sink, s: &imm Array[i64], t: &uni Array[i64]) { k.put(s, t); }
+fn tally(k: &<imm Sink, s: &imm Array[i64]) i64 { k.count(s) }
+
+fn main() {
+  var c = List[i64]();
+  var m = List[i64]();
+  each i in 0usize ..< 4usize { c.push(i64.from(i)); m.push(10i64); }
+  let b4: Array[i64, 4] = [1, 2, 3, 4];
+  addUni((&uni c).viewUni(), &imm b4);
+  addMut(m.viewMut(), &b4);
+  // c = 0+1, 1+2, 2+3, 3+4;  m = 10 + 1, 12, 13, 14
+  print <- "add ", c[0usize], " ", c[1usize], " ", c[2usize], " ", c[3usize], " ", m[0usize], " ", m[3usize], "\n";
+  print <- "total ", total(&imm b4), " label ", label("hello"), "\n";
+
+  // An empty slice: a list that holds nothing may have no buffer
+  var e = List[i64]();
+  addUni((&uni e).viewUni(), &imm b4);
+  print <- "empty ", e.len(), "\n";
+
+  var r = List[i64]();
+  r.push(1);
+  // leaf: 2.  doubled: 4.  leaf: 5
+  mid((&uni r).viewUni(), 1);
+  print <- "chain ", r[0usize], "\n";
+
+  var g = List[i64]();
+  g.push(1);
+  let gp: Array[i64, 2] = [10, 20];
+  // g[0] = 1 + 3 = 4; the result is (3 + 10, 4 + 4, 5, 6 + 30)
+  let grown = grow((&uni g).viewUni(), Big(3, 4, 5, 6), &imm gp);
+  print <- "grow ", g[0usize], " ", grown.x, " ", grown.y, " ", grown.z, " ", grown.w, "\n";
+
+  var f = List[i64]();
+  f.push(1);
+  // 1 + 2 + 2
+  applyTo(&bump, (&uni f).viewUni(), 2);
+  print <- "fnref ", f[0usize], "\n";
+
+  var a = Adder(0);
+  var d = Doubler(0);
+  var ta = List[i64]();
+  var td = List[i64]();
+  ta.push(0);
+  td.push(0);
+  feed(&uni a, &imm b4, (&uni ta).viewUni());
+  feed(&uni d, &imm b4, (&uni td).viewUni());
+  // total of b4 = 10: Adder 10, Doubler 20
+  print <- "feed ", ta[0usize], " ", td[0usize], "\n";
+  let fa = Adder(5);
+  let fd = Doubler(5);
+  // 5 + 10, 5 * 2 + 10
+  print <- "tally ", tally(&imm fa, &imm b4), " ", tally(&imm fd, &imm b4), "\n";
+}
