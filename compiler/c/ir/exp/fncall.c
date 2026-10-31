@@ -5565,7 +5565,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
             flowNewSelfThrough(fstate, argsp);
         else
             flowLoadValue(fstate, argsp);
-        flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
+        flowHandleMoveOrCopyLast(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }
     flowGateOperandsEnd(fstate, inflight, keep);

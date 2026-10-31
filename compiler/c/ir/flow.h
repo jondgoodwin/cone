@@ -256,7 +256,18 @@ typedef struct {
     INode *exp;
     int16_t *counts;   // points to array of counts. NULL if not tuple
     int16_t amt;       // count nbr if not a tuple, # of counts if tuple
+    uint8_t cand;      // a local's or parameter's read that may be its last use (RefCand...), see flowHandleMoveOrCopyLast
 } RefCountNode;
+
+// RefCountNode.cand: a kept read of a whole counted local or parameter, handed to a new holder, is a
+// candidate to be that variable's last use, and so a move. The path walk decides (flowpath.c); a
+// candidate never confirmed stays the counted copy it is
+enum {
+    RefCandNone = 0,
+    RefCandOpen = 1,        // asked, not decided
+    RefCandFailed = 2,      // some path reads the variable again, or a live borrow of it conflicts: stays a copy
+    RefCandMoved = 3,       // decided: the node was removed and the name use marked FlagMoveOut
+};
 
 // Hollow release: 'var' holds a sole owning reference whose referent, or an
 // element of it, was moved out, and this releases it without what moved.
@@ -352,6 +363,12 @@ HollowNode *flowNewHollow(VarDclNode *var);
 
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
+
+// As flowHandleMoveOrCopy, for a value handed to one new holder (a call's argument, an initializer, a
+// single assignment's value, an allocation's value, a struct literal's field): a kept read of a whole
+// counted local or parameter is also a candidate for the variable's last use, which the path walk may
+// turn into a move
+void flowHandleMoveOrCopyLast(INode **nodep);
 
 // Deactivate the source of a value moved to a new holder (or say the move is illegal)
 void flowHandleMove(INode *node);
