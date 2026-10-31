@@ -19,7 +19,7 @@ typedef struct ConeDefine {
     int64_t value;
 } ConeDefine;
 
-// The size gate's default, PROVISIONAL until the design chat picks it from the size curve
+// The size gate's default, for --private-instances
 #define DefaultPrivateInstances 64
 
 // Compiler options
