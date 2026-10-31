@@ -596,7 +596,14 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
             writes = ((FnCallNode*)writes)->objfn;
     }
     uint32_t setmark = writes ? fnCallSetPlace(writes) : 0;
+    // '&*s' over a slice reference borrows what it points at, as a slice again
+    if (node->tag == BorrowTag && node->vtexp->tag == DerefTag && !(node->flags & FlagSuffix))
+        derefSliceBorrowed = (StarNode*)node->vtexp;
     int placed = iexpTypeCheckAny(pstate, &node->vtexp);
+    derefSliceBorrowed = NULL;
+    if (placed && node->tag == BorrowTag && node->vtexp->tag == DerefTag && !(node->flags & FlagSuffix)
+        && ((IExpNode*)node->vtexp)->vtype->tag == ArrayDerefTag)
+        node->tag = ArrayBorrowTag;
     if (writes)
         fnCallSetPlaceEnd(setmark);
     if (placed == 0)
