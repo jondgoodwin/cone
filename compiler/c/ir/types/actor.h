@@ -49,6 +49,43 @@ typedef struct ActorInfo {
     FieldDclNode *answer;   // The state's hidden Answer slot, where a message returning a value holds an 'await'
 } ActorInfo;
 
+// What the parser generated for one 'actor trait': the abstraction of an actor,
+// behaviours only. Its name, used as a type, names a handle of two words, the
+// mailbox of whichever actor it holds (counted, as an actor's handle's is) and
+// the vtable of that actor's handle as the virtual trait 'vt' sees it, so that a
+// call through it is one indirect call of the actor's own sending method
+typedef struct ActorTraitInfo {
+    StructNode *handle;     // What the trait's name names: the two-word handle
+    StructNode *body;       // The trait as written, its behaviours as requirements
+    StructNode *vt;         // The ordinary trait whose methods are the handle's: send, ask and future
+    FnDclNode *wrap;        // Makes a handle from a virtual reference to an actor's handle
+    Nodes *crossing;        // FnDclNode, VarDclNode pairs: each parameter that crosses to the actor
+    ActorMessage *msgs;     // Its behaviours, in the order written; 'method' is the requirement in 'body'
+    uint32_t nmsgs;
+} ActorTraitInfo;
+
+// Record an actor trait the parser generated
+void actorTraitRegister(ActorTraitInfo *info);
+
+// The actor trait whose handle 'type' is, or NULL
+ActorTraitInfo *actorTraitOfHandle(INode *type);
+
+// Is a value of type 'from' (a type declaration) an actor's handle, wanted
+// where 'to' (a type declaration) is the handle of an actor trait? Then the
+// conversion is the language's own (actorTraitCoerce), whether or not the actor
+// conforms: it is judged there, where it can be said which behaviour is missing
+int actorTraitWanted(INode *from, INode *to);
+
+// Convert the actor handle '*nodep' to the actor trait handle 'totype': the
+// actor's conformance is checked, naming each behaviour it lacks, and the value
+// becomes a call of the trait's 'wrap' on a borrow of the handle, which makes
+// the trait's handle, a counted copy of the actor's mailbox with the table of
+// the actor's sending methods that the virtual reference carries. 'pstate' is
+// the type check state, NULL where a coercion has none; a value that is no
+// place is lent as a temporary only with one. Answers whether the result has
+// the type wanted
+int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype);
+
 // Record an actor the parser generated, filled in by the parser. Every
 // parameter whose argument crosses to the actor -- each message's and each
 // initializer's, 'self' aside -- is in 'crossing', as the state's own

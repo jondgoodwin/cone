@@ -722,3 +722,40 @@ contains = [
   "define internal %void @bumpSum(ptr noalias nonnull dereferenceable(8) %0, i64 %1)",
   "define internal %void @apply(ptr %0, ptr noalias nonnull dereferenceable(8) %1, i64 %2)",
 ]
+
+# Separate from ref_noalias because its subject is a slice, which is a pointer and a count and
+# has no place for an attribute: Cone's convention passes it as the two (genlAggCopies).
+[scenario.ref_noalias_slice]
+category = "run"
+description = "A slice parameter passed as its pointer and its count, 'noalias' on a '&uni' slice's pointer, nothing on an '&imm' slice's or a '&str''s (lead 1 in Backlog\\llvm-generation.md, 'PR 2 = #827'), a '&mut' or a '&' slice's; an empty slice, a slice lent on, beside a large argument and an sret result, through a function reference and a virtual reference; values checked"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "a-uni-slice-is-two-parameters-the-pointer-noalias-an-imm-slice-and-a-str-none"
+target = "preir"
+contains = [
+  "define internal %void @addUni(ptr noalias %0, i64 %len, ptr %1, i64 %len1)",
+  "define internal i64 @total(ptr %0, i64 %len)",
+  "define internal i64 @label(ptr %0, i64 %len)",
+  "define internal %void @leaf(ptr noalias %0, i64 %len, i64 %1)",
+]
+excludes = ["nonnull %0, i64 %len", "dereferenceable(8) %0, i64 %len"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "a-mut-or-read-only-slice-is-two-parameters-with-no-attribute"
+target = "preir"
+contains = ["define internal %void @addMut(ptr %0, i64 %len, ptr %1, i64 %len1)"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "slices-beside-an-sret-result-and-a-large-argument-keep-their-positions"
+target = "preir"
+contains = ["define internal void @grow(ptr noalias sret(%Big) %sret, ptr noalias %0, i64 %len, ptr noalias readonly captures(none) dereferenceable(32) %1, ptr %2, i64 %len1)"]
+
+[[scenario.ref_noalias_slice.check]]
+name = "fn-references-and-virtual-references-pass-the-same-two"
+target = "preir"
+contains = [
+  "define internal %void @applyTo(ptr %0, ptr noalias %1, i64 %len, i64 %2)",
+  "define internal %void @_CNvNt5Adder3put(ptr noalias nonnull dereferenceable(8) %0, ptr %1, i64 %len, ptr noalias %2, i64 %len1)",
+  "define internal %void @feed(%\"Sink:Vtable.0\" %0, ptr %1, i64 %len, ptr noalias %2, i64 %len1)",
+]

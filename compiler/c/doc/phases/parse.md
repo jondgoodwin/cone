@@ -423,8 +423,9 @@ tells apart by the word after `mod` and hands to `parseModTrait`
 ([module](../nodes/module.md), "Module traits").
 `actor` builds one too, the declarations an actor stands for (section 6),
 and its arm tells `actor trait`, the actor's abstraction, apart by the word
-after `actor` and reports it `ErrorUnbuiltKind` where it is written. An in-file
-`mod name { ... }` block is refused in source under that code too, though it is
+after `actor` and hands it to `parseActorTrait`, which builds the declarations
+an actor trait stands for (section 6). An in-file
+`mod name { ... }` block is refused in source with `ErrorUnbuiltKind`, though it is
 no unbuilt shape: it does not exist there, since a nested module is a file of
 its own or a subfolder. A generated include file alone writes one, for each of
 the package's submodules it reaches, and `parseModuleBlock` parses it as a
@@ -915,7 +916,47 @@ So the state's methods are expanded bodies (`fnDclNameRes` records what they
 name), and the include-file generator walks each actor's state, public or not
 (`incSeedActors`): a private type, function or method the state names goes into
 the file beside the actor, still private, and need not be made `pub`. What crosses to the actor, and what a behaviour returns, is checked after type
-check (`actorCheckAll`, `ir/types/actor.c`).
+check (`actorCheckAll`, `ir/types/actor.c`). The handle has a `==` of its own, two
+handles being equal where they own the one mailbox; the names of the handle's
+awaited and future-giving methods (`fetch'ask`, `fetch'future`) are one pair for
+each behaviour name in the whole compile (`parseBehaviourName`), not one for each
+actor, which is what lets an actor trait's handle declare methods by the same names.
+
+**It generates an actor trait's declarations** (`parseActorTrait`). `actor trait
+ChunkSink { pub async fn accept(self, c: Chunk); }` is read as a trait body with
+its behaviours noted, as an actor's body is (`ParseState.dcltexts`), and kept as a
+private trait of the requirements (`ChunkSink.behaviours`, an `ActorTraitInfo`'s
+`body`); a field, a `fn`, a body, a behaviour that is not `pub` or has no `self`,
+a macro, a static, a type parameter and an `is` are refused
+(`ErrorActorTraitMember`), and a parameter that cannot cross threads is refused as
+an actor's is. Written as source and parsed, as the actor's are: an ordinary trait
+`ChunkSink.vt` declaring, for each behaviour, the three methods an actor's handle
+has for it (the send, and for one returning a value the awaited send and the
+future-giving one, by the same private names); `ChunkSink.fat`, the two words of a
+virtual reference; the handle under the trait's name, `is Sendable`, whose fields
+are the mailbox, `Arc[opaq, actors.Mailbox[u8]]` (the type erased: the allocation's
+first part is the Mailbox, which names no message, and the handle's copy and drop
+count it without saying which actor it is), and `table`, the virtual reference's
+vtable word; and `ChunkSink.wrap`. A method of the handle sends through the
+virtual reference rebuilt from the mailbox's place in the handle (an actor's
+handle is that one field) and the table, so a send through the trait's handle is
+one indirect call of the actor's own handle method that sends the message. The
+table is the compiler's vtable of the actor's handle as `ChunkSink.vt`, made where
+the conversion is, one for each (actor, trait) pair, as any trait's is.
+
+Conformance is structural and is judged where a handle is converted: `iexpMatches`
+answers `ConvByMeth` for an actor's handle where an actor trait's handle is wanted
+(`actorTraitWanted`), and `iexpCoerce` calls `actorTraitCoerce`, which asks of each
+behaviour of the trait that the actor has one by the name, `pub`, with the same
+parameter types and returned type (`ErrorActorTraitConform`, naming each that it
+does not), and rewrites the value to a call of `ChunkSink.wrap` on a borrow of the
+handle, which the call's argument coercion makes a virtual reference to the trait
+(`fnCallFinalizeArgs`). A value that is no place is lent as a temporary, so the
+conversion needs a check state, as a string literal lent as a borrow does. The
+include file keeps the trait whole, as it does an actor, and walks its body
+(`incSeedActors`). `actorMessageOfSend` finds a trait's handle's methods as it does
+an actor's, so `await`, a kept call's future and the thread check
+(`actorCheckAll`) treat a call through the trait as they do a direct one.
 
 **It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
 yields &Node { ... yield n; ... }` is read as a function, `yields` being a word
@@ -1138,7 +1179,7 @@ never be analyzed.
 | --- | --- |
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor trait` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. the refused in-file `mod name { … }` block uses it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
 | the retired `into` | `parseRetiredInto` reports `ErrorInto` at the word, then reads the type after it if one begins there, and `parseCast` goes on with the operand it had, so each use is one diagnostic and what follows parses as written |
@@ -1207,7 +1248,7 @@ numbers.
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form — a name or a path, `as` and a name to bind it under (`ErrorNoIdent` where no name follows), then a `use` clause — and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
 | `parser/parsegen.c` | `parseGenBegin`, `parseGenFinish`, `parseGenParms`, `parseGenAnnotate`, `parseYield`, `parseYieldEach`, `parseGenNone` | a generator: its parameter list read again for where each parameter is written, the struct, `walk.yield`, `walk.none` and the function that makes the generator written as source and parsed with the author's body in `next`, a `yield` and `yield each` read as statements, a `return` made to hand back None (section 6) |
-| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
+| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorTrait`, `parseActorRuntime`, `parseDclText`, `parseBehaviourName` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; an actor trait: its body read and checked, and the virtual trait, the two-word handle and the conversion's function written and parsed, recorded in its `ActorTraitInfo` |
 | | `parseBehaviourWords` | `async fn`, read up to the `fn` in an actor's body; `async` alone, and `async fn` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseEndOfMember`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`; the member of a type's braces, whose last needs none before the `}`; and the two resyncs |

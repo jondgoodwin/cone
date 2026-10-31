@@ -641,6 +641,131 @@ pub struct ListDrain['a, T] is Iterator[T] {
   }
 }
 
+// -------- PriorityQueue --------
+
+// Whether the priority a goes out before b. The order is '<=>' on the
+// priority: a number's, a text's, or the one a struct defines, and nothing
+// else is asked of P. INTERIM: '<=>' answers 0 for a float NaN against anything,
+// so a NaN priority's place is unspecified (the queue stays memory-safe and every
+// item comes out, but where the NaN pops is not promised). The agreed order for
+// floats is total, NaN last; it comes when a float-specific path can be written
+// ('#if P is Float', metaprogramming step 2) or with floats' total order.
+fn beforePriority[P](a: &P, b: &P) bool inline { (*a <=> *b) < 0i32 }
+
+// A priority queue: a binary min-heap that hands out the item of the least
+// priority first. 'push(p, t)' adds an item t with priority p and 'pop()'
+// removes and answers the pair with the least priority, as an 'Option' of
+// '(P, T)' ('None' when it is empty); 'peek()' borrows that pair without
+// removing it. Both are O(log n); 'peek', 'len' and 'isEmpty' are O(1).
+//
+// The priorities are in one List and the items in another, in the same order
+// (the heap's: the children of position i are at 2i+1 and 2i+2), so a
+// comparison reads only priorities, packed together, and the items are moved
+// along with them. Priorities are ordered by '<=>' on P: any number, text, or
+// a struct that defines '<=>'. A NaN float priority's place is unspecified (the
+// queue stays memory-safe and every item comes out). Priorities that compare equal
+// go out in no particular order; a queue that needs a fixed order among equals
+// puts the tie-breaker in the priority, a struct's '<=>' that compares it
+// second. Values move in and out, never copied, so T may be a move type (a
+// String, a struct with a 'final'); the queue's death finalizes each priority
+// and item it still holds. Like a List, it takes its blocks from its region,
+// the last argument of every init.
+pub struct PriorityQueue[P, T] is ShapeChanging, Sendable, CarriesRegion {
+  prios: List[P];
+  items: List[T];
+
+  // An empty queue, 'PriorityQueue[f32, u32]()': no block until the first
+  // push. The region is handed to both lists.
+  pub fn initEmpty overload init(self: &new, region: *MemRegion) {
+    *self = PriorityQueue(List[P](region), List[T](region));
+  }
+
+  // An empty queue with room for at least n pairs, 'PriorityQueue[f32, u32](100)'
+  pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
+    *self = PriorityQueue(List[P](n, region), List[T](n, region));
+  }
+
+  // How many pairs it holds, and how many its blocks have room for
+  pub fn len(self: &) usize { prios.len() }
+  pub fn capacity(self: &) usize { prios.capacity() }
+  pub fn isEmpty(self: &) bool { prios.len() == 0usize }
+
+  // Make room for 'more' pairs beyond those it holds (see List)
+  pub fn reserve(self: &mut, more: usize) {
+    prios.reserve(more);
+    items.reserve(more);
+  }
+
+  // Finalize every priority and item and keep the room
+  pub fn clear(self: &mut) {
+    prios.clear();
+    items.clear();
+  }
+
+  // Move a priority and its item in
+  pub fn push(self: &mut, p: P, t: T) {
+    prios.push(p);
+    items.push(t);
+    // Sift up: the new pair is lifted out, each parent that goes after it moves
+    // down into the hole, and the pair is put where the hole ends
+    let pp = prios.ptr;
+    let ip = items.ptr;
+    var i = prios.used - 1usize;
+    let hp = mem.readRaw(pp + i);
+    let ht = mem.readRaw(ip + i);
+    while i > 0usize {
+      let parent = (i - 1usize) / 2usize;
+      if !beforePriority(&hp, (pp + parent) as &P) { break; }
+      mem.writeRaw(pp + i, mem.readRaw(pp + parent));
+      mem.writeRaw(ip + i, mem.readRaw(ip + parent));
+      i = parent;
+    }
+    mem.writeRaw(pp + i, hp);
+    mem.writeRaw(ip + i, ht);
+  }
+
+  // Remove the pair of least priority and move it out, or None when empty
+  pub fn pop(self: &mut) Option[(P, T)] {
+    let n = prios.used;
+    if n == 0usize { return None; }
+    let pp = prios.ptr;
+    let ip = items.ptr;
+    let topP = mem.readRaw(pp);
+    let topT = mem.readRaw(ip);
+    let last = n - 1usize;
+    prios.used = last;
+    items.used = last;
+    if last > 0usize {
+      // Sift down: the last pair is lifted out, the lesser child of the hole
+      // moves up into it while that child goes before the pair, and the pair is
+      // put where the hole ends
+      let hp = mem.readRaw(pp + last);
+      let ht = mem.readRaw(ip + last);
+      var i = 0usize;
+      while true {
+        let l = 2usize * i + 1usize;
+        if l >= last { break; }
+        var c = l;
+        if l + 1usize < last && beforePriority((pp + (l + 1usize)) as &P, (pp + l) as &P) { c = l + 1usize; }
+        if !beforePriority((pp + c) as &P, &hp) { break; }
+        mem.writeRaw(pp + i, mem.readRaw(pp + c));
+        mem.writeRaw(ip + i, mem.readRaw(ip + c));
+        i = c;
+      }
+      mem.writeRaw(pp + i, hp);
+      mem.writeRaw(ip + i, ht);
+    }
+    Some[(P, T)]((topP, topT))
+  }
+
+  // Borrows of the pair 'pop' would remove, for reading it now, or None when
+  // empty. The borrows are good until the queue next changes.
+  pub fn peek(self: &) Option[(&P, &T)] {
+    if prios.used == 0usize { return None; }
+    Some[(&P, &T)]((prios.ptr as &P, items.ptr as &T))
+  }
+}
+
 // -------- Deque --------
 
 // A double-ended queue of T: a growable ring buffer (Rust's VecDeque). Its values
