@@ -663,12 +663,16 @@ is not built. A downcast of a virtual reference to an open trait names a concret
 trait; one that does not, or a type that is no struct (`n is i64`), is `ErrorInvType` with a message
 saying the value is never one, not that a tag is missing ([cast](../nodes/cast.md), "`castIsTypeCheck`").
 
-An actor's declaration has five codes of its own and borrows two. What its
+An actor's declaration has five codes of its own and borrows three. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
-macro, `extern`, a `self` of another kind, a generic actor, one naming an
-abstraction), is `ErrorActorMember`; a module declaring one without importing
+macro, `extern`, a `self` of another kind, a generic actor, one with a base to
+`extends` or an `is` on a condition, an `is` naming something that is not an actor
+trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`; an `is` that names
+an ordinary trait is refused first by the type check of the generated list, `ErrorNoSize`);
+an actor that says it `is` an actor trait and does not conform is
+`ErrorActorTraitConform`, listing what it lacks as a conversion's refusal does; a module declaring one without importing
 the `actors` package is `ErrorActorRuntime`; `async` without `fn`,
 or `async fn` outside an actor's body, is `ErrorBehaviourWords`, a parse code
 of its own because `async` is a keyword that means nothing alone; and `self.m()` on one of the actor's behaviours where there is no

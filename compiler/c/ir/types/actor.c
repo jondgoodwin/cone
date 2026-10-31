@@ -19,6 +19,7 @@ static uint32_t actorTraitCnt = 0;
 static uint32_t actorTraitMax = 0;
 
 static ActorMessage *actorTraitMessages(ActorTraitInfo *trait, INode *handle);
+static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *actor, INode *at, char *lead);
 
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
@@ -166,6 +167,37 @@ static void actorRefuseGc(ActorInfo *info) {
     }
 }
 
+// What an actor says it is, 'actor Counter is ChunkSink': each name in the list
+// must be an actor trait (its handle, or an instance of a generic one), and the
+// actor must conform to it, as it would to be converted to it. What it lacks is
+// named, in the words of the conversion's refusal
+static void actorCheckIs(ActorInfo *info) {
+    FnSigNode *sig = (FnSigNode *)info->isfn->vtype;
+    VarDclNode *parm = (VarDclNode *)nodesGet(sig->parms, 0);
+    INode *list = parm->vtype;
+    if (list == NULL || list == unknownType || list->tag == UnknownTag)
+        return;
+    INode *listdcl = itypeGetTypeDcl(list);
+    Nodes *named = listdcl->tag == TTupleTag || listdcl->tag == TupleTag ? ((TupleNode *)listdcl)->elems : NULL;
+    uint32_t count = named ? named->used : 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        INode *one = named ? nodesGet(named, i) : list;
+        if (one == NULL || one == unknownType || one->tag == UnknownTag)
+            continue;
+        INode *dcl = itypeGetTypeDcl(one);
+        ActorTraitInfo *trait = dcl->tag == StructTag ? actorTraitOfHandle(dcl) : NULL;
+        if (trait == NULL) {
+            if (dcl == errorType || dcl->tag == UnknownTag)
+                continue;
+            errorMsgNode((INode *)info->handle, ErrorActorMember,
+                "Actor %s says it is %s, which is not an actor trait: an actor's 'is' names actor traits, which it conforms to by having their behaviours.",
+                &info->handle->namesym->namestr, itypeName(dcl));
+            continue;
+        }
+        actorTraitConforms(trait, dcl, info, (INode *)info->handle, "which it says it is");
+    }
+}
+
 // A message carries its arguments to whichever worker thread runs the actor,
 // and an initializer's arguments become the state, which the workers then run
 // on: so each must be Sendable, as a channel's element or a thread's start
@@ -201,6 +233,8 @@ void actorCheckAll() {
         }
         for (uint32_t j = 0; j < info->nmsgs; ++j)
             actorCheckReturn(info, info->msgs[j].method);
+        if (info->isfn)
+            actorCheckIs(info);
         actorRefuseGc(info);
     }
     // An actor trait's behaviours are sent to whatever actor the handle holds,
@@ -493,7 +527,7 @@ static void actorSigCat(char *buf, size_t size, Name *name, FnSigNode *sig, INod
 // read off its handle's sending methods, which an instance of a generic trait has
 // at its own arguments: a behaviour's parameters are those of its send, and what
 // it returns is what its future holds
-static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *actor, INode *at) {
+static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *actor, INode *at, char *lead) {
     char why[2400];
     why[0] = '\0';
     int bad = 0;
@@ -557,8 +591,8 @@ static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *a
             strncat(traitname, "]", sizeof(traitname) - strlen(traitname) - 1);
         }
         errorMsgNode(at, ErrorActorTraitConform,
-            "Actor %s does not conform to actor trait %s, which it is converted to here:%s An actor conforms when it has every behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.",
-            &actor->handle->namesym->namestr, traitname, why);
+            "Actor %s does not conform to actor trait %s, %s:%s An actor conforms when it has every behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.",
+            &actor->handle->namesym->namestr, traitname, lead, why);
     }
     return bad == 0;
 }
@@ -568,7 +602,7 @@ int actorTraitMeets(INode *type, INode *traitHandle) {
     traitHandle = itypeGetTypeDcl(traitHandle);
     if (!actorTraitWanted(type, traitHandle))
         return 0;
-    return actorTraitConforms(actorTraitOfHandle(traitHandle), traitHandle, actorOfHandle(type), NULL);
+    return actorTraitConforms(actorTraitOfHandle(traitHandle), traitHandle, actorOfHandle(type), NULL, NULL);
 }
 
 int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
@@ -581,7 +615,7 @@ int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
     // handle, which holds that and nothing else (parseactor.c)
     if (actor->handle->fields.used != 1)
         errorUnreachable(orig, "an actor's handle holds more than its mailbox, which an actor trait's handle reads it from");
-    if (!actorTraitConforms(trait, totypedcl, actor, orig)) {
+    if (!actorTraitConforms(trait, totypedcl, actor, orig, "which it is converted to here")) {
         // The conversion is built anyway, so what uses the value says nothing more
         INode *conv = (INode *)newConvCastNode(orig, totypedcl);
         inodeLexCopy(conv, orig);
