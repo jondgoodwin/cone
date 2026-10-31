@@ -852,7 +852,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 ptrToType = genlType(gen, pointee);
                 ptrToKind = LLVMGetTypeKind(ptrToType);
                 ptrToFloat = itypeGetTypeDcl(pointee)->tag == FloatNbrTag;
-                if (ptrToKind == LLVMPointerTypeKind)
+                // Only a pointee that is itself a reference or pointer has a pointee to
+                // step over: a nullable-pointer enum (an Option of a reference, 'Rc' or
+                // 'Uni') is an LLVM pointer too, but points at nothing in Cone
+                INode *pointeedcl = itypeGetTypeDcl(pointee);
+                if (ptrToKind == LLVMPointerTypeKind && (pointeedcl->tag == RefTag || pointeedcl->tag == PtrTag))
                     stepType = genlPointeeType(gen, pointee);
             }
             switch (op) {

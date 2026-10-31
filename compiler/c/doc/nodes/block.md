@@ -196,7 +196,8 @@ statements; the loop below then checks them as built. By the source's type:
 
 - **an array, or a reference to one, a slice, or a type that lends an array it
   holds** (a list, `structLentBody`): a counted loop over the slice, `var i = 0`
-  and `loop { if i >= s.len {break}; let x = &s[i]; i++; ...body }`, the slice
+  and `loop { if i >= s.len {break}; let x = &s[i]; i++; ...body }` (for a written
+  borrow; a plain source copies, below), the slice
   being the array lent as one, the source itself, or the lending method's
   result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
   list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
@@ -211,6 +212,30 @@ statements; the loop below then checks them as built. By the source's type:
   permission written on it is `ErrorEachBorrowPerm`. A `&mut` variable or
   parameter that is itself the source is no written borrow and is walked as the
   reference it is.
+
+  **A plain source** (not a written borrow, `unwritten` in `eachLower`) hands out
+  each item as `let x = item` would, decided by the item type (`itypeIsMove`):
+  - an item that copies is copied: the loop is the same counted loop, each variable
+    `s[i]` itself in place of `&s[i]`, and the source stays (frozen for the loop, as
+    ever). A Deque, Set, Dict or OrderedDict, whose `iter()` lends `&T` or
+    `(&K, &V)`, has each item read through (`*item`, or a tuple of the reads for
+    one variable over a pair);
+  - an item that moves is taken out, which consumes the source: it is moved into the
+    hidden variable (the place is not used) and the loop walks the type's `drain()`,
+    a cursor that moves each item out and finalizes the ones a `break` leaves
+    (`List`, `Deque`, `Set`, `Dict`, `OrderedDict`). The variable the source named is
+    recorded (`eachMarkMoved`), so a later use is the move error saying to write
+    `'each x in &name'` (`nameuseFlow`). Several variables over a pair that moves are
+    its elements moved out by the assignment `k, v = item`, as `let k, v = f()` does
+    (`eachBindVars`);
+  - what cannot be consumed, a source behind a borrow (a reference, a slice, a field
+    reached through one: `iexpPathThroughBorrow`), is `ErrorEachBehindBorrow`, naming
+    the borrow to write, `&l` or `&*r`; an owned fixed array of items that move has
+    no cursor yet, `ErrorEachNoDrain`. A `parallel each` (`eachParallelKind`) copies
+    items that copy and refuses items that move, behind a borrow or not.
+
+  A cursor, a type's own `iter()` and a written borrow hand out what their cursor
+  lends, as before.
 - **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
   place, not behind a reference; `iter()` with one variable, `indexed()` with
   two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
