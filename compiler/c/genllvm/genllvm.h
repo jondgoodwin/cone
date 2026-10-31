@@ -135,6 +135,14 @@ typedef struct GenDiFile {
     struct GenDiFile *next;
 } GenDiFile;
 
+// The cold function that finishes a counted reference's death (genlDropSlow)
+typedef struct GenDropSlow {
+    INode *vtexp;           // The type the reference points at
+    INode *region;          // Its region
+    LLVMValueRef fn;
+    struct GenDropSlow *next;
+} GenDropSlow;
+
 typedef struct GenState {
     LLVMTargetMachineRef machine;
     LLVMTargetDataRef datalayout;
@@ -147,6 +155,8 @@ typedef struct GenState {
     LLVMDIBuilderRef dibuilder;
     LLVMMetadataRef difile;     // The compile's main source file
     GenDiFile *difiles;         // The others, made as the code in them is reached
+    GenDropSlow *dropslow;      // The cold death functions made so far (genlDropSlow)
+    uint32_t dropslowcnt;
 
     LLVMTypeRef emptyStructType;
 
