@@ -10,10 +10,11 @@
 //   by List.sortBy; then 20,000 operations, two pushes to a pop, are checked
 //   against a table of how many of each priority the queue should hold: the pop
 //   is the least priority with a count above 0;
-// - float priorities are ordered by '<' and '>' and a NaN goes after everything
-//   (after infinity); equal priorities, NaNs included, pop in no promised order,
-//   so only their priorities are checked, and the items of ties are checked as a
-//   set (item ids 1 and 2 share a priority: both come out, the sum is 3);
+// - float priorities without a NaN are ordered by value; equal priorities pop in
+//   no promised order, so only their priorities are checked, and the items of ties
+//   are checked as a set (items 3 and 7 share 1.0: both come out, the sum is 10);
+// - a NaN priority's place is unspecified: with NaNs in, all 12 pairs still come
+//   out exactly once (items 1 to 12 sum to 78, and their bits to 8190);
 // - a Move item with a 'final' dies exactly once: by pop (at the match arm's
 //   end), by clear, or with the queue; nothing is finalized by growing or sifting;
 //   the count of finals equals the count of items made, and LSan sees no leak;
@@ -160,19 +161,16 @@ fn randomInterleaved() {
 
 fn floats() {
   var zero = 0.0f32;
-  let nan = zero / zero;
   let inf = 1.0f32 / zero;
   var q = PriorityQueue[f32, u32]();
   q.push(2.5f32, 1u32);
-  q.push(nan, 2u32);
   q.push(1.0f32, 3u32);
   q.push(2.5f32, 4u32);
   q.push(-inf, 5u32);
   q.push(inf, 6u32);
   q.push(1.0f32, 7u32);
-  q.push(nan, 8u32);
   q.push(-0.5f32, 9u32);
-  // -inf, -0.5, 1.0 and 1.0 (items 3 and 7), 2.5 and 2.5 (items 1 and 4), inf, NaN, NaN
+  // -inf, -0.5, 1.0 and 1.0 (items 3 and 7), 2.5 and 2.5 (items 1 and 4), inf
   var items = List[u32].empty();
   var prios = List[f32].empty();
   var more = true;
@@ -186,7 +184,7 @@ fn floats() {
       case is None {more = false;}
     }
   }
-  expectUInt(u64.from(prios.len()), 9, "nine came out");
+  expectUInt(u64.from(prios.len()), 7, "seven came out");
   expect(*prios[0usize] == -inf && *items[0usize] == 5u32, "-inf first, with its item");
   expect(*prios[1usize] == -0.5f32 && *items[1usize] == 9u32, "then -0.5");
   expect(*prios[2usize] == 1.0f32 && *prios[3usize] == 1.0f32, "then the two 1.0s");
@@ -194,29 +192,57 @@ fn floats() {
   expect(*prios[4usize] == 2.5f32 && *prios[5usize] == 2.5f32, "then the two 2.5s");
   expectUInt(u64.from(*items[4usize] + *items[5usize]), 5, "whose items are 1 and 4 in either order");
   expect(*prios[6usize] == inf && *items[6usize] == 6u32, "then infinity");
-  expect(*prios[7usize] != *prios[7usize] && *prios[8usize] != *prios[8usize], "the NaNs come last");
-  expectUInt(u64.from(*items[7usize] + *items[8usize]), 10, "with items 2 and 8 in either order");
 }
 
-fn floats64() {
-  var zero = 0.0;
+// A NaN priority's place is unspecified: '<=>' answers 0 for a NaN against
+// anything. What is promised is that the queue stays memory-safe and every item
+// comes out exactly once: 12 pairs, 4 of them NaN, items 1..12 (sum 78), come out
+// as 12 pairs whose items sum to 78 and are all different (their bits, or'd, are 8190)
+fn nanPriorities() {
+  var zero = 0.0f32;
   let nan = zero / zero;
-  var q = PriorityQueue[f64, u32]();
-  q.push(nan, 1u32);
-  q.push(3.0, 2u32);
-  q.push(-1.0, 3u32);
-  match q.pop() {
-    case let Some(pair) {let p, t = pair; expectUInt(u64.from(t), 3, "f64: -1.0 first");}
-    case is None {expect(false, "f64 pop");}
+  var q = PriorityQueue[f32, u32]();
+  var i = 1u32;
+  while i <= 12u32 {
+    if i % 3u32 == 0u32 { q.push(nan, i); } else { q.push(f32.from(i % 5u32), i); }
+    i = i + 1u32;
   }
-  match q.pop() {
-    case let Some(pair) {let p, t = pair; expectUInt(u64.from(t), 2, "f64: then 3.0");}
-    case is None {expect(false, "f64 pop");}
+  var count = 0u64;
+  var sum = 0u64;
+  var bits = 0u64;
+  var more = true;
+  while more {
+    match q.pop() {
+      case let Some(pair) {
+        let p, t = pair;
+        count = count + 1u64;
+        sum = sum + u64.from(t);
+        bits = bits | (1u64 << u64.from(t));
+      }
+      case is None {more = false;}
+    }
   }
-  match q.pop() {
-    case let Some(pair) {let p, t = pair; expectUInt(u64.from(t), 1, "f64: NaN last");}
-    case is None {expect(false, "f64 pop");}
+  expectUInt(count, 12, "NaN f32: every pair came out");
+  expectUInt(sum, 78, "NaN f32: items 1 to 12 summed");
+  expectUInt(bits, 8190, "NaN f32: each item exactly once");
+  expect(q.isEmpty(), "NaN f32: empty after");
+
+  var zero64 = 0.0;
+  let nan64 = zero64 / zero64;
+  var r = PriorityQueue[f64, String]();
+  var j = 1;
+  while j <= 12 {
+    if j % 3 == 0 { r.push(nan64, String.from("x")); } else { r.push(f64.from(j % 5), String.from("y")); }
+    j = j + 1;
   }
+  var n = 0u64;
+  while r.len() > 0usize {
+    match r.pop() {
+      case let Some(pair) {let p, s = pair; n = n + 1u64;}
+      case is None {}
+    }
+  }
+  expectUInt(n, 12, "NaN f64 with String items: every pair came out");
 }
 
 // A priority that is a struct: by cost, then by serial
@@ -227,8 +253,6 @@ struct Cost {
   pub fn `<=>`(self, other: Cost) i32 {
     if cost != other.cost { cost <=> other.cost } else { serial <=> other.serial }
   }
-
-  pub fn `==`(self, other: Cost) bool { cost == other.cost && serial == other.serial }
 }
 
 fn structPriorities() {
@@ -351,7 +375,7 @@ fn inArena() {
 fn reserved() {
   var q = PriorityQueue[i32, u32](100usize);
   expectUInt(u64.from(q.capacity()), 100, "PriorityQueue[i32, u32](100) has room for 100");
-  var r = PriorityQueue[i32, u32].empty();
+  var r = PriorityQueue[i32, u32]();
   r.reserve(10usize);
   expect(r.capacity() >= 10usize, "reserve makes room");
   expect(r.isEmpty(), "and holds nothing");
@@ -362,7 +386,7 @@ fn main() {
   randomSorted();
   randomInterleaved();
   floats();
-  floats64();
+  nanPriorities();
   structPriorities();
   finalsPop();
   finalsDie();

@@ -644,17 +644,13 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // -------- PriorityQueue --------
 
 // Whether the priority a goes out before b. The order is '<=>' on the
-// priority: a number's, a text's, or the one a struct defines. '<=>' alone
-// answers 0 for a float NaN against anything, itself included, so for a float
-// a tie it reports is told apart: the NaN (the one value not equal to itself)
-// goes after the other. That gives floats a total order, every NaN after
-// infinity and NaNs among themselves ties. The test reads '==', so a priority
-// type needs '==' as well as '<=>' (every number and text has both; a struct
-// that defines '<=>' defines '==' too).
-fn beforePriority[P](a: &P, b: &P) bool inline {
-  let c = *a <=> *b;
-  c < 0i32 || (c == 0i32 && !(*b == *b) && *a == *a)
-}
+// priority: a number's, a text's, or the one a struct defines, and nothing
+// else is asked of P. INTERIM: '<=>' answers 0 for a float NaN against anything,
+// so a NaN priority's place is unspecified (the queue stays memory-safe and every
+// item comes out, but where the NaN pops is not promised). The agreed order for
+// floats is total, NaN last; it comes when a float-specific path can be written
+// ('#if P is Float', metaprogramming step 2) or with floats' total order.
+fn beforePriority[P](a: &P, b: &P) bool inline { (*a <=> *b) < 0i32 }
 
 // A priority queue: a binary min-heap that hands out the item of the least
 // priority first. 'push(p, t)' adds an item t with priority p and 'pop()'
@@ -666,8 +662,8 @@ fn beforePriority[P](a: &P, b: &P) bool inline {
 // (the heap's: the children of position i are at 2i+1 and 2i+2), so a
 // comparison reads only priorities, packed together, and the items are moved
 // along with them. Priorities are ordered by '<=>' on P: any number, text, or
-// a struct that defines '<=>'. A float priority is ordered totally: a NaN comes
-// after every other value, so it goes out last. Priorities that compare equal
+// a struct that defines '<=>'. A NaN float priority's place is unspecified (the
+// queue stays memory-safe and every item comes out). Priorities that compare equal
 // go out in no particular order; a queue that needs a fixed order among equals
 // puts the tie-breaker in the priority, a struct's '<=>' that compares it
 // second. Values move in and out, never copied, so T may be a move type (a
@@ -687,14 +683,6 @@ pub struct PriorityQueue[P, T] is ShapeChanging, Sendable, CarriesRegion {
   // An empty queue with room for at least n pairs, 'PriorityQueue[f32, u32](100)'
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = PriorityQueue(List[P](n, region), List[T](n, region));
-  }
-
-  // An empty queue: no block until the first push
-  pub fn empty() PriorityQueue { PriorityQueue(List[P].empty(), List[T].empty()) }
-
-  // An empty queue with room for n pairs
-  pub fn withCapacity(n: usize) PriorityQueue {
-    PriorityQueue(List[P].withCapacity(n), List[T].withCapacity(n))
   }
 
   // How many pairs it holds, and how many its blocks have room for
