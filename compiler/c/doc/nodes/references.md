@@ -514,7 +514,10 @@ who vouches: `StaticVouched` for a generic's parameter bounded `+ 'static`
 (`genericStaticHow`; each call is held to hand it only global borrows, by
 `lifePartStatic`), `StaticWritten` for a signature that writes the borrow
 `'static`, the only form an actor's behaviour or initializer takes, in its
-parameters and its reply. A struct's
+parameters and its reply. `StaticOff`, the strict mode, still lets a borrow
+through that is written `'static` in its type (`ref->lifename == staticLifeName`,
+as Rust's `&'static str` is `Send`): a struct field `&'static str` is Sendable,
+which is what lets http3's `FrameError` convert into an `AnyError`. A struct's
 remembered answer is the strict one: a mode other than `StaticOff` trusts its
 "not bound", asks again where it was "bound", and remembers neither.
 
