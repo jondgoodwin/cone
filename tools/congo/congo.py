@@ -1931,7 +1931,7 @@ KEY_FORMAT = "congo build key 1"
 KEY_EXT = ".key"
 # The environment variables conec reads (getenv in compiler/c): each is part
 # of every key
-CONEC_ENV = ("CONE_PACKAGES", "CONE_LLVM_OPTIONS")
+CONEC_ENV = ("CONE_PACKAGES", "CONE_LLVM_OPTIONS", "CONE_NO_NOALIAS")
 # Whether a compile whose key is unchanged is skipped: '--no-cache' says not
 USE_CACHE = [True]
 

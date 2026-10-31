@@ -4,6 +4,7 @@
 // - Vec3 + Vec3, Vec3.dot, Vec3.cross and Vec3.normalize: each over 4,096
 //   pairs (in cache), 2,000 times over;
 // - Mat4 * Vec4: 4,096 vectors through a matrix, 2,000 times over;
+// - Quat * Vec3, Quat.slerp and Mat4 * Mat4: 4,096 each (in cache), 500 times over;
 // - 1M points through a matrix: a million points (12 MB, out of cache)
 //   carried through a placement 'm * p', 20 times over;
 // - 1M particles: each step a million particles moved by their velocity, the
@@ -209,6 +210,83 @@ fn main() i32 {
     i = 0usize;
     while i < n {
       h = mix3(mix3(h, p[i]), vel[i]);
+      i = i + 1usize;
+    }
+  }
+
+  // Quat * Vec3, Quat.slerp and Mat4 * Mat4, in cache
+  {
+    let n = 4096usize;
+    let passes = 500u64;
+    let q = block[Quat](n);
+    let q2 = block[Quat](n);
+    let v = block[Vec3](n);
+    let ov = block[Vec3](n);
+    let oq = block[Quat](n);
+    let ma = block[Mat4](n);
+    let mo = block[Mat4](n);
+    var i = 0usize;
+    while i < n {
+      let t = f32.from(i % 977usize) * 0.01;
+      q[i] = Quat.angleAxis(t, Vec3(1., 2., 3.).normalize());
+      q2[i] = Quat.angleAxis(2. * t + 0.3, Vec3(3., 1., 2.).normalize());
+      v[i] = Vec3(t, 1. - t, 2. * t + 0.5);
+      ma[i] = Mat4.fromTrs(Vec3(t, 1., 2.), q[i], Vec3(1., 1. + 0.01 * t, 1.));
+      i = i + 1usize;
+    }
+
+    var t0 = Instant.now();
+    var pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        ov[i] = q[i] * v[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Quat * Vec3:           ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(h, ov[i]);
+      i = i + 1usize;
+    }
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        oq[i] = q[i].slerp(q2[i], f32.from(i % 100usize) * 0.01);
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Quat.slerp:            ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix(mix(mix(mix(h, oq[i].x as u32), oq[i].y as u32), oq[i].z as u32), oq[i].w as u32);
+      i = i + 1usize;
+    }
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        mo[i] = ma[i] * ma[(i + 1usize) % n];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat4 * Mat4:           ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      var k = 0usize;
+      while k < 16usize {
+        h = mix(h, mo[i].m[k] as u32);
+        k = k + 1usize;
+      }
       i = i + 1usize;
     }
   }
