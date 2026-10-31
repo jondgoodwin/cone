@@ -365,6 +365,14 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     }
     int islent = lentvia != NULL;
     int hasiter = !isslice && !isarray && !hasnext && !islent && eachHasMethod(base, iterName);
+    // A permission written asks the type for the cursor that has it, 'viewMut()' or
+    // 'viewUni()', in place of 'iter()'; a type without one lends its items to be read
+    Name *itername = iterName;
+    if (hasiter && writtenperm != NULL) {
+        Name *viewname = nametblFind(writtenperm == (INode*)uniPerm ? "viewUni" : "viewMut", 7);
+        if (eachHasMethod(base, viewname))
+            itername = viewname;
+    }
     if (!isslice && !isarray && !islent && !hasnext && !hasiter) {
         errorMsgNode(src, ErrorNotIterable,
             "'each' walks a numeric range ('each i in 0 < n'), an array or a slice, something with a 'next' method, or something with an 'iter' method that gives one, and %s is none of those.",
@@ -401,7 +409,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     if ((hasnext || hasiter) && !itemskind) {
         INode *cursortype = base;
         if (hasiter) {
-            FnDclNode *iterfn = eachMethod(base, iterName);
+            FnDclNode *iterfn = eachMethod(base, itername);
             INode *given = iterfn ? eachAnswer(iterfn) : NULL;
             if (given != NULL && (given->tag == RefTag || given->tag == VirtRefTag))
                 given = itypeGetTypeDcl(((RefNode*)given)->vtexp);
@@ -525,7 +533,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             nodesAdd(&outer->stmts, (INode*)srcdcl);
             owner = eachUse(srcdcl, lexnode);
         }
-        VarDclNode *cursordcl = eachVar(mutPerm, (INode*)eachCall(owner, iterName, lexnode), scope, lexnode);
+        VarDclNode *cursordcl = eachVar(mutPerm, (INode*)eachCall(owner, itername, lexnode), scope, lexnode);
         nodesAdd(&outer->stmts, (INode*)cursordcl);
         cursor = eachUse(cursordcl, lexnode);
     }

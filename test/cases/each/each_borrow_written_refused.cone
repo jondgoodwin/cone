@@ -1,24 +1,12 @@
 // A permission written on an 'each' source is given or refused, never dropped.
-// A Deque, a Set and a Dict lend their items to be read (their 'iter' takes
-// '&'): '&mut' and '&uni' over them are refused, saying to walk '&'.
-// A list, an array and a subslice lend their items with the permission.
+// A Set lends its items to be read only, since writing an element would break its
+// hash: '&mut' and '&uni' over it are refused, saying to walk '&'. A list, an
+// array, a subslice, a Deque and a Dict lend their items with the permission
+// (each_borrow_written).
 
 mod each_borrow_written_refused;
 
 import collections use *;
-
-fn dequeMut() {
-  var d = Deque[i64]();
-  d.push(1i64);
-  each x in &mut d {                //~ ErrorEachBorrowPerm:13 "walk '&' of it"
-  }
-}
-
-fn dequeUni() {
-  var d = Deque[i64]();
-  each x in &uni d {                //~ ErrorEachBorrowPerm:13 "lends its items to be read"
-  }
-}
 
 fn setMut() {
   var s = Set[i64]();
@@ -26,15 +14,9 @@ fn setMut() {
   }
 }
 
-fn dictMut() {
-  var m = Dict[i64, i64]();
-  each k, v in &mut m {             //~ ErrorEachBorrowPerm:16 "walk '&' of it"
-  }
-}
-
-fn dictUni() {
-  var m = Dict[i64, i64]();
-  each pair in &uni m {             //~ ErrorEachBorrowPerm:16 "lends its items to be read"
+fn setUni() {
+  var s = Set[i64]();
+  each x in &uni s {                //~ ErrorEachBorrowPerm:13 "walk '&' of it"
   }
 }
 
@@ -44,6 +26,28 @@ fn readOnly() {
   l.push(1i64);
   each x in &l {
     *x = 2i64;                      //~ ErrorNoMut:5 "permission to modify"
+  }
+}
+
+// A Deque and a Dict have a '&mut' cursor but none for '&uni': an Option or a tuple
+// of '&uni' items is refused as a type argument (ErrorUniShared)
+fn dequeUni() {
+  var d = Deque[i64]();
+  each x in &uni d {                //~ ErrorEachBorrowPerm:13 "has none to change in place"
+  }
+}
+
+fn dictUni() {
+  var m = Dict[i64, i64]();
+  each k, v in &uni m {             //~ ErrorEachBorrowPerm:16 "walk '&' of it"
+  }
+}
+
+// A Dict lends its keys to be read only
+fn dictKey() {
+  var m = Dict[i64, i64]();
+  each k, v in &mut m {
+    *k = 2i64;                      //~ ErrorNoMut:5 "permission to modify"
   }
 }
 

@@ -793,6 +793,10 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // The same cursor under the name 'each x in deque' walks it by
   pub fn iter(self: &) DequeItems[T] { DequeItems[T](self, 0usize) }
 
+  // The cursor 'each x in &mut deque' walks by: the same
+  // values, front to back, each lent to be changed in place
+  pub fn viewMut(self: &mut) DequeMutItems[T] { DequeMutItems[T](self, 0usize) }
+
   // The slot of the value at position i, which may be the one just past the last
   // when the caller is about to fill it
   fn slot(self: &, i: usize) usize {
@@ -847,6 +851,21 @@ pub struct DequeItems['a, T] is Iterator[&T] {
     let i = pos;
     pos = i + 1usize;
     Some[&T]((deque.ptr + deque.slot(i)) as &T)
+  }
+}
+
+// A cursor over a deque's values, front to back: 'next' gives a '&mut' borrow of
+// each in turn, to change it in place. It borrows the deque mutably, which may
+// not change while the cursor, or a value it gave, is used
+pub struct DequeMutItems['a, T] is Iterator[&mut T] {
+  deque: &'a mut Deque[T];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[&'a mut T] {
+    if pos >= deque.used { return None; }
+    let i = pos;
+    pos = i + 1usize;
+    Some[&mut T]((deque.ptr + deque.slot(i)) as &mut T)
   }
 }
 
@@ -1646,6 +1665,11 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // pair of borrows, a key and its value, in the table's order
   pub fn iter(self: &) DictPairs[K, V] { DictPairs[K, V](self, 0usize) }
 
+  // The cursor 'each k, v in &mut dict' walks by: the
+  // key to read and its value to change in place.
+  // A key is never lent to be written: it is hashed where it sits.
+  pub fn viewMut(self: &mut) DictMutPairs[K, V] { DictMutPairs[K, V](self, 0usize) }
+
   // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
   // not 'key': a Uni[str] or Rc[str] key is a reference itself, and a method
   // call reads through one reference only, so it is read through to its text
@@ -1867,6 +1891,20 @@ pub struct DictPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
     if i == noBucket { pos = dict.mask + 1usize; return None; }
     pos = i + 1usize;
     Some[(&K, &V)]((&dict.slots[i].key, &dict.slots[i].value))
+  }
+}
+
+// A cursor over a dictionary's pairs, to change the values in place: a borrow of
+// each key to read with a '&mut' borrow of its value, as a tuple
+pub struct DictMutPairs['a, K: Hash, V] is Iterator[(&K, &mut V)] {
+  dict: &'a mut Dict[K, V];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[(&'a K, &'a mut V)] {
+    let i = nextFull(dict.ctrl, dict.mask, pos);
+    if i == noBucket { pos = dict.mask + 1usize; return None; }
+    pos = i + 1usize;
+    Some[(&K, &mut V)]((&dict.slots[i].key, &mut dict.slots[i].value))
   }
 }
 
@@ -2115,6 +2153,9 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
   // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
   // pair of borrows, a key and its value, in the order of insertion
   pub fn iter(self: &) OrderedPairs[K, V] { OrderedPairs[K, V](self, 0usize) }
+
+  // The cursor a written '&mut' walks by (see Dict.viewMut)
+  pub fn viewMut(self: &mut) OrderedMutPairs[K, V] { OrderedMutPairs[K, V](self, 0usize) }
 
   // The hash of a key: the key fed to this dictionary's hasher
   fn hashOf[B](self: &, key: &B) u64 {
@@ -2390,6 +2431,20 @@ pub struct OrderedPairs['a, K: Hash, V] is Iterator[(&K, &V)] {
     let i = pos;
     pos = i + 1usize;
     Some[(&K, &V)]((&dict.dense[i].key, &dict.dense[i].value))
+  }
+}
+
+// A cursor over an OrderedDict's pairs, to change the values in place, in the
+// order of insertion (see DictMutPairs)
+pub struct OrderedMutPairs['a, K: Hash, V] is Iterator[(&K, &mut V)] {
+  dict: &'a mut OrderedDict[K, V];
+  pos: usize;
+
+  pub fn next(self: &mut) Option[(&'a K, &'a mut V)] {
+    if pos >= dict.count { return None; }
+    let i = pos;
+    pos = i + 1usize;
+    Some[(&K, &mut V)]((&dict.dense[i].key, &mut dict.dense[i].value))
   }
 }
 
