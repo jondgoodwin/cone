@@ -1,0 +1,145 @@
+// What the vector arithmetic inside geomath's heavier operations must not
+// change, checked with the testing package, so lanes.out holds the summary
+// alone.
+//
+// - Layout: Vec3 is 12 bytes, Vec4 and Quat 16, Mat4 64, all aligned as an f32
+//   is; the operations load their fields into a Vector[f32, 4] and store the
+//   result back, and the types never hold one.
+// - Results, bit for bit: Quat's slerp and Mat4's product, which do their
+//   arithmetic on whole vectors, are each done again here from the scalar
+//   formula they were written from (the same terms added in the same order),
+//   and the two must agree in every bit of every component, over a spread of
+//   values that includes negative ones, large and small ones, and the slerp's
+//   short and long arcs. Quat's rotate of a Vec3 is checked the same way: it
+//   was tried on vectors and left scalar, and this keeps it so.
+
+mod lanes;
+
+import testing use *;
+import geomath use *;
+
+fn bits(v: f32) u32 {v as u32}
+
+fn same(got: f32, want: f32, label: &Array[u8]) {
+  expectUInt(u64.from(bits(got)), u64.from(bits(want)), label);
+}
+
+fn rotateScalar(q: Quat, v: Vec3) Vec3 {
+  let ix = q.w * v.x + q.y * v.z - q.z * v.y;
+  let iy = q.w * v.y + q.z * v.x - q.x * v.z;
+  let iz = q.w * v.z + q.x * v.y - q.y * v.x;
+  let iw = -q.x * v.x - q.y * v.y - q.z * v.z;
+  Vec3(ix * q.w - iw * q.x - iy * q.z + iz * q.y,
+    iy * q.w - iw * q.y - iz * q.x + ix * q.z,
+    iz * q.w - iw * q.z - ix * q.y + iy * q.x)
+}
+
+fn slerpScalar(a: Quat, to: Quat, t: f32) Quat {
+  let u = [0.333333333333333f, 0.100000000000000f, 0.047619047619048f, 0.027777777777778f,
+    0.018181818181818f, 0.012820512820513f, 0.009523809523810f, 0.013978731275863f];
+  let vv = [0.333333333333333f, 0.400000000000000f, 0.428571428571429f, 0.444444444444444f,
+    0.454545454545455f, 0.461538461538462f, 0.466666666666667f, 0.894638801655200f];
+  var d = a.dot(to);
+  var sign: f32 = 1.;
+  if d < 0. {
+    sign = -1.;
+    d = -d;
+  };
+  let dm1 = d - 1.;
+  let topp = 1. - t;
+  let sqrT = t * t;
+  let sqrD = topp * topp;
+  var ct: f32 = 1.;
+  var cd: f32 = 1.;
+  var i = 8usize;
+  while i > 0usize {
+    i = i - 1usize;
+    ct = 1. + (u[i] * sqrT - vv[i]) * dm1 * ct;
+    cd = 1. + (u[i] * sqrD - vv[i]) * dm1 * cd;
+  };
+  ct = sign * t * ct;
+  cd = topp * cd;
+  Quat(cd * a.x + ct * to.x, cd * a.y + ct * to.y, cd * a.z + ct * to.z, cd * a.w + ct * to.w)
+}
+
+fn multScalar(a: Mat4, b: Mat4) Mat4 {
+  var r = Mat4(Array[f32, 16]() <- fill 0f);
+  var col = 0usize;
+  while col < 4usize {
+    let c = 4usize * col;
+    var row = 0usize;
+    while row < 4usize {
+      r.m[c + row] = a.m[row] * b.m[c] + a.m[4usize + row] * b.m[c + 1usize]
+        + a.m[8usize + row] * b.m[c + 2usize] + a.m[12usize + row] * b.m[c + 3usize];
+      row = row + 1usize;
+    };
+    col = col + 1usize;
+  };
+  r
+}
+
+// A number from a seed: a few thousand values from -8 to 8, with some of them
+// tiny, so the sums see cancellation and different exponents
+fn next(seed: u32) u32 {seed * 1664525u32 + 1013904223u32}
+
+fn value(seed: u32) f32 {
+  let big = f32.from((seed >> 8u32) % 16001u32) / 1000. - 8.;
+  if (seed >> 4u32) % 5u32 == 0u32 {big * 0.0001} else {big}
+}
+
+fn main() i32 {
+  expectUInt(u64.from(mem.sizeof[Vec3]()), 12u64, "Vec3 is 12 bytes");
+  expectUInt(u64.from(mem.sizeof[Vec4]()), 16u64, "Vec4 is 16 bytes");
+  expectUInt(u64.from(mem.sizeof[Quat]()), 16u64, "Quat is 16 bytes");
+  expectUInt(u64.from(mem.sizeof[Mat4]()), 64u64, "Mat4 is 64 bytes");
+  expectUInt(u64.from(mem.alignof[Vec3]()), 4u64, "Vec3 is aligned as an f32");
+  expectUInt(u64.from(mem.alignof[Vec4]()), 4u64, "Vec4 is aligned as an f32");
+  expectUInt(u64.from(mem.alignof[Quat]()), 4u64, "Quat is aligned as an f32");
+  expectUInt(u64.from(mem.alignof[Mat4]()), 4u64, "Mat4 is aligned as an f32");
+
+  var seed = 12345u32;
+  var n = 0u32;
+  while n < 300u32 {
+    seed = next(seed);
+    let q = Quat(value(seed), value(next(seed)), value(next(next(seed))), value(next(next(next(seed)))));
+    seed = next(next(next(next(seed))));
+    let to = Quat(value(seed), value(next(seed)), value(next(next(seed))), value(next(next(next(seed)))));
+    seed = next(next(next(next(seed))));
+    let v = Vec3(value(seed), value(next(seed)), value(next(next(seed))));
+    seed = next(next(next(seed)));
+    let t = f32.from((seed >> 8u32) % 1001u32) / 1000.;
+
+    let r = q.rotate(v);
+    let rs = rotateScalar(q, v);
+    same(r.x, rs.x, "rotate x, bit for bit");
+    same(r.y, rs.y, "rotate y, bit for bit");
+    same(r.z, rs.z, "rotate z, bit for bit");
+
+    let s = q.slerp(to, t);
+    let ss = slerpScalar(q, to, t);
+    same(s.x, ss.x, "slerp x, bit for bit");
+    same(s.y, ss.y, "slerp y, bit for bit");
+    same(s.z, ss.z, "slerp z, bit for bit");
+    same(s.w, ss.w, "slerp w, bit for bit");
+
+    var ma = Mat4(Array[f32, 16]() <- fill 0f);
+    var mb = Mat4(Array[f32, 16]() <- fill 0f);
+    var k = 0usize;
+    while k < 16usize {
+      seed = next(seed);
+      ma.m[k] = value(seed);
+      seed = next(seed);
+      mb.m[k] = value(seed);
+      k = k + 1usize;
+    };
+    let p = ma * mb;
+    let ps = multScalar(ma, mb);
+    k = 0usize;
+    while k < 16usize {
+      same(p.m[k], ps.m[k], "matrix product, bit for bit");
+      k = k + 1usize;
+    };
+    n = n + 1u32;
+  };
+  done()
+}
