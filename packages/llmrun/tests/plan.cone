@@ -39,10 +39,10 @@ fn contains(hay: &String, needle: &str) bool {
 }
 
 // Refused, saying this
-fn refusedWith(r: &Result[PlanSummary, String], needle: &str, label: &str) {
+fn refusedWith(r: &Result[PlanSummary, LlmError], needle: &str, label: &str) {
   match r {
     case is Ok { expect(false, label); }
-    case let Err(e) { expectBool(contains(e, needle), true, label); if !contains(e, needle) { printStr(e.view()); printStr("\n"); } }
+    case let Err(err) { let e = err.message(); expectBool(contains(&e, needle), true, label); if !contains(&e, needle) { printStr(e.view()); printStr("\n"); } }
   }
 }
 
@@ -66,7 +66,7 @@ fn realFile(name: &str, layers: u64, heads: u64, tied: bool, kv4096: u64, expect
               expectUInt(u64.from(info.shape.ropeMode), 1u64, "the neox rotation order");
               expectUInt(u64.from(info.contextLength), 40960u64, "trained for 40960 positions");
             }
-            case let Err(e) { expectStr(e.view(), "", "the shape is read"); }
+            case let Err(e) { expectStr(e.message().view(), "", "the shape is read"); }
           }
         }
         case let Err(e) { expectStr(e.message().view(), "", "the file parses"); }
@@ -85,14 +85,14 @@ fn realFile(name: &str, layers: u64, heads: u64, tied: bool, kv4096: u64, expect
       expectUInt(s.budget.kv, kv4096, "the KV cache at 4096 positions");
       expectBool(s.budget.total() < DEVICE_LOCAL, true, "it fits at 4096");
     }
-    case let Err(e) { expectStr(e.view(), "", "the plan at 4096"); }
+    case let Err(e) { expectStr(e.message().view(), "", "the plan at 4096"); }
   }
   match planModel(&p, &LoadOptions(8192usize, 64usize), BINDING, DEVICE_LOCAL) {
     case let Ok(s) {
       expectUInt(s.budget.kv, kv4096 * 2u64, "the KV cache at 8192 positions is twice");
       expectBool(s.budget.total() + 536870912u64 < DEVICE_LOCAL, true, "it fits at 8192, with the system's share kept");
     }
-    case let Err(e) { expectStr(e.view(), "", "the plan at 8192"); }
+    case let Err(e) { expectStr(e.message().view(), "", "the plan at 8192"); }
   }
 }
 
@@ -126,7 +126,7 @@ fn main() i32 {
   writeFile(&file, &weights, "qwen3", &Flaws.none());
   match planModel(&file, &options, BINDING, DEVICE_LOCAL) {
     case let Ok(s) { expectUInt(u64.from(s.matrices), 15u64, "the good file has 15 matrices (the output and 7 a layer)"); expectUInt(u64.from(s.buffers), 1u64, "...in one buffer"); }
-    case let Err(e) { expectStr(e.view(), "", "the good synthetic file plans"); }
+    case let Err(e) { expectStr(e.message().view(), "", "the good synthetic file plans"); }
   }
   writeFile(&file, &weights, "gemma", &Flaws.none());
   refusedWith(&planModel(&file, &options, BINDING, DEVICE_LOCAL), "only 'qwen3' and 'llama' are run", "another architecture is refused");

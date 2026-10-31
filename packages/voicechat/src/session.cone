@@ -130,8 +130,14 @@ pub fn tailTokens(vocab: &llmrun.ModelTokens) List[u32] {
 // Start over: the cache empty, the system turn and the opening of a user turn in it
 fn newConversation(engine: &mut llmrun.Engine, device: &mut Device, vocab: &llmrun.ModelTokens, sysTurn: &Array[u32]) Result[void, String] {
   engine.reset();
-  engine.feed(device, sysTurn, false)?;
-  engine.feed(device, headTokens(vocab, false).view(), false)?;
+  match engine.feed(device, sysTurn, false) {
+    case is Ok {}
+    case let Err(e) { return Err[void, String](e.message()); }
+  }
+  match engine.feed(device, headTokens(vocab, false).view(), false) {
+    case is Ok {}
+    case let Err(e) { return Err[void, String](e.message()); }
+  }
   Ok[void, String](nil)
 }
 
@@ -159,7 +165,11 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   let clean = speechText(text.bytes());
   if clean.len() == 0usize { return Ok[bool, String](false); }
   let t0 = Instant.now();
-  let raw = tts.speak(device, clean.view(), voice, speed)?;
+  var raw = List[f32].empty();
+  match tts.speak(device, clean.view(), voice, speed) {
+    case var Ok(l) { raw = l; }
+    case let Err(e) { return Err[bool, String](e.message()); }
+  }
   let spent = seconds(Instant.now(), t0);
   // the silence Kokoro puts at both ends is cut to 80 ms before and 150 ms after (see trimPads)
   let samples = trimPads(raw.view(), 1920usize, 3600usize, 0.004f);
@@ -202,7 +212,7 @@ fn sayGoodbye(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &textt
       }
       thread.sleep(Duration.fromMillis(300));
     }
-    case let Err(m) { say(m.view()); say("\n"); }
+    case let Err(m) { say(m.message().view()); say("\n"); }
   }
 }
 
@@ -215,11 +225,11 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let modelFile = Path.from(o.model.view());
   var engine: llmrun.Engine = match llmrun.Engine.open(device, &modelFile, &llmrun.LoadOptions(o.ctx, 64usize)) {
     case var Ok(e) { e }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   var vocab: llmrun.ModelTokens = match llmrun.loadTokens(engine.ggufModel()) {
     case var Ok(v) { v }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   if !vocab.hasChatMl {
     say("voicechat: this model's vocabulary has no ChatML tokens\n");
@@ -229,16 +239,16 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let sttVocab = Path.from(o.sttVocab.view());
   var stt: speechtotext.Parakeet = match speechtotext.Parakeet.open(device, &sttModel, &sttVocab) {
     case var Ok(p) { p }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   let british = o.voice.view().startsWith("b");
   var tts: texttospeech.Speaker = match texttospeech.Speaker.open(device, o.ttsDir.view(), british) {
     case var Ok(s) { s }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   let voice: texttospeech.Voice = match texttospeech.Voice.load(o.ttsDir.view(), o.voice.view()) {
     case var Ok(v) { v }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   tts.seed(o.seed);
   var rng = Rng.fromSeed(o.seed);
@@ -249,7 +259,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   let sysTurn = vocab.systemTurn(systemBytes.view());
   match engine.feed(device, sysTurn.view(), false) {
     case is Ok {}
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   }
   let afterSystem = engine.pos;
   {
@@ -258,7 +268,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     var logits = List[f32].empty();
     match engine.feed(device, hi.view(), true) {
       case var Ok(l) { logits = l; }
-      case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+      case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
     }
     var k = 0usize;
     while k < 4usize {
@@ -267,7 +277,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
       one.push(id);
       match engine.feed(device, one.view(), true) {
         case var Ok(l) { logits = l; }
-        case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+        case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
       }
       k = k + 1usize;
     }
@@ -278,11 +288,11 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     quiet.resize(8000usize, 0.0f);
     match stt.transcribe(device, quiet.view()) {
       case is Ok {}
-      case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+      case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
     }
     match tts.speak(device, "Ready.", &voice, o.speed) {
       case is Ok {}
-      case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+      case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
     }
   }
   say("models ready in ");
@@ -335,7 +345,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   // ---- the loop. The cache always ends with the opening of a user turn, put there while nobody was waiting.
   match engine.feed(device, headTokens(&vocab, false).view(), false) {
     case is Ok {}
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   }
   // Ctrl-C: SDL's audio swallows it (interrupt.cone says why), so the loop asks for it, here and in the reply's loop
   var intr = voiceaudio.Interrupt.start();
@@ -374,7 +384,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
         let w0 = Instant.now();
         match stt.transcribe(device, warmth.view()) {
           case is Ok {}
-          case let Err(m) { say(m.view()); say("\n"); break; }
+          case let Err(m) { say(m.message().view()); say("\n"); break; }
         }
         lastWarm = Instant.now();
         warmCalls = warmCalls + 1usize;
@@ -459,7 +469,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     var logits = List[f32].empty();
     match engine.feed(device, turn.view(), true) {
       case var Ok(l) { logits = l; }
-      case let Err(m) { say(m.view()); say("\n"); break; }
+      case let Err(m) { say(m.message().view()); say("\n"); break; }
     }
     let prefilled = Instant.now();
     let promptEnd = engine.pos;
@@ -524,7 +534,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
               one.push(id);
               match engine.feed(device, one.view(), true) {
                 case var Ok(l) { logits = l; }
-                case let Err(m) { say(m.view()); say("\n"); failed = true; generating = false; }
+                case let Err(m) { say(m.message().view()); say("\n"); failed = true; generating = false; }
               }
             }
           }
@@ -610,7 +620,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     } else {
       match engine.feed(device, headTokens(&vocab, true).view(), false) {
         case is Ok {}
-        case let Err(m) { say(m.view()); say("\n"); break; }
+        case let Err(m) { say(m.message().view()); say("\n"); break; }
       }
     }
 
