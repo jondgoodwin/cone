@@ -1,0 +1,49 @@
+// A temporary lent to a collection's '&mut' method is finalized at the end of
+// its statement. 'Dict' and 'OrderedDict' hold raw pointers, and a temporary
+// given to one of their '&mut' methods ('remove', 'swapRemove', 'getMut') was
+// once never finalized, which leaked it: the temporary key of a lookup.
+// Each Key counts its own death. The hand count: the dictionaries hold keys
+// 1 and 2 (dying at the end of main, with them), and each of the six lookups
+// below makes one temporary key (100 to 105) that dies at its statement's
+// end, so after the six statements 6 have died, one after each statement.
+
+mod collection_temp_key_finalized;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal deaths = 0i64;
+
+struct Key is Hash {
+  pub n: i64;
+  pub fn `==`(self: &, o: &Key) bool { n == o.n }
+  pub fn hash(self: &, h: &mut Hasher) { h.writeU64(u64.from(n)); }
+  fn final(self: &uni) { deaths = deaths + 1i64; }
+}
+
+fn check(label: &str, want: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(deaths);
+  printStr(if deaths == want {" ok\n"} else {" WRONG\n"});
+}
+
+fn main() i32 {
+  var d = Dict[Key, i64].empty();
+  var od = OrderedDict[Key, i64].empty();
+  d.insert(Key(1i64), 1i64);
+  od.insert(Key(2i64), 2i64);
+  d.remove(&Key(100i64));
+  check("Dict.remove", 1i64);
+  d.getMut(&Key(101i64));
+  check("Dict.getMut", 2i64);
+  od.remove(&Key(102i64));
+  check("OrderedDict.remove", 3i64);
+  od.swapRemove(&Key(103i64));
+  check("OrderedDict.swapRemove", 4i64);
+  od.getMut(&Key(104i64));
+  check("OrderedDict.getMut", 5i64);
+  d.contains(&Key(105i64));
+  check("Dict.contains", 6i64);
+  0i32
+}
