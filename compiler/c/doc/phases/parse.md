@@ -835,7 +835,8 @@ written `&'static P T` is let through, and `actorCheckAll` asks its permission a
 what it reaches; the reply's type is spelled into the generated calls without
 `'static`, since no lifetime is named among a call's type arguments and
 instancing erases it), a bare `self` becomes
-`self: &mut`, and the other three declarations are written as Cone source and
+`self: &uni` (written, `&`, `&mut`, `&imm`, `&opaq` or `&uni` are taken as they are, so a method
+with a weaker `self` cannot call a helper with a bare one), and the other three declarations are written as Cone source and
 parsed from a lexer of their own: the handle under the actor's own name (one
 field owning the mailbox, an initializer per one of the state's or the
 implicit one's fields, a send method per behaviour, as public as the

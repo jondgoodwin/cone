@@ -133,7 +133,7 @@
 //       done with, nothing in it finalized, so each argument is moved exactly
 //       once.
 //
-//         fn Counter.dispatch(self: &mut Counter.State, msg *Counter.Msg) {
+//         fn Counter.dispatch(self: &uni Counter.State, msg *Counter.Msg) {
 //           if &*msg is &Counter.Msg.add {
 //             imm p = msg as *Counter.Msg.add;
 //             self.add(take(&(*p).n));     // take: mem.readRaw of the field
@@ -2017,7 +2017,7 @@ fn finalizeState[S, M: Sendable](h: *Header) {
 // dispatch function is handed each message where it lies in its slot, and
 // takes it: it moves every field out, and the slot is then done with, nothing
 // in it finalized.
-pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &mut S, m: *M)) *S {
+pub fn makeActor[S, M: Sendable](dispatch: &fn(s: &uni S, m: *M)) *S {
   ensureRunning();
   let room = libc.malloc(mem.sizeof[S]() + 1usize);
   if room as usize == 0usize {
@@ -2120,7 +2120,7 @@ pub fn sendable[T: Sendable](v: T) T {v}
 // worker that took the actor from a queue calls this.
 fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   var slot = (*h).dispatch;
-  let f = mem.readRaw[&fn(s: &mut S, m: *M)](&mut slot as *(&fn(s: &mut S, m: *M)));
+  let f = mem.readRaw[&fn(s: &uni S, m: *M)](&mut slot as *(&fn(s: &uni S, m: *M)));
   let st = stateOf[S, M](h);
   let rec = mem.typeRecord[S]();
   curActor = h as usize;
@@ -2155,7 +2155,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
       traceRunStart(h, cause, bhv);
     }
     if kind == kindMsg {
-      f(&mut *st, payloadOf(slot) as *M);
+      f(stateOf[S, M](h) as &uni S, payloadOf(slot) as *M);
     } else {
       resumeSlot[S](st, payloadOf(slot), kind);
     }

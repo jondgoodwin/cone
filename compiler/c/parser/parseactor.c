@@ -20,7 +20,7 @@
  *     pub fn bump(self: &, n: u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
  *   enum Counter.Msg is Sendable {struct bump {n: u64;}}    one variant per behaviour
- *   fn Counter.dispatch(self: &mut Counter.State, msg: *Counter.Msg) {
+ *   fn Counter.dispatch(self: &uni Counter.State, msg: *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {let p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
@@ -335,6 +335,11 @@ static int parseActorOnlyStatic(char *from, char *to) {
     return 1;
 }
 
+// The permissions a method's 'self' may be written with
+static int parseActorSelfPerm(PermNode *perm) {
+    return perm == uniPerm || perm == mutPerm || perm == roPerm || perm == immPerm || perm == opaqPerm;
+}
+
 static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
 }
@@ -369,27 +374,25 @@ static int parseActorAwaits(DclTexts *texts, FnDclNode *fn) {
 
 // Check a method's 'self': the state, lent to a behaviour for the message it
 // handles, and to a synchronous method by its caller. Written bare it is the
-// state borrowed 'mut', which the method has alone while it runs; '&' and
-// '&mut' are taken as written; an initializer's is '&new' and the finalizer's
-// '&uni', as any type's are.
+// state borrowed 'uni', which the method has alone while it runs; '&', '&mut',
+// '&imm', '&opaq' and '&uni' are taken as written; an initializer's is '&new'
+// and the finalizer's '&uni', as any type's are.
 static int parseActorSelf(StructNode *state, FnDclNode *fn) {
     VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)fn->vtype)->parms, 0);
     INode *type = self->vtype;
     if (isNameUseNode(type) && ((NameUseNode *)type)->namesym == selfTypeName) {
-        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(mutPerm), type);
+        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(uniPerm), type);
         return 1;
     }
     if (type->tag == RefTag && ((RefNode *)type)->region == borrowRef) {
         PermNode *perm = parseActorPerm((RefNode *)type);
-        if (perm == mutPerm || perm == roPerm)
+        if (parseActorSelfPerm(perm))
             return 1;
         if (perm == newPerm && parseActorIsInit(fn))
             return 1;
-        if (perm == uniPerm && fn->namesym == finalName)
-            return 1;
     }
     errorMsgNode((INode *)self, ErrorActorMember,
-        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'mut', or 'self: &' to only read it (an initializer's is 'self: &new', the finalizer's 'self: &uni').",
+        "%s's 'self' is actor %s's state, lent to the method for the message it handles: write 'self', which has it 'uni', or 'self: &', 'self: &mut', 'self: &imm', 'self: &opaq' or 'self: &uni' (an initializer's is 'self: &new').",
         &fn->namesym->namestr, &state->namesym->namestr);
     return 0;
 }
@@ -537,9 +540,9 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         }
         VarDclNode *self = (VarDclNode *)nodesGet(sig->parms, 0);
         PermNode *selfperm = parseActorPerm((RefNode *)self->vtype);
-        if (selfperm != mutPerm && selfperm != roPerm) {
+        if (!parseActorSelfPerm(selfperm)) {
             errorMsgNode((INode *)self, ErrorActorMember,
-                "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self: &' or 'self: &mut'.");
+                "A behaviour's 'self' is the actor's state, lent for the message: 'self' (which has it 'uni'), 'self: &', 'self: &mut', 'self: &imm', 'self: &opaq' or 'self: &uni'.");
             ok = 0;
         }
         // The reply goes back in a message too: a borrow of the whole program
@@ -1144,7 +1147,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // argument moved out of it into the method's call
     genPuts(&g, "fn ");
     genSlot(&g, GenDispatch);
-    genPuts(&g, "(self: &mut ");
+    genPuts(&g, "(self: &uni ");
     genSlot(&g, GenState);
     genPuts(&g, ", msg: *");
     genSlot(&g, GenMsg);
