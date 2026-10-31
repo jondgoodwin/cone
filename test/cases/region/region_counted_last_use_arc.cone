@@ -23,7 +23,11 @@
 // - 10 later:    'm' is read after the store: a copy, released at the end.
 // - 11 overwrite: stored, then the holder overwritten before the function ends:
 //                the value is released at the overwrite, once.
-// - 12 both:     'm' passed twice in one call: the first a copy, the second moved.
+// - 12 both:     'm' used twice in one function: the first a copy, the second moved.
+// - 13 in loop:  declared inside the loop: moved each pass.
+// - 14 reassign: 'v = ident(v)': moved into the call, stored back, released once.
+// - 15 merged:   stored on one branch, read after the branches join: a copy.
+// - 16 leaves:   a loop left by 'break' right after the store: moved.
 //
 // Finals counted and each id printed; a marker line precedes and follows the
 // release it is ordered against.
@@ -201,6 +205,56 @@ fn twice(m: C) i32 {
 
 fn fresh(id: i32) C { Arc[imm, Note](id) }
 
+// 13: declared inside the loop: each pass has its own, moved each time; the
+// second pass's store releases the first pass's value
+fn inLoop(b: &mut Box) {
+  var i = 0i32;
+  while i < 2i32 {
+    let t = fresh(70i32 + i);
+    b.v = Some[C](t);
+    line("13 in loop: stored");
+    i = i + 1i32;
+  }
+  b.v = None[C];
+  line("13 in loop: overwritten");
+}
+
+fn ident(m: C) C { m }
+
+// 14: the value read for a call and stored back over the same variable
+fn reassign() {
+  var v = fresh(80i32);
+  v = ident(v);
+  line("14 reassign: done");
+}
+
+// 15: stored on one branch, read after the branches join: a copy on both
+fn merged(b: &mut Box, m: C, c: bool) {
+  if c {
+    b.v = Some[C](m);
+  }
+  line("15 merged: after the if");
+  b.v = None[C];
+  line("15 merged: overwritten");
+  printInt(i64.from(m.id));
+  printStr("\n");
+}
+
+// 16: a loop that leaves by 'break' after the store does not read again
+fn leaves(b: &mut Box, m: C) {
+  var i = 0i32;
+  while i < 3i32 {
+    if i == 1i32 {
+      b.v = Some[C](m);
+      break;
+    }
+    i = i + 1i32;
+  }
+  line("16 leaves: stored");
+  b.v = None[C];
+  line("16 leaves: overwritten");
+}
+
 fn main() {
   var b = Box(None[C]);
   call(&mut b, fresh(1i32));
@@ -255,6 +309,20 @@ fn main() {
   printInt(i64.from(twice(fresh(12i32))));
   printStr("\n");
   line("12 both: returned");
+
+  inLoop(&mut b);
+  line("13 in loop: returned");
+
+  reassign();
+  line("14 reassign: returned");
+
+  merged(&mut b, fresh(90i32), true);
+  line("15 merged: returned (true)");
+  merged(&mut b, fresh(91i32), false);
+  line("15 merged: returned (false)");
+
+  leaves(&mut b, fresh(100i32));
+  line("16 leaves: returned");
   printStr("finals ");
   printInt(i64.from(finals));
   printStr("\n");
