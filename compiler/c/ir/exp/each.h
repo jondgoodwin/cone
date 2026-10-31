@@ -21,7 +21,9 @@
 //
 // - an array or a slice, or a type that lends an array (a list lends its
 //   slice, 'view'), is walked by a counted loop over its length, each variable a
-//   borrow of an element: no cursor is made;
+//   copy of an element, or a borrow of it for a source written as a borrow, or the
+//   element itself where it moves, which consumes the list (its 'drain' is walked): see
+//   'A plain source' in compiler/c/doc/nodes/block.md;
 // - a type with a 'next' method is a cursor, and is used as it is (a place is
 //   advanced in place, a value is held in a variable of the loop's);
 // - a type with an 'iter' method gives one, and the loop walks what it gives.
@@ -45,6 +47,14 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer);
 // ('each x in &mut l'); NULL for any other source, one that reads. A reference that
 // is only a name is no written borrow. 'type' is the source's checked type.
 INode *eachWrittenPerm(INode *src, INode *type);
+
+// Did an 'each' consume this variable (its items move, so the loop took the whole value)?
+int eachMovedVar(INode *dcl);
+
+// The refusals of an 'each' (or 'parallel each') whose items move behind a borrow, and the
+// kind of source a 'parallel each' has (see each.c)
+void eachBehindError(INode *src, INode *base, int refish);
+int eachParallelKind(INode *src, INode *type, INode *base, int refish, int isslice, int isarray, int islent);
 
 // The step of a numeric range ('each x in a ..< b by s') is advanced by the
 // parser's own call, on the loop's hidden counter, of this private name

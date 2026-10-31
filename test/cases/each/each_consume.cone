@@ -1,0 +1,196 @@
+// A plain 'each' hands out each item as 'let x = item' would. Items that copy are
+// copied and the source stays; items that move are taken out of the source, which is
+// consumed: a List, a Deque, a Set, a Dict and an OrderedDict each give up their items
+// through a cursor, and what the loop does not reach (a 'break') is finalized with it.
+// 'each k, v in dict' moves the key and the value out of each pair.
+
+mod each_consume;
+
+import stdio use *;
+import collections use *;
+
+struct Noisy {
+  pub n: i32;
+  fn final(self: &uni) {
+    printStr("final ");
+    printInt(i64.from(n));
+    printStr("\n");
+  }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn noisy(n: i32) Noisy { Noisy(n) }
+
+// -------- items that copy: the source stays --------
+
+fn copies() {
+  var l = List[i64]();
+  l.push(1i64); l.push(2i64); l.push(3i64);
+  var t = 0i64;
+  each x in l {
+    t += x;
+  }
+  show("list copies", t + i64.from(l.len));         // 6 + 3
+
+  var d = Deque[i64]();
+  d.push(10i64); d.push(20i64);
+  var td = 0i64;
+  each x in d {
+    td += x;
+  }
+  show("deque copies", td + i64.from(d.len));       // 30 + 2
+
+  var s = Set[i64]();
+  s.insert(7i64); s.insert(8i64);
+  var ts = 0i64;
+  each x in s {
+    ts += x;
+  }
+  show("set copies", ts + i64.from(s.len));         // 15 + 2
+
+  var m = Dict[i64, i64]();
+  m.insert(1i64, 10i64); m.insert(2i64, 20i64);
+  var tm = 0i64;
+  each k, v in m {
+    tm += k * v;
+  }
+  var pairs = 0i64;
+  each pair in m {
+    pairs += pair.0 + pair.1;
+  }
+  show("dict copies", tm * 100i64 + pairs + i64.from(m.len));    // 5000 + 33 + 2
+
+  let a = [4i64, 5i64, 6i64];
+  var ta = 0i64;
+  each x in a {
+    ta += x;
+  }
+  show("array copies", ta + a[0usize]);             // 15 + 4
+}
+
+// -------- items that move: the source is consumed --------
+
+fn consumeList() {
+  var names = List[String]();
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  names.push(String.from("f"));
+  var total = 0usize;
+  each name in names {            // name is a String, taken out of names
+    total += name.len;
+  }
+  show("list consumed", i64.from(total));           // 2 + 3 + 1
+}
+
+fn consumeDeque() {
+  var d = Deque[String]();
+  d.push(String.from("x"));
+  d.push(String.from("yz"));
+  var out = String.from("");
+  each s in d {
+    out.append(s.view());
+  }
+  show("deque consumed", i64.from(out.len));        // 3
+}
+
+fn consumeSet() {
+  var s = Set[String]();
+  s.insert(String.from("one"));
+  s.insert(String.from("three"));
+  var total = 0usize;
+  each e in s {
+    total += e.len;
+  }
+  show("set consumed", i64.from(total));            // 3 + 5
+}
+
+fn consumeDict() {
+  var m = Dict[String, String]();
+  m.insert(String.from("k1"), String.from("vvv"));
+  m.insert(String.from("k22"), String.from("v"));
+  var total = 0usize;
+  each k, v in m {                // the key and the value, moved out of the pair
+    total += k.len * 10usize + v.len;
+  }
+  show("dict consumed", i64.from(total));           // 2*10+3 + 3*10+1
+  var o = OrderedDict[String, String]();
+  o.insert(String.from("aa"), String.from("b"));
+  o.insert(String.from("cc"), String.from("dd"));
+  var order = String.from("");
+  each k, v in o {
+    order.append(k.view());
+    order.append(v.view());
+  }
+  show("ordered consumed", i64.from(order.len));    // 7
+  var pairs = 0usize;
+  var w = Dict[String, i64]();
+  w.insert(String.from("a"), 1i64);
+  each pair in w {                // the whole pair, a tuple that moves
+    pairs += pair.0.len;
+  }
+  show("pair consumed", i64.from(pairs));           // 1
+}
+
+// -------- an early exit finalizes what the loop did not reach --------
+
+fn earlyList() {
+  var l = List[Noisy]();
+  l.push(noisy(1)); l.push(noisy(2)); l.push(noisy(3));
+  each x in l {
+    printStr("see ");
+    printInt(i64.from(x.n));
+    printStr("\n");
+    if x.n == 2 { break; }
+  }
+  printStr("after list\n");
+}
+
+fn earlyDeque() {
+  var d = Deque[Noisy]();
+  d.push(noisy(4)); d.push(noisy(5)); d.push(noisy(6));
+  each x in d {
+    printStr("see ");
+    printInt(i64.from(x.n));
+    printStr("\n");
+    if x.n == 4 { break; }
+  }
+  printStr("after deque\n");
+}
+
+fn earlyDict() {
+  var m = OrderedDict[i64, Noisy]();
+  m.insert(1i64, noisy(7)); m.insert(2i64, noisy(8)); m.insert(3i64, noisy(9));
+  each k, v in m {
+    printStr("see ");
+    printInt(i64.from(v.n));
+    printStr("\n");
+    if k == 1i64 { break; }
+  }
+  printStr("after ordered\n");
+  var h = Dict[i64, Noisy]();
+  h.insert(1i64, noisy(10));
+  each k, v in h {
+    printStr("see ");
+    printInt(i64.from(v.n));
+    printStr("\n");
+    if k == 1i64 { break; }
+  }
+  printStr("after dict\n");
+}
+
+fn main() {
+  copies();
+  consumeList();
+  consumeDeque();
+  consumeSet();
+  consumeDict();
+  earlyList();
+  earlyDeque();
+  earlyDict();
+}
