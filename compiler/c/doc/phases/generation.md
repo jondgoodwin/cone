@@ -1780,8 +1780,7 @@ dropped). Each seam of such a method takes it into its record first
 back. So the dispatcher answers only when the slot still holds it, the first
 half having returned a value rather than parking (`answerAt` takes the call's
 value by value and moves it into the reply; a parked method's value is
-undefined, so `answerAt` sets it down in scratch bytes and lets it go
-unfinalized).
+undefined, so `answerAt` forgets it, `mem.forget`).
 The resume function answers likewise once the second half returns
 (`answerTo`), dropping the value where nothing awaits it.
 
