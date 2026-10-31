@@ -960,6 +960,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         parse->tparms = tparms;
         parse->tparmsend = lex->prevend - 1;
+        if (parse->dcltexts && parse->dcltexts->tparms == NULL) {
+            parse->dcltexts->tparms = parse->tparms;
+            parse->dcltexts->tparmsend = parse->tparmsend;
+        }
         if (parms->used > 0 || strnode->lifeparms == NULL) {
             strnode->genericinfo = newGenericInfo();
             strnode->genericinfo->parms = parms;

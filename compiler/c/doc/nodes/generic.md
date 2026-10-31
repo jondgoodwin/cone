@@ -317,7 +317,9 @@ instance (`genericIsTypeInstance`: a reference type, a call whose head names a
 generic type, or a region applied to a type, `Uni[str]`, whose declaration is asked
 by what its `is` list wrote, `regionStructWritesRegionRef`, since it need not be
 resolved yet), in a `where` clause and not in a condition on an `is` entry. The inline slot takes the
-same, `[T, S: Stack[T]]`. The arguments are resolved with every parameter hooked
+same, `[T, S: Stack[T]]`, and a name or instance that is an actor trait's handle
+(`genericNamedActorTrait`), which an actor's handle that conforms meets as well as
+the handle itself (`actorTraitMeets`, in `genericConditionValue`'s last two cases). The arguments are resolved with every parameter hooked
 (`genericParmsNameRes` hooks them all, then resolves what follows each), so a
 bound names a parameter written after it as well as before: `[S: Stack[T], T]`. A generic trait named
 with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTrait`
