@@ -469,6 +469,10 @@ int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
     INode *fromtype = iexpGetTypeDcl(*nodep);
     ActorInfo *actor = actorOfHandle(fromtype);
     INode *orig = *nodep;
+    // The trait's handle reads the actor's mailbox from the place of the actor's
+    // handle, which holds that and nothing else (parseactor.c)
+    if (actor->handle->fields.used != 1)
+        errorUnreachable(orig, "an actor's handle holds more than its mailbox, which an actor trait's handle reads it from");
     if (!actorTraitConforms(trait, actor, orig)) {
         // The conversion is built anyway, so what uses the value says nothing more
         INode *conv = (INode *)newConvCastNode(orig, totypedcl);

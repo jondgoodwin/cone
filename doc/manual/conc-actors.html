@@ -14,8 +14,8 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
-		not yet on macOS. Not built yet: <span class="pre">actor trait</span>, a generic actor, and a queued method on a
-		message type.</i></p>
+		not yet on macOS. Not built yet: a generic <span class="pre">actor trait</span>, a generic actor, and a queued
+		method on a message type.</i></p>
 
 	<p>The <a href="guide-actors.html">Guide's bakery</a> gave each part of a program an actor of its own, and let them
 		talk. Building something real raises the questions the tour skipped: when is an answer sent back, when does an
@@ -191,8 +191,9 @@ or &amp;'static uni.
 		before the behaviour runs, and the value is dropped, unless the behaviour was awaited or its future kept
 		(<a href="conc-await.html">Awaiting and futures</a>).</li>
 	<li><b>An actor declares no static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
-		type parameters, and names no abstraction.</b> <span class="pre">actor trait</span>, its abstraction, is not
-		built yet.</li>
+		type parameters, and names no abstraction.</b> An actor conforms to an
+		<a href="#actortrait"><span class="pre">actor trait</span></a>, its abstraction, by having the behaviours, with
+		nothing written on the actor.</li>
 	</ul>
 
 	<h2 id="making">Making an actor</h2>
@@ -252,6 +253,70 @@ note 3
 		sent to a thread, over a channel, in another actor's message, or kept in another actor's state. So the state may
 		hold what may not cross threads (an <span class="pre">Rc</span>, a <span class="pre">mut</span> owner, borrows
 		inside a method), since it never crosses as a value: only the runtime reaches it.</p>
+
+	<h2 id="actortrait">Actor traits: sending to whichever actor</h2>
+	<p>A function that sends a chunk to "anything that accepts chunks" does not want to know which actor that is. An
+		<span class="pre">actor trait</span> says what a sender needs, as behaviours and nothing else:</p>
+<pre>
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+</pre>
+	<p>It declares signatures only. An actor has no fields a caller outside it can read and no code a caller can run
+		inside it, so a field, a <span class="pre">fn</span> and a body are refused, and each behaviour is
+		<span class="pre">pub</span>, since a sender is outside the actor. The module declaring the trait imports
+		<span class="pre">actors</span>, as for an actor.</p>
+	<p><b>Conformance is structural.</b> An actor conforms to the trait where it has each of its behaviours, <span class="pre">pub</span>,
+		by name, with the same parameter types and the same returned type. It writes nothing for it, and may have
+		more: a fake with the same behaviours conforms with no declaration, and so does an actor written before the
+		trait was. It is checked where a handle is converted, and the error names what is missing:</p>
+<pre>
+Error 1570: Actor Mute does not conform to actor trait ChunkSink, which it is converted to here: It has no behaviour
+'pub async fn accept(c: Chunk)'. It has no behaviour 'pub async fn total() u64'. An actor conforms when it has every
+behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.
+</pre>
+	<p><b>The trait's name is a type</b>, as an actor's is, and a value of it is a handle that holds any conforming
+		actor. An actor's handle given where the trait's is wanted (an argument, a <span class="pre">let</span> with
+		the type written, a field's value, a return) is converted, with nothing written at the conversion:</p>
+<pre>
+fn feedAll(sinks: &amp;List[ChunkSink], n: u64) {
+  each sink in sinks.iter() { sink.accept(Chunk(n)); }
+}
+
+let counter = Counter();
+let doubler = Doubler();                  // another actor, with the same two behaviours
+var sinks = List[ChunkSink].empty();
+sinks.push(counter);
+sinks.push(doubler);
+feedAll(&amp;sinks, 5u64);
+</pre>
+	<p>The handle is two words: a counted owner of the actor's mailbox, copied and dropped as an actor's handle is, so
+		it keeps the actor alive; and a pointer to the table of the actor's own sending methods for the trait, one table
+		for each actor and trait, made where the conversion is. A call through the handle is the same call as a direct
+		one with one more indirect jump, and has the same four shapes: <span class="pre">sink.accept(c)</span> sends,
+		<span class="pre">let t = sink.total()</span> keeps the future,
+		<span class="pre">await sink.total()</span> waits for the reply, and a plain
+		<span class="pre">sink.total();</span> drops it (<a href="conc-await.html">Awaiting and futures</a>).</p>
+	<p><b>Two handles are equal where they name the one actor</b>: <span class="pre">==</span> compares the mailboxes.
+		That is how a subscriber is removed from a list of them, and it holds for an actor's own handle as well; it is
+		not a comparison of values, so a handle made twice from the same actor is equal to itself.</p>
+	<p><b>"Whoever asked" is a parameter.</b> An actor trait of one behaviour is a reply address. Cone has no callbacks:
+		a one-off answer is a behaviour's return, and anything the answerer should send back, more than once or to
+		someone else, is an ordinary message to a handle it was given:</p>
+<pre>
+actor trait ReadDone {
+  pub async fn done(self, n: u64);
+}
+
+actor Reader {
+  pub async fn read(self, f: File, reply: ReadDone) { ... reply.done(n); }
+}
+</pre>
+	<p>Reader sends to <span class="pre">reply</span> without knowing what it is; a test can pass a fake, and another
+		actor can be passed along to answer in its turn. A handle is <span class="pre">Sendable</span> and may be
+		passed in a message, kept in another actor's state or put in a list; it keeps its actor alive, so a list of
+		subscribers that should not hold them is not what an actor trait gives yet.</p>
 
 	<h2 id="messages">Messages and their order</h2>
 	<p>A send is one-way: it queues the message and returns. An answer comes back only to an
@@ -435,6 +500,12 @@ package's), which the actor collects between its messages.
 	<li><b>The dispatch function</b>, <span class="pre">Counter.dispatch</span>, which the runtime hands each message
 		where it lies, and which moves each argument out of it into the behaviour's call.</li>
 	</ul>
+	<p>An <a href="#actortrait">actor trait</a> stands for four declarations too: an ordinary trait with the three methods
+		an actor's handle has for each behaviour (the send, and for one that returns a value the awaited send and the
+		future-giving one); the trait's handle, whose fields are the mailbox, its type erased, and the table; and a
+		function that makes the handle from a reference to an actor's. The table is the compiler's ordinary vtable of
+		the actor's handle as that trait, one for each actor and trait, whose slots are the handle's own methods that
+		send.</p>
 	<p>Those names are what a diagnostic about them says; no source can write them, so nothing but the actor reaches its
 		state, its messages or its mailbox. The mailbox's header and the state are one allocation; the mailbox's slots are in segments of their own, the first
 		allocated with the actor, and a send allocates nothing.
