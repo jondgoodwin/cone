@@ -896,10 +896,13 @@ static void genlBorrowAttrs(GenState *gen, FnDclNode *glofn, LLVMValueRef fn) {
         int kind = genlBorrowKind(gen, parmtype);
         if (kind && genlBorrowFat(parmtype)) {
             // A slice is passed as its pointer and its count (genlAggCopies),
-            // which puts the attributes on the pointer; 'nonnull' not among
-            // them, since an empty slice's pointer may be null
-            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateStringAttribute(gen->context, GenlSliceBorrow,
-                (unsigned)strlen(GenlSliceBorrow), kind == 1 ? "uni" : "imm", 3));
+            // which puts 'noalias' on the pointer; 'nonnull' not with it, since
+            // an empty slice's pointer may be null. Only a '&uni' slice: 'noalias
+            // readonly' on an '&imm' one (a '&str') slowed fasta by 6% (measured
+            // 31 Oct 2026), and nothing measured gains from it
+            if (kind == 1)
+                LLVMAddAttributeAtIndex(fn, idx, LLVMCreateStringAttribute(gen->context, GenlSliceBorrow,
+                    (unsigned)strlen(GenlSliceBorrow), "uni", 3));
         }
         else if (kind) {
             LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,

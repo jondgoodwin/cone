@@ -1611,12 +1611,13 @@ parameter of that literal struct type, in a function with Cone's convention and
 in each call to a function type taking one (through a function reference or a
 virtual reference as through a name), as two scalars, the pointer then the count
 (`genlAggIsSlice`; the body joins them again with `insertvalue` as it begins,
-`genlAggParmJoin`, which LLVM's own passes undo). A borrowed slice's parameter
-is marked with the string attribute `cone-slice-borrow` (`uni` or `imm`), which
-`genlAggSigAttrs` turns into `noalias` (and `readonly` for `imm`) on the pointer
-at its new position. The pointer gets neither `nonnull`, since an empty slice's
-may be null, nor `dereferenceable`, since the count is not in the signature. A
-slice returned stays one value.
+`genlAggParmJoin`, which LLVM's own passes undo). A `&uni` slice's parameter
+is marked with the string attribute `cone-slice-borrow`, which
+`genlAggSigAttrs` turns into `noalias` on the pointer at its new position. The
+pointer gets neither `nonnull`, since an empty slice's may be null, nor
+`dereferenceable`, since the count is not in the signature. An `&imm` slice and
+a `&str` get nothing: `noalias readonly` on them slowed one benchmark (fasta) by
+6% and no measured program gains from it. A slice returned stays one value.
 
 `&mut` (shared mutable) and `&` (read-only, maybe changed by others) get
 nothing, nor does a pointer, an owning or virtual reference, a
