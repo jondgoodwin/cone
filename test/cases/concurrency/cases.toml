@@ -171,8 +171,30 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_counter]
 category = "run"
-description = "A declared actor made by 'Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state 'mut', calling a synchronous helper; the total is exact at quiescence"
+description = "A declared actor made by 'Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state '&uni', calling a synchronous helper; the total is exact at quiescence"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_self_uni]
+category = "run"
+description = "A behaviour's bare 'self' is '&uni': it lends '&uni self.field' and a struct field on to helpers taking '&uni'; '&', '&mut', '&imm', '&opaq' and '&uni' written on 'self' are each accepted and run; a behaviour that awaits uses 'self' afresh after the 'await'; the behaviour's state parameter is noalias"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[[scenario.concurrency_actor_self_uni.check]]
+name = "a-behaviours-state-parameter-is-noalias-by-its-permission"
+target = "preir"
+contains = [
+  "define internal %void @Ledger.dispatch(ptr noalias nonnull dereferenceable(48) %0, ptr %1)",
+  "i3add(ptr noalias nonnull dereferenceable(48) %0, i64 %1)",
+  "i6viaUni(ptr noalias nonnull dereferenceable(48) %0, i64 %1)",
+  "i6viaImm(ptr noalias nonnull readonly dereferenceable(48) %0)",
+  "i6viaMut(ptr %0, i64 %1)",
+  "i7viaRead(ptr %0)",
+]
+
+[scenario.concurrency_actor_self_uni_reject]
+category = "reject"
+description = "With a behaviour's 'self' '&uni', a borrow of the state made before an 'await' is ended by the seam (ErrorFrozen, unchanged)"
+tags = ["parse", "flow"]
 
 [scenario.concurrency_actor_manual]
 category = "run"
@@ -226,7 +248,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_parse]
 category = "reject"
-description = "What an actor's declaration may not say: a behaviour carrying a borrow, generic, or taking 'self &uni'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a behaviour without 'self'; 'init' or 'final' as a behaviour; a 'pub fn' method, which is synchronous; a generic actor; one naming an abstraction"
+description = "What an actor's declaration may not say: a behaviour carrying a borrow, generic, or taking 'self: &new'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a behaviour without 'self'; 'init' or 'final' as a behaviour; a 'pub fn' method, which is synchronous; a generic actor; one naming an abstraction"
 tags = ["parse"]
 
 [scenario.concurrency_behaviour_dupparm]
