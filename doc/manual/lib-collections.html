@@ -25,7 +25,7 @@
 
 	<p>The <span class="pre">collections</span> package holds the growable collections: <a href="#list">List</a>,
 		<a href="#dict">Dict</a>, <a href="#ordereddict">OrderedDict</a>, <a href="#set">Set</a>,
-		<a href="#deque">Deque</a> and <a href="#string">String</a>, all brought in by
+		<a href="#deque">Deque</a>, <a href="#priorityqueue">PriorityQueue</a> and <a href="#string">String</a>, all brought in by
 		<span class="pre">import collections use *;</span>. Under them are the language's own
 		<a href="#array">arrays</a>, whose size is fixed, and <a href="#slices">slices</a>, borrowed views of a run of
 		elements. This page also covers what every collection shares: <a href="#send">the send operator's entries</a>,
@@ -342,6 +342,71 @@ fn main() i32 {
 		<span class="pre">Deque[T](n)</span>, a block of exactly <span class="pre">n</span> slots,
 		are a list's. Its values may wrap round the block's end, so it has no
 		<span class="pre">view()</span>: read them by position or with the cursor.</p>
+
+	<h2 id="priorityqueue">PriorityQueue</h2>
+	<p><span class="pre">PriorityQueue[P, T]</span> hands out its items cheapest first. Each item goes in with a
+		priority, <span class="pre">push(p, t)</span>, and <span class="pre">pop()</span> removes the pair with the
+		least priority and answers it as an <span class="pre">Option</span> of <span class="pre">(P, T)</span>
+		(<span class="pre">None</span> when the queue is empty). <span class="pre">peek()</span> is an
+		<span class="pre">Option</span> of borrows of that pair, <span class="pre">(&amp;P, &amp;T)</span>, and
+		removes nothing. It is a binary min-heap: <span class="pre">push</span> and <span class="pre">pop</span> are
+		O(log n), <span class="pre">peek</span>, <span class="pre">len</span> and <span class="pre">isEmpty</span> are O(1).
+		It is built as two lists in the heap's order, the priorities in one and the items in the other, so a comparison
+		reads only priorities, packed together. A queue made with
+		<span class="pre">PriorityQueue[f32, u32]()</span> takes its blocks from the heap's region, and one made in a
+		region (<span class="pre">new a[PriorityQueue[f32, u32]](16)</span>, <a href="mem-collections.html">Collections
+		placed in a region</a>) from that.</p>
+<pre>
+mod prioritydemo;
+
+import stdio use *;
+import collections use *;
+
+fn main() i32 {
+  var jobs = PriorityQueue[i32, String]();
+  jobs.push(5, String.from("write report"));
+  jobs.push(3, String.from("answer mail"));
+  jobs.push(8, String.from("tidy desk"));
+  match jobs.peek() {                 // the least priority, as borrows
+    case let Some(pair) {
+      let p, job = pair;
+      print &lt;- *p; print &lt;- " "; print &lt;- job.view(); print &lt;- "\n";
+    }
+    case is None {print &lt;- "nothing to do\n";}
+  }
+  var more = true;
+  while more {
+    match jobs.pop() {                // the least priority, moved out
+      case let Some(pair) {
+        let p, job = pair;
+        print &lt;- p; print &lt;- " "; print &lt;- job.view(); print &lt;- "\n";
+      }
+      case is None {more = false;}
+    }
+  }
+  0i32
+}
+</pre>
+	<p>This prints <span class="pre">3 answer mail</span> for the peek, then
+		<span class="pre">3 answer mail</span>, <span class="pre">5 write report</span> and
+		<span class="pre">8 tidy desk</span>.</p>
+	<p>Priorities are ordered by <span class="pre">&lt;=&gt;</span> on <span class="pre">P</span>: any number, text, or a
+		struct that defines <span class="pre">&lt;=&gt;</span>; nothing else is asked of <span class="pre">P</span>.
+		A NaN float priority's place is not specified (the queue stays memory-safe and every item still comes out,
+		but where the NaN pops is not promised). Priorities that compare equal come out in no particular order; a queue that needs one order among
+		equals puts the tie-breaker into the priority, a struct whose <span class="pre">&lt;=&gt;</span> compares it
+		second. Values move in and out and are never copied, so <span class="pre">T</span> may be a type that moves
+		or has a <span class="pre">final</span>; a pair popped dies where it ends up, and the queue's death (or
+		<span class="pre">clear</span>) finalizes each pair it still holds. A borrow from
+		<span class="pre">peek</span> is good until the queue next changes.
+		<span class="pre">len</span>, <span class="pre">isEmpty</span>, <span class="pre">capacity</span>,
+		<span class="pre">reserve(n)</span>, <span class="pre">clear</span> and <span class="pre">PriorityQueue[P, T](n)</span>
+		are a list's.</p>
+	<p>Use it when the next value wanted is always the least of those waiting and values keep arriving: the open
+		list of a search, a timer queue, the next event of a simulation. To order values that are all known up front,
+		sort them once with <span class="pre">sortBy</span> instead: a sorted list costs n log n once and is read in
+		any order, where a queue costs log n for each value in and out, and pays off only when pushes and pops are
+		mixed.</p>
 
 	<h2 id="string">String</h2>
 	<p><span class="pre">String</span> is the growable string: a list of bytes, lent as text,
