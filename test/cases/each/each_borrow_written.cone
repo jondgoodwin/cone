@@ -1,0 +1,168 @@
+// An 'each' source written as a borrow with a permission borrows with it:
+// 'each x in &l' lends each item to be read, '&mut l' lends each to be changed,
+// and '&uni l' lends each uniquely. Through a source that is already a reference
+// the borrow is written on what it points at: '&mut *r', '&uni *r', '&*r'.
+// Over a list, an array, a subslice, a field, in a statement, in 'parallel each'
+// and in an entry of '<-'. (Over a Deque, a Set and a Dict only '&' reads their
+// items: each_borrow_written_refused.)
+
+mod each_borrow_written;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+struct Holder {
+  items: List[i32];
+}
+
+fn makeList() List[i32] {
+  var l = List[i32]();
+  l.push(1i32);
+  l.push(2i32);
+  l.push(3i32);
+  l
+}
+
+fn sum(l: &List[i32]) i32 {
+  var t = 0i32;
+  each x in &*l {
+    t += *x;
+  }
+  t
+}
+
+fn listMut() i32 {
+  var l = makeList();
+  each x in &mut l {
+    *x = *x * 10i32;
+  }
+  sum(&l)                          // 10 + 20 + 30
+}
+
+fn listUni() i32 {
+  var l = makeList();
+  each x in &uni l {
+    *x = *x + 100i32;
+  }
+  sum(&l)                          // 101 + 102 + 103
+}
+
+fn listRead() i32 {
+  var l = makeList();
+  var t = 0i32;
+  each x in &l {
+    t += *x;
+  }
+  t + sum(&l)                      // 6 + 6
+}
+
+fn throughMut(r: &mut List[i32]) i32 {
+  each x in &mut *r {
+    *x = *x + 1i32;
+  }
+  var t = 0i32;
+  each x in &*r {
+    t += *x;
+  }
+  t                                // 2 + 3 + 4
+}
+
+fn throughUni(r: &uni List[i32]) i32 {
+  each x in &uni *r {
+    *x = *x * 2i32;
+  }
+  sum(&*r)                         // (2 + 3 + 4) doubled: 4 + 6 + 8, after throughMut
+}
+
+fn arrayMut() i32 {
+  var a = [1i32, 2i32, 3i32];
+  each x in &mut a {
+    *x = *x + 1i32;
+  }
+  each x in &uni a {
+    *x = *x * 3i32;
+  }
+  var t = 0i32;
+  each x in &a {
+    t += *x;
+  }
+  t                                // (2 + 3 + 4) * 3
+}
+
+fn subslice(s: &mut Array[i32]) i32 {
+  each x in &mut s[1usize ..< 3usize] {
+    *x = *x + 50i32;
+  }
+  s[0usize] + s[1usize] + s[2usize] + s[3usize]
+}
+
+fn fieldMut() i32 {
+  var h = Holder(makeList());
+  each x in &mut h.items {
+    *x = -*x;
+  }
+  sum(&h.items)                    // -6
+}
+
+fn builderMut() i32 {
+  var l = makeList();
+  var out = List[i32]();
+  out <- each x in &mut l yield { *x = *x + 1i32; *x * 2i32 };
+  sum(&l) + sum(&out)              // (2 + 3 + 4) + (4 + 6 + 8)
+}
+
+fn parallelUni() i32 {
+  var a = [1u64, 2u64, 3u64, 4u64];
+  parallel each x in &uni a {
+    *x = *x * 5u64;
+  }
+  i32.from(a[0usize] + a[1usize] + a[2usize] + a[3usize])    // 50
+}
+
+fn otherCollections() i64 {
+  var d = Deque[i64]();
+  d.push(1i64);
+  d.push(2i64);
+  var s = Set[i64]();
+  s.insert(7i64);
+  s.insert(8i64);
+  var m = Dict[i64, i64]();
+  m.insert(1i64, 10i64);
+  m.insert(2i64, 20i64);
+  var t = 0i64;
+  each x in &d {
+    t += *x;                       // 1 + 2
+  }
+  each x in &s {
+    t += *x;                       // 7 + 8
+  }
+  each k, v in &m {
+    t += *k * *v;                  // 10 + 40
+  }
+  t
+}
+
+fn show(label: &str, n: i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+fn main() i32 {
+  show("list &mut", listMut());
+  show("list &uni", listUni());
+  show("list &", listRead());
+  var l = makeList();
+  show("through &mut *r", throughMut(&mut l));
+  show("through &uni *r", throughUni(&uni l));
+  show("array &mut, &uni", arrayMut());
+  var a = [1i32, 2i32, 3i32, 4i32];
+  show("subslice &mut", subslice(&mut a));
+  show("field &mut", fieldMut());
+  show("builder &mut", builderMut());
+  show("parallel &uni", parallelUni());
+  show("deque, set, dict &", i32.from(otherCollections()));   // 3 + 15 + 50
+  0i32
+}

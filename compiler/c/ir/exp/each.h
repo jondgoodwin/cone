@@ -41,6 +41,11 @@
 // takes out and makes the block the loop leaves through when it has run out.
 void eachLower(TypeCheckState *pstate, BlockNode *outer);
 
+// The permission a source written as a borrow lends its items with, 'mut' or 'uni'
+// ('each x in &mut l'); NULL for any other source, one that reads. A reference that
+// is only a name is no written borrow. 'type' is the source's checked type.
+INode *eachWrittenPerm(INode *src, INode *type);
+
 // The step of a numeric range ('each x in a ..< b by s') is advanced by the
 // parser's own call, on the loop's hidden counter, of this private name
 // (eachRangeStepName; its arguments are the range's first value, the count of
