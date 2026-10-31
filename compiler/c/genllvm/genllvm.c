@@ -142,6 +142,8 @@ static int genlIsEntryMain(GenState *gen, FnDclNode *fnnode, const char *symbol)
     return parmcnt == 0 || parmcnt == 2;
 }
 
+static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode);
+
 // The size of a function just generated, in LLVM instructions, before any
 // optimisation: the compiler's estimate of what inlining it would cost. Counted
 // from the body, the one place its size is known before LLVM reshapes it.
@@ -187,6 +189,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
     genlNameAnonFn(gen, fnnode->llvmvar);
     // Its COMDAT waits for the body: its size decides whether it is shared
+    genlBorrowDeref(gen, fnnode);
 
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
@@ -882,6 +885,84 @@ LLVMMetadataRef genlDiFile(GenState *gen, INode *node) {
     return made->file;
 }
 
+// Which borrow does a parameter of this type take, as far as LLVM's 'noalias'
+// is concerned: 1 a thin borrow of unique permission (no other live reference
+// reaches what it points at), 2 a thin borrow of immutable permission whose
+// pointee holds no atomic inline (nobody writes it; an atomic is written through
+// an immutable borrow by design, as Rust's UnsafeCell is), 0 anything else:
+// shared-mutable and read-only borrows, which others may change, a fat
+// reference, an owning or virtual reference, a pointer, a value, a lock's guard
+static int genlBorrowKind(GenState *gen, INode *parmtype) {
+    if (gen->opt->no_noalias || gen->opt->gpu)
+        return 0;
+    INode *type = itypeGetTypeDcl(parmtype);
+    if (type->tag != RefTag)
+        return 0;
+    RefNode *ref = (RefNode*)type;
+    if (refIsFat(ref) || (ref->region && regionIsRegionRef(ref->region)))
+        return 0;
+    INode *perm = itypeGetTypeDcl(ref->perm);
+    if (perm == (INode*)uniPerm)
+        return 1;
+    if (perm == (INode*)immPerm && !permIsLock(perm) && !itypeHoldsAtomic(ref->vtexp))
+        return 2;
+    return 0;
+}
+
+// Tell LLVM what the permissions of a function's borrowed parameters already
+// say: nobody else reaches what a unique borrow points at ('noalias'), nobody
+// writes what an immutable one does ('noalias readonly'), and neither is null.
+// Only a function with Cone's own convention: not a C-named one, whose caller
+// is C, and not a split method, whose first half hands its parameters on to
+// the halves after it. Called where the symbol is made (genlGloFnName);
+// 'dereferenceable' needs the pointee's layout and is added with the body
+// (genlFn), since a pointee is generated later than the signature.
+static void genlBorrowAttrs(GenState *gen, FnDclNode *glofn, LLVMValueRef fn) {
+    if (genlIsCAbiFn(glofn) || glofn->vtype->tag != FnSigTag || awaitSplitOf(glofn))
+        return;
+    FnSigNode *fnsig = (FnSigNode*)glofn->vtype;
+    uint32_t cnt;
+    INode **nodesp;
+    unsigned idx = 1;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        int kind = genlBorrowKind(gen, ((IExpNode*)*nodesp)->vtype);
+        if (kind) {
+            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("noalias", 7), 0));
+            LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                LLVMGetEnumAttributeKindForName("nonnull", 7), 0));
+            if (kind == 2)
+                LLVMAddAttributeAtIndex(fn, idx, LLVMCreateEnumAttribute(gen->context,
+                    LLVMGetEnumAttributeKindForName("readonly", 8), 0));
+        }
+        ++idx;
+    }
+}
+
+// The 'dereferenceable' half of genlBorrowAttrs, for the function whose body is
+// being generated: the pointee's whole size, when it has one
+static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode) {
+    if (genlIsCAbiFn(fnnode) || awaitSplitOf(fnnode))
+        return;
+    FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
+    uint32_t cnt;
+    INode **nodesp;
+    unsigned idx = 1;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        INode *parmtype = ((IExpNode*)*nodesp)->vtype;
+        if (genlBorrowKind(gen, parmtype)) {
+            LLVMTypeRef pointee = genlType(gen, ((RefNode*)itypeGetTypeDcl(parmtype))->vtexp);
+            if (LLVMTypeIsSized(pointee)) {
+                unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, pointee);
+                if (size > 0)
+                    LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
+                        LLVMGetEnumAttributeKindForName("dereferenceable", 15), size));
+            }
+        }
+        ++idx;
+    }
+}
+
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Do not generate inline functions
@@ -919,6 +1000,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         }
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlCAbiDeclare(gen, glofn, glofn->llvmvar);
+        genlBorrowAttrs(gen, glofn, glofn->llvmvar);
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);

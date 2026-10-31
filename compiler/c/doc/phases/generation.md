@@ -1609,6 +1609,39 @@ copied, and a release build's optimizer forwards that copy itself where it
 proves nothing the call reaches can write the slice's memory. Measured 4
 October 2026.
 
+### noalias on a borrowed parameter
+
+LLVM keeps a borrowed value in registers across a loop only when it knows no
+other pointer reaches that memory, and the permissions already say so.
+`genlBorrowAttrs` (called where `genlGloFnName` makes the symbol) marks a
+parameter that is a thin borrowed reference, in a region that is not a
+`RegionRef`:
+
+- `&uni T`: `noalias nonnull`. No other live reference reaches it.
+- `&imm T`, where `T` holds no atomic inline (`itypeHoldsAtomic`) and the
+  permission is not a lock's: `noalias nonnull readonly`. An atomic is written
+  through an immutable borrow by design, as Rust's `UnsafeCell` is.
+- `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
+  the body is generated, because a pointee's layout is not known when the
+  signature is (the pointee of a reference is generated later,
+  `genlPointeeLater`); a declaration has none.
+
+`&mut` (shared mutable) and `&` (read-only, maybe changed by others) get
+nothing, nor does a fat reference, a pointer, an owning or virtual reference, a
+lock's guard, a C-named function (`genlIsCAbiFn`: its caller is C), a split
+method (its first half hands its parameters on to the halves after it), a GPU
+module, or a function this does not name: an async half, a `parallel` body
+and a vtable thunk are made elsewhere and carry none. A method's `self` counts
+as any parameter. `genlAggSigAttrs` copies a pointer parameter's attributes
+across when it rewrites a signature, so they survive "Large aggregates".
+
+Everything this relies on is the checker's: a `&uni` lent beside a borrow of
+one of its parts, or a `&uni` or `&imm` of a global, is refused (cases
+`ref_noalias_reject`), so a `noalias` cannot meet an alias. If a miscompile
+ever points here, build the program with `--no-noalias` (or `CONE_NO_NOALIAS`
+set in the environment, which reaches every `conec` a build tool starts) and
+compare.
+
 ### A split method
 
 An actor's behaviour holding an `await` is cut at each one, a seam, where it
@@ -2571,6 +2604,7 @@ variables.
 | | `genlCAbiWalk`, `genlCAbiClassify`, `genlCAbiEightbyte` | SysV x86-64's classification of a struct of up to 16 bytes: its scalars, the class of each eightbyte, the scalar each crosses as |
 | | `genlCAbiExtend`, `genlCAbiMark` | the `zeroext` or `signext` a narrow integer crosses with, and the `sret` and `byval` marks, put on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiFnType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnPtrCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type (and a `ccall` signature's), its marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it and a call through a reference to it, its prologue's parameters and its returns — lowered for a C-named one |
+| `genllvm/genllvm.c` | `genlBorrowKind`, `genlBorrowAttrs`, `genlBorrowDeref` | which borrowed parameters get `noalias` (a `&uni`, an `&imm` holding no atomic), marked at the symbol and, for `dereferenceable`, with the body (section 6, "noalias on a borrowed parameter") |
 | `genllvm/genlvector.c` | `genlVectorIntrinsic`, `genlDivideCheck`, `genlVectorShift` | a vector's operator, math or reduction, over its first argument's lanes; the one check before an integer division; a shift defined past the width (section 3, "Vectors") |
 | | `genlVectorConvert`, `genlVectorLanes`, `genlVectorArray`, `genlVectorLane` | a vector's conversion, construction and select (a type literal); a lane type as another over whole vectors; an array as a vector and back; the address of a lane, bounds checked |
 | `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |

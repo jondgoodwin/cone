@@ -74,6 +74,7 @@ typedef struct ConeOptions {
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
+    int no_noalias;      // --no-noalias, or CONE_NO_NOALIAS set: no 'noalias' on a unique or immutable borrow parameter
     int warn_index_star; // Warn at each '*x[i]' over a type's index place (WarnIndexStar)
     int await_direct;    // Test only: split each message's seams, each record handed straight to its second half
     int docs;            // Generate code documentation

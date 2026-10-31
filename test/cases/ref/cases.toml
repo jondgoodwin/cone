@@ -658,3 +658,67 @@ category = "reject"
 description = "A plain '&' borrow where an '&imm' reference is wanted (a declared type, inside Some, an argument): ErrorInvType as before, and the message tells the author to write '&imm' on the borrowed value; the '&imm' spelling compiles"
 tags = ["typecheck"]
 diagnostics = 4
+
+# Separate from ref_unireborrow because its subject is generation, not flow: the attributes a
+# function Cone defines gives a borrowed parameter (compiler/c/doc/phases/generation.md,
+# "noalias on a borrowed parameter"). The checks pin the signatures; the run is the same
+# borrows chained and lent on, which is where a wrong 'noalias' would show.
+[scenario.ref_noalias]
+category = "run"
+description = "'noalias nonnull dereferenceable(n)' on a '&uni' parameter, '+ readonly' on an '&imm' one, nothing on '&mut', '&' or an '&imm' of a struct holding an atomic; a '&uni' reborrowed down a chain and a chain three deep the optimizer inlines; the methods' self; values checked"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias.check]]
+name = "uni-and-imm-borrow-parameters-are-noalias"
+target = "preir"
+contains = [
+  "define internal %void @byUni(ptr noalias nonnull dereferenceable(32) %0, ptr noalias nonnull readonly dereferenceable(32) %1, i64 %2)",
+  "define internal i64 @twice(ptr noalias nonnull readonly dereferenceable(16) %0, ptr noalias nonnull dereferenceable(16) %1)",
+  "define internal %void @leaf(ptr noalias nonnull dereferenceable(16) %0, i64 %1)",
+  "define internal %void @inc3(ptr noalias nonnull dereferenceable(16) %0)",
+]
+
+[[scenario.ref_noalias.check]]
+name = "a-rewritten-signature-keeps-the-borrowed-parameters-attributes"
+target = "preir"
+contains = ["define internal void @grow(ptr noalias sret(%Big) %sret, ptr noalias nonnull dereferenceable(16) %0, ptr noalias readonly captures(none) dereferenceable(32) %1, ptr noalias nonnull readonly dereferenceable(16) %2)"]
+
+[[scenario.ref_noalias.check]]
+name = "a-method-self-is-noalias-by-its-permission"
+target = "preir"
+contains = [
+  "(ptr noalias nonnull dereferenceable(8) %0, i64 %1)",
+  "(ptr noalias nonnull readonly dereferenceable(8) %0)",
+]
+
+[[scenario.ref_noalias.check]]
+name = "mut-and-read-only-borrows-and-an-atomic-holder-get-none"
+target = "preir"
+contains = [
+  "define internal %void @byMut(ptr %0, ptr %1, i64 %2)",
+  "define internal %void @countHit(ptr %0)",
+  "define internal i64 @hitsOf(ptr %0)",
+  "define internal %void @_CNvNt3Acc4bump(ptr %0, i64 %1)",
+]
+excludes = ["@byMut(ptr noalias", "@countHit(ptr noalias", "@hitsOf(ptr noalias"]
+
+[scenario.ref_noalias_reject]
+category = "reject"
+description = "What 'noalias' relies on: a '&uni' lent beside a borrow of one of its parts, and a '&uni' or '&imm' of a global, are refused"
+tags = ["typecheck", "flow"]
+diagnostics = 6
+
+[scenario.ref_noalias_dyn]
+category = "run"
+description = "A method that fills a vtable slot and a function called through a '&fn' carry 'noalias' as a direct call's callee does; called through a '&<uni' and '&<imm' trait value and a function reference, the values are those of direct calls"
+tags = ["genllvm", "runtime"]
+
+[[scenario.ref_noalias_dyn.check]]
+name = "slot-methods-and-fn-targets-are-noalias-the-callers-are-not"
+target = "preir"
+contains = [
+  "define internal %void @_CNvNt3Sum3add(ptr noalias nonnull dereferenceable(8) %0, i64 %1)",
+  "define internal i64 @_CNvNt3Dbl5total(ptr noalias nonnull readonly dereferenceable(8) %0)",
+  "define internal %void @bumpSum(ptr noalias nonnull dereferenceable(8) %0, i64 %1)",
+  "define internal %void @apply(ptr %0, ptr noalias nonnull dereferenceable(8) %1, i64 %2)",
+]

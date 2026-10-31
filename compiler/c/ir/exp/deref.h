@@ -26,6 +26,10 @@ int derefInject(INode **node);
 // transitional spelling (silent by default; a migration's site list)
 extern int derefWarnIndexStar;
 
+// The one deref of a slice reference that may be checked: the operand of a written
+// borrow, '&*s', '&mut *s', '&uni *s' (borrowTypeCheck). Any other '*s' stays refused.
+extern StarNode *derefSliceBorrowed;
+
 // Perform data flow analysis on deref node
 void derefFlow(FlowState *fstate, StarNode **node);
 

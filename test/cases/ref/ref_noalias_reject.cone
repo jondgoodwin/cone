@@ -1,0 +1,54 @@
+// 'noalias' on a '&uni' (or '&imm') parameter is the compiler promising LLVM that nothing else
+// reaches what it points at, so each way of reaching it from beside the borrow must be refused
+// here, or the optimizer turns the hole into a miscompile (ref_noalias runs what is allowed). A
+// '&uni' lent beside a borrow of one of its parts, in each permission (an '&imm' of a variable is
+// refused outright), and a '&uni' or '&imm' borrow of a global, which another function names.
+// One function per case.
+
+mod ref_noalias_reject;
+
+struct P {
+  pub a: i64;
+  pub b: i64;
+}
+
+var g: i64 = 0;
+let frozen: i64 = 1;
+
+fn uniAndUni(x: &uni P, y: &uni i64) {}
+fn uniAndImm(x: &uni P, y: &imm i64) {}
+fn uniAndMut(x: &uni P, y: &mut i64) {}
+fn uniAndRead(x: &uni P, y: &i64) {}
+fn bumpGlobal(x: &uni i64) { *x = *x + 1; g = g + 10; }
+fn readGlobal(x: &imm i64) i64 { g = 5; *x }
+
+fn partUni() {
+  var p = P(0, 0);
+  uniAndUni(&uni p, &uni p.a);         //~ ErrorFrozen:21 "may not be borrowed as 'uni'"
+}
+
+fn partImm() {
+  var p = P(0, 0);
+  uniAndImm(&uni p, &imm p.a);         //~ ErrorBadPerm:21 "cannot obtain this permission"
+}
+
+fn partMut() {
+  var p = P(0, 0);
+  uniAndMut(&uni p, &mut p.a);         //~ ErrorFrozen:21 "may not be borrowed mutably"
+}
+
+fn partRead() {
+  var p = P(0, 0);
+  uniAndRead(&uni p, &p.a);            //~ ErrorFrozen:22 "may not be borrowed"
+}
+
+fn uniGlobal() {
+  bumpGlobal(&uni g);                  //~ ErrorBadPerm:14 "cannot obtain this permission"
+}
+
+fn immGlobal() {
+  readGlobal(&imm g);                  //~ ErrorBadPerm:14 "cannot obtain this permission"
+}
+
+fn main() {
+}
