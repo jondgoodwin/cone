@@ -149,7 +149,7 @@
 
 mod bpetokenize;
 
-import collections use String, List, Dict, Error;
+import collections use String, List, Dict, Error, PriorityQueue;
 
 // -------- failure --------
 
@@ -245,11 +245,11 @@ struct Work {
   sym: List[u32];
   prev: List[usize];
   next: List[usize];
-  heap: List[u64];
+  heap: PriorityQueue[Candidate, Nothing];
 
   fn empty() Work {
     Work(Scan.empty(), List[usize].empty(), List[u32].empty(), List[usize].empty(), List[usize].empty(),
-      List[u64].empty())
+      PriorityQueue[Candidate, Nothing]())
   }
 }
 
@@ -578,12 +578,12 @@ pub struct Tokenizer {
   }
 
   // The pair at symbol i and the symbol after it, in the heap if a rule joins it
-  fn queuePair(self: &, sym: &Array[u32], next: &Array[usize], heap: &mut List[u64], i: usize) {
+  fn queuePair(self: &, sym: &Array[u32], next: &Array[usize], heap: &mut PriorityQueue[Candidate, Nothing], i: usize) {
     let j = next[i];
     if j == noLink { return; }
     let key = (u64.from(sym[i]) << 32u64) | u64.from(sym[j]);
     match merges.getCopy(&key) {
-      case let Some(found) { heapPush(heap, ((found >> 32u64) << 32u64) | u64.from(i)); }
+      case let Some(found) { heap.push(Candidate(u32.from(found >> 32u64), i), Nothing()); }
       case is None { }
     }
   }
@@ -617,7 +617,7 @@ pub struct Tokenizer {
     }
     while work.heap.len() > 0usize {
       let top = heapPop(&mut work.heap);
-      let left = usize.from(top & 0xFFFFFFFFu64);
+      let left = top.left;
       if sym[left] == deadSymbol { continue; }
       let right = next[left];
       if right == noLink { continue; }
@@ -626,7 +626,7 @@ pub struct Tokenizer {
         case is None { continue; }
         case let Some(found) {
           // a stale entry: this place's pair has changed since it was queued
-          if (found >> 32u64) != (top >> 32u64) { continue; }
+          if u32.from(found >> 32u64) != top.rank { continue; }
           sym[left] = u32.from(found & 0xFFFFFFFFu64);
           sym[right] = deadSymbol;
           let after = next[right];
@@ -687,46 +687,28 @@ fn pushAll(out: &mut List[u8], b: &Array[u8]) {
   while i < b.len { out.push(b[i]); i = i + 1usize; }
 }
 
-// -------- a min-heap of u64 --------
+// -------- the candidate merges --------
 
-fn heapPush(h: &mut List[u64], v: u64) {
-  h.push(v);
-  let a = h.viewMut();
-  var i = a.len - 1usize;
-  while i > 0usize {
-    let parent = (i - 1usize) / 2usize;
-    if a[parent] <= a[i] { break; }
-    let t = a[parent];
-    a[parent] = a[i];
-    a[i] = t;
-    i = parent;
+// A pair waiting to merge: the rank of its rule, then the position of its left
+// symbol. The least goes first: the earliest rule, leftmost among equals.
+struct Candidate {
+  pub rank: u32;
+  pub left: usize;
+
+  pub fn `<=>`(self, o: Candidate) i32 {
+    if rank < o.rank { -1i32 } else if rank > o.rank { 1i32 } else { left <=> o.left }
   }
 }
 
-// Remove and answer the least; the heap is not empty
-fn heapPop(h: &mut List[u64]) u64 {
-  let a = h.viewMut();
-  let top = a[0usize];
-  let last = a[a.len - 1usize];
-  h.truncate(h.len() - 1usize);
-  if h.len() > 0usize {
-    let b = h.viewMut();
-    b[0usize] = last;
-    var i = 0usize;
-    while true {
-      var least = i;
-      let l = i * 2usize + 1usize;
-      let r = l + 1usize;
-      if l < b.len && b[l] < b[least] { least = l; }
-      if r < b.len && b[r] < b[least] { least = r; }
-      if least == i { break; }
-      let t = b[least];
-      b[least] = b[i];
-      b[i] = t;
-      i = least;
-    }
+// The queue's item: the priority already says everything
+struct Nothing {}
+
+// The least candidate, removed; the queue is not empty
+fn heapPop(h: &mut PriorityQueue[Candidate, Nothing]) Candidate {
+  match h.pop() {
+    case let Some(pair) { let top, n = pair; top }
+    case is None { Candidate(0u32, 0usize) }
   }
-  top
 }
 
 // -------- UTF-8 across tokens --------
