@@ -3151,6 +3151,18 @@ class BuildCache(unittest.TestCase):
         self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
         self.assertEqual(self.run_app(app, "--release"), ([], "20\n"))
 
+    def test_an_environment_variable_conec_reads_recompiles(self):
+        # CONE_NO_NOALIAS changes the code conec makes without changing any
+        # file or command line, so it is in every key
+        app = self.chain()
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        self.env["CONE_NO_NOALIAS"] = "1"
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+        self.assertEqual(self.run_app(app), ([], "20\n"))
+        del self.env["CONE_NO_NOALIAS"]
+        self.assertEqual(self.run_app(app), (self.ALL, "20\n"))
+
     def test_another_conec_or_conestd_compiles_everything(self):
         app = self.chain()
         tools = self.root / "tools"

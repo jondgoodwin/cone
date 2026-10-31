@@ -60,6 +60,7 @@ enum
     OPT_INTRINSIC_FALLBACK,
     OPT_AWAIT_DIRECT,
     OPT_WARN_INDEX_STAR,
+    OPT_NO_NOALIAS,
 
     OPT_BNF,
     OPT_ANTLR,
@@ -109,6 +110,7 @@ static opt_arg_t args[] =
     { "intrinsic-fallback", '\0', OPT_ARG_NONE, OPT_INTRINSIC_FALLBACK },
     { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
     { "warn-index-star", '\0', OPT_ARG_NONE, OPT_WARN_INDEX_STAR },
+    { "no-noalias", '\0', OPT_ARG_NONE, OPT_NO_NOALIAS },
 
     OPT_ARGS_FINISH
 };
@@ -197,6 +199,9 @@ static void usage()
         "  --warn-index-star\n"
         "                  Warn at each '*x[i]' over an index through a type's\n"
         "                  '[]', the spelling indexing as a place retires.\n"
+        "  --no-noalias    Attach no 'noalias' to a unique or immutable borrow\n"
+        "                  parameter (also set by CONE_NO_NOALIAS in the\n"
+        "                  environment): the way to bisect a suspected miscompile.\n"
         ,
         "" // "Runtime options for Cone programs (not for use with Cone compiler):\n"
     );
@@ -359,6 +364,11 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
 #endif
     opt->release = 1;
     opt->package_search_paths = NULL;
+    {
+        char *nn = getenv("CONE_NO_NOALIAS");
+        if (nn && *nn && strcmp(nn, "0") != 0)
+            opt->no_noalias = 1;
+    }
 
     while ((id = optNext(&s)) != -1) {
         switch (id) {
@@ -426,6 +436,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_INTRINSIC_FALLBACK: opt->intrinsic_fallback = 1; break;
         case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
         case OPT_WARN_INDEX_STAR: opt->warn_index_star = 1; break;
+        case OPT_NO_NOALIAS: opt->no_noalias = 1; break;
 
         case OPT_VERBOSE:
         {
