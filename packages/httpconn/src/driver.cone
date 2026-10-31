@@ -1546,7 +1546,15 @@ pub struct Driver {
       self.closeNow(lp, i, false, false);
       return;
     }
-    c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
+    // A layer that has failed on its own (a refused certificate) is the
+    // reason: the peer's reset after its alert can be handled before the
+    // layer's failure is read (feed), and must not hide it
+    if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
+      let text = c.layer.failureText();
+      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
+    } else {
+      c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
+    }
     self.closeNow(lp, i, false, false);
   }
 
