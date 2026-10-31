@@ -79,17 +79,10 @@ pub struct Weights {
 
   // Read the model file and put it on the device: the tables, and the one buffer of every tensor (lent to a job and
   // taken back from its completion)
-  pub fn load(device: &mut Device, dir: &str) Result[(Weights, Buffer), String] {
+  pub fn load(device: &mut Device, dir: &str) Result[(Weights, Buffer), TextToSpeechError] {
     var p = String.from(dir);
     p <- "/kokoro-v1_0.safetensors";
-    let file = match openSafetensors(&Path.from(p.view())) {
-      case var Ok(f) { f }
-      case let Err(m) {
-        var e = String.from("texttospeech: ");
-        e <- m.view();
-        return Err[(Weights, Buffer), String](e);
-      }
-    };
+    let file = openSafetensors(&Path.from(p.view()))?;
     let h = &file.header;
     // the layout: every tensor, then the three made for each LSTM
     var index = Dict[String, usize].empty();
@@ -102,7 +95,7 @@ pub struct Weights {
         var m = String.from("texttospeech: tensor ");
         m <- ti.name.view();
         m <- " is not F32";
-        return Err[(Weights, Buffer), String](m);
+        return Err[(Weights, Buffer), TextToSpeechError](TextToSpeechError(m));
       }
       index.insert(ti.name.copy(), total);
       var sh = List[usize].empty();
@@ -122,7 +115,7 @@ pub struct Weights {
         case is None {
           var m = String.from("texttospeech: no tensor ");
           m <- wihName.view();
-          return Err[(Weights, Buffer), String](m);
+          return Err[(Weights, Buffer), TextToSpeechError](TextToSpeechError(m));
         }
       };
       index.insert(joined(base, ".wih_cat"), total);
@@ -134,7 +127,7 @@ pub struct Weights {
       b = b + 1usize;
     }
     let buf = device.createBuffer(u64.from(total) * 4u64, BUFFER_USAGE);
-    if !buf.isValid() { return Err[(Weights, Buffer), String](String.from("texttospeech: the GPU could not make the weights buffer (out of memory?)")); }
+    if !buf.isValid() { return Err[(Weights, Buffer), TextToSpeechError](TextToSpeechError(String.from("texttospeech: the GPU could not make the weights buffer (out of memory?)"))); }
     // the tensors, as they are in the file
     t = 0usize;
     while t < h.tensors.len() {
@@ -194,6 +187,6 @@ pub struct Weights {
       getF(h, file.bytes(), "bert.embeddings.position_embeddings.weight"), typeAll,
       getF(h, file.bytes(), "bert.embeddings.LayerNorm.weight"), getF(h, file.bytes(), "bert.embeddings.LayerNorm.bias"),
       getF(h, file.bytes(), "text_encoder.embedding.weight"), hw, bias0);
-    Ok[(Weights, Buffer), String]((weights, buf))
+    Ok[(Weights, Buffer), TextToSpeechError]((weights, buf))
   }
 }

@@ -88,15 +88,15 @@ fn appendBytes(out: &mut List[u8], b: &Array[u8]) {
 // `tokenizer.ggml.pre`, and as special tokens those whose `token_type` is 3 (control) or 4 (user defined), which is
 // what llama.cpp matches in a text. Only the byte-level BPE of the GPT-2 family is built (`tokenizer.ggml.model` =
 // "gpt2"); a SentencePiece vocabulary is refused.
-pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
+pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, LlmError] {
   let Some(kind) = model.text("tokenizer.ggml.model") else {
-    return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.model"));
+    return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: the file has no tokenizer.ggml.model")));
   };
   if kind != "gpt2" {
     var m = String.from("llmrun: the tokenizer is '");
     m <- kind;
     m <- "'; only the byte-level BPE ('gpt2') is built here";
-    return Err[ModelTokens, String](m);
+    return Err[ModelTokens, LlmError](LlmError(m));
   }
   var pre = bpetokenize.PreTokenizer.Gpt2;
   match model.text("tokenizer.ggml.pre") {
@@ -107,7 +107,7 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
           var m = String.from("llmrun: the tokenizer's pre-tokenizer is '");
           m <- name;
           m <- "', which this build does not reproduce";
-          return Err[ModelTokens, String](m);
+          return Err[ModelTokens, LlmError](LlmError(m));
         }
       }
     }
@@ -119,14 +119,14 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
     case let Some(items) {
       var i = 0usize;
       while i < items.len() {
-        let Some(t) = items.text(i) else { return Err[ModelTokens, String](String.from("llmrun: a token in the vocabulary is not text")); };
+        let Some(t) = items.text(i) else { return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: a token in the vocabulary is not text"))); };
         tokens.push(String.from(t));
         i = i + 1usize;
       }
       match model.list("tokenizer.ggml.token_type") {
         case let Some(types) {
           if types.len() != items.len() {
-            return Err[ModelTokens, String](String.from("llmrun: token_type and tokens differ in length"));
+            return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: token_type and tokens differ in length")));
           }
           i = 0usize;
           while i < items.len() {
@@ -140,19 +140,19 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
         case is None {}
       }
     }
-    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.tokens")); }
+    case is None { return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: the file has no tokenizer.ggml.tokens"))); }
   }
   var merges = List[String].empty();
   match model.list("tokenizer.ggml.merges") {
     case let Some(items) {
       var i = 0usize;
       while i < items.len() {
-        let Some(t) = items.text(i) else { return Err[ModelTokens, String](String.from("llmrun: a merge is not text")); };
+        let Some(t) = items.text(i) else { return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: a merge is not text"))); };
         merges.push(String.from(t));
         i = i + 1usize;
       }
     }
-    case is None { return Err[ModelTokens, String](String.from("llmrun: the file has no tokenizer.ggml.merges")); }
+    case is None { return Err[ModelTokens, LlmError](LlmError(String.from("llmrun: the file has no tokenizer.ggml.merges"))); }
   }
   let built = bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(), pre);
   match built {
@@ -170,9 +170,9 @@ pub fn loadTokens(model: &gguf.Model) Result[ModelTokens, String] {
       let hasChatMl = imStart != NO_TOKEN && imEnd != NO_TOKEN && think != NO_TOKEN && thinkEnd != NO_TOKEN;
       if imEnd != NO_TOKEN { addStop(&mut stops, imEnd); }
       if endOfText != NO_TOKEN { addStop(&mut stops, endOfText); }
-      Ok[ModelTokens, String](ModelTokens(tok, stops, hasChatMl, imStart, imEnd, think, thinkEnd))
+      Ok[ModelTokens, LlmError](ModelTokens(tok, stops, hasChatMl, imStart, imEnd, think, thinkEnd))
     }
-    case let Err(e) { Err[ModelTokens, String](e.message()) }
+    case let Err(e) { Err[ModelTokens, LlmError](LlmError(e.message())) }
   }
 }
 

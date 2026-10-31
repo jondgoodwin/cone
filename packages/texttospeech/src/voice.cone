@@ -23,7 +23,7 @@ pub struct Voice {
   }
 
   // Load a voice (or blend) from the folder that holds 'voices/<name>.safetensors'
-  pub fn load(dir: &str, spec: &str) Result[Voice, String] {
+  pub fn load(dir: &str, spec: &str) Result[Voice, TextToSpeechError] {
     var names = List[String].empty();
     var weights = List[f64].empty();
     var total = 0.0;
@@ -44,7 +44,7 @@ pub struct Voice {
                 var m = String.from("texttospeech: the weight in \"");
                 m <- part;
                 m <- "\" is not a number";
-                return Err[Voice, String](m);
+                return Err[Voice, TextToSpeechError](TextToSpeechError(m));
               }
             }
           }
@@ -56,8 +56,8 @@ pub struct Voice {
       }
       i = i + 1usize;
     }
-    if names.len() == 0usize { return Err[Voice, String](String.from("texttospeech: no voice named")); }
-    if !(total > 0.0) { return Err[Voice, String](String.from("texttospeech: the weights of the voices do not add to more than 0")); }
+    if names.len() == 0usize { return Err[Voice, TextToSpeechError](TextToSpeechError(String.from("texttospeech: no voice named"))); }
+    if !(total > 0.0) { return Err[Voice, TextToSpeechError](TextToSpeechError(String.from("texttospeech: the weights of the voices do not add to more than 0"))); }
     var mix = List[f32].withCapacity(STYLE_ROWS * STYLE_WIDTH);
     var k = 0usize;
     while k < STYLE_ROWS * STYLE_WIDTH { mix.push(0.0); k = k + 1usize; }
@@ -75,7 +75,7 @@ pub struct Voice {
                 var m = String.from("texttospeech: the voice file ");
                 m <- path.view();
                 m <- " is not 510 rows of 256";
-                return Err[Voice, String](m);
+                return Err[Voice, TextToSpeechError](TextToSpeechError(m));
               }
               let w = f32.from(*weights[n] / total);
               k = 0usize;
@@ -84,7 +84,7 @@ pub struct Voice {
             case is None {
               var m = String.from("texttospeech: no tensor \"voice\" in ");
               m <- path.view();
-              return Err[Voice, String](m);
+              return Err[Voice, TextToSpeechError](TextToSpeechError(m));
             }
           }
         }
@@ -92,14 +92,14 @@ pub struct Voice {
           var m = String.from("texttospeech: no voice \"");
           m <- names[n].view();
           m <- "\" (";
-          m <- e.view();
+          m <- e.message().view();
           m <- ")";
-          return Err[Voice, String](m);
+          return Err[Voice, TextToSpeechError](TextToSpeechError(m));
         }
       }
       n = n + 1usize;
     }
-    Ok[Voice, String](Voice(String.from(spec), mix))
+    Ok[Voice, TextToSpeechError](Voice(String.from(spec), mix))
   }
 }
 

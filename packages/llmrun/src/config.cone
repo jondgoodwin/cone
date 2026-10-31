@@ -11,6 +11,25 @@ pub struct ModelInfo {
   pub contextLength: usize;
 }
 
+// Why a model could not be loaded, planned or run: the whole line, "llmrun: " first
+pub struct LlmError is Error, Sendable {
+  pub reason: String;
+
+  pub fn message(self: &) String { reason.copy() }
+
+  // What '?' makes of a file that could not be mapped, or of one that is not GGUF
+  pub fn fromFs overload from(e: fs.FsError) LlmError {
+    var m = String.from("llmrun: ");
+    m <- e.message().view();
+    LlmError(m)
+  }
+  pub fn fromGguf overload from(e: gguf.GgufError) LlmError {
+    var m = String.from("llmrun: ");
+    m <- e.message().view();
+    LlmError(m)
+  }
+}
+
 fn keyOf(arch: &String, suffix: &str) String {
   var k = arch.copy();
   k <- ".";
@@ -18,7 +37,7 @@ fn keyOf(arch: &String, suffix: &str) String {
   k
 }
 
-fn needCount(model: &gguf.Model, arch: &String, suffix: &str) Result[usize, String] {
+fn needCount(model: &gguf.Model, arch: &String, suffix: &str) Result[usize, LlmError] {
   let k = keyOf(arch, suffix);
   match model.uint(k.view()) {
     case let Some(n) {
@@ -26,14 +45,14 @@ fn needCount(model: &gguf.Model, arch: &String, suffix: &str) Result[usize, Stri
         var m = String.from("llmrun: the metadata key ");
         m <- k.view();
         m <- " is not a usable size";
-        return Err[usize, String](m);
+        return Err[usize, LlmError](LlmError(m));
       }
-      Ok[usize, String](usize.from(n))
+      Ok[usize, LlmError](usize.from(n))
     }
     case is None {
       var m = String.from("llmrun: the file has no metadata key ");
       m <- k.view();
-      Err[usize, String](m)
+      Err[usize, LlmError](LlmError(m))
     }
   }
 }
@@ -55,9 +74,9 @@ fn optionalFloat(model: &gguf.Model, arch: &String, suffix: &str, fallback: f64)
 // The shape of the model a file holds, or why this build cannot run it. Only the architectures 'qwen3' and 'llama'
 // are run; a model that scales its rotary embedding (llama 3.1's rope scaling, YaRN) is refused, since the rotation
 // here is the plain one.
-pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
+pub fn readInfo(model: &gguf.Model) Result[ModelInfo, LlmError] {
   let Some(archName) = model.text("general.architecture") else {
-    return Err[ModelInfo, String](String.from("llmrun: the file has no general.architecture"));
+    return Err[ModelInfo, LlmError](LlmError(String.from("llmrun: the file has no general.architecture")));
   };
   let arch = String.from(archName);
   let isQwen3 = arch.view() == "qwen3";
@@ -65,7 +84,7 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
     var m = String.from("llmrun: the architecture is '");
     m <- arch.view();
     m <- "'; only 'qwen3' and 'llama' are run";
-    return Err[ModelInfo, String](m);
+    return Err[ModelInfo, LlmError](LlmError(m));
   }
   let scaling = keyOf(&arch, "rope.scaling.type");
   match model.text(scaling.view()) {
@@ -74,7 +93,7 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
         var m = String.from("llmrun: the model scales its rotary embedding ('");
         m <- t;
         m <- "'), which this build does not implement";
-        return Err[ModelInfo, String](m);
+        return Err[ModelInfo, LlmError](LlmError(m));
       }
     }
     case is None {}
@@ -87,7 +106,7 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
   let headDim = optionalCount(model, &arch, "attention.key_length", dim / nHeads);
   let valueDim = optionalCount(model, &arch, "attention.value_length", headDim);
   if valueDim != headDim {
-    return Err[ModelInfo, String](String.from("llmrun: the key and value lengths differ, which this build does not run"));
+    return Err[ModelInfo, LlmError](LlmError(String.from("llmrun: the key and value lengths differ, which this build does not run")));
   }
   let ropeDim = optionalCount(model, &arch, "rope.dimension_count", headDim);
   let eps = optionalFloat(model, &arch, "attention.layer_norm_rms_epsilon", 0.00001);
@@ -96,10 +115,10 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
 
   // the vocabulary is the token table's row count; the output is tied when the file has no output matrix
   let Some(embd) = model.find("token_embd.weight") else {
-    return Err[ModelInfo, String](String.from("llmrun: the file has no token_embd.weight"));
+    return Err[ModelInfo, LlmError](LlmError(String.from("llmrun: the file has no token_embd.weight")));
   };
   if embd.dims.len() != 2usize || usize.from(*embd.dims[0usize]) != dim {
-    return Err[ModelInfo, String](String.from("llmrun: token_embd.weight is not [embedding_length, vocabulary]"));
+    return Err[ModelInfo, LlmError](LlmError(String.from("llmrun: token_embd.weight is not [embedding_length, vocabulary]")));
   }
   let vocab = usize.from(*embd.dims[1usize]);
   var tied = true;
@@ -113,7 +132,7 @@ pub fn readInfo(model: &gguf.Model) Result[ModelInfo, String] {
   let shape = ModelShape(layers, dim, ffDim, nHeads, nKvHeads, headDim, vocab, f32.from(eps), f32.from(base), ropeDim,
     ropeMode, qkNorm, tied);
   if !shape.isValid() {
-    return Err[ModelInfo, String](String.from("llmrun: the metadata describes a model with impossible sizes (heads not in whole groups, a rotation wider than a head, or a zero size)"));
+    return Err[ModelInfo, LlmError](LlmError(String.from("llmrun: the metadata describes a model with impossible sizes (heads not in whole groups, a rotation wider than a head, or a zero size)")));
   }
-  Ok[ModelInfo, String](ModelInfo(shape, arch, trainedLength))
+  Ok[ModelInfo, LlmError](ModelInfo(shape, arch, trainedLength))
 }
