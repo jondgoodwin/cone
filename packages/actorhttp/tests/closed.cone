@@ -1,0 +1,174 @@
+// 'await server.closed()': it completes once the server's listener is shut, the
+// 'next' waiting has been answered Closed and the requests no actor took have
+// been answered 503. Checked on loopback: a server with an actor waiting in
+// 'next' (answered Closed, and a connect is refused as soon as 'closed' has
+// completed); a server with a request in it that no actor took (the client is
+// answered 503; the request has been in the server for a second, by the clock,
+// before the server is closed); 'closed' on a server already closed and on a
+// server with no handle, which complete at once; and a server with no close
+// asked for, whose 'closed' stays waiting until close is asked.
+
+mod closed;
+
+import stdio use *;
+import thread;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import time use Duration;
+import iocore use SocketAddr;
+import httpclient use Response;
+import actors;
+import actorhttp use Client, Server, ServerConfig, FetchError;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+actor Owner {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  // Waits in 'next'; sends 1 when answered Closed, 2 when it was given a request
+  pub async fn waitNext(self, out: Sender[u64]) {
+    let r = await server.next();
+    match r {
+      case var Ok(ok) {out.send(2u64);}
+      case let Err(e) {out.send(1u64);}
+    }
+  }
+
+  pub async fn close(self) {
+    server.close();
+  }
+
+  // Sends 1 when 'closed' completes
+  pub async fn whenClosed(self, out: Sender[u64]) {
+    _ = await server.closed();
+    out.send(1u64);
+  }
+
+  // Asks the close, and sends 1 when it is done
+  pub async fn closeAndWait(self, out: Sender[u64]) {
+    server.close();
+    _ = await server.closed();
+    out.send(1u64);
+  }
+}
+
+actor Requester {
+  client: Client;
+
+  // The status the server answered, or 0
+  pub async fn get(self, port: u16, out: Sender[u64]) {
+    var u = String.from("http://127.0.0.1:");
+    u.appendUInt(u64.from(port));
+    u.append("/hello");
+    let r = await client.get(u.view());
+    match &r {
+      case let &Ok(ok) {out.send(u64.from(ok.status));}
+      case let &Err(e) {out.send(0u64);}
+    }
+  }
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+actor Connector {
+  // Sends 1 when a connection to the port was made, else 0
+  pub async fn tryPort(self, port: u16, out: Sender[u64]) {
+    let r = await actorhttp.connect("127.0.0.1", port);
+    match &r {
+      case let &Ok(ok) {out.send(1u64);}
+      case let &Err(e) {out.send(0u64);}
+    }
+  }
+}
+
+// Whether a connect to the port is refused
+fn refused(port: u16) bool {
+  var tx: Sender[u64];
+  var rx: Receiver[u64];
+  tx, rx = Channel[u64].make();
+  let r = Connector();
+  r.tryPort(port, tx);
+  take[u64](&mut rx, 99u64) == 0u64
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var otx: Sender[u64];
+  var orx: Receiver[u64];
+  otx, orx = Channel[u64].make();
+
+  // An actor waiting in 'next'
+  let a = Owner(Server.none());
+  a.open(ptx.clone());
+  let aport = take[u16](&mut prx, 0u16);
+  a.waitNext(otx.clone());
+  thread.sleep(Duration.fromMillis(200i64));
+  a.closeAndWait(otx.clone());
+  // Both send 1: the 'next' answered Closed, and 'closed' completed
+  printStr("closed completed: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\nthe waiting next answered Closed: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\nconnect refused once 'closed' completed: ");
+  printStr(yes(refused(aport)));
+  printStr("\n");
+  // Already closed: at once
+  a.whenClosed(otx.clone());
+  printStr("closed on a closed server: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\n");
+
+  // A request no actor took
+  let b = Owner(Server.none());
+  b.open(ptx.clone());
+  let bport = take[u16](&mut prx, 0u16);
+  let rq = Requester(Client.standard());
+  rq.get(bport, otx.clone());
+  thread.sleep(Duration.fromMillis(1000i64));
+  b.closeAndWait(otx.clone());
+  // The 503 and 'closed' come in either order
+  let x = take[u64](&mut orx, 99u64);
+  let y = take[u64](&mut orx, 99u64);
+  printStr("the request no actor took: ");
+  printUInt(if x == 1u64 {y} else {x});
+  printStr(", closed completed: ");
+  printUInt(if x == 1u64 {x} else {y});
+  printStr("\n");
+
+  // closed does not close
+  let c = Owner(Server.none());
+  c.open(ptx.clone());
+  let cport = take[u16](&mut prx, 0u16);
+  c.whenClosed(otx.clone());
+  thread.sleep(Duration.fromMillis(200i64));
+  printStr("closed on an open server waits, the server still listens: ");
+  printStr(yes(!refused(cport)));
+  printStr("\n");
+  c.close();
+  printStr("and completes when it is closed: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\n");
+
+  // No server
+  let d = Owner(Server.none());
+  d.whenClosed(otx.clone());
+  printStr("closed on a server with no handle: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\n");
+  finalAll();
+  printStr("end\n");
+  0i32
+}

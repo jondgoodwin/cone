@@ -183,6 +183,14 @@ actor Acceptor {
     server.close();
   }
 
+  // Closed, and the listener shut when 'done' is sent: a connect to the port is refused from then on
+  pub async fn stopAndWait(self, done: OneshotSender[u64]) {
+    server.close();
+    _ = await server.closed();
+    var d = done;
+    d.send(1u64);
+  }
+
   fn route(self, ex: Exchange) {
     if ex.request.body.view().contains("\"model\":\"hang\"") {
       hits.send(1u64);
@@ -343,21 +351,6 @@ actor Prober {
   }
 
   pub async fn refused(self, port: u16, done: OneshotSender[u64]) {
-    // 'server.close()' is posted to the server's service thread and stops the listening a moment
-    // after the call returns: wait until a connect to the port is refused, so the call below meets
-    // a port with nothing listening
-    var tries = 0u32;
-    while tries < 500u32 {
-      let probe = await actorhttp.connect("127.0.0.1", port);
-      var gone = false;
-      match &probe {
-        case let &Err(e) {gone = true;}
-        else {}
-      }
-      if gone {break;}
-      _ = await aio.sleep(Duration.fromMillis(10i64));
-      tries = tries + 1u32;
-    }
     let chat = Chat(Client.standard(), Endpoint.make(baseUrl(port).view(), "CHATAPI_TEST_KEY"));
     let rrefused = await chat.complete(simple("echo"));
     show("refused", &rrefused);
@@ -431,7 +424,11 @@ fn main() i32 {
     let gone = Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     gone.open(ptx2.clone());
     let deadPort = take[u16](&mut prx2, 0u16);
-    gone.stop();
+    var stx: OneshotSender[u64];
+    var srx: OneshotReceiver[u64];
+    stx, srx = Oneshot[u64].make();
+    gone.stopAndWait(stx);
+    srx.recv();
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();
