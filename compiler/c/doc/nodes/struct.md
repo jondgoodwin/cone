@@ -20,10 +20,10 @@ family it is for, and nothing is inferred from what it declares. `mod trait` is
 the module's abstraction, built as a node of its own, `ModTraitNode`, which
 [module](module.md), "Module traits", owns: a module has functions and globals
 rather than fields and methods, and one instance, so it shares this node's
-cloning of defaults but none of its layout. `actor trait` is admitted by the
-grammar so that the spelling of that abstraction is settled; it does not exist,
-so it reports `ErrorUnbuiltKind` where it is written. `enum trait` is refused,
-and that absence is the one below.
+cloning of defaults but none of its layout. `actor trait` is the actor's
+abstraction, built by the parser as ordinary declarations, a trait among them
+([parse](../phases/parse.md), section 6, "It generates an actor trait's
+declarations"). `enum trait` is refused, and that absence is the one below.
 
 **At a glance.** `parseStruct` does a great deal — tag synthesis, the placeholders
 an `is` list becomes, variants in both of their spellings, tag numbering, generic

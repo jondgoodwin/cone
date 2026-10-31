@@ -1,0 +1,62 @@
+// An actor trait declared in a package, used from a program that imports it
+// through its include file: this program's own actor, 'Doubler', conforms to
+// the package's 'ChunkSink' without naming it, and so does the package's
+// 'Counter'. Both are converted where the package's handle is wanted, held in
+// a list, and sent through it by the package's 'feed' and by this program.
+// The totals are worked out by hand: Counter gets 4 + 6 = 10 and Doubler
+// gets 2 * (4 + 6) = 20; the Reporter awaits each in the order listed.
+
+mod sinks;
+
+import stdio use *;
+import collections use List;
+import actors;
+import actortraitlib use *;
+
+actor Doubler {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n * 2u64;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, sinks: List[ChunkSink]) {
+    var i = 0usize;
+    while i < sinks.view().len() {
+      let t = await sinks[i].total();
+      printStr("sink "); printUInt(u64.from(i)); printStr(" total "); printUInt(t); printStr("\n");
+      i = i + 1usize;
+    }
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Counter();
+    let d = Doubler();
+    var sinks = List[ChunkSink].empty();
+    sinks.push(c);
+    sinks.push(d);
+    feed(c, 4u64);
+    feed(d, 4u64);
+    var i = 0usize;
+    while i < sinks.view().len() {
+      sinks[i].accept(Chunk(6u64));
+      i = i + 1usize;
+    }
+    let r = Reporter();
+    r.report(sinks);
+  }
+  finalAll();
+}

@@ -125,7 +125,7 @@ sharing, means most aliasing questions never arise to be asked.
 concurrency one.** [References and Regions](references-and-regions.md) carries
 what borrowing does today.
 
-## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour, a future or an I/O operation; no 'actor trait', no generic actor]
+## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour, a future or an I/O operation; no generic actor, no generic 'actor trait']
 
 > *"What I like about actors is how much simpler it makes talking about
 > concurrency and designing around concurrency, and the modularness of it, as

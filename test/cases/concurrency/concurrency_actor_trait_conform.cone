@@ -1,0 +1,80 @@
+// An actor conforms to an actor trait where it has each behaviour of the trait,
+// 'pub', under the name, with the same parameter types and the same returned
+// type; checked where its handle is converted to the trait's, and every way it
+// falls short is named there at once.
+//
+// - Mute lacks both behaviours.
+// - Wrong has 'accept' with another parameter type, and 'total' not 'pub'.
+// - Short has 'total' returning another type.
+// - Fine has them all, and one more, and converts without a word.
+//
+// The conversion is wherever a handle of the trait is wanted: an argument, a
+// 'let' with the type written, a field's value, a return.
+
+mod concurrency_actor_trait_conform;
+
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+
+actor Mute {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn other(self) {sum = sum + 1u64;}
+}
+
+actor Wrong {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn accept(self, n: u64) {sum = sum + n;}
+  async fn total(self) u64 {sum}
+}
+
+actor Short {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn accept(self, c: Chunk) {sum = sum + c.n;}
+  pub async fn total(self) u32 {0u32}
+}
+
+actor Fine {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn accept(self, c: Chunk) {sum = sum + c.n;}
+  pub async fn total(self) u64 {sum}
+  pub async fn extra(self) {sum = 0u64;}
+}
+
+fn feed(s: ChunkSink) {
+  s.accept(Chunk(1u64));
+}
+
+struct Holder {
+  pub sink: ChunkSink;
+}
+
+fn make() ChunkSink {
+  let m = Mute();
+  m                                   //~ ErrorActorTraitConform "Actor Mute does not conform to actor trait ChunkSink"
+}
+
+fn main() {
+  let mute = Mute();
+  let wrong = Wrong();
+  let short = Short();
+  let fine = Fine();
+  feed(mute);                         //~ ErrorActorTraitConform "It has no behaviour 'pub async fn accept(c: Chunk)'. It has no behaviour 'pub async fn total() u64'"
+  feed(wrong);                        //~ ErrorActorTraitConform "Its behaviour accept(n: u64) does not take and return what the trait's accept(c: Chunk) does. Its behaviour total() u64 is not 'pub'"
+  let a: ChunkSink = short;           //~ ErrorActorTraitConform "Its behaviour total() u32 does not take and return what the trait's total() u64 does"
+  let h = Holder(wrong);              //~ ErrorActorTraitConform "Actor Wrong does not conform to actor trait ChunkSink"
+  feed(fine);
+  let ok: ChunkSink = fine;
+  let b = Holder(fine);
+}

@@ -696,6 +696,19 @@ is told which variable it borrows or holds); copying one stays `ErrorParCopy`. I
 that writes through its source, naming an outside variable whose type could point at
 a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
+An actor trait's declaration has two codes of its own and borrows two. What
+its body may not hold, or a form of it not built (a field, a `fn`, a behaviour
+with a body, a behaviour that is not `pub` or has no `self`, a generic or
+`overload` one, a static, a macro, a type parameter, an `is` or a base), is
+`ErrorActorTraitMember`; an actor's handle converted to the trait's where the
+actor lacks a behaviour, declares it without `pub` or with other parameter or
+returned types is `ErrorActorTraitConform`, naming each. A module declaring a
+trait without importing `actors` is `ErrorActorRuntime`, and a parameter or a
+returned type that cannot cross threads is `ErrorNotSendable`, as an actor's
+behaviour's is. The vtable the conversion needs is an ordinary trait's, so an
+actor that passes the check and still fails it (a signature the check does not
+compare) is that machinery's own diagnostic.
+
 A closure literal ([closure](../nodes/closure.md)) has five: a parameter written
 without a type where no signature gives one, or a signature the parameters do not
 fit, is `ErrorClosureParm`; paths that give different types where the return type
