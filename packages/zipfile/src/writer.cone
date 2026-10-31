@@ -87,10 +87,8 @@ pub struct ZipWriter {
 
   // Adds the file at 'path' under 'name'. Its modification time is not read; set 'opts.modified'.
   pub fn addFile(self: &mut, name: &str, path: &Path, opts: &EntryOptions) Result[void, ZipError] {
-    match fs.mapFile(path) {
-      case let Err(fe) { Err[void, ZipError](ioFault(&fe)) }
-      case let Ok(m) { self.addEntry(name, m.view(), opts, false) }
-    }
+    let m = fs.mapFile(path)?;
+    self.addEntry(name, m.view(), opts, false)
   }
 
   // Adds a folder and everything below it: a folder entry for each folder, a file entry for each
@@ -98,30 +96,26 @@ pub struct ZipWriter {
   // The files' modification times are the files' own. Links are skipped. The folder 'root' itself gets
   // no entry.
   pub fn addTree(self: &mut, root: &Path, prefix: &str, opts: &EntryOptions) Result[void, ZipError] {
-    match fs.readDir(root) {
-      case let Err(fe) { return Err[void, ZipError](ioFault(&fe)); }
-      case let Ok(listed) {
-        var k = 0usize;
-        while k < listed.len() {
-          let item = &listed[k];
-          var name = String.from(prefix);
-          name.append(item.name.view());
-          if item.isDir {
-            self.addDir(name.view(), opts)?;
-            name.append("/");
-            self.addTree(&item.path, name.view(), opts)?;
-          } else if item.isFile {
-            var stamp = opts.modified;
-            match fs.stat(&item.path) {
-              case let Ok(info) { stamp = info.modified.unixSeconds(); }
-              case is Err {}
-            }
-            let o = EntryOptions(opts.method, opts.level, stamp, opts.mode, opts.zip64, opts.comment.copy());
-            self.addFile(name.view(), &item.path, &o)?;
-          }
-          k += 1usize;
+    let listed = fs.readDir(root)?;
+    var k = 0usize;
+    while k < listed.len() {
+      let item = &listed[k];
+      var name = String.from(prefix);
+      name.append(item.name.view());
+      if item.isDir {
+        self.addDir(name.view(), opts)?;
+        name.append("/");
+        self.addTree(&item.path, name.view(), opts)?;
+      } else if item.isFile {
+        var stamp = opts.modified;
+        match fs.stat(&item.path) {
+          case let Ok(info) { stamp = info.modified.unixSeconds(); }
+          case is Err {}
         }
+        let o = EntryOptions(opts.method, opts.level, stamp, opts.mode, opts.zip64, opts.comment.copy());
+        self.addFile(name.view(), &item.path, &o)?;
       }
+      k += 1usize;
     }
     Ok[void, ZipError](nil)
   }
@@ -330,10 +324,7 @@ pub struct ZipWriter {
       piece.clear();
       s = self.pull(&mut piece, 1048576usize);
       let wrote = if first { fs.writeFile(path, piece.view()) } else { fs.appendFile(path, piece.view()) };
-      match wrote {
-        case let Err(fe) { return Err[void, ZipError](ioFault(&fe)); }
-        case is Ok {}
-      }
+      wrote?;
       first = false;
     }
     Ok[void, ZipError](nil)
