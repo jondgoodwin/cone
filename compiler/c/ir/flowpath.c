@@ -876,7 +876,6 @@ static void pwCandApply() {
             errorUnreachable((INode *)rc, "a counted read the walk met in a slot that does not hold it");
             continue;
         }
-        { extern unsigned long tmpMoved; ++tmpMoved; }
         rc->cand = RefCandMoved;
         rc->exp->flags |= FlagMoveOut;
         *pwCands[i].slot = rc->exp;

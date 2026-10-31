@@ -8,18 +8,6 @@
 #include "ir.h"
 
 #include <assert.h>
-#include <stdlib.h>
-#include <stdio.h>
-// TEMPORARY breadth counter, not committed
-unsigned long tmpInjected = 0, tmpMoved = 0;
-static void tmpStatReport(void) {
-    const char *f = getenv("CONE_RCSTAT");
-    if (!f) return;
-    FILE *fp = fopen(f, "a");
-    if (fp) { fprintf(fp, "%lu %lu\n", tmpInjected, tmpMoved); fclose(fp); }
-}
-static int tmpStatReg = 0;
-#define TMPSTAT_INJECT() do { ++tmpInjected; if (!tmpStatReg) { tmpStatReg = 1; atexit(tmpStatReport); } } while (0)
 #include <memory.h>
 #include <stdio.h>
 
@@ -1069,7 +1057,6 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
 
     // Inject the reference-count node
     RefCountNode *rcnode;
-    TMPSTAT_INJECT();
     newNode(rcnode, RefCountNode, RefCountTag);
     rcnode->exp = *nodep;
     rcnode->vtype = vtype;
