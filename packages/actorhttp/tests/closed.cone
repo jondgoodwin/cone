@@ -3,8 +3,8 @@
 // been answered 503. Checked on loopback: a server with an actor waiting in
 // 'next' (answered Closed, and a connect is refused as soon as 'closed' has
 // completed); a server with a request in it that no actor took (the client is
-// answered 503; the request has been in the server for a second, by the clock,
-// before the server is closed); 'closed' on a server already closed and on a
+// answered 503; 'waiting' says the request is in the server before it is
+// closed);'closed' on a server already closed and on a
 // server with no handle, which complete at once; and a server with no close
 // asked for, whose 'closed' stays waiting until close is asked.
 
@@ -18,6 +18,7 @@ import time use Duration;
 import iocore use SocketAddr;
 import httpclient use Response;
 import actors;
+import aio;
 import actorhttp use Client, Server, ServerConfig, FetchError;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
@@ -46,6 +47,22 @@ actor Owner {
 
   pub async fn close(self) {
     server.close();
+  }
+
+  // Sends 1 when a request is waiting in the server for an actor (looking every 10 ms), or 0
+  // after 60 s
+  pub async fn untilWaiting(self, out: Sender[u64]) {
+    var tries = 0u32;
+    while tries < 6000u32 {
+      let n = await server.waiting();
+      if n == 1u64 {
+        out.send(1u64);
+        return;
+      }
+      _ = await aio.sleep(Duration.fromMillis(10i64));
+      tries = tries + 1u32;
+    }
+    out.send(0u64);
   }
 
   // Sends 1 when 'closed' completes
@@ -115,7 +132,6 @@ fn main() i32 {
   a.open(ptx.clone());
   let aport = take[u16](&mut prx, 0u16);
   a.waitNext(otx.clone());
-  thread.sleep(Duration.fromMillis(200i64));
   a.closeAndWait(otx.clone());
   // Both send 1: the 'next' answered Closed, and 'closed' completed
   printStr("closed completed: ");
@@ -137,7 +153,10 @@ fn main() i32 {
   let bport = take[u16](&mut prx, 0u16);
   let rq = Requester(Client.standard());
   rq.get(bport, otx.clone());
-  thread.sleep(Duration.fromMillis(1000i64));
+  b.untilWaiting(otx.clone());
+  printStr("the request reached the server and waits: ");
+  printUInt(take[u64](&mut orx, 99u64));
+  printStr("\n");
   b.closeAndWait(otx.clone());
   // The 503 and 'closed' come in either order
   let x = take[u64](&mut orx, 99u64);
