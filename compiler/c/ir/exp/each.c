@@ -299,7 +299,9 @@ static void eachBindVars(BlockNode *loop, uint32_t nvars, INode *item, uint16_t 
 }
 
 INode *eachWrittenPerm(INode *src, INode *type) {
-    if ((src->tag != BorrowTag && src->tag != ArrayBorrowTag) || (type->tag != RefTag && type->tag != ArrayRefTag))
+    // ('&mut s[a ..< b]' is a subslice index that carries the borrow: FlagBorrow)
+    if ((src->tag != BorrowTag && src->tag != ArrayBorrowTag && !(src->tag == FnCallTag && (src->flags & FlagBorrow)))
+        || (type->tag != RefTag && type->tag != ArrayRefTag))
         return NULL;
     INode *perm = itypeGetTypeDcl(((RefNode*)type)->perm);
     return perm == (INode*)mutPerm || perm == (INode*)uniPerm ? perm : NULL;

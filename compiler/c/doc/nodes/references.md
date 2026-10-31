@@ -282,6 +282,14 @@ own pointee, which is what makes two checks cover all of them.
 
 ### `borrowTypeCheck`
 
+A written `&*s`, `&mut *s` or `&uni *s` on a slice reference borrows what it points
+at, as a slice again: the borrow names its deref operand (`derefSliceBorrowed`), the
+only `*` of a slice reference that `derefTypeCheck` types (as the array it points at,
+`ArrayDerefTag`), and retags itself `ArrayBorrowTag`. Its permission is checked against
+the reference's like any borrow's, so `&uni *s` of a `&mut` slice is `ErrorBadPerm`. Any
+other `*s` stays `ErrorNotPtr`.
+
+
 In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
 type's own indexing method receives the borrowed receiver (`` `[]` `` for a plain
 `&v[i]` where it lends a borrow, `` `&[]` `` otherwise: [fncall](fncall.md), "A
