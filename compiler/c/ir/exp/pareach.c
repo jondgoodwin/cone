@@ -2647,6 +2647,20 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         }
         int place = parRecheckable(src);
 
+        // A plain 'parallel each' hands each pass its item as 'let x = item' would: a copy
+        // where it copies. Items that move are not taken out in parallel: the loop borrows them
+        int pcopy = ischunks ? 0 : eachParallelKind(src, type, base, isref || isslice, isslice, isarray, islent);
+        if (pcopy == 3) {
+            eachBehindError(src, base, isref || isslice);
+            return;
+        }
+        if (pcopy == 2) {
+            errorMsgNode(src, ErrorEachBehindBorrow,
+                "A 'parallel each' over %s would take its items out, and these items move: its passes borrow them. Write 'parallel each x in &' before the source.",
+                itypeName(base));
+            return;
+        }
+
         // Cut at its end, the pieces walk the source after the behaviour has
         // returned: an array or slice must lie in the actor or on the heap, not in
         // the behaviour's own frame (a list's block is on the heap)
@@ -2717,7 +2731,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
             FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
             at->flags |= FlagIndex;
             nodesAdd(&at->args, parUse(k, lexnode));
-            elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef,
+            elem = pcopy == 1 ? (INode*)at : (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef,
                 writtenperm != NULL ? writtenperm : mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         }
         outer->flags |= FlagParallel;
