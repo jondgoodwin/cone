@@ -120,7 +120,14 @@ fn parseLine(line: &str) Option[(String, Entry)] {
   }
 }
 
-fn loadDict(path: &Path) Result[Dict[String, Entry], String] {
+// Why a lexicon could not be loaded: the whole line, "englishphonemes: " first
+pub struct PhonemesError is Error, Sendable {
+  pub reason: String;
+
+  pub fn message(self: &) String { reason.copy() }
+}
+
+fn loadDict(path: &Path) Result[Dict[String, Entry], PhonemesError] {
   let text = match fs.readFile(path) {
     case var Ok(t) { t }
     case let Err(e) {
@@ -128,7 +135,7 @@ fn loadDict(path: &Path) Result[Dict[String, Entry], String] {
       m <- path.view();
       m <- ": ";
       m <- e.message().view();
-      return Err[Dict[String, Entry], String](m);
+      return Err[Dict[String, Entry], PhonemesError](PhonemesError(m));
     }
   };
   let lines = text.lines();
@@ -165,7 +172,7 @@ fn loadDict(path: &Path) Result[Dict[String, Entry], String] {
     }
     i = i + 1usize;
   }
-  Ok[Dict[String, Entry], String](d)
+  Ok[Dict[String, Entry], PhonemesError](d)
 }
 
 // ---- stress marks ----
@@ -333,7 +340,7 @@ pub struct Lexicon {
   silvers: Dict[String, Entry];
 
   // Read misaki's lexicons from 'dir' (us_gold.tsv, us_silver.tsv, or the gb_ pair)
-  pub fn load(dir: &str, british: bool) Result[Lexicon, String] {
+  pub fn load(dir: &str, british: bool) Result[Lexicon, PhonemesError] {
     let prefix = if british { "gb" } else { "us" };
     var gp = String.from(dir);
     gp <- "/";
@@ -345,7 +352,7 @@ pub struct Lexicon {
     sp <- "_silver.tsv";
     let golds = loadDict(&Path.from(gp.view()))?;
     let silvers = loadDict(&Path.from(sp.view()))?;
-    Ok[Lexicon, String](Lexicon(british, golds, silvers))
+    Ok[Lexicon, PhonemesError](Lexicon(british, golds, silvers))
   }
 
   // misaki's get_NNP: a name spelled out letter by letter

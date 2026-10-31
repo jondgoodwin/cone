@@ -94,12 +94,12 @@ fn key(arch: &str, suffix: &str) String {
 // The bytes of a GGUF file holding these weights, named and laid out as a Qwen3 ('qwen3') or Llama ('llama') file
 // is: the metadata keys llmrun reads, and the tensors by their ggml names. Only the keys of the shape are written:
 // no tokenizer. The same bytes load through 'Engine.open' as a downloaded file's do.
-pub fn syntheticGguf(m: &ModelWeights, arch: &str) Result[List[u8], String] {
+pub fn syntheticGguf(m: &ModelWeights, arch: &str) Result[List[u8], LlmError] {
   syntheticGgufWith(m, arch, &Flaws.none())
 }
 
 // ...with something wrong in it on purpose
-pub fn syntheticGgufWith(m: &ModelWeights, arch: &str, flaws: &Flaws) Result[List[u8], String] {
+pub fn syntheticGgufWith(m: &ModelWeights, arch: &str, flaws: &Flaws) Result[List[u8], LlmError] {
   let s = &m.shape;
   var w = gguf.Writer.make();
   w.putText("general.architecture", arch);
@@ -118,33 +118,33 @@ pub fn syntheticGgufWith(m: &ModelWeights, arch: &str, flaws: &Flaws) Result[Lis
   }
   if flaws.ropeScaling { w.putText(key(arch, "rope.scaling.type").view(), "yarn"); }
   if flaws.tokenizerFrom.len() > 0usize {
-    match copyTokenizer(&mut w, flaws.tokenizerFrom.view()) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+    match copyTokenizer(&mut w, flaws.tokenizerFrom.view()) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
   }
-  match putMatrix(&mut w, "token_embd.weight", &m.tokenEmbd, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-  match putVector(&mut w, "output_norm.weight", &m.outputNorm, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+  match putMatrix(&mut w, "token_embd.weight", &m.tokenEmbd, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+  match putVector(&mut w, "output_norm.weight", &m.outputNorm, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
   if !s.tied {
-    match putMatrix(&mut w, "output.weight", &m.output, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+    match putMatrix(&mut w, "output.weight", &m.output, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
   }
   var l = 0usize;
   while l < s.layers {
     let lw = &m.layers[l];
-    match putVector(&mut w, layerName(l, "attn_norm.weight").view(), &lw.attnNorm, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "attn_q.weight").view(), &lw.wq, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "attn_k.weight").view(), &lw.wk, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "attn_v.weight").view(), &lw.wv, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "attn_output.weight").view(), &lw.wo, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+    match putVector(&mut w, layerName(l, "attn_norm.weight").view(), &lw.attnNorm, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_q.weight").view(), &lw.wq, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_k.weight").view(), &lw.wk, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_v.weight").view(), &lw.wv, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "attn_output.weight").view(), &lw.wo, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
     if s.qkNorm {
-      match putVector(&mut w, layerName(l, "attn_q_norm.weight").view(), &lw.qNorm, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-      match putVector(&mut w, layerName(l, "attn_k_norm.weight").view(), &lw.kNorm, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+      match putVector(&mut w, layerName(l, "attn_q_norm.weight").view(), &lw.qNorm, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+      match putVector(&mut w, layerName(l, "attn_k_norm.weight").view(), &lw.kNorm, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
     }
-    match putVector(&mut w, layerName(l, "ffn_norm.weight").view(), &lw.ffnNorm, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "ffn_gate.weight").view(), &lw.wGate, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "ffn_up.weight").view(), &lw.wUp, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
-    match putMatrix(&mut w, layerName(l, "ffn_down.weight").view(), &lw.wDown, flaws) { case var Some(e) { return Err[List[u8], String](e); } case is None {} }
+    match putVector(&mut w, layerName(l, "ffn_norm.weight").view(), &lw.ffnNorm, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_gate.weight").view(), &lw.wGate, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_up.weight").view(), &lw.wUp, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
+    match putMatrix(&mut w, layerName(l, "ffn_down.weight").view(), &lw.wDown, flaws) { case var Some(e) { return Err[List[u8], LlmError](LlmError(e)); } case is None {} }
     l = l + 1usize;
   }
   match w.finish() {
-    case var Ok(bytes) { Ok[List[u8], String](bytes) }
-    case let Err(e) { Err[List[u8], String](e.message()) }
+    case var Ok(bytes) { Ok[List[u8], LlmError](bytes) }
+    case let Err(e) { Err[List[u8], LlmError](LlmError(e.message())) }
   }
 }

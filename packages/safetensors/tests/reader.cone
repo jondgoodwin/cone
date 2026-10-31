@@ -37,6 +37,20 @@ fn refused(bytes: &List[u8], label: &str) {
   }
 }
 
+// The refusal says this much of its line first
+fn saysFirst(bytes: &List[u8], want: &str, label: &str) {
+  match parseSafetensors(bytes.view()) {
+    case is Ok { expect(false, label); }
+    case let Err(e) {
+      let m = e.message();
+      let w: &Array[u8] = want;
+      if m.len() < w.len { expect(false, label); return; }
+      let head: &Array[u8] = &m.view()[0usize ..< w.len];
+      expectStr(head, want, label);
+    }
+  }
+}
+
 fn main() i32 {
   var data = List[u8].empty();
   // a: F32 [2, 2] = 1, 2, 3, 4 ; b: F16 [3] = three halves ; c: I32 [1]
@@ -120,7 +134,7 @@ fn main() i32 {
         case is None { expect(false, "metadata is found"); }
       }
     }
-    case let Err(e) { expect(false, "a well-formed file parses"); expectStr(e.view(), "", "the reason"); }
+    case let Err(e) { expect(false, "a well-formed file parses"); expectStr(e.message().view(), "", "the reason"); }
   }
 
   // a file on disk, mapped
@@ -144,7 +158,10 @@ fn main() i32 {
   let missing = Path.from("no-such-file.safetensors");
   match openSafetensors(&missing) {
     case is Ok { expect(false, "a missing file is refused"); }
-    case is Err { expect(true, "a missing file is refused"); }
+    case let Err(e) {
+      let m = e.message();
+      expectBool(m.len() > 14usize && m.view().startsWith("safetensors: "), true, "a missing file is refused, in the package's line");
+    }
   }
 
   // refusals
@@ -154,6 +171,10 @@ fn main() i32 {
   le64(&mut shortFile, 1000u64);
   refused(&shortFile, "a header longer than the file");
   refused(&file("{not json", more.view()), "a header that is not JSON");
+  saysFirst(&empty, "safetensors: too short for a header length", "the line of a file too short for a header");
+  saysFirst(&file("{not json", more.view()), "safetensors: the header is not JSON: json: ", "the line of a header that is not JSON");
+  saysFirst(&file("{\"a\":{\"dtype\":\"F64\",\"shape\":[1],\"data_offsets\":[0,8]}}", more.view()),
+    "safetensors: tensor a has dtype F64, which this reader does not take (F32, F16, BF16, I32)", "the line of an unsupported dtype");
   refused(&file("[1]", more.view()), "a header that is not an object");
   refused(&file("{\"a\":{\"dtype\":\"F64\",\"shape\":[1],\"data_offsets\":[0,8]}}", more.view()), "an unsupported dtype");
   refused(&file("{\"a\":{\"dtype\":\"F32\",\"shape\":[2,2],\"data_offsets\":[0,12]}}", more.view()), "a range that does not fit its shape");

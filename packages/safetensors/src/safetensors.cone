@@ -23,7 +23,7 @@
 
 mod safetensors;
 
-import collections use List, String;
+import collections use Error, List, String;
 import path use Path;
 import fs;
 import json use Json;
@@ -159,10 +159,29 @@ pub struct Safetensors {
   }
 }
 
-fn stErr(reason: &str) Result[Safetensors, String] {
+// Why a safetensors file could not be read: the whole line, "safetensors: " first
+pub struct SafetensorsError is Error, Sendable {
+  pub reason: String;
+
+  pub fn message(self: &) String { reason.copy() }
+
+  // What '?' makes of a file that could not be mapped, or of a header that is not JSON
+  pub fn fromFs overload from(e: fs.FsError) SafetensorsError {
+    var m = String.from("safetensors: ");
+    m <- e.message().view();
+    SafetensorsError(m)
+  }
+  pub fn fromJson overload from(e: json.JsonError) SafetensorsError {
+    var m = String.from("safetensors: the header is not JSON: ");
+    m <- e.message().view();
+    SafetensorsError(m)
+  }
+}
+
+fn stErr(reason: &str) Result[Safetensors, SafetensorsError] {
   var m = String.from("safetensors: ");
   m <- reason;
-  Err[Safetensors, String](m)
+  Err[Safetensors, SafetensorsError](SafetensorsError(m))
 }
 
 fn dtypeCode(s: &str) Option[u32] {
@@ -197,22 +216,14 @@ pub struct SafetensorsFile {
 }
 
 // Map a file and parse its header; why not as a message
-pub fn openSafetensors(path: &Path) Result[SafetensorsFile, String] {
-  match fs.mapFile(path) {
-    case var Ok(f) {
-      let h = parseSafetensors(f.view())?;
-      Ok[SafetensorsFile, String](SafetensorsFile(h, f))
-    }
-    case let Err(e) {
-      var m = String.from("safetensors: ");
-      m <- e.message().view();
-      Err[SafetensorsFile, String](m)
-    }
-  }
+pub fn openSafetensors(path: &Path) Result[SafetensorsFile, SafetensorsError] {
+  let f = fs.mapFile(path)?;
+  let h = parseSafetensors(f.view())?;
+  Ok[SafetensorsFile, SafetensorsError](SafetensorsFile(h, f))
 }
 
 // Parse a file's bytes (the whole file, mapped or read)
-pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, String] {
+pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, SafetensorsError] {
   if file.len < 8usize { return stErr("too short for a header length"); }
   var n = 0u64;
   var i = 7usize;
@@ -224,16 +235,7 @@ pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, String] {
   if n > u64.from(file.len - 8usize) { return stErr("the header is longer than the file"); }
   let hlen = usize.from(n);
   let dataStart = 8usize + hlen;
-  let parsed = json.parse(&file[8usize..<dataStart]);
-  var root = Json.Null;
-  match parsed {
-    case var Ok(j) { root = j; }
-    case let Err(e) {
-      var m = String.from("safetensors: the header is not JSON: ");
-      m <- e.message().view();
-      return Err[Safetensors, String](m);
-    }
-  }
+  let root = json.parse(&file[8usize..<dataStart])?;
   if !root.isObject() { return stErr("the header is not an object"); }
   var out = Safetensors(List[TensorInfo].empty(), List[String].empty());
   var k = 0usize;
@@ -340,5 +342,5 @@ pub fn parseSafetensors(file: &Array[u8]) Result[Safetensors, String] {
     }
     out.tensors.push(info);
   }
-  Ok[Safetensors, String](out)
+  Ok[Safetensors, SafetensorsError](out)
 }

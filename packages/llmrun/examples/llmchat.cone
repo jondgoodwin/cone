@@ -85,7 +85,7 @@ fn bytesOf(s: &str) List[u8] {
 
 // Run the turn's tokens, then generate until the model ends its turn or the context is full, printing as it goes
 fn reply(engine: &mut Engine, device: &mut Device, vocab: &ModelTokens, sampler: &TokenSampler, rng: &mut Rng,
-    turn: List[u32], thinking: bool) Result[Reply, String] {
+    turn: List[u32], thinking: bool) Result[Reply, LlmError] {
   let t0 = Instant.now();
   var logits = engine.feed(device, turn.view(), true)?;
   let t1 = Instant.now();
@@ -112,7 +112,7 @@ fn reply(engine: &mut Engine, device: &mut Device, vocab: &ModelTokens, sampler:
   }
   writeBytes(stream.finish().view());
   let t2 = Instant.now();
-  Ok[Reply, String](Reply(made, t1.since(t0).secondsF64(), t2.since(t1).secondsF64(), full))
+  Ok[Reply, LlmError](Reply(made, t1.since(t0).secondsF64(), t2.since(t1).secondsF64(), full))
 }
 
 // --voice: a spoken conversation (package voicechat). The options not already read by main.
@@ -284,11 +284,11 @@ fn main() i32 {
   let modelFile = Path.from(modelPath.view());
   var engine: Engine = match Engine.open(&mut device, &modelFile, &LoadOptions(ctx, 64usize)) {
     case var Ok(e) { e }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   var vocab: ModelTokens = match loadTokens(engine.ggufModel()) {
     case var Ok(v) { v }
-    case let Err(m) { say(m.view()); say("\n"); return 1i32; }
+    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
   };
   if !vocab.hasChatMl {
     say("llmchat: this model's vocabulary has no ChatML tokens (<|im_start|>, <|im_end|>, <think>, </think>)\n");
@@ -360,7 +360,7 @@ fn main() i32 {
                   closeFirst = true;
                 }
               }
-              case let Err(m) { say(m.view()); say("\n"); conversing = false; }
+              case let Err(m) { say(m.message().view()); say("\n"); conversing = false; }
             }
           }
         }

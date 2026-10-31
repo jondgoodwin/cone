@@ -25,9 +25,9 @@ biases; the `f16` file also rounds every large matrix to a half (1.2 GB against 
 ## API
 
 ```
-Parakeet.open(&mut device, &modelPath, &vocabPath)  -> Result[Parakeet, String]
-p.transcribe(&mut device, samples)                  -> Result[Transcript, String]   // text, token ids, frames, timings
-p.run(&mut device, samples, trace)                  -> Result[Run, String]          // with the features, the encoder's
+Parakeet.open(&mut device, &modelPath, &vocabPath)  -> Result[Parakeet, SpeechToTextError]
+p.transcribe(&mut device, samples)                  -> Result[Transcript, SpeechToTextError]   // text, token ids, frames, timings
+p.run(&mut device, samples, trace)                  -> Result[Run, SpeechToTextError]          // with the features, the encoder's
                                                                                     // intermediate outputs and the decode's steps
 resampleTo16k(samples, rate), soundTo16k(&sound)    -> List[f32]
 ```

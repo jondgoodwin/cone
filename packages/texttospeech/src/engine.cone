@@ -75,6 +75,22 @@ fn name3(a: &str, n: usize, b: &str) String {
   s
 }
 
+// Why a model, voice or text could not be loaded or said: the whole line, "texttospeech: " first
+pub struct TextToSpeechError is Error, Sendable {
+  pub reason: String;
+
+  pub fn message(self: &) String { reason.copy() }
+
+  // What '?' makes of a model file that could not be read ("texttospeech: " in front), or of the lexicons failing to
+  // load (their own line, "englishphonemes: ...")
+  pub fn fromSafetensors overload from(e: SafetensorsError) TextToSpeechError {
+    var m = String.from("texttospeech: ");
+    m <- e.message().view();
+    TextToSpeechError(m)
+  }
+  pub fn fromPhonemes overload from(e: PhonemesError) TextToSpeechError { TextToSpeechError(e.message()) }
+}
+
 pub struct Engine {
   kernels: Kernels;
   llm: llmkernels.Kernels;
@@ -95,7 +111,7 @@ pub struct Engine {
   pub f0ForSource: List[f32];
 
   // Load the model and its tables from 'dir' (the folder that holds kokoro-v1_0.safetensors and vocab.tsv)
-  pub fn open(device: &mut Device, dir: &str) Result[Engine, String] {
+  pub fn open(device: &mut Device, dir: &str) Result[Engine, TextToSpeechError] {
     let loaded = Weights.load(device, dir)?;
     let weights, buf = loaded;
     var vocab = Dict[String, u32].empty();
@@ -121,15 +137,15 @@ pub struct Engine {
       case let Err(e) {
         var m = String.from("texttospeech: cannot read ");
         m <- path.view();
-        return Err[Engine, String](m);
+        return Err[Engine, TextToSpeechError](TextToSpeechError(m));
       }
     }
     let kernels = Kernels.make(device);
     let llm = llmkernels.Kernels.make(device);
-    if !kernels.isValid() || !llm.isValid() { return Err[Engine, String](String.from("texttospeech: the kernels could not be made on this device")); }
+    if !kernels.isValid() || !llm.isValid() { return Err[Engine, TextToSpeechError](TextToSpeechError(String.from("texttospeech: the kernels could not be made on this device"))); }
     var held = List[Buffer].empty();
     held.push(buf);
-    Ok[Engine, String](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32].empty()))
+    Ok[Engine, TextToSpeechError](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32].empty()))
   }
 
   // The ids of the model's tokens for a phoneme string (characters it has no id for are left out), with the two
@@ -695,14 +711,14 @@ pub struct Engine {
   // Say a string of phonemes in a voice's style (256 floats) at a speed (1.0 normal, more is faster). 'noise' is the
   // source generator's randomness; none: drawn from 'rng'.
   pub fn synthesize(self: &mut, device: &mut Device, phonemes: &str, style: &Array[f32], speed: f32, rng: &mut Rng,
-      noise: Option[SourceNoise]) Result[Spoken, String] {
+      noise: Option[SourceNoise]) Result[Spoken, TextToSpeechError] {
     let t0 = Instant.now();
     let ids = self.tokens(phonemes);
     let t = ids.len();
     if t < 3usize || t > 512usize {
-      return Err[Spoken, String](String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes"));
+      return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes")));
     }
-    if style.len < 256usize { return Err[Spoken, String](String.from("texttospeech: a style is 256 floats")); }
+    if style.len < 256usize { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a style is 256 floats"))); }
     var probes = List[Probe].empty();
 
     // ---- A: the text ----
@@ -717,7 +733,7 @@ pub struct Engine {
     let t2 = Instant.now();
     self.recordNanos = self.recordNanos + t1.since(t0).nanos();
     self.gpuNanos = self.gpuNanos + t2.since(t1).nanos();
-    if !okA { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage A)")); }
+    if !okA { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage A)"))); }
     appendProbes(&mut probes, probesA);
 
     // ---- the durations ----
@@ -765,7 +781,7 @@ pub struct Engine {
     let t5 = Instant.now();
     self.recordNanos = self.recordNanos + t4.since(t3).nanos();
     self.gpuNanos = self.gpuNanos + t5.since(t4).nanos();
-    if !okB { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)")); }
+    if !okB { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)"))); }
     appendProbes(&mut probes, probesB);
     let f0 = backsB.pop() || List[f32].empty();
 
@@ -799,7 +815,7 @@ pub struct Engine {
     let t8 = Instant.now();
     self.recordNanos = self.recordNanos + t7.since(t6).nanos();
     self.gpuNanos = self.gpuNanos + t8.since(t7).nanos();
-    if !okC { return Err[Spoken, String](String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage C)")); }
+    if !okC { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage C)"))); }
     appendProbes(&mut probes, probesC);
 
     // ---- the inverse STFT, on the CPU ----
@@ -810,7 +826,7 @@ pub struct Engine {
       probes.push(Probe(String.from("har_source"), harSource));
       probes.push(Probe(String.from("har"), har));
     }
-    Ok[Spoken, String](Spoken(audio, durations, f0, probes))
+    Ok[Spoken, TextToSpeechError](Spoken(audio, durations, f0, probes))
   }
 }
 
