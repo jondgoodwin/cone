@@ -1,0 +1,46 @@
+// The shape the benchmark's richards program met: a scheduler holds a List of an
+// Option of an Rc of a task control block; the block holds an Rc of a trait object
+// and the Option of an Rc of its own type. The List steps a pointer to the Option,
+// which is a single LLVM pointer (intrinsic_pointer_to_nullable_enum).
+
+mod intrinsic_pointer_to_nullable_enum_trait;
+
+import stdio use *;
+import collections use *;
+
+trait Task {
+  pub fn run(self: &mut, s: &mut Sched) Option[Rc[mut, Tcb]];
+}
+
+struct Idle {
+  pub count: i64;
+  pub fn run(self: &mut, s: &mut Sched) Option[Rc[mut, Tcb]] { count += 1; s.n += 1; s.cur }
+}
+
+struct Tcb {
+  pub link: Option[Rc[mut, Tcb]];
+  pub task: Rc[mut, Task];
+  pub prio: i64;
+  pub waiting: bool;
+  pub fn isW(self: &) bool { !waiting }
+}
+
+struct Sched {
+  pub n: i64;
+  pub cur: Option[Rc[mut, Tcb]];
+  pub table: List[Option[Rc[mut, Tcb]]];
+}
+
+fn main() {
+  let t1 = Rc[mut, Tcb](None[Rc[mut, Tcb]], Rc[mut, Idle](0), 5, false);
+  var s = Sched(0, Some(t1), List[Option[Rc[mut, Tcb]]].empty());
+  s.table.push(Some(t1));
+  s.table.push(None);
+  let r = t1.task.run(&mut s);
+  print <- "total ", s.n, "\n";
+  print <- "table ", s.table.len(), "\n";
+  match r {
+    case let Some(t) { print <- "prio ", t.prio, "\n"; }
+    else { print <- "none\n"; }
+  }
+}
