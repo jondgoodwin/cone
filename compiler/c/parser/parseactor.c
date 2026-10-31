@@ -435,13 +435,15 @@ static int parseActorSelf(StructNode *state, FnDclNode *fn) {
     return 0;
 }
 
+// What a message about the declaration being read calls it: "Actor", and
+// "Actor trait" while an actor trait's behaviours are read and its runtime found
+static char *parseActorKind = "Actor";
+
 // Check the parameters of a behaviour or an initializer, which cross to the
 // actor's thread, and record each for the thread check (actorCheckAll). What
 // cannot cross whatever it turns out to be -- a borrow, a lifetime, the
 // state itself -- is refused here. 'crossing' takes the function and each
 // parameter in pairs. Returns whether all of them can be written again.
-static char *parseActorKind = "Actor";   // "Actor trait" while an actor trait's behaviours are read
-
 static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, FnDclNode *fn, Nodes **crossing) {
     int ok = 1;
     int isinit = parseActorIsInit(fn);
