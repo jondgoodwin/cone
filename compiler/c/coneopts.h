@@ -19,6 +19,9 @@ typedef struct ConeDefine {
     int64_t value;
 } ConeDefine;
 
+// The size gate's default, PROVISIONAL until the design chat picks it from the size curve
+#define DefaultPrivateInstances 64
+
 // Compiler options
 typedef struct ConeOptions {
 
@@ -52,6 +55,7 @@ typedef struct ConeOptions {
     int vulkan;      // 1=SPIR-V's Vulkan form, the one with compute entry points (genSetup decides it)
     int release;    // 0=debug (no optimizations). 1=release (default)
     int library;    // 1=generate a C-API compatible static library
+    int privateinst; // A release program's generic instance this small (LLVM instructions, before optimisation) is its own, not shared; 0=none (genlFn)
     int described;  // 1=a build description names the package: one object of several linked together
     int runtimebc;    // Compile with the LLVM bitcode file for the runtime
     int pic;        // Compile using position independent code
