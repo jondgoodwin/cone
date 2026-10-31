@@ -547,6 +547,7 @@ their `typecheck` scenarios pin them.
 | `carriesborrow` | `itypeCarriesBorrow`'s answer to whether a value of the type may hold a borrowed reference: `CarriesBorrowUnknown` until asked, `CarriesBorrowAsking` while its own fields and variants are being asked (a cycle through an owning reference or pointer that reaches it again adds nothing), then `CarriesBorrowYes` or `CarriesBorrowNo`. It is remembered only once the struct is type checked, and a "no" that leaned on a struct still being asked is not remembered. `newStructNode` sets it unknown, and so does `cloneStructNode`: an instance's fields are its own question |
 | `mustuse` | declared `@mustUse` (`parseStruct`): a statement that drops a value of the type is warned (`discardCheck`). An enum's covers its variants. Copied into an instance with the rest of the node |
 | `carriesending` | `itypeCarriesEndingBorrow`'s answer, kept the same way: whether a value of the type may hold a borrow of a lifetime that ends, a `'static` borrow passed as a key is. What a signature says a value may carry asks this (`lifeGather`, `lifeHeld`) |
+| `carrieswritable` | whether a value of the type may hold a writable (`&mut`, not virtual) borrowed reference, kept the same way. `itypeWritableBorrowDepth` answers 0 at once for a struct that cannot, however deep its fields nest |
 
 **What tells the three apart:**
 

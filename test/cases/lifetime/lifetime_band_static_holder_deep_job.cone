@@ -1,0 +1,152 @@
+// A job posted to a hosted service, as aio's 'runHostJob' runs it: a generic
+// function takes the job's body out of a block, and calls its 'run' with a
+// loop and a '&mut' to the service. The service's field chain, eighteen
+// structs deep, ends in a value holding only a ''static' borrow, so it holds
+// no borrow that ends, and the borrow of the local 'body' the call lends
+// cannot be kept in it.
+//
+// Verdict: accept; prints "3 3".
+// Basis: mem-lifetimes.html, "The global lifetime: 'static"; aio's
+// runHostJob over actorhttp's Service is this shape.
+// Master 6f2481669: refused, Error 1085 at 'body.run(lp, svc)' (the
+// writable-borrow walk of the service's type stopped at its depth cap).
+// lifetime_band_static_holder_deep_job_ending is the same shape with a field
+// that holds a borrow that ends, refused.
+
+mod lifetime_band_static_holder_deep_job;
+
+import stdio use *;
+
+struct Loop {
+  ticks: u32;
+}
+
+struct Bump {
+  amount: u32;
+
+  fn run(self: &mut, lp: &mut Loop, s: &mut Service) {
+    lp.ticks = lp.ticks + amount;
+    s.sent = s.sent + amount;
+  }
+}
+
+struct Fault {
+  code: u32;
+  detail: &'static str;
+}
+
+struct Reader {
+  last: Option[Fault];
+  count: u32;
+}
+
+struct Level0 {
+  inner: Reader;
+  tag: u32;
+}
+
+struct Level1 {
+  inner: Level0;
+  tag: u32;
+}
+
+struct Level2 {
+  inner: Level1;
+  tag: u32;
+}
+
+struct Level3 {
+  inner: Level2;
+  tag: u32;
+}
+
+struct Level4 {
+  inner: Level3;
+  tag: u32;
+}
+
+struct Level5 {
+  inner: Level4;
+  tag: u32;
+}
+
+struct Level6 {
+  inner: Level5;
+  tag: u32;
+}
+
+struct Level7 {
+  inner: Level6;
+  tag: u32;
+}
+
+struct Level8 {
+  inner: Level7;
+  tag: u32;
+}
+
+struct Level9 {
+  inner: Level8;
+  tag: u32;
+}
+
+struct Level10 {
+  inner: Level9;
+  tag: u32;
+}
+
+struct Level11 {
+  inner: Level10;
+  tag: u32;
+}
+
+struct Level12 {
+  inner: Level11;
+  tag: u32;
+}
+
+struct Level13 {
+  inner: Level12;
+  tag: u32;
+}
+
+struct Level14 {
+  inner: Level13;
+  tag: u32;
+}
+
+struct Level15 {
+  inner: Level14;
+  tag: u32;
+}
+
+struct Level16 {
+  inner: Level15;
+  tag: u32;
+}
+
+struct Level17 {
+  inner: Level16;
+  tag: u32;
+}
+
+struct Service {
+  drv: Level17;
+  sent: u32;
+}
+
+fn runHostJob[S, J](lp: &mut Loop, job: *J, svc: &mut S) {
+  var body = mem.readRaw[J](job);
+  body.run(lp, svc);
+}
+
+fn main() {
+  var lp = Loop(0u32);
+  var svc = Service(Level17(Level16(Level15(Level14(Level13(Level12(Level11(Level10(Level9(Level8(Level7(Level6(Level5(Level4(Level3(Level2(Level1(Level0(Reader(Some[Fault](Fault(1u32, "oops")), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32), 0u32);
+  var job = Bump(3u32);
+  runHostJob[Service, Bump](&mut lp, &job as *Bump, &mut svc);
+  printInt(i64.from(svc.sent));
+  printStr(" ");
+  printInt(i64.from(lp.ticks));
+  printStr("\n");
+}
