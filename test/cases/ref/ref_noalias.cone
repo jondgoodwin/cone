@@ -1,0 +1,137 @@
+// A '&uni' borrow is reached by no other live reference and an '&imm' one is written by nobody, so
+// a function Cone defines tells LLVM so: 'noalias' on each (and 'readonly' on the '&imm'), with
+// 'nonnull' and the pointee's size as 'dereferenceable'. '&mut' (shared mutable) and '&'
+// (read-only, maybe changed by others) are told nothing, and neither is an '&imm' whose pointee
+// holds an atomic, which is written through the immutable borrow by design. The signatures are
+// pinned in cases.toml; what is run here is the output of the same borrows chained, lent on
+// and used again, which is where a wrong 'noalias' would show. Every value is worked out in the
+// comments.
+
+mod ref_noalias;
+
+import stdio use *;
+
+struct Plain {
+  pub a: i64;
+  pub b: i64;
+}
+
+struct Stats {
+  pub name: u32;
+  pub hits: Atomic[u64];
+}
+
+struct Acc {
+  pub n: i64;
+  pub fn add(self: &uni, k: i64) { n = n + k; }
+  pub fn get(self: &imm) i64 { n }
+  pub fn bump(self: &mut, k: i64) { n = n + k; }
+}
+
+// The pair from the permission experiment: the first two parameters differ only in permission
+fn byUni(c: &uni Array[f32, 8], b: &imm Array[f32, 8], n: usize) {
+  each j in 0usize ..< n { c[j] += b[j]; }
+}
+
+fn byMut(c: &mut Array[f32, 8], b: &Array[f32, 8], n: usize) {
+  each j in 0usize ..< n { c[j] += b[j]; }
+}
+
+// An '&imm' of a struct holding an atomic: others write the atomic through it, so no 'noalias'
+fn countHit(s: &imm Stats) {
+  s.hits.add(1u64);
+}
+
+fn hitsOf(s: &imm Stats) u64 {
+  s.hits.load()
+}
+
+// An '&imm' of a plain struct, read twice beside a call that could (but may not) change it
+fn twice(p: &imm Plain, q: &uni Plain) i64 {
+  let before = p.a;
+  q.a = q.a + 1;
+  before + p.a
+}
+
+// Reborrow chains: each level lends its '&uni' on and uses it again
+fn leaf(c: &uni Plain, k: i64) {
+  c.a = c.a + k;
+}
+
+fn mid(c: &uni Plain, k: i64) {
+  leaf(&uni *c, k);
+  c.b = c.b + c.a;
+  leaf(c, k);
+}
+
+fn top(c: &uni Plain, k: i64) {
+  mid(&uni *c, k);
+  c.a = c.a + 100;
+  mid(c, k);
+}
+
+// Three deep and small: the optimizer inlines the chain into the caller, turning each parameter's
+// 'noalias' into scoped metadata on the loads and stores
+fn inc3(c: &uni Plain) { c.a = c.a + 1; }
+fn inc2(c: &uni Plain) { inc3(&uni *c); c.a = c.a * 2; inc3(c); }
+fn inc1(c: &uni Plain) { inc2(&uni *c); c.b = c.a; inc2(c); }
+
+fn sum(p: &imm Plain) i64 { p.a + p.b }
+
+// A signature the aggregate pass rewrites (a result slot first, a large argument by pointer) keeps
+// its borrowed parameters' attributes, at their new positions
+struct Big {
+  pub x: i64;
+  pub y: i64;
+  pub z: i64;
+  pub w: i64;
+}
+
+fn grow(c: &uni Plain, big: Big, p: &imm Plain) Big {
+  c.a = c.a + big.x;
+  Big(big.x + p.a, big.y + c.a, big.z, big.w + p.b)
+}
+
+fn main() {
+  var c = Array[f32, 8]() <- fill 0.0f;
+  let b = Array[f32, 8]() <- fill 1.0f;
+  byUni(&uni c, &imm b, 8usize);
+  byMut(&mut c, &b, 8usize);
+  // c[3] = 0 + 1 + 1
+  print <- "arrays ", i64.from(f64.from(c[3usize])), "\n";
+
+  let s = Stats(7u32, Atomic[u64].of(0u64));
+  countHit(&imm s);
+  countHit(&imm s);
+  countHit(&imm s);
+  print <- "hits ", i64.from(hitsOf(&imm s)), "\n";
+
+  let p = Plain(5, 0);
+  var q = Plain(1, 0);
+  // before = 5, q.a becomes 2, p.a is still 5
+  print <- "twice ", twice(&imm p, &uni q), " ", q.a, "\n";
+
+  var r = Plain(1, 10);
+  // leaf: a = 2.  mid's b = 10 + 2 = 12, leaf: a = 3.  top: a = 103.
+  // mid again (k = 1): leaf a = 104, b = 12 + 104 = 116, leaf a = 105.
+  top(&uni r, 1);
+  print <- "chain ", r.a, " ", r.b, "\n";
+
+  var t = Plain(0, 0);
+  // inc1: inc2 { inc3: a = 1; a = 2; inc3: a = 3 }, b = 3, inc2 { a = 4; a = 8; a = 9 }
+  inc1(&uni t);
+  let u = Plain(t.a, t.b);
+  print <- "inline ", t.a, " ", t.b, " ", sum(&imm u), "\n";
+
+  var gc = Plain(1, 2);
+  let gp = Plain(10, 20);
+  // gc.a = 1 + 3 = 4; the result is (3 + 10, 4 + 4, 5, 6 + 20)
+  let grown = grow(&uni gc, Big(3, 4, 5, 6), &imm gp);
+  print <- "grow ", gc.a, " ", grown.x, " ", grown.y, " ", grown.z, " ", grown.w, "\n";
+
+  var acc = Acc(0);
+  acc.add(4);
+  acc.add(5);
+  acc.bump(10);
+  print <- "methods ", acc.get(), " ", acc.get(), "\n";
+}
