@@ -22,7 +22,7 @@ struct Fin { pub n: i64; }
 
 fn strongAndWeak() {
   let r = Rcw[mut, Fin](1);
-  let w = Weak[Fin].of(r);
+  let w = Weak[Fin].of(&r);
   expectUInt(u64.from(w.strongCount()), 1, "a new value has one strong owner");
   expectUInt(u64.from(w.weakCount()), 1, "and the one weak reference made");
   expectUInt(u64.from(liveBlocks()), 1, "in one block");
@@ -47,7 +47,7 @@ fn strongAndWeak() {
 
 fn outlived() Weak[Fin] {
   let r = Rcw[mut, Fin](2);
-  Weak[Fin].of(r)
+  Weak[Fin].of(&r)
 }
 
 fn none() {
@@ -59,18 +59,9 @@ fn none() {
   expect(!w2.alive(), "nor is its clone");
 }
 
-fn unique() {
-  // A unique owner moves into 'of' and is given up there, so the value has
-  // died by the time the weak reference is handed back
-  let r = Rcw[Fin](3);
-  let w = Weak[Fin].of(r);
-  expect(!w.alive(), "a unique owner given to of() is gone");
-  expectUInt(u64.from(liveBlocks()), 1, "its block stays for the weak reference");
-}
-
 fn upgraded() {
   let r = Rcw[mut, Fin](4);
-  let w = Weak[Fin].of(r);
+  let w = Weak[Fin].of(&r);
   match w.upgrade() {
     case let Some(s) {
       expectInt(s.n, 4, "upgrade() reaches a live value");
@@ -86,7 +77,6 @@ fn upgraded() {
     let again = &o;
   }
   expectUInt(u64.from(w.strongCount()), 1, "both went at their scope's end");
-  let again = &r;
 }
 
 fn fallible() {
@@ -106,7 +96,6 @@ fn main() i32 {
   }
   expectUInt(u64.from(liveBlocks()), 0, "until it goes too");
   none();
-  unique();
   expectUInt(u64.from(liveBlocks()), 0, "every block given back");
   upgraded();
   expectUInt(u64.from(liveBlocks()), 0, "the upgraded value died with r, and its block was freed");
