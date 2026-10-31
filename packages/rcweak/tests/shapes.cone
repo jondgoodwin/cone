@@ -26,6 +26,9 @@ fn condMove(b: bool) {
   let r = Rcw[mut, Fin](4);
   let w = Weak[Fin].of(r);
   if cond(b) { sink(w); }
+  // Every 'of(r)' below is followed by a read of 'r': the last read of a counted local is a move,
+  // and 'of' takes its owner by value, so the value would die inside it
+  let again = &r;
 }
 
 // A weak reference assigned over is let go as it is replaced
@@ -35,6 +38,7 @@ fn reassigned() {
   w = Weak[Fin].none();
   let c = Weak[Fin].of(r);
   expectUInt(u64.from(c.weakCount()), 1, "the one assigned over was let go: only this one");
+  let again = &r;
 }
 
 fn inLocalStruct() {
@@ -46,6 +50,7 @@ fn inLocalStruct() {
   }
   let c = Weak[Fin].of(r);
   expectUInt(u64.from(c.weakCount()), 1, "the struct's went with it");
+  let again = &r;
 }
 
 // Passed by value it moves in; returned, it moves out
@@ -67,6 +72,7 @@ fn inList() {
   l.push(through(Weak[Fin].of(r)));
   expectUInt(u64.from(l[0usize].weakCount()), 3, "three in the list");
   expectInt(reachIt(&l[2usize]), 2, "reached through a borrow of an element");
+  let again = &r;
 }
 
 // Asked for a strong owner on each turn of a loop, which goes at the turn's end
@@ -82,6 +88,7 @@ fn loop() {
   }
   expectInt(sum, 12, "four reads of 3");
   expectUInt(u64.from(w.strongCount()), 1, "no owner left over from the loop");
+  let again = &r;
 }
 
 // A weak reference moves; nothing is counted
@@ -90,6 +97,7 @@ fn moves() {
   let w = Weak[Fin].of(r);
   let w2 = w;
   expectUInt(u64.from(w2.weakCount()), 1, "moved, not copied");
+  let again = &r;
 }
 
 // The value sits after the header at the value's own alignment
@@ -110,6 +118,9 @@ fn layouts() {
   let ws = Weak[Small].of(s);
   let ss = ws.strong();
   expectInt(i64.from(ss.b), 6, "a Small's second byte");
+  let again = &b;
+  let again2 = &d;
+  let again3 = &s;
 }
 
 fn main() i32 {

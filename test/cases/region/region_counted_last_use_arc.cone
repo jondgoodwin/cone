@@ -28,6 +28,7 @@
 // - 14 reassign: 'v = ident(v)': moved into the call, stored back, released once.
 // - 15 merged:   stored on one branch, read after the branches join: a copy.
 // - 16 leaves:   a loop left by 'break' right after the store: moved.
+// - 17 through: 'k.n = readN(k) + 1': the store reads the owner after the call: a copy.
 //
 // Finals counted and each id printed; a marker line precedes and follows the
 // release it is ordered against.
@@ -255,6 +256,22 @@ fn leaves(b: &mut Box, m: C) {
   line("16 leaves: overwritten");
 }
 
+struct Cell {
+  pub var n: i32;
+  fn final(self: &uni) { printStr("  final cell\n"); }
+}
+alias K = Arc[mut, Cell];
+
+fn readN(k: K) i32 { k.n }
+
+// 17: stored through the very owner passed to the call on the right: the store
+// reads the owner after the call, so the call's read is a copy
+fn throughOwner() {
+  let k = K(5i32);
+  k.n = readN(k) + 1i32;
+  line("17 through: stored");
+}
+
 fn main() {
   var b = Box(None[C]);
   call(&mut b, fresh(1i32));
@@ -323,6 +340,9 @@ fn main() {
 
   leaves(&mut b, fresh(100i32));
   line("16 leaves: returned");
+
+  throughOwner();
+  line("17 through: returned");
   printStr("finals ");
   printInt(i64.from(finals));
   printStr("\n");

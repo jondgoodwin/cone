@@ -876,6 +876,7 @@ static void pwCandApply() {
             errorUnreachable((INode *)rc, "a counted read the walk met in a slot that does not hold it");
             continue;
         }
+        { extern unsigned long tmpMoved; ++tmpMoved; }
         rc->cand = RefCandMoved;
         rc->exp->flags |= FlagMoveOut;
         *pwCands[i].slot = rc->exp;
@@ -1057,6 +1058,11 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         // seam does (pwSeam)
         if (pathVars[index].holder || pathVars[index].pending)
             loanUse(index, node);
+        // Any other mention of a variable a candidate moved on some path, a
+        // read through it ('r.n' of an owner 'r') as well as of it, fails that
+        // candidate: dropUse does not look through an owning reference
+        if (pathDrops && node != pwCandUse && pathVars[index].hascand && (pathVars[index].state & DropMoved))
+            pathCandFail(index, pathVars[index].state);
         // A value moves out of it, or out through it, here (flowMoveSource
         // marked where): the variable owning the value no longer holds it
         if (pathDrops && (node->flags & (FlagMoveOut | FlagHollowOut))) {
