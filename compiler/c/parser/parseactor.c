@@ -1191,15 +1191,13 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genSlot(&g, GenTake);
                     genPuts(&g, "(&(*p).");
                     genSlot(&g, GenEnvelope);
-                    genPuts(&g, ")); let r = ");
+                    genPuts(&g, ")); let v = ");
                 }
                 else {
                     genPuts(&g, ".askNone(&mut self.");
                     genSlot(&g, GenAnswer);
-                    genPuts(&g, "); let r = ");
+                    genPuts(&g, "); let v = ");
                 }
-                genSlot(&g, GenActors);
-                genPuts(&g, ".keep(&");
             }
             else if (asked) {
                 genSlot(&g, GenActors);
@@ -1228,11 +1226,11 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genPuts(&g, ")");
             }
             if (slotted) {
-                genPuts(&g, ")); ");
+                genPuts(&g, "); ");
                 genSlot(&g, GenActors);
                 genPuts(&g, ".answerAt(&mut self.");
                 genSlot(&g, GenAnswer);
-                genPuts(&g, ", r);}\n");
+                genPuts(&g, ", v);}\n");
             }
             else
                 genPuts(&g, asked ? "));}\n" : ");}\n");

@@ -884,7 +884,7 @@ the two functions that make a request's envelope (`Counter.reply'`,
 nothing). A reply to an `await` is no variant of the message enum: it is a
 slot of its own kind in the awaiting actor's mailbox, which the actors package
 resumes ([Generation](generation.md), "A message's reply"). Such a behaviour returning a value is
-dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
+dispatched through the Answer slot (`actors.ask`, `askNone`,
 `answerAt`). An actor with a behaviour, or writing `selfactor`, gets
 `Counter.self'`, which makes the handle from the state
 ([Generation](generation.md), "A message's reply"). Every actor's state has one
