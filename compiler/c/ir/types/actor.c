@@ -14,6 +14,10 @@ static ActorInfo **actors = NULL;
 static uint32_t actorCnt = 0;
 static uint32_t actorMax = 0;
 
+static ActorTraitInfo **actorTraits = NULL;
+static uint32_t actorTraitCnt = 0;
+static uint32_t actorTraitMax = 0;
+
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
     "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait",
@@ -197,6 +201,42 @@ void actorCheckAll() {
             actorCheckReturn(info, info->msgs[j].method);
         actorRefuseGc(info);
     }
+    // An actor trait's behaviours are sent to whatever actor the handle holds,
+    // so each parameter and each returned type crosses to that actor's thread
+    for (uint32_t i = 0; i < actorTraitCnt; ++i) {
+        ActorTraitInfo *info = actorTraits[i];
+        Name *traitname = info->handle->namesym;
+        for (uint32_t j = 0; j + 1 < info->crossing->used; j += 2) {
+            FnDclNode *fn = (FnDclNode *)nodesGet(info->crossing, j);
+            VarDclNode *parm = (VarDclNode *)nodesGet(info->crossing, j + 1);
+            INode *type = parm->vtype;
+            if (type == NULL || type == unknownType || type->tag == UnknownTag)
+                continue;
+            if (!itypeThreadBoundHow(type, NULL, StaticWritten))
+                continue;
+            char typename[256] = "";
+            itypeSpellCat(typename, sizeof(typename), type, 0);
+            char what[512], reason[512];
+            genericNotSendableWhy(type, what, reason, StaticWritten);
+            errorMsgNode((INode *)parm, ErrorNotSendable,
+                "Actor trait %s's behaviour %s takes %s, a %s, which is not Sendable: %s %s. A message carries its arguments to the thread the actor runs on, so each must be Sendable.",
+                &traitname->namestr, &fn->namesym->namestr, &parm->namesym->namestr, typename, what, reason);
+        }
+        for (uint32_t j = 0; j < info->nmsgs; ++j) {
+            FnDclNode *fn = info->msgs[j].method;
+            INode *type = ((FnSigNode *)fn->vtype)->rettype;
+            if (type == NULL || type == unknownType || type->tag == UnknownTag
+                || itypeGetTypeDcl(type)->tag == VoidTag || !itypeThreadBoundHow(type, NULL, StaticWritten))
+                continue;
+            char typename[256] = "";
+            itypeSpellCat(typename, sizeof(typename), type, 0);
+            char what[512], reason[512];
+            genericNotSendableWhy(type, what, reason, StaticWritten);
+            errorMsgNode(((FnSigNode *)fn->vtype)->rettype, ErrorNotSendable,
+                "Actor trait %s's behaviour %s returns a %s, which is not Sendable: %s %s. The value goes back to the actor that awaits it, on the thread that runs that actor, so it must be Sendable.",
+                &traitname->namestr, &fn->namesym->namestr, typename, what, reason);
+        }
+    }
 }
 
 int actorIsState(INode *type) {
@@ -236,6 +276,19 @@ ActorInfo *actorOfSelfFn(FnDclNode *fn) {
 
 ActorMessage *actorMessageOfSend(FnDclNode *send, ActorInfo **info) {
     INode *owner = inodeGetOwner((INode *)send);
+    // A trait's handle sends through its table: the same four shapes, but no
+    // actor of its own to answer
+    for (uint32_t i = 0; i < actorTraitCnt; ++i) {
+        if ((INode *)actorTraits[i]->handle != owner)
+            continue;
+        for (uint32_t j = 0; j < actorTraits[i]->nmsgs; ++j) {
+            if (actorTraits[i]->msgs[j].send == send) {
+                *info = NULL;
+                return &actorTraits[i]->msgs[j];
+            }
+        }
+        return NULL;
+    }
     for (uint32_t i = 0; i < actorCnt; ++i) {
         if ((INode *)actors[i]->handle != owner)
             continue;
@@ -295,4 +348,148 @@ INode *actorStateMember(INode *type, Name *name, StructNode **state) {
         return member;
     }
     return NULL;
+}
+
+// ---- Actor traits ------------------------------------------------------------
+
+void actorTraitRegister(ActorTraitInfo *info) {
+    if (actorTraitCnt == actorTraitMax) {
+        uint32_t newmax = actorTraitMax ? actorTraitMax * 2 : 8;
+        ActorTraitInfo **grown = (ActorTraitInfo **)memAllocBlk(newmax * sizeof(ActorTraitInfo *));
+        if (actorTraitCnt)
+            memcpy(grown, actorTraits, actorTraitCnt * sizeof(ActorTraitInfo *));
+        actorTraits = grown;
+        actorTraitMax = newmax;
+    }
+    actorTraits[actorTraitCnt++] = info;
+}
+
+ActorTraitInfo *actorTraitOfHandle(INode *type) {
+    for (uint32_t i = 0; i < actorTraitCnt; ++i) {
+        if ((INode *)actorTraits[i]->handle == type)
+            return actorTraits[i];
+    }
+    return NULL;
+}
+
+int actorTraitWanted(INode *from, INode *to) {
+    return actorTraitCnt != 0 && to != NULL && from != NULL
+        && actorTraitOfHandle(to) != NULL && actorOfHandle(from) != NULL;
+}
+
+// Do two types written as a parameter's or a return, either maybe none, agree?
+static int actorSameType(INode *a, INode *b) {
+    int avoid = a == NULL || itypeGetTypeDcl(a)->tag == VoidTag;
+    int bvoid = b == NULL || itypeGetTypeDcl(b)->tag == VoidTag;
+    if (avoid || bvoid)
+        return avoid && bvoid;
+    return itypeIsSame(a, b);
+}
+
+// A behaviour as 'name(a: A, b: B) R', its 'self' left out
+static void actorSigCat(char *buf, size_t size, FnDclNode *fn) {
+    FnSigNode *sig = (FnSigNode *)fn->vtype;
+    size_t len = strlen(buf);
+    snprintf(buf + len, size - len, "%s(", &fn->namesym->namestr);
+    int first = 1;
+    INode **parmp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, parmp)) {
+        VarDclNode *parm = (VarDclNode *)*parmp;
+        if (parm->namesym == selfName)
+            continue;
+        len = strlen(buf);
+        snprintf(buf + len, size - len, "%s%s: ", first ? "" : ", ", &parm->namesym->namestr);
+        first = 0;
+        itypeSpellCat(buf, size, parm->vtype, 0);
+    }
+    len = strlen(buf);
+    snprintf(buf + len, size - len, ")");
+    if (sig->rettype != NULL && itypeGetTypeDcl(sig->rettype)->tag != VoidTag) {
+        len = strlen(buf);
+        snprintf(buf + len, size - len, " ");
+        itypeSpellCat(buf, size, sig->rettype, 0);
+    }
+}
+
+// Does the actor have each behaviour of the trait, 'pub', by its name, with the
+// same parameter types and the same returned type? If not, say each that it does
+// not at 'at'
+static int actorTraitConforms(ActorTraitInfo *trait, ActorInfo *actor, INode *at) {
+    char why[2400];
+    why[0] = '\0';
+    int bad = 0;
+    for (uint32_t j = 0; j < trait->nmsgs; ++j) {
+        FnDclNode *req = trait->msgs[j].method;
+        fnCallDemandCandidates((INode *)req);
+        char want[512];
+        want[0] = '\0';
+        actorSigCat(want, sizeof(want), req);
+        size_t len = strlen(why);
+        ActorMessage *have = actorMessageNamed(actor, req->namesym);
+        if (have == NULL) {
+            snprintf(why + len, sizeof(why) - len, " It has no behaviour 'pub async fn %s'.", want);
+            ++bad;
+            continue;
+        }
+        fnCallDemandCandidates((INode *)have->method);
+        char has[512];
+        has[0] = '\0';
+        actorSigCat(has, sizeof(has), have->method);
+        if (!(have->method->flags & FlagPub)) {
+            snprintf(why + len, sizeof(why) - len, " Its behaviour %s is not 'pub', and a sender outside the actor reaches only a 'pub' one.", has);
+            ++bad;
+            continue;
+        }
+        FnSigNode *reqsig = (FnSigNode *)req->vtype;
+        FnSigNode *havesig = (FnSigNode *)have->method->vtype;
+        int same = reqsig->parms->used == havesig->parms->used && actorSameType(reqsig->rettype, havesig->rettype);
+        for (uint32_t k = 1; same && k < reqsig->parms->used; ++k) {
+            INode *a = ((VarDclNode *)nodesGet(reqsig->parms, k))->vtype;
+            INode *b = ((VarDclNode *)nodesGet(havesig->parms, k))->vtype;
+            same = a != NULL && b != NULL && itypeIsSame(a, b);
+        }
+        if (!same) {
+            snprintf(why + len, sizeof(why) - len, " Its behaviour %s does not take and return what the trait's %s does.", has, want);
+            ++bad;
+        }
+    }
+    if (bad) {
+        errorMsgNode(at, ErrorActorTraitConform,
+            "Actor %s does not conform to actor trait %s, which it is converted to here:%s An actor conforms when it has every behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.",
+            &actor->handle->namesym->namestr, &trait->handle->namesym->namestr, why);
+        return 0;
+    }
+    return 1;
+}
+
+int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
+    INode *totypedcl = itypeGetTypeDcl(totype);
+    ActorTraitInfo *trait = actorTraitOfHandle(totypedcl);
+    INode *fromtype = iexpGetTypeDcl(*nodep);
+    ActorInfo *actor = actorOfHandle(fromtype);
+    INode *orig = *nodep;
+    if (!actorTraitConforms(trait, actor, orig)) {
+        // The conversion is built anyway, so what uses the value says nothing more
+        INode *conv = (INode *)newConvCastNode(orig, totypedcl);
+        inodeLexCopy(conv, orig);
+        *nodep = conv;
+        return 1;
+    }
+    // The handle is lent to 'wrap' for the call, and the virtual reference that
+    // makes is what carries the table of the actor's sending methods. A value
+    // that is no place is lent as a temporary, to the end of its statement
+    INode *perm = newPermUseNode(roPerm);
+    if (iexpIsLval(orig))
+        borrowMutRef(nodep, fromtype, perm);
+    else if (pstate != NULL && pstate->scope >= 2)
+        borrowTempRef(nodep, fromtype, perm, borrowTempScope(pstate));
+    else
+        return 0;
+    fnCallDemandCandidates((INode *)trait->wrap);
+    FnCallNode *call = newFnCallLower(orig, newNameUseFromDclNode((INode *)trait->wrap, orig), 1);
+    nodesAdd(&call->args, *nodep);
+    fnCallFinalizeArgs(pstate, call);
+    *nodep = (INode *)call;
+    return 1;
 }

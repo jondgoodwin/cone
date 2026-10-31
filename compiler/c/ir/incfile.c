@@ -820,7 +820,8 @@ static void incWalkStruct(IncGen *g, StructNode *strnode) {
 
 // The file holds each actor of a module whole, its state's fields and method
 // bodies too, whether the actor is public or not: so what those name goes in
-// beside it, a private type among them
+// beside it, a private type among them. An actor trait likewise, whose
+// behaviours' parameter and returned types go in beside it
 static void incSeedActors(IncGen *g, ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
@@ -828,6 +829,9 @@ static void incSeedActors(IncGen *g, ModuleNode *mod) {
         ActorInfo *actor = (*nodesp)->tag == StructTag ? actorOfHandle(*nodesp) : NULL;
         if (actor)
             incWalkStruct(g, actor->state);
+        ActorTraitInfo *trait = (*nodesp)->tag == StructTag ? actorTraitOfHandle(*nodesp) : NULL;
+        if (trait)
+            incWalkStruct(g, trait->body);
     }
 }
 

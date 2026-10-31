@@ -1,0 +1,137 @@
+// A trait's handle keeps its actor alive, as an actor's handle does, and two
+// handles are equal where they name the one actor: the mailbox they both own.
+//
+// Four Listeners are made and each handed to the list of 'Ear's by its own
+// handle, which main then lets go of: the list's copies are all that is left,
+// so nothing has died. A fifth handle, 'gone', is made from the third
+// listener, and the list is rebuilt without any handle equal to it -- the
+// subscriber removed from a list. Each handle the rebuild copies is dropped
+// with the old list, and the third listener, with 'gone' the last handle to it
+// once the old list is, dies when 'gone' does. All four finalizers run exactly
+// once, none before its last handle went, and each saw what was sent it:
+// ids 1+2+3+4, and 10 sent to every one then 5 to every one still listed.
+//
+// Equality is of the actor, not of the handle's other word: a handle made
+// twice from the same actor is equal to itself, and two actors never are, even
+// of the one kind; an actor's own handle is equal to a copy of it.
+
+mod concurrency_actor_trait_identity;
+
+import stdio use *;
+import collections use List;
+import thread;
+import time;
+import actors;
+
+struct Results {
+  pub finals: Atomic[u64];
+  pub idsum: Atomic[u64];
+  pub heard: Atomic[u64];
+}
+
+let results: Results;
+
+fn @initpure init() {
+  results = Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn waitFinals(n: u64) {
+  while results.finals.load() < n {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+}
+
+actor trait Ear {
+  pub async fn hear(self, n: u64);
+}
+
+actor Listener {
+  id: u64;
+  heard: u64;
+
+  fn init(self: &new, id: u64) {
+    *self = Self(id: id, heard: 0u64);
+  }
+
+  pub async fn hear(self, n: u64) {
+    heard = heard + n;
+  }
+
+  fn final(self: &uni) {
+    results.idsum.add(id);
+    results.heard.add(heard);
+    results.finals.add(1u64);
+  }
+}
+
+fn broadcast(ears: &List[Ear], n: u64) {
+  var i = 0usize;
+  while i < ears.view().len() {
+    ears[i].hear(n);
+    i = i + 1usize;
+  }
+}
+
+// The list without the handles equal to 'gone': the others copied across, the
+// old list dropped
+fn without(ears: List[Ear], gone: Ear) List[Ear] {
+  var kept = List[Ear].empty();
+  var i = 0usize;
+  while i < ears.view().len() {
+    if !(ears[i] == gone) {
+      kept.push(ears[i]);
+    }
+    i = i + 1usize;
+  }
+  kept
+}
+
+fn show(what: &str, same: bool) {
+  printStr(what);
+  printStr(if same {" equal\n"} else {" different\n"});
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+
+  var ears = List[Ear].empty();
+  {
+    let a = Listener(1u64);
+    let b = Listener(2u64);
+    let c = Listener(3u64);
+    let d = Listener(4u64);
+    ears.push(a);
+    ears.push(b);
+    ears.push(c);
+    ears.push(d);
+
+    // Two handles made from the one actor are equal; of two actors, never
+    let x: Ear = a;
+    let y: Ear = a;
+    let z: Ear = b;
+    show("same actor, two handles:", x == y);
+    show("two actors:", x == z);
+    let a2 = a;
+    show("an actor's handle and its copy:", a == a2);
+    show("two actors' handles:", a == b);
+  }
+  broadcast(&ears, 10u64);
+  printStr("listed, finalized "); printUInt(results.finals.load()); printStr("\n");
+
+  // The third listener is removed: its handle made again, and the list rebuilt
+  {
+    let gone: Ear = ears[2usize];
+    ears = without(ears, gone);
+  }
+  broadcast(&ears, 5u64);
+  waitFinals(1u64);
+  printStr("three listed, one removed and dead: finalized "); printUInt(results.finals.load()); printStr("\n");
+
+  ears = List[Ear].empty();
+  waitFinals(4u64);
+  finalAll();
+  printStr("all gone: finalized "); printUInt(results.finals.load());
+  printStr(", ids "); printUInt(results.idsum.load());
+  printStr(", heard "); printUInt(results.heard.load()); printStr("\n");
+}

@@ -1,0 +1,43 @@
+// What an actor trait's declaration may not say, refused where it is written,
+// at parse. An actor trait declares behaviours only, signatures with no body:
+// a caller outside an actor can send it a message and nothing else, so there is
+// no field to read, no 'fn' to run inside it, and no body to write, since the
+// actor that conforms writes the behaviour with its own state to run it on.
+//
+// - A field, a 'static' and a macro are not behaviours; nor is a 'fn', which
+//   would run code inside the actor (ErrorActorTraitMember).
+// - A behaviour with a body, one that is not 'pub' (a sender is outside the
+//   actor), one without 'self', one declared 'overload', and a generic one.
+// - A borrowed parameter cannot cross to the actor's thread, as in an actor
+//   (ErrorNotSendable); the trait's parameters are held to it where they are
+//   written, so an actor that conforms cannot be handed a borrow through it.
+// - A trait that is generic, or names an abstraction or a base, is not built.
+
+mod concurrency_actor_trait_parse;
+
+import actors;
+
+actor trait Bad {
+  count: u64;                                  //~ ErrorActorTraitMember "count is a field, and an actor trait declares behaviours only"
+  static var shared: u64 = 0u64;               //~ ErrorActorTraitMember "a 'static' is not one"
+  macro twice[x: i64] {x + x}                  //~ ErrorActorTraitMember "a macro is not one"
+  pub fn helper(self) u64;                     //~ ErrorActorTraitMember "helper is a 'fn', and an actor trait declares behaviours only"
+  pub async fn total(self) u64;
+  pub async fn body(self) u64 {0u64}           //~ ErrorActorTraitMember "Behaviour body has a body, and an actor trait declares signatures only"
+  async fn quiet(self, n: u64);                //~ ErrorActorTraitMember "Behaviour quiet is not 'pub'"
+  pub async fn loose(n: u64);                  //~ ErrorActorTraitMember "Behaviour loose has no 'self'"
+  pub async fn peek(self, r: &u64);            //~ ErrorNotSendable "Actor trait Bad's behaviour peek takes r, a borrowed reference"
+  pub async fn pick[T](self, x: T);            //~ ErrorActorTraitMember "Behaviour pick is generic"
+}
+
+actor trait Many[T] {                          //~ ErrorActorTraitMember "Actor trait Many takes type parameters"
+  pub async fn take(self, x: u64);
+}
+
+trait Shape {
+  fn area(self: &) u64;
+}
+
+actor trait Square is Shape {                  //~ ErrorActorTraitMember "Actor trait Square names an abstraction or a base"
+  pub async fn grow(self);
+}

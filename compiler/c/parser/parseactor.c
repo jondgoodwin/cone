@@ -125,6 +125,44 @@ enum GenSlot {
 
 static Name *genShared[GenState];
 
+// The names of the handle methods that send a behaviour awaited ('fetch'ask')
+// and for a future ('fetch'future'), which no source can spell. One pair for
+// each behaviour name in the whole compile, not one for each actor: an actor
+// trait's handle, and the virtual trait it dispatches through, declare methods
+// by these names and an actor's handle meets them by the same names
+typedef struct BehaviourName {
+    Name *method;
+    Name *ask;
+    Name *future;
+} BehaviourName;
+
+static BehaviourName *behaviourNames = NULL;
+static uint32_t behaviourNameCnt = 0;
+static uint32_t behaviourNameMax = 0;
+
+static Name *parseBehaviourName(Name *method, int future) {
+    for (uint32_t i = 0; i < behaviourNameCnt; ++i) {
+        if (behaviourNames[i].method == method)
+            return future ? behaviourNames[i].future : behaviourNames[i].ask;
+    }
+    if (behaviourNameCnt == behaviourNameMax) {
+        uint32_t newmax = behaviourNameMax ? behaviourNameMax * 2 : 32;
+        BehaviourName *grown = (BehaviourName *)memAllocBlk(newmax * sizeof(BehaviourName));
+        if (behaviourNameCnt)
+            memcpy(grown, behaviourNames, behaviourNameCnt * sizeof(BehaviourName));
+        behaviourNames = grown;
+        behaviourNameMax = newmax;
+    }
+    BehaviourName *entry = &behaviourNames[behaviourNameCnt++];
+    char buf[300];
+    entry->method = method;
+    snprintf(buf, sizeof(buf), "%s'ask", &method->namestr);
+    entry->ask = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s'future", &method->namestr);
+    entry->future = nametblPrivate(buf, strlen(buf));
+    return future ? entry->future : entry->ask;
+}
+
 // ---- Text the declaration's members were written with ----------------------
 
 void parseDclText(ParseState *parse, INode *dcl, char *type, char *typeend, char *value, char *valueend) {
@@ -402,6 +440,8 @@ static int parseActorSelf(StructNode *state, FnDclNode *fn) {
 // cannot cross whatever it turns out to be -- a borrow, a lifetime, the
 // state itself -- is refused here. 'crossing' takes the function and each
 // parameter in pairs. Returns whether all of them can be written again.
+static char *parseActorKind = "Actor";   // "Actor trait" while an actor trait's behaviours are read
+
 static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, FnDclNode *fn, Nodes **crossing) {
     int ok = 1;
     int isinit = parseActorIsInit(fn);
@@ -418,8 +458,8 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
         if (text == NULL || text->type == NULL
             || parseActorTextHas(text->type, text->typeend, "Self")) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
-                "Actor %s's %s %s takes %s, the actor's own state, which never leaves the actor. %s.",
-                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
+                "%s %s's %s %s takes %s, the actor's own state, which never leaves the actor. %s.",
+                parseActorKind, &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -427,8 +467,8 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
         if ((parseActorIsBorrow(parm->vtype) && !parseActorIsStaticBorrow(parm->vtype))
             || !parseActorOnlyStatic(text->type, text->typeend)) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
-                "Actor %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &'static imm, &'static opaq or &'static uni.",
-                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
+                "%s %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &'static imm, &'static opaq or &'static uni.",
+                parseActorKind, &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -569,7 +609,7 @@ static void parseActorHeader(StructNode *state, Name *actorname) {
             "Actor %s takes type parameters, and a generic actor is not built yet.", &actorname->namestr);
     if (state->basetrait || state->extendsbase) {
         errorMsgNode((INode *)state, ErrorActorMember,
-            "Actor %s names an abstraction or a base, which an actor does not have yet: 'actor trait' is not built.",
+            "Actor %s names an abstraction or a base, which an actor does not have yet. It conforms to an actor trait by having its behaviours, with nothing written on the actor.",
             &actorname->namestr);
         return;
     }
@@ -578,7 +618,7 @@ static void parseActorHeader(StructNode *state, Name *actorname) {
     for (nodelistFor(&state->fields, cnt, nodesp)) {
         if ((*nodesp)->flags & IsMixin) {
             errorMsgNode((INode *)state, ErrorActorMember,
-                "Actor %s names an abstraction or a base, which an actor does not have yet: 'actor trait' is not built.",
+                "Actor %s names an abstraction or a base, which an actor does not have yet. It conforms to an actor trait by having its behaviours, with nothing written on the actor.",
                 &actorname->namestr);
             return;
         }
@@ -646,16 +686,16 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     ModuleNode *actorsmod = parseActorFindImport(mod->imports, "actors");
     if (actorsmod == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on the actors package, which module %s does not import: write 'import actors;' after the 'mod' line.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on the actors package, which module %s does not import: write 'import actors;' after the 'mod' line.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     ModuleNode *syncmod = parseActorFindImport(actorsmod->imports, "sync");
     if (syncmod == NULL || namespaceFind(&actorsmod->namespace, nametblFind("startActor", 10)) == NULL
         || namespaceFind(&actorsmod->namespace, nametblFind("makeActor", 9)) == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on the actors package, and the module %s imports as actors is not that package: it has no makeActor or startActor, or does not import sync.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on the actors package, and the module %s imports as actors is not that package: it has no makeActor or startActor, or does not import sync.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     // Core's 'mem', reached by a name of its own, so that an initializer's
@@ -665,8 +705,8 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     INode *memdcl = coremod ? namespaceFind(&coremod->namespace, nametblFind("mem", 3)) : NULL;
     if (memdcl == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on core's 'mem', which module %s does not reach.",
-            &actorname->namestr, &mod->namesym->namestr);
+            "%s %s runs on core's 'mem', which module %s does not reach.",
+            parseActorKind, &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     parseActorBind(mod, genShared[GenActors], (INode *)actorsmod, FlagImportName);
@@ -697,20 +737,515 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     return 2;
 }
 
+// ---- 'actor trait' -----------------------------------------------------------
+//
+// 'actor trait ChunkSink { pub async fn accept(self, c: Chunk); }' declares what
+// a sender needs of an actor, behaviours only: nothing outside an actor can run
+// code inside it, so a caller can only send. An actor conforms where it has each
+// behaviour, 'pub', under the name, with the parameter and returned types
+// (actorTraitCoerce asks, where a handle of an actor is converted). The trait's
+// name, used as a type, is a handle of two words, generated as Cone source and
+// parsed here, in this order:
+//
+//   struct trait ChunkSink.vt {                     an ordinary trait, with the three
+//     pub fn accept(self: &, c: Chunk);             methods an actor's handle has for
+//   }                                               each behaviour (send, and for one
+//                                                   returning a value, ask and future)
+//   struct ChunkSink.fat {data: *u8; vt: *u8;}      the two words of a virtual reference
+//   struct ChunkSink is Sendable {
+//     mailbox: Arc[opaq, actors.Mailbox[u8]];       the actor's mailbox, counted
+//     table: *u8;                                   the vtable of the actor's handle as vt
+//     pub fn accept(self: &, c: Chunk) {            sends through the table: one indirect
+//       let v = <the virtual reference made of mailbox and table>;   call of the actor's own
+//       v.accept(c);}                                                 sending method
+//   }
+//   fn ChunkSink.wrap(v: &<ChunkSink.vt) ChunkSink  the conversion, called on a borrow of an
+//                                                   actor's handle: the handle's mailbox
+//                                                   copied, the virtual reference's table
+//
+// The table is the compiler's own vtable of the actor's handle as 'vt': one for
+// each (actor, trait) pair, made where the handle is converted, as any trait's
+// is, its methods the handle's own that send a message. The mailbox's type is
+// erased to 'Mailbox[u8]': what a handle of any actor owns is the one allocation
+// whose first part is the Mailbox, which holds no message of its own type, and
+// the handle's copy and drop count it and give it back without naming that
+// type. The virtual reference is rebuilt from the mailbox's place in the
+// handle, which is where an actor's handle is, and the table.
+//
+// The trait as written is kept too ('ChunkSink.behaviours', a trait of the
+// requirements), as the state of an actor is, for the parameter types.
+
+enum TraitSlot {
+    TrVt = GenState,    // 'ChunkSink.vt'
+    TrFat,              // 'ChunkSink.fat'
+    TrWrap,             // 'ChunkSink.wrap'
+    TrBody,             // 'ChunkSink.behaviours'
+    TrTable,            // The handle's second field
+    TrWords,            // A handle's method's local: the virtual reference's two words
+    TrVia,              // and the virtual reference made of them
+    TrSlots             // From here, as GenSlots: each behaviour returning a value, its ask name, then its future's
+};
+
+// Check a behaviour's 'self': an actor trait's is not lent to anything, so any
+// borrowing form is read as the one a sender needs, '&'
+static int parseActorTraitSelf(StructNode *body, FnDclNode *fn) {
+    VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)fn->vtype)->parms, 0);
+    INode *type = self->vtype;
+    if (isNameUseNode(type) && ((NameUseNode *)type)->namesym == selfTypeName) {
+        self->vtype = (INode *)newRefNodeFull(RefTag, (INode *)self, borrowRef, newPermUseNode(roPerm), type);
+        return 1;
+    }
+    if (type->tag == RefTag && ((RefNode *)type)->region == borrowRef
+        && parseActorSelfPerm(parseActorPerm((RefNode *)type)))
+        return 1;
+    errorMsgNode((INode *)self, ErrorActorTraitMember,
+        "%s's 'self' is whatever actor the trait's handle holds, which a sender only sends to: write 'self'.",
+        &fn->namesym->namestr);
+    return 0;
+}
+
+// The behaviours of an actor trait's body, and what it may not hold at all
+static void parseActorTraitMembers(DclTexts *texts, StructNode *body, Name *traitname, ActorMembers *members) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (body->genericinfo || body->lifeparms)
+        errorMsgNode((INode *)body, ErrorActorTraitMember,
+            "Actor trait %s takes type parameters, and a generic actor trait is not built yet.", &traitname->namestr);
+    if (body->basetrait || body->extendsbase)
+        errorMsgNode((INode *)body, ErrorActorTraitMember,
+            "Actor trait %s names an abstraction or a base, which an actor trait does not have yet.", &traitname->namestr);
+    for (nodelistFor(&body->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        if (field->flags & IsMixin) {
+            errorMsgNode((INode *)body, ErrorActorTraitMember,
+                "Actor trait %s names an abstraction or a base, which an actor trait does not have yet.", &traitname->namestr);
+            break;
+        }
+        errorMsgNode((INode *)field, ErrorActorTraitMember,
+            "%s is a field, and an actor trait declares behaviours only: the actors that conform have their own state, which only their own methods reach, so a sender can only send them a message.",
+            &field->namesym->namestr);
+    }
+    for (nodelistFor(&body->nodelist, cnt, nodesp)) {
+        INode *node = *nodesp;
+        if (node->tag == MacroDclTag) {
+            errorMsgNode(node, ErrorActorTraitMember, "An actor trait declares behaviours only, and a macro is not one.");
+            continue;
+        }
+        if (node->tag == VarDclTag) {
+            errorMsgNode(node, ErrorActorTraitMember, "An actor trait declares behaviours only, and a 'static' is not one.");
+            continue;
+        }
+        if (node->tag != FnDclTag)
+            continue;
+        FnDclNode *fn = (FnDclNode *)node;
+        if (!parseActorIsBehaviour(texts, fn)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "%s is a 'fn', and an actor trait declares behaviours only: code cannot be run inside an actor by a caller outside it, so all a sender has is a message to send. Declare it 'pub async fn %s(self, ...);' if an actor should take it as one.",
+                &fn->namesym->namestr, &fn->namesym->namestr);
+            continue;
+        }
+        if (fn->value != NULL) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s has a body, and an actor trait declares signatures only: each actor that conforms writes the behaviour itself, with its own state to run it on.",
+                &fn->namesym->namestr);
+            continue;
+        }
+        if (!(fn->flags & FlagMethFld)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s has no 'self': a behaviour is sent to an actor, which is its first parameter, 'self'.",
+                &fn->namesym->namestr);
+            continue;
+        }
+        if (!parseActorTraitSelf(body, fn))
+            continue;
+        int ok = 1;
+        if (!(fn->flags & FlagPub)) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s is not 'pub', and an actor trait's behaviours are what a sender outside the actor sends: declare it 'pub async fn %s(...)'.",
+                &fn->namesym->namestr, &fn->namesym->namestr);
+            ok = 0;
+        }
+        if (fn->overloadsym) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s is declared 'overload', which an actor trait's behaviour is not yet.", &fn->namesym->namestr);
+            ok = 0;
+        }
+        if (fn->genericinfo) {
+            errorMsgNode(node, ErrorActorTraitMember,
+                "Behaviour %s is generic, which a behaviour cannot be yet: each is one variant of the actor's message type.",
+                &fn->namesym->namestr);
+            ok = 0;
+        }
+        FnSigNode *sig = (FnSigNode *)fn->vtype;
+        if (parseActorReturns(fn)) {
+            DclText *rettext = parseActorText(texts, fn->vtype);
+            if (rettext && rettext->type && !parseActorOnlyStatic(rettext->type, rettext->typeend)) {
+                errorMsgNode(sig->rettype, ErrorNotSendable,
+                    "Actor trait %s's behaviour %s returns a type naming a lifetime other than 'static, which is not Sendable: no borrow but one that lives for the whole program, written &'static imm, &'static opaq or &'static uni, goes back in a reply.",
+                    &traitname->namestr, &fn->namesym->namestr);
+                ok = 0;
+            }
+        }
+        parseActorKind = "Actor trait";
+        int parmsok = parseActorParms(texts, body, traitname, fn, &members->crossing);
+        parseActorKind = "Actor";
+        if (parmsok && ok)
+            nodesAdd(&members->messages, node);
+    }
+}
+
+// The parameters of a behaviour as a method of the handle or of the virtual
+// trait declares them, 'self' left out: as the author wrote them, or with their
+// defaults too
+static void genTraitParms(GenText *g, DclTexts *texts, FnDclNode *fn, int defaults) {
+    INode **parmp;
+    uint32_t parmcnt;
+    for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+        VarDclNode *parm = (VarDclNode *)*parmp;
+        if (parm->namesym == selfName)
+            continue;
+        DclText *text = parseActorText(texts, (INode *)parm);
+        genPuts(g, ", ");
+        if (defaults)
+            genParm(g, text, parm->namesym);
+        else {
+            genName(g, parm->namesym);
+            genPuts(g, ": ");
+            genPutn(g, text->type, text->typeend - text->type);
+        }
+    }
+}
+
+// The arguments of a call passing a behaviour's parameters on, each by its name
+static void genTraitArgs(GenText *g, FnDclNode *fn) {
+    int first = 1;
+    INode **parmp;
+    uint32_t parmcnt;
+    for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+        VarDclNode *parm = (VarDclNode *)*parmp;
+        if (parm->namesym == selfName)
+            continue;
+        if (!first)
+            genPuts(g, ", ");
+        first = 0;
+        genName(g, parm->namesym);
+    }
+}
+
+// What a behaviour returns, as the actors package's Future[..] holds it
+static void genTraitFuture(GenText *g, DclTexts *texts, FnDclNode *fn) {
+    DclText *rettext = parseActorText(texts, fn->vtype);
+    int tuple = ((FnSigNode *)fn->vtype)->rettype->tag == TupleTag;
+    genSlot(g, GenActors);
+    genPuts(g, ".Future[");
+    genPuts(g, tuple ? "(" : "");
+    if (rettext)
+        genPutn(g, rettext->type, rettext->typeend - rettext->type);
+    genPuts(g, tuple ? ")]" : "]");
+}
+
+// The virtual reference a handle's method calls through, made of the mailbox's
+// place in the handle (where an actor's handle holds its mailbox, the handle's
+// whole) and the table
+static void genTraitVia(GenText *g) {
+    genPuts(g, " {var ");
+    genSlot(g, TrWords);
+    genPuts(g, " = ");
+    genSlot(g, TrFat);
+    genPuts(g, "(&self.");
+    genSlot(g, GenMailbox);
+    genPuts(g, " as *u8, self.");
+    genSlot(g, TrTable);
+    genPuts(g, "); let ");
+    genSlot(g, TrVia);
+    genPuts(g, " = ");
+    genSlot(g, GenMem);
+    genPuts(g, ".readRaw[&<");
+    genSlot(g, TrVt);
+    genPuts(g, "](&mut ");
+    genSlot(g, TrWords);
+    genPuts(g, " as *(&<");
+    genSlot(g, TrVt);
+    genPuts(g, "));");
+}
+
+static void parseActorTrait(ParseState *parse, uint16_t pubflag) {
+    ModuleNode *mod = parse->mod;
+
+    // The body, read as a trait's with its behaviours noted, and where each
+    // parameter's and return type is written kept, to be written again
+    DclTexts texts = {NULL, 0, 0, 0, NULL, 0, NULL};
+    texts.awaiting = newNodes(4);
+    texts.behaviours = newNodes(8);
+    DclTexts *svtexts = parse->dcltexts;
+    parse->dcltexts = &texts;
+    StructNode *body = (StructNode *)parseStruct(parse, 0);
+    parse->dcltexts = svtexts;
+    Name *traitname = body->namesym;
+    if (traitname == anonName)
+        return;
+
+    ActorMembers members;
+    members.messages = newNodes(8);
+    members.inits = newNodes(2);
+    members.crossing = newNodes(8);
+    members.declared = 0;
+    parseActorTraitMembers(&texts, body, traitname, &members);
+
+    GenText g = {NULL, 0, 0};
+    genPuts(&g, "");
+    parseActorKind = "Actor trait";
+    int runtime = parseActorRuntime(parse, body, traitname, &g);
+    parseActorKind = "Actor";
+    if (runtime == 0)
+        return;
+
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t nasks = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        if (parseActorReturns((FnDclNode *)*nodesp))
+            ++nasks;
+    }
+
+    uint32_t nnames = TrSlots + 2 * nasks;
+    Name **names = (Name **)memAllocBlk(nnames * sizeof(Name *));
+    for (int i = 0; i < GenState; ++i)
+        names[i] = genShared[i];
+    char buf[300];
+    snprintf(buf, sizeof(buf), "%s.vt", &traitname->namestr);
+    names[TrVt] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.fat", &traitname->namestr);
+    names[TrFat] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.wrap", &traitname->namestr);
+    names[TrWrap] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.behaviours", &traitname->namestr);
+    names[TrBody] = nametblPrivate(buf, strlen(buf));
+    names[TrTable] = nametblPrivate("table", 5);
+    names[TrWords] = nametblPrivate("words'", 6);
+    names[TrVia] = nametblPrivate("via'", 4);
+    uint32_t ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (parseActorReturns(fn)) {
+            names[ask] = parseBehaviourName(fn->namesym, 0);
+            names[ask + nasks] = parseBehaviourName(fn->namesym, 1);
+            ++ask;
+        }
+    }
+    body->namesym = names[TrBody];
+
+    // The virtual trait: the methods of an actor's handle for each behaviour
+    genPuts(&g, "struct trait ");
+    genSlot(&g, TrVt);
+    genPuts(&g, " {\n");
+    ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        int returns = parseActorReturns(fn);
+        genPuts(&g, "  pub fn ");
+        genName(&g, fn->namesym);
+        genPuts(&g, "(self: &");
+        genTraitParms(&g, &texts, fn, 0);
+        genPuts(&g, ");\n");
+        if (returns) {
+            genPuts(&g, "  pub fn ");
+            genSlot(&g, ask);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ", ");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ": ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Reply);\n  pub fn ");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ") ");
+            genTraitFuture(&g, &texts, fn);
+            genPuts(&g, ";\n");
+            ++ask;
+        }
+    }
+    genPuts(&g, "}\n");
+
+    // The two words of a virtual reference
+    genPuts(&g, "struct ");
+    genSlot(&g, TrFat);
+    genPuts(&g, " {data: *u8; vt: *u8;}\n");
+
+    // The handle
+    genPuts(&g, "struct ");
+    genName(&g, traitname);
+    genPuts(&g, " is ");
+    genSlot(&g, GenSendable);
+    genPuts(&g, " {\n  ");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, ": ");
+    genSlot(&g, GenSync);
+    genPuts(&g, ".Arc[opaq, ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".Mailbox[u8]];\n  ");
+    genSlot(&g, TrTable);
+    genPuts(&g, ": *u8;\n  pub fn `==`(self: &, o: ");
+    genName(&g, traitname);
+    genPuts(&g, ") bool {*(&self.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize) == *(&o.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize)}\n");
+    ask = TrSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        int returns = parseActorReturns(fn);
+        genPuts(&g, "  pub fn ");
+        genName(&g, fn->namesym);
+        genPuts(&g, "(self: &");
+        genTraitParms(&g, &texts, fn, 1);
+        genPuts(&g, ")");
+        genTraitVia(&g);
+        genPuts(&g, " ");
+        genSlot(&g, TrVia);
+        genPuts(&g, ".");
+        genName(&g, fn->namesym);
+        genPuts(&g, "(");
+        genTraitArgs(&g, fn);
+        genPuts(&g, ");}\n");
+        if (returns) {
+            genPuts(&g, "  pub fn ");
+            genSlot(&g, ask);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ", ");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ": ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Reply)");
+            genTraitVia(&g);
+            genPuts(&g, " ");
+            genSlot(&g, TrVia);
+            genPuts(&g, ".");
+            genSlot(&g, ask);
+            genPuts(&g, "(");
+            genTraitArgs(&g, fn);
+            genPuts(&g, ((FnSigNode *)fn->vtype)->parms->used > 1 ? ", " : "");
+            genSlot(&g, GenEnvelope);
+            genPuts(&g, ");}\n  pub fn ");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(self: &");
+            genTraitParms(&g, &texts, fn, 0);
+            genPuts(&g, ") ");
+            genTraitFuture(&g, &texts, fn);
+            genTraitVia(&g);
+            genPuts(&g, " ");
+            genSlot(&g, TrVia);
+            genPuts(&g, ".");
+            genSlot(&g, ask + nasks);
+            genPuts(&g, "(");
+            genTraitArgs(&g, fn);
+            genPuts(&g, ")}\n");
+            ++ask;
+        }
+    }
+    genPuts(&g, "}\n");
+
+    // The conversion's function, called on a borrow of an actor's handle
+    genPuts(&g, "fn ");
+    genSlot(&g, TrWrap);
+    genPuts(&g, "(v: &<");
+    genSlot(&g, TrVt);
+    genPuts(&g, ") ");
+    genName(&g, traitname);
+    genPuts(&g, " {let f = ");
+    genSlot(&g, GenMem);
+    genPuts(&g, ".readRaw[");
+    genSlot(&g, TrFat);
+    genPuts(&g, "](&v as *");
+    genSlot(&g, TrFat);
+    genPuts(&g, "); let r = f.data as &");
+    genSlot(&g, GenSync);
+    genPuts(&g, ".Arc[opaq, ");
+    genSlot(&g, GenActors);
+    genPuts(&g, ".Mailbox[u8]]; ");
+    genName(&g, traitname);
+    genPuts(&g, "(*r, f.vt)}\n");
+
+    // Parse it, as the trait's own source, its diagnostics reported at its name
+    Lexer *gen = lexNew(g.text, lex->url);
+    gen->genat = (INode *)body;
+    gen->gennames = names;
+    gen->ngennames = nnames;
+    uint32_t firstnode = mod->nodes->used;
+    lexPush(gen);
+    if (runtime == 2)
+        parseFnOrVar(parse, 0);
+    modAddNode(mod, names[TrBody], (INode *)body);
+    StructNode *vt = (StructNode *)parseStruct(parse, 0);
+    modAddNode(mod, names[TrVt], (INode *)vt);
+    StructNode *fat = (StructNode *)parseStruct(parse, 0);
+    modAddNode(mod, names[TrFat], (INode *)fat);
+    StructNode *handle = (StructNode *)parseStruct(parse, pubflag);
+    modAddNode(mod, handle->namesym, (INode *)handle);
+    FnDclNode *wrap = (FnDclNode *)parseFnOrVar(parse, 0);
+    if (!lexIsToken(EofToken))
+        errorMsgLex(ErrorNoEof, "The declarations generated for actor trait %s did not parse whole.", &traitname->namestr);
+    lexPop();
+
+    // Every declaration generated here, exported by a library compile whatever
+    // its visibility, since an importer generates them again (dclIsExported)
+    for (uint32_t i = firstnode; i < mod->nodes->used; ++i) {
+        INode *node = nodesGet(mod->nodes, i);
+        DclInfo *dclinfo = inodeGetDclInfo(node);
+        if (dclinfo && (node->tag == StructTag || node->tag == FnDclTag))
+            dclinfo->facts |= DclActorGen;
+    }
+
+    // Each behaviour, and the handle's methods that send it
+    ActorTraitInfo *info = (ActorTraitInfo *)memAllocBlk(sizeof(ActorTraitInfo));
+    memset(info, 0, sizeof(ActorTraitInfo));
+    info->handle = handle;
+    info->body = body;
+    info->vt = vt;
+    info->wrap = wrap;
+    info->crossing = members.crossing;
+    info->nmsgs = members.messages->used;
+    info->msgs = (ActorMessage *)memAllocBlk((info->nmsgs ? info->nmsgs : 1) * sizeof(ActorMessage));
+    ask = TrSlots;
+    uint32_t m = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        ActorMessage *am = &info->msgs[m++];
+        am->method = fn;
+        am->send = NULL;
+        am->ask = NULL;
+        am->future = NULL;
+        Name *futurename = parseActorReturns(fn) ? names[ask + nasks] : NULL;
+        Name *askname = parseActorReturns(fn) ? names[ask++] : NULL;
+        INode **hp;
+        uint32_t hcnt;
+        for (nodelistFor(&handle->nodelist, hcnt, hp)) {
+            if ((*hp)->tag != FnDclTag)
+                continue;
+            FnDclNode *hfn = (FnDclNode *)*hp;
+            if (hfn->namesym == fn->namesym && am->send == NULL && (hfn->flags & FlagMethFld))
+                am->send = hfn;
+            else if (askname && hfn->namesym == askname)
+                am->ask = hfn;
+            else if (futurename && hfn->namesym == futurename)
+                am->future = hfn;
+        }
+    }
+    actorTraitRegister(info);
+}
+
 // ---- The declaration ---------------------------------------------------------
 
 void parseActor(ParseState *parse, uint16_t pubflag) {
     ModuleNode *mod = parse->mod;
 
-    // 'actor trait', the abstraction of an actor, is admitted and not built
+    // 'actor trait', the abstraction of an actor
     if (lexNextIsWord("trait")) {
-        errorMsgLex(ErrorUnbuiltKind,
-            "'actor trait' is the abstraction of an actor, and the compiler does not build it yet.");
-        lexNextToken();
-        lexNextToken();
-        if (lexIsToken(IdentToken))
-            lexNextToken();
-        parseSkipDclBody();
+        parseActorTrait(parse, pubflag);
         return;
     }
 
@@ -789,10 +1324,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
         if (parseActorReturns(fn)) {
-            snprintf(buf, sizeof(buf), "%s'ask", &fn->namesym->namestr);
-            names[ask] = nametblPrivate(buf, strlen(buf));
-            snprintf(buf, sizeof(buf), "%s'future", &fn->namesym->namestr);
-            names[ask + nasks] = nametblPrivate(buf, strlen(buf));
+            names[ask] = parseBehaviourName(fn->namesym, 0);
+            names[ask + nasks] = parseBehaviourName(fn->namesym, 1);
             ++ask;
         }
     }
@@ -908,6 +1441,14 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genPuts(&g, ".Mailbox[");
     genSlot(&g, GenMsg);
     genPuts(&g, "]];\n");
+    // Two handles are equal when they are of the one actor: the one mailbox
+    genPuts(&g, "  pub fn `==`(self: &, o: ");
+    genName(&g, actorname);
+    genPuts(&g, ") bool {*(&self.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize) == *(&o.");
+    genSlot(&g, GenMailbox);
+    genPuts(&g, " as *usize)}\n");
     if (members.declared == 0) {
         // The state's implicit initializer: its fields with their types written,
         // in order, the rest taking their defaults. Public where nothing private

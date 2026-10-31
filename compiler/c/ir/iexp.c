@@ -100,6 +100,11 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     if (result != NoMatch)
         return result;
 
+    // An actor's handle where an actor trait's handle is wanted is converted by
+    // the language (actorTraitCoerce), which judges whether the actor conforms
+    if (actorTraitWanted(fromtype, itypeGetTypeDcl(totype)))
+        return ConvByMeth;
+
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
@@ -459,6 +464,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     }
     case ConvByMeth:
     {
+        if (actorTraitWanted(iexpGetTypeDcl(*from), totypedcl))
+            return actorTraitCoerce(iexpCoerceState, from, totype);
         // The injected call takes the operand's position before it is lowered,
         // because lowering is what reports a private or unmatched isTrue
         FnCallNode *istrue = newFnCallLower(*from, *from, 1);

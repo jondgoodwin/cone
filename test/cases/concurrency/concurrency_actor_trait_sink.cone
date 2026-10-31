@@ -1,0 +1,113 @@
+// An actor trait: what a sender needs of an actor, as behaviours only. Two
+// actors that share nothing but the shapes of two behaviours conform to it with
+// nothing written on either, and one list holds a handle to each.
+//
+// 'ChunkSink' declares 'accept' and 'total'. Counter adds what it is sent;
+// Doubler adds twice what it is sent and has a behaviour of its own, 'reset',
+// which the trait does not name: an actor conforms by having each behaviour of
+// the trait, not by having no more. Both are converted where a 'ChunkSink' is
+// wanted -- an argument, a list's 'push' -- by the language, with nothing
+// written at the conversion.
+//
+// 'feedAll' sends through the list, so each send is one indirect call of the
+// actor's own sending method; 'Reporter' awaits each handle's 'total', which
+// is sent awaited through the same table (a behaviour that returns a value
+// has the four shapes through the trait's handle as through an actor's).
+// Everything main sends goes before the Reporter's request, from the one
+// thread, and every sender's messages to one actor arrive in the order sent,
+// so the totals are the same on every run.
+
+mod concurrency_actor_trait_sink;
+
+import stdio use *;
+import collections use List;
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+
+actor Counter {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+actor Doubler {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n * 2u64;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+
+  pub async fn reset(self) {
+    sum = 0u64;
+  }
+}
+
+// One chunk to every sink in the list, whatever each is
+fn feedAll(sinks: &List[ChunkSink], n: u64) {
+  var i = 0usize;
+  while i < sinks.view().len() {
+    sinks[i].accept(Chunk(n));
+    i = i + 1usize;
+  }
+}
+
+fn feedOne(s: ChunkSink, n: u64) {
+  s.accept(Chunk(n));
+}
+
+actor Reporter {
+  pub async fn report(self, sinks: List[ChunkSink]) {
+    var i = 0usize;
+    while i < sinks.view().len() {
+      let t = await sinks[i].total();
+      printStr("sink "); printUInt(u64.from(i)); printStr(" total "); printUInt(t); printStr("\n");
+      i = i + 1usize;
+    }
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Counter();
+    let d = Doubler();
+    var sinks = List[ChunkSink].empty();
+    sinks.push(c);
+    sinks.push(d);
+    feedAll(&sinks, 5u64);
+    feedAll(&sinks, 7u64);
+    feedOne(c, 100u64);
+    feedOne(Doubler(), 1u64);
+    d.reset();
+    feedAll(&sinks, 1u64);
+    let r = Reporter();
+    r.report(sinks);
+  }
+  finalAll();
+}
