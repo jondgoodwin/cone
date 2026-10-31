@@ -16,13 +16,10 @@ import stdio use *;
 import collections use *;
 import toml;
 
-// The manifest's package, or the reason it cannot be read
-fn describe(text: &Array[u8]) Result[String, String] {
-  var doc = toml.Document();
-  match toml.parse(text) {
-    case var Ok(ok) { doc <-> ok; }
-    case let Err(e) { return Err[String, String](e.message()); }
-  }
+// The manifest's package, or the reason it cannot be read (an application: the
+// parser's error and its own refusals alike are an AnyError)
+fn describe(text: &Array[u8]) Result[String, AnyError] {
+  let doc = toml.parse(text)?;
   // Only Congo's tables, each table only Congo's keys
   let names = doc.names();
   var i = 0usize;
@@ -31,30 +28,30 @@ fn describe(text: &Array[u8]) Result[String, String] {
       var m = String.from("[");
       m.append(names[i].view());
       m.append("] is not part of a Congo manifest");
-      return Err[String, String](m);
+      return Err[String, AnyError](AnyError.msg(m.view()));
     }
     i = i + 1usize;
   }
   if !doc.has("package") {
-    return Err[String, String](String.from("the manifest needs a [package] table"));
+    return Err[String, AnyError](AnyError.msg("the manifest needs a [package] table"));
   }
   let pkg = &doc["package"];
   var out = String.empty();
-  let Some(n) = pkg.getString("name") else { return Err[String, String](String.from("[package] name must be a string")); };
+  let Some(n) = pkg.getString("name") else { return Err[String, AnyError](AnyError.msg("[package] name must be a string")); };
   out.append(n.view());
-  let Some(v) = pkg.getString("version") else { return Err[String, String](String.from("[package] version must be a string")); };
+  let Some(v) = pkg.getString("version") else { return Err[String, AnyError](AnyError.msg("[package] version must be a string")); };
   out.append(" ");
   out.append(v.view());
-  let Some(o) = pkg.getString("output") else { return Err[String, String](String.from("[package] output must be a string")); };
+  let Some(o) = pkg.getString("output") else { return Err[String, AnyError](AnyError.msg("[package] output must be a string")); };
   out.append(", a ");
   out.append(o.view());
   if doc.has("link") {
-    let Some(l) = doc["link"].getStrings("libraries") else { return Err[String, String](String.from("[link] libraries must be a list of strings")); };
+    let Some(l) = doc["link"].getStrings("libraries") else { return Err[String, AnyError](AnyError.msg("[link] libraries must be a list of strings")); };
     out.append("\nlinks: ");
     let shown = String.join(l.view(), ", ");
     out.append(shown.view());
   }
-  Ok[String, String](out)
+  Ok[String, AnyError](out)
 }
 
 fn show(text: &Array[u8]) {
@@ -62,7 +59,7 @@ fn show(text: &Array[u8]) {
     case let Ok(ok) { printStr(ok.view()); }
     case let Err(e) {
       printStr("congo.toml: ");
-      printStr(e.view());
+      printStr(e.message().view());
     }
   }
   printStr("\n");

@@ -2510,7 +2510,7 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how
                     "a borrowed reference, and no borrow may leave its thread: its lifetime is checked in that thread alone");
                 if (how == StaticOff && (perm == (INode *)immPerm || perm == (INode *)opaqPerm || perm == (INode *)uniPerm))
                     strcat(reason,
-                        ". A borrow that lives for the whole program does cross where the generic bounds that type parameter 'Sendable + 'static'");
+                        ". A borrow that lives for the whole program does cross where the generic bounds that type parameter 'Sendable + 'static', and a borrow written &'static does anywhere");
             }
             break;
         }

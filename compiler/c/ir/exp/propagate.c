@@ -175,6 +175,7 @@ static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode *
     if (itypeIsSame(from, to) || coerce == EqMatch || coerce == CastSubtype || coerce == ConvSubtype)
         return ConvAsIs;
     INode *todcl = itypeGetTypeDcl(to);
+    int hasfrom = 0;
 
     // An 'overload from' of the destination that takes it, asked as a call of it
     // asks, with nothing changed. A selection that is ambiguous is the call's to
@@ -182,6 +183,7 @@ static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode *
     if (isMethodType(todcl)) {
         INode *binding = iNsTypeFindFnField((INsTypeNode*)todcl, fromName);
         if (binding != NULL) {
+            hasfrom = 1;
             VarDclNode *probevar = newVarDclFull(anonName, VarDclTag, from, (INode*)immPerm, NULL);
             inodeLexCopy((INode*)probevar, lexnode);
             INode *probe = newNameUseFromDclNode((INode*)probevar, lexnode);
@@ -222,6 +224,19 @@ static enum PropagateConv propagateConvKind(INode *from, INode *to, StructNode *
         return ConvRefused;
     }
     char retname[200];
+    // The destination has a 'from' and the error is bound to its thread: the
+    // 'from' that takes errors in general (AnyError's) takes only Sendable ones,
+    // so say that is what is wrong, not that a 'from' is missing
+    if (hasfrom && itypeThreadBound(from, NULL)) {
+        char what[512], reason[512];
+        genericNotSendableWhy(from, what, reason, StaticOff);
+        errorMsgNode(lexnode, ErrorQuesConvert,
+            intry ? "'?' gives this error, %s, to a try block giving %s, whose error %s takes only errors that are Sendable (it may cross between actors), and %s is not Sendable: %s %s."
+                : "'?' returns this error, %s, from a function returning %s, whose error %s takes only errors that are Sendable (it may cross between actors), and %s is not Sendable: %s %s.",
+            propagateSpell(fromname, sizeof(fromname), from), propagateSpell(retname, sizeof(retname), rettype),
+            propagateSpell(toname, sizeof(toname), to), fromname, what, reason);
+        return ConvRefused;
+    }
     errorMsgNode(lexnode, ErrorQuesConvert,
         intry ? "'?' gives this error, %s, to a try block giving %s, whose error %s cannot take it: declare an 'overload from' or a plain 'from' method on %s that takes %s, or a variant of %s that holds it."
             : "'?' returns this error, %s, from a function returning %s, whose error %s cannot take it: declare an 'overload from' or a plain 'from' method on %s that takes %s, or a variant of %s that holds it.",

@@ -40,27 +40,19 @@ pub struct Plugin {
   }
 
   pub fn connect(self: &mut, lp: &mut Loop, addr: SocketAddr, serverName: &str, token: u64) Result[u64, httpclient.Failure] {
-    match drv.connect(lp, addr, serverName, token) {
-      case let Ok(id) {return Ok[u64, httpclient.Failure](id.number());}
-      case let Err(f) {return Err[u64, httpclient.Failure](clientFailure(f));}
-    }
+    // (the driver's Failure is this package's, downstream of httpclient's, which
+    // can declare no 'from' for it: 'mapError' makes the conversion '?' needs)
+    let id = drv.connect(lp, addr, serverName, token).mapError(fn(f: Failure) httpclient.Failure {clientFailure(f)})?;
+    Ok[u64, httpclient.Failure](id.number())
   }
 
   // A server's UDP socket at addr, its connections' TLS cfg's certificate
   // and key (QUIC's own bounds the defaults)
   pub fn listen(self: &mut, lp: &mut Loop, addr: SocketAddr, cfg: &tls.ServerConfig, token: u64) Result[u64, httpclient.Failure] {
-    match quic.Context.server(quic.Config.make(), &cfg.certFile, &cfg.keyFile) {
-      case let Ok(ctx) {
-        match drv.listen(lp, addr, ctx, token) {
-          case let Ok(l) {return Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index));}
-          case let Err(f) {return Err[u64, httpclient.Failure](clientFailure(f));}
-        }
-      }
-      case let Err(e) {
-        return Err[u64, httpclient.Failure](httpclient.Failure.make(httpclient.Stage.Tls, e.osError, ErrorKind.Unsupported,
-          e.message().view()));
-      }
-    }
+    let ctx = quic.Context.server(quic.Config.make(), &cfg.certFile, &cfg.keyFile)
+      .mapError(fn(e: quic.QuicError) httpclient.Failure {serverFailure(e)})?;
+    let l = drv.listen(lp, addr, ctx, token).mapError(fn(f: Failure) httpclient.Failure {clientFailure(f)})?;
+    Ok[u64, httpclient.Failure]((u64.from(l.gen) << 32u64) | u64.from(l.index))
   }
 
   pub fn localPort(self: &, lp: &Loop, listener: u64) u16 {
@@ -121,6 +113,11 @@ fn reqOf(r: httpclient.H3Req) ReqId {
 fn reqNumbers(r: ReqId) httpclient.H3Req {
   if r.isNone() {return httpclient.H3Req.none();}
   httpclient.H3Req(r.conn.number(), r.number())
+}
+
+// A server Context that QUIC could not make, as a fetch's failure
+fn serverFailure(e: quic.QuicError) httpclient.Failure {
+  httpclient.Failure.make(httpclient.Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view())
 }
 
 // A driver's failure as a fetch's

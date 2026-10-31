@@ -255,7 +255,11 @@ int refWritesShared(RefNode *ref) {
 // parameter is bounded ''static' (StaticVouched), the signature's where it is
 // written so (StaticWritten).
 StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how) {
-    if (how == StaticOff ||itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
+    // Where borrows are not let cross at large (StaticOff), one written ''static'
+    // still does, as Rust's '&'static str' is Send: its data is global and
+    // immutable. What a StaticOff walk remembers per struct is that strict answer.
+    if ((how == StaticOff && ref->lifename != staticLifeName)
+        || itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
         return StaticNotBorrow;
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     if (perm != (INode *)immPerm && perm != (INode *)opaqPerm && perm != (INode *)uniPerm)
