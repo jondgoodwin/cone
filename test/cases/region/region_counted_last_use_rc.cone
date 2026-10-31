@@ -1,0 +1,260 @@
+// The last use of a counted local or parameter is a move. 'm' handed to a new
+// holder where nothing reads it afterwards on any path gives the holder the
+// owner 'm' held: no owner is added, and 'm' is not released at its scope's
+// end. Any other read stays a counted copy. The only thing a program can see is
+// when a value reaches no owner, so each case below finalizes a 'Note' ('final'
+// prints its id) and the order of the prints is the count at work. Every line
+// is worked out by hand from the rule above; the value 'n' is born with one
+// owner (the temporary handed over to the parameter) in every case.
+//
+// One case per shape of path that decides it:
+//
+// - 1 call:      the last use is an argument to a function that stores it: moved.
+// - 2 some:      'Some(m)': moved.
+// - 3 literal:   a struct literal's field: moved.
+// - 4 push:      'List.push(m)': moved.
+// - 5 branch:    'm' stored on one branch of an 'if', unused on the other: moved on the one,
+//                released at the end on the other (a drop flag).
+// - 6 match:     the same over a 'match'.
+// - 7 loop:      read inside a loop, 'm' declared outside: a copy each pass, and the
+//                value still there on the next.
+// - 8 closure:   a closure that reads 'm' is used after the store: a copy.
+// - 9 borrow:    a borrow of 'm' that is not used again when 'm' is stored: moved.
+// - 10 later:    'm' is read after the store: a copy, released at the end.
+// - 11 overwrite: stored, then the holder overwritten before the function ends:
+//                the value is released at the overwrite, once.
+// - 12 both:     'm' passed twice in one call: the first a copy, the second moved.
+//
+// Finals counted and each id printed; a marker line precedes and follows the
+// release it is ordered against.
+
+mod region_counted_last_use_rc;
+
+import stdio use *;
+import collections use List;
+
+alias C = Rc[imm, Note];
+
+var @threadlocal finals = 0i32;
+
+struct Note {
+  pub id: i32;
+  fn final(self: &uni) {
+    finals = finals + 1i32;
+    printStr("  final ");
+    printInt(i64.from(id));
+    printStr("\n");
+  }
+}
+
+struct Box {
+  pub var v: Option[C];
+}
+
+struct Pair {
+  pub c: C;
+  pub n: i32;
+}
+
+fn line(label: &str) {
+  printStr(label);
+  printStr("\n");
+}
+
+fn store(b: &mut Box, m: C) {
+  b.v = Some[C](m);
+}
+
+fn wrap(m: C) Option[C] {
+  Some[C](m)
+}
+
+fn make(m: C) Pair {
+  Pair(m, 7i32)
+}
+
+fn read(m: C) i32 { m.id }
+
+// 1: the last use is a call's argument
+fn call(b: &mut Box, m: C) {
+  store(b, m);
+  line("1 call: stored");
+  b.v = None[C];
+  line("1 call: overwritten");
+}
+
+// 2: Some(m)
+fn some(b: &mut Box, m: C) {
+  b.v = Some[C](m);
+  line("2 some: stored");
+  b.v = None[C];
+  line("2 some: overwritten");
+}
+
+// 3: a struct literal's field; the struct dies at the end of its block
+fn literal(m: C) {
+  {
+    let p = make(m);
+    line("3 literal: made");
+  }
+  line("3 literal: struct gone");
+}
+
+// 4: push
+fn pushed(l: &mut List[C], m: C) {
+  l.push(m);
+  line("4 push: stored");
+  *l = List[C].empty();
+  line("4 push: overwritten");
+}
+
+// 5: one branch of an if
+fn branch(b: &mut Box, m: C, c: bool) {
+  if c {
+    b.v = Some[C](m);
+    line("5 branch: stored");
+    b.v = None[C];
+  }
+  else {
+    line("5 branch: not stored");
+  }
+  line("5 branch: after the if");
+}
+
+// 6: one arm of a match
+fn arm(b: &mut Box, m: C, k: Option[i32]) {
+  match k {
+    case let Some[i32](_) {
+      b.v = Some[C](m);
+      line("6 match: stored");
+      b.v = None[C];
+    }
+    case is None {
+      line("6 match: not stored");
+    }
+  }
+  line("6 match: after the match");
+}
+
+// 7: in a loop, with 'm' declared outside it
+fn looped(b: &mut Box, m: C) {
+  var i = 0i32;
+  while i < 3i32 {
+    b.v = Some[C](m);
+    i = i + 1i32;
+  }
+  line("7 loop: after loop");
+  b.v = None[C];
+  line("7 loop: overwritten, still readable");
+  printInt(i64.from(m.id));
+  printStr("\n");
+}
+
+// 8: captured by a closure that is called after the store
+fn closed(b: &mut Box, m: C) {
+  let f = fn() i32 { m.id };
+  b.v = Some[C](m);
+  line("8 closure: stored");
+  printInt(i64.from(f()));
+  printStr("\n");
+  b.v = None[C];
+  line("8 closure: overwritten");
+}
+
+// 9: borrowed, the borrow done with, then stored
+fn borrowed(b: &mut Box, m: C) {
+  let r = &m;
+  printInt(i64.from(r.id));
+  printStr("\n");
+  b.v = Some[C](m);
+  line("9 borrow: stored");
+  b.v = None[C];
+  line("9 borrow: overwritten");
+}
+
+// 10: read after the store
+fn later(b: &mut Box, m: C) {
+  b.v = Some[C](m);
+  line("10 later: stored");
+  printInt(i64.from(m.id));
+  printStr("\n");
+  b.v = None[C];
+  line("10 later: overwritten");
+}
+
+// 11: stored, then the holder overwritten before the function ends
+fn overwrite(b: &mut Box, m: C) {
+  b.v = Some[C](m);
+  line("11 overwrite: stored");
+  b.v = None[C];
+  line("11 overwrite: overwritten");
+}
+
+// 12: the first of two uses in one call is a copy, the second a move
+fn twice(m: C) i32 {
+  let p = Pair(m, 1i32);
+  let q = Pair(m, 2i32);
+  line("12 both: made");
+  p.n + q.n
+}
+
+fn fresh(id: i32) C { Rc[imm, Note](id) }
+
+fn main() {
+  var b = Box(None[C]);
+  call(&mut b, fresh(1i32));
+  line("1 call: returned, holder drops");
+  b.v = None[C];
+  line("1 call: dropped");
+
+  some(&mut b, fresh(2i32));
+  line("2 some: returned, holder drops");
+  b.v = None[C];
+  line("2 some: dropped");
+
+  literal(fresh(3i32));
+  line("3 literal: returned");
+
+  var l = List[C].empty();
+  pushed(&mut l, fresh(4i32));
+  line("4 push: returned, list drops");
+  l = List[C].empty();
+  line("4 push: dropped");
+
+  branch(&mut b, fresh(50i32), true);
+  line("5 branch: returned (true), holder drops");
+  b.v = None[C];
+  branch(&mut b, fresh(51i32), false);
+  line("5 branch: returned (false)");
+
+  arm(&mut b, fresh(60i32), Some[i32](1i32));
+  line("6 match: returned (some), holder drops");
+  b.v = None[C];
+  arm(&mut b, fresh(61i32), None[i32]);
+  line("6 match: returned (none)");
+
+  looped(&mut b, fresh(7i32));
+  line("7 loop: returned, holder drops");
+  b.v = None[C];
+
+  closed(&mut b, fresh(8i32));
+  line("8 closure: returned, holder drops");
+  b.v = None[C];
+
+  borrowed(&mut b, fresh(9i32));
+  line("9 borrow: returned, holder drops");
+  b.v = None[C];
+
+  later(&mut b, fresh(10i32));
+  line("10 later: returned");
+
+  overwrite(&mut b, fresh(11i32));
+  line("11 overwrite: returned");
+
+  printInt(i64.from(twice(fresh(12i32))));
+  printStr("\n");
+  line("12 both: returned");
+  printStr("finals ");
+  printInt(i64.from(finals));
+  printStr("\n");
+}

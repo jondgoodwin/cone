@@ -1139,6 +1139,38 @@ void flowHandleMoveOrCopy(INode **nodep) {
     }
 }
 
+// Is this expression a candidate to be a variable's last use: a name use of a
+// whole local or parameter that is not a move type, holds counted references
+// and has something to do as it dies? Only the path walk can tell whether it
+// is the last use on every path (flowpath.c, pwCandidate); a match's variable
+// and its bindings, a global and a static are never candidates.
+static int flowIsCandidate(INode *node) {
+    if (!isNameUseNode(node) || !isExpNode(node))
+        return 0;
+    INode *dcl = ((NameUseNode *)node)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag)
+        return 0;
+    VarDclNode *var = (VarDclNode *)dcl;
+    if (var->scope == 0 || (var->flags & FlagStatic) || var->vtype == NULL)
+        return 0;
+    if (flowMatchBound(dcl) || nameIsMatchHolder(var->namesym))
+        return 0;
+    if (itypeGetTypeDcl(var->vtype)->tag == TTupleTag)
+        return 0;
+    return flowDropTracked(var) && itypeNeedsFinal(var->vtype);
+}
+
+void flowHandleMoveOrCopyLast(INode **nodep) {
+    INode *node = *nodep;
+    int cand = flowCurrent && !iexpIsMove(node) && flowIsCandidate(node);
+    flowHandleMoveOrCopy(nodep);
+    if (cand && (*nodep)->tag == RefCountTag && ((RefCountNode *)*nodep)->exp == node
+        && ((RefCountNode *)*nodep)->counts == NULL) {
+        ((RefCountNode *)*nodep)->cand = RefCandOpen;
+        flowCurrent->dropgate = 1;
+    }
+}
+
 // *********************
 // Temporaries
 //
