@@ -36,6 +36,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->spans = NULL;
     snode->carriesborrow = CarriesBorrowUnknown;
     snode->carriesending = CarriesBorrowUnknown;
+    snode->carrieswritable = CarriesBorrowUnknown;
     snode->holdstraced = HoldsTracedUnknown;
     snode->lends = LendsLoaned;
     snode->shapeinf = ShapeUnknown;
@@ -155,6 +156,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // or are bound to their thread, is the instance's own question
     newnode->carriesborrow = CarriesBorrowUnknown;
     newnode->carriesending = CarriesBorrowUnknown;
+    newnode->carrieswritable = CarriesBorrowUnknown;
     newnode->holdstraced = HoldsTracedUnknown;
     newnode->holdsatomic = HoldsTracedUnknown;
     newnode->cannottrace = HoldsTracedUnknown;

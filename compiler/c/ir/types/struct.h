@@ -52,6 +52,7 @@ typedef struct StructNode {
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t carriesending;  // itypeCarriesEndingBorrow's remembered answer (CarriesBorrow*), once the type is checked
+    uint8_t carrieswritable; // itypeCarriesWritableBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t shapeinf;       // Whether the compiler finds it shape-changing (ShapeInfer), for a type that declares none of the three (shapeinfer.h)

@@ -45,11 +45,17 @@ INode *itypeGetDerefTypeDcl(INode *node) {
 // not yet type checked. A "no" that depended on it is not remembered.
 static int itypeCarriesProvisional = 0;
 
+// What itypeCarriesAt asks: any borrowed reference; one of a lifetime that
+// ends (itypeCarriesEndingBorrow); a writable one a store can go through
+// (itypeCarriesWritableBorrow)
+enum { CarriesAnyBorrow = 0, CarriesEndingBorrow = 1, CarriesWritableBorrow = 2 };
+
 static int itypeCarriesAt(INode *type, int ending);
 
-// 'ending' asks itypeCarriesEndingBorrow's question, remembered apart
+// 'ending' says which question, each remembered apart
 static int itypeStructCarriesBorrow(StructNode *type, int ending) {
-    uint8_t *memo = ending ? &type->carriesending : &type->carriesborrow;
+    uint8_t *memo = ending == CarriesWritableBorrow ? &type->carrieswritable
+        : ending ? &type->carriesending : &type->carriesborrow;
     switch (*memo) {
     case CarriesBorrowYes:
         return 1;
@@ -124,6 +130,9 @@ static int itypeCarriesAt(INode *type, int ending) {
         // either: asked of a lifetime that ends, it answers for what it points
         // at only, as an owning reference does.
         if (itypeGetTypeDcl(ref->region) == borrowRef) {
+            // A read-only borrow is no way through for a store, nor a virtual one
+            if (ending == CarriesWritableBorrow)
+                return type->tag != VirtRefTag && (permGetFlags(ref->perm) & MayWrite);
             if (ending && ref->lifename == staticLifeName)
                 return itypeCarriesAt(ref->vtexp, ending);
             return !lifeIsInvariant(ref->lifename)
@@ -160,7 +169,13 @@ int itypeCarriesBorrow(INode *type) {
 // May a value of this type hold a borrow of a lifetime that ends: one that is
 // not ''static'?
 int itypeCarriesEndingBorrow(INode *type) {
-    return itypeCarriesAt(type, 1);
+    return itypeCarriesAt(type, CarriesEndingBorrow);
+}
+
+// May a value of this type hold a writable borrowed reference, one a store
+// can go through (itypeWritableBorrowDepth)? Remembered per struct.
+static int itypeCarriesWritableBorrow(INode *type) {
+    return itypeCarriesAt(type, CarriesWritableBorrow);
 }
 
 // Can a borrowed reference whose referent is 'want' be stored somewhere in a
@@ -295,7 +310,9 @@ int itypeWritableBorrowDepth(INode *type, int most) {
     }
     case StructTag:
     {
-        if (!itypeCarriesBorrow(type))
+        // A struct that can hold no writable borrow anywhere is answered at
+        // once, however deep its fields nest (the walk below stops at its cap)
+        if (!itypeCarriesBorrow(type) || !itypeCarriesWritableBorrow(type))
             return 0;
         for (int i = 0; i < writableAskingCnt; ++i) {
             if (writableAsking[i] == type && writableAskingMost[i] == most)
