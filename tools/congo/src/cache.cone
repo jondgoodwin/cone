@@ -1,0 +1,277 @@
+// The build cache (congo.py's KEY_FORMAT, content_hash, tool_hash,
+// conec_command, key_inputs, key_of, cache_fresh, record_key, cone_sources
+// and searched_sources).
+//
+// A compile is skipped where its key is unchanged since the last compile that
+// succeeded in that build folder, and each of its outputs is the file that
+// compile wrote. The key is the SHA-256 of everything the compile reads or
+// is told: conec and conestd by content, conec's whole command line, the
+// environment conec reads (CONE_PACKAGES, CONE_LLVM_OPTIONS), and each file
+// it reads -- by what it is to the compile, its content and its path. The
+// key is written beside the outputs (<name>.key) after a compile succeeds,
+// and removed before the next compile begins, so a compile that fails or is
+// killed leaves none and is done again. Linking always runs. --no-cache
+// compiles everything, and records the keys of what it compiled.
+
+const keyFormat = "congo build key 1";
+
+// A file a key covers, and what it is to the compile: 'source', 'include',
+// 'manifest', 'description', 'searched', 'prelude', 'module'
+struct KeyFile {
+  pub kind: String;
+  pub path: Path;
+}
+
+fn keyFileOf(kind: &str, p: &Path) KeyFile { KeyFile(String.from(kind), p.copy()) }
+
+// The SHA-256 of a digest's 32 bytes, in hex
+fn hexOfDigest(d: &Array[u8, 32]) String {
+  var out = String.empty();
+  var i = 0usize;
+  while i < 32usize {
+    out.appendHex(u64.from(d[i]), 2usize);
+    i = i + 1usize;
+  }
+  out
+}
+
+// The SHA-256 of a file's content, in hex; "unreadable" where it cannot be read
+fn contentHash(file: &Path) String {
+  match fs.readFile(file) {
+    case let Ok(data) {
+      let digest = cryptohash.sha256(data.view());
+      hexOfDigest(&digest)
+    }
+    case is Err { String.from("unreadable") }
+  }
+}
+
+// The hash of text, in hex
+fn textHash(text: &str) String {
+  let digest = cryptohash.sha256(text);
+  hexOfDigest(&digest)
+}
+
+// conec's or conestd's content hash, or 'absent' where there is no file
+fn toolHash(file: &Path) String {
+  if !fs.isFile(file) { return String.from("absent"); }
+  contentHash(file)
+}
+
+// Where conestd is: the one CONESTD names, else the one built beside conec,
+// whether or not it is there
+fn conestdPath(conec: &Path) Path {
+  let named = envOr("CONESTD", "");
+  if !named.isEmpty() {
+    let given = Path.from(named.view());
+    return given.normalize();
+  }
+  let folder = conec.parent();
+  folder.join("conestd.lib")
+}
+
+// conec's command line as it is run: the -D defines put after the compiler
+fn conecCommand(conec: &Path, defines: &List[String], rest: &List[String]) List[String] {
+  var command = List[String].empty();
+  command.push(native(conec));
+  var d = 0usize;
+  while d < defines.len() {
+    command.push(String.from("-D"));
+    command.push(defines[d].copy());
+    d = d + 1usize;
+  }
+  var r = 0usize;
+  while r < rest.len() {
+    command.push(rest[r].copy());
+    r = r + 1usize;
+  }
+  command
+}
+
+// A list of texts as JSON writes it, ["a", "b"]
+fn jsonList(items: &List[String]) String {
+  var out = String.from("[");
+  var i = 0usize;
+  while i < items.len() {
+    if i > 0usize { out <- ", "; }
+    out.appendByte('"');
+    let text = items[i].view();
+    var j = 0usize;
+    while j < text.len() {
+      let b = text[j];
+      if b == '"' { out <- "\\\""; }
+      else if b == '\\' { out <- "\\\\"; }
+      else if b == '\n' { out <- "\\n"; }
+      else if b == '\r' { out <- "\\r"; }
+      else if b == '\t' { out <- "\\t"; }
+      else if b < 0x20u8 { out <- "\\u00"; out.appendHex(u64.from(b), 2usize); }
+      else { out.appendByte(b); }
+      j = j + 1usize;
+    }
+    out.appendByte('"');
+    i = i + 1usize;
+  }
+  out <- "]";
+  out
+}
+
+// The lines a key is the hash of: conec and conestd by content, conec's whole
+// command line, the environment it reads, and each file it reads by what it
+// is to the compile, its content and its path
+fn keyInputs(command: &List[String], files: &List[KeyFile]) List[String] {
+  var lines = List[String].empty();
+  let conec = Path.from(command[0usize].view());
+  let conecHash = toolHash(&conec);
+  lines.push(cat("conec ", conecHash.view(), " ", command[0usize].view()));
+  let conestd = conestdPath(&conec);
+  let conestdHash = toolHash(&conestd);
+  let conestdText = native(&conestd);
+  lines.push(cat("conestd ", conestdHash.view(), " ", conestdText.view()));
+  let listed = jsonList(command);
+  lines.push(cat("command ", listed.view()));
+  let packages = envOr("CONE_PACKAGES", "");
+  lines.push(cat("env CONE_PACKAGES=", packages.view()));
+  let options = envOr("CONE_LLVM_OPTIONS", "");
+  lines.push(cat("env CONE_LLVM_OPTIONS=", options.view()));
+  var i = 0usize;
+  while i < files.len() {
+    let f = &files[i];
+    var hash = String.from("absent");
+    if fs.isFile(&f.path) { hash = contentHash(&f.path); }
+    let place = native(&f.path);
+    lines.push(cat(f.kind.view(), " ", hash.view(), " ", place.view()));
+    i = i + 1usize;
+  }
+  lines
+}
+
+fn keyOf(inputs: &List[String]) String {
+  var text = String.from(keyFormat);
+  var i = 0usize;
+  while i < inputs.len() {
+    text <- "\n", inputs[i].view();
+    i = i + 1usize;
+  }
+  textHash(text.view())
+}
+
+// Whether the compile a key file records can stand: the key is the same, and
+// each output is there and is the file that compile wrote
+fn cacheFresh(keyPath: &Path, key: &str, outputs: &List[Path]) bool {
+  if !fs.isFile(keyPath) { return false; }
+  var text = String.empty();
+  match fs.readFile(keyPath) {
+    case var Ok(ok) { text <-> ok; }
+    case is Err { return false; }
+  }
+  let lines = splitLines(text.view());
+  if lines.len() < 2usize { return false; }
+  if !lines[0usize].equals(keyFormat) { return false; }
+  let wanted = cat("key ", key);
+  if !lines[1usize].equals(wanted.view()) { return false; }
+  var i = 0usize;
+  while i < outputs.len() {
+    let place = native(&outputs[i]);
+    var recorded = String.empty();
+    var found = false;
+    var l = 0usize;
+    while l < lines.len() {
+      let line = lines[l].view();
+      if line.startsWith("output ") {
+        let rest = &line[7usize..];
+        let space = findByte(rest, ' ', 0usize);
+        if space < rest.len() && &rest[space + 1usize..] == place.view() {
+          recorded = String.from(&rest[..<space]);
+          found = true;
+        }
+      }
+      l = l + 1usize;
+    }
+    if !found || !fs.isFile(&outputs[i]) { return false; }
+    let now = contentHash(&outputs[i]);
+    if !now.equals(recorded.view()) { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Record a successful compile's key, with the inputs it was made from and the
+// hash of each output, written whole or not at all
+fn recordKey(keyPath: &Path, key: &str, inputs: &List[String], outputs: &List[Path]) {
+  var text = String.from(keyFormat);
+  text <- "\nkey ", key;
+  var i = 0usize;
+  while i < inputs.len() {
+    text <- "\n", inputs[i].view();
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < outputs.len() {
+    let hash = contentHash(&outputs[i]);
+    let place = native(&outputs[i]);
+    text <- "\noutput ", hash.view(), " ", place.view();
+    i = i + 1usize;
+  }
+  text <- "\n";
+  let partialName = cat(keyPath.name(), ".partial");
+  let partial = keyPath.parent().join(partialName.view());
+  writeAll(&partial, text.view());
+  removeIfThere(keyPath);
+  match fs.rename(&partial, keyPath) {
+    case is Ok {}
+    case let Err(e) { fail(fsMessage(&e)); }
+  }
+}
+
+// Paths in the order congo.py's sorted() puts them: by their spelling
+fn bySpelling(a: &Path, b: &Path) i32 {
+  let x = native(a);
+  let y = native(b);
+  x.compare(y.view())
+}
+
+// Every .cone file in a folder, at any depth, in a fixed order: more than
+// conec reads of a package it finds on its package search path, never less
+fn coneSources(folder: &Path) List[Path] {
+  var found = List[Path].empty();
+  if !fs.isDir(folder) { return found; }
+  var entries = List[fs.DirEntry].empty();
+  match fs.walk(folder) {
+    case var Ok(ok) { entries <-> ok; }
+    case let Err(e) { fail(fsMessage(&e)); }
+  }
+  var i = 0usize;
+  while i < entries.len() {
+    let entry = &entries[i];
+    if entry.path.extension() == ".cone" {
+      let isFile = if entry.isLink {fs.isFile(&entry.path)} else {entry.isFile};
+      if isFile { found.push(entry.path.copy()); }
+    }
+    i = i + 1usize;
+  }
+  found.sortBy(&bySpelling);
+  found
+}
+
+// What conec may read of a package it finds on its package search path,
+// rather than being told its files: its folder's name.cone, which the search
+// tries first, and everything in its src/ and gpu/
+fn searchedSources(pkg: &Package, kind: &str, out: &mut List[KeyFile]) {
+  let file = cat(pkg.name.view(), ".cone");
+  let beside = pkg.root.parent();
+  out.push(keyFileOf(kind, &beside.join(file.view())));
+  let src = pkg.root.join("src");
+  let inSrc = coneSources(&src);
+  var i = 0usize;
+  while i < inSrc.len() {
+    out.push(keyFileOf(kind, &inSrc[i]));
+    i = i + 1usize;
+  }
+  let gpu = pkg.root.join("gpu");
+  let inGpu = coneSources(&gpu);
+  i = 0usize;
+  while i < inGpu.len() {
+    out.push(keyFileOf(kind, &inGpu[i]));
+    i = i + 1usize;
+  }
+}

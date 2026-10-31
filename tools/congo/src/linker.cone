@@ -231,6 +231,15 @@ struct Vcvars {
   pub ran: bool;
   pub file: Path;
   pub printed: String;
+  // Each variable it set, in any spelling of its name, to a value other than
+  // the one it had: the name, the new value and the value before
+  pub setNames: List[String];
+  pub setValues: List[String];
+  pub setBefores: List[String];
+}
+
+fn noVcvars() Vcvars {
+  Vcvars(false, Path.from(""), String.empty(), List[String].empty(), List[String].empty(), List[String].empty())
 }
 
 // vcvars64.bat's environment, taken on by Congo itself (for the link, and
@@ -239,7 +248,12 @@ struct Vcvars {
 fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   let vcvars = findVcvars();
   if vcvars.isEmpty() { return Err[Vcvars, String](String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
-  let vcvarsText = native(&vcvars);
+  runVcvarsAt(&vcvars, changes)
+}
+
+// The same, of the vcvars64.bat given
+fn runVcvarsAt(vcvars: &Path, changes: &mut EnvChanges) Result[Vcvars, String] {
+  let vcvarsText = native(vcvars);
   // The line as written, not quoted again: cmd would not recognise the
   // batch path. The marker divides what vcvars64.bat prints, in the
   // console's code page, from the environment, which 'cmd /u' prints in
@@ -281,6 +295,7 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
   // Each variable set printed, in any spelling of its name, where its value
   // is not what it already is
   let lines = splitLines(variables.view());
+  var run = Vcvars(true, vcvars.copy(), String.empty(), List[String].empty(), List[String].empty(), List[String].empty());
   var i = 0usize;
   while i < lines.len() {
     let l = lines[i].view();
@@ -289,12 +304,18 @@ fn runVcvars(changes: &mut EnvChanges) Result[Vcvars, String] {
       let name = &l[..<eq];
       let value = &l[eq + 1usize..];
       let now = envOr(name, "");
-      if !envHas(name) || now.view() != value { changes.set(name, value); }
+      if !envHas(name) || now.view() != value {
+        run.setNames.push(String.from(name));
+        run.setValues.push(String.from(value));
+        run.setBefores.push(now.copy());
+        changes.set(name, value);
+      }
     }
     i = i + 1usize;
   }
   printed <- err.view();
-  Ok[Vcvars, String](Vcvars(true, vcvars.copy(), printed))
+  run.printed <-> printed;
+  Ok[Vcvars, String](run)
 }
 
 // Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
@@ -336,6 +357,12 @@ struct Linker {
   pub conestd: Path;
   pub names: List[String];
   pub values: List[String];
+  // Whether the environment came from the file in the Congo home, and
+  // whether it has been captured again since (msvcenv.cone)
+  pub cached: bool;
+  pub recaptured: bool;
+  // The run of vcvars64.bat a capture made, for the message of a missing link.exe
+  pub ran: Vcvars;
 
   // Set the link's environment in Congo's own, in changes, for one link
   pub fn apply(self: &, changes: &mut EnvChanges) {
@@ -348,10 +375,118 @@ struct Linker {
       i = i + 1usize;
     }
   }
+
+  // PATH as the link's environment has it
+  pub fn pathList(self: &) String {
+    var changes = noChanges();
+    self.apply(&mut changes);
+    let pathList = envOr("PATH", "");
+    changes.restore();
+    pathList
+  }
+
+  // Microsoft's link.exe on the environment's PATH, or the empty path
+  pub fn findTool(self: &) Path {
+    let pathList = self.pathList();
+    let tool = which("link.exe", pathList.view());
+    if tool.isEmpty() || !isMsvcLinker(&tool) { return Path.from(""); }
+    tool
+  }
+
+  // What the environment is to be, taken from what a run of vcvars64.bat
+  // changed in Congo's own (in changes): each variable it set, with the value
+  // it has now
+  pub fn setFromChanges(self: &mut, changes: &EnvChanges) {
+    names.clear();
+    values.clear();
+    var i = 0usize;
+    while i < changes.names.len() {
+      let name = changes.names[i].view();
+      names.push(String.from(name));
+      values.push(envOr(name, ""));
+      i = i + 1usize;
+    }
+  }
+
+  // Where the environment came from the cache and has not been captured
+  // again yet, capture it again from vcvars64.bat, replacing the cache, and
+  // find link.exe in it; whether that was done. Once a Linker, so that an
+  // environment that is not the trouble costs one run of vcvars64.bat.
+  pub fn recapture(self: &mut) bool {
+    if !cached || recaptured { return false; }
+    recaptured = true;
+    match msvcEnvironment(self, true) {
+      case is Ok {}
+      case is Err { return true; }
+    }
+    let found = self.findTool();
+    if !found.isEmpty() { tool = found; }
+    true
+  }
+
+  // Whether a failed link looks like the environment's fault rather than the
+  // build's: link.exe could not run, or ended with a status of Windows' own
+  // (a DLL of its own not found), or could not open a library that no
+  // package of the build names (the C runtime's, the Windows SDK's)
+  pub fn environmental(self: &, said: &str, code: u32, ran: bool, libraries: &List[String]) bool {
+    if !ran || code >= 0xC0000000u32 { return true; }
+    // Each "cannot open file 'X'" and "cannot open input file 'X'" the
+    // linker said
+    var from = 0usize;
+    while true {
+      let at = findText(said, "cannot open ", from);
+      if at >= said.len() { return false; }
+      let open = at + 12usize;
+      from = open;
+      let tail = &said[open..];
+      var skip = 0usize;
+      if tail.startsWith("input file '") { skip = 12usize; }
+      else if tail.startsWith("file '") { skip = 6usize; }
+      else { continue; }
+      let after = &said[open + skip..];
+      let end = findByte(after, '\'', 0usize);
+      if end == 0usize || end >= after.len() { continue; }
+      var file = String.from(&after[..<end]);
+      file.lowerAscii();
+      if !file.endsWith(".lib") { continue; }
+      let base = &file.view()[lastSeparator(file.view())..];
+      var named = false;
+      var i = 0usize;
+      while i < libraries.len() {
+        var lib = cat(libraries[i].view(), ".lib");
+        lib.lowerAscii();
+        if lib.equals(base) { named = true; }
+        i = i + 1usize;
+      }
+      if !named { return true; }
+    }
+    false
+  }
+}
+
+// Where needle is in text, from a place on; the text's length where it is not
+fn findText(text: &str, needle: &str, from: usize) usize {
+  var i = from;
+  while i + needle.len() <= text.len() {
+    if &text[i..<i + needle.len()] == needle { return i; }
+    i = i + 1usize;
+  }
+  text.len()
+}
+
+// The place after the last '\' or '/' in a path's spelling: where its file name begins
+fn lastSeparator(text: &str) usize {
+  var at = 0usize;
+  var i = 0usize;
+  while i < text.len() {
+    if text[i] == '\\' || text[i] == '/' { at = i + 1usize; }
+    i = i + 1usize;
+  }
+  at
 }
 
 fn noLinkerYet() Linker {
-  Linker(Path.from(""), Path.from(""), List[String].empty(), List[String].empty())
+  Linker(Path.from(""), Path.from(""), List[String].empty(), List[String].empty(), false, false, noVcvars())
 }
 
 // The system linker, with the environment it needs: Microsoft's link.exe in
@@ -361,55 +496,46 @@ fn noLinkerYet() Linker {
 // are: Visual Studio's default Developer Command Prompt links for x86. The
 // environment is worked out in Congo's own and put back after; the Linker
 // holds what it set, for each link.
-fn findLinker(conestd: &Path) Result[Linker, String] {
-  var changes = noChanges();
-  match linkerIn(&mut changes) {
-    case let Ok(ok) {
-      var linker = Linker(ok.copy(), conestd.copy(), List[String].empty(), List[String].empty());
-      var i = 0usize;
-      while i < changes.names.len() {
-        let name = changes.names[i].view();
-        linker.names.push(String.from(name));
-        linker.values.push(envOr(name, ""));
-        i = i + 1usize;
-      }
-      changes.restore();
-      Ok[Linker, String](linker)
-    }
-    case let Err(e) {
-      changes.restore();
-      Err[Linker, String](e.copy())
-    }
-  }
-}
-
-// link.exe, its environment set in Congo's own, in changes
-fn linkerIn(changes: &mut EnvChanges) Result[Path, String] {
-  var ran = Vcvars(false, Path.from(""), String.empty());
+//
+// Where Congo runs vcvars64.bat itself, what it sets is kept in the Congo
+// home (msvcenv.cone) and applied with no batch file run; 'useCache' false
+// captures it again. An inherited x86 environment is converted by a run, as
+// before, and not kept.
+fn findLinker(conestd: &Path, useCache: bool) Result[Linker, String] {
+  var linker = Linker(Path.from(""), conestd.copy(), List[String].empty(), List[String].empty(), false, false,
+    noVcvars());
   let startPath = envOr("PATH", "");
   let inherited = which("link.exe", startPath.view());
-  var vcvarsNeeded = false;
   if !(!inherited.isEmpty() && isMsvcLinker(&inherited)) {
-    vcvarsNeeded = true;
+    match msvcEnvironment(&mut linker, !useCache) {
+      case is Ok {}
+      case let Err(e) { return Err[Linker, String](e.copy()); }
+    }
   }
   else {
     let target = msvcTarget(&inherited);
     if !(target.isEmpty() || target.equals("x64")) {
       // Silently, as when there is no linker: nothing is the user's to fix
-      withoutVsLibs(changes);
-      vcvarsNeeded = true;
+      var changes = noChanges();
+      withoutVsLibs(&mut changes);
+      match runVcvars(&mut changes) {
+        case var Ok(ok) { linker.ran <-> ok; }
+        case let Err(e) {
+          changes.restore();
+          return Err[Linker, String](e.copy());
+        }
+      }
+      linker.setFromChanges(&changes);
+      changes.restore();
     }
   }
-  if vcvarsNeeded {
-    match runVcvars(changes) {
-      case var Ok(ok) { ran <-> ok; }
-      case let Err(e) { return Err[Path, String](e.copy()); }
-    }
+  var tool = linker.findTool();
+  if tool.isEmpty() && linker.recapture() { tool = linker.findTool(); }
+  if tool.isEmpty() {
+    let pathList = linker.pathList();
+    let found = which("link.exe", pathList.view());
+    return Err[Linker, String](noLinker(&found, pathList.view(), &linker.ran));
   }
-  let pathList = envOr("PATH", "");
-  let tool = which("link.exe", pathList.view());
-  if tool.isEmpty() || !isMsvcLinker(&tool) {
-    return Err[Path, String](noLinker(&tool, pathList.view(), &ran));
-  }
-  Ok[Path, String](tool)
+  linker.tool = tool;
+  Ok[Linker, String](linker)
 }
