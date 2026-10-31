@@ -760,10 +760,14 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
 //     pub fn accept(self: &, c: Chunk) {            sends through the table: one indirect
 //       let v = <the virtual reference made of mailbox and table>;   call of the actor's own
 //       v.accept(c);}                                                 sending method
-//   }
-//   fn ChunkSink.wrap(v: &<ChunkSink.vt) ChunkSink  the conversion, called on a borrow of an
-//                                                   actor's handle: the handle's mailbox
+//     fn wrap(v: &<ChunkSink.vt) ChunkSink {...}    the conversion, called on a borrow of an
+//   }                                               actor's handle: the handle's mailbox
 //                                                   copied, the virtual reference's table
+//
+// A generic trait, 'actor trait Sink[T]', declares its type parameters, as written,
+// on the virtual trait and the handle (and so on 'wrap', a function of the handle's
+// own, which an instance has at its own arguments); the bracketed names follow
+// each use of either.
 //
 // The table is the compiler's own vtable of the actor's handle as 'vt': one for
 // each (actor, trait) pair, made where the handle is converted, as any trait's

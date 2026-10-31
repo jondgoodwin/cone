@@ -14,8 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
-		not yet on macOS. Not built yet: a generic <span class="pre">actor trait</span>, a generic actor, and a queued
-		method on a message type.</i></p>
+		not yet on macOS. Not built yet: a generic actor, and a queued method on a message type.</i></p>
 
 	<p>The <a href="guide-actors.html">Guide's bakery</a> gave each part of a program an actor of its own, and let them
 		talk. Building something real raises the questions the tour skipped: when is an answer sent back, when does an
@@ -317,6 +316,41 @@ actor Reader {
 		actor can be passed along to answer in its turn. A handle is <span class="pre">Sendable</span> and may be
 		passed in a message, kept in another actor's state or put in a list; it keeps its actor alive, so a list of
 		subscribers that should not hold them is not what an actor trait gives yet.</p>
+
+	<h3 id="generic-trait">A generic actor trait</h3>
+	<p>The trait may take type parameters, and each type of event, message or answer it is used at is an instance of
+		it, as for any generic type, with a handle and a table of its own. The actors that conform are not generic (a
+		generic actor is still refused); they conform to the instance their behaviours' types make:</p>
+<pre>
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Tally  { pub async fn hear(self, e: Click) { ... } }     // a Subscriber[Click]
+actor Typist { pub async fn hear(self, e: Key)   { ... } }     // a Subscriber[Key]
+
+let clicks: List[Subscriber[Click]] = ...;   // a Tally and a Clicker in one list
+let keys: Subscriber[Key] = typist;
+let bad: Subscriber[Key] = tally;            // Error 1570: ... put(e: Click) does not take and return
+                                             // what the trait's hear(e: Key) does
+</pre>
+	<p>What an <span class="pre">await</span> through a handle of an instance gives is the instance's type.</p>
+
+	<h3 id="trait-bound">As a bound: no table</h3>
+	<p>An actor trait may bound a type parameter, <span class="pre">[S: ChunkSink]</span> or
+		<span class="pre">[S: Subscriber[Click]]</span>, and an actor that conforms meets the bound, as does the trait's
+		own handle. A generic function is made for the type it is given, so it calls that actor's own methods directly:
+		no handle is made, no table, and no indirect call. A pipeline whose stages are fixed when the program is compiled
+		pays nothing for the abstraction.</p>
+<pre>
+fn connect[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));          // for a Counter, a call of Counter's own accept
+}
+connect(counter, 10u64);       // not connect(counter as a handle): none is made
+</pre>
+	<p>An actor that does not conform given to such a parameter is refused, as for any bound
+		(<span class="pre">connect requires S is ChunkSink, and Mute is not ChunkSink</span>). Convert it to the trait's
+		handle, where the error names what it lacks.</p>
 
 	<h2 id="messages">Messages and their order</h2>
 	<p>A send is one-way: it queues the message and returns. An answer comes back only to an
