@@ -583,7 +583,6 @@ enum ErrorCode {
     // 'each' inside '<-' (parser/parseexpr.c, ir/exp/contents.c)
     ErrorEachEntry = 1370,      // An 'each' entry of '<-' written wrongly: with variables and no 'yield', a body in braces, or a 'yield' of nothing
     ErrorDrainItem = 1371,      // 'xs <- each src' over a source whose items come borrowed and move: a borrow cannot be copied out of
-    ErrorEachMutSource = 1372,  // An 'each' (or 'parallel each') over a source written '&mut src': 'each' reads, and the items are changed through 'src.mutItems()'
 
     // 'parallel each' (ir/exp/pareach.c)
     ErrorParSource = 1380,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
@@ -771,6 +770,7 @@ enum ErrorCode {
     ErrorMacroAwait = 1562,     // A compound assignment through a macro method, `x += await f()`, or the right operand of a macro method's `||` or `&&`, `opt || await f()`, that holds an `await`: the operand is substituted into the macro's body, where the wait cannot be cut. Pointed at the operand
     ErrorMacroMixedSet = 1563,  // A macro and a function declared under one name in one scope or one type: a set of same-named declarations holds all macros or all functions. Pointed at the later declaration, and again at the earlier
     ErrorNoLogicMethod = 1564,  // `||` or `&&` written with a left operand whose type declares no `||`/`&&` (a number, a pointer, a struct without them): they are methods of the left operand's type, and bool, Option and Result have them. Pointed at the left operand
+    ErrorEachBorrowPerm = 1566, // An 'each' source written '&mut src' or '&uni src' whose type walks through an 'iter' that lends '&' only (a Deque, a Set, a Dict): there are no items to change in place, so the permission written cannot be given. Pointed at the source
 
     // Warnings
     WarnCode = 3000,

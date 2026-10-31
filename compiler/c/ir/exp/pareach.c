@@ -2659,8 +2659,9 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
 
         // A mutable slice as the source itself lends each item mutably, as 'each'
         // does; any other lends it to be read. A cursor lends what its type says
+        INode *writtenperm = ischunks ? NULL : eachWrittenPerm(src, type);
         int mutlend = ischunks ? cursor.mut
-            : isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
+            : writtenperm != NULL || (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm));
         Name *slicename = mutlend ? parSliceMutName : parSliceName;
 
         // let s = [the slice]
@@ -2674,7 +2675,10 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 nodesAdd(&outer->stmts, (INode*)srcdcl);
                 owner = parUse(srcdcl, lexnode);
             }
-            slicedcl = parVar(slicename, immPerm, (INode*)parCall(owner, lentvia, lexnode), scope, lexnode);
+            Name *lender = lentvia;
+            if (writtenperm != NULL && lentvia == nametblFind("view", 4))
+                lender = writtenperm == (INode*)uniPerm ? nametblFind("viewUni", 7) : nametblFind("viewMut", 7);
+            slicedcl = parVar(slicename, immPerm, (INode*)parCall(owner, lender, lexnode), scope, lexnode);
         }
         else if (isarray) {
             INode *array = src;
@@ -2689,7 +2693,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 array = (INode*)deref;
             }
             slicedcl = parVar(slicename, immPerm, NULL, scope, lexnode);
-            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, unknownType, array);
+            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, writtenperm != NULL ? writtenperm : unknownType, array);
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
         lo = parVar(parLoName, immPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
@@ -2713,7 +2717,8 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
             FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
             at->flags |= FlagIndex;
             nodesAdd(&at->args, parUse(k, lexnode));
-            elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
+            elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef,
+                writtenperm != NULL ? writtenperm : mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         }
         outer->flags |= FlagParallel;
         elemindexed = cursor.vars >= 2;
