@@ -12,7 +12,7 @@
 //
 //   fn build() {
 //     imm p = Rcw[mut, Parent](1, List[Child].empty());
-//     p.kids.push(Child(2, Weak[Parent].of(p)));
+//     p.kids.push(Child(2, Weak[Parent].of(&p)));
 //     ...
 //   }   // p's last owner goes: the parent dies, then its children, and the
 //       // children's weak references to it do not hold it up
@@ -21,11 +21,10 @@
 // counts another owner, and when the last goes the value dies -- its 'final',
 // its fields' finalizers, the owners its fields hold -- as an 'Rc' value does.
 // 'Rcw[mut, T]' is the form to share: a weak reference is made only from it.
-// Plain 'Rcw' (unique) moves instead of copying, as plain 'Rc' does, and
-// handing one to 'Weak[T].of' gives it up.
+// Plain 'Rcw' (unique) moves instead of copying, as plain 'Rc' does.
 //
-// A weak reference is a 'Weak[T]': made from a strong owner with
-// 'Weak[T].of(owner)', or pointing at nothing with 'Weak[T].none()'. It cannot
+// A weak reference is a 'Weak[T]': made from a strong owner, lent, with
+// 'Weak[T].of(&owner)' (it only observes the owner and keeps none), or pointing at nothing with 'Weak[T].none()'. It cannot
 // be read through: its value may have died. To reach the value, ask for a
 // strong owner, which keeps the value alive for as long as it is held:
 //
@@ -121,11 +120,10 @@ fn roundUp(n: usize, align: usize) usize { (n + align - 1usize) & (0usize - alig
 pub struct Weak[T] {
   hdr: *Rcw;   // the value's header, or null for none()
 
-  // A weak reference to what 'owner' points at. The owner is passed by value,
-  // so a shared 'Rcw[mut, T]' owner is copied and a unique 'Rcw' one moves in
-  // and is given up.
-  pub fn of(owner: Rcw[mut, T]) Weak[T] {
-    let at = owner as *T;
+  // A weak reference to what 'owner' points at. The owner is lent, not taken:
+  // it keeps its value alive, and a call may be its last use without ending it.
+  pub fn of(owner: &Rcw[mut, T]) Weak[T] {
+    let at = (*owner) as *T;
     let h = (at as usize - valueOffset[T]()) as *Rcw;
     let hr = h as &mut Rcw;
     hr.weak = hr.weak + 1usize;

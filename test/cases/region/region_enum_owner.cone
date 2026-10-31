@@ -81,6 +81,12 @@ fn takeOption(o: Option[Tally[mut, i32]]) {
   printStr("took ");
 }
 
+// The last read of a counted local is a move (region_counted_last_use_rc), so
+// each copy below is followed by a borrow of its source, which counts nothing
+fn touchO(o: &Option[Tally[mut, i32]]) { }
+fn touchW(w: &Wrap) { }
+fn touchH(h: &Holds) { }
+
 fn soSome() { let o: Option[Uni[Fin]] = Some[Uni[Fin]](Uni[Fin](1)); }
 fn soNone() { let o: Option[Uni[Fin]] = None; }
 fn rcSome() { let o: Option[Rc[Fin]] = Some[Rc[Fin]](Rc[Fin](2)); }
@@ -95,7 +101,28 @@ fn countedNone() {
 fn countedCopy() {
   let o: Option[Tally[mut, i32]] = Some[Tally[mut, i32]](Tally[mut, i32](1));
   let o2 = o;
+  touchO(&o);
   printStr("copied ");
+}
+// Read last, the same values move: no owner is added, and the source is not released
+fn countedMoved() {
+  let o: Option[Tally[mut, i32]] = Some[Tally[mut, i32]](Tally[mut, i32](1));
+  let o2 = o;
+  printStr("moved ");
+}
+fn countedPassedMoved() {
+  let o: Option[Tally[mut, i32]] = Some[Tally[mut, i32]](Tally[mut, i32](1));
+  takeOption(o);
+}
+fn countedInStructMoved() {
+  let w = Wrap(Some[Tally[mut, i32]](Tally[mut, i32](1)));
+  let w2 = w;
+  printStr("moved ");
+}
+fn taggedCountedMoved() {
+  let h: Holds = Holds.Counted(Tally[mut, i32](1), 2);
+  let h2 = h;
+  printStr("moved ");
 }
 fn countedNoneCopy() {
   let o: Option[Tally[mut, i32]] = None;
@@ -105,6 +132,7 @@ fn countedNoneCopy() {
 fn countedPassed() {
   let o: Option[Tally[mut, i32]] = Some[Tally[mut, i32]](Tally[mut, i32](1));
   takeOption(o);
+  touchO(&o);
 }
 fn countedMatched() {
   let o: Option[Tally[mut, i32]] = Some[Tally[mut, i32]](Tally[mut, i32](1));
@@ -112,15 +140,18 @@ fn countedMatched() {
     case let Some[Tally[mut, i32]](s) { printStr("some "); }
     else { printStr("none "); }
   }
+  touchO(&o);
 }
 fn countedInStruct() {
   let w = Wrap(Some[Tally[mut, i32]](Tally[mut, i32](1)));
   let w2 = w;
+  touchW(&w);
   printStr("copied ");
 }
 fn taggedCounted() {
   let h: Holds = Holds.Counted(Tally[mut, i32](1), 2);
   let h2 = h;
+  touchH(&h);
   printStr("copied ");
 }
 fn taggedNeither() {
@@ -143,6 +174,10 @@ fn main() i32 {
   show("counted-local"); countedLocal(); end();
   show("counted-none"); countedNone(); end();
   show("counted-copy"); countedCopy(); end();
+  show("counted-last-use-moved"); countedMoved(); end();
+  show("counted-passed-last-use-moved"); countedPassedMoved(); end();
+  show("counted-in-struct-last-use-moved"); countedInStructMoved(); end();
+  show("tagged-counted-last-use-moved"); taggedCountedMoved(); end();
   show("counted-none-copy"); countedNoneCopy(); end();
   show("counted-passed"); countedPassed(); end();
   show("counted-matched"); countedMatched(); end();

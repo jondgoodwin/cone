@@ -129,6 +129,8 @@ typedef struct {
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
     uint8_t initing;    // its initializer is being walked: it holds no value yet
+    uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
+    void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
 } PathVar;
 
@@ -168,5 +170,13 @@ void flowPathPrint();
 // stored over whole: what it holds there is needed past the seam (flowloan.c,
 // a seam's live mark fired)
 void pathSeamLive(INode *seam, uint32_t var);
+
+// A candidate for a counted variable's last use (RefCountNode.cand) fails: a
+// read of the variable meets the state its move left (pathCandFail), or a live
+// borrow of it conflicts with the move (pathCandFailAccess). True when that
+// settles the matter, and the walk is made again without it
+int pathCandFail(uint32_t var, uint8_t state);
+int pathCandFailAccess(INode *access);
+extern uint32_t pathCandNew;
 
 #endif

@@ -51,16 +51,32 @@ fn end() { printStr("|\n"); }
 
 fn take(s: Shared) { printStr("in "); }
 
+// A copy is a copy only while its source is read again afterwards: the last
+// read of a counted local is a move (region_counted_last_use_rc). Each copy
+// below is followed by a borrow of its source, which counts nothing, so the
+// copy is what these lines exercise.
+fn touchS(s: &Shared) { }
+fn touchR(r: &Tally[mut, Fin]) { }
+fn touchA(a: &Array[Tally[mut, Fin], 2]) { }
+fn touchSA(s: &SharedArray) { }
+fn touchO(o: &Option[Shared]) { }
+
 fn structAlone() { let s = Shared(Tally[mut, Fin](1)); }
-fn structCopied() { let s = Shared(Tally[mut, Fin](1)); let t = s; }
-fn structPassed() { let s = Shared(Tally[mut, Fin](1)); take(s); }
-fn structLiteral() { let r = Tally[mut, Fin](1); let s = Shared(r); }
-fn arrayCopied() { let a = [Tally[mut, Fin](1), Tally[mut, Fin](2)]; let b = a; }
-fn arrayFieldCopied() { let s = SharedArray([Tally[mut, Fin](1), Tally[mut, Fin](2)]); let t = s; }
+fn structCopied() { let s = Shared(Tally[mut, Fin](1)); let t = s; touchS(&s); }
+fn structPassed() { let s = Shared(Tally[mut, Fin](1)); take(s); touchS(&s); }
+fn structLiteral() { let r = Tally[mut, Fin](1); let s = Shared(r); touchR(&r); }
+fn arrayCopied() { let a = [Tally[mut, Fin](1), Tally[mut, Fin](2)]; let b = a; touchA(&a); }
+fn arrayFieldCopied() { let s = SharedArray([Tally[mut, Fin](1), Tally[mut, Fin](2)]); let t = s; touchSA(&s); }
 fn tupleCopied() { let t = (Shared(Tally[mut, Fin](1)), 2i64); let u = t; }
 fn tupleLiteral() { let r = Tally[mut, Fin](1); let t = (r, 5i64); }
 fn destructured() { let t = (Shared(Tally[mut, Fin](1)), 2i64); let a: Shared; let n: i64; a, n = t; }
-fn optionCopied() { let o: Option[Shared] = Some[Shared](Shared(Tally[mut, Fin](1))); let p = o; }
+fn optionCopied() { let o: Option[Shared] = Some[Shared](Shared(Tally[mut, Fin](1))); let p = o; touchO(&o); }
+// The last read of a local holding a counted reference is a move: no owner is
+// added, and the source is not released, so the value dies once, with its holder
+fn structMoved() { let s = Shared(Tally[mut, Fin](1)); take(s); }
+fn structLiteralMoved() { let r = Tally[mut, Fin](1); let s = Shared(r); }
+fn arrayMoved() { let a = [Tally[mut, Fin](1), Tally[mut, Fin](2)]; let b = a; }
+fn optionMoved() { let o: Option[Shared] = Some[Shared](Shared(Tally[mut, Fin](1))); let p = o; }
 fn fillVariable() { let s = Shared(Tally[mut, Fin](1)); let a = Array[Shared, 3]() <- fill s; }
 fn fillTuple() { let r = Tally[mut, Fin](1); let a = Array[(Tally[mut, Fin], i64), 2]() <- fill (r, 5i64); }
 fn fillAllocated() { let a = Array[Tally[mut, Fin], 2]() <- fill Tally[mut, Fin](3); }
@@ -80,6 +96,10 @@ fn main() i32 {
   show("tuple-literal"); tupleLiteral(); end();
   show("destructured"); destructured(); end();
   show("option-copied"); optionCopied(); end();
+  show("struct-moved"); structMoved(); end();
+  show("struct-literal-moved"); structLiteralMoved(); end();
+  show("array-moved"); arrayMoved(); end();
+  show("option-moved"); optionMoved(); end();
   show("fill-variable"); fillVariable(); end();
   show("fill-tuple"); fillTuple(); end();
   show("fill-allocated"); fillAllocated(); end();

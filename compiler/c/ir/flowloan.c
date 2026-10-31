@@ -1397,6 +1397,10 @@ void loanUse(uint32_t var, INode *usenode) {
             continue;
         }
         pend->fired = 1;
+        // A candidate for its variable's last use is not, with a borrow of the
+        // variable used after it: it stays a copy (flowpath.c, pwCandidate)
+        if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+            continue;
         // One error per access, however many borrows it conflicts with
         if (mapGet(pend->access, 0, 1))
             continue;
@@ -1541,6 +1545,10 @@ void loanFlightAccess(Place *pl, int access, INode *node) {
                 met = 1;
                 continue;
             }
+            // A candidate for its variable's last use is not, with a borrow of the
+            // variable carried by a call or value still being made: it stays a copy
+            if (access == AccessMove && pathCandFailAccess(node))
+                return;
             if (!loanReportOnce(node))
                 return;
             char srcname[128];

@@ -574,6 +574,24 @@ more holder, and the fill form holds only a constant. Past 16 copies the second
 stands for every later element and is generated in a loop, so the holder
 injected around it is added once per pass.
 
+**The last read of a counted local is a move.** Five of those seven places
+(`varDclFlow`, `assignSingleFlow`, `fnCallFlow`, `allocateFlow`, `typeLitFlow`)
+call `flowHandleMoveOrCopyLast`, which does what `flowHandleMoveOrCopy` does and
+also marks the `RefCountNode` it injected for a *candidate* (`RefCountNode.cand`
+= `RefCandOpen`, and `dropgate` set so that the path walk runs). A candidate is a
+bare name use of a whole local or parameter that is not a move type, is
+tracked for drops (`flowDropTracked`) and has something to do as it dies
+(`itypeNeedsFinal`), and that is not a tuple, a global, a static, a match's
+variable or a match's binding; the other two places, and every read that is not
+a bare name use (a field, an element, a deref, a recast), stay copies. The main
+walk cannot tell whether the read is the variable's last: the path walk decides
+("The loan walk", "Candidates for a last use"). A candidate it confirms loses its
+`RefCountNode` (so no holder is added) and its name use is marked `FlagMoveOut`
+(so the variable is not released at its scope's end on that path, and a drop flag
+says where the paths differ), exactly as a conditional `uni` move is; one it does
+not confirm stays the counted copy. The only thing a program can see is that a
+value reaches count zero earlier than the variable's scope ends.
+
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` (or `FlagPartNoPrior`) says there was none, and a value's
@@ -1832,6 +1850,48 @@ only a literal or a named constant's index allows.
 A global holding a reference, and recursion, are generation's to refuse,
 where the module's globals and its calls are known.
 
+### Candidates for a last use
+
+[Jon 30 Oct: the last use of a counted local or parameter is a move; Arc parity
+with Rust.] The main walk marks some counted reads as *candidates*
+(`RefCountNode.cand`, "Moves and counting"); this walk decides them, as a
+forward search for a use after the move, with the machinery the drop-flag
+client has for a `uni` move and the loan client has for a move's conflicts, and
+no second analysis. In the walk a candidate is walked as the move it would be:
+`pwCandidate` sets the name use `pwCandUse`, and `pwPlace` then calls `dropMove`
+for it as for a marked move (`FlagMoveOut`) and `pwPlaceValue` makes the access
+`AccessMove`, its site the `RefCountNode`. A candidate *fails*, and stays a copy,
+when
+
+- a later read of the variable meets the state the move left (`dropUse`,
+  `dropMove`, `dropPartUse` call `pathCandFail` before they refuse): this is
+  every read after it on a path, a read in a pass of a loop after the pass that
+  moved it (a variable declared outside the loop), a borrow of it, a field of
+  it, a second candidate of it. The candidate that moved it last fails
+  (`PathVar.lastcand`);
+- the move conflicts with a live borrow of the variable that is used again
+  after it, or with one carried by the call or value still being made
+  (`loanUse`, `loanFlightAccess`: `pathCandFailAccess`). A closure holds the
+  variables it names as borrows, so a closure used after the read fails it.
+
+Whatever fails changes the states the walk had, so `flowPathWalk` walks the
+function again without the failed ones, until none fails (each walk has fewer
+open candidates: it ends). Only the last walk's releases are applied
+(`dropWalkEnd`), and then `pwCandApply` turns each candidate still open into its
+move: the `RefCountNode` leaves the tree and the name use is marked
+`FlagMoveOut`. A walk that reports an error is not made again. The
+walk's records of a seam or a generator's `yield` would be made twice, so a
+function with either keeps its candidates as copies (`pwCandOff`). A
+candidate in code the walk never reaches stays a copy.
+
+What it cannot get wrong is a leak or a double release: a read after the
+move is refused as a use of a moved value would be, and a candidate it
+confirms is moved on every path that reaches it, with the variable's release
+at the exit decided from the paths (the drop flag, where they differ). Cases it
+does not make moves, by construction: a variable read by anything after (even a
+borrow that ends at once), and any read that is not a bare name use of the
+variable.
+
 ### Drop flags
 
 [Jon 26 Sep: runtime drop flags, and conditional handling as a general flow
@@ -2312,6 +2372,7 @@ droppable noted as holding nothing is never finalized.
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
 | | `loanLockLive`, `loanLockStillLive`, `loanSetRootedAt`, `loanFlightRootedAt` | a lock's guard given back at its borrow's last use: the live mark of a point (`PendingLockLive`) and whether a use fired it; whether a loan set, or an operand in flight, holds a loan of the guard |
 | | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
+| `ir/flowpath.c` | `pwCandidate`, `pwCandApply`, `pathCandFail`, `pathCandFailAccess`, `flowPathWalkOnce` | walk a counted read marked a candidate for its last use as the move it would be; make the survivors moves; fail the one that moved a variable a later read meets, or one a live borrow conflicts with; the walk made again while one fails |
 | `ir/flowpath.c` | `pwLockPoint`, `pwLockApply`, `pwLockPos` | the points where a guard might give its lock back, a mark on each holder of its borrow; the points never fired made statements (`flowLockGive`, a `DropFlagNode` flagged `FlagLockGive`) |
 | `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
 | `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitChainLevels`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
@@ -2331,6 +2392,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self: &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
+| | `flowHandleMoveOrCopyLast`, `flowIsCandidate` | `flowHandleMoveOrCopy` for a value going to one new holder, also marking the counted read of a whole local or parameter a candidate for its last use (`RefCountNode.cand`); the path walk decides it ("Candidates for a last use") |
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference or, outside an `@intrinsic` body, a raw pointer (`flowRefuseMoveThrough`) |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |

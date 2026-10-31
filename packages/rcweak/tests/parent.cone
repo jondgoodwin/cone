@@ -1,0 +1,37 @@
+// The package header's example, exactly: a parent whose children point back at
+// it weakly, built with 'Weak[Parent].of(&p)' and no read of 'p' after the
+// last child. 'of' only lends: it observes the owner and keeps none, so a call
+// that is the owner's last use does not end the parent. Every count is worked
+// out by hand: 'p' is the one strong owner throughout; each child holds one weak
+// reference to it, and the parent dies when 'p' goes, then its children.
+
+mod parent;
+
+import testing use *;
+import rcweak use *;
+import collections use *;
+
+var @threadlocal log = 0i64;
+fn note(d: i64) { log = log * 10i64 + d; }
+
+struct ChildValue { pub n: i64; pub parent: Weak[Parent]; fn final(self: &uni) { note(n); } }
+alias Child = Rcw[mut, ChildValue];
+struct Parent { pub n: i64; pub kids: List[Child]; fn final(self: &uni) { note(n); } }
+
+fn build() Weak[Parent] {
+  let p = Rcw[mut, Parent](1, List[Child].empty());
+  p.kids.push(Child(2, Weak[Parent].of(&p)));
+  p.kids.push(Child(3, Weak[Parent].of(&p)));
+  let w = Weak[Parent].of(&p);
+  expectUInt(u64.from(w.strongCount()), 1, "p alone owns the parent");
+  expectUInt(u64.from(w.weakCount()), 3, "two children and this one");
+  expect(w.alive(), "the parent is alive after the last child is built");
+  w
+}
+
+fn main() i32 {
+  let w = build();
+  expectInt(log, 123, "p's last owner went at the end of build: the parent, then its children in order");
+  expect(!w.alive(), "and the weak reference knows");
+  done()
+}

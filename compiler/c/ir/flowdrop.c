@@ -163,6 +163,8 @@ void dropPartUse(uint32_t var, INode *node) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked || !(pv->state & (DropUninit | DropMoved)))
         return;
+    if (pathCandFail(var, pv->state))
+        return;
     if (mapReported(node))
         return;
     if (pv->state & DropMoved)
@@ -175,7 +177,7 @@ void dropMove(uint32_t var, INode *node, int hollow) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked)
         return;
-    if (pv->state != DropWhole && pv->state != 0)
+    if (pv->state != DropWhole && pv->state != 0 && !pathCandFail(var, pv->state))
         dropRefuse(node, pv->state, 0);
     pathSetState(var, hollow ? DropHollow : DropMoved);
 }
@@ -184,8 +186,12 @@ void dropUse(uint32_t var, INode *node, int borrow) {
     PathVar *pv = &pathVars[var];
     if (!pv->tracked || pv->state == DropWhole || pv->state == 0)
         return;
-    if (pv->state & (DropMoved | DropHollow | DropUninit))
+    if (pv->state & (DropMoved | DropHollow | DropUninit)) {
+        // The state a candidate's move left: that candidate was not the last use
+        if (pathCandFail(var, pv->state))
+            return;
         dropRefuse(node, pv->state, borrow);
+    }
 }
 
 static DropSite *dropSite(INode *node, uint8_t kind, uint32_t cnt, int *isnew) {

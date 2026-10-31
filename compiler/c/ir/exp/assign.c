@@ -596,7 +596,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
     // - Enforce move semantics
     // - Handle copy semantic aliasing
     // A '_' takes it and drops it at the statement's end (genlDiscard)
-    flowHandleMoveOrCopy(rval);
+    flowHandleMoveOrCopyLast(rval);
     assignSingleTarget(lval, rval);
 }
 

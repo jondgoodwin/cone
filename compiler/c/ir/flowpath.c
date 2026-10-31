@@ -493,6 +493,8 @@ static uint32_t pathVar(VarDclNode *var) {
         && pwCarries(var->vtype);
     pv->temp = 0;
     pv->initing = 0;
+    pv->hascand = 0;
+    pv->lastcand = NULL;
     var->flowindex = index;
     return index;
 }
@@ -816,6 +818,97 @@ static PathSet *pwPlaceSlots(Place *pl, PathSet *holds) {
 // was the move, checked there
 static int pwMoved = 0;
 
+// Candidates for a variable's last use (RefCountNode.cand), decided by the
+// walk: the name use being walked as one and the node wrapping it, and every
+// candidate met this walk with the slot holding it. A candidate that a later
+// read of its variable, or a conflicting live borrow, fails makes the walk be
+// made again without it (flowPathWalk); the last walk's survivors become
+// moves (pwCandApply)
+typedef struct {
+    INode **slot;
+    RefCountNode *rc;
+} PathCand;
+static INode *pwCandUse = NULL;
+static INode *pwCandSite = NULL;
+static RefCountNode *pwCandRc = NULL;
+static PathCand *pwCands = NULL;
+static uint32_t npwCands = 0;
+static uint32_t pwCandCap = 0;
+static int pwCandOff = 0;       // this walk makes no candidates: a seam, or a generator
+uint32_t pathCandNew = 0;       // candidates failed in this walk
+
+// Walk a counted local's or parameter's read that may be its last use: as a
+// move, in the state of the variable on each path
+static PathSet *pwCandidate(INode **nodep, RefCountNode *rc, int move) {
+    INode *use = rc->exp;
+    VarDclNode *var = isNameUseNode(use) && ((NameUseNode *)use)->dclnode->tag == VarDclTag
+        ? (VarDclNode *)((NameUseNode *)use)->dclnode : NULL;
+    if (var == NULL || !pathDrops || pwCandOff || rc->cand != RefCandOpen || !pathVars[pathVar(var)].tracked)
+        return pwValue(&rc->exp, move);
+    if (npwCands == pwCandCap)
+        pwCands = (PathCand *)pathGrow(pwCands, &pwCandCap, sizeof(PathCand));
+    pwCands[npwCands].slot = nodep;
+    pwCands[npwCands++].rc = rc;
+    pathVars[pathVar(var)].hascand = 1;
+    INode *svuse = pwCandUse;
+    INode *svsite = pwCandSite;
+    RefCountNode *svrc = pwCandRc;
+    pwCandUse = use;
+    pwCandSite = (INode *)rc;
+    pwCandRc = rc;
+    PathSet *holds = pwValue(&rc->exp, move);
+    pwCandUse = svuse;
+    pwCandSite = svsite;
+    pwCandRc = svrc;
+    return holds;
+}
+
+// The walk found no read of the variable after these on any path, and no
+// conflicting live borrow: they move. The count they would have added is not
+// added, and the variable gives up its value there (FlagMoveOut, as
+// a marked move's), so its release at its scope's end is skipped on that path
+static void pwCandApply() {
+    for (uint32_t i = 0; i < npwCands; ++i) {
+        RefCountNode *rc = pwCands[i].rc;
+        if (rc->cand != RefCandOpen)
+            continue;
+        if (*pwCands[i].slot != (INode *)rc) {
+            errorUnreachable((INode *)rc, "a counted read the walk met in a slot that does not hold it");
+            continue;
+        }
+        rc->cand = RefCandMoved;
+        rc->exp->flags |= FlagMoveOut;
+        *pwCands[i].slot = rc->exp;
+    }
+}
+
+// A read of a variable, or a move of it, that meets the state a candidate's move
+// left: the candidate that moved it last fails instead (the variable is read
+// again, so the candidate was not its last use). True when that settles the
+// matter: the walk is made again without it
+int pathCandFail(uint32_t var, uint8_t state) {
+    PathVar *pv = &pathVars[var];
+    if (!pv->hascand || !(state & DropMoved))
+        return 0;
+    if (pv->lastcand) {
+        ((RefCountNode *)pv->lastcand)->cand = RefCandFailed;
+        pv->lastcand = NULL;
+        ++pathCandNew;
+        return 1;
+    }
+    return pathCandNew > 0;
+}
+
+// A candidate's move conflicts with a live borrow of its variable, used again
+// after it: the candidate fails
+int pathCandFailAccess(INode *access) {
+    if (access->tag != RefCountTag || ((RefCountNode *)access)->cand != RefCandOpen)
+        return 0;
+    ((RefCountNode *)access)->cand = RefCandFailed;
+    ++pathCandNew;
+    return 1;
+}
+
 // The drop-flag client's check of a use of a place's root variable, the
 // owner of the value for a match's binding
 static void pwDropUse(Place *pl, INode *node, int borrow) {
@@ -964,11 +1057,24 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         // seam does (pwSeam)
         if (pathVars[index].holder || pathVars[index].pending)
             loanUse(index, node);
+        // Any other mention of a variable a candidate moved on some path, a
+        // read through it ('r.n' of an owner 'r') as well as of it, fails that
+        // candidate: dropUse does not look through an owning reference
+        if (pathDrops && node != pwCandUse && pathVars[index].hascand && (pathVars[index].state & DropMoved))
+            pathCandFail(index, pathVars[index].state);
         // A value moves out of it, or out through it, here (flowMoveSource
         // marked where): the variable owning the value no longer holds it
         if (pathDrops && (node->flags & (FlagMoveOut | FlagHollowOut))) {
             VarDclNode *owner = flowDropOwner(var);
             dropMove(owner == var ? index : pathVar(owner), node, (node->flags & FlagHollowOut) != 0);
+            pwMoved = 1;
+        }
+        // A candidate for the variable's last use moves it here, as a marked
+        // move would. The read of it that an earlier candidate's move makes
+        // fails that candidate (dropMove), before this one is the latest
+        else if (pathDrops && node == pwCandUse) {
+            dropMove(index, node, 0);
+            pathVars[index].lastcand = pwCandRc;
             pwMoved = 1;
         }
         pl->var = index;
@@ -1091,8 +1197,11 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
         return base && pwCarries(((IExpNode *)*nodep)->vtype) ? base : NULL;
     if (!moved)
         pwDropUse(&pl, *nodep, 0);
-    int moves = move && iexpIsMove(*nodep);
-    pwAccess(&pl, moves ? AccessMove : AccessRead, *nodep);
+    // A candidate for its variable's last use is walked as the move it would be;
+    // a live borrow of the variable that conflicts fails it (loanUse)
+    int cand = pwCandUse == *nodep;
+    int moves = cand || (move && iexpIsMove(*nodep));
+    pwAccess(&pl, moves ? AccessMove : AccessRead, cand ? pwCandSite : *nodep);
     PathSet *holds = pwPlaceHolds(&pl, *nodep);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
@@ -3685,6 +3794,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         return NULL;
     }
     case RefCountTag:
+        if (((RefCountNode *)node)->cand == RefCandOpen)
+            return pwCandidate(nodep, (RefCountNode *)node, move);
         return pwValue(&((RefCountNode *)node)->exp, move);
     case HollowTag:
         return ((HollowNode *)node)->exp ? pwValue(&((HollowNode *)node)->exp, move) : NULL;
@@ -3746,6 +3857,12 @@ static PathSet *pwCallerLoans(uint32_t var) {
     return holds;
 }
 
+static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams);
+
+// The walk, made again while a candidate for a counted variable's last use
+// fails (pathCandFail): a failure only ever adds, so each walk has fewer open
+// candidates than the last, and the last holds the candidates that are moves.
+// A walk that reported an error is not made again; the function is refused
 void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     // The walk's state is file-static, as flow's variable stack is: safe
     // because flow never runs re-entrantly, which this holds it to
@@ -3755,6 +3872,20 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
         return;
     }
     walking = 1;
+    int errorsOnEntry = errors;
+    // A seam or a generator's yield records what the walk meets, which a walk
+    // made again would record twice: its candidates stay copies
+    pwCandOff = seams || (yieldAny() && yieldGenOf(fndcl) != NULL);
+    while (flowPathWalkOnce(fndcl, loans, drops, seams) && errors == errorsOnEntry)
+        ;
+    pwCandOff = 0;
+    walking = 0;
+}
+
+// One walk; true when a candidate failed and the walk is to be made again
+static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
+    pathCandNew = 0;
+    npwCands = 0;
     ++statFns;
     if (loans)
         ++statLoanFns;
@@ -3796,15 +3927,18 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
             pathSetFacts(index, pwCallerLoans(index), NULL);
     }
     pwBlock((BlockNode *)fndcl->value, 1, 1);
-    if (drops)
+    int again = pathCandNew > 0 && errors == errorsOnEntry;
+    if (drops && !again)
         dropWalkEnd(errors == errorsOnEntry);
-    if (nlockpts && errors == errorsOnEntry)
+    if (nlockpts && errors == errorsOnEntry && !again)
         pwLockApply();
+    if (!again && errors == errorsOnEntry)
+        pwCandApply();
 
     // A variable's index is the walk's own
     for (uint32_t i = 1; i < nvars; ++i)
         pathVars[i].var->flowindex = 0;
-    walking = 0;
+    return again;
 }
 
 void flowPathPrint() {

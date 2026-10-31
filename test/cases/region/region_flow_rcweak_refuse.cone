@@ -7,10 +7,9 @@
 // weak reference moved away is not there to ask. What it may do is run by the
 // package's own tests (packages/rcweak/tests).
 //
-// A unique 'Rcw' owner is accepted by 'Weak[T].of', which takes its owner by
-// value: the unique owner moves in and is given up, which is what makes the
-// weak reference safe to make from it, and using the owner afterwards is
-// refused as any moved value is.
+// 'Weak[T].of' only observes its owner and takes it lent ('of(&owner)'), so a
+// unique 'Rcw' owner, which is lent as a unique reference and not as a shared
+// owner, does not fit it.
 
 mod region_flow_rcweak_refuse;
 
@@ -20,33 +19,37 @@ struct Pt { pub x: i64; }
 
 fn fromImm() {
   let r = Rcw[imm, Pt](1);
-  let w = Weak[Pt].of(r);         //~ ErrorInvType
+  let w = Weak[Pt].of(&r);         //~ ErrorInvType
 }
 
 fn readThrough() i64 {
   let r = Rcw[mut, Pt](2);
-  let w = Weak[Pt].of(r);
+  let w = Weak[Pt].of(&r);
   (*w).x                         //~ ErrorNotPtr
                                   //~^ ErrorNoMeth follow-on
 }
 
 fn header() {
   let r = Rcw[mut, Pt](3);
-  let w = Weak[Pt].of(r);
+  let w = Weak[Pt].of(&r);
   let h = w.hdr;                  //~ ErrorNotPublic
 }
 
 fn movedAway() bool {
   let r = Rcw[mut, Pt](4);
-  let w = Weak[Pt].of(r);
+  let w = Weak[Pt].of(&r);
   let w2 = w;
   w.alive()                      //~ ErrorMove
 }
 
+// ErrorInvType on 'of(&r)' is intended, not a gap: upgrade() can make a second
+// strong owner from a weak reference, so a unique owner that stayed unique while
+// lent to 'of' would be unsound. The sanctioned path moves it into an
+// 'Rcw[mut, T]' first (packages/rcweak/tests/counts.cone, uniqueGivenUp).
 fn uniGivenUp() i64 {
   let r = Rcw[Pt](5);
-  let w = Weak[Pt].of(r);
-  r.x                            //~ ErrorMove
+  let w = Weak[Pt].of(&r);       //~ ErrorInvType
+  r.x
 }
 
 fn main() {
