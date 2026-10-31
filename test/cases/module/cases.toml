@@ -1312,6 +1312,42 @@ target = "symbols"
 object = "g"
 excludes = ["g[", "g.add", "g.total"]
 
+# The same three objects in an optimized program: an instance's function small
+# enough to inline is the program's own copy (internal), while a library keeps
+# its copies shared, and the instance's counter and the trait objects' vtables
+# stay shared everywhere, since each must be one object in the program. A
+# function's address is promised the same only within one object (nothing says
+# two objects, or two folded copies, share one), so only that is pinned.
+[scenario.module_generic_private]
+category = "run"
+description = "An optimized program, a library and a generic module's package: the program keeps a small generic instance function to itself while the library's copy stays shared; the instance's counter counts once across both, a function's address is one in each object, and a trait object made in the program is told apart in the library by one vtable"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+[[scenario.module_generic_private.check]]
+name = "the-program-keeps-a-small-instance-function-to-itself"
+target = "symbols"
+contains = [
+  "define internal g[i64].add comdat nodeduplicate",
+  "define internal g[i64].sameAddress comdat nodeduplicate",
+  "global linkonce_odr thread_local g[i64].total comdat any",
+  "global linkonce_odr thread_local g[i64].adds comdat any",
+  "define linkonce_odr g[i64].heavy comdat any",
+  "constant linkonce_odr q.Wrap[i64] as q.Shape (vtable) comdat any",
+  "constant linkonce_odr q.Wrap[f64] as q.Shape (vtable) comdat any",
+]
+excludes = ["define linkonce_odr g[i64].add comdat", "global internal thread_local", "constant internal q.Wrap"]
+
+[[scenario.module_generic_private.check]]
+name = "the-library-keeps-its-instance-shared"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "global linkonce_odr thread_local g[i64].total comdat any",
+]
+
 [scenario.module_generic_parse]
 category = "reject"
 description = "A generic module's 'mod' line with an empty parameter list, and one C-named"

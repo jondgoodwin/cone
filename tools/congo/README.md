@@ -451,7 +451,11 @@ that imports nothing that needs it takes nothing from it. The same goes for
 and `iocore` (`ws2_32` and `ntdll`, Winsock and the wait completion packet): each names its Windows
 SDK libraries in its own `[link.windows]`. Congo's Windows link line adds
 only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
-belong to the toolchain and not to any package. `tls` is the example of a
+belong to the toolchain and not to any package. A release link on Windows also
+says `/OPT:REF,ICF`, so the linker drops what nothing reaches and folds
+identical functions: the net under the compiler's size gate on a release
+program's generic instances, which keeps each small one as the program's own
+copy (`--private-instances`). `tls` is the example of a
 package whose libraries differ by system, with no plain `[link]`: on Windows
 OpenSSL's import libraries and `crypt32`, on Linux the system's `ssl` and
 `crypto` (Ubuntu's `libssl-dev`).

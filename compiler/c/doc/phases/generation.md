@@ -213,6 +213,7 @@ its linkage:
 | --- | --- | --- |
 | a definition of a program compiled with no build description — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
 | in a described build, library or program, an instance of a generic, a member of one, or a vtable (`GenlShared`) | `linkonce_odr`: every object that uses it defines it, all the copies are the same, and an unused one may be dropped | `any` — the linker keeps one copy. `nodeduplicate` would make the copies a duplicate-symbol error (LNK2005), and internal would leave two vtables with two addresses |
+| a *function* of such an instance, in a release program of at most `--private-instances` LLVM instructions as first generated (below) | `internal`, set once the body is generated | `nodeduplicate`; the object's own copy |
 | a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
 | a described build's other definitions — a program's, or a library's that are not exported, and every vtable list | `internal` | `nodeduplicate` |
 | `main`, or a public C-named definition (`pub` and `@c` export to C) | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
@@ -280,7 +281,27 @@ instance, and a vtable `GenlShared`, which `genlLinkage` lowers to
 package defines the instances it uses; each importer defines the ones it uses,
 from the full body its include file carries (a generic cannot be `extern`);
 identical instances in two objects merge at link, and one only an importer
-makes is in that importer's object alone. A vtable is shared because pattern
+makes is in that importer's object alone. **A release program keeps its small
+instance functions to itself** (`genlInstanceIsPrivate`). Shared, an instance
+is a `linkonce_odr` function LLVM has to keep a body of for the linker, and one
+it chooses not to inline is called out of line, its argument's address taken
+and the value spilled (measured 31 Oct 2026: core's `Option[Rc[..]]` drop glue,
+called out of line on every decrement, made richards 2.6 times slower than the
+same IR with the instances internal). So a function of a shared instance, generated in a program
+compile (not `--library`) that is release and described, is set `internal` when
+its body is at most `opt->privateinst` LLVM instructions as first generated,
+before any optimisation (`--private-instances=n`, `DefaultPrivateInstances`; 0
+shares all). The size is measured on the generated function because a reshaped
+private copy cannot safely be merged back afterwards, so the decision precedes
+optimisation. A larger instance stays `linkonce_odr`, one copy per program; a
+library keeps all of its instances shared, since its importers may link against
+them; a debug build keeps one copy (it compiles faster and a breakpoint lands in
+one place). A generic's global (its statics) and a vtable are never decided by
+size: they stay `linkonce_odr`, one object per program, because a counter must
+count once and a vtable's address tells a type apart. A function's address is
+therefore not promised to agree across objects (a private copy per object, and
+the linker's identical-code folding `/OPT:ICF` may then merge or not): the
+language promises it only within one object. A vtable is shared because pattern
 matching tells a concrete type by comparing a virtual reference's vtable
 address with the one its own object built (`genlIsType`): a reference built in
 the program and tested in the library matched nothing while each object kept
