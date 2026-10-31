@@ -1,0 +1,221 @@
+// Bench: PriorityQueue[f32, u32] against a hand-written binary min-heap of
+// (key, id) pairs in one List (a copy of navmesh's MinHeap, the open list of
+// its searches, ties in key broken by the lower id). Both do the same work on
+// the same keys: 200,000 pushes of pseudo-random keys, then 200,000 pops; and
+// a search-shaped load, 400,000 rounds of one pop and two pushes on a queue
+// that starts with 1,000 pairs. Each way is timed 5 times, alternating the old
+// heap and the new queue, and the median and the spread (least to greatest) of
+// the five are printed in milliseconds. A checksum of the popped keys is printed
+// for each, and the two must agree (equal keys pop in either order, but then
+// the keys are equal, so the checksum of keys does not see it).
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/pqbench.cone
+
+mod pqbench;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+
+struct HeapItem {
+  pub key: f32;
+  pub id: u32;
+}
+
+struct MinHeap {
+  pub items: List[HeapItem];
+
+  pub fn empty() MinHeap { MinHeap(List[HeapItem].empty()) }
+  pub fn withCapacity(n: usize) MinHeap { MinHeap(List[HeapItem].withCapacity(n)) }
+  pub fn len(self: &) usize { items.len() }
+  pub fn isEmpty(self: &) bool { items.len() == 0usize }
+
+  fn before(a: HeapItem, b: HeapItem) bool inline {
+    if a.key < b.key { return true; }
+    if a.key > b.key { return false; }
+    a.id < b.id
+  }
+
+  pub fn push(self: &mut, key: f32, id: u32) {
+    items.push(HeapItem(key, id));
+    var i = items.len() - 1usize;
+    let item = *items[i];
+    while i > 0usize {
+      let p = (i - 1usize) / 2usize;
+      let pi = *items[p];
+      if MinHeap.before(item, pi) {
+        items.set(i, pi);
+        i = p;
+      } else {
+        break;
+      }
+    }
+    items.set(i, item);
+  }
+
+  pub fn pop(self: &mut) HeapItem {
+    let top = *items[0usize];
+    let last = *items[items.len() - 1usize];
+    items.truncate(items.len() - 1usize);
+    let n = items.len();
+    if n > 0usize {
+      var i = 0usize;
+      while true {
+        let l = 2usize * i + 1usize;
+        if l >= n { break; }
+        var c = l;
+        if l + 1usize < n && MinHeap.before(*items[l + 1usize], *items[l]) { c = l + 1usize; }
+        let ci = *items[c];
+        if MinHeap.before(ci, last) {
+          items.set(i, ci);
+          i = c;
+        } else {
+          break;
+        }
+      }
+      items.set(i, last);
+    }
+    top
+  }
+}
+
+const bulk = 200000usize;
+const rounds = 400000usize;
+
+fn next(x: u64) u64 { (x * 1103515245u64 + 12345u64) % 2147483648u64 }
+
+fn keyOf(x: u64) f32 { f32.from((x >> 4u64) % 100000u64) * 0.01f32 }
+
+// ---- the hand-written heap
+
+fn oldBulk() u64 {
+  var h = MinHeap.withCapacity(bulk);
+  var x = 1u64;
+  var i = 0usize;
+  while i < bulk { x = next(x); h.push(keyOf(x), u32.from(i)); i = i + 1usize; }
+  var sum = 0u64;
+  while !h.isEmpty() { let t = h.pop(); sum = sum + u64.from(t.key * 100.0f32); }
+  sum
+}
+
+fn oldSearch() u64 {
+  var h = MinHeap.withCapacity(2000usize);
+  var x = 2u64;
+  var i = 0usize;
+  while i < 1000usize { x = next(x); h.push(keyOf(x), u32.from(i)); i = i + 1usize; }
+  var sum = 0u64;
+  var r = 0usize;
+  while r < rounds {
+    let t = h.pop();
+    sum = sum + u64.from(t.key * 100.0f32);
+    x = next(x);
+    h.push(t.key + keyOf(x), t.id);
+    x = next(x);
+    h.push(t.key + keyOf(x), t.id);
+    // keep the size steady: drop one
+    let d = h.pop();
+    sum = sum + u64.from(d.key * 100.0f32);
+    r = r + 1usize;
+  }
+  sum
+}
+
+// ---- the library's queue
+
+fn newBulk() u64 {
+  var q = PriorityQueue[f32, u32].withCapacity(bulk);
+  var x = 1u64;
+  var i = 0usize;
+  while i < bulk { x = next(x); q.push(keyOf(x), u32.from(i)); i = i + 1usize; }
+  var sum = 0u64;
+  var more = true;
+  while more {
+    match q.pop() {
+      case let Some(pair) { let k, id = pair; sum = sum + u64.from(k * 100.0f32); }
+      case is None { more = false; }
+    }
+  }
+  sum
+}
+
+fn newSearch() u64 {
+  var q = PriorityQueue[f32, u32].withCapacity(2000usize);
+  var x = 2u64;
+  var i = 0usize;
+  while i < 1000usize { x = next(x); q.push(keyOf(x), u32.from(i)); i = i + 1usize; }
+  var sum = 0u64;
+  var r = 0usize;
+  while r < rounds {
+    match q.pop() {
+      case let Some(pair) {
+        let k, id = pair;
+        sum = sum + u64.from(k * 100.0f32);
+        x = next(x);
+        q.push(k + keyOf(x), id);
+        x = next(x);
+        q.push(k + keyOf(x), id);
+      }
+      case is None {}
+    }
+    match q.pop() {
+      case let Some(pair) { let k, id = pair; sum = sum + u64.from(k * 100.0f32); }
+      case is None {}
+    }
+    r = r + 1usize;
+  }
+  sum
+}
+
+// ---- timing
+
+fn sorted5(v: &mut List[i64]) {
+  v.sortBy((a, b) => if *a < *b {-1i32} else if *a > *b {1i32} else {0i32});
+}
+
+fn ms(ns: i64) i64 { ns / 1000000i64 }
+
+fn report(label: &str, work: i32) {
+  var olds = List[i64].empty();
+  var news = List[i64].empty();
+  var oldSum = 0u64;
+  var newSum = 0u64;
+  var run = 0usize;
+  while run < 5usize {
+    let t0 = Instant.now();
+    oldSum = if work == 0i32 { oldBulk() } else { oldSearch() };
+    olds.push(t0.elapsed().nanos());
+    let t1 = Instant.now();
+    newSum = if work == 0i32 { newBulk() } else { newSearch() };
+    news.push(t1.elapsed().nanos());
+    run = run + 1usize;
+  }
+  sorted5(&mut olds);
+  sorted5(&mut news);
+  printStr(label);
+  printStr(": hand-written median ");
+  printInt(ms(*olds[2usize]));
+  printStr(" ms (");
+  printInt(ms(*olds[0usize]));
+  printStr("-");
+  printInt(ms(*olds[4usize]));
+  printStr("), PriorityQueue median ");
+  printInt(ms(*news[2usize]));
+  printStr(" ms (");
+  printInt(ms(*news[0usize]));
+  printStr("-");
+  printInt(ms(*news[4usize]));
+  printStr("), checksums ");
+  printUInt(oldSum);
+  printStr(if oldSum == newSum {" =="} else {" DIFFER"});
+  printStr(" ");
+  printUInt(newSum);
+  printStr("\n");
+}
+
+fn main() i32 {
+  report("200000 pushes then 200000 pops", 0i32);
+  report("400000 rounds of pop, push, push, pop", 1i32);
+  0i32
+}
