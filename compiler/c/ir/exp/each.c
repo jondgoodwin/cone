@@ -298,6 +298,13 @@ static void eachBindVars(BlockNode *loop, uint32_t nvars, INode *item, uint16_t 
     }
 }
 
+INode *eachWrittenPerm(INode *src, INode *type) {
+    if ((src->tag != BorrowTag && src->tag != ArrayBorrowTag) || (type->tag != RefTag && type->tag != ArrayRefTag))
+        return NULL;
+    INode *perm = itypeGetTypeDcl(((RefNode*)type)->perm);
+    return perm == (INode*)mutPerm || perm == (INode*)uniPerm ? perm : NULL;
+}
+
 // The loop and the statements that make ready its source, once type check knows
 // what the source is. The source has been checked as the initializer of its
 // hidden variable (the first statement), which is how every other expression
@@ -335,6 +342,11 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     INode *type = iexpGetTypeDcl(src);
     if (type == errorType || type == unknownType)
         return;
+
+    // A source written as a borrow with a permission that writes ('&mut l', '&uni l')
+    // lends each item with that permission. A reference that is only a name (a
+    // parameter) is no written borrow: it is walked as it always was.
+    INode *writtenperm = eachWrittenPerm(src, type);
 
     // What kind of source: the type itself, or what a reference to it points at
     int isref = type->tag == RefTag || type->tag == VirtRefTag;
@@ -393,6 +405,17 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             INode *given = iterfn ? eachAnswer(iterfn) : NULL;
             if (given != NULL && (given->tag == RefTag || given->tag == VirtRefTag))
                 given = itypeGetTypeDcl(((RefNode*)given)->vtexp);
+            // The permission written reaches the items only if 'iter' takes the source with it
+            if (writtenperm != NULL && iterfn != NULL && iterfn->vtype != NULL && iterfn->vtype->tag == FnSigTag
+                && ((FnSigNode*)iterfn->vtype)->parms->used > 0) {
+                INode *selftype = ((VarDclNode*)nodesGet(((FnSigNode*)iterfn->vtype)->parms, 0))->vtype;
+                if (selftype->tag == RefTag && !permMatches(writtenperm, ((RefNode*)selftype)->perm)) {
+                    errorMsgNode(src, ErrorEachBorrowPerm,
+                        "%s lends its items to be read, and has none to change in place: walk '&' of it to read them.",
+                        itypeName(base));
+                    return;
+                }
+            }
             if (given != NULL && !eachHasMethod(given, nextName)) {
                 errorMsgNode(src, ErrorEachItem,
                     "The 'iter' of %s gives %s, which has no 'next' method to take the items from.",
@@ -428,7 +451,12 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
                 nodesAdd(&outer->stmts, (INode*)srcdcl);
                 owner = eachUse(srcdcl, lexnode);
             }
-            slicedcl = eachVar(immPerm, (INode*)eachCall(owner, lentvia, lexnode), scope, lexnode);
+            // A permission written asks the lending method for the slice that has it:
+            // 'view' becomes 'viewMut' or 'viewUni'
+            Name *lender = lentvia;
+            if (writtenperm != NULL && lentvia == nametblFind("view", 4))
+                lender = writtenperm == (INode*)uniPerm ? nametblFind("viewUni", 7) : nametblFind("viewMut", 7);
+            slicedcl = eachVar(immPerm, (INode*)eachCall(owner, lender, lexnode), scope, lexnode);
         }
         else if (isarray) {
             // The array's place, lent as the slice of it; an array that is no place is held first
@@ -440,7 +468,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             if (isref)
                 array = eachDeref(array, lexnode);
             slicedcl = eachVar(immPerm, NULL, scope, lexnode);
-            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, unknownType, array);
+            slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, writtenperm != NULL ? writtenperm : unknownType, array);
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
         VarDclNode *index = eachVar(mutPerm, start, scope, lexnode);
@@ -456,6 +484,8 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         INode *elemperm = unknownType;
         if ((isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm)) || itemskind >= 3)
             elemperm = (INode*)mutPerm;
+        if (writtenperm != NULL && !itemskind)
+            elemperm = writtenperm;
         RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, elemperm, (INode*)elem);
         if (itemskind == 2 || itemskind == 4) {
             // The position is a copy of the count, the second variable the element's borrow
