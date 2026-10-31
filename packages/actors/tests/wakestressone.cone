@@ -178,12 +178,13 @@ fn main() i32 {
       while total() < passes * u64.from(senders) * perSender && nowNs() < deadline {
         thread.yieldNow();
       }
-      // A failure stops here, with no finalAll, which would wait for the
-      // message left queued
-      requireUInt(counts.late.load(), 0u64, "no sender's wait ran past its 2 s deadline: no message left while the workers slept");
-      requireUInt(total(), passes * u64.from(senders) * perSender, "every message counted, the last within 2 s of the senders' end");
-      again = actors.stats().spinsFound == 0u64 && nowNs() < giveUp;
+      again = actors.stats().spinsFound == 0u64 && nowNs() < giveUp && counts.late.load() == 0u64 &&
+        total() == passes * u64.from(senders) * perSender;
     }
+    // A failure stops here, with no finalAll, which would wait for the
+    // message left queued
+    requireUInt(counts.late.load(), 0u64, "no sender's wait ran past its 2 s deadline: no message left while the workers slept");
+    requireUInt(total(), passes * u64.from(senders) * perSender, "every message counted, the last within 2 s of the senders' end");
     actors.waitUntilIdle();
     expect(counts.worst.load() < 1000000000u64, "no message took 1 s from its send to its count");
     let st = actors.stats();
