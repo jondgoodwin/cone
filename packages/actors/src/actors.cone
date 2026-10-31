@@ -550,7 +550,9 @@
 // (keepBudget: twice the high-water mark in slots, between the floor and
 // 256 KB) and no further; a CALM rest (no growth since the previous one)
 // reclaims the drained segments that can be reused, trims what is kept to the
-// floor, two small segments (trimKept), and, if the segment the ring is in is
+// floor, two small segments less those a sender has linked beyond the ring's
+// own already (restFloor, trimKept; the linked ones are the ring's and stay),
+// and, if the segment the ring is in is
 // larger than a small one, gives up its remaining slots and goes on in a
 // small one (shrinkChain: one compare-and-swap of the
 // tail claims the slots, the segment is retired as a drained one, and the next
@@ -560,7 +562,11 @@
 // waits for a sender: a send claiming a position meanwhile finds the swap fail
 // (and nothing is done) or lands past the segment's end, where it links as it
 // would anyway. The result is that an actor sent one burst and then nothing
-// holds a few small segments (about 5 KB with 64-byte slots) after two rests,
+// holds three small segments (the one the ring is in and two more, linked or
+// kept: about 7.7 KB with 64-byte slots) after two rests, however it came to
+// them; under load, where a send can come into a rest, a rest may be left
+// holding one or two more for a rest or two (the tests' bound: at most six
+// segments, 20 KB, and the 8 KB bound broken in at most 8 of 400 rests),
 // and after one at most what the burst's budget allows (about 32 KB at 64-byte
 // slots), not the ring the burst made. A mailbox that is never quiet never
 // gets there. One that falls quiet for a moment in a stream keeps most of what
@@ -1660,7 +1666,8 @@ fn reclaim(h: *Header) {
 //   goes no further: a stream that drains for a moment keeps most of what it
 //   will want again.
 // - A CALM rest (the mark before halving no higher than the previous rest left
-//   it: nothing deeper happened since) trims what is kept to the floor, and, if
+//   it: nothing deeper happened since) trims what is kept to the floor less
+//   the segments already linked beyond the ring's own (restFloor), and, if
 //   the segment the consumer is in is larger than a small one, gives up its
 //   remaining slots and goes on in a small segment (shrinkChain). So a burst
 //   leaves its ring for the first rest and loses it at the second, which is
@@ -1682,7 +1689,7 @@ fn atRest(h: *Header) {
   let x = ldSeg(&(*h).cur as **Seg);
   let low = (*x).count <= (*e).small;
   let kept = keptBytes(e);
-  let floor = usize.from((*e).floor);
+  var floor = restFloor(h, e, x);
   let calm = pre <= (*e).prevHigh;
   (*e).prevHigh = (*h).high;
   if low && kept <= floor {
@@ -1702,10 +1709,27 @@ fn atRest(h: *Header) {
   if !low {
     shrinkChain(h);
     reclaim(h);
+    floor = restFloor(h, e, ldSeg(&(*h).cur as **Seg));
     if keptBytes(e) > floor {
       trimKept(h, e, floor, true);
     }
   }
+}
+
+// What a mailbox at a calm rest keeps: the floor, two small segments, less the
+// bytes of the segments a sender has already linked beyond the one the ring
+// is in (cur): those stand in for the kept ones, so that the mailbox at rest
+// holds the same however it came to rest. The linked ones are the ring's and
+// are never touched here; only the kept ones (trimKept) are given back
+fn restFloor(h: *Header, e: *Extra, cur: *Seg) usize {
+  let floor = usize.from((*e).floor);
+  var ahead = 0usize;
+  var s = ldSeg(&(*cur).next as **Seg);
+  while s as usize != 0usize && ahead < floor {
+    ahead = ahead + segBytesOf(h, (*s).count);
+    s = ldSeg(&(*s).next as **Seg);
+  }
+  if ahead >= floor {0usize} else {floor - ahead}
 }
 
 // What a mailbox keeps: the pool's and the spare places' bytes
