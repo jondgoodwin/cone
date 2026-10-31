@@ -59,6 +59,26 @@ fn none() {
   expect(!w2.alive(), "nor is its clone");
 }
 
+// A weak reference is made from a shared owner only: a unique 'Rcw' could be
+// made a second strong owner by upgrade() while still unique. So a unique owner
+// gives up its uniqueness first, moving into an 'Rcw[mut, T]' (the move consumes
+// it), and lends that. (A unique owner lent directly is refused:
+// region_flow_rcweak_refuse.)
+fn uniqueGivenUp() Weak[Fin] {
+  let u = Rcw[Fin](3);
+  let m: Rcw[mut, Fin] = u;
+  let w = Weak[Fin].of(&m);
+  expectUInt(u64.from(w.strongCount()), 1, "a unique owner moved into a shared one: still one strong owner");
+  expect(w.alive(), "and the weak reference made from it is alive");
+  w
+}
+
+fn unique() {
+  let w = uniqueGivenUp();
+  expect(!w.alive(), "the shared owner it became is gone");
+  expectUInt(u64.from(liveBlocks()), 1, "its block stays for the weak reference");
+}
+
 fn upgraded() {
   let r = Rcw[mut, Fin](4);
   let w = Weak[Fin].of(&r);
@@ -96,6 +116,7 @@ fn main() i32 {
   }
   expectUInt(u64.from(liveBlocks()), 0, "until it goes too");
   none();
+  unique();
   expectUInt(u64.from(liveBlocks()), 0, "every block given back");
   upgraded();
   expectUInt(u64.from(liveBlocks()), 0, "the upgraded value died with r, and its block was freed");
