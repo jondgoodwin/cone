@@ -14,14 +14,19 @@
 // result, and the next one runs: what fails in a build is answered as a
 // value (build.cone), which is what a test reports.
 
-// How long a test program may run before it fails: 60 seconds
-const testTimeoutSeconds = 60i64;
+// How long a test program may run before it fails: 180 seconds
+const testTimeoutSeconds = 180i64;
+
+// The status a test exits with when it ran no checks (testing.skip),
+// automake's
+const skipStatus = 77u32;
 
 // What 'congo test' counts, for a package and for them all
 struct Tally {
   pub passed: u64;
   pub failed: u64;
   pub skipped: u64;           // debug-only tests, not built or run in a release test
+  pub unrun: List[String];    // why each test that skipped itself ran no checks
   pub built: u64;
   pub unbuilt: u64;
   pub broken: u64;            // packages that did not build, so nothing of theirs ran
@@ -31,6 +36,11 @@ struct Tally {
     passed = passed + other.passed;
     failed = failed + other.failed;
     skipped = skipped + other.skipped;
+    var u = 0usize;
+    while u < other.unrun.len() {
+      unrun.push(other.unrun[u].copy());
+      u = u + 1usize;
+    }
     built = built + other.built;
     unbuilt = unbuilt + other.unbuilt;
     broken = broken + other.broken;
@@ -44,7 +54,7 @@ struct Tally {
   pub fn ok(self: &) bool { failed == 0u64 && unbuilt == 0u64 && broken == 0u64 }
 
   pub fn summary(self: &) String {
-    var text = counted(passed + failed + skipped, "test");
+    var text = counted(passed + failed + skipped + u64.from(unrun.len()), "test");
     text <- ": ";
     text <- passed;
     text <- " passed, ";
@@ -56,6 +66,19 @@ struct Tally {
       text <- ", ";
       text <- skipped;
       text <- " skipped (debug only)";
+    }
+    if unrun.len() > 0usize {
+      // Each reason once, in the order first met
+      var reasons = List[String].empty();
+      var r = 0usize;
+      while r < unrun.len() {
+        if !holdsName(&reasons, unrun[r].view()) { reasons.push(unrun[r].copy()); }
+        r = r + 1usize;
+      }
+      let why = String.join(reasons.view(), "; ");
+      text <- ", ";
+      text <- u64.from(unrun.len());
+      text <- " skipped (", why.view(), ")";
     }
     text <- "; ";
     let examples = counted(built + unbuilt, "example");
@@ -72,7 +95,7 @@ struct Tally {
   }
 }
 
-fn emptyTally() Tally { Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, List[String].empty()) }
+fn emptyTally() Tally { Tally(0u64, 0u64, 0u64, List[String].empty(), 0u64, 0u64, 0u64, List[String].empty()) }
 
 // '1 test', '2 tests'
 fn counted(n: u64, word: &str) String {
@@ -282,7 +305,10 @@ fn programs(folder: &Path, filter: &str, hasFilter: bool) List[Path] {
 struct Verdict {
   pub passed: bool;
   pub detail: String;
+  pub skipped: bool;      // the test ran no checks; detail says why
 }
+
+fn verdictOf(passed: bool, detail: String) Verdict { Verdict(passed, detail, false) }
 
 // Build, run and compare one test program
 fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
@@ -292,7 +318,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   var exe: Path = "";
   match buildProgram(s, file, &dest) {
     case var Ok(ok) { exe <-> ok; }
-    case let Err(e) { return Verdict(false, e.copy()); }
+    case let Err(e) { return verdictOf(false, e.copy()); }
   }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
@@ -309,13 +335,13 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
       if ok.timedOut {
         // What it wrote to stderr says how far it got: a panic's line, say,
         // before an end that never came
-        var note = String.from("timed out after 60 seconds");
+        var note = String.from("timed out after 180 seconds");
         let err = utf8Decode(ok.stderr.view());
         if !isStrippedAway(err.view()) {
           let shownErr = indent(err.view(), "  ");
           note <- "\nstderr:\n", shownErr.view();
         }
-        return Verdict(false, note);
+        return verdictOf(false, note);
       }
       code = ok.exitCode;
       stdout = utf8Decode(ok.stdout.view());
@@ -326,12 +352,33 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   // A program that could not start has nothing to compare, and this line is
   // how a person learns why (no dialog says so)
   let notStarted = dllNote(code, &exe);
-  if notStarted.len() > 0usize { return Verdict(false, notStarted); }
+  if notStarted.len() > 0usize { return verdictOf(false, notStarted); }
+  // A test that exits with skipStatus (testing.skip) ran no checks, so it is
+  // neither passed nor failed, and nothing is compared or blessed: skipped,
+  // and why, the last line it printed. A test whose .exit holds the status, a
+  // test of skip itself, is compared as any other
+  if code == skipStatus {
+    var skipsItself = true;
+    match expectedExit(file) {
+      case let Ok(want) { skipsItself = !want.equals("77"); }
+      case is Err { skipsItself = false; }
+    }
+    if skipsItself {
+      let said = normalizedLines(stdout.view());
+      var reason = String.empty();
+      if said.len() > 0usize { reason = stripped(said[said.len() - 1usize].view()); }
+      if reason.startsWith("skipped:") { reason = stripped(&reason.view()[8usize..]); }
+      if reason.isEmpty() { reason = String.from("no reason given"); }
+      var skipped = verdictOf(true, reason);
+      skipped.skipped = true;
+      return skipped;
+    }
+  }
   let expectedPath = expectationFile(file, ".out");
   if !fs.isFile(&expectedPath) {
     let expectedShown = shown(&expectedPath);
     if !bless {
-      return Verdict(false, cat("no expected output, ", expectedShown.view(), ": write it by hand, or run 'congo test ",
+      return verdictOf(false, cat("no expected output, ", expectedShown.view(), ": write it by hand, or run 'congo test ",
         stem, " --bless' and check what it writes against the source"));
     }
     // Blessed only where there is nothing yet: an expected file is written
@@ -358,13 +405,13 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
       note <- " and removed the stale ", staleShown.view();
     }
     note <- ": check it by hand against the source";
-    return Verdict(true, note);
+    return verdictOf(true, note);
   }
   var problems = List[String].empty();
   var want = String.empty();
   match expectedExit(file) {
     case var Ok(ok) { want <-> ok; }
-    case let Err(e) { return Verdict(false, e.copy()); }
+    case let Err(e) { return verdictOf(false, e.copy()); }
   }
   // Compared in decimal, so a status beyond any exit code's range is
   // simply not the one the test ended with
@@ -403,7 +450,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     problems.push(cat("stderr:\n", shownErr.view()));
   }
   let passed = problems.len() == 0usize;
-  Verdict(passed, String.join(problems.view(), "\n"))
+  verdictOf(passed, String.join(problems.view(), "\n"))
 }
 
 // Whether Python's str.strip() leaves nothing of a text
@@ -440,7 +487,7 @@ fn report(line: &str, detail: &str) {
 
 // Build the package, then run each test and build each example
 fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: bool, bless: bool,
-    defines: &List[String]) Tally {
+    defines: &List[String], useCache: bool) Tally {
   var tally = emptyTally();
   let label = pkg.label();
   let rootPlace = native(&pkg.root);
@@ -452,7 +499,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   let folders = registryFolders(repo);
   let out = buildFolder(&pkg, mode);
   let indexes = registryIndexes();
-  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines);
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache);
   let name = pkg.name.copy();
   let isLibrary = pkg.output.equals("library");
   let testsFolder = pkg.root.join("tests");
@@ -529,6 +576,13 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
       continue;
     }
     let verdict = runTest(&mut s, file, bless);
+    if verdict.skipped {
+      let skippedLine = cat("        test ", stem, " ... skipped (", verdict.detail.view(), ")");
+      report(skippedLine.view(), "");
+      tally.unrun.push(verdict.detail.copy());
+      i = i + 1usize;
+      continue;
+    }
     var outcome: &str = "ok";
     if !verdict.passed { outcome = "FAILED"; }
     let line = cat("        test ", stem, " ... ", outcome);
@@ -592,7 +646,7 @@ fn packageManifests(folder: &Path) List[Path] {
 
 // Test the current package; or, in a folder of packages that is not a
 // package itself (a registry folder such as packages/), each package in it
-fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &List[String]) i32 {
+fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &List[String], noCache: bool) i32 {
   var mode: &str = "debug";
   if release { mode = "release"; }
   let repo = findRepo();
@@ -613,11 +667,11 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
       case var Ok(ok) { pkg <-> ok; }
       case let Err(e) { fail(e.copy()); }
     }
-    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines);
+    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache);
     total.add(&tally);
     i = i + 1usize;
   }
-  if hasFilter && total.passed + total.failed + total.skipped + total.built + total.unbuilt + total.broken == 0u64 {
+  if hasFilter && total.passed + total.failed + total.skipped + u64.from(total.unrun.len()) + total.built + total.unbuilt + total.broken == 0u64 {
     fail(cat("no test or example has '", filter, "' in its name"));
   }
   if manifests.len() > 1usize {

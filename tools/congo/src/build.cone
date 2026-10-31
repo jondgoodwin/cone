@@ -39,23 +39,26 @@ struct Session {
   // conec compile of the build, the packages it imports included (conec's
   // isDefined, definedInt)
   pub defines: List[String];
+  // Whether a compile whose key is unchanged is skipped: '--no-cache' says
+  // not (cache.cone)
+  pub useCache: bool;
 }
 
-fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String]) Session {
+fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool) Session {
   Session(repo.copy(), reg, out.copy(), String.from(mode), Dict[String, Path].empty(),
     Dict[String, Path].empty(), List[String].empty(), List[String].empty(), Path.from(""), false, noLinkerYet(),
-    copyStrings(defines))
+    copyStrings(defines), useCache)
 }
 
 // Build pkg and everything it imports into its build folder, each package
 // compiled on its own; answer the executable, or for a library its object.
-// A build is whole every time: every description written, every package
-// compiled, nothing kept from a build before. The first failure ends Congo.
-fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String]) Path {
+// Every description is written, and every package compiled unless its key is
+// unchanged (cache.cone). The first failure ends Congo.
+fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool) Path {
   let folders = registryFolders(repo);
   let out = buildFolder(&pkg, mode);
   let indexes = registryIndexes();
-  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines);
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache);
   let top = s.reg.add(pkg);
   match build(&mut s, top) {
     case var Ok(ok) {
@@ -197,8 +200,16 @@ fn lonePackage(given: &Path) Result[Package, String] {
 // compiled. A library's compile writes its include file beside its object,
 // which is what every package compiled after it that imports it is compiled
 // against.
+//
+// The compile is skipped where its key is unchanged (cache.cone). A
+// description with no package line for core (core's own, and those of what
+// core imports) has conec load the prelude from the packages folder
+// CONE_PACKAGES names: what it reads there is part of the key. With no core
+// in the build there is no CONE_PACKAGES, and Congo cannot say what conec
+// reads, so that compile is never skipped. 'hasCore' and 'coreUnit' say
+// whether the build has core, and where.
 fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, includes: &Path, mode: &str,
-    defines: &List[String], top: bool, announce: bool) Result[Path, String] {
+    defines: &List[String], top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
   let unit = &plan.units[u];
   let pkg = &reg.packages[unit.pkg];
   let output = if top {pkg.output.copy()} else {String.from("library")};
@@ -212,57 +223,101 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
       fail(fsMessage(&e));
     }
   }
-  // A library's include file is written afresh, so one left by an earlier
-  // build never stands in for it
   let incl = includeFor(pkg, out);
-  match fs.removeFile(&incl) {
-    case is Ok {}
-    case let Err(e) {
-      if !e.notFound() {
-        fail(fsMessage(&e));
-      }
-    }
+  let objName = cat(pkg.name.view(), ".obj");
+  let obj = out.join(objName.view());
+  let isLibrary = output.equals("library");
+  var outputs = List[Path].empty();
+  outputs.push(obj.copy());
+  if isLibrary { outputs.push(incl.copy()); }
+  let outText = native(out);
+  let descText = native(&desc);
+  let rest = argList("-o", outText.view(), descText.view());
+  let command = conecCommand(conec, defines, &rest);
+  // What the compile reads: the manifest, the description, every source of
+  // the package, the include file of every package the description names,
+  // and where conec loads the prelude from the packages folder, what it
+  // reads there
+  var files = List[KeyFile].empty();
+  if !pkg.lone {
+    let manifest = pkg.root.join("congo.toml");
+    files.push(keyFileOf("manifest", &manifest));
   }
+  files.push(keyFileOf("description", &desc));
+  let order = walkOrder(&unit.mods);
+  var imported = copyIndices(&packages);
+  var w = 0usize;
+  while w < order.len() {
+    let m = *order[w];
+    var f = 0usize;
+    while f < unit.mods[m].files.len() {
+      files.push(keyFileOf("source", &unit.mods[m].files[f]));
+      f = f + 1usize;
+    }
+    w = w + 1usize;
+  }
+  w = 0usize;
+  while w < order.len() {
+    let m = *order[w];
+    var l = 0usize;
+    while l < unit.mods[m].lines.len() {
+      let dep = unit.mods[m].lines[l].pkg;
+      if !holds(&imported, dep) { imported.push(dep); }
+      l = l + 1usize;
+    }
+    w = w + 1usize;
+  }
+  var i = 0usize;
+  while i < imported.len() {
+    let theirs = includeFor(&reg.packages[*imported[i]], includes);
+    files.push(keyFileOf("include", &theirs));
+    i = i + 1usize;
+  }
+  var keyable = true;
+  var preludeNamed = false;
+  i = 0usize;
+  while i < packages.len() {
+    if reg.packages[*packages[i]].name.equals("core") { preludeNamed = true; }
+    i = i + 1usize;
+  }
+  if !preludeNamed {
+    if hasCore { searchedSources(&reg.packages[plan.units[coreUnit].pkg], "prelude", &mut files); }
+    else { keyable = false; }
+  }
+  let inputs = keyInputs(&command, &files);
+  let key = keyOf(&inputs);
+  let keyName = cat(pkg.name.view(), ".key");
+  let keyPath = out.join(keyName.view());
+  if keyable && useCache && cacheFresh(&keyPath, key.view(), &outputs) { return Ok[Path, String](obj); }
+  // No key stands while conec runs, so a compile that fails or is killed
+  // leaves none; and a library's include file is written afresh, so one left
+  // by an earlier build never stands in for it
+  removeIfThere(&keyPath);
+  removeIfThere(&incl);
   if announce {
     let label = pkg.label();
     let root = native(&pkg.root);
     let compiling = cat(label.view(), " (", root.view(), ")");
     say("Compiling", compiling.view());
   }
-  let outText = native(out);
-  let descText = native(&desc);
-  if !runConec(conec, defines, argList("-o", outText.view(), descText.view())) {
+  if !runConec(&command) {
     return Err[Path, String](cat("could not compile ", pkg.name.view(), " (build description: ", descText.view(), ")"));
   }
-  let objName = cat(pkg.name.view(), ".obj");
-  let obj = out.join(objName.view());
   if !fs.isFile(&obj) {
     let place = native(&obj);
     return Err[Path, String](cat("conec wrote no object at ", place.view()));
   }
-  if output.equals("library") && !fs.isFile(&incl) {
+  if isLibrary && !fs.isFile(&incl) {
     let place = native(&incl);
     return Err[Path, String](cat("conec wrote no include file for ", pkg.name.view(), " at ", place.view()));
   }
+  if keyable { recordKey(&keyPath, key.view(), &inputs, &outputs); }
   Ok[Path, String](obj)
 }
 
-// Run conec with the -D defines after it, then rest, and show what it said
+// Run conec as the command line says (conecCommand), and show what it said
 // but its closing 'Compile finished' line; whether it succeeded
-fn runConec(conec: &Path, defines: &List[String], rest: List[String]) bool {
-  let program = native(conec);
-  var args = argList(program.view());
-  var d = 0usize;
-  while d < defines.len() {
-    args.push(String.from("-D"));
-    args.push(defines[d].copy());
-    d = d + 1usize;
-  }
-  var r = 0usize;
-  while r < rest.len() {
-    args.push(rest[r].copy());
-    r = r + 1usize;
-  }
+fn runConec(args: &List[String]) bool {
   var chatter = String.empty();
   var code = 0u32;
   match process.run(args.view()) {
@@ -328,7 +383,9 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
   // modules named core: so the packages folder conec takes it from is the
   // registry folder Congo found core in
   var core = 0usize;
-  if plan.unitNamed(&s.reg, "core", &mut core) {
+  let hasCoreUnit = plan.unitNamed(&s.reg, "core", &mut core);
+  let coreOfBuild = core;
+  if hasCoreUnit {
     let folder = s.reg.packages[plan.units[core].pkg].root.parent();
     let named = native(&folder);
     changes.set("CONE_PACKAGES", named.view());
@@ -381,7 +438,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
       makeFolder(&dest);
       var obj: Path = "";
       match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
-        announce || !isTop) {
+        announce || !isTop, s.useCache, hasCoreUnit, coreOfBuild) {
         case var Ok(ok) { obj <-> ok; }
         case let Err(e) {
           changes.restore();
@@ -596,7 +653,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       case var Ok(ok) { conestd <-> ok; }
       case let Err(e) { return Err[void, String](e.copy()); }
     }
-    match findLinker(&conestd) {
+    match findLinker(&conestd, s.useCache) {
       case var Ok(ok) { s.linker <-> ok; }
       case let Err(e) { return Err[void, String](e.copy()); }
     }
@@ -654,7 +711,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
           case let Ok(ok) { runtimeFiles.push(ok.copy()); }
           case let Err(e) {
-            fs.removeFile(exe);
+            _ = fs.removeFile(exe);
             return Err[void, String](e.copy());
           }
         }
@@ -664,37 +721,6 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
     }
     i = i + 1usize;
   }
-  // The link line: the objects, conestd, then the C libraries the packages'
-  // [link] tables name, each searched for first in their [link] paths
-  var command = List[String].empty();
-  command.push(native(&s.linker.tool));
-  command.push(String.from("/NOLOGO"));
-  i = 0usize;
-  while i < objOrder.len() {
-    command.push(native(&objOrder[i]));
-    i = i + 1usize;
-  }
-  command.push(native(&s.linker.conestd));
-  i = 0usize;
-  while i < paths.len() {
-    let place = native(&paths[i]);
-    command.push(cat("/LIBPATH:", place.view()));
-    i = i + 1usize;
-  }
-  i = 0usize;
-  while i < libraries.len() {
-    command.push(cat(libraries[i].view(), ".lib"));
-    i = i + 1usize;
-  }
-  let exeText = native(exe);
-  command.push(cat("/OUT:", exeText.view()));
-  command.push(String.from("/SUBSYSTEM:CONSOLE"));
-  command.push(String.from("msvcrt.lib"));
-  command.push(String.from("legacy_stdio_definitions.lib"));
-  // The C runtime's own libraries are the toolchain's and stay here; the
-  // Windows SDK's import libraries a package calls (sync's synchronization,
-  // process's shell32, iocore's ws2_32 and ntdll) are named by that package's
-  // [link.windows]
   if announce {
     let place = shown(exe);
     say("Linking", place.view());
@@ -708,23 +734,16 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       }
     }
   }
-  var changes = noChanges();
-  s.linker.apply(&mut changes);
-  var code = 0u32;
-  var said = String.empty();
-  match process.run(command.view()) {
-    case let Ok(ok) {
-      code = ok.exitCode;
-      said = consoleText(ok.stdout.view());
-      let err = consoleText(ok.stderr.view());
-      said <- err.view();
-    }
-    case let Err(e) {
-      fail(e.message());
-    }
+  var attempt = runLink(s, &objOrder, exe, &libraries, &paths);
+  var again = String.empty();
+  // A link that failed the way a stale Visual Studio environment makes one
+  // fail is tried once more, in the environment captured afresh
+  if attempt.code != 0u32 && s.linker.environmental(attempt.said.view(), attempt.code, attempt.ran, &libraries)
+      && s.linker.recapture() {
+    attempt = runLink(s, &objOrder, exe, &libraries, &paths);
+    again = String.from("\n(linked twice: the second time in Visual Studio's environment captured again from vcvars64.bat)");
   }
-  changes.restore();
-  if code != 0u32 {
+  if attempt.code != 0u32 {
     var named = String.empty();
     i = 0usize;
     while i < units.len() {
@@ -736,12 +755,13 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       }
       i = i + 1usize;
     }
-    let line = String.join(command.view(), " ");
-    var m = cat("link failed:\n", line.view(), "\n", said.view());
+    let line = String.join(attempt.command.view(), " ");
+    var m = cat("link failed:\n", line.view(), "\n", attempt.said.view());
     if !named.isEmpty() {
       m <- "\nC libraries linked (", named.view(),
         "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
     }
+    m <- again.view();
     return Err[void, String](m);
   }
   let exeFolder = exe.parent();
@@ -782,4 +802,69 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
     i = i + 1usize;
   }
   succeeded()
+}
+
+// One run of the linker: the line it was given, its exit status, whether it
+// could be started, and what it said
+struct LinkRun {
+  pub command: List[String];
+  pub code: u32;
+  pub ran: bool;
+  pub said: String;
+}
+
+// Run the linker over the objects, in the session's linker environment. The
+// link line: the objects, conestd, then the C libraries the packages' [link]
+// tables name, each searched for first in their [link] paths. The C
+// runtime's own libraries are the toolchain's and stay here; the Windows
+// SDK's import libraries a package calls (sync's synchronization, process's
+// shell32, iocore's ws2_32 and ntdll) are named by that package's
+// [link.windows]. Built each time it is run, since a capture of Visual
+// Studio's environment again may find another link.exe.
+fn runLink(s: &mut Session, objOrder: &List[Path], exe: &Path, libraries: &List[String], paths: &List[Path]) LinkRun {
+  var command = List[String].empty();
+  command.push(native(&s.linker.tool));
+  command.push(String.from("/NOLOGO"));
+  var i = 0usize;
+  while i < objOrder.len() {
+    command.push(native(&objOrder[i]));
+    i = i + 1usize;
+  }
+  command.push(native(&s.linker.conestd));
+  i = 0usize;
+  while i < paths.len() {
+    let place = native(&paths[i]);
+    command.push(cat("/LIBPATH:", place.view()));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < libraries.len() {
+    command.push(cat(libraries[i].view(), ".lib"));
+    i = i + 1usize;
+  }
+  let exeText = native(exe);
+  command.push(cat("/OUT:", exeText.view()));
+  command.push(String.from("/SUBSYSTEM:CONSOLE"));
+  command.push(String.from("msvcrt.lib"));
+  command.push(String.from("legacy_stdio_definitions.lib"));
+  var changes = noChanges();
+  s.linker.apply(&mut changes);
+  var code = 0u32;
+  var ran = true;
+  var said = String.empty();
+  match process.run(command.view()) {
+    case let Ok(ok) {
+      code = ok.exitCode;
+      said = consoleText(ok.stdout.view());
+      let err = consoleText(ok.stderr.view());
+      said <- err.view();
+    }
+    case let Err(e) {
+      ran = false;
+      let why = e.message();
+      said = cat(command[0usize].view(), " could not run: ", why.view(), "\n");
+    }
+  }
+  changes.restore();
+  LinkRun(command, code, ran, said)
 }

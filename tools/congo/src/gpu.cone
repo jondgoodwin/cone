@@ -302,12 +302,6 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   let spv = s.out.join(spvName.view());
   let writtenName = cat(module.view(), ".spv");
   let written = work.join(writtenName.view());
-  removeIfThere(&spv);
-  removeIfThere(&written);
-  let label = pkg.label();
-  let shownRoot = if hasGpu {native(&gpuFolder)} else {native(&pkg.root)};
-  let compiling = cat(label.view(), " for the GPU (", shownRoot.view(), ")");
-  say("Compiling", compiling.view());
   var rest = List[String].empty();
   rest.push(cat("--triple=", gpuTriple));
   if s.mode.equals("debug") { rest.push(String.from("--debug")); }
@@ -318,7 +312,54 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   rest.push(String.from("-o"));
   rest.push(native(&work));
   rest.push(native(&source));
-  if !runConec(&s.conec, &s.defines, rest) {
+  let command = conecCommand(&s.conec, &s.defines, &rest);
+  // The key (cache.cone) holds what conec may read of each package it finds
+  // on its search path and compiles from source, more than it reads, never
+  // less: the gpu/ folder's modules where that is what is compiled, else the
+  // marked package's, and those of every package of the closure, core's among
+  // them
+  var files = List[KeyFile].empty();
+  let manifest = pkg.root.join("congo.toml");
+  files.push(keyFileOf("manifest", &manifest));
+  files.push(keyFileOf("module", &source));
+  if hasGpu {
+    let gpuSources = coneSources(&gpuFolder);
+    var g = 0usize;
+    while g < gpuSources.len() {
+      files.push(keyFileOf("searched", &gpuSources[g]));
+      g = g + 1usize;
+    }
+  }
+  else { searchedSources(pkg, "searched", &mut files); }
+  var compiled = List[usize].empty();
+  compiled.push(plan.units[core].pkg);
+  var c = 0usize;
+  while c < packages.len() {
+    if !holds(&compiled, *packages[c]) { compiled.push(*packages[c]); }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < compiled.len() {
+    if !s.reg.packages[*compiled[c]].name.equals(name.view()) {
+      searchedSources(&s.reg.packages[*compiled[c]], "searched", &mut files);
+    }
+    c = c + 1usize;
+  }
+  let inputs = keyInputs(&command, &files);
+  let key = keyOf(&inputs);
+  let keyName = cat(module.view(), ".key");
+  let keyPath = work.join(keyName.view());
+  var outputs = List[Path].empty();
+  outputs.push(spv.copy());
+  if s.useCache && cacheFresh(&keyPath, key.view(), &outputs) { return Ok[Path, String](spv); }
+  removeIfThere(&keyPath);
+  removeIfThere(&spv);
+  removeIfThere(&written);
+  let label = pkg.label();
+  let shownRoot = if hasGpu {native(&gpuFolder)} else {native(&pkg.root)};
+  let compiling = cat(label.view(), " for the GPU (", shownRoot.view(), ")");
+  say("Compiling", compiling.view());
+  if !runConec(&command) {
     let sourcePlace = native(&source);
     return Err[Path, String](cat("could not compile ", name.view(), " for the GPU (", sourcePlace.view(), ")"));
   }
@@ -330,6 +371,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
     case is Ok {}
     case let Err(e) { fail(fsMessage(&e)); }
   }
+  recordKey(&keyPath, key.view(), &inputs, &outputs);
   Ok[Path, String](spv)
 }
 
