@@ -1614,8 +1614,8 @@ October 2026.
 LLVM keeps a borrowed value in registers across a loop only when it knows no
 other pointer reaches that memory, and the permissions already say so.
 `genlBorrowAttrs` (called where `genlGloFnName` makes the symbol) marks a
-parameter that is a thin borrowed reference, in a region that is not a
-`RegionRef`:
+parameter that is a borrowed reference, thin or a slice, in a region that is not
+a `RegionRef`:
 
 - `&uni T`: `noalias nonnull`. No other live reference reaches it.
 - `&imm T`, where `T` holds no atomic inline (`itypeHoldsAtomic`) and the
@@ -1626,8 +1626,22 @@ parameter that is a thin borrowed reference, in a region that is not a
   signature is (the pointee of a reference is generated later,
   `genlPointeeLater`); a declaration has none.
 
+**A slice** (`&uni Array[T]`, `&imm Array[T]`, a `&str`) is one `{ ptr, i64 }`
+value, and no attribute can sit on a struct. So `genlAggCopies` passes every
+parameter of that literal struct type, in a function with Cone's convention and
+in each call to a function type taking one (through a function reference or a
+virtual reference as through a name), as two scalars, the pointer then the count
+(`genlAggIsSlice`; the body joins them again with `insertvalue` as it begins,
+`genlAggParmJoin`, which LLVM's own passes undo). A `&uni` slice's parameter
+is marked with the string attribute `cone-slice-borrow`, which
+`genlAggSigAttrs` turns into `noalias` on the pointer at its new position. The
+pointer gets neither `nonnull`, since an empty slice's may be null, nor
+`dereferenceable`, since the count is not in the signature. An `&imm` slice and
+a `&str` get nothing: `noalias readonly` on them slowed one benchmark (fasta) by
+6% and no measured program gains from it. A slice returned stays one value.
+
 `&mut` (shared mutable) and `&` (read-only, maybe changed by others) get
-nothing, nor does a fat reference, a pointer, an owning or virtual reference, a
+nothing, nor does a pointer, an owning or virtual reference, a
 lock's guard, a C-named function (`genlIsCAbiFn`: its caller is C), a split
 method (its first half hands its parameters on to the halves after it), a GPU
 module, or a function this does not name: an async half, a `parallel` body
@@ -2540,7 +2554,7 @@ variables.
   in: `f(mk(1).n, { let x = mk(2); if c { return; } 3 })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
-- **A function taking an aggregate passed as a pointer, or returning any
+- **A function taking an aggregate passed as a pointer or a slice, or returning any
   aggregate but one or two scalars, is a different LLVM function after
   `genlAggCopies`** (section 6, "Large aggregates", "Lending a place to a
   call"): remade with pointer parameters or another result type and the old
@@ -2613,6 +2627,7 @@ variables.
 | | `genlAggCopyTo`, `genlAggConstTo`, `genlAggPhis`, `genlAggEdge` | a copy with `llvm.memcpy`, a constant's with `llvm.memset` or field by field, each phi's slot filled at its predecessors' ends, an edge given a block of its own |
 | | `genlAggByPtr`, `genlAggPassesByPtr` | whether an argument of an LLVM type is passed as a pointer (section 6, "Lending a place to a call") |
 | | `genlAggLent`, `genlAggArgPtr`, `genlAggWideStore` | a load generation lent, passed its address; any other argument passed as a pointer, copied: where it was loaded, a call's result slot passed on, or stored wide |
+| | `genlAggIsSlice`, `genlAggParmJoin` | a literal `{ ptr, count }` struct, passed as its two scalars; the parameter's value rebuilt as the body begins (section 6, "noalias on a borrowed parameter") |
 | | `genlAggParmInPlace`, `genlAggParmLoad` | a parameter only read, its variable's slot made the pointer; any other read whole as the body begins |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state; no statement, release or back edge once the path ended; each statement's temporaries finalized at its end |
 | | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break; the path ended after |
