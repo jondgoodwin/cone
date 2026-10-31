@@ -177,7 +177,7 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node) {
 static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     // Checked again: the call is the awaited one already
     if (node->message) {
-        node->vtype = ((FnSigNode *)node->message->vtype)->rettype;
+        node->vtype = actorMessageReturns(node->message);
         return;
     }
     if (node->exp->tag != FnCallTag)
@@ -202,7 +202,10 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     if (!awaitDemandRuntime(pstate, node))
         return;
     fnCallDemandCandidates((INode *)msg->ask);
-    fnCallDemandCandidates((INode *)msg->method);
+    // The requirement of an instance of a generic trait's handle is the template's,
+    // in its type parameters: its future-giving method stands for it
+    FnDclNode *behaviour = msg->generic ? msg->future : msg->method;
+    fnCallDemandCandidates((INode *)behaviour);
 
     FnSigNode *asksig = (FnSigNode *)msg->ask->vtype;
     NameUseNode *askuse = (NameUseNode *)call->objfn;
@@ -210,8 +213,8 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     askuse->vtype = (INode *)asksig;
     INode *envtype = ((VarDclNode *)nodesGet(asksig->parms, asksig->parms->used - 1))->vtype;
     nodesAdd(&call->args, (INode *)newAwaitReplyNode(node, envtype));
-    node->message = msg->method;
-    node->vtype = ((FnSigNode *)msg->method->vtype)->rettype;
+    node->message = behaviour;
+    node->vtype = actorMessageReturns(behaviour);
 }
 
 // What is awaited is a future, a value of an instance of the actors package's
