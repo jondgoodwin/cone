@@ -1,4 +1,4 @@
-// The stream package: the shapes a transform of bytes takes, written once with
+// The streams package: the shapes a transform of bytes takes, written once with
 // no I/O inside, so that inflate, deflate, zstd and a hash run in any stage of
 // a pipeline: over a file, a socket, an actor's mailbox or a buffer in memory.
 // It holds layer 1 of Cone's streaming design (a codec core); the layers over
@@ -7,7 +7,7 @@
 //
 //   mod squeeze;
 //   import iobuf use IoBuf;
-//   import stream use *;
+//   import streams use *;
 //   import deflate;
 //
 //   // Any transform, run over 'input' in 64 KiB pieces: what it makes, joined.
@@ -71,7 +71,8 @@
 // A DIGESTER differs in what it gives. 'feed' takes bytes, and 'finish' answers
 // the digest, whose type (and size) is the digester's own ('Out'): there is no
 // 'pull', since nothing comes out until the end. 'finish' leaves the digester
-// as it was, so it may be asked again and fed more.
+// as it was, so it may be asked again (the same digest) and fed more. That is
+// for now: 'finish' becomes by-value once a by-value Self requirement is built.
 //
 // METHOD CHOICES. These are defaults a later design may revisit.
 //
@@ -90,7 +91,9 @@
 //   Digester is read off 'finish'.
 // - A digester's 'finish' takes '&', not 'self': a requirement taking Self by
 //   value is not built for a trait (the manual's Traits page), and cryptohash's
-//   'finish' already leaves the hasher usable, which the stages do not mind.
+//   'finish' already leaves the hasher usable, so a second 'finish' returns the
+//   same digest (tested for sha256, sha512 and sha1). It becomes by-value once
+//   a by-value Self requirement is built.
 // - No error value in the trait. A stage that must pass a failure on needs a
 //   message and a kind, and each codec's error is its own type (DeflateError,
 //   ZstdError). Left to the stage layer, which has to settle what 'Ending'
@@ -103,7 +106,7 @@
 // What depends on the OS: nothing here. IoBuf's pool (package iobuf) makes the
 // calls.
 
-mod stream;
+mod streams;
 
 import iobuf use IoBuf;
 
@@ -142,6 +145,11 @@ pub trait Digester {
   // Takes more of the message.
   pub fn feed(self: &mut, input: &Array[u8]);
 
-  // The digest of everything fed so far. The digester is left as it was.
+  // The digest of everything fed so far. The digester is left as it was, so a
+  // second 'finish' is harmless: it returns the same digest, and a 'feed' after
+  // one goes on from where the message was (the digest of the longer message).
+  // This takes '&' only because a requirement taking Self by value is not built
+  // yet; once it is, 'finish' becomes by-value (consuming), and a second
+  // 'finish' will then be refused by the checker instead of answered.
   pub fn finish(self: &) Out;
 }
