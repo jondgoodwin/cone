@@ -1,0 +1,47 @@
+// A lend reaches a folded method only through a lender that gives the permission
+// its receiver asks for. A method whose receiver asks for a permission no lender of
+// the clause gives is not folded, so a call of it finds no such method: a type
+// that lends its bytes through 'view' alone (a text, whose bytes must stay valid
+// UTF-8) reaches the reading methods of Array[u8] and not 'reverse', which writes.
+// The permission a lender gives is read from the borrow it returns.
+
+mod struct_typecheck_use_lend_perm;
+
+import collections use *;
+
+struct Bytes {
+  pub items: &Array[u8];
+
+  pub fn view(self: &) &Array[u8] { items }
+
+  use Array[u8] via view;
+}
+
+struct Block {
+  pub n: i32;
+  pub fn total(self: &) i32 { n }
+  pub fn bump(self: &mut) { n = n + 1i32; }
+}
+
+// Lends the reading and the unique permission, but not '&mut'
+struct ReadOnly {
+  pub blk: Block;
+  pub fn view(self: &) &Block { &blk }
+  pub fn viewUni(self: &uni) &uni Block { &uni blk }
+  use Block via view, viewUni but n;
+}
+
+fn main() {
+  let raw: Array[u8, 3] = [1u8, 2u8, 3u8];
+  let b = Bytes(&raw);
+  let n = b.len();
+  b.reverse();                   //~ ErrorNoMbr "Method or field `reverse` not found"
+
+  var r = ReadOnly(Block(1i32));
+  let t = r.total();
+  r.bump();                      //~ ErrorNoMbr "Method or field `bump` not found"
+
+  // A List of text has no 'reverse' to reach: the method is for numbers
+  var names = List[String]();
+  names.reverse();               //~ ErrorNoMbr "Method or field `reverse` not found"
+}

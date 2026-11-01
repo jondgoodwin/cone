@@ -1769,6 +1769,23 @@ branches on `via` to `structLendExpand`, which needs the body complete as a
 sibling is, and the lending method to be a method the type declares
 (`ErrorLend`, as are an enum, a trait, or the type itself as the body).
 
+**A clause may name up to three lenders.** `use Array[T] via view, viewMut, viewUni`
+holds the names in `FieldDclNode.via`, `via2` and `via3` (the last two kept at the
+end of the node: a name-table slot can hold a field where a variable is expected, and
+`varDclHook` reads `scope` at the variable's offset, so nothing may be inserted before
+`index`). Which permission each lender lends is read from the borrow its signature
+returns (`structLendLenderClass`: `&mut` is 1, `&uni` is 2, anything else 0), never from
+its name, and a lend names at most one lender of each class (`ErrorLend`). A method is
+reached through the lender of the class its receiver asks for
+(`structLendReceiverClass`, the permission of the first parameter's borrow; an overload
+set takes its weakest candidate's, so a set with a reading member is reached by the read
+lender): `structLendItem` leaves a method out of the type's namespace, with no error,
+when the clause has no lender of that class, so the call finds no such method, and
+`structLendNameOf` picks the lender again where the receiver is rewritten and where a
+vtable slot's path is recorded. `String` names `view` alone; `List` names all three.
+`each`/`parallel each` still read the first lender (`structLentVia`) and choose
+`viewMut`/`viewUni` themselves by the written permission.
+
 **Entries are aliases, as a sibling's are.** `structLendItem` binds each
 admitted name to the body's declaration and enters the alias in the type's
 namespace, so a lookup finds `AliasDclTag` and a call is the direct call of the
