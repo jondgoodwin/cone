@@ -1031,7 +1031,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         // HERE: an imported module's function has a body in the IR and is only a
         // declaration in this object, and LLVM's verifier rejects a declaration
         // carrying a subprogram
-        if (!gen->opt->release && defined != GenlDeclared) {
+        if (gen->opt->debuginfo && defined != GenlDeclared) {
             char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
             LLVMMetadataRef difile = genlDiFile(gen, (INode*)glofn);
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
@@ -1460,6 +1460,18 @@ static void genlEntry(GenState *gen) {
     genlComdat(gen, entry);
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(context);
     LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(context, entry, "entry"));
+    // The program's 'main' is a single-call function that a release build
+    // inlines here. An entry with no subprogram would drop the inlined code's
+    // lines and names, which is all of a small program
+    if (gen->opt->debuginfo) {
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)mainfn);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            "main", 4, "main", 4, difile, mainfn->linenbr, sptype, 0, 1, mainfn->linenbr, LLVMDIFlagPublic, 0);
+        LLVMSetSubprogram(entry, sp);
+        LLVMSetCurrentDebugLocation2(builder,
+            LLVMDIBuilderCreateDebugLocation(context, mainfn->linenbr, 0, sp, NULL));
+    }
 
     LLVMValueRef initfn = genlStitchFn(gen, InitAllIntrinsic);
     LLVMValueRef finalfn = genlStitchFn(gen, FinalAllIntrinsic);
@@ -1494,7 +1506,13 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     char *layout = LLVMCopyStringRepOfTargetData(gen->datalayout);
     LLVMSetDataLayout(gen->module, layout);
     LLVMDisposeMessage(layout);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
+        // Windows' debugger and profiler tools read CodeView, which the linker
+        // writes out as a PDB; without this flag LLVM emits DWARF into the COFF
+        // object, which the linker ignores
+        if (strstr(gen->opt->triple, "windows") != NULL)
+            LLVMAddModuleFlag(gen->module, LLVMModuleFlagBehaviorWarning, "CodeView", 8,
+                LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(gen->context), 1, 0)));
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difiles = NULL;
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
@@ -1569,7 +1587,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     genlStitch(gen, 0);
     genlStitch(gen, 1);
 
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMDIBuilderFinalize(gen->dibuilder);
 }
 
@@ -2677,6 +2695,11 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
     opt->vulkan = opt->gpu && strstr(opt->triple, "vulkan") != NULL;
+    // A native program carries debug info in a release build too, so a profiler
+    // can name its functions (a PDB on Windows, DWARF in the ELF on Linux).
+    // WebAssembly and SPIR-V output keep it for a debug build alone: a release
+    // module is as small as it can be, and there is no tool to split it off.
+    opt->debuginfo = !opt->strip_debug && (!opt->release || !(opt->wasm || opt->gpu));
     genlLLVMOptions(opt->gpu);
     // A crash inside LLVM then names the pass and the function it was in, as
     // llc's does, rather than ending conec without a word
