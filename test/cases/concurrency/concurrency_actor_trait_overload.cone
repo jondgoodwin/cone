@@ -1,0 +1,62 @@
+// An actor trait's behaviour may declare 'overload', and the name then works on
+// a handle of the trait as it does on an actor's own handle: `s <- 5` sends
+// 'accept' to whichever actor the handle holds.
+//
+// 'Sink' declares `accept overload `<-``. Adder and Doubler conform; Adder
+// repeats the overload name, Doubler does not (conformance is by the
+// behaviour's name and its shapes, as for a trait with no overload name), so
+// `<-` works on a Sink handle for both, and on Adder's own handle, but not on
+// Doubler's own, which never said it.
+//
+// Everything is sent from the one thread before the reads, and one sender's
+// messages to one actor arrive in the order sent, so the totals are fixed.
+
+mod concurrency_actor_trait_overload;
+
+import stdio use *;
+import actors;
+
+actor trait Sink {
+  pub async fn accept overload `<-`(self, c: i32);
+  pub async fn total(self) i32;
+}
+
+actor Adder {
+  sum: i32;
+  fn init(self: &new) {*self = Self(sum: 0);}
+  pub async fn accept overload `<-`(self, c: i32) {sum = sum + c;}
+  pub async fn total(self) i32 {sum}
+}
+
+actor Doubler {
+  sum: i32;
+  fn init(self: &new) {*self = Self(sum: 0);}
+  pub async fn accept(self, c: i32) {sum = sum + c * 2;}
+  pub async fn total(self) i32 {sum}
+}
+
+fn feed(s: Sink) {
+  s <- 5;
+  s.accept(1);
+}
+
+actor Reporter {
+  pub async fn report(self, a: Sink, b: Sink) {
+    printStr("adder "); printInt(await a.total()); printStr("\n");
+    printStr("doubler "); printInt(await b.total()); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let a = Adder();
+    let d = Doubler();
+    feed(a);
+    feed(d);
+    a <- 10;
+    let r = Reporter();
+    r.report(a, d);
+  }
+  finalAll();
+}

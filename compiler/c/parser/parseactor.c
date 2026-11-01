@@ -879,11 +879,6 @@ static void parseActorTraitMembers(DclTexts *texts, StructNode *body, Name *trai
                 &fn->namesym->namestr, &fn->namesym->namestr);
             ok = 0;
         }
-        if (fn->overloadsym) {
-            errorMsgNode(node, ErrorActorTraitMember,
-                "Behaviour %s is declared 'overload', which an actor trait's behaviour is not yet.", &fn->namesym->namestr);
-            ok = 0;
-        }
         if (fn->genericinfo) {
             errorMsgNode(node, ErrorActorTraitMember,
                 "Behaviour %s is generic, which a behaviour cannot be yet: each is one variant of the actor's message type.",
@@ -1145,6 +1140,10 @@ static void parseActorTrait(ParseState *parse, uint16_t pubflag) {
         int returns = parseActorReturns(fn);
         genPuts(&g, "  pub fn ");
         genName(&g, fn->namesym);
+        if (fn->overloadsym) {
+            genPuts(&g, " overload ");
+            genName(&g, fn->overloadsym);
+        }
         genPuts(&g, "(self: &");
         genTraitParms(&g, &texts, fn, 1);
         genPuts(&g, ")");

@@ -773,7 +773,7 @@ enum ErrorCode {
     ErrorEachBorrowPerm = 1566, // An 'each' source written '&mut src' or '&uni src' whose type walks through an 'iter' that lends '&' only (a Deque, a Set, a Dict): there are no items to change in place, so the permission written cannot be given. Pointed at the source
     ErrorEachBehindBorrow = 1567, // An 'each' over a source reached through a borrow (a reference, a field of one, a slice) whose items move: a plain 'each' hands out each item as `let x = item` would, which a borrow cannot give up. Names the borrow to write, `&l` or `&*r`. Pointed at the source
     ErrorEachNoDrain = 1568,    // An 'each' over an owned array whose items move: no cursor consumes a fixed array yet. Pointed at the source
-    ErrorActorTraitMember = 1569, // What an 'actor trait' may not hold, or a form of it not built: a field, a 'fn', a behaviour with a body, a behaviour that is not 'pub' or has no 'self', a static, a macro, an 'is' or 'extends', a type parameter, an 'overload'. Pointed at the member
+    ErrorActorTraitMember = 1569, // What an 'actor trait' may not hold, or a form of it not built: a field, a 'fn', a behaviour with a body, a behaviour that is not 'pub' or has no 'self', a static, a macro, an 'is' or 'extends', a type parameter. Pointed at the member
     ErrorActorTraitConform = 1570, // An actor handle converted to an actor trait's handle where the actor does not conform: a behaviour of the trait it lacks, declares without 'pub' or with other parameter or return types. Names each. Pointed at the value converted
 
     // Warnings
