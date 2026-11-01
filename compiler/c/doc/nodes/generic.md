@@ -1380,8 +1380,24 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   (`genericConditionNameRes`) and the evaluator read them. A walk that type
   checked or generated one would take a compile-time question for a runtime
   test.
-- **Only a struct fits a trait structurally.** A number type meets the markers
-  granted to it and no trait with members.
+- **A struct fits a trait structurally by its declared methods, a number type
+  by its built-in ones** (`genericNumberFits`, `iNsTypeNumberMeets`): `<=>`,
+  `cmp`, `==`, `+` and the rest in corenumber.c. The number's methods hold the
+  number by value and a trait must write `&Self` (Error 1069 refuses `Self` by
+  value), so for number types only a by-value parameter meets a requirement's
+  reference to `Self`, and the call reads the referent. This is interim: the
+  general fix is a by-value `Self` in traits (which `Digester.finish` also
+  wants), and the branch can then go. It is not widened to Copy structs. A
+  trait that requires no method of a value (a marker, or only static functions)
+  is met by a number only by the compiler's grant, so `T.make(x)` through a
+  type parameter whose argument is a number (other than `from`) is still
+  refused (fncall.c, "a number type has 'from'"). `fnSigReqTypeSame` also reads
+  a requirement's default-permission `&Self` as `imm` where `Self` declares
+  Immutable (`str`), as an unwritten permission to such a type is.
+- **A number's `cmp(a, &b)`** is the three-way `<=>` with the second number read
+  through a reference (a `CmpIntrinsic` whose second parameter is a reference;
+  genlexpr.c loads it), so `a.cmp(&b)` in a generic body bounded by `Ordered`
+  reaches it. bool has neither.
 - **A clause naming a generic trait's instance type checks and instantiates
   while the evaluator runs**, so evaluating a condition can instantiate other
   generics and re-enter `genericRequirementsMet`. Whatever it keeps for a
