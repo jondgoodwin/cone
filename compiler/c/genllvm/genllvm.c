@@ -2667,6 +2667,8 @@ static void genlLLVMOptions(int gpu) {
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
     gen->libroot = NULL;
+    gen->dropslow = NULL;
+    gen->dropslowcnt = 0;
     gen->deferred = NULL;
     gen->deferredcnt = 0;
     gen->deferredmax = 0;

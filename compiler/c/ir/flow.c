@@ -1113,6 +1113,19 @@ int flowIsKeptRead(INode *node) {
     return flowIsLvalRead(node);
 }
 
+// The payload a match's binding reads out of the matched value, where that is
+// the match's own hidden variable and the variant has no other field
+// (flowTakesSoleField), and the payload has a death of its own -- a counted
+// reference, or a value holding one -- though it is not a move type. Nothing
+// names the hidden variable but the pattern, and the pattern reads the payload
+// once, so this read is the last of it: the payload moves out with the matched
+// value instead of gaining a holder that the matched value's own release then
+// undoes. (A read of a plain number copies, as it did.)
+static int flowIsSolePayloadTake(INode *node) {
+    return node->tag == FldAccessTag && isExpNode(node) && itypeNeedsFinal(((IExpNode *)node)->vtype)
+        && flowTakesSoleField((FnCallNode *)node);
+}
+
 void flowHandleMoveOrCopy(INode **nodep) {
     // A tuple literal has no storage of its own: each element's value is moved
     // or copied into it on its own, as a struct literal's fields are, so a
@@ -1124,7 +1137,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
             flowHandleMoveOrCopy(elemp);
         return;
     }
-    if (iexpIsMove(*nodep)) {
+    if (iexpIsMove(*nodep) || flowIsSolePayloadTake(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }

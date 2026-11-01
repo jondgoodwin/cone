@@ -1162,6 +1162,65 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
         genlRegionCall(gen, freemeth, genlOwnerHeader(gen, ref, valptr, refnode));
 }
 
+// The fast path of a counted reference's release. In a release build the
+// decrement stays in line at every release (the region's 'dealiasRef'), and the
+// rest -- the value's finalizing and the region's 'free' -- is one cold function
+// for each type and region, called only when the count reaches zero. So a drop
+// of a type that holds such a reference is a few instructions however large the
+// pointee's own drop is, and small enough for LLVM to inline even where its
+// instance is shared. Only a plain thin reference whole: a fat or virtual one,
+// a guard, and a release of a value moved out of in part, keep the death in line.
+static int genlDropSlowApplies(GenState *gen, RefNode *refnode, MovedPath *paths) {
+    return gen->opt->release && !gen->opt->gpu && paths == NULL && refnode->tag == RefTag
+        && !refIsFat(refnode) && !permHeldKind(refnode->perm);
+}
+
+static LLVMValueRef genlDropSlow(GenState *gen, RefNode *refnode) {
+    for (GenDropSlow *known = gen->dropslow; known; known = known->next) {
+        if (known->region == refnode->region && itypeIsSame(known->vtexp, refnode->vtexp))
+            return known->fn;
+    }
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(gen->context, 0);
+    LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &ptrtype, 1, 0);
+    char symbol[64];
+    snprintf(symbol, sizeof(symbol), "cone.dropslow.%u", gen->dropslowcnt++);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, symbol, fntype);
+    genlLinkage(fn, NULL, GenlDefined);
+    genlComdat(gen, fn);
+    genlFnAttr(gen, fn, "noinline");
+    genlFnAttr(gen, fn, "cold");
+    GenDropSlow *made = memAllocBlk(sizeof(GenDropSlow));
+    made->vtexp = refnode->vtexp;
+    made->region = refnode->region;
+    made->fn = fn;
+    made->next = gen->dropslow;
+    gen->dropslow = made;
+
+    // Generated as a function of its own, set aside from the one being built
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    uint32_t svtempbase = gen->tempbase;
+    gen->tempbase = gen->tempcnt;
+    gen->fn = fn;
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+    gen->allocaPoint = allocaPoint;
+    LLVMValueRef ref = LLVMGetParam(fn, 0);
+    genlRegionDeath(gen, ref, ref, refnode, NULL, 0, 0);
+    LLVMBuildRetVoid(gen->builder);
+    if (LLVMGetInstructionParent(allocaPoint))
+        LLVMInstructionEraseFromParent(allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    return fn;
+}
+
 // One owner of an owning reference goes away. A region with 'dealiasRef' is asked
 // whether it was the last, and the value dies only if so. Without one, a 'Move'
 // region's owner is the only one, and its going is the value's death; any
@@ -1187,7 +1246,10 @@ static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refn
     LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
     LLVMBuildCondBr(gen->builder, last, dofree, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, dofree);
-    genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
+    if (genlDropSlowApplies(gen, refnode, paths))
+        LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(genlDropSlow(gen, refnode)), genlDropSlow(gen, refnode), &ref, 1, "");
+    else
+        genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
     LLVMBuildBr(gen->builder, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, nofree);
 }
