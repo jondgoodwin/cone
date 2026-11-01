@@ -82,45 +82,13 @@ fn sidePoint(g: &Graph, n: usize, side: u32, frac: f32) Vec2 {
   Vec2(l, t + (b - t) * frac)
 }
 
-// ---- A* heap ----
+// ---- A* open list ----
 
-struct Heap {
-  f: List[f32];
-  s: List[usize];
-
-  fn push(self: &mut, cost: f32, state: usize) {
-    f.push(cost);
-    s.push(state);
-    var i = f.len() - 1usize;
-    while i > 0usize {
-      let p = (i - 1usize) / 2usize;
-      if *f[p] <= *f[i] { break; }
-      f.swap(p, i);
-      s.swap(p, i);
-      i = p;
-    }
-  }
-
-  fn pop(self: &mut) usize {
-    let top = *s[0usize];
-    let n = f.len() - 1usize;
-    f.set(0usize, *f[n]);
-    s.set(0usize, *s[n]);
-    f.pop();
-    s.pop();
-    var i = 0usize;
-    while true {
-      let l = 2usize * i + 1usize;
-      let r = l + 1usize;
-      var m = i;
-      if l < f.len() && *f[l] < *f[m] { m = l; }
-      if r < f.len() && *f[r] < *f[m] { m = r; }
-      if m == i { break; }
-      f.swap(m, i);
-      s.swap(m, i);
-      i = m;
-    }
-    top
+// The state of least cost, removed; the queue is not empty
+fn popState(heap: &mut PriorityQueue[f32, usize]) usize {
+  match heap.pop() {
+    case let Some(pair) { let cost, state = pair; state }
+    case is None { 0usize }
   }
 }
 
@@ -171,15 +139,15 @@ fn search(grid: &Grid, ai: usize, aj: usize, da: u32, bi: usize, bj: usize, db: 
   var closed = List[bool].withCapacity(total);
   var k = 0usize;
   while k < total { g.push(1.0e30); came.push(-1); closed.push(false); k = k + 1usize; }
-  var heap = Heap(List[f32].empty(), List[usize].empty());
+  var heap = PriorityQueue[f32, usize]();
   let start = (aj * nx + ai) * 4usize + usize.from(da);
   g.set(start, 0.);
   let goalX = *grid.xs[bi];
   let goalY = *grid.ys[bj];
   heap.push((*grid.xs[ai] - goalX).abs() + (*grid.ys[aj] - goalY).abs(), start);
   var found = -1i32;
-  while heap.f.len() > 0usize {
-    let st = heap.pop();
+  while !heap.isEmpty() {
+    let st = popState(&mut heap);
     if *closed[st] { continue; }
     closed.set(st, true);
     let d = u32.from(st % 4usize);

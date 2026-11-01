@@ -15,7 +15,7 @@
 //   import iobuf use *;
 //   import time use Instant;
 //
-//   mut conn = Connection.client(Config.make(), Instant.now());
+//   var conn = Connection.client(Config.make(), Instant.now());
 //   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
 //   while true {                                     // the driver's loop:
 //     send(conn.pollTransmit(now));                  // a Chain: one gather write
@@ -58,8 +58,8 @@
 // 'pollTransmit(now)' gives what to send next; 'pollTimeout()' gives the one
 // deadline to wake at, and 'handleTimeout(now)' says it came; 'pollEvent()'
 // gives what happened. Bytes come in as IoBufs, moved in: the buffer a
-// receive completed with, kept in an iobuf Chain, parsed across its segments
-// where they lie. Bytes go out as IoBufs too, moved to the driver to send:
+// receive completed with, kept in a streams Reader (over an iobuf Chain), parsed
+// across its segments where they lie. Bytes go out as IoBufs too, moved to the driver to send:
 // 'pollTransmit' gives all that are ready at once, a Chain of the buffers
 // they lie in, in order, which the driver sends in one gather write
 // (iocore's SendChain), as http2's 'pollTransmit' gives its frames. The core
@@ -139,10 +139,12 @@
 // input held; 'bodyWindow' (256 KiB) body bytes out unreleased;
 // 'writeWatermark' (256 KiB) bytes queued to send ('maxBuffered' holds a
 // whole head of the role's, or making the connection panics). A head is
-// gathered in a buffer from the buffer pool taken at its first byte, 4 KiB,
-// and doubled only as the head needs, up to its bound: a connection awaiting
-// a head holds none, and a head bound is a ceiling, not what each
-// connection holds. Timeouts are Durations,
+// read where it lies: the input is a streams Reader, and a head in its first
+// segment is parsed in that segment, with no copy. A head that crosses a
+// segment's edge is copied together once, into one block from the buffer pool
+// that the Reader keeps only while it holds bytes: a connection awaiting a
+// head holds none, and a head bound is a ceiling, not what each connection
+// holds. Timeouts are Durations,
 // each turned into an absolute Instant when it starts: 'headTimeout' (30 s)
 // from the moment a head is awaited (a client: its request handed over
 // whole; a server: the request's first byte) to its last byte;
@@ -190,8 +192,7 @@
 // absolute form for proxies (a server reads them, a client never writes
 // them); transfer codings other than chunked; reading a request's body that
 // a server has already answered (the connection closes instead); keeping an
-// HTTP/1.0 peer alive; and parsing a head in place when it lies in one
-// segment (it is copied out to be read). The client layer above (pools,
+// HTTP/1.0 peer alive. The client layer above (pools,
 // retries, redirects, the scheduler) is httpclient, over httpconn.
 
 mod http1;
@@ -199,6 +200,7 @@ mod http1;
 import collections use List, String;
 import time use Instant, Duration;
 import iobuf use IoBuf, Chain;
+import streams use Reader;
 import http use *;
 
 // ---------------------------------------------------------------------------
@@ -275,7 +277,6 @@ enum WriteState {
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by the watermark instead
 const tailSize = 4096usize;               // a buffer small writes gather in, when the last queued has no room
-const headStart = 4096usize;              // a head's first buffer; it doubles as the head needs, up to its bound
 const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
 const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
 
@@ -286,12 +287,11 @@ pub struct Connection is Move {
   now: Instant;              // the time the last call brought
 
   // Reading
-  input: Chain;              // what arrived and is not yet parsed or handed on
+  input: Reader;             // what arrived and is not yet parsed or handed on
   eof: bool;                 // the peer has finished sending
   rs: ReadState;
   remaining: u64;            // the body's or the chunk's bytes still to come
-  headBuf: IoBuf;            // a head being gathered, copied out of the input
-  headScan: usize;           // how far it has been checked
+  headScan: usize;           // how far the head at the front of the input has been checked
   sawBytes: bool;            // a byte of the head awaited has arrived
   outstanding: usize;        // body bytes handed out, not yet released
   headInFlight: bool;        // a client's request in flight is a HEAD
@@ -344,8 +344,8 @@ pub struct Connection is Move {
       panic("http1: maxBuffered must hold a whole head (maxResponseHeadBytes)", file, line);
     }
     Connection(clientRole: client, cfg: cfg, now: now,
-      input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
-      headBuf: IoBuf.empty(), headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
+      input: Reader.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle, remaining: 0u64,
+      headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
       ws: WriteState.Idle, wremaining: 0u64, out: Chain.make(noBound), held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
       answeringHead: false, peer10: false, keepAlive: true,
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
@@ -480,7 +480,7 @@ pub struct Connection is Move {
         }
         // A server between requests: RFC 9112 (2.2) lets a server skip
         // empty lines before a request line
-        while input.len() >= 2usize && input.matchesAt(0usize, "\r\n") {input.advance(2usize);}
+        while input.len() >= 2usize && input.matchesAt(0usize, "\r\n") {input.consume(2usize);}
         if input.len() == 1usize && input.byteAt(0usize) == '\r' && !eof {return Event.NeedData;}
         if input.len() > 0usize {
           self.startHead();
@@ -507,7 +507,7 @@ pub struct Connection is Move {
       if rs == ReadState.ChunkEnd {
         // A client takes an LF alone for the CRLF (RFC 9112, 2.2)
         if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
-          input.advance(1usize);
+          input.consume(1usize);
           rs = ReadState.ChunkSize;
           continue;
         }
@@ -519,7 +519,7 @@ pub struct Connection is Move {
           self.fail(ErrorKind.Malformed, 400u16, "a chunk's data is not followed by CRLF");
           continue;
         }
-        input.advance(2usize);
+        input.consume(2usize);
         rs = ReadState.ChunkSize;
         continue;
       }
@@ -815,88 +815,54 @@ pub struct Connection is Move {
     self.failedEvent()
   }
 
-  // Copy what arrived into headBuf and check it, up to the blank line that
-  // ends a head: the head's length then, or 0 (not all here yet, or failed).
-  // headBuf is taken once a head's first byte is here, headStart bytes, and
-  // grows to twice its size, up to the head's bound, only while the input
-  // holds more of the head than it does: a connection awaiting a head holds
-  // no buffer, and a short head a small one
+  // Check what arrived for the blank line that ends a head: the head's length
+  // then, or 0 (not all here yet, or failed). The head is looked at where it
+  // lies, as a view the input lends: the bytes of the input's first segment
+  // first, and only when they hold no end, all that has arrived (up to the
+  // head's bound), which copies the head together once if it crosses a
+  // segment's edge. headScan keeps how far the bytes are checked, so a head
+  // arriving in many pieces is not checked again from its start
   fn gatherHead(self: &mut) usize {
     let most = if clientRole {cfg.maxResponseHeadBytes} else {cfg.maxHeadBytes};
-    if headBuf.capacity() == 0usize {headScan = 0usize;}
+    var n = input.contiguousLen();
+    if n > most {n = most;}
     while true {
-      let have = headBuf.len();
-      if input.len() > have && have < most {
-        if headBuf.room() == 0usize {
-          // Grow: the head's bytes are still in the input, so the new buffer
-          // is filled from its start
-          let want = if headBuf.capacity() == 0usize {headStart} else {headBuf.capacity() * 2usize};
-          headBuf = IoBuf(if want < most {want} else {most});
-          let n = input.copyOut(0usize, headBuf.spare());
-          headBuf.setLen(n);
-        } else {
-          let n = input.copyOut(have, headBuf.spare());
-          headBuf.setLen(have + n);
-        }
+      var found = HeadScan(0usize, headScan, scanOk);
+      match input.peek(n) {
+        case let Some(v) {found = scanHeadBytes(v, headScan, most, clientRole);}
+        case is None[&Array[u8]] {}
       }
-      let len = self.scanHead(most);
-      if len > 0usize || failed {return len;}
-      // Not ended in what the buffer holds: look again only if it is full
-      // and the input holds more
-      if headBuf.room() > 0usize || input.len() <= headBuf.len() {return 0usize;}
-    }
-    0usize
-  }
-
-  // Check headBuf from headScan for the blank line ending a head: the head's
-  // length, or 0 (not there yet, or failed: a malformed line, or the head
-  // passed most)
-  fn scanHead(self: &mut, most: usize) usize {
-    let v = headBuf.view();
-    let lim = if v.len < most {v.len} else {most};
-    var i = headScan;
-    while i < lim {
-      let c = v[i];
-      if c == '\n' {
-        let bare = i == 0usize || v[i - 1usize] != '\r';
-        if bare && !clientRole {
-          self.fail(ErrorKind.Malformed, 400u16, "a line ends in an LF without its CR");
-          return 0usize;
-        }
-        if clientRole {
-          // A response's line may end in an LF alone (RFC 9112, 2.2): its
-          // head ends at a line with nothing before its CR or LF
-          let lineAt = if bare {i} else {i - 1usize};
-          if lineAt == 0usize || v[lineAt - 1usize] == '\n' {
-            headScan = 0usize;
-            return i + 1usize;
-          }
-        } else if i >= 3usize && v[i - 2usize] == '\n' && v[i - 3usize] == '\r' {
-          headScan = 0usize;
-          return i + 1usize;
-        }
-      } else if i > 0usize && v[i - 1usize] == '\r' {
+      headScan = found.at;
+      if found.why == scanBareLf {
+        self.fail(ErrorKind.Malformed, 400u16, "a line ends in an LF without its CR");
+        return 0usize;
+      }
+      if found.why == scanBareCr {
         self.fail(ErrorKind.Malformed, 400u16, "a CR is not followed by its LF");
         return 0usize;
       }
-      i = i + 1usize;
-    }
-    headScan = i;
-    if lim >= most {
-      if clientRole {self.fail(ErrorKind.TooLarge, 0u16, "the head is longer than maxResponseHeadBytes");}
-      else {self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");}
+      if found.why == scanTooLong {
+        if clientRole {self.fail(ErrorKind.TooLarge, 0u16, "the head is longer than maxResponseHeadBytes");}
+        else {self.fail(ErrorKind.TooLarge, 431u16, "the head is longer than maxHeadBytes");}
+        return 0usize;
+      }
+      if found.len > 0usize {
+        headScan = 0usize;
+        return found.len;
+      }
+      // Not ended in the n bytes looked at: look at all that has arrived
+      let all = if input.len() < most {input.len()} else {most};
+      if all <= n {return 0usize;}
+      n = all;
     }
     0usize
   }
 
-  // The head gathered is consumed: its bytes leave the input, its buffer
-  // goes home
+  // The head at the front of the input, len bytes, is consumed
   fn consumeHead(self: &mut, len: usize) {
-    input.advance(len);
-    headBuf = IoBuf.empty();
+    input.consume(len);
     headScan = 0usize;
   }
-
   fn readHead(self: &mut) Event {
     let len = self.gatherHead();
     if failed {return self.failedEvent();}
@@ -915,7 +881,10 @@ pub struct Connection is Move {
   // A server's request head, gathered: parsed, checked, and its body's
   // framing decided
   fn requestHead(self: &mut, len: usize) Event {
-    let read = readRequest(headBuf.view(), &cfg);
+    let read = match input.peek(len) {
+      case let Some(v) {readRequest(v, &cfg)}
+      case is None[&Array[u8]] {bad[RequestRead](ErrorKind.Malformed, 400u16, "the head is not in the input")}
+    };
     self.consumeHead(len);
     match read {
       case var Ok(r) {
@@ -938,7 +907,10 @@ pub struct Connection is Move {
   // A client's response head, gathered: an interim one, or the final one
   // with its body's framing decided
   fn responseHead(self: &mut, len: usize) Event {
-    let read = readResponse(headBuf.view(), &cfg);
+    let read = match input.peek(len) {
+      case let Some(v) {readResponse(v, &cfg)}
+      case is None[&Array[u8]] {bad[ResponseRead](ErrorKind.Malformed, 0u16, "the head is not in the input")}
+    };
     self.consumeHead(len);
     match read {
       case var Ok(r) {
@@ -1028,7 +1000,7 @@ pub struct Connection is Move {
     var n = avail;
     if rs != ReadState.UntilClose && remaining < n {n = remaining;}
     var buf = IoBuf.empty();
-    if u64.from(input.firstLen()) <= n {
+    if u64.from(input.contiguousLen()) <= n {
       match input.popFront() {
         case let Some(s) {buf = s;}
         case is None[IoBuf] {}
@@ -1039,7 +1011,7 @@ pub struct Connection is Move {
       let room = buf.spare();
       let k = input.copyOut(0usize, &mut room[0usize ..< want]);
       buf.setLen(k);
-      input.advance(k);
+      input.consume(k);
     }
     let got = buf.len();
     outstanding = outstanding + got;
@@ -1108,16 +1080,9 @@ pub struct Connection is Move {
       self.fail(ErrorKind.TooLarge, 400u16, "a chunk's size line is longer than maxChunkLineBytes");
       return false;
     }
-    let read = match input.contiguous(0usize, at) {
+    let read = match input.peek(at) {
       case let Some(s) {parseChunkLine(s, &cfg)}
-      case is None[&Array[u8]] {
-        // The line lies across segments: copy it out to read it
-        var tmp = IoBuf(at + 1usize);
-        let room = tmp.spare();
-        let k = input.copyOut(0usize, &mut room[0usize ..< at]);
-        tmp.setLen(k);
-        parseChunkLine(tmp.view(), &cfg)
-      }
+      case is None[&Array[u8]] {bad[u64](ErrorKind.Malformed, 400u16, "a chunk's size line is not in the input")}
     };
     let size = match read {
       case var Ok(v) {v}
@@ -1126,7 +1091,7 @@ pub struct Connection is Move {
         return false;
       }
     };
-    input.advance(at + skip);
+    input.consume(at + skip);
     if size == 0u64 {
       rs = ReadState.Trailers;
     } else {
@@ -1139,7 +1104,7 @@ pub struct Connection is Move {
   // The trailer section after the last chunk: End once it is whole
   fn readTrailers(self: &mut) Event {
     if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
-      input.advance(1usize);
+      input.consume(1usize);
       return self.endMessage(Headers.empty());
     }
     if input.len() < 2usize {
@@ -1147,7 +1112,7 @@ pub struct Connection is Move {
       return Event.NeedData;
     }
     if input.matchesAt(0usize, "\r\n") {
-      input.advance(2usize);
+      input.consume(2usize);
       return self.endMessage(Headers.empty());
     }
     let len = self.gatherHead();
@@ -1156,7 +1121,10 @@ pub struct Connection is Move {
       if eof {return self.closedMidBody();}
       return Event.NeedData;
     }
-    let read = parseFields(headBuf.view(), 0usize, &cfg, !clientRole, false);
+    let read = match input.peek(len) {
+      case let Some(v) {parseFields(v, 0usize, &cfg, !clientRole, false)}
+      case is None[&Array[u8]] {bad[FieldLines](ErrorKind.Malformed, 400u16, "the trailers are not in the input")}
+    };
     self.consumeHead(len);
     match read {
       case var Ok(f) {self.endMessage(f.(headers))}

@@ -1,4 +1,5 @@
-// A binary min-heap of (key, id) pairs: the open list of every search here.
+// The open list of every search here: a min-heap of (key, id) pairs, the
+// library's PriorityQueue ordered by a priority of key then id.
 // Duplicates of an id are allowed (a search pushes again when it finds a
 // shorter route and skips the stale entry when it pops it: "lazy deletion").
 // Ties in key pop in a fixed order (the lower id first) so a search is
@@ -7,64 +8,32 @@
 pub struct HeapItem {
   pub key: f32;
   pub id: u32;
+
+  // The key, then the id
+  pub fn `<=>`(self, o: HeapItem) i32 {
+    if key < o.key { -1i32 } else if key > o.key { 1i32 } else { id <=> o.id }
+  }
 }
 
+// The queue's item: the priority already says everything
+struct Nothing {}
+
 pub struct MinHeap {
-  pub items: List[HeapItem];
+  q: PriorityQueue[HeapItem, Nothing];
 
-  pub fn empty() MinHeap { MinHeap(List[HeapItem].empty()) }
+  pub fn empty() MinHeap { MinHeap(PriorityQueue[HeapItem, Nothing]()) }
 
-  pub fn len(self: &) usize { items.len() }
-  pub fn isEmpty(self: &) bool { items.len() == 0usize }
-  pub fn clear(self: &mut) { items.clear(); }
+  pub fn len(self: &) usize { q.len() }
+  pub fn isEmpty(self: &) bool { q.isEmpty() }
+  pub fn clear(self: &mut) { q.clear(); }
 
-  // True when a pops before b
-  fn before(a: HeapItem, b: HeapItem) bool inline {
-    if a.key < b.key { return true; }
-    if a.key > b.key { return false; }
-    a.id < b.id
-  }
-
-  pub fn push(self: &mut, key: f32, id: u32) {
-    items.push(HeapItem(key, id));
-    var i = items.len() - 1usize;
-    let item = *items[i];
-    while i > 0usize {
-      let p = (i - 1usize) / 2usize;
-      let pi = *items[p];
-      if MinHeap.before(item, pi) {
-        items.set(i, pi);
-        i = p;
-      } else {
-        break;
-      }
-    }
-    items.set(i, item);
-  }
+  pub fn push(self: &mut, key: f32, id: u32) { q.push(HeapItem(key, id), Nothing()); }
 
   // The smallest, removed; the caller checks isEmpty first
   pub fn pop(self: &mut) HeapItem {
-    let top = *items[0usize];
-    let last = *items[items.len() - 1usize];
-    items.truncate(items.len() - 1usize);
-    let n = items.len();
-    if n > 0usize {
-      var i = 0usize;
-      while true {
-        let l = 2usize * i + 1usize;
-        if l >= n { break; }
-        var c = l;
-        if l + 1usize < n && MinHeap.before(*items[l + 1usize], *items[l]) { c = l + 1usize; }
-        let ci = *items[c];
-        if MinHeap.before(ci, last) {
-          items.set(i, ci);
-          i = c;
-        } else {
-          break;
-        }
-      }
-      items.set(i, last);
+    match q.pop() {
+      case let Some(pair) { let top, n = pair; top }
+      case is None { HeapItem(0., 0u32) }
     }
-    top
   }
 }
