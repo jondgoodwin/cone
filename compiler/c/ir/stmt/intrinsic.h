@@ -125,6 +125,7 @@ enum IntrinsicFn {
     ReadRawIntrinsic,       // readRaw[T](p: *T) T
     WriteRawIntrinsic,      // writeRaw[T](p: *T, value: T)
     MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
+    ForgetIntrinsic,        // forget[T](value: T)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() bool
     TraceIntrinsic,         // trace[T](p: *T, mode: u32)

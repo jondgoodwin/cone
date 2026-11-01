@@ -885,7 +885,7 @@ the two functions that make a request's envelope (`Counter.reply'`,
 nothing). A reply to an `await` is no variant of the message enum: it is a
 slot of its own kind in the awaiting actor's mailbox, which the actors package
 resumes ([Generation](generation.md), "A message's reply"). Such a behaviour returning a value is
-dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
+dispatched through the Answer slot (`actors.ask`, `askNone`,
 `answerAt`). An actor with a behaviour, or writing `selfactor`, gets
 `Counter.self'`, which makes the handle from the state
 ([Generation](generation.md), "A message's reply"). Every actor's state has one
@@ -976,6 +976,22 @@ actor's handle that conforms meets it too (`actorTraitMeets`, the same check as 
 conversion's, silent); a generic body is cloned at its arguments, so it calls the
 actor's own methods directly, and no handle and no table are made.
 An actor that does not conform is `ErrorWhereUnmet`, as for any bound.
+
+**An actor's `is` list is an assertion, taken out of the state.** `actor Counter is
+ChunkSink` is read by `parseStruct` as a struct's `is` (a base and placeholder
+fields), and where it is written is kept (`DclTexts.istext`, `isend`, `isnames`).
+`parseActorHeader` removes both from the state, which is no type that conforms to
+anything, and `parseActor` generates a function `Counter.is'` of one parameter whose
+type is a pointer to the list as written (to a tuple where it names more than one),
+so that the names are resolved and type checked as any type's are, and nothing is
+asked of the size of what they name, which an ordinary trait would be refused for
+(`ActorInfo.isfn`). After
+type check `actorCheckAll` reads the parameter's type back (`actorCheckIs`): each
+name must be an actor trait's handle (else `ErrorActorMember`), and the actor must
+conform to it, with the conversion's own check and words (`actorTraitConforms`,
+`ErrorActorTraitConform`, "which it says it is"), reported at the actor. Nothing
+else of the actor depends on the list. `extends`, or an `is` on a condition, is
+still refused at parse (`ErrorActorMember`).
 
 **It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
 yields &Node { ... yield n; ... }` is read as a function, `yields` being a word

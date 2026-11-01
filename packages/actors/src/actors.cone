@@ -2771,11 +2771,6 @@ pub fn askNone(slot: &mut Answer) {
   slot.held = 1u8;
 }
 
-// The address a method's value is kept at, so that the dispatcher takes it
-// only when the method returned one: a temporary that a raw pointer
-// outlives is never finalized where it stands
-pub fn keep[R](r: &R) *R {r as *R}
-
 // Where a message's returned value goes, now that it has returned: 0 where
 // a seam took the envelope (the method is parked, and returned no value); 1
 // where nobody waits for the value, which is dropped; else where the reply
@@ -2811,13 +2806,15 @@ pub fn answered(slot: &mut Answer) {
 }
 
 // The dispatcher, after a message that returns a value and holds an 'await'
-// returned: its value is at r, unless a seam parked the message
-pub fn answerAt[R](slot: &mut Answer, r: *R) {
+// returned, with the value it returned, moved in here: unless a seam parked
+// the message, which returned no value, and what v holds is then no value at
+// all, so it is forgotten: ended without being finalized
+pub fn answerAt[R](slot: &mut Answer, v: R) {
   let d = answerTo(slot);
   if d as usize == 0usize {
+    mem.forget[R](v);
     return;
   }
-  let v = mem.readRaw[R](r);
   if d as usize == 1usize {
     answered(slot);
     return;
