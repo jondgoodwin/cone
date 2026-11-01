@@ -222,7 +222,8 @@
 // Its files are one module, and only this one, the root, imports:
 //
 //   deflate.cone      this overview
-//   types.cone        Format, ErrorKind, DeflateError, GzipHeader
+//   (this file)       also ErrorKind and DeflateError, at its end
+//   types.cone        Format, GzipHeader
 //   tables.cone       the constants of RFC 1951
 //   checksum.cone     adler32, Adler32, crc32, Crc32
 //   huffman.cone      the Huffman decoding table
@@ -237,3 +238,49 @@ mod deflate;
 import collections use *;
 import iobuf use IoBuf;
 pub import streams use Status;
+
+// The failure types are here, in the root, and not in types.cone: the root is
+// checked first, and an AnyError made from a type declared in a file checked
+// later (Inflater.failure makes one from a DeflateError) is refused as not yet
+// an Error. Both are Sendable, so that they cross between actors in an AnyError.
+
+// What kind of thing was wrong with a compressed stream
+pub enum ErrorKind is Sendable {
+  // The zlib or gzip header is wrong, or asks for something not supported
+  BadHeader;
+  // A block header or a Huffman code description is invalid
+  BadBlock;
+  // A symbol that is not in the code, or a length or distance code that
+  // does not exist
+  BadCode;
+  // A match that reaches back before the start of the output
+  BadDistance;
+  // The input ended before the stream did
+  Truncated;
+  // The Adler-32, the CRC-32 or the gzip size does not match
+  BadChecksum;
+  // More output than the limit allows
+  TooLarge;
+  // Bytes after the last gzip member that are not another member
+  TrailingData;
+}
+
+// Why a stream could not be inflated: what kind, how many bytes of input had
+// been used when it was noticed, and a sentence. Sendable, so that it crosses
+// between actors inside an AnyError.
+pub struct DeflateError is Error, Sendable {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) DeflateError {
+    DeflateError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn message(self: &) String { reason.copy() }
+
+  pub fn copy(self: &) DeflateError {
+    DeflateError(kind, offset, reason.copy())
+  }
+}

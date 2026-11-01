@@ -1,0 +1,197 @@
+// The stages package: layer 3 of Cone's streaming design, stages between actors.
+// A stream between actors is a run of owned chunks (an IoBuf each), handed on by
+// a call and given back by another, under credit; each stage is an actor over a
+// transform of package streams (layer 1) that has no I/O in it.
+//
+//   mod squash;
+//   import actors;
+//   import deflate;
+//   import stages use *;
+//
+//   // sink end first: each stage is made with the one after it
+//   let inf = InflateStage(sink, deflate.Format.Gzip);
+//   source.start(inf);                 // a source that sends chunks to 'inf'
+//
+// WHAT IS HERE
+//
+//   Ending         how a stream ended: Finished, or Failed(AnyError) (stage.cone)
+//   ChunkSink      an actor trait: accept(c), end(how), attach(up)
+//   ChunkSource    an actor trait: giveBack(b), the credit coming back
+//   DigestSink     an actor trait: digest(d), where a hash stage sends its digest
+//   Link           N buffers one stage sends in: the credit (link.cone)
+//   StageCore[T]   the state and work of a stage over any Transform T
+//   HashCore[D]    the same over a Digester, passing the chunks on unchanged
+//   InflateStage(down, format)        inflate a gzip, zlib or raw deflate stream
+//   DeflateStage(down, format, level) compress into one
+//   ZstdDecodeStage(down)             decompress zstd frames
+//   ZstdEncodeStage(down, level)      compress into a zstd frame
+//   Sha256Stage(down, to)  Sha512Stage(down, to)  Sha1Stage(down, to)
+//                                     pass the chunks on unchanged and send the
+//                                     digest of all of them to 'to' when the stream
+//                                     finishes
+//
+// stage.cone is the longer account: the end and an error travel forward as the
+// call 'end(how)', credit is the buffers, and a pipeline is wired from the sink
+// end back. A corrupt gzip stream reaches the last sink as 'Ending.Failed(e)',
+// with the inflater's own message and its DeflateError inside the AnyError.
+//
+// A SINK THAT AWAITS inside 'accept' (to write a file, say) is parked there and
+// the actor runs its next message meanwhile, so the 'end' that follows the last
+// chunk can run before that chunk's behaviour has finished. Such a sink counts
+// the chunks it holds and finishes its own end when the last is given back.
+//
+// The codec stages are one actor each because an actor takes no type parameters
+// yet; when a generic actor is built, one 'Stage[T]' replaces them (the hash
+// stages differ in their digest's size). Layer 3 is here and not in package
+// streams so that the codecs, which import streams, do not import actors.
+//
+// Where '<-' will go: 'down <- chunk' will mean 'down.accept(chunk)', once an
+// actor trait's behaviour may be declared 'overload `<-`'.
+
+mod stages;
+
+import iobuf use IoBuf;
+import collections use AnyError, List, Deque;
+import actors;
+import streams use *;
+import deflate;
+import zstd;
+import cryptohash;
+
+// How many buffers a stage's output link owns, and how large each is
+pub const linkBuffers = 4usize;
+pub const linkBytes = 65536usize;
+
+// Gzip, zlib or raw deflate, inflated
+pub actor InflateStage is ChunkSink, ChunkSource {
+  core: StageCore[deflate.Inflater];
+
+  pub fn init(self: &new, down: ChunkSink, format: deflate.Format) {
+    *self = Self(core: StageCore[deflate.Inflater].make(deflate.Inflater.make(format), down, linkBuffers, linkBytes));
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) { core.end(how); }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// Compressed to gzip, zlib or raw deflate
+pub actor DeflateStage is ChunkSink, ChunkSource {
+  core: StageCore[deflate.Deflater];
+
+  pub fn init(self: &new, down: ChunkSink, format: deflate.Format, level: i32) {
+    *self = Self(core: StageCore[deflate.Deflater].make(deflate.Deflater.make(format, level), down, linkBuffers, linkBytes));
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) { core.end(how); }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// Zstandard frames, decompressed
+pub actor ZstdDecodeStage is ChunkSink, ChunkSource {
+  core: StageCore[zstd.Decompressor];
+
+  pub fn init(self: &new, down: ChunkSink) {
+    *self = Self(core: StageCore[zstd.Decompressor].make(zstd.Decompressor.make(), down, linkBuffers, linkBytes));
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) { core.end(how); }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// Compressed to one zstd frame
+pub actor ZstdEncodeStage is ChunkSink, ChunkSource {
+  core: StageCore[zstd.Compressor];
+
+  pub fn init(self: &new, down: ChunkSink, level: i32) {
+    *self = Self(core: StageCore[zstd.Compressor].make(zstd.Compressor.make(level), down, linkBuffers, linkBytes));
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) { core.end(how); }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// SHA-256 of the stream, chunks passed on as they are
+pub actor Sha256Stage is ChunkSink, ChunkSource {
+  core: HashCore[cryptohash.Sha256];
+  to: DigestSink;
+
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
+    *self = Self(core: HashCore[cryptohash.Sha256].make(cryptohash.Sha256.make(), down), to: to);
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {
+        let d = core.digest();
+        var bytes = List[u8].withCapacity(32usize);
+        bytes.appendSlice(&d);
+        to.digest(bytes);
+      }
+      else {}
+    }
+    core.end(how);
+  }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// SHA-512 of the stream, chunks passed on as they are
+pub actor Sha512Stage is ChunkSink, ChunkSource {
+  core: HashCore[cryptohash.Sha512];
+  to: DigestSink;
+
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
+    *self = Self(core: HashCore[cryptohash.Sha512].make(cryptohash.Sha512.make(), down), to: to);
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {
+        let d = core.digest();
+        var bytes = List[u8].withCapacity(64usize);
+        bytes.appendSlice(&d);
+        to.digest(bytes);
+      }
+      else {}
+    }
+    core.end(how);
+  }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}
+
+// SHA-1 of the stream (legacy), chunks passed on as they are
+pub actor Sha1Stage is ChunkSink, ChunkSource {
+  core: HashCore[cryptohash.Sha1];
+  to: DigestSink;
+
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
+    *self = Self(core: HashCore[cryptohash.Sha1].make(cryptohash.Sha1.make(), down), to: to);
+    down.attach(selfactor);
+  }
+  pub async fn accept(self, c: IoBuf) { core.accept(c); }
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished {
+        let d = core.digest();
+        var bytes = List[u8].withCapacity(20usize);
+        bytes.appendSlice(&d);
+        to.digest(bytes);
+      }
+      else {}
+    }
+    core.end(how);
+  }
+  pub async fn attach(self, up: ChunkSource) { core.attach(up); }
+  pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
+}

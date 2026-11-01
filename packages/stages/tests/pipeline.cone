@@ -1,0 +1,352 @@
+// Pipelines of stages, end to end: bytes cross between actors as owned chunks
+// under credit, are transformed on the way, and arrive intact. Four pipelines
+// run at once, side by side, each with a sink of its own:
+//
+//   0. a gzip file on disk -> a file source (aio reads it, 64 KiB at a time) ->
+//      InflateStage -> Sha256Stage -> a counting sink. The counting sink sees
+//      every byte of the inflated data, and the digest the hash stage sends is
+//      the sha256 of the data made in memory;
+//   1. memory -> DeflateStage -> InflateStage -> Sha256Stage -> counting sink:
+//      the data survives a compress and an inflate, one stage after the other;
+//   2. memory -> ZstdEncodeStage -> ZstdDecodeStage -> Sha512Stage -> counting sink;
+//   3. the same through Sha1Stage.
+//
+// After the program's actors are all gone (finalAll), every buffer is back in
+// the pool: its count of lent buffers is zero.
+//
+// The data is a pseudo-random run of five words (as the codecs test's), so that
+// it compresses and has long matches and short ones. Release builds use 8 MiB;
+// a debug build 2 MiB.
+
+mod pipeline;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import iocore use IoError, Access;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import aio use File;
+import streams use *;
+import stages use *;
+import deflate;
+import zstd;
+import cryptohash;
+
+fn total() usize { if isDebugBuild() {2097152usize} else {8388608usize} }
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+// What one pipeline's sinks write down, read by main once every actor has finished
+struct Seen {
+  pub bytes: Atomic[u64];       // bytes the counting sink received
+  pub chunks: Atomic[u64];      // chunks it received
+  pub finished: Atomic[u64];    // 'end(Finished)' calls
+  pub failed: Atomic[u64];      // 'end(Failed)' calls
+  pub digests: Atomic[u64];     // digests received
+  pub digestOk: Atomic[u64];    // digests that equalled the expected one
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let seen2: Seen;
+let seen3: Seen;
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  seen2 = newSeen();
+  seen3 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else if slot == 2usize {&seen2} else {&seen3}
+}
+
+// ---- the sink end: counts what arrives and gives each buffer straight back ----
+
+actor Counting is ChunkSink {
+  slot: usize;
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];     // told when the stream has ended, so that main can wait
+
+  pub fn init(self: &new, slot: usize, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    s.bytes.add(u64.from(c.len()));
+    s.chunks.add(1u64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) { s.failed.add(1u64); }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+// Receives a hash stage's digest and says whether it is the expected one
+actor Checker is DigestSink {
+  slot: usize;
+  want: List[u8];
+
+  pub fn init(self: &new, slot: usize, want: List[u8]) {
+    *self = Self(slot: slot, want: want);
+  }
+
+  pub async fn digest(self, d: List[u8]) {
+    let s = seenOf(slot);
+    s.digests.add(1u64);
+    if d.view() == want.view() { s.digestOk.add(1u64); }
+  }
+}
+
+// ---- the source end ----
+
+// Reads a file through aio, 64 KiB at a time, into a link of four buffers
+actor FileSource is ChunkSource {
+  down: ChunkSink;
+  link: Link;
+  name: String;
+  file: File;
+  at: u64;
+  pumping: bool;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, name: String) {
+    *self = Self(down: down, link: Link.make(4usize, 65536usize), name: name, file: File.none(),
+      at: 0u64, pumping: false, over: false);
+    down.attach(selfactor);
+  }
+
+  // Opens the file and reads it through
+  pub async fn start(self) {
+    let r = await aio.openFile(&Path.from(name.view()), Access.Read);
+    match r {
+      case let Ok(f) {
+        file = f;
+        selfactor.pump();
+      }
+      case let Err(e) {
+        over = true;
+        down.end(Ending.Failed(AnyError.msg(e.message().view())));
+      }
+    }
+  }
+
+  // Reads while there is a buffer to read into
+  pub async fn pump(self) {
+    if pumping || over { return; }
+    pumping = true;
+    var more = true;
+    while more {
+      match link.take() {
+        case is None { more = false; }
+        case let Some(b) {
+          let r = await file.readAt(at, b);
+          match r {
+            case let Ok(buf) {
+              if buf.isEmpty() {
+                link.give(buf);
+                over = true;
+                down.end(Ending.Finished);
+                more = false;
+              } else {
+                at = at + u64.from(buf.len());
+                down.accept(buf);
+              }
+            }
+            case let Err(e) {
+              over = true;
+              down.end(Ending.Failed(AnyError.msg(e.message().view())));
+              more = false;
+            }
+          }
+        }
+      }
+    }
+    pumping = false;
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if !pumping && !over { selfactor.pump(); }
+  }
+}
+
+// Sends a list of bytes in chunks of 64 KiB through a link of four buffers
+actor MemorySource is ChunkSource {
+  down: ChunkSink;
+  link: Link;
+  data: List[u8];
+  at: usize;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8]) {
+    *self = Self(down: down, link: Link.make(4usize, 65536usize), data: data, at: 0usize, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if at >= data.len() {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take() {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
+            buf.append(&data.view()[at ..< at + n]);
+            at = at + n;
+            down.accept(buf);
+          }
+        }
+      }
+    }
+  }
+}
+
+fn digestOf(a: &Array[u8]) List[u8] {
+  var out = List[u8].empty();
+  out.appendSlice(a);
+  out
+}
+
+fn dup(a: &List[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len());
+  out.appendSlice(a.view());
+  out
+}
+
+fn checkSlot(slot: usize, size: u64, what: &str) {
+  let s = seenOf(slot);
+  expectUInt(s.bytes.load(), size, what);
+  expectUInt(s.finished.load(), 1u64, what);
+  expectUInt(s.failed.load(), 0u64, what);
+  expectUInt(s.digests.load(), 1u64, what);
+  expectUInt(s.digestOk.load(), 1u64, what);
+}
+
+fn main() i32 {
+  initAll();
+  let original = corpus(total());
+  let size = u64.from(original.len());
+
+  // a gzip file on disk, for pipeline 0
+  let name = "stages_pipeline_test.tmp.gz";
+  let packed = deflate.gzipCompress(original.view(), 2);
+  match fs.writeFile(&Path.from(name), packed.view()) {
+    case is Ok {}
+    case let Err(e) { return skip("cannot write the temporary file"); }
+  }
+
+  let sha256 = digestOf(&cryptohash.sha256(original.view()));
+  let sha512 = digestOf(&cryptohash.sha512(original.view()));
+  let sha1 = digestOf(&cryptohash.sha1(original.view()));
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  {
+    // 0. file -> inflate -> sha256 -> count
+    let count0 = Counting(0usize, tx0);
+    let hash0 = Sha256Stage(count0, Checker(0usize, dup(&sha256)));
+    let inf0 = InflateStage(hash0, deflate.Format.Gzip);
+    let src0 = FileSource(inf0, String.from(name));
+
+    // 1. memory -> deflate -> inflate -> sha256 -> count
+    let count1 = Counting(1usize, tx1);
+    let hash1 = Sha256Stage(count1, Checker(1usize, dup(&sha256)));
+    let inf1 = InflateStage(hash1, deflate.Format.Zlib);
+    let def1 = DeflateStage(inf1, deflate.Format.Zlib, 1i32);
+    let src1 = MemorySource(def1, dup(&original));
+
+    // 2. memory -> zstd -> unzstd -> sha512 -> count
+    let count2 = Counting(2usize, tx2);
+    let hash2 = Sha512Stage(count2, Checker(2usize, dup(&sha512)));
+    let dec2 = ZstdDecodeStage(hash2);
+    let enc2 = ZstdEncodeStage(dec2, 3i32);
+    let src2 = MemorySource(enc2, dup(&original));
+
+    // 3. the same, with sha1
+    let count3 = Counting(3usize, tx3);
+    let hash3 = Sha1Stage(count3, Checker(3usize, dup(&sha1)));
+    let dec3 = ZstdDecodeStage(hash3);
+    let enc3 = ZstdEncodeStage(dec3, 3i32);
+    let src3 = MemorySource(enc3, dup(&original));
+
+    src0.start();
+    src1.start();
+    src2.start();
+    src3.start();
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  rx3.recv();
+  finalAll();
+  _ = fs.removeFile(&Path.from(name));
+
+  checkSlot(0usize, size, "file -> inflate -> sha256 -> count");
+  // at least that many: a pull that runs out of input sends the buffer part-filled
+  expect(seen0.chunks.load() >= (size + 65535u64) / 65536u64, "file: at least as many chunks as 64 KiB holds");
+  checkSlot(1usize, size, "memory -> deflate -> inflate -> sha256 -> count");
+  checkSlot(2usize, size, "memory -> zstd -> unzstd -> sha512 -> count");
+  checkSlot(3usize, size, "memory -> zstd -> unzstd -> sha1 -> count");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
+
+

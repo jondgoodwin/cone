@@ -1,0 +1,290 @@
+// ======== Layer 3, stages between actors: chunks that move under credit ========
+//
+// Between two actors a stream is a run of owned chunks (an IoBuf each), handed
+// on by a call and given back by another. Two actor traits say what a stage
+// is to its neighbours; neither names the other's actor, so any actor that has
+// the behaviours is a stage (the manual's Actor traits).
+//
+//   ChunkSink    what takes chunks:  accept(c)   a chunk, moved in
+//                                    end(how)    the stream is over: Ending
+//                                    attach(up)  who to give buffers back to
+//   ChunkSource  what gets them back: giveBack(b) an emptied buffer
+//
+// The end, and an error, travel FORWARD as the call 'end(how)', after the last
+// chunk and from the same sender, so they arrive in order. They are never a
+// cancel. An 'Ending' is Finished or Failed(AnyError): the AnyError is Sendable,
+// so it crosses between actors, and a transform's 'failure()' makes it from the
+// codec's own typed error (DeflateError, ZstdError) with nothing lost: its
+// message, its chain of causes, and 'holds[E]()' to take the typed error out.
+//
+// THE CREDIT IS THE BUFFERS (link.cone). A stage owns a Link of N buffers and
+// sends only while it holds one; the consumer gives the same buffer back when
+// its bytes are used up. A pipeline is wired from the sink end back: each stage
+// is made with the stage after it, and tells that stage who it is with
+// 'attach(selfactor)' in its 'init', so the consumer can give buffers back.
+// The handles that point upstream are dropped at the end of the stream (when
+// the stage has seen the upstream 'end' and returned every buffer it holds), so
+// the actors do not keep each other alive.
+//
+//   // sink end first; each stage is made with its downstream
+//   let count = Counter();
+//   let hash  = Sha256Stage(count, whoGetsTheDigest);
+//   let inf   = InflateStage(hash, deflate.Format.Gzip);
+//   source.start(inf);
+//
+// TWO CORES, so an actor over a transform is a few lines. 'StageCore[T]' holds
+// any Transform with its Link and does the work of a stage that makes new
+// chunks (inflate, deflate, zstd): feed what arrives, pull what comes out into
+// the link's buffers, and hold the input chunk until all its output is out. A
+// pass-through such as a hash stage is 'HashCore[D]': the chunk goes on as it
+// is, unmoved and uncopied, and comes back through the stage to the source.
+// An actor cannot take type parameters yet, so the actors that wrap a core
+// are written once for each codec (stages.cone); when a generic actor is
+// built, 'Stage[T]' replaces them.
+//
+// Where '<-' will go: 'sink <- chunk' will mean 'sink.accept(chunk)', once an
+// actor trait's behaviour may be declared 'overload `<-`'.
+
+// How a stream ended
+pub enum Ending {
+  // Every chunk has been sent
+  Finished;
+  // The stream could not be completed; the error says why
+  Failed(AnyError);
+}
+
+// A stage that takes chunks. A behaviour per the module's rules: the chunk is
+// moved in, the end follows the last chunk, and 'attach' comes first.
+pub actor trait ChunkSink {
+  // A chunk of the stream. Give it back to the source when its bytes are used.
+  pub async fn accept(self, c: IoBuf);
+  // The stream is over, one way or the other. Nothing is sent after.
+  pub async fn end(self, how: Ending);
+  // The stage that sends here, to give buffers back to; sent once, before the
+  // first chunk
+  pub async fn attach(self, up: ChunkSource);
+}
+
+// A stage that lends buffers and takes them back
+pub actor trait ChunkSource {
+  // An emptied buffer back from its consumer: one more chunk may be sent
+  pub async fn giveBack(self, b: IoBuf);
+}
+
+// Whoever wants the digest a hash stage worked out
+pub actor trait DigestSink {
+  pub async fn digest(self, d: List[u8]);
+}
+
+// Gives a chunk back to its source, if the source is still held
+fn handBack(up: &Option[ChunkSource], b: IoBuf) {
+  match up {
+    case let &Some(u) { u.giveBack(b); }
+    case is None {}
+  }
+}
+
+// ---- a stage that transforms: any Transform, in a few lines per codec ----
+
+// The state and the work of a stage over a transform. An actor holds one and
+// its behaviours call the matching methods.
+pub struct StageCore[T: Transform] is Move {
+  t: T;
+  link: Link;                 // the output's buffers: N, and the credit
+  down: ChunkSink;
+  up: Option[ChunkSource];
+  cur: Option[IoBuf];         // the input chunk being worked on; held until its output is all out
+  backlog: Deque[IoBuf];      // chunks that arrived while 'cur' was held (at most the upstream's N)
+  waiting: bool;              // a pull wants an output buffer and every one is out
+  finishing: bool;            // the transform has been told its input is over
+  dry: bool;                  // a pull after that said NeedInput once
+  upEnded: bool;              // the upstream's 'end' has arrived
+  ended: bool;                // our 'end' has been sent downstream
+
+  // A stage over 't' sending to 'down' in a link of 'count' buffers of 'size' bytes
+  pub fn make(t: T, down: ChunkSink, count: usize, size: usize) StageCore[T] {
+    StageCore[T](t, Link.make(count, size), down, None[ChunkSource], None[IoBuf], Deque[IoBuf].empty(),
+      false, false, false, false, false)
+  }
+
+  // The stage that sends here (the sink's 'attach')
+  pub fn attach(self: &mut, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  // A chunk arrives (the sink's 'accept')
+  pub fn accept(self: &mut, c: IoBuf) {
+    if ended {
+      handBack(&up, c);
+    } else if cur is Some || upEnded {
+      backlog.push(c);
+    } else {
+      t.feed(c.view());
+      cur = Some[IoBuf](c);
+      self.drain();
+    }
+    self.settle();
+  }
+
+  // The upstream's end arrives (the sink's 'end')
+  pub fn end(self: &mut, how: Ending) {
+    upEnded = true;
+    match how {
+      case is Finished {
+        if !waiting && !ended { self.drain(); }
+      }
+      case let Failed(e) {
+        if !ended { self.finish(Ending.Failed(e)); }
+      }
+    }
+    self.settle();
+  }
+
+  // An output buffer comes back (the source's 'giveBack')
+  pub fn giveBack(self: &mut, b: IoBuf) {
+    link.give(b);
+    if waiting { self.drain(); }
+    self.settle();
+  }
+
+  // The link, for its counters
+  pub fn linkInfo(self: &) &Link { &link }
+
+  // Pull while there is a buffer to pull into and something to pull
+  fn drain(self: &mut) {
+    waiting = false;
+    var go = !ended;
+    while go {
+      match link.take() {
+        case is None {
+          waiting = true;
+          go = false;
+        }
+        case let Some(b) {
+          var out = b;
+          let st = t.pull(&mut out);
+          if out.isEmpty() { link.give(out); } else { down.accept(out); }
+          if st == Status.Done {
+            self.finish(Ending.Finished);
+            go = false;
+          } else if st == Status.Failed {
+            self.finish(self.failed());
+            go = false;
+          } else if st == Status.NeedInput {
+            go = self.nextInput();
+          }
+        }
+      }
+    }
+  }
+
+  // The input is used up: give the chunk back and go on to the next, or to the
+  // end. Whether to pull again.
+  fn nextInput(self: &mut) bool {
+    self.returnCur();
+    match backlog.popFront() {
+      case let Some(c) {
+        t.feed(c.view());
+        cur = Some[IoBuf](c);
+        return true;
+      }
+      case is None {}
+    }
+    if !upEnded { return false; }
+    if !finishing {
+      t.finish();
+      finishing = true;
+      return true;
+    }
+    if dry {
+      self.finish(Ending.Failed(AnyError.msg("streams: the transform wants input after the stream's end")));
+      return false;
+    }
+    dry = true;
+    true
+  }
+
+  // Our end, once
+  fn finish(self: &mut, how: Ending) {
+    if ended { return; }
+    ended = true;
+    down.end(how);
+  }
+
+  fn failed(self: &) Ending {
+    match t.failure() {
+      case let Some(e) { Ending.Failed(e) }
+      case is None { Ending.Failed(AnyError.msg("streams: the transform failed")) }
+    }
+  }
+
+  fn returnCur(self: &mut) {
+    var taken = None[IoBuf];
+    taken <-> cur;
+    match taken {
+      case let Some(c) { handBack(&up, c); }
+      case is None {}
+    }
+  }
+
+  // Once both ends are over, every chunk held goes home and the upstream handle goes
+  fn settle(self: &mut) {
+    if ended && upEnded {
+      self.returnCur();
+      var more = true;
+      while more {
+        match backlog.popFront() {
+          case let Some(c) { handBack(&up, c); }
+          case is None { more = false; }
+        }
+      }
+      up = None[ChunkSource];
+    }
+  }
+}
+
+// ---- a stage that passes chunks on and watches them: a digest ----
+
+// The state and the work of a stage over a Digester. The chunk goes on as it
+// is; the buffer comes back through this stage to the source.
+pub struct HashCore[D: Digester] is Move {
+  d: D;
+  down: ChunkSink;
+  up: Option[ChunkSource];
+  out: usize;                 // chunks passed on and not yet back
+  upEnded: bool;
+
+  pub fn make(d: D, down: ChunkSink) HashCore[D] {
+    HashCore[D](d, down, None[ChunkSource], 0usize, false)
+  }
+
+  pub fn attach(self: &mut, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub fn accept(self: &mut, c: IoBuf) {
+    d.feed(c.view());
+    out = out + 1usize;
+    down.accept(c);
+  }
+
+  pub fn giveBack(self: &mut, b: IoBuf) {
+    out = out - 1usize;
+    handBack(&up, b);
+    self.settle();
+  }
+
+  // The digest of everything that has passed, once the stream has finished
+  pub fn digest(self: &) D.Out { d.finish() }
+
+  // Passes the end on
+  pub fn end(self: &mut, how: Ending) {
+    upEnded = true;
+    down.end(how);
+    self.settle();
+  }
+
+  fn settle(self: &mut) {
+    if upEnded && out == 0usize { up = None[ChunkSource]; }
+  }
+}

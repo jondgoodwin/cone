@@ -1,0 +1,239 @@
+// Credit is the buffers: a slow consumer holds a fast producer to the buffers
+// of its link. A producer owns a Link of four 64 KiB buffers and sends 64
+// chunks of 64 KiB (4 MiB) to a sink that keeps each chunk for 3 ms before it
+// gives it back. The producer can only send while it holds a buffer, so the
+// chunks in flight (sent and not yet given back) never pass four. That is
+// measured three ways, none of them the link's say-so alone:
+//
+//   - the sink counts the chunks it holds (accepted, not yet given back) and
+//     keeps the largest count it saw;
+//   - the producer counts its own sends less its own giveBacks, and keeps the
+//     largest;
+//   - the link's own peak and its stalls (the times the producer wanted a
+//     buffer and every one was out).
+//
+// All three must be four at most, and the sink's must be exactly four (a sink
+// that is slow and a producer that is fast fill the link; if it were three,
+// the test would not be testing the bound). The producer must have been held
+// back (stalls above zero), every chunk must arrive in order with its own
+// bytes, the stream ends Finished, and every buffer is back in the pool at the
+// end.
+//
+// Then a second run where the sink is quick: the producer is not held back as
+// far (its stalls are fewer or the same) but never passes four either.
+
+mod credit;
+
+import testing use *;
+import collections use *;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import actors;
+import aio;
+import stages use *;
+
+fn chunkBytes() usize { 65536usize }
+fn chunkCount() u64 { 64u64 }
+fn buffers() usize { 4usize }
+
+// What the actors write down, read by main when they have all finished
+struct Seen {
+  pub received: Atomic[u64];      // chunks the sink received
+  pub inOrder: Atomic[u64];       // of them, those whose first byte was the next one's number
+  pub whole: Atomic[u64];         // of them, those whose every byte was that number
+  pub sinkHeld: Atomic[i64];      // chunks the sink holds now
+  pub sinkMax: Atomic[i64];       // the most it held at once
+  pub sent: Atomic[u64];          // chunks the producer sent
+  pub sourceHeld: Atomic[i64];    // chunks the producer has out now (sent, not given back)
+  pub sourceMax: Atomic[i64];     // the most it had out at once
+  pub peak: Atomic[u64];          // the link's peak in flight
+  pub stalls: Atomic[u64];        // the link's stalls
+  pub finished: Atomic[u64];      // end(Finished) calls
+  pub failed: Atomic[u64];        // end(Failed) calls
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[i64].of(0i64), Atomic[i64].of(0i64),
+    Atomic[u64].of(0u64), Atomic[i64].of(0i64), Atomic[i64].of(0i64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let slow: Seen;
+let quick: Seen;
+
+fn @initpure init() {
+  slow = newSeen();
+  quick = newSeen();
+}
+
+fn seenOf(which: u32) &Seen { if which == 0u32 {&slow} else {&quick} }
+
+// Takes chunks and keeps each for 'pauseMs' before giving it back
+actor Sink is ChunkSink {
+  which: u32;
+  pauseMs: i64;
+  up: Option[ChunkSource];
+  next: u64;
+  pending: u64;                 // chunks accepted and not yet given back
+  ending: bool;                 // the end has arrived
+  done: OneshotSender[u64];     // told when the stream has ended, so that main can wait
+
+  pub fn init(self: &new, which: u32, pauseMs: i64, done: OneshotSender[u64]) {
+    *self = Self(which: which, pauseMs: pauseMs, up: None[ChunkSource], next: 0u64, pending: 0u64,
+      ending: false, done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(which);
+    pending = pending + 1u64;
+    let now = s.sinkHeld.add(1i64) + 1i64;
+    s.sinkMax.max(now);
+    s.received.add(1u64);
+    // Chunk n holds the byte n % 251 throughout
+    let tag = u8.from(next % 251u64);
+    next = next + 1u64;
+    let v = c.view();
+    if v.len == chunkBytes() && v[0usize] == tag { s.inOrder.add(1u64); }
+    var all = v.len == chunkBytes();
+    var i = 0usize;
+    while all && i < v.len {
+      if v[i] != tag { all = false; }
+      i = i + 1usize;
+    }
+    if all { s.whole.add(1u64); }
+    if pauseMs > 0i64 {
+      let r = await aio.sleep(Duration.fromMillis(pauseMs));
+    }
+    s.sinkHeld.add(-1i64);
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+    pending = pending - 1u64;
+    if ending && pending == 0u64 { self.finishUp(); }
+  }
+
+  // A behaviour that awaits is parked, and the next message runs meanwhile: the
+  // 'end' that follows the last chunk can run before that chunk's behaviour has
+  // finished. So a sink that awaits inside 'accept' counts its chunks, and
+  // finishes only when the last has been given back.
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(which);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) { s.failed.add(1u64); }
+    }
+    ending = true;
+    if pending == 0u64 { self.finishUp(); }
+  }
+
+  fn finishUp(self) {
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+// Sends chunkCount() chunks as fast as its link lets it
+actor Producer is ChunkSource {
+  which: u32;
+  down: ChunkSink;
+  link: Link;
+  made: u64;
+  over: bool;
+
+  pub fn init(self: &new, which: u32, down: ChunkSink) {
+    *self = Self(which: which, down: down, link: Link.make(buffers(), chunkBytes()), made: 0u64, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    let s = seenOf(which);
+    s.sourceHeld.add(-1i64);
+    link.give(b);
+    s.peak.store(u64.from(link.peak()));
+    s.stalls.store(link.stalls());
+    self.pump();
+  }
+
+  fn pump(self) {
+    let s = seenOf(which);
+    var more = !over;
+    while more {
+      if made >= chunkCount() {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take() {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let tag = u8.from(made % 251u64);
+            let room = buf.spare();
+            var i = 0usize;
+            while i < chunkBytes() { room[i] = tag; i = i + 1usize; }
+            buf.setLen(chunkBytes());
+            made = made + 1u64;
+            let now = s.sourceHeld.add(1i64) + 1i64;
+            s.sourceMax.max(now);
+            s.sent.add(1u64);
+            down.accept(buf);
+          }
+        }
+      }
+    }
+    s.peak.store(u64.from(link.peak()));
+    s.stalls.store(link.stalls());
+  }
+}
+
+fn report(s: &Seen, label: &str) {
+  expectUInt(s.sent.load(), chunkCount(), label);
+  expectUInt(s.received.load(), chunkCount(), label);
+  expectUInt(s.inOrder.load(), chunkCount(), label);
+  expectUInt(s.whole.load(), chunkCount(), label);
+  expectUInt(s.finished.load(), 1u64, label);
+  expectUInt(s.failed.load(), 0u64, label);
+  expectInt(s.sinkHeld.load(), 0i64, label);
+  expectInt(s.sourceHeld.load(), 0i64, label);
+  expect(s.sinkMax.load() <= i64.from(buffers()), label);
+  expect(s.sourceMax.load() <= i64.from(buffers()), label);
+  expect(s.peak.load() <= u64.from(buffers()), label);
+}
+
+fn main() i32 {
+  initAll();
+  var slowTx: OneshotSender[u64];
+  var slowRx: OneshotReceiver[u64];
+  slowTx, slowRx = Oneshot[u64].make();
+  var quickTx: OneshotSender[u64];
+  var quickRx: OneshotReceiver[u64];
+  quickTx, quickRx = Oneshot[u64].make();
+  {
+    let slowSink = Sink(0u32, 3i64, slowTx);
+    let a = Producer(0u32, slowSink);
+    let quickSink = Sink(1u32, 0i64, quickTx);
+    let b = Producer(1u32, quickSink);
+    a.start();
+    b.start();
+  }
+  slowRx.recv();
+  quickRx.recv();
+  finalAll();
+  report(&quick, "quick sink");
+  expect(quick.sinkMax.load() <= 4i64, "quick sink: never more than four held");
+  report(&slow, "slow sink");
+  expectInt(slow.sinkMax.load(), 4i64, "slow sink: the sink held four chunks at once (the link is full)");
+  expectInt(slow.sourceMax.load(), 4i64, "slow sink: the producer had four out at once");
+  expectUInt(slow.peak.load(), 4u64, "slow sink: the link's peak is four");
+  expect(slow.stalls.load() > 0u64, "slow sink: the producer was held back at least once");
+  expectUInt(iobuf.stats().lent, 0u64, "slow sink: every buffer is back in its pool");
+  done()
+}
