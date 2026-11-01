@@ -587,6 +587,21 @@ fn lossy(perMille: u32, gets: usize, getSize: u64, posts: usize, postSize: u64, 
   printUInt(u64.from(w.cl.asks.len())); printStr(" requests, all done and every byte right: ");
   printStr(yes(all && allRight(&w.cl))); printStr("; datagrams dropped both ways: ");
   printStr(yes(cs.lost > 0u64 && ss.lost > 0u64)); printStr("\n");
+  if !(all && allRight(&w.cl)) {
+    // Why, on stderr (not compared): the connection's close, and each request that is not right
+    eprintStr("  (took "); eprintInt(took); eprintStr(" ms; the connection's close: "); eprintStr(w.cl.closeText.view());
+    eprintStr(")\n");
+    var q = 0usize;
+    while q < w.cl.asks.len() {
+      let a = &w.cl.asks[q];
+      if a.outcome != 1u32 || a.status != 200u16 || !a.good || (!a.post && a.got != a.size) {
+        eprintStr("  (request "); eprintUInt(u64.from(q)); eprintStr(": outcome "); eprintUInt(u64.from(a.outcome));
+        eprintStr(", status "); eprintUInt(u64.from(a.status)); eprintStr(", got "); eprintUInt(a.got);
+        eprintStr(" of "); eprintUInt(a.size); eprintStr(", "); eprintStr(a.failText.view()); eprintStr(")\n");
+      }
+      q = q + 1usize;
+    }
+  }
   if bound {
     // At most one turn for nothing a wakeStep, each end, and some slack
     let most = u64.from(took) + 50u64;
