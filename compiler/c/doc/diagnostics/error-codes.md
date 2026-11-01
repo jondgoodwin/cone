@@ -701,8 +701,8 @@ a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
 An actor trait's declaration has two codes of its own and borrows two. What
 its body may not hold, or a form of it not built (a field, a `fn`, a behaviour
-with a body, a behaviour that is not `pub` or has no `self`, a generic or
-`overload` one, a static, a macro, a lifetime among its type parameters, an `is`
+with a body, a behaviour that is not `pub` or has no `self`, a generic
+one, a static, a macro, a lifetime among its type parameters, an `is`
 or a base), is `ErrorActorTraitMember`; an actor's handle converted to the
 trait's (an instance's, of a generic trait) where the
 actor lacks a behaviour, declares it without `pub` or with other parameter or

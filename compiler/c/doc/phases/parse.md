@@ -929,7 +929,10 @@ private trait of the requirements (`ChunkSink.behaviours`, an `ActorTraitInfo`'s
 `body`); a field, a `fn`, a body, a behaviour that is not `pub` or has no `self`,
 a macro, a static, a lifetime among its type parameters and an `is` are refused
 (`ErrorActorTraitMember`), and a parameter that cannot cross threads is refused as
-an actor's is. The trait may be generic, `actor trait Subscriber[Event]`: the
+an actor's is. A behaviour's `overload` name is carried to the trait's handle's send
+method alone (the virtual trait's methods are called by the behaviour's own name, and
+`actorTraitConforms` matches by that name), so `s <- c` works on a trait handle and an
+actor that conforms need not repeat the overload name. The trait may be generic, `actor trait Subscriber[Event]`: the
 parameters are kept as written (`DclTexts.tparms`, which `parseStruct` records) and
 declared again on the virtual trait and the handle, so the handle is a generic
 struct and each of its instances has its own methods, table and `wrap`. Written as

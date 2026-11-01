@@ -42,8 +42,7 @@
 // are written once for each codec (stages.cone); when a generic actor is
 // built, 'Stage[T]' replaces them.
 //
-// Where '<-' will go: 'sink <- chunk' will mean 'sink.accept(chunk)', once an
-// actor trait's behaviour may be declared 'overload `<-`'.
+// 'sink <- chunk' is 'sink.accept(chunk)': the behaviour declares '<-' as its overload name.
 
 // How a stream ended
 pub enum Ending {
@@ -57,7 +56,7 @@ pub enum Ending {
 // chunk, and 'attach' comes before the first.
 pub actor trait ChunkSink {
   // A chunk of the stream. Give it back to the source when its bytes are used.
-  pub async fn accept(self, c: IoBuf);
+  pub async fn accept overload `<-`(self, c: IoBuf);
   // The stream is over, one way or the other. Nothing is sent after.
   pub async fn end(self, how: Ending);
   // The stage that sends here, to give buffers back to; sent once, before the
@@ -180,7 +179,7 @@ pub struct StageCore[T: Transform] is Move {
         case let Some(b) {
           var out = b;
           let st = t.pull(&mut out);
-          if out.isEmpty() { link.give(out); } else { down.accept(out); }
+          if out.isEmpty() { link.give(out); } else { down <- out; }
           if st == Status.Done {
             self.finish(Ending.Finished);
             go = false;
@@ -283,7 +282,7 @@ pub struct HashCore[D: Digester] is Move {
   pub fn accept(self: &mut, c: IoBuf) {
     d.feed(c.view());
     out = out + 1usize;
-    down.accept(c);
+    down <- c;
   }
 
   pub fn giveBack(self: &mut, b: IoBuf) {
