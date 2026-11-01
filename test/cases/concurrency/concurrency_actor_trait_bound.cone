@@ -1,0 +1,107 @@
+// An actor trait as a bound on a type parameter: '[S: ChunkSink]'. The generic
+// body calls the argument's own methods, as a body generic over any trait does,
+// so what a pipeline fixed at compile time pays for the abstraction is nothing:
+// no handle of the trait, no table. An actor meets the bound where it conforms,
+// and so does the trait's own handle (a table call then, as it always is).
+// concurrency_actor_trait_static pins the absence of the table.
+//
+// - connect[S: ChunkSink] is called with a Counter, a Doubler (an actor of the
+//   program's, with its own `accept`), and a ChunkSink handle made from one;
+// - the bound may be an instance of a generic trait: pump[S: Subscriber[Click]];
+// - an actor that does not conform meets no bound: refused at the call.
+// The totals are worked out by hand.
+
+mod concurrency_actor_trait_bound;
+
+import stdio use *;
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+struct Click is Sendable {
+  pub x: u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Counter {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+
+  pub async fn hear(self, e: Click) {
+    sum = sum + e.x * 1000u64;
+  }
+}
+
+actor Doubler {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n * 2u64;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+// Sends two chunks to whatever it is given, directly
+fn connect[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));
+  s.accept(Chunk(n + 1u64));
+}
+
+fn pump[S: Subscriber[Click]](s: S, x: u64) {
+  s.hear(Click(x));
+}
+
+actor Reporter {
+  pub async fn report(self, a: Counter, b: Doubler, c: ChunkSink) {
+    let x = await a.total();
+    let y = await b.total();
+    let z = await c.total();
+    printStr("counter "); printUInt(x); printStr(" doubler "); printUInt(y);
+    printStr(" through the handle "); printUInt(z); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let a = Counter();
+    let b = Doubler();
+    let c = Counter();
+    connect(a, 10u64);
+    connect(b, 10u64);
+    let handle: ChunkSink = c;
+    connect(handle, 100u64);
+    pump(a, 3u64);
+    let r = Reporter();
+    r.report(a, b, handle);
+  }
+  finalAll();
+}
