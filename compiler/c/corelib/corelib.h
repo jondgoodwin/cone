@@ -132,6 +132,10 @@ extern StructNode *carriesRegionTrait;
 extern StructNode *gcTraceElementsTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
+extern StructNode *floatTrait;
+extern StructNode *signedTrait;
+extern StructNode *unsignedTrait;
+extern StructNode *numericTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
 // 'Shareable', Sendable's sibling: a borrow of a value of the type may be held

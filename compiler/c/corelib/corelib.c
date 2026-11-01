@@ -104,6 +104,10 @@ StructNode *carriesRegionTrait;
 StructNode *gcTraceElementsTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
+StructNode *floatTrait;
+StructNode *signedTrait;
+StructNode *unsignedTrait;
+StructNode *numericTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
 StructNode *shareableTrait;
@@ -182,6 +186,8 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)carriesRegionTrait || node == (INode*)gcTraceElementsTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
+        || node == (INode*)floatTrait || node == (INode*)signedTrait
+        || node == (INode*)unsignedTrait || node == (INode*)numericTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
         || node == (INode*)shareableTrait || node == (INode*)shapeKeepingTrait
         || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
@@ -375,6 +381,15 @@ void stdlibInit(int ptrsize) {
     // and asked only by a constraint, 'where T is Integer'; any other type
     // is one only by declaring it.
     integerTrait = newBuiltinTrait(integerTraitName);
+    // 'Float', 'Signed', 'Unsigned' and 'Numeric': the number markers, granted
+    // by the compiler as 'Integer' is (genericTypeIs) and asked only by a
+    // constraint. 'Float' is f32 and f64; 'Signed' the signed integers and the
+    // floats; 'Unsigned' the unsigned integers (not bool or char); 'Numeric'
+    // every integer and float. Any other type is one only by declaring it.
+    floatTrait = newBuiltinTrait(floatTraitName);
+    signedTrait = newBuiltinTrait(signedTraitName);
+    unsignedTrait = newBuiltinTrait(unsignedTraitName);
+    numericTrait = newBuiltinTrait(numericTraitName);
     // 'Pointer' [Jon 27 Sep]: the raw pointer types, '*T' whatever T is and
     // whatever its permission, granted by the compiler (genericTypeIs) and
     // asked only by a constraint, 'where T is Pointer'. A reference is not

@@ -1,0 +1,37 @@
+// Each number marker refused where the compiler does not grant it. Float is
+// f32 and f64 alone; Signed the signed integers and the floats, not an
+// unsigned integer; Unsigned the unsigned integers, not a float; Numeric every
+// integer and float, not bool, char or a struct. A method of a generic type
+// whose marker fails is absent from that instance.
+
+mod generic_typecheck_number_markers;
+
+struct Pt {pub x: i32;}
+
+fn float[T](x: T) T where T is Float {x}
+fn signed[T](x: T) T where T is Signed {x}
+fn unsigned[T](x: T) T where T is Unsigned {x}
+fn numeric[T](x: T) T where T is Numeric {x}
+
+struct Cell[T] where T is Numeric {
+  pub v: T;
+  pub fn halve(self: &) T where T is Float {v * 0.5}
+}
+
+fn main() {
+  float(1.5);
+  float(1i32);                   //~ ErrorWhereUnmet:8 "float requires T is Float, and i32 is not Float"
+  float(true);                   //~ ErrorWhereUnmet:8 "float requires T is Float, and bool is not Float"
+  float(Pt(1));                  //~ ErrorWhereUnmet:8 "float requires T is Float, and Pt is not Float"
+  signed(1i8);
+  signed(1u8);                   //~ ErrorWhereUnmet:9 "signed requires T is Signed, and u8 is not Signed"
+  unsigned(1u8);
+  unsigned(1.5);                 //~ ErrorWhereUnmet:11 "unsigned requires T is Unsigned, and f64 is not Unsigned"
+  unsigned(1i8);                 //~ ErrorWhereUnmet:11 "unsigned requires T is Unsigned, and i8 is not Unsigned"
+  numeric(1u8);
+  numeric(true);                 //~ ErrorWhereUnmet:10 "numeric requires T is Numeric, and bool is not Numeric"
+  numeric('a');                  //~ ErrorWhereUnmet:10 "numeric requires T is Numeric, and char is not Numeric"
+  numeric(Pt(1));                //~ ErrorWhereUnmet:10 "numeric requires T is Numeric, and Pt is not Numeric"
+  let ci = Cell[i32](1i32);
+  ci.halve();                    //~ ErrorWhereAbsent:5 "No method halve for Cell[i32]: it exists only where T is Float, and i32 is not Float"
+}

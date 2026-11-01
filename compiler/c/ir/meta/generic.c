@@ -1879,9 +1879,25 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return itypeIsMove(dcl);
     if (trait == copyTrait)
         return !itypeIsMove(dcl);
-    if (trait == integerTrait
-        && (dcl->tag == IntNbrTag || (dcl->tag == UintNbrTag && dcl != (INode*)boolType && dcl != (INode*)charType)))
-        return 1;
+    // and the number markers: Float is f32 and f64, Signed the signed integers
+    // and the floats, Unsigned the unsigned integers, Numeric all of them.
+    // bool and char are unsigned in the tree but are not numbers.
+    {
+        int isint = dcl->tag == IntNbrTag
+            || (dcl->tag == UintNbrTag && dcl != (INode*)boolType && dcl != (INode*)charType);
+        int isuint = isint && dcl->tag == UintNbrTag;
+        int isfloat = dcl->tag == FloatNbrTag;
+        if (trait == integerTrait && isint)
+            return 1;
+        if (trait == floatTrait && isfloat)
+            return 1;
+        if (trait == signedTrait && ((isint && !isuint) || isfloat))
+            return 1;
+        if (trait == unsignedTrait && isuint)
+            return 1;
+        if (trait == numericTrait && (isint || isfloat))
+            return 1;
+    }
     if (trait == pointerTrait && dcl->tag == PtrTag)
         return 1;
     // core's Hash is granted to the integers and bool, which feed their bits
