@@ -1,0 +1,75 @@
+// ======== Layer 3, credit: a Link owns the buffers between two stages ========
+//
+// A link is the pool of N buffers (4 of 64 KiB at first) one stage sends its
+// output in. CREDIT IS THE BUFFERS: a stage may send a chunk only while it holds
+// a buffer of its link to put it in. It sends the buffer (moved, to the next
+// stage's 'accept'), and the consumer, once it has used the bytes up, gives the
+// same buffer back with the source's 'giveBack'. So at most N buffers are ever
+// in flight between the two, however slow the consumer is, and the memory a link
+// can pin is N times the buffer size. A stage with no buffer to send in waits:
+// it does nothing until a 'giveBack' arrives.
+//
+//   var link = Link.make(4usize, 65536usize);
+//   match link.take() {                       // None when all N are out
+//     case let Some(b) { ... fill b ...; sink.accept(b); }
+//     case is None { /* wait for giveBack */ }
+//   }
+//   link.give(b);                             // a buffer came back (emptied here)
+//
+//   link.take()      a buffer, empty, from the link; None (and a stall counted) when all are out
+//   link.give(b)     a buffer back; it is emptied. A panic if the link has all of its buffers
+//   link.capacity()  N                  link.available()  buffers here now
+//   link.inFlight()  N less available   link.peak()       most in flight at once so far
+//   link.stalls()    takes that found none: how often the consumer held the producer back
+//
+// A link lives in the one stage that sends through it (an actor's state), so it
+// takes no lock; the consumer's side is only the 'giveBack' message.
+
+pub struct Link is Move {
+  free: List[IoBuf];
+  count: usize;       // N
+  held: usize;        // how many of the N are out now
+  top: usize;         // the most out at once
+  stalled: u64;       // takes that found none
+
+  // N buffers of 'size' bytes each, all here
+  pub fn make(count: usize, size: usize) Link {
+    var free = List[IoBuf].withCapacity(count);
+    var i = 0usize;
+    while i < count {
+      free.push(IoBuf(size));
+      i = i + 1usize;
+    }
+    Link(free, count, 0usize, 0usize, 0u64)
+  }
+
+  // An empty buffer, or None when all are out
+  pub fn take(self: &mut) Option[IoBuf] {
+    match free.pop() {
+      case let Some(b) {
+        held = held + 1usize;
+        if held > top { top = held; }
+        Some[IoBuf](b)
+      }
+      case is None {
+        stalled = stalled + 1u64;
+        None[IoBuf]
+      }
+    }
+  }
+
+  // A buffer back from the consumer (or one a stage took and did not send)
+  pub fn give(self: &mut, b: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if held == 0usize { panic("streams: Link.give with every buffer already home", file, line); }
+    var buf = b;
+    buf.clear();
+    held = held - 1usize;
+    free.push(buf);
+  }
+
+  pub fn capacity(self: &) usize { count }
+  pub fn available(self: &) usize { free.len() }
+  pub fn inFlight(self: &) usize { held }
+  pub fn peak(self: &) usize { top }
+  pub fn stalls(self: &) u64 { stalled }
+}
