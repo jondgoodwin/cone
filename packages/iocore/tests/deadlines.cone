@@ -34,8 +34,18 @@ fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
   }
 }
 
+var jobStarted: Atomic[u32];
+var jobDone: Atomic[u32];
+
+fn @initpure init() {
+  jobStarted = Atomic[u32].of(0u32);
+  jobDone = Atomic[u32].of(0u32);
+}
+
 fn slowWork(arg: u64, buf: &mut IoBuf) Outcome {
+  jobStarted.store(1u32);
   thread.sleep(Duration.fromMillis(i64.from(arg)));
+  jobDone.store(1u32);
   Outcome.Done(0usize)
 }
 
@@ -112,19 +122,37 @@ fn main() i32 {
       lp.setGrace(Duration.fromMillis(1i64));
     }
 
-    // 3. A job running past its deadline
+    // 3. A job running past its deadline. On a machine too busy to start the
+    // lane's thread within the 20 ms the job is still queued at its deadline
+    // and is case 4's (answered with its buffer, never run): that is not the
+    // case, so it is tried again until the job did start before its deadline
+    var tried = 0u32;
     {
-      let t0 = Instant.now();
-      lp.submitBy(Op.Call(one, &slowWork, 150u64, IoBuf(100usize)), Target.Here(3u64),
-        t0 + Duration.fromMillis(20i64));
-      waitFor(&mut lp, &mut out, 1usize);
+      var t0 = Instant.now();
+      while true {
+        jobStarted.store(0u32);
+        jobDone.store(0u32);
+        t0 = Instant.now();
+        lp.submitBy(Op.Call(one, &slowWork, 600u64, IoBuf(100usize)), Target.Here(3u64),
+          t0 + Duration.fromMillis(20i64));
+        waitFor(&mut lp, &mut out, 1usize);
+        tried = tried + 1u32;
+        if jobStarted.load() == 1u32 || tried >= 50u32 {break;}
+        out.clear();
+      }
+      requireUInt(u64.from(jobStarted.load()), 1u64, "the job started before its deadline");
       requireUInt(u64.from(out.len()), 1u64, "one answer");
+      // A deadline is answered near its time: that is the feature. The bound is
+      // generous on purpose (25 times the 20 ms deadline, still under the job's
+      // 600 ms), so a loaded machine does not fail it while a deadline answered
+      // only when the job returns still would
+      expect(t0.elapsed() < Duration.fromMillis(500i64), "and near its time: within 500 ms");
       expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
       expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the job still has it");
-      expect(t0.elapsed() < Duration.fromMillis(100i64), "on time, long before the job returns");
+      expectUInt(u64.from(jobDone.load()), 0u64, "on time: before the job returns");
       expectUInt(stats().lent, 1u64, "its buffer still lent, to the job");
       out.clear();
-      lp.poll(Instant.now() + Duration.fromMillis(250i64), &mut out);
+      lp.poll(Instant.now() + Duration.fromMillis(900i64), &mut out);
       expectUInt(u64.from(out.len()), 0u64, "the job returned, and nothing more was answered");
       expectUInt(lp.counters().lateReturns, lateBase + 1u64, "its buffer given back");
       expectUInt(stats().lent, 0u64, "home to its pool");
@@ -132,6 +160,8 @@ fn main() i32 {
 
     // 4. A job still queued at its deadline
     {
+      // (what case 3's tries that never ran left in the lane's count)
+      let triesCancelled = one.stats().cancelled;
       lp.submit(Op.Call(one, &slowWork, 100u64, IoBuf(100usize)), Target.Here(4u64));
       lp.submitBy(Op.Call(one, &slowWork, 0u64, IoBuf(100usize)), Target.Here(5u64),
         Instant.now() + Duration.fromMillis(20i64));
@@ -146,7 +176,7 @@ fn main() i32 {
       out.clear();
       let st = one.stats();
       expectUInt(st.ran, 2u64, "the lane ran two jobs in all");
-      expectUInt(st.cancelled, 1u64, "and took one out of its queue");
+      expectUInt(st.cancelled - triesCancelled, 1u64, "and took one out of its queue");
     }
 
     let cs = lp.counters();
