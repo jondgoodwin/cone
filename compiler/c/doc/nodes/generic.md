@@ -853,7 +853,9 @@ Every other question a clause asks is
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
   (`itypeIsMove`); `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
-  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `bool`; and `Pointer`
+  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is neither `bool` nor `char`;
+  `Float` is `f32` and `f64`, `Signed` the signed integers and the floats,
+  `Unsigned` the unsigned integers, `Numeric` all of those; and `Pointer`
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference; and core's `Hash`, a trait with a method, is granted to
   every integer type and `bool` as well (`coreIsHashTrait`; [struct](struct.md),

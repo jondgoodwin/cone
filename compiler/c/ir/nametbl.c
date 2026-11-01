@@ -280,6 +280,10 @@ void nametblInit() {
     visitMethodName = nametblFind("visit", 5);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
+    floatTraitName = nametblFind("Float", 5);
+    signedTraitName = nametblFind("Signed", 6);
+    unsignedTraitName = nametblFind("Unsigned", 8);
+    numericTraitName = nametblFind("Numeric", 7);
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
     shareableTraitName = nametblFind("Shareable", 9);
