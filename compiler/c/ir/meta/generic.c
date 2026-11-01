@@ -1450,6 +1450,19 @@ static INode *genericNamedType(INode *node) {
     return node;
 }
 
+// Does a bound written after a type parameter name an actor trait: its handle,
+// or an instance of a generic one with its type arguments? An actor trait is
+// not a trait in the type system, but a handle struct, so '[S: ChunkSink]' reads
+// as a type met by itself alone; an actor that conforms meets it too
+static int genericNamedActorTrait(INode *node) {
+    INode *dcl = NULL;
+    if (node->tag == FnCallTag && isNameUseNode(((FnCallNode*)node)->objfn))
+        dcl = nameUseGetDcl((NameUseNode*)((FnCallNode*)node)->objfn);
+    else if (isNameUseNode(node) && isTypeNode(node))
+        dcl = itypeGetTypeDcl(node);
+    return dcl != NULL && dcl->tag == StructTag && actorTraitOfHandle(dcl) != NULL;
+}
+
 // A type written out as an instance, where a 'where' clause names one:
 // 'where K is Uni[str]', 'where T is Option[i64]'. A generic type given its
 // arguments, or a reference type (a region's, 'Uni[str]', is one), whose parts
@@ -1636,6 +1649,10 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
                 else if (genericNamedGenericTrait(*annotp)) {
                     if (!genericTraitInstanceVet(*annotp))
                         continue;
+                }
+                else if (genericNamedActorTrait(*annotp)) {
+                    // An actor trait's handle, or an instance of a generic one: met by an
+                    // actor that conforms, decided by evaluation (actorTraitMeets)
                 }
                 else if (genericNamedTrait(*annotp) == NULL) {
                     // A name that bound nothing was reported where it was resolved
@@ -2257,7 +2274,7 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
         INode *inst = genericClauseCloneChecked((CastNode*)cond, parms, args);
         if (inst == NULL)
             return WhereUnknown;
-        return itypeIsSame(type, inst) ? WhereTrue : WhereFalse;
+        return itypeIsSame(type, inst) || actorTraitMeets(type, inst) ? WhereTrue : WhereFalse;
     }
     if (type == NULL || (trait == NULL && named == NULL) || (parm == NULL && !nested))
         return WhereUnknown;
@@ -2265,8 +2282,9 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
         return WhereLate;
     if (trait)
         return genericTypeIsHow(type, trait, genericStaticHow(trait, parm)) ? WhereTrue : WhereFalse;
-    // A type is met by itself alone
-    return itypeIsSame(type, named) ? WhereTrue : WhereFalse;
+    // A type is met by itself alone, but for an actor trait's handle, which an
+    // actor that conforms meets too
+    return itypeIsSame(type, named) || actorTraitMeets(type, named) ? WhereTrue : WhereFalse;
 }
 
 // One condition of a generic's, decided as the generic's own code would ask it
