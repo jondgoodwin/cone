@@ -1352,6 +1352,18 @@ holds the declaration to its shape at the end of the type's check
   other type is. Stores through `mem.writeRaw` are handed to a write barrier as
   any store is (`genlBarrierAt`), and a store of the whole collection is handed
   the barrier for each reference it holds, by the same walk.
+- **Core's `Array[T]` declares it.** Its `gcTraceElements` takes the slice reference
+  `&mut Array[T]` a method of the body takes (an `ArrayRefTag` whose referent is `T`),
+  which `structGcTraceElements` accepts for the struct named `Array` (`arrayTypeDcl`)
+  and no other. That is what lets the body's methods place any `T` by `mem.writeRaw`
+  (`reverse`, the sorts). A value of the body is never walked by address, since the
+  address lacks the count (`genlTraceWalk` skips it); a slice reference is a borrow and
+  traces nothing, so what is traced is whatever owns the elements: a list by its own
+  `gcTraceElements`, a fixed `Array[T, n]` by its elements, and an owner of the body
+  (`Uni[Array[T]]`, what `freeze` gives) by the count it carries (`genlTraceThrough`
+  reads the pointer and count of the fat owner and walks the elements; before, such an
+  owner of traced elements was reported as untraceable). A type folding Array in with
+  `use Array[T] via ...` names its own `gcTraceElements` in `but`, as `List` does.
 - **One element type.** The cursor gives references to values of one type, so a
   type argument that holds a traced reference and is not `E` is held where nothing
   finds it: `Dict[K, V]` gives its values, and a key that holds a traced reference

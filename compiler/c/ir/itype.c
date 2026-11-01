@@ -1195,11 +1195,10 @@ int itypeCannotTrace(INode *type) {
         if (ref->tag == VirtRefTag || !regionIsRegionRef(ref->region) || regionIsTraced(ref->region))
             return 0;
         INode *behind = itypeBehindOwner(ref);
-        // An array body of values a trace must find: nothing here walks it
-        if (behind == NULL || refIsFat(ref))
-            return refIsFat(ref) && behind != NULL && itypeHoldsTraced(behind);
-        if (!itypeHoldsTraced(behind))
+        if (behind == NULL || !itypeHoldsTraced(behind))
             return 0;
+        // The elements of an array body are walked by the count the owner carries
+        // (genlTraceThrough), under the rules a thin owner's value meets
         // A collector that marks while the program runs must hear of each store
         // of a reference to a value holding a traced reference, and can hear of
         // the traced reference only: a value behind an owner is not walked then

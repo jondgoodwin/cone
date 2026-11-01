@@ -490,7 +490,7 @@ pub struct @opaque str {
 // without a size. The compiler gives the struct its generic parameter and its
 // size, and this its methods, written once, which a 'List' and any owner of
 // the body reach.
-pub struct @opaque Array[T] {
+pub struct @opaque Array[T] is GcTraceElements {
   // The number of elements. Not 'inline', so that a type folding it in can fill
   // a trait's slot with it (a slot points at a function that exists)
   pub fn len(self: &) usize { self.len }
@@ -543,21 +543,500 @@ pub struct @opaque Array[T] {
     ArrayMutChunks[T](self, n, 0usize)
   }
 
-  // The elements in the opposite order, in place. A type that lends its body through
-  // 'viewMut' (a List) reaches it by that lender, as every method that asks for '&mut'.
-  // For numbers only, for now: a swap of any T places values in raw memory (mem.moveRaw),
-  // which the compiler refuses for a body that may hold a traced reference unless the
-  // type placing them declares GcTraceElements, and Array does not
-  pub fn reverse(self: &mut) where T is Numeric {
+  // How a collector reaches the elements, as a List's block does: a writable reference
+  // to each. This is what lets the methods of Array place any T by 'mem.writeRaw'
+  // (a reverse, a sort): the compiler refuses that for a body that may hold a traced
+  // reference unless the method belongs to a type declaring GcTraceElements. The
+  // stores go through the write barrier as any store does
+  pub fn gcTraceElements(self: &mut) ArrayMutItems[T] { ArrayMutItems[T](self, 0usize) }
+
+  // The elements in the opposite order, in place, of any element type. A type that
+  // lends its body through 'viewMut' (a List) reaches it by that lender, as every
+  // method that asks for '&mut'
+  pub fn reverse(self: &mut) {
+    let p = self as *T;
     var i = 0usize;
     var j = self.len;
     while i + 1usize < j {
       j = j - 1usize;
-      let held = self[i];
-      self[i] = self[j];
-      self[j] = held;
+      let held = mem.readRaw[T](p + i);
+      mem.writeRaw[T](p + i, mem.readRaw[T](p + j));
+      mem.writeRaw[T](p + j, held);
       i = i + 1usize;
     }
+  }
+
+  // The elements from 'start' up to but not including 'end', as a slice of the same
+  // elements (a panic if 'start' is past 'end' or 'end' past the count, reported at the
+  // caller's line); 'sliceMut' for changing them in place
+  pub fn slice(self: &, start: usize, end: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &Array[T] {
+    if start > end || end > self.len {
+      panic("Array.slice: the range is not within the elements", file, line);
+    }
+    mem.sliceFromParts[T]((self as *T) + start, end - start)
+  }
+
+  pub fn sliceMut(self: &mut, start: usize, end: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut Array[T] {
+    if start > end || end > self.len {
+      panic("Array.sliceMut: the range is not within the elements", file, line);
+    }
+    mem.sliceFromPartsMut[T]((self as *T) + start, end - start)
+  }
+
+  // ---- Ordering: sorts, selection and searches ----
+  //
+  // 'order(a, b)' is the three-way comparison of two elements, as '<=>' answers it: negative
+  // when a goes before b, 0 when either may go first, positive when after. It is met
+  // statically, so it is inlined into the sort. The natural order, for a T that is Ordered
+  // (every number type, text, a type with a '<=>' written against '&'), is '<=>'; a float's
+  // is IEEE total order, so a NaN has a place. A descending sort is '(a, b) => b <=> a'.
+  //
+  // The sorts here are unstable (equal values may change their order), sort in place and
+  // never allocate (O(log n) stack), and take O(n log n) comparisons at worst: a
+  // pattern-defeating quicksort, which also detects sorted, reversed and few-valued input.
+  // Whatever 'order' answers they are memory-safe and keep every element exactly once; a
+  // comparison that is not a consistent order leaves some permutation, and a debug build
+  // (isDebugBuild) panics when the result is not in order by 'order'.
+
+  // Is element i before element j by 'order'?
+  fn lessAt[F: fn(a: &T, b: &T) i32](self: &, i: usize, j: usize, order: &F) bool inline {
+    let p = self as *T;
+    order((p + i) as &T, (p + j) as &T) < 0i32
+  }
+
+  // Exchange two elements
+  fn swapAt(self: &mut, i: usize, j: usize) {
+    if i != j {
+      let p = self as *T;
+      let held = mem.readRaw[T](p + i);
+      mem.writeRaw[T](p + i, mem.readRaw[T](p + j));
+      mem.writeRaw[T](p + j, held);
+    }
+  }
+
+  // Move element i left, past the larger elements before it
+  fn insertTail[F: fn(a: &T, b: &T) i32](self: &mut, i: usize, order: &F) inline {
+    let p = self as *T;
+    if i > 0usize && order((p + i) as &T, (p + i - 1usize) as &T) < 0i32 {
+      let held = mem.readRaw[T](p + i);
+      mem.writeRaw[T](p + i, mem.readRaw[T](p + i - 1usize));
+      var j = i - 1usize;
+      while j > 0usize && order(&held, (p + j - 1usize) as &T) < 0i32 {
+        mem.writeRaw[T](p + j, mem.readRaw[T](p + j - 1usize));
+        j = j - 1usize;
+      }
+      mem.writeRaw[T](p + j, held);
+    }
+  }
+
+  // Move the first element right, past the smaller elements after it
+  fn insertHead[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    let p = self as *T;
+    let n = self.len;
+    if n >= 2usize && order((p + 1usize) as &T, p as &T) < 0i32 {
+      let held = mem.readRaw[T](p);
+      mem.writeRaw[T](p, mem.readRaw[T](p + 1usize));
+      var j = 1usize;
+      while j + 1usize < n && order((p + j + 1usize) as &T, &held) < 0i32 {
+        mem.writeRaw[T](p + j, mem.readRaw[T](p + j + 1usize));
+        j = j + 1usize;
+      }
+      mem.writeRaw[T](p + j, held);
+    }
+  }
+
+  fn insertionSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    let n = self.len;
+    var i = 1usize;
+    while i < n {
+      self.insertTail(i, order);
+      i = i + 1usize;
+    }
+  }
+
+  // Restore the max-heap below 'root' among the first 'end' elements
+  fn siftDown[F: fn(a: &T, b: &T) i32](self: &mut, rootIn: usize, end: usize, order: &F) {
+    var root = rootIn;
+    var more = true;
+    while more {
+      var child = 2usize * root + 1usize;
+      if child >= end {
+        more = false;
+      }
+      else {
+        if child + 1usize < end && self.lessAt(child, child + 1usize, order) { child = child + 1usize; }
+        if self.lessAt(root, child, order) {
+          self.swapAt(root, child);
+          root = child;
+        }
+        else {
+          more = false;
+        }
+      }
+    }
+  }
+
+  // The fallback of the quicksort when it keeps getting unbalanced splits: O(n log n) always
+  fn heapSortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    let n = self.len;
+    var i = n / 2usize;
+    while i > 0usize {
+      i = i - 1usize;
+      self.siftDown(i, n, order);
+    }
+    var end = n;
+    while end > 1usize {
+      end = end - 1usize;
+      self.swapAt(0usize, end);
+      self.siftDown(0usize, end, order);
+    }
+  }
+
+  // The median of the elements at three positions, by position (no element moves);
+  // 'swaps' counts the exchanges that took, so 0 says the three were in order and many
+  // say they were reversed
+  fn median3[F: fn(a: &T, b: &T) i32](self: &, a: usize, b: usize, c: usize, swaps: &mut usize, order: &F) usize {
+    var x = a;
+    var y = b;
+    var z = c;
+    if self.lessAt(y, x, order) { let t = x; x = y; y = t; *swaps = *swaps + 1usize; }
+    if self.lessAt(z, y, order) { let t = y; y = z; z = t; *swaps = *swaps + 1usize; }
+    if self.lessAt(y, x, order) { let t = x; x = y; y = t; *swaps = *swaps + 1usize; }
+    y
+  }
+
+  // A pivot's position, from the median of three positions (of three medians of three, for
+  // 50 or more elements); and whether the elements are likely sorted. Input found
+  // mostly reversed is reversed here, which makes it sorted and the pivot its mirror
+  fn choosePivot[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) (usize, bool) {
+    let n = self.len;
+    var a = n / 4usize;
+    var b = n / 4usize * 2usize;
+    var c = n / 4usize * 3usize;
+    var swaps = 0usize;
+    if n >= 50usize {
+      a = self.median3(a - 1usize, a, a + 1usize, &mut swaps, order);
+      b = self.median3(b - 1usize, b, b + 1usize, &mut swaps, order);
+      c = self.median3(c - 1usize, c, c + 1usize, &mut swaps, order);
+    }
+    b = self.median3(a, b, c, &mut swaps, order);
+    if swaps < 12usize {
+      (b, swaps == 0usize)
+    }
+    else {
+      self.reverse();
+      (n - 1usize - b, true)
+    }
+  }
+
+  // Swap a few elements around the middle for others picked by a cheap pseudo-random
+  // sequence seeded by the count, so the same input always sorts the same way, and a
+  // pattern that defeated the pivot choice does not do so twice
+  fn breakPatterns(self: &mut) {
+    let n = self.len;
+    if n >= 8usize {
+      var random = u64.from(n);
+      var modulus = 1usize;
+      while modulus < n { modulus = modulus * 2usize; }
+      let pos = n / 4usize * 2usize;
+      var k = 0usize;
+      while k < 3usize {
+        random = random ^ (random << 13u64);
+        random = random ^ (random >> 7u64);
+        random = random ^ (random << 17u64);
+        var other = usize.from(random) & (modulus - 1usize);
+        if other >= n { other = other - n; }
+        self.swapAt(pos - 1usize + k, other);
+        k = k + 1usize;
+      }
+    }
+  }
+
+  // Put right what a few exchanges of neighbours can: true when it left the elements
+  // sorted, false (having done some of the work) when it gives up. For input that is
+  // nearly in order
+  fn partialInsertionSort[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) bool {
+    let p = self as *T;
+    let n = self.len;
+    var i = 1usize;
+    var steps = 0usize;
+    while steps < 5usize {
+      while i < n && !self.lessAt(i, i - 1usize, order) { i = i + 1usize; }
+      if i == n { return true; }
+      if n < 50usize { return false; }
+      self.swapAt(i - 1usize, i);
+      self.insertTail(i - 1usize, order);
+      mem.sliceFromPartsMut[T](p + i, n - i).insertHead(order);
+      steps = steps + 1usize;
+    }
+    false
+  }
+
+  // Partition around the element at 'pivot': those before it are put before the pivot
+  // and the rest after, so the pivot lands at the returned position. Also whether the
+  // elements were already in that arrangement
+  fn partitionBy[F: fn(a: &T, b: &T) i32](self: &mut, pivot: usize, order: &F) (usize, bool) {
+    let n = self.len;
+    self.swapAt(0usize, pivot);
+    var l = 1usize;
+    var r = n;
+    while l < r && self.lessAt(l, 0usize, order) { l = l + 1usize; }
+    while l < r && !self.lessAt(r - 1usize, 0usize, order) { r = r - 1usize; }
+    let was = l >= r;
+    // The rest by a branch-free sweep: each element is exchanged with the first one not
+    // before the pivot, and that boundary moves up by one when it was before it. No
+    // branch depends on a comparison, so random input costs no mispredictions
+    let p = self as *T;
+    var bound = l;
+    var i = l;
+    while i < r {
+      let before = order((p + i) as &T, p as &T) < 0i32;
+      let held = mem.readRaw[T](p + i);
+      mem.writeRaw[T](p + i, mem.readRaw[T](p + bound));
+      mem.writeRaw[T](p + bound, held);
+      bound = bound + (if before { 1usize } else { 0usize });
+      i = i + 1usize;
+    }
+    let mid = bound - 1usize;
+    self.swapAt(0usize, mid);
+    (mid, was)
+  }
+
+  // Gather the elements equal to the pivot at the front, answering how many: the
+  // sort then skips them. Used when the pivot equals the one just below it, which
+  // says the input has many equal elements
+  fn partitionEqual[F: fn(a: &T, b: &T) i32](self: &mut, pivot: usize, order: &F) usize {
+    let n = self.len;
+    self.swapAt(0usize, pivot);
+    var l = 1usize;
+    var r = n;
+    var more = true;
+    while more {
+      while l < r && !self.lessAt(0usize, l, order) { l = l + 1usize; }
+      while l < r && self.lessAt(0usize, r - 1usize, order) { r = r - 1usize; }
+      if l >= r {
+        more = false;
+      }
+      else {
+        r = r - 1usize;
+        self.swapAt(l, r);
+        l = l + 1usize;
+      }
+    }
+    l
+  }
+
+  // How many splits a sort may find unbalanced before it turns to the heap sort
+  fn splitLimit(self: &) u32 { 64u32 - u64.from(self.len).leadingZeros() }
+
+  // The quicksort. 'pred' is the pivot of the split this range is the upper side of (or
+  // null): every element here is not before it, so a pivot equal to it is a run of equals.
+  // It loops on the upper side and recurses on the lower, a stack of O(log n)
+  fn pdqSort[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, predIn: *T, balancedIn: bool, limitIn: u32) {
+    let base = self as *T;
+    var start = 0usize;
+    var n = self.len;
+    var pred = predIn;
+    var wasBalanced = balancedIn;
+    var wasPartitioned = true;
+    var limit = limitIn;
+    while true {
+      let v = mem.sliceFromPartsMut[T](base + start, n);
+      if n <= 20usize {
+        v.insertionSortBy(order);
+        return;
+      }
+      if limit == 0u32 {
+        v.heapSortBy(order);
+        return;
+      }
+      if !wasBalanced {
+        v.breakPatterns();
+        limit = limit - 1u32;
+      }
+      let pivot, likelySorted = v.choosePivot(order);
+      if wasBalanced && wasPartitioned && likelySorted {
+        if v.partialInsertionSort(order) { return; }
+      }
+      if pred != null && order(pred as &T, (base + start + pivot) as &T) >= 0i32 {
+        let equal = v.partitionEqual(pivot, order);
+        start = start + equal;
+        n = n - equal;
+      }
+      else {
+        let mid, was = v.partitionBy(pivot, order);
+        wasPartitioned = was;
+        let smaller = if mid < n - mid { mid } else { n - mid };
+        wasBalanced = smaller >= n / 8usize;
+        mem.sliceFromPartsMut[T](base + start, mid).pdqSort(order, pred, wasBalanced, limit);
+        pred = base + start + mid;
+        start = start + mid + 1usize;
+        n = n - mid - 1usize;
+      }
+    }
+  }
+
+  // Put the element that belongs at position k there, with none after it before it and
+  // none before it after it: a quickselect on the sort's partition, falling back on the
+  // heap sort of what is left when the splits go bad
+  fn selectRecurse[F: fn(a: &T, b: &T) i32](self: &mut, k: usize, order: &F) {
+    let base = self as *T;
+    var start = 0usize;
+    var n = self.len;
+    var idx = k;
+    var pred: *T = null;
+    var wasBalanced = true;
+    var limit = self.splitLimit();
+    while true {
+      let v = mem.sliceFromPartsMut[T](base + start, n);
+      if n <= 10usize {
+        v.insertionSortBy(order);
+        return;
+      }
+      if limit == 0u32 {
+        v.heapSortBy(order);
+        return;
+      }
+      if !wasBalanced {
+        v.breakPatterns();
+        limit = limit - 1u32;
+      }
+      let pivot, likelySorted = v.choosePivot(order);
+      if pred != null && order(pred as &T, (base + start + pivot) as &T) >= 0i32 {
+        let equal = v.partitionEqual(pivot, order);
+        if idx < equal { return; }
+        start = start + equal;
+        n = n - equal;
+        idx = idx - equal;
+      }
+      else {
+        let mid, was = v.partitionBy(pivot, order);
+        let smaller = if mid < n - mid { mid } else { n - mid };
+        wasBalanced = smaller >= n / 8usize;
+        if idx < mid {
+          n = mid;
+        }
+        else if idx == mid {
+          return;
+        }
+        else {
+          pred = base + start + mid;
+          start = start + mid + 1usize;
+          n = n - mid - 1usize;
+          idx = idx - mid - 1usize;
+        }
+      }
+    }
+  }
+
+  // Put the elements in the order 'order' gives, in place, without allocating. Equal
+  // elements may change their order. A debug build panics if 'order' is not a consistent
+  // order (the result is not in order by it)
+  pub fn sortUnstableBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
+    if self.len <= 20usize {
+      self.insertionSortBy(order);
+    }
+    else {
+      self.pdqSort(order, null, true, self.splitLimit());
+    }
+    if isDebugBuild() && !self.isSortedBy(order) {
+      panic("sortUnstableBy: the comparison is not a consistent order: the result is not in order by it");
+    }
+  }
+
+  // Put the elements in order by the key 'key(x)' gives each, a number or other Ordered type
+  // (it is asked afresh at every comparison, so it should be cheap)
+  pub fn sortUnstableByKey[K, F: fn(x: &T) K](self: &mut, key: &F) where K is Ordered {
+    self.sortUnstableBy(&KeyOrder[T, K, F](key));
+  }
+
+  // Put the elements in their natural order (the order of '<=>'; a float's is IEEE total
+  // order), in place, without allocating. Equal elements may change their order
+  pub fn sortUnstable(self: &mut) where T is Ordered {
+    self.sortUnstableBy(&orderNatural[T]);
+  }
+
+  // Put the element that would be at position k if the elements were sorted there, the
+  // elements before it not after it and those after it not before it, in O(n) expected
+  // time, in place; answers the element. A panic if k is not within the elements
+  pub fn selectNthBy[F: fn(a: &T, b: &T) i32](self: &mut, k: usize, order: &F, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T {
+    if k >= self.len {
+      panic("selectNth: the position is not within the elements", file, line);
+    }
+    self.selectRecurse(k, order);
+    if isDebugBuild() {
+      let p = self as *T;
+      var i = 0usize;
+      while i < self.len {
+        if (i < k && order((p + k) as &T, (p + i) as &T) < 0i32) || (i > k && order((p + i) as &T, (p + k) as &T) < 0i32) {
+          panic("selectNthBy: the comparison is not a consistent order", file, line);
+        }
+        i = i + 1usize;
+      }
+    }
+    &mut self[k]
+  }
+
+  pub fn selectNthByKey[K, F: fn(x: &T) K](self: &mut, k: usize, key: &F, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T where K is Ordered {
+    self.selectNthBy(k, &KeyOrder[T, K, F](key), file, line);
+    &mut self[k]
+  }
+
+  pub fn selectNth(self: &mut, k: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) &mut T where T is Ordered {
+    self.selectNthBy(k, &orderNatural[T], file, line)
+  }
+
+  // Are the elements in order by 'order': none before the one preceding it
+  pub fn isSortedBy[F: fn(a: &T, b: &T) i32](self: &, order: &F) bool {
+    var i = 1usize;
+    while i < self.len {
+      if self.lessAt(i, i - 1usize, order) { return false; }
+      i = i + 1usize;
+    }
+    true
+  }
+
+  pub fn isSorted(self: &) bool where T is Ordered {
+    self.isSortedBy(&orderNatural[T])
+  }
+
+  // How many leading elements satisfy 'pred', for a 'pred' that is true of a run of them
+  // and false of the rest (a sorted array's "is before x"): found by halving, O(log n)
+  pub fn partitionPoint[F: fn(x: &T) bool](self: &, pred: &F) usize {
+    let p = self as *T;
+    var lo = 0usize;
+    var hi = self.len;
+    while lo < hi {
+      let mid = lo + (hi - lo) / 2usize;
+      if pred((p + mid) as &T) { lo = mid + 1usize; } else { hi = mid; }
+    }
+    lo
+  }
+
+  // In an array sorted by 'probe' (probe(e) answers e <=> target: negative while e is before
+  // it): the first position not before the target, and whether the element there equals it
+  pub fn binarySearchBy[F: fn(x: &T) i32](self: &, probe: &F) (usize, bool) {
+    let p = self as *T;
+    var lo = 0usize;
+    var hi = self.len;
+    while lo < hi {
+      let mid = lo + (hi - lo) / 2usize;
+      if probe((p + mid) as &T) < 0i32 { lo = mid + 1usize; } else { hi = mid; }
+    }
+    (lo, lo < self.len && probe((p + lo) as &T) == 0i32)
+  }
+
+  // In an array sorted in natural order: the first position not before x (where it would be
+  // inserted), and whether the element there equals x
+  pub fn binarySearch(self: &, x: T) (usize, bool) where T is Ordered {
+    let p = self as *T;
+    var lo = 0usize;
+    var hi = self.len;
+    while lo < hi {
+      let mid = lo + (hi - lo) / 2usize;
+      if orderNatural[T]((p + mid) as &T, &x) < 0i32 { lo = mid + 1usize; } else { hi = mid; }
+    }
+    (lo, lo < self.len && orderNatural[T]((p + lo) as &T, &x) == 0i32)
   }
 
   // The elements as rows of 'N': 'a.asArrays[3]()' is the same memory seen as a slice of
@@ -590,6 +1069,28 @@ pub struct @opaque Array[T] {
     let q = p as *Array[T, N];
     mem.sliceFromPartsMut[Array[T, N]](q, self.len / N)
   }
+}
+
+// The natural order of an Ordered type, as the comparison the sorts and searches take
+fn orderNatural[T](a: &T, b: &T) i32 where T is Ordered { a <=> b }
+
+// The comparison of two elements by the keys a function gives them, for the 'ByKey' forms
+struct KeyOrder['a, T, K, F: fn(x: &T) K] {
+  key: &'a F;
+  pub fn `()`(self: &, a: &T, b: &T) i32 where K is Ordered { key(a) <=> key(b) }
+}
+
+// The first i in 0 ..< n where pred(i) is false, for a 'pred' that is true of the
+// indices up to some point and false from there: the search of a table that is
+// not an Array (a font's bytes, a CSR row), by halving, O(log n)
+pub fn partitionIndex[F: fn(i: usize) bool](n: usize, pred: &F) usize {
+  var lo = 0usize;
+  var hi = n;
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2usize;
+    if pred(mid) { lo = mid + 1usize; } else { hi = mid; }
+  }
+  lo
 }
 
 // A cursor over a slice's elements in runs of 'size', which 'chunks' gives: 'next'
@@ -2478,8 +2979,9 @@ pub trait Hash {
 // is negative, zero or positive as the receiver is before, equal to or after the
 // other. Met by every number type except bool, by its built-in `<=>` (compiler:
 // genericNumberFits), by str, and by any type that writes `cmp` as below. A
-// float compares by IEEE `<` and `>`, so a NaN answers 0 against anything; the
-// library's sorts will use total order instead.
+// float's `<=>` (and `cmp`) is IEEE 754 total order: -0 before +0, a NaN after every
+// number when its sign bit is clear and before every number when it is set; `<`,
+// `<=` and `==` stay IEEE's.
 pub trait Ordered {
   pub fn cmp overload `<=>`(self: &, o: &Self) i32;
 }

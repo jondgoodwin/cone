@@ -2919,9 +2919,16 @@ static GcTraceState structGcTraceElements(StructNode *node, INode **elem, char *
     if (sig->parms->used != 1)
         TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     RefNode *selftype = (RefNode*)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 0)));
-    if (selftype->tag != RefTag || itypeGetTypeDcl(selftype->region) != borrowRef
+    // core's Array[T], the body of a run-time count, is borrowed as a slice: its
+    // '&mut' self is a slice reference, whose referent is the element type
+    int sliceself = 0;
+    if (selftype->tag == ArrayRefTag && node->namesym == arrayTypeDcl->namesym) {
+        Nodes *targs = itypeInstanceTypeArgs((INode*)node);
+        sliceself = targs != NULL && targs->used == 1 && itypeIsSame(nodesGet(targs, 0), selftype->vtexp);
+    }
+    if ((selftype->tag != RefTag && !sliceself) || itypeGetTypeDcl(selftype->region) != borrowRef
         || !(permGetFlags(itypeGetTypeDcl(selftype->perm)) & MayWrite)
-        || itypeGetTypeDcl(selftype->vtexp) != (INode*)node)
+        || (!sliceself && itypeGetTypeDcl(selftype->vtexp) != (INode*)node))
         TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     INode *cursor = itypeGetTypeDcl(sig->rettype);
     if (cursor->tag != StructTag || (cursor->flags & (TraitType | EnumType)))

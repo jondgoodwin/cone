@@ -1,0 +1,279 @@
+// Bench: the unstable sort (Array.sortUnstable / sortUnstableBy, a pattern-defeating
+// quicksort) against today's List.sortBy (a stable merge sort through a second block),
+// and, on short arrays, against a hand-written insertion sort (the copy that packages
+// keep for the short tables they sort). Part 1 sorts 1,000,000 values of five input
+// patterns (random, already sorted, reversed, four distinct values, an organ pipe) of
+// three element types (u32, f32, and a 40-byte struct ordered by a u32 key). Part 2 sorts
+// 4,000,000 / n arrays of n = 8, 16 and 32 random u32 each. Every way is timed 5 times,
+// alternating the ways, and the median and the spread (least to greatest) of the five are
+// printed in milliseconds, with the ratio of the medians. A checksum of the sorted keys
+// is printed for each way, and the ways must agree.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/sortbench.cone
+
+mod sortbench;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+
+struct Rec {
+  pub key: u32;
+  pub id: u32;
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+}
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn value(kind: i32, i: usize, n: usize, s: &mut u64) u32 {
+  let r = u32.from(nextRand(s) >> 40u64);
+  if kind == 0 { r }
+  else if kind == 1 { u32.from(i) }
+  else if kind == 2 { u32.from(n - i) }
+  else if kind == 3 { r % 4u32 }
+  else { if i < n / 2usize { u32.from(i) } else { u32.from(n - i) } }
+}
+
+fn kindName(kind: i32) &str {
+  if kind == 0 { "random" }
+  else if kind == 1 { "sorted" }
+  else if kind == 2 { "reversed" }
+  else if kind == 3 { "4 distinct" }
+  else { "organ pipe" }
+}
+
+fn u32Order(a: &u32, b: &u32) i32 { a <=> b }
+fn f32Order(a: &f32, b: &f32) i32 { a <=> b }
+fn recOrder(a: &Rec, b: &Rec) i32 { a.key <=> b.key }
+
+fn sorted5(v: &mut List[i64]) {
+  v.sortBy(fn(a: &i64, b: &i64) i32 { a <=> b });
+}
+
+fn show(label: &str, ways: &str, a: &List[i64], b: &List[i64], sum: u64) {
+  printStr(label);
+  printStr(": ");
+  printStr(ways);
+  printStr(" median ");
+  printInt(a[2usize] / 1000000i64);
+  printStr(".");
+  printInt((a[2usize] / 10000i64) % 100i64);
+  printStr(" ms (");
+  printInt(a[0usize] / 1000000i64);
+  printStr("-");
+  printInt(a[4usize] / 1000000i64);
+  printStr("), other median ");
+  printInt(b[2usize] / 1000000i64);
+  printStr(".");
+  printInt((b[2usize] / 10000i64) % 100i64);
+  printStr(" ms (");
+  printInt(b[0usize] / 1000000i64);
+  printStr("-");
+  printInt(b[4usize] / 1000000i64);
+  printStr("), ratio ");
+  printInt(a[2usize] * 100i64 / b[2usize]);
+  printStr("%, checksum ");
+  printInt(i64.from(sum));
+  printStr("\n");
+}
+
+// Part 1 for u32
+fn benchU32(kind: i32, n: usize) {
+  var s = 12345u64;
+  var src = List[u32]();
+  var i = 0usize;
+  while i < n { src.push(value(kind, i, n, &mut s)); i = i + 1usize; }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[u32].withCapacity(n);
+    i = 0usize;
+    while i < n { w.push(src[i]); i = i + 1usize; }
+    let t0 = Instant.now();
+    w.sortUnstable();
+    news.push(t0.elapsed().nanos());
+    sumNew = u64.from(w[0usize]) + u64.from(w[n / 2usize]) * 3u64 + u64.from(w[n - 1usize]) * 7u64;
+    var v = List[u32].withCapacity(n);
+    i = 0usize;
+    while i < n { v.push(src[i]); i = i + 1usize; }
+    let t1 = Instant.now();
+    v.sortBy(&u32Order);
+    olds.push(t1.elapsed().nanos());
+    sumOld = u64.from(v[0usize]) + u64.from(v[n / 2usize]) * 3u64 + u64.from(v[n - 1usize]) * 7u64;
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("u32 ");
+  show(kindName(kind), "sortUnstable", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+fn benchF32(kind: i32, n: usize) {
+  var s = 12345u64;
+  var src = List[f32]();
+  var i = 0usize;
+  while i < n { src.push(f32.from(i32.from(value(kind, i, n, &mut s))) * 0.5f32); i = i + 1usize; }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[f32].withCapacity(n);
+    i = 0usize;
+    while i < n { w.push(src[i]); i = i + 1usize; }
+    let t0 = Instant.now();
+    w.sortUnstable();
+    news.push(t0.elapsed().nanos());
+    sumNew = u64.from(i64.from(w[0usize]) + i64.from(w[n / 2usize]) * 3i64 + i64.from(w[n - 1usize]) * 7i64);
+    var v = List[f32].withCapacity(n);
+    i = 0usize;
+    while i < n { v.push(src[i]); i = i + 1usize; }
+    let t1 = Instant.now();
+    v.sortBy(&f32Order);
+    olds.push(t1.elapsed().nanos());
+    sumOld = u64.from(i64.from(v[0usize]) + i64.from(v[n / 2usize]) * 3i64 + i64.from(v[n - 1usize]) * 7i64);
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("f32 ");
+  show(kindName(kind), "sortUnstable", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+fn benchRec(kind: i32, n: usize) {
+  var s = 12345u64;
+  var src = List[Rec]();
+  var i = 0usize;
+  while i < n {
+    let k = value(kind, i, n, &mut s);
+    src.push(Rec(k, u32.from(i), 1u64, 2u64, 3u64, 4u64));
+    i = i + 1usize;
+  }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[Rec].withCapacity(n);
+    i = 0usize;
+    while i < n { w.push(Rec(src[i].key, src[i].id, 1u64, 2u64, 3u64, 4u64)); i = i + 1usize; }
+    let t0 = Instant.now();
+    w.sortUnstableBy(&recOrder);
+    news.push(t0.elapsed().nanos());
+    sumNew = u64.from(w[0usize].key) + u64.from(w[n / 2usize].key) * 3u64 + u64.from(w[n - 1usize].key) * 7u64;
+    var v = List[Rec].withCapacity(n);
+    i = 0usize;
+    while i < n { v.push(Rec(src[i].key, src[i].id, 1u64, 2u64, 3u64, 4u64)); i = i + 1usize; }
+    let t1 = Instant.now();
+    v.sortBy(&recOrder);
+    olds.push(t1.elapsed().nanos());
+    sumOld = u64.from(v[0usize].key) + u64.from(v[n / 2usize].key) * 3u64 + u64.from(v[n - 1usize].key) * 7u64;
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("40-byte struct ");
+  show(kindName(kind), "sortUnstableBy", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+// A copy of the insertion sort the packages keep for short tables
+fn insertionSort(v: &mut List[u32]) {
+  var i = 1usize;
+  while i < v.len() {
+    let x = v[i];
+    var j = i;
+    while j > 0usize && v[j - 1usize] > x {
+      v[j] = v[j - 1usize];
+      j = j - 1usize;
+    }
+    v[j] = x;
+    i = i + 1usize;
+  }
+}
+
+// Part 2: many short arrays
+fn benchShort(n: usize) {
+  let arrays = 4000000usize / n;
+  var s = 777u64;
+  var src = List[u32]();
+  var i = 0usize;
+  while i < arrays * n { src.push(u32.from(nextRand(&mut s) >> 40u64)); i = i + 1usize; }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[u32].withCapacity(arrays * n);
+    i = 0usize;
+    while i < arrays * n { w.push(src[i]); i = i + 1usize; }
+    let t0 = Instant.now();
+    var a = 0usize;
+    while a < arrays { w.sliceMut(a * n, a * n + n).sortUnstable(); a = a + 1usize; }
+    news.push(t0.elapsed().nanos());
+    sumNew = 0u64;
+    a = 0usize;
+    while a < arrays { sumNew = sumNew + u64.from(w[a * n]) + u64.from(w[a * n + n - 1usize]) * 5u64; a = a + 1usize; }
+    var v = List[u32].withCapacity(arrays * n);
+    i = 0usize;
+    while i < arrays * n { v.push(src[i]); i = i + 1usize; }
+    let t1 = Instant.now();
+    var piece = List[u32].withCapacity(n);
+    a = 0usize;
+    while a < arrays {
+      piece.clear();
+      i = 0usize;
+      while i < n { piece.push(v[a * n + i]); i = i + 1usize; }
+      insertionSort(&mut piece);
+      i = 0usize;
+      while i < n { v[a * n + i] = piece[i]; i = i + 1usize; }
+      a = a + 1usize;
+    }
+    olds.push(t1.elapsed().nanos());
+    sumOld = 0u64;
+    a = 0usize;
+    while a < arrays { sumOld = sumOld + u64.from(v[a * n]) + u64.from(v[a * n + n - 1usize]) * 5u64; a = a + 1usize; }
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("short arrays of ");
+  printInt(i64.from(n));
+  printStr(" ");
+  show("random", "sortUnstable", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+fn main() {
+  let n = 1000000usize;
+  var kind = 0;
+  while kind < 5 {
+    benchU32(kind, n);
+    benchF32(kind, n);
+    benchRec(kind, n);
+    kind = kind + 1;
+  }
+  benchShort(8usize);
+  benchShort(16usize);
+  benchShort(32usize);
+}
