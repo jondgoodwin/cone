@@ -575,6 +575,7 @@ import diag;
 
 fn @initpure init() {
   ioLock = Mutex.make();
+  noShared = Shared.none();
   io = Atomic[usize].of(0usize);
   ended = Atomic[bool].of(false);
   readQuiet = Atomic[i64].of(2000000i64);
@@ -762,13 +763,15 @@ fn startRec(ctx: *u8, rp: actors.Reply) {
 }
 
 // The I/O thread's Loop's handles as any thread sees them (none before the
-// I/O thread has started)
-fn sharedNow() Shared {
+// I/O thread has started): borrowed from the I/O thread's block, which holds
+// its table for the life of the process and so past its Loop's death (the
+// table is counted, iocore's shared.cone, ITS LIFE). No count is touched
+fn sharedNow() &Shared {
   let t = io.load();
   if t == 0usize {
-    return Shared.none();
+    return &noShared;
   }
-  (*(t as *IoThread)).shared
+  &(*(t as *IoThread)).shared
 }
 
 // Each thread's own counts of the records its awaits started (opStats): a
@@ -852,11 +855,15 @@ struct IoThread {
   pub queued: u64;              // records queued for it (opStats): under ioLock
   pub loopDone: u64;            // records it took back answered from its Loop (opStats): its own, stored whole
   pub os: thread.Thread[u32];
-  pub shared: Shared;           // its Loop's handles as other threads see them: written before 'ready'
+  pub shared: Shared;           // its Loop's handles as other threads see them: written before 'ready'; one holder of the table, for the life of the process
 }
 
 // Guards the queues, 'io', 'ended' and the pool's making
 let ioLock: Mutex;
+
+// The table of no Loop, for a thread that looks before the I/O thread has
+// started (sharedNow). Set in 'init'
+let noShared: Shared;
 
 // The I/O thread, or 0 before the first operation is awaited. Read and written
 // under ioLock by any thread; an atomic held by a 'let' global, set in 'init'
@@ -1099,6 +1106,13 @@ fn ioMain(arg: IoArg) u32 {
     let born = Instant.now();
     var lp = Loop.mustMake();
     mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
+    // This hold on the Loop's shared table is NEVER released, on purpose: the
+    // IoThread block is kept for the life of the process, and any thread reads
+    // the table through it without a guard (startRec, cancelSide and
+    // closeHandle call sharedNow().lock(h)), including after this Loop has died
+    // (the actors package stops its workers after aio's final). Releasing it
+    // when the Loop dies would free the table under those readers: the
+    // use-after-free iocore's sharedend test pins
     mem.writeRaw[Shared](&(*me).shared as *Shared, lp.share());
     onIo = true;
     (*me).ready.store(1u32);
