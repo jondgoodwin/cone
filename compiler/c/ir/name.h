@@ -186,6 +186,10 @@ extern Name *gcTraceElementsMethodName; // "gcTraceElements", the method such a 
 extern Name *visitMethodName;    // "visit", which a counted region's trace calls to trace an object once per collection
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
+extern Name *floatTraitName;     // "Float", f32 and f64
+extern Name *signedTraitName;    // "Signed", the signed integers and the floats
+extern Name *unsignedTraitName;  // "Unsigned", the unsigned integers
+extern Name *numericTraitName;   // "Numeric", every number type: the integers and the floats
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for
 extern Name *sendableTraitName;  // "Sendable", a type whose values may cross to another thread, which a constraint may ask for
 extern Name *shareableTraitName; // "Shareable", a type a borrow of which may be held by several threads at once, which a constraint may ask for
