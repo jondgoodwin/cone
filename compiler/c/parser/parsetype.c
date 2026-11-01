@@ -480,6 +480,22 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
         if (lexIsToken(IdentToken)) {
             use->via = lex->val.ident;
             lexNextToken();
+            // Up to two more lenders, one for each permission a method's receiver
+            // may ask: 'via view, viewMut, viewUni'
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                if (!lexIsToken(IdentToken)) {
+                    errorMsgLex(ErrorNoIdent, "Expected the name of another method this type lends the body through, as in 'use Array[T] via view, viewMut, viewUni;'");
+                    break;
+                }
+                if (use->via2 == NULL)
+                    use->via2 = lex->val.ident;
+                else if (use->via3 == NULL)
+                    use->via3 = lex->val.ident;
+                else
+                    errorMsgLex(ErrorBadFold, "A lend names at most three lenders: one for '&', one for '&mut' and one for '&uni'.");
+                lexNextToken();
+            }
         }
         else
             errorMsgLex(ErrorNoIdent, "Expected the name of the method this type lends the body through, as in 'use str via view;'");

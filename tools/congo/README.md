@@ -33,12 +33,12 @@ mechanism whose final design is open (`doc/manual/safe-intrinsics.html#buildcons
 
 A native build carries debug information, release or debug: each function the
 program defines, with its file and lines, so that a profiler can name the
-functions of a release program. On Windows a release link (`/DEBUG`) writes it
+functions of a release program. On Windows a link (`/DEBUG`), debug or release, writes it
 as a `.pdb` beside the `.exe` (`build\release\hello.pdb`), which the program
 does not read and a profiler (WPA, `llvm-pdbutil`) does; on Linux it stays in
 the ELF. `--strip`, given to `build`, `run` or `test`, passes `--strip` to every
 `conec` compile, so the objects carry none, and writes no `.pdb` (and removes
-the one an earlier link left). A debug link writes no `.pdb` on Windows. A
+the one an earlier link left). A
 WebAssembly or SPIR-V release build carries none either way.
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or

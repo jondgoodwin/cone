@@ -909,13 +909,15 @@ static void structFoldReceiverWalk(StructNode *type, Name *name, INode **objp, I
 // stays a value, as the path written out would, and reaches only what a value
 // reaches: a method taking self by value. The fold adds no rule of its own.
 static FieldDclNode *structLendUseOf(StructNode *type, Name *name);
-static void structLendReceiver(TypeCheckState *pstate, FieldDclNode *use, INode **objp, INode *lexnode);
+static void structLendReceiver(TypeCheckState *pstate, Name *via, INode **objp, INode *lexnode);
+static Name *structLendNameOf(StructNode *type, FieldDclNode *use, Name *name);
 void structFoldReceiver(TypeCheckState *pstate, StructNode *type, Name *name, INode **objp, INode *lexnode) {
     // A name folded from a body the type lends: the receiver becomes the borrow
-    // of the body the type's lending method gives
+    // of the body the type's lending method gives, through the lender that gives
+    // the permission the method's receiver asks for
     FieldDclNode *lend = structLendUseOf(type, name);
     if (lend) {
-        structLendReceiver(pstate, lend, objp, lexnode);
+        structLendReceiver(pstate, structLendNameOf(type, lend, name), objp, lexnode);
         return;
     }
     INode *objtype = iexpGetTypeDcl(*objp);
@@ -1940,13 +1942,95 @@ Name *structLentVia(StructNode *type) {
     return NULL;
 }
 
+// A lend may name up to three lenders, and each method is reached through the one
+// that lends the permission its receiver asks for. The permissions, as a class:
+// 0 the read ones ('&', '&imm', '&opaq', or a receiver that is no borrow), 1 '&mut',
+// 2 '&uni'.
+static int structLendClassOfPerm(INode *perm) {
+    if (perm == NULL)
+        return 0;
+    INode *dcl = itypeGetTypeDcl(perm);
+    if (dcl == (INode*)mutPerm)
+        return 1;
+    if (dcl == (INode*)uniPerm)
+        return 2;
+    return 0;
+}
+
+// The class a method's receiver asks for. An overload set is judged by its
+// weakest candidate, so that a set with a reading member is reached by the read lender
+static int structLendReceiverClass(INode *dcl) {
+    if (dcl->tag == FnOverloadDclTag) {
+        int cls = 2;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp)) {
+            int one = structLendReceiverClass(*nodesp);
+            if (one < cls)
+                cls = one;
+        }
+        return cls;
+    }
+    if (dcl->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)dcl)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || ((FnSigNode*)sig)->parms->used == 0)
+        return 0;
+    INode *selftype = ((VarDclNode*)nodesGet(((FnSigNode*)sig)->parms, 0))->vtype;
+    if (selftype == NULL || (selftype->tag != RefTag && selftype->tag != ArrayRefTag))
+        return 0;
+    return structLendClassOfPerm(((RefNode*)selftype)->perm);
+}
+
+// The class a lending method lends: the permission of the borrow it returns
+static int structLendLenderClass(INode *lender) {
+    if (lender->tag == FnOverloadDclTag)
+        lender = nodesGet(((FnOverloadDclNode*)lender)->overloads, 0);
+    if (lender->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)lender)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || ((FnSigNode*)sig)->rettype == NULL
+        || (((FnSigNode*)sig)->rettype->tag != RefTag && ((FnSigNode*)sig)->rettype->tag != ArrayRefTag))
+        return 0;
+    return structLendClassOfPerm(((RefNode*)((FnSigNode*)sig)->rettype)->perm);
+}
+
+// The lender of a lend that lends the permission of this class, or NULL when it
+// names none
+static Name *structLendNameFor(StructNode *type, FieldDclNode *use, int cls) {
+    Name *names[3] = { use->via, use->via2, use->via3 };
+    for (int i = 0; i < 3; ++i) {
+        if (names[i] == NULL)
+            continue;
+        INode *lender = namespaceFind(&type->namespace, names[i]);
+        if (lender != NULL && structLendLenderClass(lender) == cls)
+            return names[i];
+    }
+    return NULL;
+}
+
+// The lender a call of this folded name goes through: the one matching the
+// permission its method's receiver asks for
+static Name *structLendNameOf(StructNode *type, FieldDclNode *use, Name *name) {
+    INode *alias = namespaceFind(&type->namespace, name);
+    if (alias != NULL && alias->tag == AliasDclTag) {
+        INode *dcl = ((NameUseNode*)((AliasDclNode*)alias)->target)->dclnode;
+        if (dcl != NULL) {
+            Name *lender = structLendNameFor(type, use, structLendReceiverClass(dcl));
+            if (lender != NULL)
+                return lender;
+        }
+    }
+    return use->via;
+}
+
 // Rewrite the receiver of a call to a method the type folds from a lent body:
 // '*objp' becomes the call of the lending method on it, whose result, the
 // borrow of the body, is the receiver the method was declared for
-static void structLendReceiver(TypeCheckState *pstate, FieldDclNode *use, INode **objp, INode *lexnode) {
+static void structLendReceiver(TypeCheckState *pstate, Name *via, INode **objp, INode *lexnode) {
     FnCallNode *view = newFnCallNode(*objp, 0);
     inodeLexCopy((INode*)view, lexnode);
-    view->methfld = (INode*)newMemberUseNode(use->via);
+    view->methfld = (INode*)newMemberUseNode(via);
     inodeLexCopy(view->methfld, lexnode);
     // The receiver is checked already, so the call is lowered, not checked
     if (fnCallLowerMethod(pstate, view) != 1)
@@ -1960,16 +2044,14 @@ void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INod
     Name *via = structLentVia(type);
     if (via == NULL)
         return;
-    FieldDclNode lend;
-    lend.via = via;
-    structLendReceiver(pstate, &lend, objp, lexnode);
+    structLendReceiver(pstate, via, objp, lexnode);
 }
 
 // Expand one item of a lent body's fold: bind its target in the body and enter
 // it in this type's namespace as an alias. Only a method, an overload set or a
 // macro method of the body folds: a field is not reached through a borrow of
 // the whole, and a static has no value to lend.
-static void structLendItem(StructNode *node, StructNode *body, AliasDclNode *alias, int hook) {
+static void structLendItem(StructNode *node, StructNode *body, AliasDclNode *alias, int hook, int lent[3]) {
     NameUseNode *target = (NameUseNode*)alias->target;
     Name *srcname = target->namesym;
     INode *found = namespaceFind(&body->namespace, srcname);
@@ -1997,6 +2079,11 @@ static void structLendItem(StructNode *node, StructNode *body, AliasDclNode *ali
             &srcname->namestr, &body->namesym->namestr);
         return;
     }
+    // A method whose receiver asks for a permission no lender of this lend gives is
+    // not folded, and a call of it finds no such method: a lend through 'view'
+    // alone reaches the body's reading methods only
+    if (!lent[structLendReceiverClass(dcl)])
+        return;
     target->dclnode = dcl;
     INode *prior = namespaceAdd(&node->namespace, alias->namesym, (INode*)alias);
     if (prior) {
@@ -2027,19 +2114,33 @@ static void structLendExpand(StructNode *node, FieldDclNode *use, StructNode *bo
         errorMsgNode(fold->at, ErrorLend, "%s cannot lend itself.", &node->namesym->namestr);
         return;
     }
-    INode *lender = namespaceFind(&node->namespace, use->via);
-    if (lender == NULL || !(lender->tag == FnDclTag || lender->tag == FnOverloadDclTag) || !(lender->flags & FlagMethFld)) {
-        errorMsgNode(fold->at, ErrorLend,
-            "%s lends %s through %s, and %s declares no method of that name.",
-            &node->namesym->namestr, &body->namesym->namestr, &use->via->namestr, &node->namesym->namestr);
-        return;
+    Name *lenders[3] = { use->via, use->via2, use->via3 };
+    int lent[3] = { 0, 0, 0 };
+    for (int i = 0; i < 3; ++i) {
+        if (lenders[i] == NULL)
+            continue;
+        INode *lender = namespaceFind(&node->namespace, lenders[i]);
+        if (lender == NULL || !(lender->tag == FnDclTag || lender->tag == FnOverloadDclTag) || !(lender->flags & FlagMethFld)) {
+            errorMsgNode(fold->at, ErrorLend,
+                "%s lends %s through %s, and %s declares no method of that name.",
+                &node->namesym->namestr, &body->namesym->namestr, &lenders[i]->namestr, &node->namesym->namestr);
+            return;
+        }
+        int cls = structLendLenderClass(lender);
+        if (lent[cls]) {
+            errorMsgNode(fold->at, ErrorLend,
+                "%s names two lenders that lend the same permission, and %s is the second. A lend has one lender for each of '&', '&mut' and '&uni'.",
+                &node->namesym->namestr, &lenders[i]->namestr);
+            return;
+        }
+        lent[cls] = 1;
     }
     if (fold->star)
         foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
-        structLendItem(node, body, (AliasDclNode*)*itemp, hook);
+        structLendItem(node, body, (AliasDclNode*)*itemp, hook, lent);
 }
 
 // Expand one type-body 'use' into this type's namespace. Nothing happens while
@@ -4887,7 +4988,7 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             // the lending method first: the path is that one method, not fields
             FieldDclNode *lend = strbinding->tag == AliasDclTag ? structLendUseOf(strnode, meth->namesym) : NULL;
             if (lend) {
-                INode *lender = namespaceFind(&strnode->namespace, lend->via);
+                INode *lender = namespaceFind(&strnode->namespace, structLendNameOf(strnode, lend, meth->namesym));
                 // An 'inline' method has no symbol for a slot to point at
                 if (lender == NULL || lender->tag != FnDclTag || (strmeth->flags & FlagInline))
                     return NULL;

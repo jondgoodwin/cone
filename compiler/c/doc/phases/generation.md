@@ -2041,7 +2041,7 @@ or debug, so a profiler can name a release program's functions, and `--strip` em
 WebAssembly or SPIR-V build emits it for `--debug` alone: a release module is as small as it
 can be, with no PDB to hold the information apart. On a Windows triple the module carries the
 `CodeView` flag, so the object holds CodeView and the linker (`/DEBUG`, which Congo passes on a
-release link) writes a PDB; on Linux the object holds DWARF, which stays in the ELF. The
+link that is not `--strip`ped) writes a PDB; on Linux the object holds DWARF, which stays in the ELF. The
 information does not change the code: a release program's `.text` is the same instructions
 with and without it (measured on `nbody` and `richards`; only the displacements into `.rdata`
 move, as the PDB's path is written there).

@@ -412,7 +412,7 @@ class Scenarios(unittest.TestCase):
         """A release build carries debug info, so a profiler can name its
         functions: on Windows its link writes a PDB beside the program, naming
         the program's functions; '--strip' leaves the info out of every compile
-        and writes no PDB, and a debug build writes none either. On Linux the
+        and writes no PDB; a debug build writes one too. On Linux the
         info stays in the ELF, which '--strip' makes smaller."""
         self.congo("new", "sym", cwd=self.root)
         pkg = self.root / "sym"
@@ -447,9 +447,12 @@ class Scenarios(unittest.TestCase):
         self.assertFalse(pdb.exists(), "--strip writes no PDB, and removes the last one")
         if not IS_WINDOWS:
             self.assertLess(exe.stat().st_size, symbolled)
-        # A debug build has its own folder, and writes no PDB
+        # A debug build has its own folder, and writes a PDB unless stripped
         self.congo("build", cwd=pkg)
-        self.assertFalse((pkg / "build" / "debug" / "sym.pdb").exists())
+        if IS_WINDOWS:
+            self.assertTrue((pkg / "build" / "debug" / "sym.pdb").is_file(), "a debug link writes a PDB")
+        self.congo("build", "--strip", cwd=pkg)
+        self.assertFalse((pkg / "build" / "debug" / "sym.pdb").exists(), "--strip writes no PDB in debug either")
 
     def test_a_lone_file(self):
         write(self.root / "lone.cone", """

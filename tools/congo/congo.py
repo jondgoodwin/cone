@@ -14,8 +14,8 @@
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
-They take --strip too: no debug info in any compile, and no PDB (a release
-build otherwise carries debug info, and on Windows its link writes a PDB beside
+They take --strip too: no debug info in any compile, and no PDB (a build
+otherwise carries debug info, and on Windows its link writes a PDB beside
 the .exe, for a profiler to read function names from).
 They take --no-cache too: a compile is otherwise skipped where nothing it reads
 has changed since it last succeeded in that build folder ("The build cache"),
@@ -141,7 +141,7 @@ DEFINES: list[str] = []
 
 # '--strip' given to build, run or test: conec is passed --strip for every compile
 # of the build, and a Windows link writes no PDB. Without it every native build
-# carries debug info, and a release link on Windows writes a PDB beside the .exe
+# carries debug info, and a link on Windows writes a PDB beside the .exe
 STRIP_DEBUG = [False]
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -1838,7 +1838,7 @@ class Linker:
         release link folds identical functions (/OPT:ICF), the net under the
         compiler's size gate on generic instances: the copies each object keeps
         for itself that came out the same are one again in the program. On
-        Windows a release link that is not stripped also writes the debug info
+        Windows a link that is not stripped, debug or release, also writes the debug info
         of the objects (CodeView) into a PDB beside the .exe, which a profiler
         reads for function names and lines; on Linux the info stays in the ELF."""
         if IS_WINDOWS:
@@ -1851,7 +1851,7 @@ class Linker:
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
                     "legacy_stdio_definitions.lib",
                     *(["/OPT:REF,ICF"] if release else []),
-                    *(["/DEBUG"] if release and not strip else [])]
+                    *(["/DEBUG"] if not strip else [])]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]
