@@ -1,0 +1,155 @@
+// The streams package: the shapes a transform of bytes takes, written once with
+// no I/O inside, so that inflate, deflate, zstd and a hash run in any stage of
+// a pipeline: over a file, a socket, an actor's mailbox or a buffer in memory.
+// It holds layer 1 of Cone's streaming design (a codec core); the layers over
+// it, a reader and writer within one actor and stages between actors, are
+// later packages.
+//
+//   mod squeeze;
+//   import iobuf use IoBuf;
+//   import streams use *;
+//   import deflate;
+//
+//   // Any transform, run over 'input' in 64 KiB pieces: what it makes, joined.
+//   fn runAll[T: Transform](t: &mut T, input: &Array[u8]) List[u8] {
+//     var out = List[u8].empty();
+//     var buf = IoBuf(65536usize);
+//     var at = 0usize;
+//     while at < input.len {
+//       let n = if input.len - at < 65536usize {input.len - at} else {65536usize};
+//       t.feed(&input[at ..< at + n]);
+//       at += n;
+//     }
+//     t.finish();
+//     var st = Status.MoreOutput;
+//     while st == Status.MoreOutput {
+//       buf.clear();
+//       st = t.pull(&mut buf);                  // fills buf's spare room
+//       out.appendSlice(buf.view());
+//     }
+//     out
+//   }
+//
+//   fn main() {
+//     var inf = deflate.Inflater.make(deflate.Format.Gzip);   // meets Transform
+//     imm text = runAll(&mut inf, gzFile.view());
+//   }
+//
+// WHAT IS HERE
+//
+//   Status         what a 'pull' found: NeedInput, MoreOutput, Done, Failed.
+//   Transform      a trait: input in with 'feed', output out with 'pull' into
+//                  an IoBuf's spare room, 'finish' to say the input is over.
+//                  deflate's Inflater and Deflater and zstd's Decompressor and
+//                  Compressor meet it.
+//   Digester       a trait for what only consumes: 'feed' bytes in, 'finish'
+//                  for the digest. cryptohash's Sha256, Sha512 and Sha1 meet it.
+//
+// THE RULES OF A TRANSFORM
+//
+// - No I/O, no waiting, no thread of its own. A transform holds the state of
+//   one stream as a value, 'feed' and 'pull' are plain calls that return, and
+//   it never blocks, so a stage may run it on any worker thread. Moving it to
+//   another thread between calls is the owner's affair (it is a value).
+// - 'feed' takes a borrowed slice of any size, split anywhere. The caller's
+//   bytes are its own again on return: the transform copies what it must keep.
+//   Bytes fed after 'finish' are ignored.
+// - 'pull' appends to the buffer it is given. It writes into the buffer's spare
+//   room, at most 'out.room()' bytes, and extends the buffer's length by what it
+//   wrote; bytes already in the buffer are untouched. A pull is made with some
+//   room: a buffer that is full gets no progress.
+// - Pull until the status is not MoreOutput. NeedInput says every byte fed so
+//   far is used up: feed more, or 'finish' and pull again. MoreOutput says more
+//   output is ready now, so pull again with a buffer that has room. Done says
+//   the stream is complete and everything of it has been delivered; a pull after
+//   Done writes nothing and says Done. Failed says the input was not valid (or
+//   asked for what is refused); what was delivered before is good, and the
+//   transform stays failed. The reason is the transform's own business: a
+//   codec has an 'error()' of its own type.
+// - A pull that wrote nothing is not an end: only the status says that.
+//
+// A DIGESTER differs in what it gives. 'feed' takes bytes, and 'finish' answers
+// the digest, whose type (and size) is the digester's own ('Out'): there is no
+// 'pull', since nothing comes out until the end. 'finish' leaves the digester
+// as it was, so it may be asked again (the same digest) and fed more. That is
+// for now: 'finish' becomes by-value once a by-value Self requirement is built.
+//
+// METHOD CHOICES. These are defaults a later design may revisit.
+//
+// - Status has no case for "output was written". A pull's answer says what to
+//   do next, not what this call did: how much it wrote is the buffer's length,
+//   which the caller already holds. The case is therefore 'MoreOutput' (pull
+//   again), the name deflate and zstd already used, and not 'HasOutput', which
+//   would read as "this pull produced something".
+// - One Status for every transform. deflate and zstd each declared an enum of
+//   these four cases; both now name this one ('deflate.Status' and
+//   'zstd.Status' are this type), so a stage that holds a Transform needs
+//   no knowledge of which codec it is.
+// - Structural, not declared. A type meets Transform by having the three
+//   methods, so the codec packages need not name this package's traits to be
+//   used through them (they import it for Status). Associated 'Out' of a
+//   Digester is read off 'finish'.
+// - A digester's 'finish' takes '&', not 'self': a requirement taking Self by
+//   value is not built for a trait (the manual's Traits page), and cryptohash's
+//   'finish' already leaves the hasher usable, so a second 'finish' returns the
+//   same digest (tested for sha256, sha512 and sha1). It becomes by-value once
+//   a by-value Self requirement is built.
+// - No error value in the trait. A stage that must pass a failure on needs a
+//   message and a kind, and each codec's error is its own type (DeflateError,
+//   ZstdError). Left to the stage layer, which has to settle what 'Ending'
+//   carries.
+// - Buffers are IoBuf, not List[u8]: the buffer is the unit a stage moves, and
+//   a pull writes straight into the one it will send, with no second copy.
+//   The old pull of each codec into a List[u8] stays beside the new one, for
+//   the callers that have not moved.
+//
+// What depends on the OS: nothing here. IoBuf's pool (package iobuf) makes the
+// calls.
+
+mod streams;
+
+import iobuf use IoBuf;
+
+// What a 'pull' found. For every Transform.
+pub enum Status {
+  // All the input fed so far is used: feed more, or 'finish'
+  NeedInput;
+  // More output is ready (the room given was used up): pull again
+  MoreOutput;
+  // The stream is complete: every byte of it has been delivered
+  Done;
+  // The input is not valid; the transform's own 'error()' says why
+  Failed;
+}
+
+// A transform of bytes with no I/O in it: bytes in with 'feed', bytes out with
+// 'pull'. See the package's header for the rules.
+pub trait Transform {
+  // Takes more input, of any size, split anywhere. The slice is the caller's
+  // again on return.
+  pub fn feed(self: &mut, input: &Array[u8]);
+
+  // Appends output to 'out', into its spare room and no further, and says what
+  // the transform waits for.
+  pub fn pull(self: &mut, out: &mut IoBuf) Status;
+
+  // Says that no more input will come.
+  pub fn finish(self: &mut);
+}
+
+// Something that only consumes bytes and gives one answer at the end: a hash.
+pub trait Digester {
+  // The answer's type, the digest.
+  type Out;
+
+  // Takes more of the message.
+  pub fn feed(self: &mut, input: &Array[u8]);
+
+  // The digest of everything fed so far. The digester is left as it was, so a
+  // second 'finish' is harmless: it returns the same digest, and a 'feed' after
+  // one goes on from where the message was (the digest of the longer message).
+  // This takes '&' only because a requirement taking Self by value is not built
+  // yet; once it is, 'finish' becomes by-value (consuming), and a second
+  // 'finish' will then be refused by the checker instead of answered.
+  pub fn finish(self: &) Out;
+}
