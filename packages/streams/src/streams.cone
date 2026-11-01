@@ -3,7 +3,9 @@
 // a pipeline: over a file, a socket, an actor's mailbox or a buffer in memory.
 // It holds layer 1 of Cone's streaming design (a codec core) and layer 2, a
 // Reader and a Writer for the stage that holds the bytes (reader.cone and
-// writer.cone); stages between actors, layer 3, come later.
+// writer.cone). Stages between actors, layer 3, are package stages': they need
+// the actors runtime, which these layers (and the codecs that import them) do
+// not.
 //
 //   mod squeeze;
 //   import iobuf use IoBuf;
@@ -98,10 +100,12 @@
 //   'finish' already leaves the hasher usable, so a second 'finish' returns the
 //   same digest (tested for sha256, sha512 and sha1). It becomes by-value once
 //   a by-value Self requirement is built.
-// - No error value in the trait. A stage that must pass a failure on needs a
-//   message and a kind, and each codec's error is its own type (DeflateError,
-//   ZstdError). Left to the stage layer, which has to settle what 'Ending'
-//   carries.
+// - Failure is an AnyError, asked for apart from the status. 'pull' answers
+//   Status.Failed with no value, since a status is a small enum copied freely;
+//   each codec keeps its own typed 'error()' (DeflateError, ZstdError), and the
+//   trait's 'failure()' gives the same error as an AnyError (Sendable, so it
+//   crosses between actors), None until the transform has failed. That is what
+//   a stage turns into 'Ending.Failed' (package stages).
 // - Buffers are IoBuf, not List[u8]: the buffer is the unit a stage moves, and
 //   a pull writes straight into the one it will send, with no second copy.
 //   The old pull of each codec into a List[u8] stays beside the new one, for
@@ -113,6 +117,7 @@
 mod streams;
 
 import iobuf use IoBuf, Chain;
+import collections use AnyError;
 
 // What a 'pull' found. For every Transform.
 pub enum Status {
@@ -139,6 +144,11 @@ pub trait Transform {
 
   // Says that no more input will come.
   pub fn finish(self: &mut);
+
+  // Why the transform failed, as an AnyError: None until a pull has answered
+  // Failed, so it is safe to ask at any time. A transform that cannot fail
+  // answers None always. The codec's own 'error()' keeps its own type.
+  pub fn failure(self: &) Option[AnyError];
 }
 
 // Something that only consumes bytes and gives one answer at the end: a hash.

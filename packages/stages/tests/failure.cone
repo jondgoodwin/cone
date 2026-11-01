@@ -1,0 +1,339 @@
+// A failure travels forward as 'end(Failed(e))', never as a cancel, and reaches
+// the last sink with the codec's own message and its own typed error inside the
+// AnyError. Four pipelines run side by side, each over input that goes wrong in
+// its own way, ending at a probe that writes down how the stream ended:
+//
+//   0. a gzip stream whose CRC-32 is corrupt -> InflateStage -> Sha256Stage -> probe:
+//      the probe gets Failed with the inflater's message, the DeflateError is
+//      inside (holds[DeflateError], its kind BadChecksum), the data before the
+//      trailer arrived (a failure keeps what was delivered), and no digest was
+//      sent;
+//   1. a gzip stream cut short, its source saying Finished -> the same stages:
+//      the upstream's Finished makes the inflater Truncated, and that is the
+//      probe's Failed (kind Truncated);
+//   2. a zstd frame with a corrupt byte -> ZstdDecodeStage -> Sha256Stage ->
+//      probe: Failed with the decoder's message and a ZstdError inside;
+//   3. a source that fails after its first chunk (the file went away) -> the
+//      same stages as 0: the upstream's own AnyError passes through InflateStage
+//      and the hash stage unchanged, and no digest is sent.
+//
+// The message each probe expects is the one the codec gives when it is driven
+// directly, with no actors, over the same bytes (its 'failure()'). Every buffer
+// is back in its pool at the end.
+
+mod failure;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import streams use *;
+import stages use *;
+import deflate;
+import zstd;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn dup(a: &List[u8]) List[u8] {
+  var out = List[u8].withCapacity(a.len());
+  out.appendSlice(a.view());
+  out
+}
+
+fn headOf(a: &List[u8], n: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  out.appendSlice(&a.view()[0usize ..< n]);
+  out
+}
+
+// What a probe writes down about one pipeline
+struct Seen {
+  pub bytes: Atomic[u64];       // bytes that reached the probe before the end
+  pub finished: Atomic[u64];    // end(Finished) calls
+  pub failed: Atomic[u64];      // end(Failed) calls
+  pub messageOk: Atomic[u64];   // Failed calls whose message was the expected one
+  pub typedOk: Atomic[u64];     // Failed calls whose AnyError held the expected typed error
+  pub kindOk: Atomic[u64];      // and whose kind was the expected one
+  pub digests: Atomic[u64];     // digests received (none should come after a failure)
+  pub errs: Atomic[u64];        // Err answers the digest sink got (one, after a failure)
+  pub errMessageOk: Atomic[u64]; // of them, those carrying the expected message
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let seen2: Seen;
+let seen3: Seen;
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  seen2 = newSeen();
+  seen3 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else if slot == 2usize {&seen2} else {&seen3}
+}
+
+// What typed error a probe expects inside the AnyError
+const noTyped = 0u32;
+const deflateTyped = 1u32;
+const zstdTyped = 2u32;
+
+// The last sink: gives buffers back, and writes down how the stream ended
+actor Probe is ChunkSink {
+  slot: usize;
+  wantMessage: String;
+  typed: u32;
+  wantKind: u32;               // for a DeflateError: 1 BadChecksum, 2 Truncated
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, wantMessage: String, typed: u32, wantKind: u32, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, wantMessage: wantMessage, typed: typed, wantKind: wantKind,
+      up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    seenOf(slot).bytes.add(u64.from(c.len()));
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    match how {
+      case is Finished { s.finished.add(1u64); }
+      case let Failed(e) {
+        s.failed.add(1u64);
+        if e.message().view() == wantMessage.view() { s.messageOk.add(1u64); }
+        if typed == deflateTyped {
+          if e.holds[deflate.DeflateError]() { s.typedOk.add(1u64); }
+          match e.downcastRef[deflate.DeflateError]() {
+            case let Some(d) {
+              let k = d.kind;
+              if wantKind == 1u32 && k == deflate.ErrorKind.BadChecksum { s.kindOk.add(1u64); }
+              if wantKind == 2u32 && k == deflate.ErrorKind.Truncated { s.kindOk.add(1u64); }
+            }
+            case is None {}
+          }
+        } else if typed == zstdTyped {
+          if e.holds[zstd.ZstdError]() { s.typedOk.add(1u64); s.kindOk.add(1u64); }
+        } else {
+          s.typedOk.add(1u64);
+          s.kindOk.add(1u64);
+        }
+      }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+// The hash stage's digest sink: it must get exactly one answer, and after a
+// failure that answer is an Err carrying the failure's message
+actor Checker is DigestSink[Array[u8, 32]] {
+  slot: usize;
+  wantMessage: String;
+
+  pub fn init(self: &new, slot: usize, wantMessage: String) {
+    *self = Self(slot: slot, wantMessage: wantMessage);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    let s = seenOf(slot);
+    match r {
+      case let Ok(d) { s.digests.add(1u64); }
+      case let Err(e) {
+        s.errs.add(1u64);
+        if e.message().view() == wantMessage.view() { s.errMessageOk.add(1u64); }
+      }
+    }
+  }
+}
+
+// Sends its bytes in chunks of 4 KiB, then ends Finished, or, when 'failWith'
+// is not empty, after 'failAfter' chunks ends Failed with that line instead
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: Link;
+  data: List[u8];
+  failWith: String;
+  failAfter: u64;
+  at: usize;
+  sent: u64;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], failWith: String, failAfter: u64) {
+    *self = Self(down: down, link: Link.make(4usize, 4096usize), data: data, failWith: failWith,
+      failAfter: failAfter, at: 0usize, sent: 0u64, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if failWith.len() > 0usize && sent >= failAfter {
+        over = true;
+        down.end(Ending.Failed(AnyError.msg(failWith.view())));
+        more = false;
+      } else if at >= data.len() {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take() {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let n = if data.len() - at < 4096usize {data.len() - at} else {4096usize};
+            buf.append(&data.view()[at ..< at + n]);
+            at = at + n;
+            sent = sent + 1u64;
+            down.accept(buf);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Drives a transform directly over 'input', pulling into 64 KiB buffers, and
+// answers its failure's message ("" when it did not fail)
+fn directMessage[T: Transform](t: &mut T, input: &Array[u8]) String {
+  t.feed(input);
+  t.finish();
+  var buf = IoBuf(65536usize);
+  var st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    buf.clear();
+    st = t.pull(&mut buf);
+  }
+  match t.failure() {
+    case let Some(e) { e.message() }
+    case is None { String.from("") }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  let original = corpus(20000usize);
+  let good = deflate.gzipCompress(original.view(), 2);
+
+  // 0. the CRC-32 in the gzip trailer is wrong
+  var badCrc = dup(&good);
+  badCrc[badCrc.len() - 8usize] = badCrc[badCrc.len() - 8usize] ^ 255u8;
+  var inf0 = deflate.Inflater.make(deflate.Format.Gzip);
+  let msg0 = directMessage(&mut inf0, badCrc.view());
+  expect(msg0.len() > 0usize, "direct: the inflater fails on the corrupt CRC");
+  match deflate.gzipDecompress(badCrc.view(), 0usize) {
+    case let Err(e) { expectStr(e.message().view(), msg0.view(), "direct: the one-shot helper says the same"); }
+    case is Ok { expect(false, "direct: the one-shot helper fails too"); }
+  }
+
+  // 1. cut short: the stream is complete as far as the source knows
+  let cut = headOf(&good, good.len() - 20usize);
+  var inf1 = deflate.Inflater.make(deflate.Format.Gzip);
+  let msg1 = directMessage(&mut inf1, cut.view());
+  expect(msg1.len() > 0usize, "direct: the inflater fails on the cut stream");
+
+  // 2. a zstd frame with one byte wrong
+  var frame = zstd.compress(original.view(), 3);
+  let mid = frame.len() / 2usize;
+  frame[mid] = frame[mid] ^ 255u8;
+  var dec2 = zstd.Decompressor.make();
+  let msg2 = directMessage(&mut dec2, frame.view());
+  expect(msg2.len() > 0usize, "direct: the zstd decoder fails on the corrupt frame");
+
+  var tx0: OneshotSender[u64];
+  var rx0: OneshotReceiver[u64];
+  tx0, rx0 = Oneshot[u64].make();
+  var tx1: OneshotSender[u64];
+  var rx1: OneshotReceiver[u64];
+  tx1, rx1 = Oneshot[u64].make();
+  var tx2: OneshotSender[u64];
+  var rx2: OneshotReceiver[u64];
+  tx2, rx2 = Oneshot[u64].make();
+  var tx3: OneshotSender[u64];
+  var rx3: OneshotReceiver[u64];
+  tx3, rx3 = Oneshot[u64].make();
+  {
+    let probe0 = Probe(0usize, msg0.copy(), deflateTyped, 1u32, tx0);
+    let hash0 = Sha256Stage(probe0, Checker(0usize, msg0.copy()));
+    let inf = InflateStage(hash0, deflate.Format.Gzip);
+    let src0 = Source(inf, badCrc, String.from(""), 0u64);
+
+    let probe1 = Probe(1usize, msg1.copy(), deflateTyped, 2u32, tx1);
+    let hash1 = Sha256Stage(probe1, Checker(1usize, msg1.copy()));
+    let inf1 = InflateStage(hash1, deflate.Format.Gzip);
+    let src1 = Source(inf1, cut, String.from(""), 0u64);
+
+    let probe2 = Probe(2usize, msg2.copy(), zstdTyped, 0u32, tx2);
+    let hash2 = Sha256Stage(probe2, Checker(2usize, msg2.copy()));
+    let dec = ZstdDecodeStage(hash2);
+    let src2 = Source(dec, frame, String.from(""), 0u64);
+
+    let probe3 = Probe(3usize, String.from("the disk went away"), noTyped, 0u32, tx3);
+    let hash3 = Sha256Stage(probe3, Checker(3usize, String.from("the disk went away")));
+    let inf3 = InflateStage(hash3, deflate.Format.Gzip);
+    let src3 = Source(inf3, dup(&good), String.from("the disk went away"), 1u64);
+
+    src0.start();
+    src1.start();
+    src2.start();
+    src3.start();
+  }
+  rx0.recv();
+  rx1.recv();
+  rx2.recv();
+  rx3.recv();
+  finalAll();
+
+  var slot = 0usize;
+  while slot < 4usize {
+    let s = seenOf(slot);
+    expectUInt(s.failed.load(), 1u64, "the stream ended Failed, once");
+    expectUInt(s.finished.load(), 0u64, "and not also Finished");
+    expectUInt(s.messageOk.load(), 1u64, "with the expected message");
+    expectUInt(s.typedOk.load(), 1u64, "and the expected typed error inside the AnyError");
+    expectUInt(s.kindOk.load(), 1u64, "of the expected kind");
+    expectUInt(s.digests.load(), 0u64, "and no digest was sent");
+    expectUInt(s.errs.load(), 1u64, "the digest sink got exactly one answer, an Err");
+    expectUInt(s.errMessageOk.load(), 1u64, "carrying the failure's message");
+    slot = slot + 1usize;
+  }
+  expectUInt(seen0.bytes.load(), u64.from(original.len()), "0: the data before the bad trailer was delivered");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

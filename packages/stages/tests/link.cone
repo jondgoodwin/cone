@@ -1,0 +1,69 @@
+// A Link owns N buffers and lends them one at a time: take until none is left
+// (a stall is counted), give back, and the counters say what happened. This
+// runs one thread and no actor; the credit of a whole pipeline, with actors, is
+// tested in credit.cone.
+
+mod linktest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import stages use *;
+
+fn main() i32 {
+  var link = Link.make(3usize, 4096usize);
+  expectUInt(u64.from(link.capacity()), 3u64, "a link of three");
+  expectUInt(u64.from(link.available()), 3u64, "all three are home");
+  expectUInt(u64.from(link.inFlight()), 0u64, "none is in flight");
+
+  var held = List[IoBuf].empty();
+  var i = 0usize;
+  while i < 3usize {
+    match link.take() {
+      case let Some(b) {
+        expect(b.isEmpty(), "a buffer taken is empty");
+        expect(b.capacity() >= 4096usize, "and has the room asked for");
+        held.push(b);
+      }
+      case is None { expect(false, "the first three takes find a buffer"); }
+    }
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(link.inFlight()), 3u64, "three in flight");
+  expectUInt(u64.from(link.peak()), 3u64, "the peak is three");
+  expectUInt(link.stalls(), 0u64, "no stall yet");
+
+  // A fourth take finds none: that is a stall, and the producer must wait
+  expect(link.take() is None, "the fourth take finds none");
+  expect(link.take() is None, "and so does a fifth");
+  expectUInt(link.stalls(), 2u64, "two stalls counted");
+  expectUInt(u64.from(link.inFlight()), 3u64, "still three in flight");
+
+  // One comes back, written to and with bytes in it: it is emptied
+  match held.pop() {
+    case let Some(b) {
+      var full = b;
+      full.append("hello");
+      link.give(full);
+    }
+    case is None {}
+  }
+  expectUInt(u64.from(link.available()), 1u64, "one is home");
+  expectUInt(u64.from(link.inFlight()), 2u64, "two in flight");
+  match link.take() {
+    case let Some(b) { expect(b.isEmpty(), "a buffer given back with bytes in it is emptied"); held.push(b); }
+    case is None { expect(false, "a buffer is home to take"); }
+  }
+  expectUInt(u64.from(link.peak()), 3u64, "the peak does not pass three");
+
+  // All come home
+  while held.len() > 0usize {
+    match held.pop() {
+      case let Some(b) { link.give(b); }
+      case is None {}
+    }
+  }
+  expectUInt(u64.from(link.available()), 3u64, "all three are home again");
+  expectUInt(u64.from(link.inFlight()), 0u64, "none in flight");
+  done()
+}
