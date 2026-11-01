@@ -68,11 +68,13 @@ struct Seen {
   pub typedOk: Atomic[u64];     // Failed calls whose AnyError held the expected typed error
   pub kindOk: Atomic[u64];      // and whose kind was the expected one
   pub digests: Atomic[u64];     // digests received (none should come after a failure)
+  pub errs: Atomic[u64];        // Err answers the digest sink got (one, after a failure)
+  pub errMessageOk: Atomic[u64]; // of them, those carrying the expected message
 }
 
 fn newSeen() Seen {
   Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
 }
 
 let seen0: Seen;
@@ -152,15 +154,25 @@ actor Probe is ChunkSink {
   }
 }
 
-actor Checker is DigestSink {
+// The hash stage's digest sink: it must get exactly one answer, and after a
+// failure that answer is an Err carrying the failure's message
+actor Checker is DigestSink[Array[u8, 32]] {
   slot: usize;
+  wantMessage: String;
 
-  pub fn init(self: &new, slot: usize) {
-    *self = Self(slot: slot);
+  pub fn init(self: &new, slot: usize, wantMessage: String) {
+    *self = Self(slot: slot, wantMessage: wantMessage);
   }
 
-  pub async fn digest(self, d: List[u8]) {
-    seenOf(slot).digests.add(1u64);
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    let s = seenOf(slot);
+    match r {
+      case let Ok(d) { s.digests.add(1u64); }
+      case let Err(e) {
+        s.errs.add(1u64);
+        if e.message().view() == wantMessage.view() { s.errMessageOk.add(1u64); }
+      }
+    }
   }
 }
 
@@ -278,22 +290,22 @@ fn main() i32 {
   tx3, rx3 = Oneshot[u64].make();
   {
     let probe0 = Probe(0usize, msg0.copy(), deflateTyped, 1u32, tx0);
-    let hash0 = Sha256Stage(probe0, Checker(0usize));
+    let hash0 = Sha256Stage(probe0, Checker(0usize, msg0.copy()));
     let inf = InflateStage(hash0, deflate.Format.Gzip);
     let src0 = Source(inf, badCrc, String.from(""), 0u64);
 
     let probe1 = Probe(1usize, msg1.copy(), deflateTyped, 2u32, tx1);
-    let hash1 = Sha256Stage(probe1, Checker(1usize));
+    let hash1 = Sha256Stage(probe1, Checker(1usize, msg1.copy()));
     let inf1 = InflateStage(hash1, deflate.Format.Gzip);
     let src1 = Source(inf1, cut, String.from(""), 0u64);
 
     let probe2 = Probe(2usize, msg2.copy(), zstdTyped, 0u32, tx2);
-    let hash2 = Sha256Stage(probe2, Checker(2usize));
+    let hash2 = Sha256Stage(probe2, Checker(2usize, msg2.copy()));
     let dec = ZstdDecodeStage(hash2);
     let src2 = Source(dec, frame, String.from(""), 0u64);
 
     let probe3 = Probe(3usize, String.from("the disk went away"), noTyped, 0u32, tx3);
-    let hash3 = Sha256Stage(probe3, Checker(3usize));
+    let hash3 = Sha256Stage(probe3, Checker(3usize, String.from("the disk went away")));
     let inf3 = InflateStage(hash3, deflate.Format.Gzip);
     let src3 = Source(inf3, dup(&good), String.from("the disk went away"), 1u64);
 
@@ -317,6 +329,8 @@ fn main() i32 {
     expectUInt(s.typedOk.load(), 1u64, "and the expected typed error inside the AnyError");
     expectUInt(s.kindOk.load(), 1u64, "of the expected kind");
     expectUInt(s.digests.load(), 0u64, "and no digest was sent");
+    expectUInt(s.errs.load(), 1u64, "the digest sink got exactly one answer, an Err");
+    expectUInt(s.errMessageOk.load(), 1u64, "carrying the failure's message");
     slot = slot + 1usize;
   }
   expectUInt(seen0.bytes.load(), u64.from(original.len()), "0: the data before the bad trailer was delivered");

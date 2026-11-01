@@ -53,15 +53,28 @@ pub enum Ending {
   Failed(AnyError);
 }
 
-// A stage that takes chunks. A behaviour per the module's rules: the chunk is
-// moved in, the end follows the last chunk, and 'attach' comes first.
+// A stage that takes chunks: the chunk is moved in, the end follows the last
+// chunk, and 'attach' comes before the first.
 pub actor trait ChunkSink {
   // A chunk of the stream. Give it back to the source when its bytes are used.
   pub async fn accept(self, c: IoBuf);
   // The stream is over, one way or the other. Nothing is sent after.
   pub async fn end(self, how: Ending);
   // The stage that sends here, to give buffers back to; sent once, before the
-  // first chunk
+  // first chunk.
+  //
+  // WHY 'attach' CANNOT BE OVERTAKEN by the first 'accept'. A source sends
+  // 'attach' in its 'init', and 'accept' only from a behaviour that runs after
+  // the init returned (a 'start' message, or a 'giveBack'), so the 'accept' is
+  // caused by a send that came after the 'attach' in the creating thread. The
+  // mailbox gives the consumer its messages in the order the sends claimed their
+  // positions: a send claims with one sequentially consistent atomic add on the
+  // mailbox's tail ('claim', packages/actors/src/actors.cone, THE MAILBOX) before
+  // it returns, the consumer takes positions in order, and a message is never
+  // overtaken by one it caused (the package header, MESSAGES). That holds across
+  // the ring's segments and for senders on different workers
+  // (actors/tests/ringfanin.cone checks each sender's order under fan-in). The
+  // downstream stage therefore always knows its source before its first chunk.
   pub async fn attach(self, up: ChunkSource);
 }
 
@@ -71,9 +84,13 @@ pub actor trait ChunkSource {
   pub async fn giveBack(self, b: IoBuf);
 }
 
-// Whoever wants the digest a hash stage worked out
-pub actor trait DigestSink {
-  pub async fn digest(self, d: List[u8]);
+// Whoever wants the digest a hash stage worked out, 'Out' being the digest's
+// type (Array[u8, 32] for sha256). It gets exactly one answer, when the stream
+// ends: Ok with the digest if the stream finished, Err with the failure if it
+// did not (the error that ended it, as text: see HashCore.end). So a waiter is
+// never left waiting for a digest that will not come.
+pub actor trait DigestSink[Out] {
+  pub async fn digest(self, r: Result[Out, AnyError]);
 }
 
 // Gives a chunk back to its source, if the source is still held
@@ -253,9 +270,10 @@ pub struct HashCore[D: Digester] is Move {
   up: Option[ChunkSource];
   out: usize;                 // chunks passed on and not yet back
   upEnded: bool;
+  to: DigestSink[D.Out];      // gets exactly one answer, when the stream ends
 
-  pub fn make(d: D, down: ChunkSink) HashCore[D] {
-    HashCore[D](d, down, None[ChunkSource], 0usize, false)
+  pub fn make(d: D, down: ChunkSink, to: DigestSink[D.Out]) HashCore[D] {
+    HashCore[D](d, down, None[ChunkSource], 0usize, false, to)
   }
 
   pub fn attach(self: &mut, source: ChunkSource) {
@@ -274,12 +292,16 @@ pub struct HashCore[D: Digester] is Move {
     self.settle();
   }
 
-  // The digest of everything that has passed, once the stream has finished
-  pub fn digest(self: &) D.Out { d.finish() }
-
-  // Passes the end on
+  // Answers the digest sink, once: the digest if the stream finished, else an
+  // error. An AnyError cannot be copied, so the sink gets the failure as text
+  // (its report) and the stage after this one gets the original, typed.
+  // Then passes the end on.
   pub fn end(self: &mut, how: Ending) {
     upEnded = true;
+    match &how {
+      case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
+      case let &Failed(e) { to.digest(Err[D.Out, AnyError](AnyError.msg(e.report().view()))); }
+    }
     down.end(how);
     self.settle();
   }

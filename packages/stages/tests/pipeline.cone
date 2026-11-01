@@ -59,11 +59,13 @@ struct Seen {
   pub failed: Atomic[u64];      // 'end(Failed)' calls
   pub digests: Atomic[u64];     // digests received
   pub digestOk: Atomic[u64];    // digests that equalled the expected one
+  pub digestErr: Atomic[u64];   // Err answers (none should come)
+  pub early: Atomic[u64];       // chunks that arrived before the sink knew its source (none should)
 }
 
 fn newSeen() Seen {
   Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
 }
 
 let seen0: Seen;
@@ -103,7 +105,7 @@ actor Counting is ChunkSink {
     s.chunks.add(1u64);
     match &up {
       case let &Some(u) { u.giveBack(c); }
-      case is None {}
+      case is None { s.early.add(1u64); }
     }
   }
 
@@ -118,8 +120,10 @@ actor Counting is ChunkSink {
   }
 }
 
-// Receives a hash stage's digest and says whether it is the expected one
-actor Checker is DigestSink {
+// Receive a hash stage's answer and say whether it is the expected digest
+fn sameBytes(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+actor Checker256 is DigestSink[Array[u8, 32]] {
   slot: usize;
   want: List[u8];
 
@@ -127,13 +131,49 @@ actor Checker is DigestSink {
     *self = Self(slot: slot, want: want);
   }
 
-  pub async fn digest(self, d: List[u8]) {
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
     let s = seenOf(slot);
     s.digests.add(1u64);
-    if d.view() == want.view() { s.digestOk.add(1u64); }
+    match r {
+      case let Ok(d) { if sameBytes(&d, want.view()) { s.digestOk.add(1u64); } }
+      case let Err(e) { s.digestErr.add(1u64); }
+    }
   }
 }
+actor Checker512 is DigestSink[Array[u8, 64]] {
+  slot: usize;
+  want: List[u8];
 
+  pub fn init(self: &new, slot: usize, want: List[u8]) {
+    *self = Self(slot: slot, want: want);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 64], AnyError]) {
+    let s = seenOf(slot);
+    s.digests.add(1u64);
+    match r {
+      case let Ok(d) { if sameBytes(&d, want.view()) { s.digestOk.add(1u64); } }
+      case let Err(e) { s.digestErr.add(1u64); }
+    }
+  }
+}
+actor Checker1 is DigestSink[Array[u8, 20]] {
+  slot: usize;
+  want: List[u8];
+
+  pub fn init(self: &new, slot: usize, want: List[u8]) {
+    *self = Self(slot: slot, want: want);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 20], AnyError]) {
+    let s = seenOf(slot);
+    s.digests.add(1u64);
+    match r {
+      case let Ok(d) { if sameBytes(&d, want.view()) { s.digestOk.add(1u64); } }
+      case let Err(e) { s.digestErr.add(1u64); }
+    }
+  }
+}
 // ---- the source end ----
 
 // Reads a file through aio, 64 KiB at a time, into a link of four buffers
@@ -162,7 +202,7 @@ actor FileSource is ChunkSource {
       }
       case let Err(e) {
         over = true;
-        down.end(Ending.Failed(AnyError.msg(e.message().view())));
+        down.end(Ending.Failed(AnyError.from(e)));
       }
     }
   }
@@ -191,7 +231,7 @@ actor FileSource is ChunkSource {
             }
             case let Err(e) {
               over = true;
-              down.end(Ending.Failed(AnyError.msg(e.message().view())));
+              down.end(Ending.Failed(AnyError.from(e)));
               more = false;
             }
           }
@@ -269,6 +309,8 @@ fn checkSlot(slot: usize, size: u64, what: &str) {
   expectUInt(s.failed.load(), 0u64, what);
   expectUInt(s.digests.load(), 1u64, what);
   expectUInt(s.digestOk.load(), 1u64, what);
+  expectUInt(s.digestErr.load(), 0u64, what);
+  expectUInt(s.early.load(), 0u64, what);
 }
 
 fn main() i32 {
@@ -302,27 +344,27 @@ fn main() i32 {
   {
     // 0. file -> inflate -> sha256 -> count
     let count0 = Counting(0usize, tx0);
-    let hash0 = Sha256Stage(count0, Checker(0usize, dup(&sha256)));
+    let hash0 = Sha256Stage(count0, Checker256(0usize, dup(&sha256)));
     let inf0 = InflateStage(hash0, deflate.Format.Gzip);
     let src0 = FileSource(inf0, String.from(name));
 
     // 1. memory -> deflate -> inflate -> sha256 -> count
     let count1 = Counting(1usize, tx1);
-    let hash1 = Sha256Stage(count1, Checker(1usize, dup(&sha256)));
+    let hash1 = Sha256Stage(count1, Checker256(1usize, dup(&sha256)));
     let inf1 = InflateStage(hash1, deflate.Format.Zlib);
     let def1 = DeflateStage(inf1, deflate.Format.Zlib, 1i32);
     let src1 = MemorySource(def1, dup(&original));
 
     // 2. memory -> zstd -> unzstd -> sha512 -> count
     let count2 = Counting(2usize, tx2);
-    let hash2 = Sha512Stage(count2, Checker(2usize, dup(&sha512)));
+    let hash2 = Sha512Stage(count2, Checker512(2usize, dup(&sha512)));
     let dec2 = ZstdDecodeStage(hash2);
     let enc2 = ZstdEncodeStage(dec2, 3i32);
     let src2 = MemorySource(enc2, dup(&original));
 
     // 3. the same, with sha1
     let count3 = Counting(3usize, tx3);
-    let hash3 = Sha1Stage(count3, Checker(3usize, dup(&sha1)));
+    let hash3 = Sha1Stage(count3, Checker1(3usize, dup(&sha1)));
     let dec3 = ZstdDecodeStage(hash3);
     let enc3 = ZstdEncodeStage(dec3, 3i32);
     let src3 = MemorySource(enc3, dup(&original));

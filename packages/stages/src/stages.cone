@@ -17,7 +17,8 @@
 //   Ending         how a stream ended: Finished, or Failed(AnyError) (stage.cone)
 //   ChunkSink      an actor trait: accept(c), end(how), attach(up)
 //   ChunkSource    an actor trait: giveBack(b), the credit coming back
-//   DigestSink     an actor trait: digest(d), where a hash stage sends its digest
+//   DigestSink[Out] an actor trait: digest(r), where a hash stage sends its digest (Ok)
+//                  or the failure that ended the stream (Err): one answer, always
 //   Link           N buffers one stage sends in: the credit (link.cone)
 //   StageCore[T]   the state and work of a stage over any Transform T
 //   HashCore[D]    the same over a Digester, passing the chunks on unchanged
@@ -121,77 +122,40 @@ pub actor ZstdEncodeStage is ChunkSink, ChunkSource {
 // SHA-256 of the stream, chunks passed on as they are
 pub actor Sha256Stage is ChunkSink, ChunkSource {
   core: HashCore[cryptohash.Sha256];
-  to: DigestSink;
 
-  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
-    *self = Self(core: HashCore[cryptohash.Sha256].make(cryptohash.Sha256.make(), down), to: to);
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink[Array[u8, 32]]) {
+    *self = Self(core: HashCore[cryptohash.Sha256].make(cryptohash.Sha256.make(), down, to));
     down.attach(selfactor);
   }
   pub async fn accept(self, c: IoBuf) { core.accept(c); }
-  pub async fn end(self, how: Ending) {
-    match how {
-      case is Finished {
-        let d = core.digest();
-        var bytes = List[u8].withCapacity(32usize);
-        bytes.appendSlice(&d);
-        to.digest(bytes);
-      }
-      else {}
-    }
-    core.end(how);
-  }
+  pub async fn end(self, how: Ending) { core.end(how); }
   pub async fn attach(self, up: ChunkSource) { core.attach(up); }
   pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
 }
-
 // SHA-512 of the stream, chunks passed on as they are
 pub actor Sha512Stage is ChunkSink, ChunkSource {
   core: HashCore[cryptohash.Sha512];
-  to: DigestSink;
 
-  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
-    *self = Self(core: HashCore[cryptohash.Sha512].make(cryptohash.Sha512.make(), down), to: to);
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink[Array[u8, 64]]) {
+    *self = Self(core: HashCore[cryptohash.Sha512].make(cryptohash.Sha512.make(), down, to));
     down.attach(selfactor);
   }
   pub async fn accept(self, c: IoBuf) { core.accept(c); }
-  pub async fn end(self, how: Ending) {
-    match how {
-      case is Finished {
-        let d = core.digest();
-        var bytes = List[u8].withCapacity(64usize);
-        bytes.appendSlice(&d);
-        to.digest(bytes);
-      }
-      else {}
-    }
-    core.end(how);
-  }
+  pub async fn end(self, how: Ending) { core.end(how); }
   pub async fn attach(self, up: ChunkSource) { core.attach(up); }
   pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
 }
-
 // SHA-1 of the stream (legacy), chunks passed on as they are
 pub actor Sha1Stage is ChunkSink, ChunkSource {
   core: HashCore[cryptohash.Sha1];
-  to: DigestSink;
 
-  pub fn init(self: &new, down: ChunkSink, to: DigestSink) {
-    *self = Self(core: HashCore[cryptohash.Sha1].make(cryptohash.Sha1.make(), down), to: to);
+  pub fn init(self: &new, down: ChunkSink, to: DigestSink[Array[u8, 20]]) {
+    *self = Self(core: HashCore[cryptohash.Sha1].make(cryptohash.Sha1.make(), down, to));
     down.attach(selfactor);
   }
   pub async fn accept(self, c: IoBuf) { core.accept(c); }
-  pub async fn end(self, how: Ending) {
-    match how {
-      case is Finished {
-        let d = core.digest();
-        var bytes = List[u8].withCapacity(20usize);
-        bytes.appendSlice(&d);
-        to.digest(bytes);
-      }
-      else {}
-    }
-    core.end(how);
-  }
+  pub async fn end(self, how: Ending) { core.end(how); }
   pub async fn attach(self, up: ChunkSource) { core.attach(up); }
   pub async fn giveBack(self, b: IoBuf) { core.giveBack(b); }
 }
+

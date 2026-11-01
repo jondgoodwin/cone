@@ -51,12 +51,13 @@ struct Seen {
   pub stalls: Atomic[u64];        // the link's stalls
   pub finished: Atomic[u64];      // end(Finished) calls
   pub failed: Atomic[u64];        // end(Failed) calls
+  pub early: Atomic[u64];         // chunks that came before the sink knew its source (none should)
 }
 
 fn newSeen() Seen {
   Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[i64].of(0i64), Atomic[i64].of(0i64),
     Atomic[u64].of(0u64), Atomic[i64].of(0i64), Atomic[i64].of(0i64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
 }
 
 let slow: Seen;
@@ -112,7 +113,7 @@ actor Sink is ChunkSink {
     s.sinkHeld.add(-1i64);
     match &up {
       case let &Some(u) { u.giveBack(c); }
-      case is None {}
+      case is None { s.early.add(1u64); }
     }
     pending = pending - 1u64;
     if ending && pending == 0u64 { self.finishUp(); }
@@ -201,6 +202,7 @@ fn report(s: &Seen, label: &str) {
   expectUInt(s.whole.load(), chunkCount(), label);
   expectUInt(s.finished.load(), 1u64, label);
   expectUInt(s.failed.load(), 0u64, label);
+  expectUInt(s.early.load(), 0u64, label);
   expectInt(s.sinkHeld.load(), 0i64, label);
   expectInt(s.sourceHeld.load(), 0i64, label);
   expect(s.sinkMax.load() <= i64.from(buffers()), label);
