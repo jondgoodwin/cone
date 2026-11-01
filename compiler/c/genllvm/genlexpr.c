@@ -829,6 +829,13 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         LLVMTypeRef selftyp = LLVMTypeOf(fnargs[0]);
         LLVMTypeKind selftypkind = LLVMGetTypeKind(selftyp);
 
+        // A number's 'cmp' (the three-way comparison written as a method, which
+        // a trait's '&Self' requirement meets) takes the other number by
+        // reference: read it, then compare as '<=>' does
+        if ((stitched == CmpIntrinsic || stitched == SCmpIntrinsic) && selftypkind != LLVMPointerTypeKind
+            && LLVMGetTypeKind(LLVMTypeOf(fnargs[1])) == LLVMPointerTypeKind)
+            fnargs[1] = LLVMBuildLoad2(gen->builder, selftyp, fnargs[1], "");
+
         // A vector's operators, math and reductions are LLVM's, over the whole
         // vector; the division and shift edge cases, and the reductions, are
         // genlvector.c's

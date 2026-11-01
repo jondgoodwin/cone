@@ -395,6 +395,19 @@ static void nbrThreeWayMethod(NbrNode *nbrtype) {
     nodesAdd(&sig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
     iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(threeWayName, FlagMethFld | FlagPub, (INode *)sig,
         (INode *)newIntrinsicNode(nbrtype->tag == IntNbrTag ? SCmpIntrinsic : CmpIntrinsic)));
+    // The same comparison written as a method, 'a.cmp(&b)': the other number is
+    // read through a reference, which is how a trait writes 'Self' (a trait
+    // cannot hold it by value). A trait requiring 'cmp' with '&Self' (core's
+    // Ordered) is met by this one and by '<=>' (iNsTypeNumberMeets), and a
+    // generic's 'a.cmp(&b)' reaches it when the argument is a number. Code
+    // generation reads the referent (genlexpr.c, CmpIntrinsic).
+    FnSigNode *refsig = newFnSigNode();
+    refsig->rettype = (INode*)i32Type;
+    RefNode *immref = newRefNodeFull(RefTag, NULL, borrowRef, newPermUseNode(roPerm), (INode*)selftype);
+    nodesAdd(&refsig->parms, (INode *)newVarDclFull(nametblFind("a", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&refsig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)immref, newPermUseNode(immPerm), NULL));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind("cmp", 3), FlagMethFld | FlagPub, (INode *)refsig,
+        (INode *)newIntrinsicNode(nbrtype->tag == IntNbrTag ? SCmpIntrinsic : CmpIntrinsic)));
 }
 
 // The 'hash' every integer type and bool has, which core's Hash trait requires

@@ -1821,6 +1821,46 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
     }
 }
 
+// Does this number type fit the trait by its built-in methods? A marker trait
+// is met only by the compiler's grants (decided by the caller), so it is not
+// fitted. Each method the trait requires (not a default) must be met by the
+// number's method of that name, or of the operator name the requirement
+// overloads (iNsTypeNumberMeets). A trait with a field is not met.
+static int genericNumberFits(StructNode *trait, NbrNode *nbr) {
+    if (genericTraitIsMarker(trait))
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsMixin))
+            return 0;
+    }
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        if (meth->value)
+            continue;
+        if (!((*nodesp)->flags & (TypeChecked | TypeChecking))) {
+            TypeCheckState tstate;
+            tstate.typenode = (INode*)trait;
+            tstate.fn = NULL;
+            tstate.scope = 0;
+            tstate.extend = NULL;
+            inodeTypeCheckAny(&tstate, nodesp);
+        }
+        INode *binding = namespaceFind(&nbr->namespace, meth->namesym);
+        int fits = binding && iNsTypeNumberMeets(binding, meth, (INode*)nbr, (INode*)trait);
+        if (!fits && meth->overloadsym) {
+            binding = namespaceFind(&nbr->namespace, meth->overloadsym);
+            fits = binding && iNsTypeNumberMeets(binding, meth, (INode*)nbr, (INode*)trait);
+        }
+        if (!fits)
+            return 0;
+    }
+    return 1;
+}
+
 // Is this reference an owner of core's 'str' (Uni[str], Rc[str]: any region but
 // a borrow's)?
 static int genericIsTextOwner(RefNode *ref) {
@@ -1871,6 +1911,15 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return itypeIsSized(dcl);
     if (trait == dynSizedTrait)
         return itypeIsDynSized(dcl);
+    // A number type fits a trait with methods by its built-in ones (the
+    // three-way '<=>', '==', '+'), as a struct does by its declared ones.
+    // INTERIM: a trait cannot hold 'Self' by value (Error 1069), so it writes
+    // '&Self', and a number's methods take the number by value. This branch lets
+    // the by-value method meet a '&Self' requirement, for number types only. The
+    // general fix is a by-value Self in traits, which Digester.finish wants too;
+    // then this branch can go. It is not widened to Copy structs.
+    if (dcl->tag == IntNbrTag || dcl->tag == UintNbrTag || dcl->tag == FloatNbrTag)
+        return genericNumberFits(trait, (NbrNode*)dcl);
     if (dcl->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)dcl;

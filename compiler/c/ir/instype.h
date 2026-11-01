@@ -90,4 +90,9 @@ FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *se
 struct FnSigLayoutDiff;
 int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype, struct FnSigLayoutDiff *diff);
 
+
+// Does a number type's built-in method meet the trait method 'req', its
+// by-value number standing for a requirement's reference to 'Self'? See the
+// definition. 'binding' is the number namespace's binding for the method's name.
+int iNsTypeNumberMeets(INode *binding, FnDclNode *req, INode *nbr, INode *trait);
 #endif
