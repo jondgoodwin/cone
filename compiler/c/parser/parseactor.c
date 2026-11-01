@@ -1893,7 +1893,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenIs);
         genPuts(&g, "(");
         genSlot(&g, GenAt);
-        genPuts(&g, texts.isnames > 1 ? ": (" : ": ");
+        // a pointer to the list, which asks nothing of the size of what it names
+        // (an ordinary trait there is refused by actorCheckIs, once)
+        genPuts(&g, texts.isnames > 1 ? ": *(" : ": *");
         genPutn(&g, texts.istext, texts.isend - texts.istext);
         genPuts(&g, texts.isnames > 1 ? ")) {}\n" : ") {}\n");
     }

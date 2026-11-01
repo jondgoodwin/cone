@@ -177,7 +177,14 @@ static void actorCheckIs(ActorInfo *info) {
     INode *list = parm->vtype;
     if (list == NULL || list == unknownType || list->tag == UnknownTag)
         return;
+    // the parameter is a pointer to the list
     INode *listdcl = itypeGetTypeDcl(list);
+    if (listdcl->tag == PtrTag) {
+        list = ((StarNode *)listdcl)->vtexp;
+        if (list == NULL || list == unknownType || list->tag == UnknownTag)
+            return;
+        listdcl = itypeGetTypeDcl(list);
+    }
     Nodes *named = listdcl->tag == TTupleTag || listdcl->tag == TupleTag ? ((TupleNode *)listdcl)->elems : NULL;
     uint32_t count = named ? named->used : 1;
     for (uint32_t i = 0; i < count; ++i) {

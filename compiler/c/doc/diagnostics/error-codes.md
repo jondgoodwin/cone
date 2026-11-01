@@ -669,8 +669,7 @@ body may not hold, or a form of it not built (a `pub` field, a static, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
 macro, `extern`, a `self` of another kind, a generic actor, one with a base to
 `extends` or an `is` on a condition, an `is` naming something that is not an actor
-trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`; an `is` that names
-an ordinary trait is refused first by the type check of the generated list, `ErrorNoSize`);
+trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`);
 an actor that says it `is` an actor trait and does not conform is
 `ErrorActorTraitConform`, listing what it lacks as a conversion's refusal does; a module declaring one without importing
 the `actors` package is `ErrorActorRuntime`; `async` without `fn`,

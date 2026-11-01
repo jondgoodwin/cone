@@ -982,8 +982,10 @@ ChunkSink` is read by `parseStruct` as a struct's `is` (a base and placeholder
 fields), and where it is written is kept (`DclTexts.istext`, `isend`, `isnames`).
 `parseActorHeader` removes both from the state, which is no type that conforms to
 anything, and `parseActor` generates a function `Counter.is'` of one parameter whose
-type is the list as written (a tuple where it names more than one), so that the
-names are resolved and type checked as any type's are (`ActorInfo.isfn`). After
+type is a pointer to the list as written (to a tuple where it names more than one),
+so that the names are resolved and type checked as any type's are, and nothing is
+asked of the size of what they name, which an ordinary trait would be refused for
+(`ActorInfo.isfn`). After
 type check `actorCheckAll` reads the parameter's type back (`actorCheckIs`): each
 name must be an actor trait's handle (else `ErrorActorMember`), and the actor must
 conform to it, with the conversion's own check and words (`actorTraitConforms`,
