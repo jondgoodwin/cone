@@ -261,61 +261,33 @@ pub fn brushDab(m: &PolyMesh, grid: &PointGrid, centre: Vec3, radius: f32, f: &F
 
 // -------- distance along the surface --------
 
-// A binary min-heap of (distance, vertex), ties by vertex
+// A vertex with its distance: the order the surface search settles them in,
+// nearest first, ties by vertex
+struct Reach {
+  pub key: f32;
+  pub vert: u32;
+
+  pub fn `<=>`(self, o: Reach) i32 {
+    if key < o.key { -1i32 } else if key > o.key { 1i32 } else { vert <=> o.vert }
+  }
+}
+
+// The queue's item: the priority already says everything
+struct Nothing {}
+
+// A min-heap of (distance, vertex), the library's PriorityQueue ordered by distance, then vertex
 struct DistHeap {
-  pub keys: List[f32];
-  pub vals: List[u32];
-  pub n: usize;
+  q: PriorityQueue[Reach, Nothing];
 
-  fn before(self: &, i: usize, j: usize) bool {
-    if *keys[i] != *keys[j] { return *keys[i] < *keys[j]; }
-    *vals[i] < *vals[j]
-  }
+  fn create() DistHeap { DistHeap(PriorityQueue[Reach, Nothing]()) }
+  fn isEmpty(self: &) bool { q.isEmpty() }
+  fn push(self: &mut, key: f32, val: u32) { q.push(Reach(key, val), Nothing()); }
 
-  fn push(self: &mut, key: f32, val: u32) {
-    if n < keys.len() {
-      keys.set(n, key);
-      vals.set(n, val);
-    } else {
-      keys.push(key);
-      vals.push(val);
-    }
-    var i = n;
-    n = n + 1usize;
-    while i > 0usize {
-      let up = (i - 1usize) / 2usize;
-      if self.before(i, up) {
-        keys.swap(i, up);
-        vals.swap(i, up);
-        i = up;
-      } else {
-        i = 0usize;
-      }
-    }
-  }
-
-  // Drop the smallest
-  fn dropTop(self: &mut) {
-    n = n - 1usize;
-    if n > 0usize {
-      keys.set(0usize, *keys[n]);
-      vals.set(0usize, *vals[n]);
-      var i = 0usize;
-      var going = true;
-      while going {
-        let l = 2usize * i + 1usize;
-        let r = l + 1usize;
-        var least = i;
-        if l < n && self.before(l, least) { least = l; }
-        if r < n && self.before(r, least) { least = r; }
-        if least != i {
-          keys.swap(i, least);
-          vals.swap(i, least);
-          i = least;
-        } else {
-          going = false;
-        }
-      }
+  // The nearest, removed; the heap is not empty
+  fn pop(self: &mut) Reach {
+    match q.pop() {
+      case let Some(pair) { let top, n = pair; top }
+      case is None { Reach(0., 0u32) }
     }
   }
 }
@@ -362,7 +334,7 @@ pub fn surfaceDistances(m: &PolyMesh, seeds: &List[u32], offsets: &List[f32], li
     done.push(false);
     v = v + 1usize;
   }
-  var heap = DistHeap(List[f32].empty(), List[u32].empty(), 0usize);
+  var heap = DistHeap.create();
   var i = 0usize;
   while i < seeds.len() {
     let s = usize.from(*seeds[i]);
@@ -374,10 +346,10 @@ pub fn surfaceDistances(m: &PolyMesh, seeds: &List[u32], offsets: &List[f32], li
     i = i + 1usize;
   }
   var going = true;
-  while going && heap.n > 0usize {
-    let key = *heap.keys[0usize];
-    let vu = *heap.vals[0usize];
-    heap.dropTop();
+  while going && !heap.isEmpty() {
+    let top = heap.pop();
+    let key = top.key;
+    let vu = top.vert;
     let vi = usize.from(vu);
     if !*done[vi] && key <= *dist[vi] {
       if key > limit {

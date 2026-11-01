@@ -22,39 +22,34 @@
 
 pub const NO_CELL = 0xFFFFFFFFu32;
 
-// A min-heap of u64s: the high word is the order key of a height, the low word the cell
-struct MinHeap {
-  a: List[u64];
+// The order cells leave the flood in: lowest surface first (the height's order key, which puts every
+// float, -0 before +0 and NaN last, in unsigned order), ties by cell
+struct Level {
+  key: u32;
+  cell: u32;
 
-  fn push(self: &mut, v: u64) {
-    a.push(v);
-    var i = a.len() - 1usize;
-    while i > 0usize {
-      let parent = (i - 1usize) / 2usize;
-      if *a[parent] <= *a[i] { break; }
-      a.swap(parent, i);
-      i = parent;
-    }
+  pub fn `<=>`(self, o: Level) i32 {
+    if key < o.key { -1i32 } else if key > o.key { 1i32 } else { cell <=> o.cell }
   }
+}
 
-  fn pop(self: &mut) u64 {
-    let top = *a[0usize];
-    let last = a.len() - 1usize;
-    a.swap(0usize, last);
-    a.truncate(last);
-    let n = a.len();
-    var i = 0usize;
-    while true {
-      let l = 2usize * i + 1usize;
-      let r = l + 1usize;
-      var m = i;
-      if l < n && *a[l] < *a[m] { m = l; }
-      if r < n && *a[r] < *a[m] { m = r; }
-      if m == i { break; }
-      a.swap(m, i);
-      i = m;
+// The queue's item: the priority already says everything
+struct Nothing {}
+
+// A min-heap of cells by the height of their surface
+struct MinHeap {
+  q: PriorityQueue[Level, Nothing];
+
+  fn create(n: usize) MinHeap { MinHeap(PriorityQueue[Level, Nothing](n)) }
+  fn len(self: &) usize { q.len() }
+  fn push(self: &mut, height: f32, cell: usize) { q.push(Level(orderKey(height), u32.from(cell)), Nothing()); }
+
+  // The lowest cell, removed; the heap is not empty
+  fn pop(self: &mut) usize {
+    match q.pop() {
+      case let Some(pair) { let top, n = pair; usize.from(top.cell) }
+      case is None { 0usize }
     }
-    top
   }
 }
 
@@ -101,27 +96,26 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
     closed.push(0u8);
     i = i + 1usize;
   }
-  var heap = MinHeap(List[u64].withCapacity(n));
+  var heap = MinHeap.create(n);
   var order = List[u32].withCapacity(n);
   var x = 0usize;
   while x < w {
     i = x;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
     i = (h - 1usize) * w + x;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
     x = x + 1usize;
   }
   var z = 0usize;
   while z < h {
     i = z * w;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
     i = z * w + w - 1usize;
-    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push((u64.from(orderKey(*filled[i])) << 32u64) | u64.from(u32.from(i))); }
+    if *closed[i] == 0u8 { closed.set(i, 1u8); heap.push(*filled[i], i); }
     z = z + 1usize;
   }
-  while heap.a.len() > 0usize {
-    let top = heap.pop();
-    let c = usize.from(u32.from(top & 0xFFFFFFFFu64));
+  while heap.len() > 0usize {
+    let c = heap.pop();
     order.push(u32.from(c));
     let cx = c % w;
     let cz = c / w;
@@ -137,7 +131,7 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
             closed.set(ni, 1u8);
             let lowest = *filled[c] + eps;
             if *filled[ni] < lowest { filled.set(ni, lowest); }
-            heap.push((u64.from(orderKey(*filled[ni])) << 32u64) | u64.from(u32.from(ni)));
+            heap.push(*filled[ni], ni);
           }
         }
         dx = dx + 1;
@@ -286,11 +280,11 @@ pub fn analyze(hf: &Heightfield, eps: f32, lakeMin: f32, lakeMax: f32) Hydrology
   }
   // visit from the highest surface to the lowest: every cell is added to the one it drains to
   // after all that drain to it
-  var heap2 = MinHeap(List[u64].withCapacity(n));
+  var heap2 = MinHeap.create(n);
   i = 0usize;
-  while i < n { heap2.push((u64.from(orderKey(*surf[i])) << 32u64) | u64.from(u32.from(i))); i = i + 1usize; }
+  while i < n { heap2.push(*surf[i], i); i = i + 1usize; }
   var asc = List[u32].withCapacity(n);
-  while heap2.a.len() > 0usize { asc.push(u32.from(heap2.pop() & 0xFFFFFFFFu64)); }
+  while heap2.len() > 0usize { asc.push(u32.from(heap2.pop())); }
   var accum = List[f32].withCapacity(n);
   i = 0usize;
   while i < n { accum.push(1.); i = i + 1usize; }
