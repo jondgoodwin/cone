@@ -194,6 +194,47 @@ fn digests(data: &Array[u8]) {
   expect(same(&again, &d256), "sha256: finish twice gives the same digest");
 }
 
+// The Transform's 'failure': None until a pull has answered Failed, then the
+// codec's own error as an AnyError (its message, and the typed error inside);
+// a compressor never fails
+fn failures() {
+  let junk = "this is not a gzip stream, nor a zstd frame, at all";
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  expect(inf.failure() is None, "inflate: no failure before any input");
+  let st = drive(&mut inf, junk as &Array[u8], 16usize, &mut List[u8].empty());
+  expect(st == Status.Failed, "inflate: garbage is Failed");
+  match inf.failure() {
+    case let Some(e) {
+      expectStr(e.message().view(), inf.error().message().view(), "inflate: failure() has the codec's message");
+      expect(e.holds[deflate.DeflateError](), "inflate: and the DeflateError inside");
+    }
+    case is None { expect(false, "inflate: failure() is Some after Failed"); }
+  }
+
+  var dec = zstd.Decompressor.make();
+  expect(dec.failure() is None, "zstd: no failure before any input");
+  let st2 = drive(&mut dec, junk as &Array[u8], 16usize, &mut List[u8].empty());
+  expect(st2 == Status.Failed, "zstd: garbage is Failed");
+  match dec.failure() {
+    case let Some(e) {
+      expect(e.holds[zstd.ZstdError](), "zstd: failure() has the ZstdError inside");
+      match dec.error() {
+        case let Some(own) { expectStr(e.message().view(), own.message().view(), "zstd: and the codec's message"); }
+        case is None { expect(false, "zstd: error() is Some after Failed"); }
+      }
+    }
+    case is None { expect(false, "zstd: failure() is Some after Failed"); }
+  }
+
+  var def = deflate.Deflater.make(deflate.Format.Gzip, 1);
+  var out = List[u8].empty();
+  expect(drive(&mut def, junk as &Array[u8], 16usize, &mut out) == Status.Done, "deflate: finished");
+  expect(def.failure() is None, "deflate: a compressor never fails");
+  var comp = zstd.Compressor.make(1);
+  expect(drive(&mut comp, junk as &Array[u8], 16usize, &mut out) == Status.Done, "zstd compress: finished");
+  expect(comp.failure() is None, "zstd compress: a compressor never fails");
+}
+
 fn main() i32 {
   let data = corpus(total());
   expectUInt(u64.from(data.len()), u64.from(total()), "the corpus is the size asked");
@@ -201,5 +242,6 @@ fn main() i32 {
   deflateOtherFormats(data.view());
   zstdRoundTrips(data.view());
   digests(data.view());
+  failures();
   done()
 }
