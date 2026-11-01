@@ -600,11 +600,6 @@ wrapped as one thrown away, and a local it names is no result, so the release
 list does not exempt it (`flowresult` is NULL). `if c { let x = mk(); x; }`
 finalizes `x` at the branch's end.
 
-**Each statement that made a temporary is walked again** once flow has walked
-it (`blockTempEscape`), so that a temporary a raw pointer going out of it may
-point into is kept: a variable's initializer, and a `return`'s, a `break`'s or
-a used block's value, go out ([Flow](../phases/flow.md), "Temporaries"). A
-borrow of one going out is the loan walk's to check.
 
 ## Generation
 

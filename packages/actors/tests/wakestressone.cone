@@ -93,6 +93,7 @@ actor Node {
 struct SendArg is Sendable {
   pub to: Node;
   pub from: u32;
+  pub base: u64;     // what this sender's node had counted before this pass
 }
 
 fn total() u64 {
@@ -116,10 +117,10 @@ fn sender(arg: SendArg) u32 {
     k = k + 1u64;
     if k % 8u64 == 0u64 && counts.late.load() == 0u64 {
       let deadline = nowNs() + 2000000000u64;
-      while got.load() < k && nowNs() < deadline {
+      while got.load() < arg.base + k && nowNs() < deadline {
         thread.yieldNow();
       }
-      if got.load() < k {
+      if got.load() < arg.base + k {
         counts.late.add(1u64);
       }
     }
@@ -151,24 +152,41 @@ fn main() i32 {
     let first = n0;
     actors.waitUntilIdle();
 
-    let t0 = thread.start[SendArg, u32](SendArg(n0, 0u32), &sender);
-    let t1 = thread.start[SendArg, u32](SendArg(n2, 1u32), &sender);
-    let t2 = thread.start[SendArg, u32](SendArg(n4, 2u32), &sender);
-    let t3 = thread.start[SendArg, u32](SendArg(n6, 3u32), &sender);
-    t0.join();
-    t1.join();
-    t2.join();
-    t3.join();
-    // Not waitUntilIdle: a lost wake would hold it for ever. The last
-    // messages, too, within 2 s
-    let deadline = nowNs() + 2000000000u64;
-    while total() < u64.from(senders) * perSender && nowNs() < deadline {
-      thread.yieldNow();
+    // A pass is the four senders' 4,000 messages each. Whether a spin sees work
+    // depends on a message arriving in the few microseconds after a worker
+    // went idle, which a loaded machine makes rare: further passes follow
+    // (within 30 s) until one has been seen, so the check below holds the
+    // spin to doing it, not the machine to being quiet. Every pass is checked
+    // as the first is. Measured 31 Oct with an instrumented copy under load: 23
+    // to 710 spins of ~10,000 a run saw work, so a run with none is the tail of
+    // that spread, not a lost wake (which the late, total and worst checks catch)
+    let giveUp = nowNs() + 30000000000u64;
+    var passes = 0u64;
+    var again = true;
+    while again {
+      let base = passes * perSender;
+      let t0 = thread.start[SendArg, u32](SendArg(n0, 0u32, base), &sender);
+      let t1 = thread.start[SendArg, u32](SendArg(n2, 1u32, base), &sender);
+      let t2 = thread.start[SendArg, u32](SendArg(n4, 2u32, base), &sender);
+      let t3 = thread.start[SendArg, u32](SendArg(n6, 3u32, base), &sender);
+      t0.join();
+      t1.join();
+      t2.join();
+      t3.join();
+      passes = passes + 1u64;
+      // Not waitUntilIdle: a lost wake would hold it for ever. The last
+      // messages, too, within 2 s
+      let deadline = nowNs() + 2000000000u64;
+      while total() < passes * u64.from(senders) * perSender && nowNs() < deadline {
+        thread.yieldNow();
+      }
+      again = actors.stats().spinsFound == 0u64 && nowNs() < giveUp && counts.late.load() == 0u64 &&
+        total() == passes * u64.from(senders) * perSender;
     }
     // A failure stops here, with no finalAll, which would wait for the
     // message left queued
     requireUInt(counts.late.load(), 0u64, "no sender's wait ran past its 2 s deadline: no message left while the workers slept");
-    requireUInt(total(), u64.from(senders) * perSender, "every message counted, the last within 2 s of the senders' end");
+    requireUInt(total(), passes * u64.from(senders) * perSender, "every message counted, the last within 2 s of the senders' end");
     actors.waitUntilIdle();
     expect(counts.worst.load() < 1000000000u64, "no message took 1 s from its send to its count");
     let st = actors.stats();
