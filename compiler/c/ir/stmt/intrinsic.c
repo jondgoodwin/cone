@@ -119,6 +119,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapePtrT, ShapeT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
     {"moveRaw", MoveRawIntrinsic, "moveRaw[T](to: *T, from: *T, count: usize)",
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    {"forget", ForgetIntrinsic, "forget[T](value: T)",
+        1, 1, {ShapeT}, ShapeVoid, 0, 0, PhaseExpansion, 1},
     {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",
         1, 0, {0}, ShapePtrTypeRecord, 0, 0, PhaseConstant, 1},
     {"holdsTraced", HoldsTracedIntrinsic, "holdsTraced[T]() bool",

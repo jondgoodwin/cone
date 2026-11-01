@@ -315,9 +315,10 @@ INode *flowLockGive(VarDclNode *guard, INode *at);
 // (flowpath.c), so a variable holding the borrow and used later is refused.
 // 'moved' holds each move-source expression that took its referent, or an
 // element of it, out through it, as a HollowNode's does: it is released
-// hollow. 'kept' says it is never finalized: a pointer into it may outlive
-// its statement (flowTempEscape), or a value moved out of it by value left it
-// with a hole, as a local array is left when an element moves out of it.
+// hollow. 'kept' says it is never finalized by its statement: a value moved
+// out of it by value left it with a hole, as a local array is left when an
+// element moves out of it, or an extending borrow made it a hidden local of
+// its block (varDclExtend).
 typedef struct {
     IExpNodeHdr;
     INode *exp;
@@ -334,13 +335,6 @@ void flowTempRead(INode **nodep);
 // slot, and the loan walk a root to end with its statement. One whose death
 // does nothing is 'kept', as nothing finalizes it.
 void flowTempBorrowed(INode **nodep);
-// How many temporaries flow has made: a statement that made none needs no walk
-extern uint32_t flowTempCount;
-// The walk over a statement that made temporaries, once flow has walked it:
-// each temporary that a pointer going out of the statement may point into is
-// kept. 'out' says the value of 'node' goes out of the statement: stored, or
-// handed back.
-void flowTempEscape(INode *node, int out);
 
 // What a drop flag holds at run time: which value, if any, its variable holds
 enum DropFlagState {

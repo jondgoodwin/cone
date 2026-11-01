@@ -630,7 +630,7 @@ depends on:
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
 | `DropFlagTag` | the drop-flag client, in a `dealias` list, round the release of a variable whose state differs by path there | the release runs only when the variable's drop flag holds the state it names |
 | `VarDropFlag` | the drop-flag client, on a variable given a flag | `genlDropFlagBegin` makes the flag where the variable begins; each store over it, and each marked move, updates it |
-| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by `flowTempEscape` (a raw pointer into it going out) or a move out of it by value ("Temporaries", below); `walkvar` by the loan walk (§6) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
+| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by a move out of it by value or an extending borrow ("Temporaries", below); `walkvar` by the loan walk (§6) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -800,23 +800,12 @@ out of is left unreleased.
 outlives its statement — `let r = id(mkso())`, `let r = mkso().me()`, a
 `return` or a store of one — is the loan walk's to refuse where it is used
 after the temporary dies (§6, "Temporaries"), so the temporary is finalized at
-its statement's end all the same. **A temporary a raw pointer outlives is
-kept**, since nothing follows a pointer. Once a statement that made a
-temporary is walked, `blockTempEscape` walks it again (`flowTempEscape`),
-carrying down how the value at each node goes out of the statement — a
-variable's initializer, an assignment's value (not a `_` target's: nothing
-leaves the statement, so every temporary the value's expression made dies at its
-end), a returned, broken-out or
-handed-back value — through values that can hold a borrow or a raw pointer
-(`flowTempOut`: `itypeCarriesBorrow`, or a pointer within a few levels): a
-call's arguments when its result can, every argument of a call that could
-store one (`flowTempCallStores`: a `&mut` or a pointer argument to something
-that can hold one), a literal's or an allocation's elements, a cast's operand,
-a field's or an element's base, a borrow's place. Out becomes `TempOutPtr` at
-the first value on the way that holds a pointer, and a `TempNode` reached so
-is set `kept`: never finalized, which leaks it rather than leave the pointer
-dangling. So `let p = id(mkso()) as *R` keeps the owner; `let r =
-id(mkso())`, `g(mkso())` and `let n = mkso().n` do not.
+its statement's end all the same. So is a temporary a raw pointer was made
+from: nothing follows a pointer, and `let p = id(mkso()) as *R` leaves `p`
+dangling once the statement ends, as a pointer to a local does after its
+block. Keeping it valid is the programmer's job. No walk keeps a temporary;
+only a move out of it by value or an extending borrow (`varDclExtend`) sets
+`kept`.
 
 ## 6. The loan walk
 
@@ -2331,13 +2320,6 @@ droppable noted as holding nothing is never finalized.
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
   (`FlagFirstAssign`, nothing released).
-- **A kept temporary leaks.** `flowTempEscape` keeps a temporary that a
-  borrow or a raw pointer going out of its statement may point into, and it
-  is never finalized: `let r: &R = mkso()` leaks the owner, as every temporary
-  did before. The walk is conservative: any value that can hold a borrow or a
-  pointer carries the question on, so `let n = mkso().me().n` keeps it too.
-  Extending a temporary's life to its borrow's, or refusing the borrow, is the
-  lifetime work's to decide.
 - **A new place a value is consumed without being taken must call
   `flowTempRead`**, or a temporary there is never finalized; and a new place a
   value is taken must not, or it is finalized under its new holder.
@@ -2411,7 +2393,6 @@ droppable noted as holding nothing is never finalized.
 | | `flowIsLvalRead`, `flowIsKeptRead` | the temporary-vs-lvalue test that makes counting correct; the second adds an assignment, whose target keeps its value |
 | | `flowTempRead`, `flowIsTemp`, `flowCastHandsOn` | wrap a temporary whose death does something in a `TempNode`, where it is read or thrown away ("Temporaries") |
 | | `flowTempHollow` | a move out through a temporary sole owner, noted in its `moved` |
-| | `flowTempEscape`, `flowTempCarries`, `flowTempCallStores` | keep each temporary a borrow or a pointer going out of its statement may point into |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a struct, enum, tuple or array whose death releases one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; is it an owning reference, or a tuple of them, that a store releases |
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
@@ -2427,7 +2408,7 @@ droppable noted as holding nothing is never finalized.
 | `ir/itype.c` | `itypeCarriesBorrow`, `itypeCarriesEndingBorrow` | may a value of this type hold a borrowed reference; one of a lifetime that ends, not `'static`; a struct's answers remembered in `StructNode.carriesborrow` and `carriesending` |
 | | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach. The walk stops at 16 nested structs and answers the depth it was asked, so it first asks whether a struct can hold a writable borrow at all (`StructNode.carrieswritable`), and answers 0 for one that cannot, however deep it nests |
 | `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper, with its frame (`flowLoopBegin`, `flowLoopEnd`); a `break` or `continue` handing its state to its loop (`flowLoopJump`); whether every path jumped away (`jumped`) |
-| | `blockDiscards`, `blockTempEscape` | a block throwing its final expression's value away; each statement that made a temporary walked by `flowTempEscape` |
+| | `blockDiscards` | a block throwing its final expression's value away |
 | `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not jump away joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck`, `assignIsLocalPlace` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime of a store into a global or through a reference (one into a variable's own storage is the loan walk's) |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |

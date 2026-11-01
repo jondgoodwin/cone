@@ -46,6 +46,7 @@ typedef struct ActorInfo {
     Nodes *awaiting;        // The state's methods whose bodies hold an 'await'
     FnDclNode *dispatch;    // The dispatch function, which alone calls a message
     FnDclNode *selffn;      // 'selfactor': the handle, from the state
+    FnDclNode *isfn;        // Its 'is' list: a function of one parameter, whose type is the list; NULL where it has none
     FnDclNode *replyfn;     // A request's envelope, its resume message naming no record
     FnDclNode *replyidfn;   // The same, naming the record's id
     FieldDclNode *pending;  // The state's hidden pending table, where it holds an 'await'
