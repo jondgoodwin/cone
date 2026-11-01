@@ -63,7 +63,8 @@
 //   lp.start(core)  lp.takeDone(out)    an asker's record started; those answered  (RECORDS)
 //   forever()                           an 'until' that never comes
 //   threadTimes()                       the calling thread's user and kernel nanoseconds (DIAGNOSTICS)
-//   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone()
+//   lp.share()  Shared: sh.lock(h) sh.issue(p) sh.unlock(h) sh.markClosing(h) sh.contended() sh.isNone() sh.clone()
+//     sharedTables()   tables made and not yet freed
 //     Shared.none()  issueNot issueDone issuePending    a receive or send issued off the loop's thread
 //     core.isIssued()                                    (WORKER-SIDE ISSUE)//
 //   Op.Connect(addr)  Op.Accept(listener)                   (OPERATIONS)
@@ -515,8 +516,9 @@
 // handles): its start then answers it there, and no packet comes.
 //
 // WORKER-SIDE ISSUE (shared.cone). 'lp.share()' is the loop's SHARED TABLE, a
-// Shared: Sendable, copied to share; the loop's handles as any thread sees them,
-// found with a load and a generation check, each entry with a lock. On another
+// Shared: Sendable and Move, one holder each ('sh.clone()' for another); the
+// loop's handles as any thread sees them, found with a load and a generation
+// check, each entry with a lock. On another
 // thread, 'sh.lock(h)' (false: h names nothing there), then 'sh.issue(p)' tries
 // record p's receive or send (Recv into a buffer, a Send of one buffer) on that
 // thread: issueDone, answered there, its outcome in the record (state done,
@@ -533,7 +535,10 @@
 // 'sh.markClosing(h)' (under the lock) stops any issue on h after it, so an
 // operation awaited behind a close fails as it does without the table. The
 // loop unpublishes a handle, under its lock, before it closes it. A lock found
-// held spins a while and then yields; 'sh.contended()' counts those.
+// held spins a while and then yields; 'sh.contended()' counts those. The table
+// outlives its loop for as long as a Shared is held (a thread that looks after
+// the loop died finds every entry unpublished), and the last holder to let go
+// frees it; 'sharedTables()' is how many are made and not yet freed.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
@@ -629,6 +634,7 @@ import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 fn @initpure init() {
   groupSeq = Atomic[u64].of(0u64);
   poolsLive = Atomic[u32].of(0u32);
+  sharedLive = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
   // thread of the program can reach them
   let ws = startWinsock();

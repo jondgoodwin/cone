@@ -159,7 +159,7 @@ INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {
     snprintf(name, sizeof(name), "%.*s.parallel", (int)(outerlen > 200 ? 200 : outerlen), outername);
     LLVMValueRef fn = LLVMAddFunction(gen->module, name, fntype);
     LLVMSetLinkage(fn, LLVMInternalLinkage);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef difile = genlDiFile(gen, (INode*)loop);
         LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
         LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
@@ -195,7 +195,7 @@ INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context, fn, "entry");
     gen->builder = LLVMCreateBuilderInContext(context);
     LLVMPositionBuilderAtEnd(gen->builder, entry);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         unsigned col = loop->srcp && loop->linep ? (unsigned)(loop->srcp - loop->linep) : 0;
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(context, loop->linenbr, col, LLVMGetSubprogram(fn), NULL);
         LLVMSetCurrentDebugLocation2(gen->builder, loc);

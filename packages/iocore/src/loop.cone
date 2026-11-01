@@ -546,9 +546,11 @@ pub struct Loop {
 
   // The handles as other threads see them (shared.cone, WORKER-SIDE ISSUE):
   // made at the first call, every live handle published then and each one
-  // registered after; the same table at every call. The table is never freed:
-  // it lives as long as the program, one per Loop that calls share() (only
-  // aio's does). On the loop's thread
+  // registered after; the same table at every call, each call another holder of
+  // it. The loop is one holder itself, and lets go in its death (final), after
+  // unpublishing every handle: the table is freed by the last holder to let go,
+  // a thread that holds one may look at it after the loop has died. On the
+  // loop's thread
   pub fn share(self: &mut) Shared {
     if shared.isNone() {
       shared = makeShared();
@@ -558,7 +560,7 @@ pub struct Loop {
         i = i + 1u32;
       }
     }
-    shared
+    shared.clone()
   }
 
   // Cell i's handle published in the shared table, if there is one
@@ -2270,5 +2272,10 @@ pub struct Loop {
     }
     libc.free(entries as *u8);
     libc.free(events as *u8);
+    // The shared table: every handle was unpublished above, so nothing is
+    // issued from now on. Another thread may still hold the table and look at
+    // it (workers are not joined before a loop dies), so it is not freed here:
+    // the loop's own hold is let go, as the field is dropped after this
+    // returns, and the last holder to let go frees it (shared.cone, ITS LIFE)
   }
 }

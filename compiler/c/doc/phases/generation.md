@@ -657,7 +657,8 @@ compares the virtual reference's vtable pointer with `Circle as Shape`'s
   with.
 - **Two vtables never fold into one.** Neither carries `unnamed_addr`, so LLVM
   merges no two. The linker's identical-COMDAT folding (`link.exe`'s default
-  `/OPT:ICF`, with no `/DEBUG`) does fold two implementers' methods whose code is
+  `/OPT:ICF`, which Congo's release link gives explicitly as `/OPT:REF,ICF` because
+  `/DEBUG` turns it off by default) does fold two implementers' methods whose code is
   the same, but each vtable's last slot points at its implementer's own type
   record, a private constant in the object's plain `.rdata` (no COMDAT, no
   `unnamed_addr`), so no two vtables' bytes are the same and neither are folded,
@@ -2034,8 +2035,17 @@ Not tried: a GPU or WebAssembly target (a box is a C `malloc`).
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default (the test suite passes it); one of its rules, a block's one terminator,
-is checked on every compile (section 6). `--debug` emits DWARF and drops optimization — it is the only
-switch here, with release as the default. Debug info covers only files,
+is checked on every compile (section 6). `--debug` drops optimization; release is the default.
+Debug info is a separate switch, `opt->debuginfo` (`genSetup`): a native build emits it, release
+or debug, so a profiler can name a release program's functions, and `--strip` emits none. A
+WebAssembly or SPIR-V build emits it for `--debug` alone: a release module is as small as it
+can be, with no PDB to hold the information apart. On a Windows triple the module carries the
+`CodeView` flag, so the object holds CodeView and the linker (`/DEBUG`, which Congo passes on a
+release link) writes a PDB; on Linux the object holds DWARF, which stays in the ELF. The
+information does not change the code: a release program's `.text` is the same instructions
+with and without it (measured on `nbody` and `richards`; only the displacements into `.rdata`
+move, as the PDB's path is written there).
+Debug info covers only files,
 subprograms and each instruction's line and column. A subprogram is in the file its
 function was written in (`genlDiFile`: the lexer's url, one `DIFile` for each, the
 compile's main file for a node with no lexer), so a sibling file of a folder module,
@@ -2047,7 +2057,13 @@ one. Every `genlExpr` sets the builder's debug location to its node's line and
 column, and `genlAlloca` puts it back after taking an alloca in the entry
 block: positioning the builder before the `allocaPoint` takes that
 instruction's location, which is none, and the verifier refuses a call with no
-location in a function with debug info.
+location in a function with debug info. `genlTerm` places each term in `gen->fn`'s
+subprogram, and a location whose scope is null is invalid, so every function the compiler
+builds itself has a subprogram when debug info is on: the program's entry `main` (genlEntry;
+a release build inlines the program's own `main` into it, and an entry with no subprogram
+would drop the inlined code's lines), a type's drop, a parallel `each`'s body, a split
+method, a kernel, and a counted reference's `cone.dropslow.N` (release only). A new
+generated function needs the same.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is

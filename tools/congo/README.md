@@ -21,6 +21,7 @@ congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
 congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
 congo build --no-cache     compile everything, whatever an earlier build left
+congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo publish              point an index registry at this package's current commit
 ```
 
@@ -29,6 +30,16 @@ every `conec` compile of the build, the packages it imports included, where
 core's `isDefined` and `definedInt` read them. They are a provisional
 mechanism whose final design is open (`doc/manual/safe-intrinsics.html#buildconst`,
 "Constants of the build: a provisional mechanism; its final design is open").
+
+A native build carries debug information, release or debug: each function the
+program defines, with its file and lines, so that a profiler can name the
+functions of a release program. On Windows a release link (`/DEBUG`) writes it
+as a `.pdb` beside the `.exe` (`build\release\hello.pdb`), which the program
+does not read and a profiler (WPA, `llvm-pdbutil`) does; on Linux it stays in
+the ELF. `--strip`, given to `build`, `run` or `test`, passes `--strip` to every
+`conec` compile, so the objects carry none, and writes no `.pdb` (and removes
+the one an earlier link left). A debug link writes no `.pdb` on Windows. A
+WebAssembly or SPIR-V release build carries none either way.
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
@@ -452,7 +463,8 @@ and `iocore` (`ws2_32` and `ntdll`, Winsock and the wait completion packet): eac
 SDK libraries in its own `[link.windows]`. Congo's Windows link line adds
 only the C runtime's, `msvcrt.lib` and `legacy_stdio_definitions.lib`, which
 belong to the toolchain and not to any package. A release link on Windows also
-says `/OPT:REF,ICF`, so the linker drops what nothing reaches and folds
+says `/OPT:REF,ICF` (given by name: `/DEBUG`, which it also says unless the build
+is `--strip`ped, would turn the folding off by default), so the linker drops what nothing reaches and folds
 identical functions: the net under the compiler's size gate on a release
 program's generic instances, which keeps each small one as the program's own
 copy (`--private-instances`). `tls` is the example of a

@@ -448,7 +448,7 @@ void genlComputeEntry(GenState *gen, FnDclNode *fnnode) {
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, kernel, "entry"));
     // A debug build gives the kernel a subprogram too, so that what is
     // inlined into it keeps its lines
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef difile = genlDiFile(gen, (INode*)fnnode);
         LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
         LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
