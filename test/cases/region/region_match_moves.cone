@@ -1,0 +1,163 @@
+// A counted payload a match binds moves out of the matched value instead of
+// gaining a holder that the matched value's own release then undoes. What a
+// match takes from a place it can still reach (a field, or a local read again
+// afterwards) is copied into the arm once, as before; what it takes from a
+// value nothing reads again (an owned parameter, a local dead after the match,
+// a call's result) is moved all the way into the binding. 'Tally' is
+// region_regionref's counting region, printing each count, so every line is
+// worked out by hand from the source: one owner at the allocation, one more per
+// holder gained, one fewer per holder going away, 'free' at zero.
+//
+// The binding is the only reader of the payload, so the move cannot leave a
+// use of a moved value behind: where the scrutinee is read after the match the
+// arm holds its own copy, and the scrutinee is whole (the read-after cases).
+
+mod region_match_moves;
+
+import stdio use *;
+import libc;
+
+fn line(label: &str, n: usize) {
+  printStr(label);
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+struct Tally is RegionRef {
+  owners: usize;
+  fn alloc(size: usize) *u8 inline { malloc(size) }
+  fn init(self: &new) inline { *self = Tally(1usize); }
+  fn aliasRef(self: &uni Tally) inline { owners = owners + 1usize; line("alias", owners); }
+  fn dealiasRef(self: &uni Tally) bool inline { owners = owners - 1usize; line("dealias", owners); owners == 0usize }
+  fn free(self: &uni Tally) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+alias Cnt = Tally[mut, i32];
+
+struct Holder {
+  pub cur: Option[Cnt];
+}
+
+enum Shape {
+  struct Pair { pub a: Cnt; }
+  struct Single { pub b: Cnt; }
+  struct Nothing { }
+}
+
+fn show(label: &str) {
+  printStr(label);
+  printStr(": ");
+}
+
+fn end() {
+  printStr("|\n");
+}
+
+fn make() Option[Cnt] { Some[Cnt](Cnt(1)) }
+
+// An owned parameter, dead after the match: the binding takes its holder
+fn paramRead(p: Option[Cnt]) {
+  match p {
+    case let Some[Cnt](x) { printStr("some "); }
+    else { printStr("none "); }
+  }
+}
+
+// The same, the binding handed on
+fn paramEscape(p: Option[Cnt]) Option[Cnt] {
+  match p {
+    case let Some[Cnt](x) { Some(x) }
+    else { None[Cnt] }
+  }
+}
+
+// A local dead after the match
+fn localDead() {
+  let p: Option[Cnt] = Some[Cnt](Cnt(1));
+  match p {
+    case let Some[Cnt](x) { printStr("some "); }
+    else { printStr("none "); }
+  }
+}
+
+fn peek(o: &Option[Cnt]) { }
+
+// A local read again after the match: the arm copies, the local is whole
+fn localReadAfter() {
+  let p: Option[Cnt] = Some[Cnt](Cnt(1));
+  match p {
+    case let Some[Cnt](x) { printStr("some "); }
+    else { printStr("none "); }
+  }
+  peek(&p);
+}
+
+// A field: the arm copies it, the holder keeps its own
+fn fieldRead(h: &Holder) {
+  match h.cur {
+    case let Some[Cnt](x) { printStr("some "); }
+    else { printStr("none "); }
+  }
+}
+
+// A call's result is the match's own value, taken by the arm whole
+fn resultRead() {
+  match make() {
+    case let Some[Cnt](x) { printStr("some "); }
+    else { printStr("none "); }
+  }
+}
+
+// The binding stored in a longer-lived place
+fn stored(h: &mut Holder, p: Option[Cnt]) {
+  match p {
+    case let Some[Cnt](x) { h.cur = Some(x); }
+    else { }
+  }
+}
+
+// An enum with a counted payload in two variants: one arm runs, the other not
+fn shaped(s: Shape) {
+  match s {
+    case let Pair(p) { printStr("pair "); }
+    case let Single(q) { printStr("single "); }
+    else { printStr("nothing "); }
+  }
+}
+
+// A match inside a loop, the scrutinee reassigned from the binding
+fn walk(start: Option[Cnt]) {
+  var cur = start;
+  var steps = 0;
+  while steps < 2 {
+    match cur {
+      case let Some[Cnt](x) { cur = Some(x); }
+      else { }
+    }
+    steps += 1;
+  }
+}
+
+// The long-lived values below die when 'run' ends, before 'main' ends the line
+fn run() {
+  show("param-read"); paramRead(Some[Cnt](Cnt(1))); end();
+  show("param-none"); paramRead(None[Cnt]); end();
+  show("param-escape"); let e = paramEscape(Some[Cnt](Cnt(1))); end();
+  show("local-dead"); localDead(); end();
+  show("local-read-after"); localReadAfter(); end();
+  var h = Holder(Some[Cnt](Cnt(1)));
+  show("field-read"); fieldRead(&h); end();
+  show("result-read"); resultRead(); end();
+  var h2 = Holder(None[Cnt]);
+  show("stored"); stored(&mut h2, Some[Cnt](Cnt(1))); end();
+  show("shaped-pair"); shaped(Shape.Pair(Cnt(1))); end();
+  show("shaped-single"); shaped(Shape.Single(Cnt(1))); end();
+  show("shaped-nothing"); shaped(Shape.Nothing); end();
+  show("walk"); walk(Some[Cnt](Cnt(1))); end();
+}
+
+fn main() i32 {
+  run();
+  end();
+  0i32
+}

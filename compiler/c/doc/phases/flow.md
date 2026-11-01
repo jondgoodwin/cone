@@ -384,6 +384,18 @@ value's drop flag says it no longer holds its payload, and the value cannot be
 used or taken again (`ErrorMove`). A variant with two fields, or a finalizer of
 its own, is refused as before.
 
+That payload moves even when it is not a move type, if it has a death of its
+own (a counted reference, or a value holding one: `flowIsSolePayloadTake`, asked
+by `flowHandleMoveOrCopy`). Nothing names the matched value's variable but the
+pattern, and the pattern reads the payload once, so the read is the last of it:
+the binding takes the arm's holder whole instead of gaining a holder of the
+counted reference that the matched value's own release would then give back. An
+arm on a place copies it into its own holder first, as an initializer copies a
+place (a counted local or parameter dead after the match is a last-use move
+there, "Candidates for a last use"); so a match on an owned parameter, a dead
+local or a call's result counts nothing, and one on a field, or on a local read
+again afterwards, counts the one holder the copy into the arm is.
+
 **Only a sole owner may be moved out of.** The same inward walk refuses four
 more sources. A global has no scope in which a deactivated state could be recovered.
 A place reached through a **borrowed reference** — a dereference of one, or an
