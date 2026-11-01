@@ -663,12 +663,15 @@ is not built. A downcast of a virtual reference to an open trait names a concret
 trait; one that does not, or a type that is no struct (`n is i64`), is `ErrorInvType` with a message
 saying the value is never one, not that a tag is missing ([cast](../nodes/cast.md), "`castIsTypeCheck`").
 
-An actor's declaration has five codes of its own and borrows two. What its
+An actor's declaration has five codes of its own and borrows three. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
-macro, `extern`, a `self` of another kind, a generic actor, one naming an
-abstraction), is `ErrorActorMember`; a module declaring one without importing
+macro, `extern`, a `self` of another kind, a generic actor, one with a base to
+`extends` or an `is` on a condition, an `is` naming something that is not an actor
+trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`);
+an actor that says it `is` an actor trait and does not conform is
+`ErrorActorTraitConform`, listing what it lacks as a conversion's refusal does; a module declaring one without importing
 the `actors` package is `ErrorActorRuntime`; `async` without `fn`,
 or `async fn` outside an actor's body, is `ErrorBehaviourWords`, a parse code
 of its own because `async` is a keyword that means nothing alone; and `self.m()` on one of the actor's behaviours where there is no
@@ -699,10 +702,13 @@ a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 An actor trait's declaration has two codes of its own and borrows two. What
 its body may not hold, or a form of it not built (a field, a `fn`, a behaviour
 with a body, a behaviour that is not `pub` or has no `self`, a generic or
-`overload` one, a static, a macro, a type parameter, an `is` or a base), is
-`ErrorActorTraitMember`; an actor's handle converted to the trait's where the
+`overload` one, a static, a macro, a lifetime among its type parameters, an `is`
+or a base), is `ErrorActorTraitMember`; an actor's handle converted to the
+trait's (an instance's, of a generic trait) where the
 actor lacks a behaviour, declares it without `pub` or with other parameter or
-returned types is `ErrorActorTraitConform`, naming each. A module declaring a
+returned types is `ErrorActorTraitConform`, naming each. An actor that does not
+conform, given to a type parameter bounded by the trait, is `ErrorWhereUnmet`,
+as for any bound. A module declaring a
 trait without importing `actors` is `ErrorActorRuntime`, and a parameter or a
 returned type that cannot cross threads is `ErrorNotSendable`, as an actor's
 behaviour's is. The vtable the conversion needs is an ordinary trait's, so an

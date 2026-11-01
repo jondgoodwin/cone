@@ -30,6 +30,9 @@ typedef struct ActorMessage {
                             // envelope; NULL where the method returns nothing
     FnDclNode *future;      // The handle's method sending it for a future, which it
                             // gives back; NULL where the method returns nothing
+    int generic;            // Set for a message of an instance of a generic actor trait's handle:
+                            // 'method' is the template's requirement, in its type parameters, so
+                            // what the behaviour returns is what 'future' holds (actorMessageReturns)
 } ActorMessage;
 
 // What the parser generated for one actor
@@ -43,6 +46,7 @@ typedef struct ActorInfo {
     Nodes *awaiting;        // The state's methods whose bodies hold an 'await'
     FnDclNode *dispatch;    // The dispatch function, which alone calls a message
     FnDclNode *selffn;      // 'selfactor': the handle, from the state
+    FnDclNode *isfn;        // Its 'is' list: a function of one parameter, whose type is the list; NULL where it has none
     FnDclNode *replyfn;     // A request's envelope, its resume message naming no record
     FnDclNode *replyidfn;   // The same, naming the record's id
     FieldDclNode *pending;  // The state's hidden pending table, where it holds an 'await'
@@ -75,6 +79,19 @@ ActorTraitInfo *actorTraitOfHandle(INode *type);
 // conversion is the language's own (actorTraitCoerce), whether or not the actor
 // conforms: it is judged there, where it can be said which behaviour is missing
 int actorTraitWanted(INode *from, INode *to);
+
+// Does this type meet the actor trait whose handle is 'traitHandle' (a type
+// declaration, the handle or an instance of a generic one)? It does where it is an
+// actor's handle that conforms, which is what a bound on a type parameter,
+// '[S: ChunkSink]', asks; the generic body then calls the actor's own methods, and
+// no table is made. Reports nothing
+int actorTraitMeets(INode *type, INode *traitHandle);
+
+// What the behaviour sent by the method 'fn' returns: the method's return, but for
+// the future-giving method of an instance of a generic trait's handle (the
+// message's 'method' is then the template's requirement, in its type parameters),
+// where it is what the future holds
+INode *actorMessageReturns(FnDclNode *fn);
 
 // Convert the actor handle '*nodep' to the actor trait handle 'totype': the
 // actor's conformance is checked, naming each behaviour it lacks, and the value

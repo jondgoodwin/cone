@@ -960,6 +960,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         parse->tparms = tparms;
         parse->tparmsend = lex->prevend - 1;
+        if (parse->dcltexts && parse->dcltexts->tparms == NULL) {
+            parse->dcltexts->tparms = parse->tparms;
+            parse->dcltexts->tparmsend = parse->tparmsend;
+        }
         if (parms->used > 0 || strnode->lifeparms == NULL) {
             strnode->genericinfo = newGenericInfo();
             strnode->genericinfo->parms = parms;
@@ -1030,6 +1034,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 continue;
             }
             int nth = 0;
+            // Where the list is written, for an actor (parseactor.c), which holds it apart
+            if (parse->dcltexts && parse->dcltexts->istext == NULL)
+                parse->dcltexts->istext = lex->tokp;
             do {
                 if (nth++ > 0)
                     lexNextToken();     // the comma
@@ -1072,6 +1079,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 structAddField(strnode, isafld);
             } while (lexIsToken(CommaToken));
             isend = lex->prevend;
+            if (parse->dcltexts && parse->dcltexts->isend == NULL) {
+                parse->dcltexts->isend = isend;
+                parse->dcltexts->isnames = (uint32_t)nth;
+            }
             // 'is' takes no siblings to fold from: it names abstractions, and an
             // abstraction has no value to reach a folded name through. Delegation is
             // what a field's own 'use' clause is for.

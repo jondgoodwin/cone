@@ -18,6 +18,9 @@ static ActorTraitInfo **actorTraits = NULL;
 static uint32_t actorTraitCnt = 0;
 static uint32_t actorTraitMax = 0;
 
+static ActorMessage *actorTraitMessages(ActorTraitInfo *trait, INode *handle);
+static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *actor, INode *at, char *lead);
+
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
     "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait",
@@ -164,6 +167,44 @@ static void actorRefuseGc(ActorInfo *info) {
     }
 }
 
+// What an actor says it is, 'actor Counter is ChunkSink': each name in the list
+// must be an actor trait (its handle, or an instance of a generic one), and the
+// actor must conform to it, as it would to be converted to it. What it lacks is
+// named, in the words of the conversion's refusal
+static void actorCheckIs(ActorInfo *info) {
+    FnSigNode *sig = (FnSigNode *)info->isfn->vtype;
+    VarDclNode *parm = (VarDclNode *)nodesGet(sig->parms, 0);
+    INode *list = parm->vtype;
+    if (list == NULL || list == unknownType || list->tag == UnknownTag)
+        return;
+    // the parameter is a pointer to the list
+    INode *listdcl = itypeGetTypeDcl(list);
+    if (listdcl->tag == PtrTag) {
+        list = ((StarNode *)listdcl)->vtexp;
+        if (list == NULL || list == unknownType || list->tag == UnknownTag)
+            return;
+        listdcl = itypeGetTypeDcl(list);
+    }
+    Nodes *named = listdcl->tag == TTupleTag || listdcl->tag == TupleTag ? ((TupleNode *)listdcl)->elems : NULL;
+    uint32_t count = named ? named->used : 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        INode *one = named ? nodesGet(named, i) : list;
+        if (one == NULL || one == unknownType || one->tag == UnknownTag)
+            continue;
+        INode *dcl = itypeGetTypeDcl(one);
+        ActorTraitInfo *trait = dcl->tag == StructTag ? actorTraitOfHandle(dcl) : NULL;
+        if (trait == NULL) {
+            if (dcl == errorType || dcl->tag == UnknownTag)
+                continue;
+            errorMsgNode((INode *)info->handle, ErrorActorMember,
+                "Actor %s says it is %s, which is not an actor trait: an actor's 'is' names actor traits, which it conforms to by having their behaviours.",
+                &info->handle->namesym->namestr, itypeName(dcl));
+            continue;
+        }
+        actorTraitConforms(trait, dcl, info, (INode *)info->handle, "which it says it is");
+    }
+}
+
 // A message carries its arguments to whichever worker thread runs the actor,
 // and an initializer's arguments become the state, which the workers then run
 // on: so each must be Sendable, as a channel's element or a thread's start
@@ -199,12 +240,19 @@ void actorCheckAll() {
         }
         for (uint32_t j = 0; j < info->nmsgs; ++j)
             actorCheckReturn(info, info->msgs[j].method);
+        if (info->isfn)
+            actorCheckIs(info);
         actorRefuseGc(info);
     }
     // An actor trait's behaviours are sent to whatever actor the handle holds,
     // so each parameter and each returned type crosses to that actor's thread
     for (uint32_t i = 0; i < actorTraitCnt; ++i) {
         ActorTraitInfo *info = actorTraits[i];
+        // A generic trait's parameters are written in its type parameters, which
+        // are no types until it is instanced; each actor that conforms is judged
+        // on its own behaviour's
+        if (info->handle->genericinfo)
+            continue;
         Name *traitname = info->handle->namesym;
         for (uint32_t j = 0; j + 1 < info->crossing->used; j += 2) {
             FnDclNode *fn = (FnDclNode *)nodesGet(info->crossing, j);
@@ -278,13 +326,13 @@ ActorMessage *actorMessageOfSend(FnDclNode *send, ActorInfo **info) {
     INode *owner = inodeGetOwner((INode *)send);
     // A trait's handle sends through its table: the same four shapes, but no
     // actor of its own to answer
-    for (uint32_t i = 0; i < actorTraitCnt; ++i) {
-        if ((INode *)actorTraits[i]->handle != owner)
-            continue;
-        for (uint32_t j = 0; j < actorTraits[i]->nmsgs; ++j) {
-            if (actorTraits[i]->msgs[j].send == send) {
+    ActorTraitInfo *trait = actorTraitOfHandle(owner);
+    if (trait != NULL) {
+        ActorMessage *msgs = actorTraitMessages(trait, owner);
+        for (uint32_t j = 0; j < trait->nmsgs; ++j) {
+            if (msgs[j].send == send) {
                 *info = NULL;
-                return &actorTraits[i]->msgs[j];
+                return &msgs[j];
             }
         }
         return NULL;
@@ -365,11 +413,80 @@ void actorTraitRegister(ActorTraitInfo *info) {
 }
 
 ActorTraitInfo *actorTraitOfHandle(INode *type) {
+    if (actorTraitCnt == 0 || type == NULL)
+        return NULL;
     for (uint32_t i = 0; i < actorTraitCnt; ++i) {
         if ((INode *)actorTraits[i]->handle == type)
             return actorTraits[i];
     }
+    // An instance of a generic trait's handle is the template's
+    StructNode *template = type->tag == StructTag ? genericTypeTemplate((StructNode *)type) : NULL;
+    if (template == NULL)
+        return NULL;
+    for (uint32_t i = 0; i < actorTraitCnt; ++i) {
+        if (actorTraits[i]->handle == template)
+            return actorTraits[i];
+    }
     return NULL;
+}
+
+// The behaviours of the trait whose handle is 'handle', the template itself or
+// one of its instances. An instance's methods are copies made at its arguments, so
+// its messages are made of those, once: the template's message of the same name
+// whose send, ask and future are found in the instance
+typedef struct ActorTraitInst {
+    INode *handle;
+    ActorMessage *msgs;
+} ActorTraitInst;
+
+static ActorTraitInst *actorTraitInsts = NULL;
+static uint32_t actorTraitInstCnt = 0;
+static uint32_t actorTraitInstMax = 0;
+
+static FnDclNode *actorInstMethod(INode *inst, FnDclNode *templatefn) {
+    if (templatefn == NULL)
+        return NULL;
+    INode *found = iNsTypeFindFnField((INsTypeNode *)inst, templatefn->namesym);
+    return found != NULL && found->tag == FnDclTag ? (FnDclNode *)found : NULL;
+}
+
+static ActorMessage *actorTraitMessages(ActorTraitInfo *trait, INode *handle) {
+    if (handle == (INode *)trait->handle)
+        return trait->msgs;
+    for (uint32_t i = 0; i < actorTraitInstCnt; ++i) {
+        if (actorTraitInsts[i].handle == handle)
+            return actorTraitInsts[i].msgs;
+    }
+    ActorMessage *msgs = (ActorMessage *)memAllocBlk((trait->nmsgs ? trait->nmsgs : 1) * sizeof(ActorMessage));
+    for (uint32_t j = 0; j < trait->nmsgs; ++j) {
+        msgs[j].method = trait->msgs[j].method;
+        msgs[j].send = actorInstMethod(handle, trait->msgs[j].send);
+        msgs[j].ask = actorInstMethod(handle, trait->msgs[j].ask);
+        msgs[j].future = actorInstMethod(handle, trait->msgs[j].future);
+        msgs[j].generic = 1;
+    }
+    if (actorTraitInstCnt == actorTraitInstMax) {
+        uint32_t newmax = actorTraitInstMax ? actorTraitInstMax * 2 : 8;
+        ActorTraitInst *grown = (ActorTraitInst *)memAllocBlk(newmax * sizeof(ActorTraitInst));
+        if (actorTraitInstCnt)
+            memcpy(grown, actorTraitInsts, actorTraitInstCnt * sizeof(ActorTraitInst));
+        actorTraitInsts = grown;
+        actorTraitInstMax = newmax;
+    }
+    actorTraitInsts[actorTraitInstCnt].handle = handle;
+    actorTraitInsts[actorTraitInstCnt].msgs = msgs;
+    ++actorTraitInstCnt;
+    return msgs;
+}
+
+INode *actorMessageReturns(FnDclNode *fn) {
+    INode *ret = ((FnSigNode *)fn->vtype)->rettype;
+    // The future-giving method of an instance of a generic trait's handle stands
+    // for the behaviour, whose requirement is written in the template's type
+    // parameters: what the behaviour returns is what the future holds
+    INode *owner = inodeGetOwner((INode *)fn);
+    INode *held = owner != NULL && ret != NULL && actorTraitOfHandle(owner) != NULL ? actorFutureResult(ret) : NULL;
+    return held != NULL ? held : ret;
 }
 
 int actorTraitWanted(INode *from, INode *to) {
@@ -387,10 +504,9 @@ static int actorSameType(INode *a, INode *b) {
 }
 
 // A behaviour as 'name(a: A, b: B) R', its 'self' left out
-static void actorSigCat(char *buf, size_t size, FnDclNode *fn) {
-    FnSigNode *sig = (FnSigNode *)fn->vtype;
+static void actorSigCat(char *buf, size_t size, Name *name, FnSigNode *sig, INode *ret) {
     size_t len = strlen(buf);
-    snprintf(buf + len, size - len, "%s(", &fn->namesym->namestr);
+    snprintf(buf + len, size - len, "%s(", &name->namestr);
     int first = 1;
     INode **parmp;
     uint32_t cnt;
@@ -405,28 +521,37 @@ static void actorSigCat(char *buf, size_t size, FnDclNode *fn) {
     }
     len = strlen(buf);
     snprintf(buf + len, size - len, ")");
-    if (sig->rettype != NULL && itypeGetTypeDcl(sig->rettype)->tag != VoidTag) {
+    if (ret != NULL && itypeGetTypeDcl(ret)->tag != VoidTag) {
         len = strlen(buf);
         snprintf(buf + len, size - len, " ");
-        itypeSpellCat(buf, size, sig->rettype, 0);
+        itypeSpellCat(buf, size, ret, 0);
     }
 }
 
-// Does the actor have each behaviour of the trait, 'pub', by its name, with the
-// same parameter types and the same returned type? If not, say each that it does
-// not at 'at'
-static int actorTraitConforms(ActorTraitInfo *trait, ActorInfo *actor, INode *at) {
+// Does the actor have each behaviour of the trait whose handle is 'handle', 'pub',
+// by its name, with the same parameter types and the same returned type? If not,
+// say each that it does not at 'at', where there is one. What the trait asks is
+// read off its handle's sending methods, which an instance of a generic trait has
+// at its own arguments: a behaviour's parameters are those of its send, and what
+// it returns is what its future holds
+static int actorTraitConforms(ActorTraitInfo *trait, INode *handle, ActorInfo *actor, INode *at, char *lead) {
     char why[2400];
     why[0] = '\0';
     int bad = 0;
+    ActorMessage *msgs = actorTraitMessages(trait, handle);
     for (uint32_t j = 0; j < trait->nmsgs; ++j) {
-        FnDclNode *req = trait->msgs[j].method;
+        FnDclNode *req = msgs[j].send;
+        Name *name = msgs[j].method->namesym;
         fnCallDemandCandidates((INode *)req);
+        if (msgs[j].future)
+            fnCallDemandCandidates((INode *)msgs[j].future);
+        FnSigNode *reqsig = (FnSigNode *)req->vtype;
+        INode *reqret = msgs[j].future ? actorFutureResult(((FnSigNode *)msgs[j].future->vtype)->rettype) : NULL;
         char want[512];
         want[0] = '\0';
-        actorSigCat(want, sizeof(want), req);
+        actorSigCat(want, sizeof(want), name, reqsig, reqret);
         size_t len = strlen(why);
-        ActorMessage *have = actorMessageNamed(actor, req->namesym);
+        ActorMessage *have = actorMessageNamed(actor, name);
         if (have == NULL) {
             snprintf(why + len, sizeof(why) - len, " It has no behaviour 'pub async fn %s'.", want);
             ++bad;
@@ -435,15 +560,15 @@ static int actorTraitConforms(ActorTraitInfo *trait, ActorInfo *actor, INode *at
         fnCallDemandCandidates((INode *)have->method);
         char has[512];
         has[0] = '\0';
-        actorSigCat(has, sizeof(has), have->method);
+        actorSigCat(has, sizeof(has), have->method->namesym, (FnSigNode *)have->method->vtype,
+            ((FnSigNode *)have->method->vtype)->rettype);
         if (!(have->method->flags & FlagPub)) {
             snprintf(why + len, sizeof(why) - len, " Its behaviour %s is not 'pub', and a sender outside the actor reaches only a 'pub' one.", has);
             ++bad;
             continue;
         }
-        FnSigNode *reqsig = (FnSigNode *)req->vtype;
         FnSigNode *havesig = (FnSigNode *)have->method->vtype;
-        int same = reqsig->parms->used == havesig->parms->used && actorSameType(reqsig->rettype, havesig->rettype);
+        int same = reqsig->parms->used == havesig->parms->used && actorSameType(reqret, havesig->rettype);
         for (uint32_t k = 1; same && k < reqsig->parms->used; ++k) {
             INode *a = ((VarDclNode *)nodesGet(reqsig->parms, k))->vtype;
             INode *b = ((VarDclNode *)nodesGet(havesig->parms, k))->vtype;
@@ -454,13 +579,37 @@ static int actorTraitConforms(ActorTraitInfo *trait, ActorInfo *actor, INode *at
             ++bad;
         }
     }
-    if (bad) {
+    if (bad && at != NULL) {
+        // The trait as asked for, an instance of a generic one with its arguments
+        char traitname[300] = "";
+        itypeSpellCat(traitname, sizeof(traitname), handle, 0);
+        Nodes *args = itypeInstanceTypeArgs(handle);
+        if (args != NULL && args->used > 0) {
+            INode **argp;
+            uint32_t argcnt;
+            int first = 1;
+            strncat(traitname, "[", sizeof(traitname) - strlen(traitname) - 1);
+            for (nodesFor(args, argcnt, argp)) {
+                if (!first)
+                    strncat(traitname, ", ", sizeof(traitname) - strlen(traitname) - 1);
+                first = 0;
+                itypeSpellCat(traitname, sizeof(traitname), *argp, 0);
+            }
+            strncat(traitname, "]", sizeof(traitname) - strlen(traitname) - 1);
+        }
         errorMsgNode(at, ErrorActorTraitConform,
-            "Actor %s does not conform to actor trait %s, which it is converted to here:%s An actor conforms when it has every behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.",
-            &actor->handle->namesym->namestr, &trait->handle->namesym->namestr, why);
-        return 0;
+            "Actor %s does not conform to actor trait %s, %s:%s An actor conforms when it has every behaviour of the trait, declared 'pub', under the same name, with the same parameter types and the same returned type.",
+            &actor->handle->namesym->namestr, traitname, lead, why);
     }
-    return 1;
+    return bad == 0;
+}
+
+int actorTraitMeets(INode *type, INode *traitHandle) {
+    type = itypeGetTypeDcl(type);
+    traitHandle = itypeGetTypeDcl(traitHandle);
+    if (!actorTraitWanted(type, traitHandle))
+        return 0;
+    return actorTraitConforms(actorTraitOfHandle(traitHandle), traitHandle, actorOfHandle(type), NULL, NULL);
 }
 
 int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
@@ -473,7 +622,7 @@ int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
     // handle, which holds that and nothing else (parseactor.c)
     if (actor->handle->fields.used != 1)
         errorUnreachable(orig, "an actor's handle holds more than its mailbox, which an actor trait's handle reads it from");
-    if (!actorTraitConforms(trait, actor, orig)) {
+    if (!actorTraitConforms(trait, totypedcl, actor, orig, "which it is converted to here")) {
         // The conversion is built anyway, so what uses the value says nothing more
         INode *conv = (INode *)newConvCastNode(orig, totypedcl);
         inodeLexCopy(conv, orig);
@@ -490,8 +639,10 @@ int actorTraitCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
         borrowTempRef(nodep, fromtype, perm, borrowTempScope(pstate));
     else
         return 0;
-    fnCallDemandCandidates((INode *)trait->wrap);
-    FnCallNode *call = newFnCallLower(orig, newNameUseFromDclNode((INode *)trait->wrap, orig), 1);
+    // The handle's own function, or its instance's where the trait is generic
+    FnDclNode *wrap = totypedcl == (INode *)trait->handle ? trait->wrap : actorInstMethod(totypedcl, trait->wrap);
+    fnCallDemandCandidates((INode *)wrap);
+    FnCallNode *call = newFnCallLower(orig, newNameUseFromDclNode((INode *)wrap, orig), 1);
     nodesAdd(&call->args, *nodep);
     fnCallFinalizeArgs(pstate, call);
     *nodep = (INode *)call;

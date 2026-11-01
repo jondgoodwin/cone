@@ -1,0 +1,124 @@
+// A generic actor trait: the trait is generic, the actors that conform are not
+// (a generic actor is still refused). 'Subscriber[Event]' is one trait for every
+// type of event: it is instanced at the types its users name, as any generic
+// type is, and each instance is its own two-word handle with its own table.
+//
+// - Two event types, Click and Key. Tally and Clicker take Click, so conform to
+//   Subscriber[Click]; Typist takes Key, so conforms to Subscriber[Key] and not
+//   to the other (concurrency_actor_trait_conform refuses it, naming the
+//   instance).
+// - One list of Subscriber[Click] holds a Tally and a Clicker, and 'publish'
+//   sends a click to each through the handle.
+// - A behaviour returning a value, awaited through a handle of an instance: what
+//   comes back is the instance's type (the trait's type parameter is not what a
+//   caller sees), here a u64.
+// The totals are worked out by hand: Tally adds the clicks' x, 5 and 7; Clicker
+// counts them, times a hundred; Typist keeps the last key.
+
+mod concurrency_actor_trait_generic;
+
+import stdio use *;
+import collections use List;
+import actors;
+
+struct Click is Sendable {
+  pub x: u64;
+}
+
+struct Key is Sendable {
+  pub code: u64;
+}
+
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+  pub async fn heard(self) u64;
+}
+
+actor Tally {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn hear(self, e: Click) {
+    sum = sum + e.x;
+  }
+
+  pub async fn heard(self) u64 {
+    sum
+  }
+}
+
+actor Clicker {
+  count: u64;
+
+  fn init(self: &new) {
+    *self = Self(count: 0u64);
+  }
+
+  pub async fn hear(self, e: Click) {
+    count = count + 1u64;
+  }
+
+  pub async fn heard(self) u64 {
+    count * 100u64
+  }
+}
+
+actor Typist {
+  last: u64;
+
+  fn init(self: &new) {
+    *self = Self(last: 0u64);
+  }
+
+  pub async fn hear(self, e: Key) {
+    last = e.code;
+  }
+
+  pub async fn heard(self) u64 {
+    last
+  }
+}
+
+// One click to every subscriber in the list, whatever each is
+fn publish(subs: &List[Subscriber[Click]], x: u64) {
+  var i = 0usize;
+  while i < subs.view().len() {
+    subs[i].hear(Click(x));
+    i = i + 1usize;
+  }
+}
+
+actor Bus {
+  pub async fn report(self, subs: List[Subscriber[Click]], keys: Subscriber[Key]) {
+    var i = 0usize;
+    while i < subs.view().len() {
+      let n = await subs[i].heard();
+      printStr("click subscriber "); printUInt(u64.from(i)); printStr(" heard "); printUInt(n); printStr("\n");
+      i = i + 1usize;
+    }
+    let k = await keys.heard();
+    printStr("key subscriber heard "); printUInt(k); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let tally = Tally();
+    let clicker = Clicker();
+    let typist = Typist();
+    var clicks = List[Subscriber[Click]].empty();
+    clicks.push(tally);
+    clicks.push(clicker);
+    let keys: Subscriber[Key] = typist;
+    let bus = Bus();
+    publish(&clicks, 5u64);
+    publish(&clicks, 7u64);
+    keys.hear(Key(65u64));
+    bus.report(clicks, keys);
+  }
+  finalAll();
+}

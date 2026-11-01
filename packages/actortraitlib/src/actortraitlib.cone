@@ -3,7 +3,8 @@
 // importer makes its handle, its virtual trait and its conversion again from
 // it, as it does an actor's. This package is the sample of that, and what the
 // tests of this package check from a program that imports it: the trait,
-// 'ChunkSink'; an actor of the package that conforms, 'Counter'; and
+// 'ChunkSink'; an actor of the package that conforms, 'Counter', and says so
+// ('is ChunkSink', which an importer's compile checks again from the include file); and
 // 'feed', which sends through a handle of the trait whatever actor it holds.
 
 mod actortraitlib;
@@ -19,7 +20,7 @@ pub actor trait ChunkSink {
   pub async fn total(self) u64;
 }
 
-pub actor Counter {
+pub actor Counter is ChunkSink {
   sum: u64;
 
   pub fn init(self: &new) {
@@ -38,4 +39,19 @@ pub actor Counter {
 // One chunk of n, sent to whatever actor the handle holds
 pub fn feed(s: ChunkSink, n: u64) {
   s.accept(Chunk(n));
+}
+
+// The same, to whatever actor conforms, called directly: a bound on the trait
+// makes no handle and no table
+pub fn feedBound[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));
+}
+
+// A generic actor trait, instanced by its users at the types they send
+pub actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+pub fn announce[Event](s: Subscriber[Event], e: Event) {
+  s.hear(e);
 }
