@@ -205,6 +205,7 @@ type while each call gives its own orderings.
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
+| `forget[T]` | expansion | nothing: the value is moved into the call, which has no body to finalize it; no code |
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
 | `trace[T]` | expansion | `genlTraceAt`: each traced reference the value holds, loaded and, where not null, handed to its region's `mark` with its permission and `mode` where `mark` takes them |

@@ -577,13 +577,6 @@ static int blockDiscards(FlowState *fstate, BlockNode *blk) {
     return vtype == NULL || vtype == unknownType || itypeGetTypeDcl(vtype)->tag == VoidTag;
 }
 
-// Once a statement is walked: if it made temporaries, keep each that what
-// goes out of it ('out': its value is stored or handed back) may point into
-static void blockTempEscape(uint32_t tempmark, INode *node, int out) {
-    if (flowTempCount != tempmark)
-        flowTempEscape(node, out);
-}
-
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
@@ -642,12 +635,9 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // Handle last node differently, below
         if (cnt <= 1)
             break;
-        uint32_t tempmark = flowTempCount;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             varDclFlow(fstate, (VarDclNode**)nodesp);
-            if (((VarDclNode *)*nodesp)->value)
-                blockTempEscape(tempmark, ((VarDclNode *)*nodesp)->value, 1);
             break;
         case SwapTag:
             swapFlow(fstate, (SwapNode **)nodesp);
@@ -665,7 +655,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             flowGateResult(fstate, result);
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
-            blockTempEscape(tempmark, *brkexp, 1);
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
             flowLoopJump(brknode->block, 0);
             break;
@@ -683,7 +672,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             if (isExpNode(*nodesp)) {
                 flowLoadValue(fstate, nodesp);
                 flowTempRead(nodesp);
-                blockTempEscape(tempmark, *nodesp, 0);
             }
         }
     }
@@ -704,7 +692,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     // the others where the loop ends, so its path takes no part in the join
     // after the 'if' it ends an arm of.
     int jumped = 0;
-    uint32_t tempmark = flowTempCount;
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
@@ -720,7 +707,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             // function may move: not a value it reached through a borrow
             blockResultMove(*retexp);
             blockResultCount(retexp, result, 0);
-            blockTempEscape(tempmark, *retexp, 1);
         }
         // An init returns only once it has filled self
         flowNewSelfReturn(fstate, *nodesp);
@@ -753,7 +739,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
                 flowTempRead(retexp);
             else
                 blockResultCount(retexp, result, svpos);
-            blockTempEscape(tempmark, *retexp, !discards);
         }
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
@@ -768,7 +753,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             flowLoadValue(fstate, brkexp);
             blockResultCount(brkexp, result, blockJumpMark(brknode, svpos));
         }
-        blockTempEscape(tempmark, *brkexp, 1);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
         jumped = flowLoopJump(brknode->block, 0);
         break;
