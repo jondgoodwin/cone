@@ -50,6 +50,10 @@ typedef struct FieldDclNode {
     uint16_t vtblidx;          // field's index within the type's vtable
     uint32_t lifeslots;        // The slots of its struct's declared lifetimes it holds (lifeFieldSlots)
     uint8_t lifeknown;         // 'lifeslots' is settled
+    // Kept last: a name table slot may hold a field where a variable is expected, and
+    // reads 'scope' at the VarDclNode's offset (varDclHook), so nothing is inserted before 'index'
+    Name *via2;                // On a type body's 'use' node: a second lender ('use Array[T] via view, viewMut, viewUni'); which permission each lends is read from its return type
+    Name *via3;                // ... and a third
 } FieldDclNode;
 
 
