@@ -215,7 +215,13 @@ static int fnSigReqTypeSame(INode *req, INode *impl, INode *selftype) {
         RefNode *reqref = (RefNode*)reqdcl;
         RefNode *implref = (RefNode*)impldcl;
         return fnSigReqTypeSame(reqref->vtexp, implref->vtexp, selftype)
-            && permIsSame(reqref->perm, implref->perm)
+            && (permIsSame(reqref->perm, implref->perm)
+                // A reference written with no permission to a type declaring Immutable is
+                // 'imm' (refImmutableDefaultPerm), but a trait's '&Self' is 'ro' as the
+                // trait is written. Where Self is such a type, they are the same reference
+                || (isNameUseNode(reqref->vtexp) && ((NameUseNode*)reqref->vtexp)->namesym == selfTypeName
+                    && itypeIsImmutable(selftype)
+                    && itypeGetTypeDcl(reqref->perm) == (INode*)roPerm && itypeGetTypeDcl(implref->perm) == (INode*)immPerm))
             && itypeIsSame(reqref->region, implref->region);
     }
     case PtrTag:

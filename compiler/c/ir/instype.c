@@ -299,3 +299,58 @@ int iNsTypeVrefLayoutDiff(INode *binding, FnDclNode *matchmeth, INode *selftype,
     }
     return 0;
 }
+
+// One position of a number method meeting a trait's requirement: the requirement
+// names the number type, 'Self', or the trait itself (a receiver), held directly
+// or through any reference; the number's method holds the number by value.
+static int iNsTypeNumberPosMeets(INode *req, INode *implty, INode *nbr, INode *trait) {
+    // the number's method holds the number by value, or reads it through a reference
+    INode *impldcl = itypeGetTypeDcl(implty);
+    if (impldcl->tag == RefTag)
+        impldcl = itypeGetTypeDcl(((RefNode*)impldcl)->vtexp);
+    if (impldcl != nbr)
+        return 0;
+    for (int depth = 0; depth < 4; ++depth) {
+        if (isNameUseNode(req) && ((NameUseNode*)req)->namesym == selfTypeName)
+            return 1;
+        INode *dcl = itypeGetTypeDcl(req);
+        if (dcl == nbr || dcl == trait)
+            return 1;
+        if (dcl->tag != RefTag)
+            return 0;
+        req = ((RefNode*)dcl)->vtexp;
+    }
+    return 0;
+}
+
+// Does a number type's built-in method meet the trait method 'req'? The number's
+// methods take the number by value, where a trait must write 'Self' behind a
+// reference (a trait cannot hold it by value, Error 1069), so a requirement's
+// '&Self' is met by the number held by value: the number is Copy, the call reads
+// the referent. 'binding' is the number namespace's binding for the method's name.
+int iNsTypeNumberMeets(INode *binding, FnDclNode *req, INode *nbr, INode *trait) {
+    INode **candidatep;
+    uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+    FnSigNode *reqsig = (FnSigNode*)req->vtype;
+    int found = 0;
+    while (cnt--) {
+        FnDclNode *methnode = (FnDclNode *)*candidatep++;
+        if (methnode->genericinfo)
+            continue;
+        FnSigNode *sig = (FnSigNode*)methnode->vtype;
+        if (sig->parms->used != reqsig->parms->used)
+            continue;
+        int ok = (itypeIsSame(reqsig->rettype, sig->rettype)
+            || iNsTypeNumberPosMeets(reqsig->rettype, sig->rettype, nbr, trait));
+        INode **reqp = &nodesGet(reqsig->parms, 0);
+        INode **implp = &nodesGet(sig->parms, 0);
+        for (uint32_t i = 0; ok && i < sig->parms->used; ++i)
+            ok = iNsTypeNumberPosMeets(((IExpNode*)reqp[i])->vtype, ((IExpNode*)implp[i])->vtype, nbr, trait);
+        if (!ok)
+            continue;
+        if (found)
+            return 0;
+        found = 1;
+    }
+    return found;
+}
