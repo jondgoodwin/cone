@@ -526,6 +526,9 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     // slot is finalized or released, and the value read is the caller's
     case ReadRawIntrinsic:
         return LLVMBuildLoad2(gen->builder, genlType(gen, type), fnargs[0], "rawread");
+    // The value is moved in and ends there, finalized by no one: nothing to generate
+    case ForgetIntrinsic:
+        return NULL;
     case WriteRawIntrinsic:
         LLVMBuildStore(gen->builder, fnargs[1], fnargs[0]);
         // A type that places values here says how a collector reaches them
