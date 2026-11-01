@@ -1,0 +1,354 @@
+// A Reader over the bytes that have arrived, and a Writer over a buffer being
+// filled (layer 2 of the streaming design):
+//
+//   - 'peek' gives the first n bytes as one slice: in place, copying nothing,
+//     while they lie in one segment (the pool lends no extra block), and copied
+//     once into the reader's own block when they cross a segment's edge;
+//   - a crossing peek that is asked again for more bytes from the same start,
+//     after more arrived, gives the right bytes, and so does a peek after a
+//     'consume', a 'take' or a 'popFront' dropped the copy;
+//   - a random stream cut into random pieces and read by random peeks and
+//     consumes comes out whole;
+//   - 'peek' past the end is None, a push past the bound is handed back;
+//   - the Writer's 'spare' and 'advance', 'put', 'take' (the full buffer moves
+//     out, a fresh one takes its place) and 'intoBuf', and a Transform pulling
+//     into the Writer's buffer;
+//   - a Reader and Writer carry a stream through a digester: the same digest as
+//     the one-shot hash;
+//   - every block is back in the pool at the end.
+//
+// That 'consume' under a live view, and a second 'peek', are refused is pinned
+// by test/cases/concurrency/concurrency_streams_reader_view.cone.
+
+mod reader;
+
+import testing use *;
+import collections use *;
+import iobuf use *;
+import streams use *;
+import cryptohash;
+import deflate;
+
+fn piece(text: &Array[u8]) IoBuf {
+  var b = IoBuf(text.len);
+  b.append(text);
+  b
+}
+
+fn pushed(o: Option[IoBuf]) bool {
+  o is None[IoBuf]
+}
+
+fn lent() u64 { stats().lent }
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+// A pseudo-random generator, for the data and the cuts
+fn next(s: &mut u64) u64 {
+  *s = *s * 6364136223846793005u64 + 1442695040888963407u64;
+  *s >> 33u64
+}
+
+fn inPlaceAndCrossing() {
+  let before = lent();
+  {
+    var r = Reader.make(65536usize);
+    expect(r.isEmpty(), "a new reader is empty");
+    expect(r.peek(1usize) is None[&Array[u8]], "peek of an empty reader is None");
+    expect(pushed(r.push(piece("GET /a HTTP/1.1\r\n"))), "pushed 1");
+    expectUInt(lent() - before, 1u64, "one block lent for the one segment");
+    match r.peek(4usize) {
+      case let Some(v) {expectStr(v, "GET ", "the first four bytes");}
+      case is None[&Array[u8]] {expect(false, "the first four bytes are there");}
+    }
+    match r.peek(17usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\n", "the whole segment");}
+      case is None[&Array[u8]] {expect(false, "the whole segment is there");}
+    }
+    expectUInt(lent() - before, 1u64, "peeks inside one segment copy nothing: still one block");
+    expectUInt(u64.from(r.contiguousLen()), 17u64, "17 bytes lie in the first segment");
+    expect(r.peek(18usize) is None[&Array[u8]], "peek past the end is None");
+    match r.peek(0usize) {
+      case let Some(v) {expectUInt(u64.from(v.len), 0u64, "peek of none is an empty view");}
+      case is None[&Array[u8]] {expect(false, "peek of none is Some");}
+    }
+
+    // A second and third segment: the head now crosses edges
+    expect(pushed(r.push(piece("Host: x\r"))), "pushed 2");
+    expect(pushed(r.push(piece("\n\r\nhello"))), "pushed 3");
+    expectUInt(u64.from(r.len()), 33u64, "33 bytes held");
+    expectUInt(u64.from(r.segments()), 3u64, "three segments");
+    match r.peek(17usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\n", "the first segment, still in place");}
+      case is None[&Array[u8]] {expect(false, "the first segment is there");}
+    }
+    expectUInt(lent() - before, 3u64, "still no copy: three segments");
+    match r.peek(20usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\nHos", "across one edge");}
+      case is None[&Array[u8]] {expect(false, "across one edge is there");}
+    }
+    expectUInt(lent() - before, 4u64, "crossing an edge made one copy block");
+    match r.peek(28usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\nHost: x\r\n\r\n", "across two edges, the copy extended");}
+      case is None[&Array[u8]] {expect(false, "across two edges is there");}
+    }
+    match r.peek(20usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\nHos", "a shorter peek after a longer one");}
+      case is None[&Array[u8]] {expect(false, "a shorter peek is there");}
+    }
+    match r.peek(33usize) {
+      case let Some(v) {expectStr(v, "GET /a HTTP/1.1\r\nHost: x\r\n\r\nhello", "everything");}
+      case is None[&Array[u8]] {expect(false, "everything is there");}
+    }
+    expectUInt(lent() - before, 4u64, "extending the copy took no further block");
+
+    // Consume: the copy is dropped, the next peek starts from the new front
+    r.consume(17usize);
+    expectUInt(u64.from(r.len()), 16u64, "16 bytes left");
+    expectUInt(lent() - before, 3u64, "the first segment went home (the copy block stays)");
+    match r.peek(12usize) {
+      case let Some(v) {expectStr(v, "Host: x\r\n\r\nh", "after the first segment was consumed");}
+      case is None[&Array[u8]] {expect(false, "after consuming 17 is there");}
+    }
+    r.consume(3usize);
+    match r.peek(13usize) {
+      case let Some(v) {expectStr(v, "t: x\r\n\r\nhello", "after consuming into a segment");}
+      case is None[&Array[u8]] {expect(false, "after consuming 20 is there");}
+    }
+    expect(r.findByte('x') is Some[usize], "findByte through the reader");
+    expect(r.matchesAt(3usize, "x\r\n"), "matchesAt through the reader");
+    match r.find("\r\n\r\n") {
+      case let Some(at) {expectUInt(u64.from(at), 4u64, "find across an edge");}
+      case is None[usize] {expect(false, "the head's end found");}
+    }
+    expectUInt(u64.from(r.byteAt(12usize)), u64.from('o'), "byteAt the last byte");
+
+    // popFront moves the first segment out and drops the copy; take copies out
+    match r.popFront() {
+      case let Some(s) {expectUInt(u64.from(s.len()), 5u64, "popFront gave the rest of the second segment");}
+      case is None[IoBuf] {expect(false, "popFront gave a segment");}
+    }
+    match r.peek(8usize) {
+      case let Some(v) {expectStr(v, "\n\r\nhello", "the third segment, in place, after popFront");}
+      case is None[&Array[u8]] {expect(false, "the third segment is there");}
+    }
+    var three = Array[u8, 3]() <- fill 0u8;
+    expectUInt(u64.from(r.take(&mut three[0usize ..< 3usize])), 3u64, "take copied three bytes out");
+    expectStr(&three[0usize ..< 3usize], "\n\r\n", "the bytes taken");
+    expectUInt(u64.from(r.len()), 5u64, "five left");
+    match r.peek(5usize) {
+      case let Some(v) {expectStr(v, "hello", "what take left");}
+      case is None[&Array[u8]] {expect(false, "what take left is there");}
+    }
+    r.consume(5usize);
+    expect(r.isEmpty(), "everything consumed");
+    expectUInt(lent() - before, 0u64, "an emptied reader holds no block of its own");
+    expect(r.peek(1usize) is None[&Array[u8]], "peek of a consumed reader is None");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+// Pushing past the bound hands the buffer back; peek of nothing on an empty reader
+fn bound() {
+  let before = lent();
+  {
+    var r = Reader.make(10usize);
+    expectUInt(u64.from(r.bound()), 10u64, "the bound is what make said");
+    match r.peek(0usize) {
+      case let Some(v) {expectUInt(u64.from(v.len), 0u64, "peek of none on an empty reader");}
+      case is None[&Array[u8]] {expect(false, "peek of none on an empty reader is Some");}
+    }
+    expect(pushed(r.push(piece("0123456"))), "seven bytes fit");
+    match r.push(piece("789ab")) {
+      case let Some(back) {expectStr(back.view(), "789ab", "the refused buffer comes back whole");}
+      case is None[IoBuf] {expect(false, "a push past the bound is refused");}
+    }
+    expect(pushed(r.push(piece("789"))), "ten bytes fit exactly");
+    expectUInt(u64.from(r.len()), 10u64, "ten held");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+// A random stream cut into random pieces, read by random peeks and consumes
+fn randomCuts() {
+  let before = lent();
+  let total = 300000usize;
+  var s = 12345u64;
+  var data = List[u8].withCapacity(total);
+  while data.len() < total {data.push(u8.from(next(&mut s) % 251u64));}
+  {
+    var r = Reader.make(total);
+    var at = 0usize;
+    while at < total {
+      var n = usize.from(1u64 + next(&mut s) % 3000u64);
+      if n > total - at {n = total - at;}
+      var b = IoBuf(n);
+      b.append(&data.view()[at ..< at + n]);
+      if !pushed(r.push(b)) {expect(false, "a random piece is accepted");}
+      at += n;
+    }
+    expectUInt(u64.from(r.len()), u64.from(total), "all the pieces are held");
+    var pos = 0usize;
+    var bad = 0u32;
+    var crossings = 0u32;
+    while pos < total {
+      var n = usize.from(1u64 + next(&mut s) % 4000u64);
+      if n > total - pos {n = total - pos;}
+      if n > r.contiguousLen() {crossings += 1u32;}
+      match r.peek(n) {
+        case let Some(v) {
+          var i = 0usize;
+          while i < n {
+            if v[i] != data[pos + i] {bad += 1u32;}
+            i += 1usize;
+          }
+        }
+        case is None[&Array[u8]] {bad += 1u32;}
+      }
+      // Peek a little more first sometimes, so the copy is extended, not remade
+      let more = if n + 100usize <= total - pos {n + 100usize} else {n};
+      if next(&mut s) % 3u64 == 0u64 {
+        match r.peek(more) {
+          case let Some(v) {
+            if v[more - 1usize] != data[pos + more - 1usize] {bad += 1u32;}
+          }
+          case is None[&Array[u8]] {bad += 1u32;}
+        }
+      }
+      r.consume(n);
+      pos += n;
+    }
+    expectUInt(u64.from(bad), 0u64, "every peeked byte is the byte of the stream");
+    expect(crossings > 10u32, "many peeks crossed an edge");
+    expect(r.isEmpty(), "the stream is consumed");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+// The Writer: room, advance, put, take, intoBuf
+fn writer() {
+  let before = lent();
+  {
+    var w = Writer.make(100usize);
+    expect(w.isEmpty(), "a new writer is empty");
+    expectUInt(u64.from(w.room()), 4096u64, "the buffer is the pool's 4 KiB class");
+    expectUInt(u64.from(w.spare().len), 4096u64, "all of it is spare");
+    {
+      let room = w.spare();
+      room[0usize] = 'a';
+      room[1usize] = 'b';
+    }
+    w.advance(2usize);
+    expectUInt(u64.from(w.len()), 2u64, "two bytes written");
+    expectUInt(u64.from(w.room()), 4094u64, "less room");
+    expectUInt(u64.from(w.spare().len), 4094u64, "the spare room starts after them");
+    expectUInt(u64.from(w.put("cde")), 3u64, "put copied three bytes in");
+    expectStr(w.view(), "abcde", "the bytes written");
+    expect(!w.isFull(), "not full");
+    var b = w.take();
+    expectStr(b.view(), "abcde", "take moved the written bytes out");
+    expect(w.isEmpty(), "a fresh buffer took its place");
+    expectUInt(u64.from(w.room()), 4096u64, "of the same size");
+    // Fill it exactly: put copies as many as fit
+    var big = List[u8].withCapacity(5000usize);
+    while big.len() < 5000usize {big.push('z');}
+    expectUInt(u64.from(w.put(big.view())), 4096u64, "put copies as many as fit");
+    expect(w.isFull(), "now full");
+    expectUInt(u64.from(w.spare().len), 0u64, "no spare room when full");
+    let full = w.intoBuf();
+    expectUInt(u64.from(full.len()), 4096u64, "intoBuf moved the full buffer out");
+    expectUInt(u64.from(w.room()), 0u64, "a finished writer holds none");
+    expect(w.isFull(), "and has no room");
+    expectUInt(u64.from(b.len()), 5u64, "the first buffer is still its own");
+  }
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+// A Transform pulls into the Writer's buffer; the full buffers go to a Reader
+// and its pieces to a hash: the digest of the whole is the one-shot digest
+fn pipelineBody() {
+  var s = 99u64;
+  var data = List[u8].withCapacity(200000usize);
+  let words: Array[&str, 3] = ["red ", "green ", "blue "];
+  while data.len() < 200000usize {
+    let word = words[usize.from(next(&mut s) % 3u64)];
+    var i = 0usize;
+    while i < word.len { data.push(word[i]); i += 1usize; }
+  }
+  // Deflate it through a Writer: each full (or last) buffer is pushed to a Reader
+  var r = Reader.make(1048576usize);
+  {
+    var d = deflate.Deflater.make(deflate.Format.Gzip, 2);
+    var w = Writer.make(4096usize);
+    var at = 0usize;
+    while at < data.len() {
+      let n = if data.len() - at < 8192usize {data.len() - at} else {8192usize};
+      d.feed(&data.view()[at ..< at + n]);
+      at += n;
+    }
+    d.finish();
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      st = d.pull(w.buffer());
+      if w.isFull() || st != Status.MoreOutput {
+        if !pushed(r.push(w.take())) {expect(false, "the compressed stream fits the reader");}
+      }
+    }
+    expect(st == Status.Done, "the deflater is done");
+  }
+  // Read the compressed stream back in pieces peeked and consumed, hashing them
+  // and inflating them
+  var h = cryptohash.Sha256.make();
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  let compressed = r.len();
+  var all = List[u8].empty();
+  while !r.isEmpty() {
+    let n = if r.len() < 1000usize {r.len()} else {1000usize};
+    match r.peek(n) {
+      case let Some(v) {
+        h.feed(v);
+        inf.feed(v);
+        all.appendSlice(v);
+      }
+      case is None[&Array[u8]] {expect(false, "a piece of the compressed stream is there");}
+    }
+    r.consume(n);
+  }
+  inf.finish();
+  var out = Writer.make(65536usize);
+  var plain = List[u8].empty();
+  var st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    out.buffer().clear();
+    st = inf.pull(out.buffer());
+    plain.appendSlice(out.view());
+  }
+  expect(st == Status.Done, "the inflater is done");
+  expect(compressed > 1000usize && compressed < data.len(), "it compressed");
+  expectUInt(u64.from(plain.len()), u64.from(data.len()), "the inflated length is the data's");
+  var equal = true;
+  var k = 0usize;
+  while k < data.len() {
+    if plain[k] != data[k] {equal = false; break;}
+    k += 1usize;
+  }
+  expect(equal, "the inflated bytes are the data");
+  let digest = h.finish();
+  let want = cryptohash.sha256(all.view());
+  expect(same(&digest, &want), "the digest of the pieces peeked is the one-shot digest of the stream");
+}
+
+fn pipeline() {
+  let before = lent();
+  pipelineBody();
+  expectUInt(lent() - before, 0u64, "every block went home");
+}
+
+fn main() i32 {
+  inPlaceAndCrossing();
+  bound();
+  randomCuts();
+  writer();
+  pipeline();
+  done()
+}

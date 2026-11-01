@@ -1,0 +1,83 @@
+// ======== Layer 2, writing: a Writer over a buffer being filled ========
+//
+// The producing side of a Reader: whoever has bytes to put out asks the writer
+// for room, writes into it, and says how many it wrote. When the buffer is
+// full, or the stage is done, the whole buffer is handed on (moved, to the next
+// stage or to a send), and the writer starts again on a fresh one.
+//
+//   var w = Writer.make(65536usize);        // a 64 KiB buffer, empty
+//   let n = fillFrom(w.spare());            // write into the room...
+//   w.advance(n);                           // ...and say how much
+//   if w.isFull() {send(w.take());}         // the buffer moves on; w holds a new one
+//
+//   w.spare()       the room after the written bytes, '&mut Array[u8]', to fill
+//   w.advance(n)    n bytes of the room are written (a panic past the room)
+//   w.put(bytes)    copy in as many as fit: how many
+//   w.take()        the buffer, written bytes and all, moved out; a fresh one
+//                   of the same size takes its place
+//   w.intoBuf()     the buffer moved out; the writer is spent (holds none)
+//   w.len()  w.room()  w.isFull()  w.isEmpty()  w.view()  w.buffer()
+//
+// Like Reader this lives inside one stage: it does no I/O, takes no lock and
+// never waits. The buffer is an IoBuf from the buffer pool, so 'take' hands a
+// stage's output on without a copy and a dropped writer returns its block.
+
+// A buffer being filled, and its size, for the next after 'take'
+pub struct Writer is Move {
+  buf: IoBuf;
+  size: usize;       // the room a fresh buffer is made with after 'take'
+
+  // A writer over a fresh buffer with room for at least size bytes
+  pub fn make(size: usize) Writer {
+    Writer(IoBuf(size), size)
+  }
+
+  // A writer over a buffer a caller has started (its written bytes stay); 'take'
+  // makes the next one as large as this one's capacity
+  pub fn over(buf: IoBuf) Writer {
+    let size = buf.capacity();
+    Writer(buf, size)
+  }
+
+  // The room after the written bytes, to fill
+  pub fn spare(self: &mut) &mut Array[u8] {buf.spare()}
+
+  // Say that n bytes of the room are now written: a panic, at the caller's
+  // line, past the room
+  pub fn advance(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    if n > buf.room() {panic("streams: Writer.advance past the room", file, line);}
+    buf.setLen(buf.len() + n);
+  }
+
+  // Copy in as many of bytes as fit: how many
+  pub fn put(self: &mut, bytes: &Array[u8]) usize {buf.append(bytes)}
+
+  // How many bytes are written, and how many more fit
+  pub fn len(self: &) usize {buf.len()}
+  pub fn room(self: &) usize {buf.room()}
+  pub fn isEmpty(self: &) bool {buf.isEmpty()}
+  pub fn isFull(self: &) bool {buf.room() == 0usize}
+
+  // The bytes written
+  pub fn view(self: &) &Array[u8] {buf.view()}
+
+  // The buffer itself, for a Transform's 'pull' to write into: it fills the
+  // spare room and sets the length, as 'spare' and 'advance' do
+  pub fn buffer(self: &mut) &mut IoBuf {&mut buf}
+
+  // The buffer with its written bytes, moved out; a fresh empty one takes its
+  // place. A pool that has no more to give panics, as 'IoBuf(size)' does
+  pub fn take(self: &mut) IoBuf {
+    var out = IoBuf(size);
+    out <-> buf;
+    out
+  }
+
+  // The buffer with its written bytes, moved out, and none left in the
+  // writer: for the last hand-over of a stage
+  pub fn intoBuf(self: &mut) IoBuf {
+    var out = IoBuf.empty();
+    out <-> buf;
+    out
+  }
+}

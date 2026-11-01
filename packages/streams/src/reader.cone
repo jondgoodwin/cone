@@ -1,0 +1,149 @@
+// ======== Layer 2, reading: a Reader over the bytes that have arrived ========
+//
+// A parser's view of a stream that comes in pieces: the unconsumed bytes, held
+// in the buffers they arrived in (an iobuf Chain), looked at in place and
+// consumed when the parser has used them.
+//
+//   var r = Reader.make(65536usize);       // holds at most 64 KiB unconsumed
+//   r.push(buf);                           // a read completed: its buffer joins
+//   match r.peek(4usize) {                 // the first four bytes, or None (too few yet)
+//     case let Some(v) {
+//       let magic = v[0usize];             // the view is a borrow of r...
+//       r.consume(4usize);                 // ...so consuming under a live view is refused
+//     }
+//     case is None {}
+//   }
+//
+//   r.peek(n)       Option[&Array[u8]]: the first n bytes as ONE slice, or None
+//                   when fewer than n are held. In place when they lie in one
+//                   segment; copied once into the reader's own buffer only when
+//                   they cross a segment's edge.
+//   r.consume(n)    the first n bytes are used: segments wholly used go home
+//   r.len()  r.isEmpty()  r.contiguousLen()  r.bound()  r.push(buf)
+//   r.find(pat, from)  r.findByte(b, from)  r.matchesAt(i, pat)  r.byteAt(i)
+//   r.copyOut(from, dest)  r.take(dest)  r.popFront()  r.segments()
+//
+// THE BORROW IS THE PROTOCOL. 'peek' lends a view of the reader and 'consume'
+// changes the reader, so the checker refuses a 'consume' (or any other use of
+// the reader) while the view is live: a parser cannot read from a segment that
+// 'consume' has just given back to the pool. Both take '&mut self', since a
+// peek that crosses an edge writes the reader's own copy; a second 'peek'
+// while the first view lives is refused as well, which is the price. Take what
+// you need from the view (an offset, a length, a parsed value) and let it go
+// before the next call.
+//
+// The copy a crossing peek makes is kept: a second peek of more bytes from the
+// same start copies only the bytes it adds, so a head arriving in many pieces
+// is copied about once. 'consume' (and 'take' and 'popFront', which also move
+// bytes off the front) drop the copy's bytes, and its block too when the
+// reader is left empty: a reader waiting for its next bytes holds no block of
+// its own.
+
+// The bytes that have arrived and are not yet consumed, looked at through
+// views. It owns its Chain: bytes enter by 'push' and leave by 'consume',
+// 'take' and 'popFront'. Sendable as the Chain is.
+pub struct Reader is Move {
+  chain: Chain;
+  copy: IoBuf;       // the first 'copy.len()' unconsumed bytes, when a peek crossed an edge
+
+  // An empty reader holding at most limit unconsumed bytes: a push past that
+  // is refused, its buffer handed back
+  pub fn make(limit: usize) Reader {
+    Reader(Chain.make(limit), IoBuf.empty())
+  }
+
+  // A reader over a chain already holding bytes
+  pub fn over(chain: Chain) Reader {
+    Reader(chain, IoBuf.empty())
+  }
+
+  // Add a filled buffer after the bytes held: None once it is in, or Some(buf)
+  // back, refused, when its bytes would pass the bound (an empty one is dropped)
+  pub fn push(self: &mut, buf: IoBuf) Option[IoBuf] {chain.push(buf)}
+
+  // How many unconsumed bytes are held
+  pub fn len(self: &) usize inline {chain.len()}
+  pub fn isEmpty(self: &) bool inline {chain.isEmpty()}
+  // The most it holds, as 'make' set
+  pub fn bound(self: &) usize {chain.bound()}
+  pub fn segments(self: &) usize {chain.segments()}
+
+  // How many bytes at the front lie in one segment: the longest 'peek' that
+  // copies nothing
+  pub fn contiguousLen(self: &) usize inline {chain.firstLen()}
+
+  // The first n bytes as one slice, or None when fewer are held. See the
+  // header: in place when they lie in one segment, else copied once
+  pub fn peek(self: &mut, n: usize) Option[&Array[u8]] {
+    if n > chain.len() {return None;}
+    if n == 0usize {
+      // An empty view over no block is a null slice, which an Option reads as
+      // None: the literal's bytes give it an address
+      let none: &Array[u8] = "";
+      return Some[&Array[u8]](none);
+    }
+    match chain.contiguous(0usize, n) {
+      case let Some(v) {return Some[&Array[u8]](v);}
+      case is None[&Array[u8]] {}
+    }
+    // Across an edge: extend the copy to n bytes
+    let have = copy.len();
+    if n > have {
+      if n > copy.capacity() {
+        var bigger = IoBuf(n);
+        let k = chain.copyOut(0usize, bigger.spare());
+        bigger.setLen(k);
+        copy = bigger;
+      } else {
+        let k = chain.copyOut(have, &mut copy.spare()[0usize ..< n - have]);
+        copy.setLen(have + k);
+      }
+    }
+    Some[&Array[u8]](&copy.view()[0usize ..< n])
+  }
+
+  // The first n bytes are used: every segment wholly used goes back to its
+  // pool. A panic if fewer than n are held
+  pub fn consume(self: &mut, n: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+    chain.advance(n, file, line);
+    self.dropCopy();
+  }
+
+  // The copy no longer matches the front of the chain: forget its bytes, and
+  // give its block back when the reader holds nothing, so a reader that is
+  // waiting for its next bytes holds no block of its own
+  fn dropCopy(self: &mut) {
+    if chain.isEmpty() {copy = IoBuf.empty();} else {copy.clear();}
+  }
+
+  // The byte at offset i; a panic past the end
+  pub fn byteAt(self: &, i: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) u8 {chain.byteAt(i, file, line)}
+
+  // Whether the unconsumed bytes from offset i begin with pat
+  pub fn matchesAt(self: &, i: usize, pat: &Array[u8]) bool {chain.matchesAt(i, pat)}
+
+  // The offset of the first pat at or after offset 'from', across segment
+  // edges, or None
+  pub fn find(self: &, pat: &Array[u8], from: usize = 0usize) Option[usize] {chain.find(pat, from)}
+
+  // The offset of the first byte b at or after offset 'from', or None
+  pub fn findByte(self: &, b: u8, from: usize = 0usize) Option[usize] {chain.findByte(b, from)}
+
+  // Copy bytes from offset 'from' into dest, as many as fit and are there: how many
+  pub fn copyOut(self: &, from: usize, dest: &mut Array[u8]) usize {chain.copyOut(from, dest)}
+
+  // Copy the first dest.len bytes, or as many as there are, and consume them
+  pub fn take(self: &mut, dest: &mut Array[u8]) usize {
+    let n = chain.take(dest);
+    self.dropCopy();
+    n
+  }
+
+  // The first segment moved out whole (its unconsumed bytes at its start), or
+  // None when empty: for passing a body on without copying it
+  pub fn popFront(self: &mut) Option[IoBuf] {
+    let first = chain.popFront();
+    self.dropCopy();
+    first
+  }
+}

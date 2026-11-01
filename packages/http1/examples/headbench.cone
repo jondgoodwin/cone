@@ -1,0 +1,120 @@
+// What reading a message head costs the http1 core, with no sockets and no body:
+// a core is handed a head of ten fields (about 500 bytes) and reads it to the
+// end of the message, then answers (a server) or sends its next request (a
+// client). Run one mode per process, so a script can alternate builds:
+//
+//   congo run --release packages/http1/examples/headbench.cone -- whole
+//   congo run --release packages/http1/examples/headbench.cone -- split
+//   congo run --release packages/http1/examples/headbench.cone -- client
+//
+//   whole    a server reads a request head that arrived in one buffer
+//   split    the same head, arrived in two buffers cut in the middle of a field
+//   client   a client reads a response head that arrived in one buffer
+//
+// 1,000,000 exchanges; prints the nanoseconds each took. The answer (or request)
+// written per exchange is the same in every build, so what differs between two
+// builds is the head's reading.
+
+mod headbench;
+
+import stdio use *;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+import process;
+
+fn at() Instant {Instant.fromNanos(1000000000i64)}
+
+fn request() &Array[u8] {
+  "GET /tiles/7/12.bin?lod=3&fmt=bin HTTP/1.1\r\nHost: example.com\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nAccept-Encoding: gzip, deflate, br\r\nCache-Control: no-cache\r\nPragma: no-cache\r\nCookie: session=3f9a1c52e7b04d68a1f2c3d4e5f60718; theme=dark; lang=en\r\nReferer: https://example.com/index.html\r\nConnection: keep-alive\r\n\r\n"
+}
+
+fn response() &Array[u8] {
+  "HTTP/1.1 200 OK\r\nDate: Mon, 02 Nov 2026 10:00:00 GMT\r\nServer: cone\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\nCache-Control: public, max-age=31536000, immutable\r\nETag: \"33a64df551425fcc55e4d42a148795d9f25f89d4\"\r\nLast-Modified: Sun, 01 Nov 2026 09:30:00 GMT\r\nVary: Accept-Encoding\r\nSet-Cookie: session=3f9a1c52e7b04d68a1f2c3d4e5f60718; Path=/; HttpOnly; Secure; SameSite=Lax\r\nX-Content-Type-Options: nosniff\r\n\r\n"
+}
+
+fn piece(text: &Array[u8], from: usize, to: usize) IoBuf {
+  var b = IoBuf(to - from);
+  b.append(&text[from ..< to]);
+  b
+}
+
+// A server reads one request head (in one buffer, or cut at 'cut' when it is
+// not 0) and answers it with an empty 200
+fn serve(n: u64, cut: usize) u64 {
+  var s = Connection.server(Config.make(), at());
+  let text = request();
+  var seen = 0u64;
+  var i = 0u64;
+  while i < n {
+    if cut == 0usize {
+      s.handleInput(piece(text, 0usize, text.len), at());
+    } else {
+      s.handleInput(piece(text, 0usize, cut), at());
+      s.handleInput(piece(text, cut, text.len), at());
+    }
+    var answered = false;
+    while !answered {
+      match s.pollEvent() {
+        case var Request(r) {seen = seen + u64.from(r.head.headers.len());}
+        case is End {
+          s.sendResponse(ResponseHead.make(200u16), BodyLength.empty());
+          s.finish();
+          let out = s.pollTransmit(at());
+          answered = true;
+        }
+        else {answered = true;}
+      }
+    }
+    i = i + 1u64;
+  }
+  seen
+}
+
+// A client sends a request and reads the response head that answers it
+fn fetch(n: u64) u64 {
+  var c = Connection.client(Config.make(), at());
+  let text = response();
+  var seen = 0u64;
+  var i = 0u64;
+  while i < n {
+    c.sendRequest(RequestHead.get("/tiles/7/12.bin", "example.com"), BodyLength.empty());
+    let out = c.pollTransmit(at());
+    c.handleInput(piece(text, 0usize, text.len), at());
+    var whole = false;
+    while !whole {
+      match c.pollEvent() {
+        case var Response(r) {seen = seen + u64.from(r.head.headers.len());}
+        case is End {whole = true;}
+        else {whole = true;}
+      }
+    }
+    i = i + 1u64;
+  }
+  seen
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 2usize {printStr("usage: headbench whole|split|client\n"); return 2i32;}
+  let mode = args[1usize].view();
+  let n = 1000000u64;
+  let t0 = Instant.now();
+  var seen = 0u64;
+  if mode == "whole" {
+    seen = serve(n, 0usize);
+  } else if mode == "split" {
+    seen = serve(n, 200usize);
+  } else {
+    seen = fetch(n);
+  }
+  let took = Instant.now() - t0;
+  printStr(mode);
+  printStr(" ns/exchange ");
+  printUInt(u64.from(took.nanos()) / n);
+  printStr(" fields ");
+  printUInt(seen / n);
+  printStr("\n");
+  0i32
+}

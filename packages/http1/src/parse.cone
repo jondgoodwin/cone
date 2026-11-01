@@ -40,6 +40,49 @@ fn versionOf(v: &Array[u8]) u32 {
   if minor == '0' {10u32} else {11u32}
 }
 
+// What looking for the end of a head found in the bytes so far: 'len', the
+// head's length when its blank line is there, else 0; 'at', how far the bytes
+// were checked (the next look starts there); 'why', which refusal the bytes
+// earn, if any
+struct HeadScan {
+  len: usize;
+  at: usize;
+  why: u32;
+}
+
+const scanOk = 0u32;
+const scanBareLf = 1u32;       // a request's line ends in an LF without its CR
+const scanBareCr = 2u32;       // a CR is not followed by its LF
+const scanTooLong = 3u32;      // no end to the head within 'most' bytes
+
+// Check v from offset 'from' for the blank line that ends a head, refusing a
+// malformed line as soon as it is seen: the head's length, or how far v is
+// checked (not there yet), or the refusal. A server (client false) takes only
+// CRLF line ends; a client reading a response takes an LF alone too (RFC 9112,
+// 2.2), the head ending at a line with nothing before its CR or LF. No more
+// than 'most' bytes are looked at
+fn scanHeadBytes(v: &Array[u8], from: usize, most: usize, client: bool) HeadScan {
+  let lim = if v.len < most {v.len} else {most};
+  var i = from;
+  while i < lim {
+    let c = v[i];
+    if c == '\n' {
+      let bare = i == 0usize || v[i - 1usize] != '\r';
+      if bare && !client {return HeadScan(0usize, i, scanBareLf);}
+      if client {
+        let lineAt = if bare {i} else {i - 1usize};
+        if lineAt == 0usize || v[lineAt - 1usize] == '\n' {return HeadScan(i + 1usize, 0usize, scanOk);}
+      } else if i >= 3usize && v[i - 2usize] == '\n' && v[i - 3usize] == '\r' {
+        return HeadScan(i + 1usize, 0usize, scanOk);
+      }
+    } else if i > 0usize && v[i - 1usize] == '\r' {
+      return HeadScan(0usize, i, scanBareCr);
+    }
+    i = i + 1usize;
+  }
+  HeadScan(0usize, i, if lim >= most {scanTooLong} else {scanOk})
+}
+
 // A request head read whole, and how its body is framed
 struct RequestRead {
   head: RequestHead;

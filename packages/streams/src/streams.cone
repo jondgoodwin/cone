@@ -1,9 +1,9 @@
 // The streams package: the shapes a transform of bytes takes, written once with
 // no I/O inside, so that inflate, deflate, zstd and a hash run in any stage of
 // a pipeline: over a file, a socket, an actor's mailbox or a buffer in memory.
-// It holds layer 1 of Cone's streaming design (a codec core); the layers over
-// it, a reader and writer within one actor and stages between actors, are
-// later packages.
+// It holds layer 1 of Cone's streaming design (a codec core) and layer 2, a
+// Reader and a Writer for the stage that holds the bytes (reader.cone and
+// writer.cone); stages between actors, layer 3, come later.
 //
 //   mod squeeze;
 //   import iobuf use IoBuf;
@@ -32,7 +32,7 @@
 //
 //   fn main() {
 //     var inf = deflate.Inflater.make(deflate.Format.Gzip);   // meets Transform
-//     imm text = runAll(&mut inf, gzFile.view());
+//     let text = runAll(&mut inf, gzFile.view());
 //   }
 //
 // WHAT IS HERE
@@ -44,6 +44,10 @@
 //                  Compressor meet it.
 //   Digester       a trait for what only consumes: 'feed' bytes in, 'finish'
 //                  for the digest. cryptohash's Sha256, Sha512 and Sha1 meet it.
+//   Reader         the bytes that have arrived, as an iobuf Chain: 'peek(n)'
+//                  lends them as one slice, 'consume(n)' uses them up (reader.cone).
+//   Writer         a buffer being filled: 'spare()', 'advance(n)', and 'take()'
+//                  to hand the full buffer on (writer.cone).
 //
 // THE RULES OF A TRANSFORM
 //
@@ -108,7 +112,7 @@
 
 mod streams;
 
-import iobuf use IoBuf;
+import iobuf use IoBuf, Chain;
 
 // What a 'pull' found. For every Transform.
 pub enum Status {
