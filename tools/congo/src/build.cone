@@ -42,23 +42,26 @@ struct Session {
   // Whether a compile whose key is unchanged is skipped: '--no-cache' says
   // not (cache.cone)
   pub useCache: bool;
+  // '--strip': conec is passed --strip for every compile of the build, and a
+  // release link writes no PDB (congo.py, STRIP_DEBUG)
+  pub strip: bool;
 }
 
-fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool) Session {
+fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool) Session {
   Session(repo.copy(), reg, out.copy(), String.from(mode), Dict[String, Path].empty(),
     Dict[String, Path].empty(), List[String].empty(), List[String].empty(), Path.from(""), false, noLinkerYet(),
-    copyStrings(defines), useCache)
+    copyStrings(defines), useCache, strip)
 }
 
 // Build pkg and everything it imports into its build folder, each package
 // compiled on its own; answer the executable, or for a library its object.
 // Every description is written, and every package compiled unless its key is
 // unchanged (cache.cone). The first failure ends Congo.
-fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool) Path {
+fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], useCache: bool, strip: bool) Path {
   let folders = registryFolders(repo);
   let out = buildFolder(&pkg, mode);
   let indexes = registryIndexes();
-  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache);
+  var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
   let top = s.reg.add(pkg);
   match build(&mut s, top) {
     case var Ok(ok) {
@@ -209,7 +212,7 @@ fn lonePackage(given: &Path) Result[Package, String] {
 // reads, so that compile is never skipped. 'hasCore' and 'coreUnit' say
 // whether the build has core, and where.
 fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, includes: &Path, mode: &str,
-    defines: &List[String], top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
+    defines: &List[String], strip: bool, top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
   let unit = &plan.units[u];
   let pkg = &reg.packages[unit.pkg];
   let output = if top {pkg.output.copy()} else {String.from("library")};
@@ -233,7 +236,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let outText = native(out);
   let descText = native(&desc);
   let rest = argList("-o", outText.view(), descText.view());
-  let command = conecCommand(conec, defines, &rest);
+  let command = conecCommand(conec, defines, strip, &rest);
   // What the compile reads: the manifest, the description, every source of
   // the package, the include file of every package the description names,
   // and where conec loads the prelude from the packages folder, what it
@@ -437,7 +440,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
       let dest = if own {topOut.copy()} else {out.copy()};
       makeFolder(&dest);
       var obj: Path = "";
-      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, isTop,
+      match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, s.strip, isTop,
         announce || !isTop, s.useCache, hasCoreUnit, coreOfBuild) {
         case var Ok(ok) { obj <-> ok; }
         case let Err(e) {
@@ -734,6 +737,10 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       }
     }
   }
+  // The PDB of an earlier link is no part of this one's
+  let pdbName = cat(exe.stem(), ".pdb");
+  let pdb = exe.parent().join(pdbName.view());
+  _ = fs.removeFile(&pdb);
   var attempt = runLink(s, &objOrder, exe, &libraries, &paths);
   var again = String.empty();
   // A link that failed the way a stale Visual Studio environment makes one
@@ -851,6 +858,9 @@ fn runLink(s: &mut Session, objOrder: &List[Path], exe: &Path, libraries: &List[
   // gate on generic instances (congo.py, Linker.command)
   if s.mode.equals("release") {
     command.push(String.from("/OPT:REF,ICF"));
+    // and, unless stripped, writes the objects' debug info into a PDB beside
+    // the program, which a profiler reads for names and lines
+    if !s.strip { command.push(String.from("/DEBUG")); }
   }
   var changes = noChanges();
   s.linker.apply(&mut changes);

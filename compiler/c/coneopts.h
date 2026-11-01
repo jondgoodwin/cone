@@ -64,7 +64,8 @@ typedef struct ConeOptions {
     int verify;        // Verify LLVM IR
     int extfun;        // Set function default linkage to external
     int simple_builtin;    // Use a minimal builtin package
-    int strip_debug;    // Strip debug info
+    int strip_debug;    // --strip: no debug info, in a release build or a debug one
+    int debuginfo;      // 1=emit debug info: function entries and line locations (genSetup decides it)
     int print_filenames;    // Print source file names as each is processed
     int print_ir;        // Print out IR
     int print_asm;        // Print out assembly file
