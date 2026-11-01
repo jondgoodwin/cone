@@ -11,7 +11,7 @@
 //     consumes comes out whole;
 //   - 'peek' past the end is None, a push past the bound is handed back;
 //   - the Writer's 'spare' and 'advance', 'put', 'take' (the full buffer moves
-//     out, a fresh one takes its place) and 'finish', and a Transform pulling
+//     out, a fresh one takes its place) and 'intoBuf', and a Transform pulling
 //     into the Writer's buffer;
 //   - a Reader and Writer carry a stream through a digester: the same digest as
 //     the one-shot hash;
@@ -66,7 +66,7 @@ fn inPlaceAndCrossing() {
       case is None[&Array[u8]] {expect(false, "the whole segment is there");}
     }
     expectUInt(lent() - before, 1u64, "peeks inside one segment copy nothing: still one block");
-    expectUInt(u64.from(r.inPlace()), 17u64, "17 bytes lie in the first segment");
+    expectUInt(u64.from(r.contiguousLen()), 17u64, "17 bytes lie in the first segment");
     expect(r.peek(18usize) is None[&Array[u8]], "peek past the end is None");
     match r.peek(0usize) {
       case let Some(v) {expectUInt(u64.from(v.len), 0u64, "peek of none is an empty view");}
@@ -194,7 +194,7 @@ fn randomCuts() {
     while pos < total {
       var n = usize.from(1u64 + next(&mut s) % 4000u64);
       if n > total - pos {n = total - pos;}
-      if n > r.inPlace() {crossings += 1u32;}
+      if n > r.contiguousLen() {crossings += 1u32;}
       match r.peek(n) {
         case let Some(v) {
           var i = 0usize;
@@ -225,7 +225,7 @@ fn randomCuts() {
   expectUInt(lent() - before, 0u64, "every block went home");
 }
 
-// The Writer: room, advance, put, take, finish
+// The Writer: room, advance, put, take, intoBuf
 fn writer() {
   let before = lent();
   {
@@ -255,8 +255,8 @@ fn writer() {
     expectUInt(u64.from(w.put(big.view())), 4096u64, "put copies as many as fit");
     expect(w.isFull(), "now full");
     expectUInt(u64.from(w.spare().len), 0u64, "no spare room when full");
-    let full = w.finish();
-    expectUInt(u64.from(full.len()), 4096u64, "finish moved the full buffer out");
+    let full = w.intoBuf();
+    expectUInt(u64.from(full.len()), 4096u64, "intoBuf moved the full buffer out");
     expectUInt(u64.from(w.room()), 0u64, "a finished writer holds none");
     expect(w.isFull(), "and has no room");
     expectUInt(u64.from(b.len()), 5u64, "the first buffer is still its own");
