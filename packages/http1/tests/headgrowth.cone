@@ -1,7 +1,9 @@
-// A head is gathered in a buffer that starts small and grows only as the
-// head needs it, up to the role's bound. Checked, by the buffer pool's lent
-// bytes: a client awaiting a head holds no buffer for it, and a head's first
-// bytes take a 4 KiB one. A 20 KiB head, past that start, is read whole: fed
+// A head is read where it lies, in the input's first segment, and copied
+// together (once, into a block the input keeps only while it holds bytes) only
+// when it crosses a segment's edge, up to the role's bound. Checked, by the
+// buffer pool's lent bytes: a client awaiting a head holds no buffer for it,
+// and a head's first bytes, in one segment, take no buffer beside the one
+// they came in. A 20 KiB head, over several segments, is read whole: fed
 // at once, and fed 4 KiB at a time with an event asked for after each piece,
 // by a client and by a server. A head of exactly its bound is read, and one
 // byte more is refused as before: maxResponseHeadBytes (64 KiB) for a
@@ -142,7 +144,7 @@ fn main() i32 {
     let h = sized(resp, 20480usize);
     feed(&mut c, &h.view()[0usize ..< 100usize], t);
     expectStr(next(&mut c).view(), "need data", "100 bytes of it arrive");
-    expectUInt(u64.from(stats().lentBytes - before), 8192u64, "...held: the 4 KiB they came in, and a 4 KiB head buffer");
+    expectUInt(u64.from(stats().lentBytes - before), 4096u64, "...held: the 4 KiB they came in, and no head buffer (the head is read where it lies)");
   }
 
   // A 20 KiB head, past the first buffer, read whole
