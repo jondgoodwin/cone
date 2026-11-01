@@ -261,25 +261,49 @@ pub struct Deflater {
   // comes whole when the block is full, so the compressed bytes lag the input
   // by up to 32768 tokens; 'max' bounds what one pull hands over, not what
   // the deflater holds.
-  pub fn pull(self: &mut, out: &mut List[u8], max: usize) Status {
+  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
+    let n = self.ready(max);
+    out.reserve(n);
+    var i = 0usize;
+    while i < n { out.push(*bw.out[outPos + i]); i += 1usize; }
+    self.delivered(n, max)
+  }
+
+  // The same into a buffer's spare room (the Transform of package stream):
+  // appends at most 'out.room()' bytes and lengthens 'out' by them.
+  pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
+    let room = out.room();
+    let n = self.ready(room);
+    out.append(&bw.out.view()[outPos ..< outPos + n]);
+    self.delivered(n, room)
+  }
+
+  // -------- inside --------
+
+  // Works until 'max' bytes of output are waiting or the data runs out: how
+  // many are waiting to be handed over, at most 'max'
+  fn ready(self: &mut, max: usize) usize {
     self.begin();
     while bw.out.len() - outPos < max && !done {
       if !self.step() { break; }
     }
     let avail = bw.out.len() - outPos;
-    let n = if avail < max {avail} else {max};
-    out.reserve(n);
-    var i = 0usize;
-    while i < n { out.push(*bw.out[outPos + i]); i += 1usize; }
+    if avail < max {avail} else {max}
+  }
+
+  // The first n waiting bytes were handed over, of the 'max' there was room
+  // for: what the pull answers. With the room used up to the last byte it
+  // cannot tell whether the matcher has more to write, since it works only as
+  // far as the room asks, so it says MoreOutput and the next pull finds out
+  fn delivered(self: &mut, n: usize, max: usize) Status {
     outPos = outPos + n;
     outTotal = outTotal + u64.from(n);
     self.trimOutput();
     if outPos < bw.out.len() { return Status.MoreOutput; }
     if done { return Status.Done; }
+    if n == max && n > 0usize { return Status.MoreOutput; }
     Status.NeedInput
   }
-
-  // -------- inside --------
 
   // The format's header, once
   fn begin(self: &mut) {

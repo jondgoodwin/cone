@@ -1,0 +1,113 @@
+// Is a stream through the Transform trait as fast as the Deflater's old pull
+// into a List? Deflates 100 MiB of text (gzip, level 2) fed in 64 KiB pieces and
+// pulled 64 KiB at a time, once, in the way the first argument says, and prints
+// the milliseconds and the compressed size:
+//
+//   congo run --release packages/stream/examples/bench.cone -- list
+//   congo run --release packages/stream/examples/bench.cone -- buf
+//
+//   list   the Deflater's pull into a List[u8] (what a caller used before)
+//   buf    the Transform: pull into an IoBuf's spare room, in a generic function
+//
+// One run per process, so a script can alternate the two (and a build of the
+// package before this change, with the same 'list' loop) in any order.
+
+mod bench;
+
+import collections use *;
+import iobuf use IoBuf;
+import stream use *;
+import deflate;
+import process;
+import stdio use *;
+import time use *;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+// The old way: the Deflater's own pull into a List, emptied each time
+fn viaList(data: &Array[u8]) usize {
+  var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
+  var out = List[u8].empty();
+  var total = 0usize;
+  var at = 0usize;
+  while at < data.len {
+    let n = if data.len - at < 65536usize {data.len - at} else {65536usize};
+    def.feed(&data[at ..< at + n]);
+    at += n;
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      out.clear();
+      st = def.pull(&mut out, 65536usize);
+      total += out.len();
+    }
+  }
+  def.finish();
+  var st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    out.clear();
+    st = def.pull(&mut out, 65536usize);
+    total += out.len();
+  }
+  total
+}
+
+// The new way: any Transform, pulled into a 64 KiB buffer, cleared each time
+fn viaTrait[T: Transform](t: &mut T, data: &Array[u8]) usize {
+  var buf = IoBuf(65536usize);
+  var total = 0usize;
+  var at = 0usize;
+  while at < data.len {
+    let n = if data.len - at < 65536usize {data.len - at} else {65536usize};
+    t.feed(&data[at ..< at + n]);
+    at += n;
+    var st = Status.MoreOutput;
+    while st == Status.MoreOutput {
+      buf.clear();
+      st = t.pull(&mut buf);
+      total += buf.len();
+    }
+  }
+  t.finish();
+  var st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    buf.clear();
+    st = t.pull(&mut buf);
+    total += buf.len();
+  }
+  total
+}
+
+fn main() i32 {
+  let args = process.args();
+  if args.len() < 2usize { printStr("usage: bench list|buf\n"); return 2i32; }
+  let mode = args[1usize].view();
+  let data = corpus(104857600usize);
+  let t0 = Instant.now();
+  var total = 0usize;
+  if mode == "list" {
+    total = viaList(data.view());
+  } else {
+    var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
+    total = viaTrait(&mut def, data.view());
+  }
+  let ms = t0.elapsed().millis();
+  printStr(mode);
+  printStr(" ms ");
+  printInt(ms);
+  printStr(" bytes ");
+  printInt(i64.from(total));
+  printStr("\n");
+  0i32
+}

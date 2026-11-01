@@ -196,6 +196,14 @@ fn main() {
 		<td>Owned buffers for I/O, lent to an operation by moving them: <span class="pre">IoBuf</span>
 		(made by its size, <span class="pre">IoBuf(n)</span>, from the buffer pool), <span class="pre">Bytes</span>,
 		<span class="pre">Chain</span>.</td></tr>
+	<tr><td><span class="pre">stream</span><br><span class="pre">import stream use *;</span></td>
+		<td>The shape of a transform of bytes with no I/O in it, so that a codec runs in any stage of a pipeline:
+		<span class="pre">Transform</span> (<span class="pre">feed</span> bytes in, <span class="pre">pull</span> output into an
+		<span class="pre">IoBuf</span>'s spare room, <span class="pre">finish</span>), the one <span class="pre">Status</span>
+		a pull answers (<span class="pre">NeedInput</span>, <span class="pre">MoreOutput</span>, <span class="pre">Done</span>,
+		<span class="pre">Failed</span>), and <span class="pre">Digester</span> for what only consumes (a hash: <span class="pre">feed</span>,
+		then <span class="pre">finish</span> for the digest). <span class="pre">deflate</span>'s and <span class="pre">zstd</span>'s
+		streams and <span class="pre">cryptohash</span>'s hashers meet them.</td></tr>
 	<tr><td><span class="pre">ioerror</span><br><span class="pre">import ioerror use *;</span></td>
 		<td>What went wrong with I/O, the same on every system: <span class="pre">IoErrorKind</span>
 		(<span class="pre">NotFound</span>, <span class="pre">ConnectionRefused</span>, ..., Rust's
@@ -583,7 +591,8 @@ fn main() i32 {
 		and answer the digest as a fixed array, <span class="pre">Array[u8, 32]</span>,
 		<span class="pre">Array[u8, 64]</span> and <span class="pre">Array[u8, 20]</span>. To hash a message in
 		pieces, make a hasher, <span class="pre">Sha256.make()</span> (or <span class="pre">Sha512</span>,
-		<span class="pre">Sha1</span>), feed it with <span class="pre">update(data)</span> as many times as needed
+		<span class="pre">Sha1</span>), feed it with <span class="pre">update(data)</span> (also spelled
+		<span class="pre">feed</span>, the name of <span class="pre">stream</span>'s <span class="pre">Digester</span>) as many times as needed
 		and ask <span class="pre">finish()</span>. The hasher holds its own state, with no global behind it;
 		<span class="pre">finish</span> leaves it as it was, so it can take more and be asked again,
 		<span class="pre">copyOf()</span> forks one in progress, and <span class="pre">reset()</span> empties it.
@@ -676,7 +685,10 @@ fn main() i32 {
 		<span class="pre">pull(&amp;mut out, max)</span>: at most <span class="pre">max</span> bytes appended to
 		<span class="pre">out</span>, and a <span class="pre">Status</span> that says what it waits for
 		(<span class="pre">NeedInput</span>, <span class="pre">MoreOutput</span>, <span class="pre">Done</span>, or
-		for an inflater <span class="pre">Failed</span>). The state is all in the value, so there is no global; an
+		for an inflater <span class="pre">Failed</span>). <span class="pre">pull(&amp;mut buf)</span> with an
+		<span class="pre">IoBuf</span> writes into the buffer's spare room instead, which makes both meet
+		<span class="pre">stream</span>'s <span class="pre">Transform</span>, as do <span class="pre">zstd</span>'s two; the
+		<span class="pre">Status</span> is that package's. The state is all in the value, so there is no global; an
 		inflater caps its output at 1 GiB unless <span class="pre">setLimit</span> says otherwise, since a small
 		stream can expand a thousandfold. A gzip file with several members is inflated member after member and the
 		data joined, and the header fields of the member (time, name, comment, extra field) are kept in a

@@ -1,0 +1,205 @@
+// Every codec through the Transform trait, over 100 MiB (12 MiB in a debug
+// build, which would not finish inside congo's 180 seconds) fed in pieces of
+// 64 KiB and pulled into 64 KiB buffers, against its one-shot result:
+//
+//   - deflate: the gzip stream a Deflater makes is byte for byte the one-shot
+//     'gzipCompress' makes (on the first 8 MiB: the one-shot deflater is
+//     quadratic and takes a minute and a half for 100 MiB), an Inflater turns
+//     the whole stream back into the data, and the zlib and raw forms
+//     round-trip too;
+//   - zstd: a Compressor's frame is decoded by a Decompressor into the data, and
+//     by the one-shot 'decompress' into the same data (the frame's header may
+//     differ from the one-shot's, which knows the size before it begins);
+//   - sha256: the digest a Digester gives is the one-shot 'sha256' of the data,
+//     and the same for sha512 and sha1;
+//
+// and all of them come out Done, with the byte counts the codecs keep. The
+// data is a pseudo-random run of five words, so it compresses and has long
+// matches and short ones.
+
+mod codecs;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import stream use *;
+import deflate;
+import zstd;
+import cryptohash;
+
+// 100 MiB in a release build. A debug build runs 12 MiB: congo stops a test at
+// 180 seconds, and unoptimised code is more than ten times as slow
+fn total() usize { if isDebugBuild() {12582912usize} else {104857600usize} }
+fn piece() usize { 65536usize }
+
+// How much of the data the one-shot deflater is asked about: it is quadratic
+// on a big input (100 MiB takes it a minute and a half), so its byte for byte
+// comparison is made on a prefix
+fn prefix() usize { 8388608usize }
+fn shot(data: &Array[u8]) &Array[u8] { &data[0usize ..< (if data.len < prefix() {data.len} else {prefix()})] }
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+// Pull until the status is not MoreOutput, each time into a fresh 64 KiB
+// buffer, adding what came to 'out'
+fn drain[T: Transform](t: &mut T, buf: &mut IoBuf, out: &mut List[u8]) Status {
+  var st = Status.MoreOutput;
+  while st == Status.MoreOutput {
+    buf.clear();
+    st = t.pull(buf);
+    out.appendSlice(buf.view());
+  }
+  st
+}
+
+// Feeds 'input' in pieces of 'chunk' bytes, draining after each, then says it
+// is finished and drains to the end. Everything pulled is added to 'out'. The
+// last status.
+fn drive[T: Transform](t: &mut T, input: &Array[u8], chunk: usize, out: &mut List[u8]) Status {
+  var buf = IoBuf(65536usize);
+  var st = Status.NeedInput;
+  var at = 0usize;
+  while at < input.len {
+    let n = if input.len - at < chunk {input.len - at} else {chunk};
+    t.feed(&input[at ..< at + n]);
+    at += n;
+    st = drain(t, &mut buf, out);
+    if st != Status.NeedInput { return st; }
+  }
+  t.finish();
+  drain(t, &mut buf, out)
+}
+
+// Feeds a hash the same pieces and answers its digest
+fn digestOf[D: Digester](d: &mut D, input: &Array[u8], chunk: usize) D.Out {
+  var at = 0usize;
+  while at < input.len {
+    let n = if input.len - at < chunk {input.len - at} else {chunk};
+    d.feed(&input[at ..< at + n]);
+    at += n;
+  }
+  d.finish()
+}
+
+fn deflateRoundTrips(data: &Array[u8]) {
+  var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
+  var packed = List[u8].empty();
+  let st = drive(&mut def, data, piece(), &mut packed);
+  expect(st == Status.Done, "deflate: the Deflater is Done");
+  expectUInt(def.totalIn(), u64.from(data.len), "deflate: totalIn");
+  expectUInt(def.totalOut(), u64.from(packed.len()), "deflate: totalOut is what was pulled");
+  expect(packed.len() < data.len / 2usize, "deflate: it compressed");
+
+  // against the one-shot helper, on the prefix (see 'prefix')
+  let head = shot(data);
+  var def2 = deflate.Deflater.make(deflate.Format.Gzip, 2);
+  var packed2 = List[u8].empty();
+  expect(drive(&mut def2, head, piece(), &mut packed2) == Status.Done, "deflate: the prefix's Deflater is Done");
+  let once = deflate.gzipCompress(head, 2);
+  expect(packed2.view() == once.view(), "deflate: the streamed gzip is the one-shot's, byte for byte");
+
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  var back = List[u8].empty();
+  let st2 = drive(&mut inf, packed.view(), piece(), &mut back);
+  expect(st2 == Status.Done, "inflate: the Inflater is Done");
+  expect(back.view() == data, "inflate: gzip round-trips 100 MiB");
+  expectUInt(inf.totalOut(), u64.from(data.len), "inflate: totalOut");
+  expectUInt(inf.totalIn(), u64.from(packed.len()), "inflate: totalIn is all of the stream");
+}
+
+fn deflateOtherFormats(data: &Array[u8]) {
+  // Level 1 as zlib, and level 0 raw, of the prefix
+  let head = shot(data);
+  var z = deflate.Deflater.make(deflate.Format.Zlib, 1);
+  var zs = List[u8].empty();
+  expect(drive(&mut z, head, piece(), &mut zs) == Status.Done, "deflate: zlib level 1 is Done");
+  expect(zs.view() == deflate.zlibCompress(head, 1).view(), "deflate: zlib level 1 is the one-shot's");
+  var zi = deflate.Inflater.make(deflate.Format.Zlib);
+  var zb = List[u8].empty();
+  expect(drive(&mut zi, zs.view(), piece(), &mut zb) == Status.Done, "inflate: zlib is Done");
+  expect(zb.view() == head, "inflate: zlib level 1 round-trips");
+
+  var r = deflate.Deflater.make(deflate.Format.Raw, 0);
+  var rs = List[u8].empty();
+  expect(drive(&mut r, head, piece(), &mut rs) == Status.Done, "deflate: raw stored is Done");
+  expect(rs.view() == deflate.rawDeflate(head, 0).view(), "deflate: raw stored is the one-shot's");
+  var ri = deflate.Inflater.make(deflate.Format.Raw);
+  var rb = List[u8].empty();
+  expect(drive(&mut ri, rs.view(), piece(), &mut rb) == Status.Done, "inflate: raw is Done");
+  expect(rb.view() == head, "inflate: raw stored round-trips");
+}
+
+fn zstdRoundTrips(data: &Array[u8]) {
+  var c = zstd.Compressor.make(3);
+  var packed = List[u8].empty();
+  let st = drive(&mut c, data, piece(), &mut packed);
+  expect(st == Status.Done, "zstd: the Compressor is Done");
+  expectUInt(c.totalIn(), u64.from(data.len), "zstd: totalIn");
+  expectUInt(c.totalOut(), u64.from(packed.len()), "zstd: totalOut is what was pulled");
+  expect(packed.len() < data.len / 2usize, "zstd: it compressed");
+
+  var d = zstd.Decompressor.make();
+  var back = List[u8].empty();
+  let st2 = drive(&mut d, packed.view(), piece(), &mut back);
+  expect(st2 == Status.Done, "zstd: the Decompressor is Done");
+  expect(back.view() == data, "zstd: 100 MiB round-trips through the trait");
+  expectUInt(d.totalOut(), u64.from(data.len), "zstd: Decompressor totalOut");
+
+  // The one-shot decoder reads the streamed frame; the one-shot encoder's frame
+  // is read by the streaming decoder
+  match zstd.decompress(packed.view(), data.len) {
+    case let Ok(once) { expect(once.view() == data, "zstd: the one-shot decoder reads the streamed frame"); }
+    case let Err(e) { expect(false, "zstd: the one-shot decoder reads the streamed frame"); }
+  }
+  let oneFrame = zstd.compress(data, 3);
+  var d2 = zstd.Decompressor.make();
+  var back2 = List[u8].empty();
+  expect(drive(&mut d2, oneFrame.view(), piece(), &mut back2) == Status.Done, "zstd: the one-shot frame is Done");
+  expect(back2.view() == data, "zstd: the streaming decoder reads the one-shot frame");
+  // Same data, same level: the same blocks (the one-shot header names the size)
+  expect(oneFrame.len() >= packed.len() - 16usize && oneFrame.len() <= packed.len() + 16usize,
+    "zstd: the streamed and one-shot frames are the same size to within the header");
+}
+
+fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
+
+fn digests(data: &Array[u8]) {
+  var s256 = cryptohash.Sha256.make();
+  let d256 = digestOf(&mut s256, data, piece());
+  let w256 = cryptohash.sha256(data);
+  expect(same(&d256, &w256), "sha256: the digest is the one-shot's");
+  var s512 = cryptohash.Sha512.make();
+  let d512 = digestOf(&mut s512, data, piece());
+  let w512 = cryptohash.sha512(data);
+  expect(same(&d512, &w512), "sha512: the digest is the one-shot's");
+  var s1 = cryptohash.Sha1.make();
+  let d1 = digestOf(&mut s1, data, piece());
+  let w1 = cryptohash.sha1(data);
+  expect(same(&d1, &w1), "sha1: the digest is the one-shot's");
+  expectUInt(s256.length(), u64.from(data.len), "sha256: length");
+  // finish leaves the digester as it was
+  let again = s256.finish();
+  expect(same(&again, &d256), "sha256: finish twice gives the same digest");
+}
+
+fn main() i32 {
+  let data = corpus(total());
+  expectUInt(u64.from(data.len()), u64.from(total()), "the corpus is the size asked");
+  deflateRoundTrips(data.view());
+  deflateOtherFormats(data.view());
+  zstdRoundTrips(data.view());
+  digests(data.view());
+  done()
+}

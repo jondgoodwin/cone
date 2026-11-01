@@ -264,11 +264,22 @@ pub struct Inflater {
   // waiting for: NeedInput (all input used), MoreOutput (the limit of this
   // pull came first), Done, or Failed (and the Inflater stays failed).
   // Anything pulled before a failure has been delivered and is good.
-  pub fn pull(self: &mut, out: &mut List[u8], max: usize) Status {
+  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
     if failed { return Status.Failed; }
     let s = self.advance(max);
     if !failed { bi.unpad(); }
     self.deliver(out);
+    self.dropUsedInput();
+    s
+  }
+
+  // The same into a buffer's spare room (the Transform of package stream):
+  // appends at most 'out.room()' bytes and lengthens 'out' by them.
+  pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
+    if failed { return Status.Failed; }
+    let s = self.advance(out.room());
+    if !failed { bi.unpad(); }
+    self.deliverBuf(out);
     self.dropUsedInput();
     s
   }
@@ -351,8 +362,19 @@ pub struct Inflater {
     var i = mark;
     while i < hist.len() { out.push(*hist[i]); i = i + 1usize; }
     mark = hist.len();
-    // Keep the last 32 KiB for matches; trim when 64 KiB more have piled up
-    if hist.len() >= 98304usize {
+    self.trimHistory();
+  }
+
+  // The same, into a buffer's spare room
+  fn deliverBuf(self: &mut, out: &mut IoBuf) {
+    if retain { return; }
+    mark = mark + out.append(&hist.view()[mark ..< hist.len()]);
+    self.trimHistory();
+  }
+
+  // Keep the last 32 KiB for matches; trim when 64 KiB more have piled up
+  fn trimHistory(self: &mut) {
+    if hist.len() >= 98304usize && mark == hist.len() {
       let drop = hist.len() - 32768usize;
       var k = 0usize;
       while k < 32768usize { hist.set(k, *hist[drop + k]); k = k + 1usize; }

@@ -190,19 +190,38 @@ pub struct Decompressor {
   // pull came first), Done, or Failed (and the Decompressor stays failed).
   // Anything pulled before a failure was decoded from blocks that were
   // valid; a frame's checksum is checked only at its end.
-  pub fn pull(self: &mut, out: &mut List[u8], max: usize) Status {
+  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
+    var none = IoBuf.empty();
+    self.pullInto(max, false, &mut none, out)
+  }
+
+  // The same into a buffer's spare room (the Transform of package stream):
+  // appends at most 'out.room()' bytes and lengthens 'out' by them.
+  pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
+    var none = List[u8].empty();
+    let room = out.room();
+    self.pullInto(room, true, out, &mut none)
+  }
+
+  // The loop of both pulls: decode, and hand out at most 'room' bytes, into
+  // 'buf' when 'toBuf', else into 'list' (the other is not touched)
+  fn pullInto(self: &mut, room0: usize, toBuf: bool, buf: &mut IoBuf, list: &mut List[u8]) Status {
     if self.failed() { return Status.Failed; }
-    var room = max;
+    var room = room0;
     var result: Status = Status.Done;
     while true {
       if !retain {
         let pending = hist.len() - mark;
         if pending > 0usize {
           let n = if pending < room {pending} else {room};
-          out.reserve(n);
-          var i = mark;
           let stop = mark + n;
-          while i < stop { out.push(*hist[i]); i = i + 1usize; }
+          if toBuf {
+            buf.append(&hist.view()[mark ..< stop]);
+          } else {
+            list.reserve(n);
+            var i = mark;
+            while i < stop { list.push(*hist[i]); i = i + 1usize; }
+          }
           mark = stop;
           room = room - n;
           if mark < hist.len() { result = Status.MoreOutput; break; }
