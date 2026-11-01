@@ -76,6 +76,9 @@ typedef struct DclTexts {
     Nodes *awaiting;        // Each function of the body whose own body holds an 'await' (parseFn)
     uint32_t selfactors;    // How many times the actor's body writes 'selfactor'
     Nodes *behaviours;      // Each function of the body declared 'async fn', a behaviour (parseStruct)
+    char *tparms, *tparmsend; // Where the declaration's type parameters are written, between its brackets; NULL where it has none (parseStruct)
+    char *istext, *isend;   // Where its 'is' list is written, after the 'is'; NULL where it has none (parseStruct)
+    uint32_t isnames;       // How many abstractions the list names
 } DclTexts;
 
 typedef struct ParseState {

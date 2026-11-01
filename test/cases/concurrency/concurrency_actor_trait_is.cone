@@ -1,0 +1,100 @@
+// An actor that says what it is: 'actor Counter is ChunkSink'. The assertion is
+// checked, not needed: an actor conforms to an actor trait by having its
+// behaviours, with or without it (concurrency_actor_trait_sink), so 'is' is the
+// author's statement of intent, kept true by the compiler. It names actor traits,
+// as many as the actor means to be, an instance of a generic one included.
+//
+// - Counter is ChunkSink, and Both is ChunkSink and Subscriber[Click]: each is
+//   then used where either trait's handle is wanted;
+// - an actor that says it is and falls short is refused, and the message lists
+//   every behaviour it lacks, as the conversion's does (concurrency_actor_trait_conform);
+// - the list names actor traits only: an ordinary trait, or a type, is refused.
+// The totals are worked out by hand.
+
+mod concurrency_actor_trait_is;
+
+import stdio use *;
+import actors;
+
+struct Chunk is Sendable {
+  pub n: u64;
+}
+
+struct Click is Sendable {
+  pub x: u64;
+}
+
+actor trait ChunkSink {
+  pub async fn accept(self, c: Chunk);
+  pub async fn total(self) u64;
+}
+
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Counter is ChunkSink {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+actor Both is ChunkSink, Subscriber[Click] {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn accept(self, c: Chunk) {
+    sum = sum + c.n;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+
+  pub async fn hear(self, e: Click) {
+    sum = sum + e.x * 10u64;
+  }
+}
+
+fn feed(s: ChunkSink, n: u64) {
+  s.accept(Chunk(n));
+}
+
+fn click(s: Subscriber[Click], x: u64) {
+  s.hear(Click(x));
+}
+
+actor Reporter {
+  pub async fn report(self, a: ChunkSink, b: ChunkSink) {
+    let x = await a.total();
+    let y = await b.total();
+    printStr("counter "); printUInt(x); printStr(" both "); printUInt(y); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let a = Counter();
+    let b = Both();
+    feed(a, 5u64);
+    feed(b, 7u64);
+    click(b, 3u64);
+    let r = Reporter();
+    r.report(a, b);
+  }
+  finalAll();
+}

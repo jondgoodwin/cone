@@ -183,6 +183,14 @@ actor Acceptor {
     server.close();
   }
 
+  // Closed, and the listener shut when 'done' is sent: a connect to the port is refused from then on
+  pub async fn stopAndWait(self, done: OneshotSender[u64]) {
+    server.close();
+    _ = await server.closed();
+    var d = done;
+    d.send(1u64);
+  }
+
   fn route(self, ex: Exchange) {
     if ex.request.body.view().contains("\"model\":\"hang\"") {
       hits.send(1u64);
@@ -416,7 +424,11 @@ fn main() i32 {
     let gone = Acceptor(Server.none(), htx.clone(), List[Silent].empty());
     gone.open(ptx2.clone());
     let deadPort = take[u16](&mut prx2, 0u16);
-    gone.stop();
+    var stx: OneshotSender[u64];
+    var srx: OneshotReceiver[u64];
+    stx, srx = Oneshot[u64].make();
+    gone.stopAndWait(stx);
+    srx.recv();
     var tx: OneshotSender[u64];
     var rx: OneshotReceiver[u64];
     tx, rx = Oneshot[u64].make();

@@ -1113,6 +1113,19 @@ int flowIsKeptRead(INode *node) {
     return flowIsLvalRead(node);
 }
 
+// The payload a match's binding reads out of the matched value, where that is
+// the match's own hidden variable and the variant has no other field
+// (flowTakesSoleField), and the payload has a death of its own -- a counted
+// reference, or a value holding one -- though it is not a move type. Nothing
+// names the hidden variable but the pattern, and the pattern reads the payload
+// once, so this read is the last of it: the payload moves out with the matched
+// value instead of gaining a holder that the matched value's own release then
+// undoes. (A read of a plain number copies, as it did.)
+static int flowIsSolePayloadTake(INode *node) {
+    return node->tag == FldAccessTag && isExpNode(node) && itypeNeedsFinal(((IExpNode *)node)->vtype)
+        && flowTakesSoleField((FnCallNode *)node);
+}
+
 void flowHandleMoveOrCopy(INode **nodep) {
     // A tuple literal has no storage of its own: each element's value is moved
     // or copied into it on its own, as a struct literal's fields are, so a
@@ -1124,7 +1137,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
             flowHandleMoveOrCopy(elemp);
         return;
     }
-    if (iexpIsMove(*nodep)) {
+    if (iexpIsMove(*nodep) || flowIsSolePayloadTake(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }
@@ -1184,8 +1197,6 @@ void flowHandleMoveOrCopyLast(INode **nodep) {
 // of '&&' or '||' at that operand's end, since each runs on some paths only.
 // *********************
 
-uint32_t flowTempCount = 0;
-
 // Is this expression a temporary whose death does something: a value made
 // here -- a call's result, a literal, an allocation, a block's or an 'if''s
 // value, a conversion -- rather than read out of a place that keeps it
@@ -1232,7 +1243,6 @@ static void flowTempWrap(INode **nodep) {
     temp->walkvar = NULL;
     temp->kept = 0;
     *nodep = (INode *)temp;
-    ++flowTempCount;
 }
 
 void flowTempRead(INode **nodep) {
@@ -1267,222 +1277,6 @@ static int flowCastHandsOn(INode *cast) {
     return !((to->tag == RefTag || to->tag == ArrayRefTag || to->tag == VirtRefTag)
         && itypeGetTypeDcl(((RefNode *)to)->region) == borrowRef);
 }
-
-// Does a value of this type hold a raw pointer, anywhere in it, through owning
-// references too? A few levels are looked at; a type nested deeper is taken
-// as holding none.
-static int flowTempHoldsPtr(INode *type, int depth) {
-    if (type == NULL || depth > 6)
-        return 0;
-    INode *typedcl = itypeGetTypeDcl(type);
-    INode **nodesp;
-    uint32_t cnt;
-    switch (typedcl->tag) {
-    case PtrTag:
-        return 1;
-    case RefTag:
-    case ArrayRefTag:
-    case VirtRefTag:
-        return flowTempHoldsPtr(((RefNode *)typedcl)->vtexp, depth + 1);
-    case ArrayTag:
-        return flowTempHoldsPtr(arrayElemType(typedcl), depth + 1);
-    case TTupleTag:
-        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
-            if (flowTempHoldsPtr(*nodesp, depth + 1))
-                return 1;
-        }
-        return 0;
-    case StructTag:
-    {
-        StructNode *strnode = (StructNode *)typedcl;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            if (flowTempHoldsPtr(((IExpNode *)*nodesp)->vtype, depth + 1))
-                return 1;
-        }
-        if (strnode->derived) {
-            for (nodesFor(strnode->derived, cnt, nodesp)) {
-                if (flowTempHoldsPtr(*nodesp, depth + 1))
-                    return 1;
-            }
-        }
-        return 0;
-    }
-    default:
-        return 0;
-    }
-}
-
-// How a value goes out of its statement (flowTempEscape's 'out'): not at all;
-// through values that may hold a borrow, which the loan walk follows; or, at
-// some step, through a value holding a raw pointer, which nothing follows
-enum {
-    TempOutNone = 0,
-    TempOutBorrow = 1,
-    TempOutPtr = 2,
-};
-
-// How a part of a value going out as 'out' goes out, the part of type 'type':
-// not at all, if it can hold neither a borrow nor a pointer
-static int flowTempOut(int out, INode *type) {
-    if (out == TempOutNone || type == NULL)
-        return TempOutNone;
-    if (flowTempHoldsPtr(type, 0))
-        return TempOutPtr;
-    return itypeCarriesBorrow(type) ? out : TempOutNone;
-}
-
-// May this call keep what an argument points at beyond itself: is an argument
-// a '&mut' reference, or a pointer, to something that can hold a borrow or a
-// pointer? Returns how what it keeps goes out.
-static int flowTempCallStores(FnCallNode *call) {
-    INode **argsp;
-    uint32_t cnt;
-    int out = TempOutNone;
-    for (nodesFor(call->args, cnt, argsp)) {
-        INode *type = iexpGetTypeDcl(*argsp);
-        int stores = TempOutNone;
-        if (type->tag == PtrTag)
-            stores = flowTempOut(TempOutBorrow, ((StarNode *)type)->vtexp);
-        else if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-            && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
-            && (permGetFlags(((RefNode *)type)->perm) & MayWrite))
-            stores = flowTempOut(TempOutBorrow, ((RefNode *)type)->vtexp);
-        if (stores > out)
-            out = stores;
-    }
-    return out;
-}
-
-// A temporary is finalized at its statement's end. A borrow of it may outlive
-// the statement only in what its value goes into -- a call's result that can
-// hold one, an aggregate, a store, a value the statement hands back -- and the
-// loan walk refuses any use of that after the temporary is gone (flowpath.c);
-// where Rust's rule extends a temporary, it is a hidden local of the block
-// already (varDclExtend). A raw pointer into it nothing follows: so the walk
-// here carries 'out' down from where a value leaves the statement, through
-// values that can hold a borrow or a pointer, and a temporary it reaches
-// through a value holding a pointer is kept -- never finalized, which leaks
-// it, as every temporary once was, rather than leave the pointer dangling.
-// Not a lock's guard (FlagLockAcquire): kept, it would hold its lock forever,
-// and every later borrow through the reference would wait for it. A guard
-// gives its lock and its owner back at its statement's end whatever pointer
-// into the value is made, which is unchecked, as a raw pointer is anywhere.
-void flowTempEscape(INode *node, int out) {
-    if (isNameUseNode(node))
-        return;
-    INode **nodesp;
-    uint32_t cnt;
-    switch (node->tag) {
-    case TempTag:
-    {
-        TempNode *temp = (TempNode *)node;
-        if (out == TempOutPtr
-            && !(temp->exp->tag == CastTag && (temp->exp->flags & FlagLockAcquire)))
-            temp->kept = 1;
-        flowTempEscape(temp->exp, out);
-        return;
-    }
-    case FnCallTag:
-    {
-        FnCallNode *call = (FnCallNode *)node;
-        int argsout = flowTempOut(out, call->vtype);
-        int stores = flowTempCallStores(call);
-        if (stores > argsout)
-            argsout = stores;
-        if (!isNameUseNode(call->objfn))
-            flowTempEscape(call->objfn, TempOutNone);
-        for (nodesFor(call->args, cnt, nodesp))
-            flowTempEscape(*nodesp, argsout);
-        return;
-    }
-    case FldAccessTag:
-    case ArrIndexTag:
-    {
-        FnCallNode *access = (FnCallNode *)node;
-        flowTempEscape(access->objfn, flowTempOut(out, access->vtype));
-        if (node->tag == ArrIndexTag) {
-            for (nodesFor(access->args, cnt, nodesp))
-                flowTempEscape(*nodesp, TempOutNone);
-        }
-        return;
-    }
-    case DerefTag:
-        flowTempEscape(((StarNode *)node)->vtexp, flowTempOut(out, ((StarNode *)node)->vtype));
-        return;
-    case BorrowTag:
-    case ArrayBorrowTag:
-        flowTempEscape(((RefNode *)node)->vtexp, out);
-        return;
-    case CastTag:
-        flowTempEscape(((CastNode *)node)->exp, flowTempOut(out, ((CastNode *)node)->vtype));
-        return;
-    case IsTag:
-        flowTempEscape(((CastNode *)node)->exp, TempOutNone);
-        return;
-    case NotLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
-        return;
-    case DestructTag:
-        flowTempEscape(((DestructNode *)node)->exp, flowTempOut(out, ((DestructNode *)node)->vtype));
-        return;
-    case OrLogicTag:
-    case AndLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
-        flowTempEscape(((LogicNode *)node)->rexp, TempOutNone);
-        return;
-    case VTupleTag:
-    case ArrayLitTag:
-    {
-        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
-        Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((ArrayNode *)node)->elems;
-        for (nodesFor(elems, cnt, nodesp))
-            flowTempEscape(*nodesp, elemout);
-        return;
-    }
-    case TypeLitTag:
-    {
-        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
-        for (nodesFor(((FnCallNode *)node)->args, cnt, nodesp))
-            flowTempEscape((*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp, elemout);
-        return;
-    }
-    case AllocateTag:
-        flowTempEscape(((RefNode *)node)->vtexp, flowTempOut(out, ((RefNode *)node)->vtype));
-        return;
-    case AssignTag:
-        flowTempEscape(((AssignNode *)node)->lval, TempOutNone);
-        // A '_' target keeps nothing: the value dies with the statement
-        flowTempEscape(((AssignNode *)node)->rval,
-            assignIsAnon(((AssignNode *)node)->lval) ? TempOutNone : TempOutBorrow);
-        return;
-    case RefCountTag:
-        flowTempEscape(((RefCountNode *)node)->exp, out);
-        return;
-    case AwaitTag:
-        flowTempEscape(((AwaitNode *)node)->exp, flowTempOut(out, ((AwaitNode *)node)->vtype));
-        return;
-    // The result a yield hands the caller goes out, as a return's does
-    case YieldTag:
-        flowTempEscape(((YieldNode *)node)->exp, TempOutBorrow);
-        return;
-    case HollowTag:
-        if (((HollowNode *)node)->exp)
-            flowTempEscape(((HollowNode *)node)->exp, out);
-        return;
-    // A branch's statements are walked as their block's; only the conditions
-    // are this statement's
-    case IfTag:
-        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
-            if (*nodesp != elseCond)
-                flowTempEscape(*nodesp, TempOutNone);
-            nodesp++; cnt--;
-        }
-        return;
-    default:
-        return;
-    }
-}
-
 
 // Load a reference that a value is about to be read through, and refuse the
 // read when the reference's permission grants none. The reference's own

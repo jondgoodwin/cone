@@ -14,8 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
-		not yet on macOS. Not built yet: a generic <span class="pre">actor trait</span>, a generic actor, and a queued
-		method on a message type.</i></p>
+		not yet on macOS. Not built yet: a generic actor, and a queued method on a message type.</i></p>
 
 	<p>The <a href="guide-actors.html">Guide's bakery</a> gave each part of a program an actor of its own, and let them
 		talk. Building something real raises the questions the tour skipped: when is an answer sent back, when does an
@@ -191,9 +190,9 @@ or &amp;'static uni.
 		before the behaviour runs, and the value is dropped, unless the behaviour was awaited or its future kept
 		(<a href="conc-await.html">Awaiting and futures</a>).</li>
 	<li><b>An actor declares no static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
-		type parameters, and names no abstraction.</b> An actor conforms to an
-		<a href="#actortrait"><span class="pre">actor trait</span></a>, its abstraction, by having the behaviours, with
-		nothing written on the actor.</li>
+		type parameters, and has no base.</b> It may say which
+		<a href="#actortrait"><span class="pre">actor traits</span></a>, its abstraction, it conforms to, with
+		<span class="pre">is</span>, and conforms by having the behaviours, with or without it.</li>
 	</ul>
 
 	<h2 id="making">Making an actor</h2>
@@ -317,6 +316,58 @@ actor Reader {
 		actor can be passed along to answer in its turn. A handle is <span class="pre">Sendable</span> and may be
 		passed in a message, kept in another actor's state or put in a list; it keeps its actor alive, so a list of
 		subscribers that should not hold them is not what an actor trait gives yet.</p>
+
+	<h3 id="generic-trait">A generic actor trait</h3>
+	<p>The trait may take type parameters, and each type of event, message or answer it is used at is an instance of
+		it, as for any generic type, with a handle and a table of its own. The actors that conform are not generic (a
+		generic actor is still refused); they conform to the instance their behaviours' types make:</p>
+<pre>
+actor trait Subscriber[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Tally  { pub async fn hear(self, e: Click) { ... } }     // a Subscriber[Click]
+actor Typist { pub async fn hear(self, e: Key)   { ... } }     // a Subscriber[Key]
+
+let clicks: List[Subscriber[Click]] = ...;   // a Tally and a Clicker in one list
+let keys: Subscriber[Key] = typist;
+let bad: Subscriber[Key] = tally;            // Error 1570: ... put(e: Click) does not take and return
+                                             // what the trait's hear(e: Key) does
+</pre>
+	<p>What an <span class="pre">await</span> through a handle of an instance gives is the instance's type.</p>
+
+	<h3 id="trait-bound">As a bound: no table</h3>
+	<p>An actor trait may bound a type parameter, <span class="pre">[S: ChunkSink]</span> or
+		<span class="pre">[S: Subscriber[Click]]</span>, and an actor that conforms meets the bound, as does the trait's
+		own handle. A generic function is made for the type it is given, so it calls that actor's own methods directly:
+		no handle is made, no table, and no indirect call. A pipeline whose stages are fixed when the program is compiled
+		pays nothing for the abstraction.</p>
+<pre>
+fn connect[S: ChunkSink](s: S, n: u64) {
+  s.accept(Chunk(n));          // for a Counter, a call of Counter's own accept
+}
+connect(counter, 10u64);       // not connect(counter as a handle): none is made
+</pre>
+	<p>An actor that does not conform given to such a parameter is refused, as for any bound
+		(<span class="pre">connect requires S is ChunkSink, and Mute is not ChunkSink</span>). Convert it to the trait's
+		handle, where the error names what it lacks.</p>
+
+	<h3 id="actor-is">An actor that says what it is</h3>
+	<p>Conformance needs nothing written on the actor, but an author may say what the actor is meant to be, and have the
+		compiler keep it true. <span class="pre">is</span> names actor traits (instances of generic ones too), and each
+		is checked as an assertion:</p>
+<pre>
+actor Counter is ChunkSink { ... }
+actor Both is ChunkSink, Subscriber[Click] { ... }
+
+actor Lacks is ChunkSink {            // Error 1570: Actor Lacks does not conform to actor trait ChunkSink,
+  pub async fn other(self) { ... }    // which it says it is: It has no behaviour 'pub async fn accept(c: Chunk)'.
+}                                     // It has no behaviour 'pub async fn total() u64'. ...
+</pre>
+	<p>The error lists everything missing, as the conversion's does. Saying so changes nothing else: the actor is
+		converted, bounded and sent to the same with or without it, and the assertion is not part of its state or its
+		handle. A name that is not an actor trait, a struct for one, is refused. An actor still has no base to
+		<span class="pre">extends</span>.</p>
 
 	<h2 id="messages">Messages and their order</h2>
 	<p>A send is one-way: it queues the message and returns. An answer comes back only to an
