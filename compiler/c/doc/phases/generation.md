@@ -817,6 +817,19 @@ single reference the value it points at, for a virtual reference through its
 record's `finalize` — then
 the region's `free` if it has one.
 
+**In a release build the death is a cold function, the decrement stays in
+line** (`genlDropSlow`). After `dealiasRef`'s `bool`, a plain thin reference
+(not fat or virtual, not a guard, not a release of a value moved out of in
+part) calls `cone.dropslow.N(ptr)`, an internal `noinline cold` function made once
+for each region and pointee type in the object, whose body is `genlRegionDeath`.
+So a release is a decrement, a compare and one call on the rare branch, however
+large the pointee's own drop is; a drop of a type holding such a reference is
+then small enough for LLVM to inline even where its instance is shared
+(`linkonce_odr`), which is what keeps a shared instance's drop from being called
+on every decrement. The recursion of a chain of counted links is not flattened:
+each link's death still calls the next's inside its own, one `dropslow` frame
+deep per link. Debug builds keep the death in line.
+
 **One routine is a value's death in place, whatever its type**
 (`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
 (flow lists the variable, or for a struct or an enum a call to its drop), a
