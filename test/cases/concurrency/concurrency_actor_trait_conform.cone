@@ -9,7 +9,10 @@
 // - Fine has them all, and one more, and converts without a word.
 //
 // The conversion is wherever a handle of the trait is wanted: an argument, a
-// 'let' with the type written, a field's value, a return.
+// 'let' with the type written, a field's value, a return. A generic trait is
+// judged at the instance asked for (Narrow takes a u32 and meets Box[u32], not
+// Box[u64]), and a bound '[S: ChunkSink]' is met by an actor that conforms and
+// refused for one that does not.
 
 mod concurrency_actor_trait_conform;
 
@@ -65,7 +68,34 @@ fn make() ChunkSink {
   m                                   //~ ErrorActorTraitConform "Actor Mute does not conform to actor trait ChunkSink"
 }
 
+// A generic trait is judged at the instance asked for, and says it
+actor trait Box[T] {
+  pub async fn put(self, v: T);
+}
+
+actor Narrow {
+  sum: u64;
+  fn init(self: &new) {*self = Self(sum: 0u64);}
+  pub async fn put(self, v: u32) {sum = sum + u64.from(v);}
+}
+
+fn fill(b: Box[u64]) {
+  b.put(1u64);
+}
+
+fn fillNarrow(b: Box[u32]) {
+  b.put(1u32);
+}
+
+// A bound is met by an actor that conforms, and by no other
+fn connect[S: ChunkSink](s: S) {
+  s.accept(Chunk(1u64));
+}
+
 fn main() {
+  let narrow = Narrow();
+  fill(narrow);                       //~ ErrorActorTraitConform "Actor Narrow does not conform to actor trait Box[u64], which it is converted to here: Its behaviour put(v: u32) does not take and return what the trait's put(v: u64) does"
+  fillNarrow(narrow);
   let mute = Mute();
   let wrong = Wrong();
   let short = Short();
@@ -75,6 +105,8 @@ fn main() {
   let a: ChunkSink = short;           //~ ErrorActorTraitConform "Its behaviour total() u32 does not take and return what the trait's total() u64 does"
   let h = Holder(wrong);              //~ ErrorActorTraitConform "Actor Wrong does not conform to actor trait ChunkSink"
   feed(fine);
+  connect(fine);
+  connect(mute);                      //~ ErrorWhereUnmet "connect requires S is ChunkSink, and Mute is not ChunkSink"
   let ok: ChunkSink = fine;
   let b = Holder(fine);
 }

@@ -57,8 +57,10 @@
 # (_conform, naming what an actor lacks), and the runs: two actors in one list
 # sent through and awaited (_sink), a one-behaviour trait passed as the reply
 # address (_reply), a behaviour's parameter defaults and returned tuple
-# (_shapes), the trait declared in another module (_module), and a handle's
-# identity and its keeping its actor alive (_identity).
+# (_shapes), the trait declared in another module (_module), a handle's
+# identity and its keeping its actor alive (_identity), a generic trait at two
+# types (_generic), and a trait as a bound on a type parameter (_bound), which
+# makes no table (_static, whose named checks read the dump).
 #
 # 'await' in an actor's behaviour: a seam, where the behaviour returns to the
 # actor's dispatcher to wait. An 'await' on a behaviour of an actor that
@@ -234,12 +236,12 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_trait_parse]
 category = "reject"
-description = "What an actor trait's declaration may not say: a field, a static, a macro, a 'fn', a behaviour with a body, not 'pub', without 'self' or generic, a behaviour carrying a borrow, a generic trait, one naming an abstraction"
+description = "What an actor trait's declaration may not say: a field, a static, a macro, a 'fn', a behaviour with a body, not 'pub', without 'self' or generic, a behaviour carrying a borrow, a trait with a lifetime among its type parameters, one naming an abstraction"
 tags = ["parse"]
 
 [scenario.concurrency_actor_trait_conform]
 category = "reject"
-description = "An actor's handle converted to an actor trait's where the actor lacks a behaviour, takes other parameters, returns another type or has it not 'pub': refused at the conversion, naming each, in an argument, a 'let', a field's value and a return; one that conforms, with a behaviour more, converts"
+description = "An actor's handle converted to an actor trait's where the actor lacks a behaviour, takes other parameters, returns another type or has it not 'pub': refused at the conversion, naming each, in an argument, a 'let', a field's value and a return; one that conforms, with a behaviour more, converts; a generic trait judged at the instance asked for; a bound met by a conforming actor and refused for another"
 tags = ["typecheck"]
 
 [scenario.concurrency_actor_trait_module]
@@ -251,6 +253,33 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 category = "run"
 description = "A trait's behaviour with a default for a parameter, a returned tuple awaited through the handle, and one that takes only its defaults"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_generic]
+category = "run"
+description = "A generic actor trait 'Subscriber[Event]' at two event types: actors that conform to an instance (one conforming to neither, one to a second instance), a list of handles of an instance holding two kinds of actor, sent through, and a returned value awaited through a handle of an instance"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_bound]
+category = "run"
+description = "An actor trait as a bound, '[S: ChunkSink]' and '[S: Subscriber[Click]]': the generic body calls the argument's own methods, for two kinds of actor and for the trait's own handle, and the totals are the same as if each had been called directly"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_trait_static]
+category = "run"
+description = "A bound on an actor trait dispatches statically: the instance of 'connect' at a Counter calls the Counter's own sending method directly, and no table is made for the pair"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_actor_trait_static.check]]
+name = "the-bound-makes-no-table"
+target = "symbols"
+contains = ["define internal connect[Counter] comdat nodeduplicate", "define internal Counter.accept comdat nodeduplicate"]
+excludes = ["Counter as `ChunkSink.vt`"]
+
+[[scenario.concurrency_actor_trait_static.check]]
+name = "the-instance-calls-the-actor-directly"
+target = "preir"
+# the argument's chunk made, then a call of a named function (an indirect call is `call %void %5(...)`)
+contains = ["%literal = insertvalue %Chunk undef, i64 %n1, 0\n  %2 = call %void @"]
 
 [scenario.concurrency_actor_shapes]
 category = "run"
@@ -543,6 +572,18 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 name = "release"
 
 [[scenario.concurrency_await_places_reply.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_await_reply_final]
+category = "run"
+description = "A value an actor method with an 'await' returns is moved into its reply and finalized exactly once, after the reply is consumed: returned after a seam, before one, and sent with no 'await' (dropped by the dispatcher)"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_reply_final.run]]
+name = "release"
+
+[[scenario.concurrency_await_reply_final.run]]
 name = "debug"
 options = ["--debug"]
 
