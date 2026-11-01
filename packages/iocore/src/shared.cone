@@ -2,9 +2,9 @@
 // (see the package's header, WORKER-SIDE ISSUE).
 //
 // How it is built. 'lp.share()' makes the Loop's SHARED TABLE: a fixed
-// directory of chunks of 256 entries that never move and are never freed (the
-// records' own scheme, record.cone), one entry per handle-table cell, by the
-// Handle's index. The Loop's thread publishes an entry when it registers a
+// directory of chunks of 256 entries that never move while the table lives
+// (the records' own scheme, record.cone), one entry per handle-table cell, by
+// the Handle's index. The Loop's thread publishes an entry when it registers a
 // handle (its OS handle, kind and skip mode written, then its generation stored
 // with release) and unpublishes it, under the entry's lock, before it closes the
 // OS handle. Any thread finds an entry with a load and a generation check: no
@@ -21,6 +21,15 @@
 // acquisition is counted (Shared.contended), spins a while and then yields its
 // processor, so a holder that was preempted is not spun on for a whole quantum.
 // The Loop's thread holds no other lock while it takes one.
+//
+// ITS LIFE. The table outlives its Loop: a thread that holds a Shared may look
+// at it (a lock, a generation check) after the Loop has died, and finds every
+// entry unpublished, so nothing is issued. So the table is counted, one count
+// for the Loop and one for each Shared handed out ('clone', which 'lp.share()'
+// does), and the Slab, its directory and every chunk are freed by whoever lets
+// go last (Shared's final). A Shared is Move, so each holder is one count, and
+// a thread that only borrows one (&Shared) adds none: no count is touched to
+// look, lock or issue.
 //
 // ISSUE. 'sh.issue(p)', with the entry of p's handle locked, tries a receive or
 // a send of record p on the calling thread. Windows: WSARecv/WSASend on a
@@ -56,21 +65,53 @@ struct SEntry {
   pad: Array[u8, 32];
 }
 
-// The table: the chunk directory and the contended count
+// The table: the chunk directory, the contended count, and how many hold it
 struct Slab {
   dir: *usize;
   contended: u64;
+  holders: u64;            // the Loop and every Shared handed out (atomic)
 }
 
-// A Loop's shared table, as any thread holds it: Sendable, copied to share
-// (WORKER-SIDE ISSUE)
-pub struct Shared is Sendable {
+// How many tables are made and not yet freed: for tests, and for finding leaks
+let sharedLive: Atomic[u32];
+
+pub fn sharedTables() u32 {sharedLive.load()}
+
+// A Loop's shared table, as any thread holds it: Sendable, one holder each, a
+// 'clone' for another (WORKER-SIDE ISSUE). The last holder to let go frees it
+pub struct Shared is Move, Sendable {
   at: usize;               // the Slab, or 0: none
 
   // No table: nothing is ever issued through it
   pub fn none() Shared {Shared(0usize)}
 
   pub fn isNone(self: &) bool {at == 0usize}
+
+  // Another holder of the same table
+  pub fn clone(self: &) Shared {
+    if at != 0usize {
+      mem.atomicAdd[u64](&(*(at as *Slab)).holders as *u64, 1u64, MemOrder.Relaxed);
+    }
+    Shared(at)
+  }
+
+  // This holder lets go; the last frees the table. The Loop's thread wrote
+  // every chunk: the count's release and acquire order those writes before the
+  // free, whichever holder is last
+  fn final(self: &uni) {
+    if at == 0usize {return;}
+    let s = at as *Slab;
+    if mem.atomicSub[u64](&(*s).holders as *u64, 1u64, MemOrder.Release) != 1u64 {return;}
+    mem.atomicLoad[u64](&(*s).holders as *u64, MemOrder.Acquire);
+    var ci = 0u32;
+    while ci < shChunks {
+      libc.free(mem.atomicLoad[usize]((*s).dir + usize.from(ci), MemOrder.Relaxed) as *u8);
+      ci = ci + 1u32;
+    }
+    libc.free((*s).dir as *u8);
+    libc.free(s as *u8);
+    sharedLive.sub(1u32);
+  }
 
   // The lock acquisitions that found the lock held, since the table was made
   pub fn contended(self: &) u64 {
@@ -165,8 +206,8 @@ pub struct Shared is Sendable {
   }
 }
 
-// A new table, its directory empty; none if there is no memory for it (then
-// nothing is issued off the Loop's thread)
+// A new table, its directory empty, the Loop its one holder; none if there is
+// no memory for it (then nothing is issued off the Loop's thread)
 fn makeShared() Shared {
   let s = libc.calloc(1usize, mem.sizeof[Slab]()) as *Slab;
   let d = libc.calloc(usize.from(shChunks), mem.sizeof[usize]()) as *usize;
@@ -176,6 +217,8 @@ fn makeShared() Shared {
     return Shared.none();
   }
   (*s).dir = d;
+  (*s).holders = 1u64;
+  sharedLive.add(1u32);
   Shared(s as usize)
 }
 

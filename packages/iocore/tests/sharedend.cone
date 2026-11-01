@@ -1,0 +1,131 @@
+// A worker thread holds the loop's shared table and issues on it while the
+// loop dies (see the package's header, WORKER-SIDE ISSUE, and shared.cone, ITS
+// LIFE). Workers are not joined before a loop dies, so the table must outlive
+// the loop for as long as the worker holds it, and be freed, once, by the last
+// holder to let go:
+//
+// 1. The loop makes its table, a worker is handed one holder of it and sends
+//    through it on a live handle, off the loop's thread.
+// 2. The loop dies while the worker goes on looking: every entry is unpublished
+//    first, so the worker is refused from then on, and its looks at the table
+//    (a lock, a generation check) read memory that is still there. Run under
+//    ASan, a table freed with the loop would be a use after free here.
+// 3. The table is still live, held by the worker alone.
+// 4. The worker lets go, and the table is freed. Run under LSan, a table
+//    nobody frees would be a leak at the program's end.
+
+mod sharedend;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+struct Ask {
+  tag: u64;
+}
+
+// What the worker has done, and when it is told to stop: atomics held by 'let'
+// globals, set in 'init'; the worker is given their addresses' owner (this
+// module), so it only reads them
+let sent: Atomic[u32];       // sends the worker issued and saw done at once
+let refused: Atomic[u32];    // looks at the table that found the handle gone
+let stop: Atomic[u32];
+
+fn @initpure init() {
+  sent = Atomic[u32].of(0u32);
+  refused = Atomic[u32].of(0u32);
+  stop = Atomic[u32].of(0u32);
+}
+
+// What the worker is handed: one holder of the table, and a handle in it
+struct Work is Sendable {
+  sh: Shared;
+  h: Handle;
+}
+
+fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n && Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+// A connected pair on lp; the second end is the one the worker sends on
+fn pair(lp: &mut Loop) Handle {
+  let listener = lp.mustListen(SocketAddr.localhost(0u16));
+  var port = 0u16;
+  match lp.localAddr(listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  lp.submit(Op.Accept(listener), Target.Here(9001u64));
+  lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
+  var out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  var b = Handle.none();
+  var k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9002u64 {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  b
+}
+
+// Off the loop's thread: a few sends through the table, between many looks at it
+fn worker(w: Work) u32 {
+  let pool = OpPool[Ask].make();
+  var looks = 0u32;
+  while stop.load() == 0u32 {
+    looks = looks + 1u32;
+    if w.sh.lock(w.h) {
+      if looks % 64u32 == 1u32 && sent.load() < 100u32 {
+        let r = pool.take(Ask(2u64));
+        let c = &mut (*r).core;
+        c.kind = diag.kindSend;
+        c.handle = w.h;
+        var b = IoBuf(16usize);
+        b.append("ping");
+        c.buf = Some[IoBuf](b);
+        if w.sh.issue(r as *OpCore) == issueDone {sent.add(1u32);}
+        let rec = pool.dissolve(r);
+      }
+      w.sh.unlock(w.h);
+    } else {
+      refused.add(1u32);
+    }
+    if looks % 256u32 == 0u32 {thread.yieldNow();}
+  }
+  looks
+}
+
+// The loop: made, its table handed to a worker, and dead on return, with the
+// worker still going
+fn runLoop() thread.Thread[u32] {
+  var lp = Loop.mustMake();
+  let b = pair(&mut lp);
+  let t = thread.start(Work(lp.share(), b), &worker);
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while sent.load() == 0u32 && Instant.now() < limit {thread.yieldNow();}
+  expect(sent.load() > 0u32, "the worker sent through the table, off the loop's thread");
+  expectUInt(u64.from(sharedTables()), 1u64, "one table is live while the loop is");
+  t
+}
+
+fn main() i32 {
+  initAll();
+  let t = runLoop();
+  let limit = Instant.now() + Duration.fromSeconds(5i64);
+  while refused.load() < 1000u32 && Instant.now() < limit {thread.yieldNow();}
+  expect(refused.load() >= 1000u32, "the worker is refused once the loop is dead, and goes on looking");
+  expectUInt(u64.from(sharedTables()), 1u64, "the table outlives the loop, held by the worker");
+  stop.store(1u32);
+  let looks = t.join();
+  expect(looks > 0u32, "the worker looked");
+  expectUInt(u64.from(sharedTables()), 0u64, "the worker's letting go frees the table");
+  done()
+}
