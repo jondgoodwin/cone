@@ -508,8 +508,11 @@ static int itypeStructThreadBound(StructNode *type) {
     type->threadbound = CarriesBorrowAsking;
 
     int bound = 0;
+    // (a generic actor's message enum is taken at its word whatever its type
+    // arguments, as a non-generic one is: actorCheckAll judges each instance's
+    // parameters, naming the actor and the behaviour)
     if (structDeclaresTrait(type, sendableTrait))
-        bound = itypeArgsThreadBound((INode *)type);
+        bound = actorIsMessage((INode *)type) ? 0 : itypeArgsThreadBound((INode *)type);
     else if (itypeIsOpenTrait(type))
         bound = 1;
     else {
@@ -766,7 +769,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         // Declared Sendable, and bound only by a type argument
         if (structDeclaresTrait(strnode, sendableTrait)) {
             Nodes *args = itypeInstanceTypeArgs(type);
-            if (args == NULL)
+            if (args == NULL || actorIsMessage(type))
                 return NULL;
             for (nodesFor(args, cnt, nodesp)) {
                 if (!itypeThreadBoundHow(*nodesp, NULL, itypeStaticHow))

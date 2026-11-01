@@ -80,6 +80,11 @@
  * owning reference to the Mailbox, which lays out nothing of what it points
  * at, so the handle is laid out whole before the enum is.
  *
+ * A generic actor, 'actor Stage[T: Transform]', is generated the same way with its
+ * type parameters on the handle and the enum and after each use of them (see "A
+ * generic actor" below), and the dispatcher and the other small functions as
+ * statics of the handle, so that each instance has its own (actor.c, actorInstance).
+ *
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -296,37 +301,47 @@ static void genParm(GenText *g, DclText *text, Name *name) {
 // the state constructed in it in place, so that its init runs on the state
 // where it stays, in an actor that is real already, then the actor started
 // (the actors package, A NEW ACTOR)
-static void genStartOpen(GenText *g) {
+static void genTraitUse(GenText *g, StructNode *body);
+static void genSlotUse(GenText *g, uint32_t slot, StructNode *state);
+
+static void genStartOpen(GenText *g, StructNode *state) {
     genPuts(g, ") {let ");
     genSlot(g, GenAt);
     genPuts(g, " = ");
     genSlot(g, GenActors);
     genPuts(g, ".makeActor[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, ", ");
-    genSlot(g, GenMsg);
-    genPuts(g, "](&");
-    genSlot(g, GenDispatch);
+    genSlotUse(g, GenMsg, state);
+    // A generic actor's dispatcher is a static of its handle, which each instance has its own of
+    if (state->genericinfo) {
+        genPuts(g, "](&Self.");
+        genSlot(g, GenDispatch);
+    }
+    else {
+        genPuts(g, "](&");
+        genSlot(g, GenDispatch);
+    }
     genPuts(g, "); ");
     genSlot(g, GenMem);
     genPuts(g, ".writeRaw[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, "](");
     genSlot(g, GenAt);
     genPuts(g, ", ");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, "(");
 }
 
-static void genStartClose(GenText *g) {
+static void genStartClose(GenText *g, StructNode *state) {
     genPuts(g, ")); *self = Self(");
     genSlot(g, GenMailbox);
     genPuts(g, ": ");
     genSlot(g, GenActors);
     genPuts(g, ".startActor[");
-    genSlot(g, GenState);
+    genSlotUse(g, GenState, state);
     genPuts(g, ", ");
-    genSlot(g, GenMsg);
+    genSlotUse(g, GenMsg, state);
     genPuts(g, "](");
     genSlot(g, GenAt);
     genPuts(g, "));}\n");
@@ -609,9 +624,10 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
 // Returns whether its 'is' list is to be checked (parseActor)
 static int parseActorHeader(DclTexts *texts, StructNode *state, Name *actorname) {
     int checked = 0;
-    if (state->genericinfo || state->lifeparms)
+    if (state->lifeparms)
         errorMsgNode((INode *)state, ErrorActorMember,
-            "Actor %s takes type parameters, and a generic actor is not built yet.", &actorname->namestr);
+            "Actor %s names a lifetime among its type parameters, which a message cannot carry: no borrow leaves its thread.",
+            &actorname->namestr);
     if (state->extendsbase || state->condis) {
         errorMsgNode((INode *)state, ErrorActorMember,
             "Actor %s names a base, or an abstraction on a condition, which an actor does not have: an actor says what it is with 'is' and an actor trait, and has no base to enrich.",
@@ -1004,6 +1020,27 @@ static void genTraitVia(GenText *g, StructNode *body) {
     genSlot(g, TrVt);
     genTraitUse(g, body);
     genPuts(g, "));");
+}
+
+// ---- A generic actor ----------------------------------------------------------
+//
+// 'actor Stage[T: Transform] {...}' declares its type parameters, as written, on
+// each declaration generated (the handle, the message enum; the state already has
+// them, as the author wrote it), and every use of one of them in the generated text
+// is followed by the parameters' names, as an actor trait's is: 'Stage.Msg[T]'. An
+// instance of the handle, 'Stage[Inflater]', then has its own state, message enum,
+// envelopes and futures, cloned as any generic type's are. The functions that are
+// not the handle's methods or the state's -- the dispatcher, the envelope
+// makers, 'selfactor''s and the 'is' list's -- are generated as statics of the
+// handle ('Stage.dispatch'), so that an instance has its own, found by name
+// (actor.c, actorInstance), where a generic function would have to be instanced
+// at a call. A message variant of a generic enum is written with its type
+// arguments after it, 'Stage.Msg.accept[T]'.
+
+// A slot's name, then the actor's type arguments where it is generic
+static void genSlotUse(GenText *g, uint32_t slot, StructNode *state) {
+    genSlot(g, slot);
+    genTraitUse(g, state);
 }
 
 static void parseActorTrait(ParseState *parse, uint16_t pubflag) {
@@ -1421,15 +1458,15 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genPuts(&g, "struct ");
     genSlot(&g, GenAllocs);
     genPuts(&g, " {\n  fn allocRegion(self: &mut ");
-    genSlot(&g, GenState);
+    genSlotUse(&g, GenState, state);
     genPuts(&g, ") &'static mut ");
     genSlot(&g, GenActors);
     genPuts(&g, ".ActorRegion {\n    ");
     genSlot(&g, GenActors);
     genPuts(&g, ".regionOf[");
-    genSlot(&g, GenState);
+    genSlotUse(&g, GenState, state);
     genPuts(&g, ", ");
-    genSlot(&g, GenMsg);
+    genSlotUse(&g, GenMsg, state);
     genPuts(&g, "](self)\n  }\n}\n");
 
     // The message enum: a variant per message, its fields the parameters,
@@ -1441,6 +1478,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     GenText ge = {NULL, 0, 0};
     genPuts(&ge, "enum ");
     genSlot(&ge, GenMsg);
+    genTraitDecl(&ge, &texts);
     genPuts(&ge, " is ");
     genSlot(&ge, GenSendable);
     genPuts(&ge, " {\n");
@@ -1487,6 +1525,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     // a method per message, which sends it
     genPuts(&g, "struct ");
     genName(&g, actorname);
+    genTraitDecl(&g, &texts);
     genPuts(&g, " {\n  ");
     genSlot(&g, GenMailbox);
     genPuts(&g, ": ");
@@ -1494,11 +1533,12 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genPuts(&g, ".Arc[opaq, ");
     genSlot(&g, GenActors);
     genPuts(&g, ".Mailbox[");
-    genSlot(&g, GenMsg);
+    genSlotUse(&g, GenMsg, state);
     genPuts(&g, "]];\n");
     // Two handles are equal when they are of the one actor: the one mailbox
     genPuts(&g, "  pub fn `==`(self: &, o: ");
     genName(&g, actorname);
+    genTraitUse(&g, state);
     genPuts(&g, ") bool {*(&self.");
     genSlot(&g, GenMailbox);
     genPuts(&g, " as *usize) == *(&o.");
@@ -1520,7 +1560,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, text, field->namesym);
         }
-        genStartOpen(&g);
+        genStartOpen(&g, state);
         int first = 1;
         for (nodelistFor(&state->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
@@ -1534,7 +1574,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ": ");
             genName(&g, field->namesym);
         }
-        genStartClose(&g);
+        genStartClose(&g, state);
     }
     for (nodesFor(members.inits, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
@@ -1554,7 +1594,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, parseActorText(&texts, (INode *)parm), parm->namesym);
         }
-        genStartOpen(&g);
+        genStartOpen(&g, state);
         int first = 1;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
@@ -1565,7 +1605,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             first = 0;
             genName(&g, parm->namesym);
         }
-        genStartClose(&g);
+        genStartClose(&g, state);
     }
     // A behaviour that returns a value is sent awaited by a second method,
     // which an 'await' calls in place of the first (awaitTypeCheck): it takes
@@ -1616,7 +1656,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ") {");
             genSlot(&g, GenActors);
             genPuts(&g, ".send[");
-            genSlot(&g, GenMsg);
+            genSlotUse(&g, GenMsg, state);
             genPuts(&g, "](");
             genSlot(&g, GenMailbox);
             genPuts(&g, ", ");
@@ -1626,6 +1666,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
+            genTraitUse(&g, state);
             // A variant holding values is constructed with parentheses; one that
             // holds none, by its name alone
             int anyparm = 0;
@@ -1709,19 +1750,20 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, ".futureFor[");
         genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, "](");
         genSlot(&g, GenMailbox);
         genPuts(&g, ");\n    ");
         genSlot(&g, GenActors);
         genPuts(&g, ".send[");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, "](");
         genSlot(&g, GenMailbox);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
         genSlot(&g, variant);
+        genTraitUse(&g, state);
         genPuts(&g, "(");
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
@@ -1735,18 +1777,29 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, "](&f)));\n    f\n  }\n");
     }
-    genPuts(&g, "}\n");
-
-    genPutn(&g, ge.text, ge.len);
+    // What is written from here on is the dispatcher, the envelope makers,
+    // 'selfactor''s function and the 'is' list's. Of a generic actor they are
+    // statics of the handle, which an instance has its own of; of any other they
+    // follow the message enum. The handle so far and the enum are put with them
+    // below (assembled)
+    GenText handletext = g;
+    g.text = NULL;
+    g.len = g.avail = 0;
+    int generic = state->genericinfo != NULL;
+    // The name the dispatcher gives the state: 'self' where it is a function of
+    // the module's, which a static of the handle must not call a parameter
+    char *dself = generic ? "st" : "self";
 
     // The dispatch function: the message where it lies in its node, each
     // argument moved out of it into the method's call
     genPuts(&g, "fn ");
     genSlot(&g, GenDispatch);
-    genPuts(&g, "(self: &uni ");
-    genSlot(&g, GenState);
+    genPuts(&g, "(");
+    genPuts(&g, dself);
+    genPuts(&g, ": &uni ");
+    genSlotUse(&g, GenState, state);
     genPuts(&g, ", msg: *");
-    genSlot(&g, GenMsg);
+    genSlotUse(&g, GenMsg, state);
     genPuts(&g, ") {\n");
     //
     // A message that returns a value: sent with no 'await', its value is
@@ -1770,6 +1823,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
+            genTraitUse(&g, state);
             genPuts(&g, " {let p = (msg as *u8 as usize) as *");
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
@@ -1777,11 +1831,14 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
+            genTraitUse(&g, state);
             genPuts(&g, "; ");
             if (slotted) {
                 genSlot(&g, GenActors);
                 if (asked) {
-                    genPuts(&g, ".ask(&mut self.");
+                    genPuts(&g, ".ask(&mut ");
+                    genPuts(&g, dself);
+                    genPuts(&g, ".");
                     genSlot(&g, GenAnswer);
                     genPuts(&g, ", ");
                     genSlot(&g, GenTake);
@@ -1790,7 +1847,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                     genPuts(&g, ")); let v = ");
                 }
                 else {
-                    genPuts(&g, ".askNone(&mut self.");
+                    genPuts(&g, ".askNone(&mut ");
+                    genPuts(&g, dself);
+                    genPuts(&g, ".");
                     genSlot(&g, GenAnswer);
                     genPuts(&g, "); let v = ");
                 }
@@ -1803,7 +1862,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, GenEnvelope);
                 genPuts(&g, "), ");
             }
-            genPuts(&g, "self.");
+            genPuts(&g, dself);
+            genPuts(&g, ".");
             genName(&g, fn->namesym);
             genPuts(&g, "(");
             int first = 1;
@@ -1824,7 +1884,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             if (slotted) {
                 genPuts(&g, "); ");
                 genSlot(&g, GenActors);
-                genPuts(&g, ".answerAt(&mut self.");
+                genPuts(&g, ".answerAt(&mut ");
+                genPuts(&g, dself);
+                genPuts(&g, ".");
                 genSlot(&g, GenAnswer);
                 genPuts(&g, ", v);}\n");
             }
@@ -1846,15 +1908,15 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, "fn ");
         genSlot(&g, withid ? GenReplyId : GenReply);
         genPuts(&g, "(st: &");
-        genSlot(&g, GenState);
+        genSlotUse(&g, GenState, state);
         genPuts(&g, withid ? ", run: *u8, id: u64, size: usize, align: usize) " : ", run: *u8, size: usize, align: usize) ");
         genSlot(&g, GenActors);
         genPuts(&g, ".Reply {\n  ");
         genSlot(&g, GenActors);
         genPuts(&g, ".replyFor[");
-        genSlot(&g, GenState);
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, withid ? "](st, run, id, true, size, align)\n}\n" : "](st, run, 0u64, false, size, align)\n}\n");
     }
 
@@ -1865,19 +1927,21 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, "fn ");
         genSlot(&g, GenSelf);
         genPuts(&g, "(st: &");
-        genSlot(&g, GenState);
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ") ");
         genName(&g, actorname);
+        genTraitUse(&g, state);
         genPuts(&g, " {");
         genName(&g, actorname);
+        genTraitUse(&g, state);
         genPuts(&g, "(");
         genSlot(&g, GenMailbox);
         genPuts(&g, ": ");
         genSlot(&g, GenActors);
         genPuts(&g, ".selfOf[");
-        genSlot(&g, GenState);
+        genSlotUse(&g, GenState, state);
         genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
+        genSlotUse(&g, GenMsg, state);
         genPuts(&g, "](st))}\n");
     }
 
@@ -1896,6 +1960,21 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPutn(&g, texts.istext, texts.isend - texts.istext);
         genPuts(&g, texts.isnames > 1 ? ")) {}\n" : ") {}\n");
     }
+
+    // Assembled: the handle, then (of a generic actor) its statics inside it, and
+    // the message enum; of any other, the statics follow the enum
+    GenText assembled = handletext;
+    if (generic) {
+        genPutn(&assembled, g.text ? g.text : "", g.len);
+        genPuts(&assembled, "}\n");
+        genPutn(&assembled, ge.text, ge.len);
+    }
+    else {
+        genPuts(&assembled, "}\n");
+        genPutn(&assembled, ge.text, ge.len);
+        genPutn(&assembled, g.text ? g.text : "", g.len);
+    }
+    g = assembled;
 
     // Parse it, as the actor's own source, its diagnostics reported at its name
     Lexer *gen = lexNew(g.text, lex->url);
@@ -1929,15 +2008,36 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     modAddNode(mod, handle->namesym, (INode *)handle);
     StructNode *msg = (StructNode *)parseStruct(parse, TraitType | SameSize | EnumType);
     modAddNode(mod, names[GenMsg], (INode *)msg);
-    info->dispatch = (FnDclNode *)parseFnOrVar(parse, 0);
-    if (awaits) {
-        info->replyfn = (FnDclNode *)parseFnOrVar(parse, 0);
-        info->replyidfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    info->msg = msg;
+    if (generic) {
+        // Statics of the handle, found by their names
+        for (nodelistFor(&handle->nodelist, cnt, nodesp)) {
+            if ((*nodesp)->tag != FnDclTag)
+                continue;
+            FnDclNode *hfn = (FnDclNode *)*nodesp;
+            if (hfn->namesym == names[GenDispatch])
+                info->dispatch = hfn;
+            else if (hfn->namesym == names[GenReply])
+                info->replyfn = hfn;
+            else if (hfn->namesym == names[GenReplyId])
+                info->replyidfn = hfn;
+            else if (hfn->namesym == names[GenSelf])
+                info->selffn = hfn;
+            else if (hfn->namesym == names[GenIs])
+                info->isfn = hfn;
+        }
     }
-    if (selfs)
-        info->selffn = (FnDclNode *)parseFnOrVar(parse, 0);
-    if (checkis)
-        info->isfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    else {
+        info->dispatch = (FnDclNode *)parseFnOrVar(parse, 0);
+        if (awaits) {
+            info->replyfn = (FnDclNode *)parseFnOrVar(parse, 0);
+            info->replyidfn = (FnDclNode *)parseFnOrVar(parse, 0);
+        }
+        if (selfs)
+            info->selffn = (FnDclNode *)parseFnOrVar(parse, 0);
+        if (checkis)
+            info->isfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    }
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for actor %s did not parse whole.", &actorname->namestr);
     lexPop();
