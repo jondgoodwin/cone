@@ -268,7 +268,7 @@ static void genlStructDrop(GenState *gen, FnDclNode *fnnode) {
 // verification in debug).
 void genlTypeDrop(GenState *gen, FnDclNode *fnnode) {
     StructNode *owner = (StructNode*)fnnode->dclinfo.owner;
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context,
             fnnode->linenbr, (unsigned)(fnnode->srcp - fnnode->linep), LLVMGetSubprogram(gen->fn), NULL);
         LLVMSetCurrentDebugLocation(gen->builder, LLVMMetadataAsValue(gen->context, loc));
@@ -674,7 +674,7 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     // A call it makes to an inlinable function needs a location in a debug
     // build, so the function has a subprogram, placed at the type
     INode *typedcl = itypeGetTypeDcl(vtype);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         LLVMMetadataRef difile = genlDiFile(gen, typedcl);
         LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
         LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
@@ -683,7 +683,7 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     }
     gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         unsigned col = typedcl->srcp && typedcl->linep ? (unsigned)(typedcl->srcp - typedcl->linep) : 0;
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, typedcl->linenbr, col, LLVMGetSubprogram(fn), NULL);
         LLVMSetCurrentDebugLocation2(gen->builder, loc);
@@ -1205,6 +1205,19 @@ static LLVMValueRef genlDropSlow(GenState *gen, RefNode *refnode) {
     gen->fn = fn;
     gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    // The terms of the death it generates are placed in a subprogram (genlTerm),
+    // so it has one, at the reference
+    if (gen->opt->debuginfo) {
+        INode *typedcl = (INode*)refnode;
+        LLVMMetadataRef difile = genlDiFile(gen, typedcl);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            symbol, strlen(symbol), symbol, strlen(symbol), difile, typedcl->linenbr, sptype, 1, 1,
+            typedcl->linenbr, LLVMDIFlagPrivate, 0);
+        LLVMSetSubprogram(fn, sp);
+        LLVMSetCurrentDebugLocation2(gen->builder,
+            LLVMDIBuilderCreateDebugLocation(gen->context, typedcl->linenbr, 0, sp, NULL));
+    }
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
     LLVMValueRef ref = LLVMGetParam(fn, 0);

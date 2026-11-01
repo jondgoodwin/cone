@@ -408,6 +408,49 @@ class Scenarios(unittest.TestCase):
         self.assertIn("build: release",
                       (pkg / "build" / "release" / "show.conebuild").read_text())
 
+    def test_release_symbols_and_strip(self):
+        """A release build carries debug info, so a profiler can name its
+        functions: on Windows its link writes a PDB beside the program, naming
+        the program's functions; '--strip' leaves the info out of every compile
+        and writes no PDB, and a debug build writes none either. On Linux the
+        info stays in the ELF, which '--strip' makes smaller."""
+        self.congo("new", "sym", cwd=self.root)
+        pkg = self.root / "sym"
+        write(pkg / "src" / "sym.cone", """
+            mod sym;
+
+            import stdio use *;
+
+            // Recursive, so optimisation leaves it a function of its own
+            fn fibonacciNumber(n: i32) i32 {
+              if n < 2i32 { n } else { fibonacciNumber(n - 1i32) + fibonacciNumber(n - 2i32) }
+            }
+
+            fn main() i32 {
+              print <- fibonacciNumber(20i32);
+              print <- "\\n";
+              0i32
+            }
+            """)
+        exe = pkg / "build" / "release" / f"sym{congo.EXE_EXT}"
+        pdb = exe.with_suffix(".pdb")
+        self.congo("build", "--release", cwd=pkg)
+        self.assertTrue(exe.is_file())
+        symbolled = exe.stat().st_size
+        if IS_WINDOWS:
+            self.assertTrue(pdb.is_file(), "a release link writes a PDB")
+            self.assertTrue(b"fibonacciNumber" in pdb.read_bytes(),
+                            "the PDB names the program's functions")
+        # Stripped: the same exe path, no PDB left from the build before
+        self.congo("build", "--release", "--strip", cwd=pkg)
+        self.assertTrue(exe.is_file())
+        self.assertFalse(pdb.exists(), "--strip writes no PDB, and removes the last one")
+        if not IS_WINDOWS:
+            self.assertLess(exe.stat().st_size, symbolled)
+        # A debug build has its own folder, and writes no PDB
+        self.congo("build", cwd=pkg)
+        self.assertFalse((pkg / "build" / "debug" / "sym.pdb").exists())
+
     def test_a_lone_file(self):
         write(self.root / "lone.cone", """
             mod lone;

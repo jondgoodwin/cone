@@ -14,6 +14,9 @@
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
+They take --strip too: no debug info in any compile, and no PDB (a release
+build otherwise carries debug info, and on Windows its link writes a PDB beside
+the .exe, for a profiler to read function names from).
 They take --no-cache too: a compile is otherwise skipped where nothing it reads
 has changed since it last succeeded in that build folder ("The build cache"),
 and on Windows the environment vcvars64.bat sets is taken from the Congo home
@@ -135,6 +138,11 @@ def dll_note(code: int | None, exe: Path | str) -> str:
 # or '-D NAME=123' given to build, run or test, passed to every conec compile of
 # the build, the packages it imports included (conec's isDefined, definedInt)
 DEFINES: list[str] = []
+
+# '--strip' given to build, run or test: conec is passed --strip for every compile
+# of the build, and a Windows link writes no PDB. Without it every native build
+# carries debug info, and a release link on Windows writes a PDB beside the .exe
+STRIP_DEBUG = [False]
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
@@ -1823,12 +1831,16 @@ class Linker:
         return with_set_output(base, variables), (vcvars, printed + err)
 
     def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
-                paths: list[Path] = (), release: bool = False) -> list[str]:
+                paths: list[Path] = (), release: bool = False,
+                strip: bool = False) -> list[str]:
         """The link line: the objects, conestd, then the C libraries the packages'
         [link] tables name, each searched for first in their [link] paths. A
         release link folds identical functions (/OPT:ICF), the net under the
         compiler's size gate on generic instances: the copies each object keeps
-        for itself that came out the same are one again in the program."""
+        for itself that came out the same are one again in the program. On
+        Windows a release link that is not stripped also writes the debug info
+        of the objects (CodeView) into a PDB beside the .exe, which a profiler
+        reads for function names and lines; on Linux the info stays in the ELF."""
         if IS_WINDOWS:
             # The C runtime's own libraries are the toolchain's and stay here;
             # the Windows SDK's import libraries a package calls (sync's
@@ -1837,7 +1849,9 @@ class Linker:
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
                     *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
-                    "legacy_stdio_definitions.lib", *(["/OPT:REF,ICF"] if release else [])]
+                    "legacy_stdio_definitions.lib",
+                    *(["/OPT:REF,ICF"] if release else []),
+                    *(["/DEBUG"] if release and not strip else [])]
         return [self.tool, *map(str, objs), str(self.conestd),
                 *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
                 "-o", str(exe), "-lm", "-lpthread"]
@@ -1969,9 +1983,11 @@ def tool_hash(path: Path) -> str:
 
 
 def conec_command(command: list[str]) -> list[str]:
-    """conec's command line as it is run: the -D defines put after the compiler."""
+    """conec's command line as it is run: the -D defines, and --strip where the
+    build is stripped, put after the compiler."""
     defines = [arg for define in DEFINES for arg in ("-D", define)]
-    return [command[0], *defines, *command[1:]]
+    strip = ["--strip"] if STRIP_DEBUG[0] else []
+    return [command[0], *defines, *strip, *command[1:]]
 
 
 def key_inputs(command: list[str], env: dict[str, str],
@@ -2491,9 +2507,12 @@ class Session:
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
+        # The PDB of an earlier link is no part of this one's
+        exe.with_suffix(".pdb").unlink(missing_ok=True)
 
         def run_link() -> tuple[list[str], int | None, str]:
-            command = linker.command(linked, exe, libraries, paths, release=self.mode == "release")
+            command = linker.command(linked, exe, libraries, paths, release=self.mode == "release",
+                                     strip=STRIP_DEBUG[0])
             try:
                 result = subprocess.run(command, env=linker.env, capture_output=True)
             except OSError as exc:
@@ -3173,6 +3192,13 @@ def add_define_argument(parser: argparse.ArgumentParser) -> None:
                              " compile of the build (provisional)")
 
 
+def add_strip_argument(parser: argparse.ArgumentParser) -> None:
+    """'--strip': no debug info in any compile of the build, and no PDB."""
+    parser.add_argument("--strip", action="store_true",
+                        help="emit no debug info (and, on Windows, no PDB); a native"
+                             " build otherwise carries function names and line tables")
+
+
 def add_cache_argument(parser: argparse.ArgumentParser) -> None:
     """'--no-cache': compile every package of the build, as if no compile
     before had left anything (README.md, "What a build does"), and capture
@@ -3196,6 +3222,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")
         add_define_argument(p)
+        add_strip_argument(p)
         add_cache_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
@@ -3207,6 +3234,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                       help="only the tests and examples whose file name contains this")
     test.add_argument("--release", action="store_true", help="an optimised build")
     add_define_argument(test)
+    add_strip_argument(test)
     add_cache_argument(test)
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
@@ -3251,6 +3279,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     DEFINES[:] = getattr(args, "define", [])
     USE_CACHE[0] = not getattr(args, "no_cache", False)
+    STRIP_DEBUG[0] = getattr(args, "strip", False)
     try:
         return args.func(args)
     except CongoError as exc:
