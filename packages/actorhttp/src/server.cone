@@ -196,13 +196,30 @@ pub struct Server is Move {
     awaitable[NextJob, Result[Exchange, ServerError]](NextJob(id))
   }
 
-  // Stop listening now: every 'next' waiting is answered Closed, the requests
-  // that no actor took are answered 503, and the exchanges taken go on. The
-  // handles stay, and name a closed server
+  // Ask the server to stop listening, and go on: the service thread closes the
+  // listener shortly after, answers every 'next' waiting Closed and the requests
+  // that no actor took 503, and lets the exchanges taken go on. The handles
+  // stay, and name a closed server. 'closed()' says when that has been done
   pub fn close(self: &) {
     if id != 0u64 {
       post[SrvCloseJob](SrvCloseJob(id));
     }
+  }
+
+  // Complete (true) once the server is closed, by 'close' or the last handle's
+  // going: the listener shut, so a connect is refused, every 'next' waiting
+  // answered Closed and the untaken requests 503. At once if it already is.
+  // Awaiting it does not close the server
+  pub fn closed(self: &) actors.Awaitable[bool] {
+    awaitable[ClosedJob, bool](ClosedJob(id))
+  }
+
+  // How many requests are in the server now, read whole and waiting for an
+  // actor to 'next' them (at most maxPending; a request whose client has gone
+  // counts until a 'next' skips it). 0 for a closed server or none. For
+  // monitoring a server that its actors are keeping up with
+  pub fn waiting(self: &) actors.Awaitable[u64] {
+    awaitable[WaitingJob, u64](WaitingJob(id))
   }
 
   fn final(self: &uni) {

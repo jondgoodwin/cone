@@ -86,6 +86,7 @@ struct SrvRec {
   altSvc: String;             // the Alt-Svc its TCP responses carry, or empty
   qkeys: Dict[QKey, u64];     // an HTTP/3 request to its key
   nextKey: u64;
+  closeWaiters: Deque[actors.Reply];  // the 'closed's waiting
 }
 
 // An HTTP/3 request's ids, as a key
@@ -488,6 +489,13 @@ fn closeServer(srv: &mut SrvRec, lp: &mut Loop) {
       freeEx(srv, slot);
     }
   }
+  // Closed: the listener is shut, and what waited is answered
+  while true {
+    match srv.closeWaiters.popFront() {
+      case var Some(rp) {actors.answerNow[bool](rp, true);}
+      else {break;}
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +579,7 @@ struct ListenJob {
         sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, drv, l,
           SlotTable[ExRec].make(16u32), Dict[u64, usize].empty(), Dict[u64, Request].empty(),
           Deque[ReadyEx].empty(), Deque[actors.Reply].empty(), 0usize, h3, h3on, h3listener, altSvc,
-          Dict[QKey, u64].empty(), 1u64));
+          Dict[QKey, u64].empty(), 1u64, Deque[actors.Reply].empty()));
         actors.answerNow[Result[Server, ServerError]](rp, Ok[Server, ServerError](Server(id, bound, secure, h3on)));
       }
       case let Err(e) {
@@ -608,6 +616,39 @@ struct SrvCloseJob {
     let k = sv.findSrv(id);
     if k >= sv.srvs.bound() {return;}
     closeServer(sv.srvAt(k) as &mut SrvRec, lp);
+  }
+}
+
+// An actor waits for a server to be closed, the 'await' giving the reply it goes back in
+struct ClosedJob {
+  pub id: u64;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+    let k = sv.findSrv(self.id);
+    if k >= sv.srvs.bound() {
+      actors.answerNow[bool](rp, true);
+      return;
+    }
+    let srv = sv.srvAt(k) as &mut SrvRec;
+    if srv.closing {
+      actors.answerNow[bool](rp, true);
+      return;
+    }
+    srv.closeWaiters.push(rp);
+  }
+}
+
+// An actor asks how many requests wait for an actor
+struct WaitingJob {
+  pub id: u64;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+    let k = sv.findSrv(self.id);
+    var n = 0u64;
+    if k < sv.srvs.bound() {
+      n = u64.from((sv.srvAt(k) as &SrvRec).ready.len());
+    }
+    actors.answerNow[u64](rp, n);
   }
 }
 

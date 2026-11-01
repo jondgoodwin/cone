@@ -89,7 +89,7 @@
 //                                                               Result[Server, ServerError]
 //   ServerConfig.make()  cfg.secure(tlsServerConfig)  cfg.offerHttp2()  cfg.maxBody cfg.maxPending cfg.conn
 //   cfg.offerHttp3(maker)   HTTP/3 beside it, through a plug-in (h3driver's)       (HTTP/3)
-//   server.next()  server.close()  server.clone()  server.port() localAddr() isSecure() offersHttp3()
+//   server.next()  server.close()  server.closed()  server.waiting()  server.clone()  server.port() localAddr() isSecure() offersHttp3()
 //   Server.none()  server.isNone()          next(): the next request, an Exchange  Result[Exchange, ServerError]
 //   ex.request (Request: head body peer secure; path() query() methodName() header(name))
 //   ex.respond(head, body)  ex.text(status, text)                  a whole response (not awaited)
@@ -322,10 +322,13 @@
 // a plug-in fetches over HTTP/3 where httpclient's header says it does, and
 // the Response's 'version' says so.
 //
-// 'server.close()' (and the last handle's going) stops listening, answers every
-// 'next' waiting Closed and every request still waiting for an actor 503, and
-// lets the exchanges already taken finish; the server's idle connections are
-// then reset. A Server handle, as a Client, is plain data that moves and
+// 'server.close()' (and the last handle's going) asks the service thread to
+// stop listening, which it does shortly after the call returns: then it answers
+// every 'next' waiting Closed and every request still waiting for an actor 503,
+// and lets the exchanges already taken finish; the server's idle connections
+// are then reset. 'await server.closed()' completes once that is done (the
+// listener shut, so a connect is refused). 'await server.waiting()' is how many
+// requests are in the server waiting for an actor to take them. A Server handle, as a Client, is plain data that moves and
 // 'clone's.
 //
 // On Windows and Linux, as httpclient and httpconn are. Not here: a request's
