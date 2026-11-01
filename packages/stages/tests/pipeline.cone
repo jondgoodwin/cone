@@ -11,6 +11,9 @@
 //   2. memory -> ZstdEncodeStage -> ZstdDecodeStage -> Sha512Stage -> counting sink;
 //   3. the same through Sha1Stage.
 //
+// The memory sources send with 'down <- buf' (ChunkSink's accept is declared
+// 'overload `<-`'), the file source with 'down.accept(buf)': both reach the sink.
+//
 // After the program's actors are all gone (finalAll), every buffer is back in
 // the pool: its count of lent buffers is zero.
 //
@@ -72,12 +75,14 @@ let seen0: Seen;
 let seen1: Seen;
 let seen2: Seen;
 let seen3: Seen;
+let arrows: Atomic[u64];    // chunks the memory sources sent with '<-'
 
 fn @initpure init() {
   seen0 = newSeen();
   seen1 = newSeen();
   seen2 = newSeen();
   seen3 = newSeen();
+  arrows = Atomic[u64].of(0u64);
 }
 
 fn seenOf(slot: usize) &Seen {
@@ -282,7 +287,8 @@ actor MemorySource is ChunkSource {
             let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
             buf.append(&data.view()[at ..< at + n]);
             at = at + n;
-            down.accept(buf);
+            down <- buf;
+            arrows.add(1u64);
           }
         }
       }
@@ -387,6 +393,7 @@ fn main() i32 {
   checkSlot(1usize, size, "memory -> deflate -> inflate -> sha256 -> count");
   checkSlot(2usize, size, "memory -> zstd -> unzstd -> sha512 -> count");
   checkSlot(3usize, size, "memory -> zstd -> unzstd -> sha1 -> count");
+  expect(arrows.load() >= 3u64 * ((size + 65535u64) / 65536u64), "memory sources send each chunk with <-");
   expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
   done()
 }
