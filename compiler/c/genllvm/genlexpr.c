@@ -3287,7 +3287,7 @@ static int genlIsLocalName(INode *lval) {
 
 // Generate a term
 static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
-    if (!gen->opt->release && gen->fn) {
+    if (gen->opt->debuginfo && gen->fn) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, 
             termnode->linenbr, (unsigned)(termnode->srcp-termnode->linep), LLVMGetSubprogram(gen->fn), NULL);
         LLVMValueRef val = LLVMMetadataAsValue(gen->context, loc);

@@ -330,7 +330,7 @@ static LLVMValueRef genlSeamFn(GenState *gen, char *symbol, LLVMTypeRef fntype, 
     LLVMValueRef fn = LLVMAddFunction(gen->module, symbol, fntype);
     LLVMSetLinkage(fn, LLVMInternalLinkage);
     genlComdat(gen, fn);
-    if (!gen->opt->release) {
+    if (gen->opt->debuginfo) {
         char *fnname = &gen->fndcl->namesym->namestr;
         LLVMMetadataRef difile = genlDiFile(gen, (INode*)node);
         LLVMMetadataRef ditype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
@@ -972,7 +972,7 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 
@@ -1065,7 +1065,7 @@ static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 
@@ -1131,7 +1131,7 @@ static void genlSeamTrace(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, entry);
     LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
     gen->allocaPoint = allocaPoint;
-    if (!gen->opt->release)
+    if (gen->opt->debuginfo)
         LLVMSetCurrentDebugLocation2(gen->builder,
             LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
 

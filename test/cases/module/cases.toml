@@ -3246,11 +3246,55 @@ name = "an-unlisted-file-is-not-compiled"
 target = "symbols"
 excludes = ["unlistedFn"]
 
-# 'build: release' decides the optimisation options: no debug information.
+# 'build: release' decides the optimisation options, not whether the object
+# carries debug information: it has a subprogram for each function it defines
+# (module_debug_info pins the rest).
 [[scenario.module_build_lib.check]]
-name = "build-release-emits-no-debug-info"
+name = "build-release-emits-debug-info"
 target = "preir"
-excludes = ["!dbg"]
+contains = ["!DISubprogram(name: \"addOne\"", "!DISubprogram(name: \"triple\""]
+
+[scenario.module_debug_info]
+category = "compile"
+description = "A release build, which is the default, carries debug information: a subprogram for each function it defines, the program's entry included"
+tags = ["genllvm"]
+
+[[scenario.module_debug_info.check]]
+name = "release-defines-a-subprogram-per-function"
+target = "preir"
+contains = ["!DISubprogram(name: \"main\"", "!DISubprogram(name: \"twice\"", "!dbg"]
+
+[scenario.module_debug_strip]
+category = "compile"
+description = "'--strip' emits no debug information, in a release build or a debug one"
+tags = ["genllvm"]
+
+[[scenario.module_debug_strip.run]]
+name = "release"
+options = ["--strip"]
+
+[[scenario.module_debug_strip.run]]
+name = "debug"
+options = ["--debug", "--strip"]
+
+[[scenario.module_debug_strip.check]]
+name = "a-stripped-build-has-no-locations-or-subprograms"
+target = "preir"
+excludes = ["!dbg", "DISubprogram", "DICompileUnit"]
+
+[scenario.module_debug_wasm]
+category = "compile"
+description = "A release WebAssembly build carries no debug information (a debug one does): it is as small as it can be, and has no PDB to hold it"
+tags = ["genllvm"]
+
+[[scenario.module_debug_wasm.run]]
+name = "release"
+options = ["--wasm"]
+
+[[scenario.module_debug_wasm.check]]
+name = "a-release-wasm-build-has-no-debug-info"
+target = "preir"
+excludes = ["!dbg", "DISubprogram"]
 
 [scenario.module_build_exe]
 category = "run"
