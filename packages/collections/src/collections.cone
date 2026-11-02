@@ -164,7 +164,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'str''s are a String's: its 'len', written once on the body. Each is reached
   // through the lender that gives the permission its receiver asks for: a '&' method
   // through 'view', a '&mut' one ('reverse') through 'viewMut', a '&uni' one through 'viewUni'
-  use Array[T] via view, viewMut, viewUni but iter, mutItems, mutChunks, mutArrays, gcTraceElements;
+  use Array[T] via view, viewMut, viewUni but iter, mutItems, mutChunks, mutArrays, gcTraceElements, sortBy, sortByKey;
 
   // An empty list, 'List[i32]()': no block until the first value arrives. The
   // last argument of every init is the region the list's block will come from,
@@ -504,53 +504,25 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and
   // 'bytesCompare' answer. The sort is stable: values that order calls equal
-  // keep the order they had. A merge sort, n log n comparisons, through a
-  // second block as big as the list's, given back before it returns.
-  // 'order' is any callable of that signature that only reads what it holds,
-  // met statically and so inlined into the merge: a function referenced,
-  // 'names.sortBy(&byName)' with 'fn byName(a: &String, b: &String) i32', a struct
-  // with that '()', or a closure written there, which may capture what it
-  // compares by, an eye point say (one that changes what it borrows is refused
-  // at the call).
+  // keep the order they had. It is Array's 'sortBy' (a merge sort over the runs
+  // it finds, Powersort's merge order, n log n comparisons, n - 1 on input
+  // already in order), and the buffer of its merges, half as many values as the
+  // list holds, comes from the list's own region, so a list in an arena sorts
+  // in its arena. 'order' is any callable of that signature that only reads
+  // what it holds, met statically and so inlined into the merge: a function
+  // referenced, 'names.sortBy(&byName)' with 'fn byName(a: &String, b: &String) i32',
+  // a struct with that '()', or a closure written there, which may capture what
+  // it compares by, an eye point say (one that changes what it borrows is
+  // refused at the call).
   pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
-    if used < 2usize { return; }
-    let spare = RawBlocks.alloc(used * mem.sizeof[T](), mem.alignof[T]()) as *T;
-    // Each pass merges runs of 'width' values from one block into the other
-    var from = ptr;
-    var to = spare;
-    var width = 1usize;
-    while width < used {
-      var lo = 0usize;
-      while lo < used {
-        let mid = if lo + width < used {lo + width} else {used};
-        let hi = if mid + width < used {mid + width} else {used};
-        var a = lo;
-        var b = mid;
-        var k = lo;
-        // The right run's value goes first only when it is strictly before
-        while a < mid && b < hi {
-          if order((from + b) as &T, (from + a) as &T) < 0i32 {
-            mem.moveRaw(to + k, from + b, 1usize);
-            b = b + 1usize;
-          }
-          else {
-            mem.moveRaw(to + k, from + a, 1usize);
-            a = a + 1usize;
-          }
-          k = k + 1usize;
-        }
-        mem.moveRaw(to + k, from + a, mid - a);
-        mem.moveRaw(to + k + (mid - a), from + b, hi - b);
-        lo = hi;
-      }
-      let was = from;
-      from = to;
-      to = was;
-      width = width * 2usize;
-    }
-    if from != ptr { mem.moveRaw(ptr, from, used); }
-    RawBlocks.release(spare as *u8);
+    self.viewMut().sortBy(order, region);
   }
+
+  // Put its values in order by the key 'key(x)' gives each, keeping the order of equal ones
+  pub fn sortByKey[K, F: fn(x: &T) K](self: &mut, key: &F) where K is Ordered {
+    self.viewMut().sortByKey(key, region);
+  }
+
 
   fn finalizeAll(self: &mut) {
     if mem.needsFinal[T]() {

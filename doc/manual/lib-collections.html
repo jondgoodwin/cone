@@ -1335,7 +1335,8 @@ let slice2 = &amp;ptr[0..=5];
 
     <h4 id="sorting">Sorting, selecting and searching</h4>
     <p>These are methods of core's <span class="pre">Array[T]</span>, so a slice, an array and a
-        <span class="pre">List</span> (which lends its body) all have them. They never allocate, and they put
+        <span class="pre">List</span> (which lends its body) all have them. Except the stable sort below, they
+        never allocate, and they put
         any element type in place, a type holding garbage-collected references included. The comparison is the
         three-way <span class="pre">a &lt;=&gt; b</span>: an <span class="pre">i32</span> that is negative when
         <span class="pre">a</span> goes before <span class="pre">b</span>, 0 when either may go first, positive
@@ -1345,6 +1346,8 @@ let slice2 = &amp;ptr[0..=5];
         are in IEEE total order, so a NaN has a place. A descending sort is
         <span class="pre">(a, b) =&gt; b &lt;=&gt; a</span>.</p>
 <pre>
+xs.sortBy((a, b) =&gt; a &lt;=&gt; b);                  // stable: equal values keep their order
+people.sortByKey(p =&gt; p.age);                   // stable, by a key
 xs.sortUnstable();                              // natural order, in place
 xs.sortUnstableBy((a, b) =&gt; b &lt;=&gt; a);          // by a comparison; this one descending
 people.sortUnstableByKey(p =&gt; p.age);           // by a key (a number or other Ordered)
@@ -1373,8 +1376,20 @@ let at, found = xs.binarySearch(42);            // earliest position not before 
         <li><span class="pre">reverse()</span>, <span class="pre">slice(start, end)</span> and
             <span class="pre">sliceMut(start, end)</span>.</li>
     </ul>
-    <p>A <span class="pre">List</span>'s own <span class="pre">sortBy(f)</span> is the stable sort (equal values
-        keep their order), through a second block.</p>
+    <p><span class="pre">sort()</span> (natural order, for an <span class="pre">Ordered</span> element),
+        <span class="pre">sortBy(order)</span> and <span class="pre">sortByKey(key)</span> are the stable sort: values
+        that compare equal keep the order they had. A merge sort over the runs it finds (ascending runs, and strictly
+        descending ones, which it reverses), short runs lengthened by insertion, merged in Powersort's order, so
+        input already in order takes n - 1 comparisons and nothing else, and a merge of two runs already in order
+        is skipped. At worst O(n log n) comparisons. It needs a buffer of half the elements for its merges, got
+        when the first merge needs it (none for 20 or fewer elements, and none for input already in order) and
+        given back before it returns. An array's methods take a last argument,
+        <span class="pre">scratch</span>, the <span class="pre">*MemRegion</span> the buffer comes from
+        (<span class="pre">null</span>, the default, is the heap's); a <span class="pre">List</span> has its own
+        <span class="pre">sortBy</span> and <span class="pre">sortByKey</span>, which pass the list's region, so a
+        list in an arena sorts in its arena (a list's <span class="pre">sort()</span> is the array's, so its buffer
+        comes from the heap's region). A debug build panics when the result is not in order by the
+        comparison, as the unstable sorts do; a release build leaves some permutation.</p>
 
     <h4>Access an Element</h4>
     <p>A single element within an array may be accessed using

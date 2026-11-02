@@ -958,6 +958,162 @@ pub struct @opaque Array[T] is GcTraceElements {
     self.sortUnstableBy(&orderNatural[T]);
   }
 
+  // ---- The stable sort ----
+  //
+  // Equal elements keep the order they had. A merge sort over the runs it finds: an
+  // ascending or a strictly descending run (which is reversed) is taken whole, a run
+  // shorter than 20 is lengthened by insertion, and the runs are merged in Powersort's
+  // order (Munro and Wild), which keeps the merges balanced however long the runs are.
+  // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
+  // a merge of two runs already in order is skipped. A merge copies the shorter of its two
+  // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
+  // it and given back before the sort returns. n log n comparisons at worst.
+
+  // How many elements from 'start' make a natural run: an ascending one (no element before
+  // the one preceding it), or a strictly descending one, which is reversed in place. At
+  // least 1 when there is an element at 'start'
+  fn naturalRun[F: fn(a: &T, b: &T) i32](self: &mut, start: usize, order: &F) usize {
+    let n = self.len;
+    let p = self as *T;
+    if start + 1usize >= n { return n - start; }
+    var end = start + 2usize;
+    if order((p + start + 1usize) as &T, (p + start) as &T) < 0i32 {
+      while end < n && order((p + end) as &T, (p + end - 1usize) as &T) < 0i32 { end = end + 1usize; }
+      mem.sliceFromPartsMut[T](p + start, end - start).reverse();
+    }
+    else {
+      while end < n && order((p + end) as &T, (p + end - 1usize) as &T) >= 0i32 { end = end + 1usize; }
+    }
+    end - start
+  }
+
+  // Merge the sorted runs [lo, mid) and [mid, hi) into one, stably, copying the shorter one
+  // to 'buf' (room for half the elements; got from 'scratch' if it is still null). Answers
+  // the buffer, so the caller can reuse and give it back. Nothing happens, and no buffer is
+  // got, when the two are already in order
+  fn mergeRuns[F: fn(a: &T, b: &T) i32](self: &mut, lo: usize, mid: usize, hi: usize, bufIn: *T, scratch: *MemRegion, order: &F) *T {
+    let p = self as *T;
+    if order((p + mid) as &T, (p + mid - 1usize) as &T) >= 0i32 { return bufIn; }
+    var buf = bufIn;
+    if buf == null {
+      buf = (scratch as &MemRegion).allocate((self.len / 2usize) * mem.sizeof[T](), mem.alignof[T]()) as *T;
+      if buf == null { panic("sort: no memory for the merge buffer"); }
+    }
+    let na = mid - lo;
+    let nb = hi - mid;
+    if na <= nb {
+      mem.moveRaw(buf, p + lo, na);
+      var i = 0usize;
+      var j = mid;
+      var k = lo;
+      while i < na && j < hi {
+        if order((p + j) as &T, (buf + i) as &T) < 0i32 {
+          mem.moveRaw(p + k, p + j, 1usize);
+          j = j + 1usize;
+        }
+        else {
+          mem.moveRaw(p + k, buf + i, 1usize);
+          i = i + 1usize;
+        }
+        k = k + 1usize;
+      }
+      // What is left of the second run is already in place
+      mem.moveRaw(p + k, buf + i, na - i);
+    }
+    else {
+      mem.moveRaw(buf, p + mid, nb);
+      var i = na;
+      var j = nb;
+      var k = hi;
+      while i > 0usize && j > 0usize {
+        k = k - 1usize;
+        if order((buf + j - 1usize) as &T, (p + lo + i - 1usize) as &T) < 0i32 {
+          mem.moveRaw(p + k, p + lo + i - 1usize, 1usize);
+          i = i - 1usize;
+        }
+        else {
+          mem.moveRaw(p + k, buf + j - 1usize, 1usize);
+          j = j - 1usize;
+        }
+      }
+      // What is left of the first run is already in place
+      mem.moveRaw(p + k - j, buf, j);
+    }
+    buf
+  }
+
+  // Put the elements in the order 'order' gives, keeping the order of elements it calls
+  // equal. 'scratch' is where the merges' buffer comes from (null, the default, is the heap's
+  // region; a default must be a literal, which 'heapRegion()' is not) (n / 2 elements, nothing for 20
+  // or fewer elements or for input that is already in order); a list passes its own region.
+  // A debug build panics if 'order' is not a consistent order (the result is not in order by
+  // it); a release build always returns some permutation of the elements
+  pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F, scratchIn: *MemRegion = null) {
+    let n = self.len;
+    let scratch = if scratchIn == null { heapRegion() } else { scratchIn };
+    if n <= 20usize || mem.sizeof[T]() == 0usize {
+      self.insertionSortBy(order);
+    }
+    else {
+      let p = self as *T;
+      // The runs found and not yet merged, as a stack (at most 2 log2 n of them), and for each
+      // the power of the boundary after it
+      var bases = Array[usize, 72]() <- fill 0usize;
+      var lens = Array[usize, 72]() <- fill 0usize;
+      var powers = Array[u32, 72]() <- fill 0u32;
+      var top = 0usize;
+      var pos = 0usize;
+      var buf: *T = null;
+      while pos < n {
+        var len = self.naturalRun(pos, order);
+        if len < 20usize && pos + len < n {
+          let end = if n - pos < 20usize { n } else { pos + 20usize };
+          let part = mem.sliceFromPartsMut[T](p + pos, end - pos);
+          var i = len;
+          while i < part.len { part.insertTail(i, order); i = i + 1usize; }
+          len = end - pos;
+        }
+        if top > 0usize {
+          let power = mergePower(bases[top - 1usize], lens[top - 1usize], len, n);
+          while top > 1usize && powers[top - 2usize] > power {
+            buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, order);
+            lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
+            top = top - 1usize;
+          }
+          powers[top - 1usize] = power;
+        }
+        bases[top] = pos;
+        lens[top] = len;
+        top = top + 1usize;
+        pos = pos + len;
+      }
+      while top > 1usize {
+        buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, order);
+        lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
+        top = top - 1usize;
+      }
+      if buf != null {
+        (scratch as &MemRegion).release(buf as *u8, (n / 2usize) * mem.sizeof[T]());
+      }
+    }
+    if isDebugBuild() && !self.isSortedBy(order) {
+      panic("sortBy: the comparison is not a consistent order: the result is not in order by it");
+    }
+  }
+
+  // Put the elements in order by the key 'key(x)' gives each, a number or other Ordered type,
+  // keeping the order of equal ones (the key is asked afresh at every comparison, so it
+  // should be cheap)
+  pub fn sortByKey[K, F: fn(x: &T) K](self: &mut, key: &F, scratch: *MemRegion = null) where K is Ordered {
+    self.sortBy(&KeyOrder[T, K, F](key), scratch);
+  }
+
+  // Put the elements in their natural order (the order of '<=>'; a float's is IEEE total
+  // order), keeping the order of equal ones
+  pub fn sort(self: &mut, scratch: *MemRegion = null) where T is Ordered {
+    self.sortBy(&orderNatural[T], scratch);
+  }
+
   // Put the element that would be at position k if the elements were sorted there, the
   // elements before it not after it and those after it not before it, in O(n) expected
   // time, in place; answers the element. A panic if k is not within the elements
@@ -1075,6 +1231,33 @@ pub struct @opaque Array[T] is GcTraceElements {
 
 // The natural order of an Ordered type, as the comparison the sorts and searches take
 fn orderNatural[T](a: &T, b: &T) i32 where T is Ordered { a <=> b }
+
+// Powersort's power of the boundary between two adjacent runs, the first starting at s1 with n1
+// elements, the second n2 long, among n elements: the depth of the shallowest node of a balanced
+// binary tree over the positions that falls between the two runs' midpoints. A run on the stack
+// is merged when a later boundary has a smaller power than the one after it. Positions are
+// doubled so midpoints are whole
+fn mergePower(s1: usize, n1: usize, n2: usize, n: usize) u32 {
+  var result = 0u32;
+  var a = 2usize * s1 + n1;
+  var b = a + n1 + n2;
+  var more = true;
+  while more {
+    result = result + 1u32;
+    if a >= n {
+      a = a - n;
+      b = b - n;
+    }
+    else if b >= n {
+      more = false;
+    }
+    if more {
+      a = a << 1usize;
+      b = b << 1usize;
+    }
+  }
+  result
+}
 
 // The comparison of two elements by the keys a function gives them, for the 'ByKey' forms
 struct KeyOrder['a, T, K, F: fn(x: &T) K] {
