@@ -90,8 +90,32 @@
 // submit it ('cpuMs') and the GPU's time for its pass, between two timestamps
 // ('gpuMs'), read back a few frames later when the GPU is done with them.
 //
-// What it does not do yet: controllers and every other input (the action
-// system), the depth layer, foveation, the headset's refresh-rate control, a
+// THE CONTROLLERS are read once a frame by 'beginFrame', so a program never
+// touches OpenXR for them. 'Headset.open' makes one action set, "gameplay",
+// with a grip pose and an aim pose, trigger and squeeze values, a thumbstick
+// and its click, a primary (A, X) and a secondary (B, Y) button, a menu button
+// and a vibration output, each for the left hand and the right; suggests their
+// bindings for Meta's Touch controllers (the Quest 3's pair too) and, as a
+// fallback, the Khronos simple controller (select is the trigger); and
+// attaches the set to the session. Each frame, once the session is FOCUSED
+// (a runtime gives a session that is not no input), it syncs the actions,
+// reads them and locates both poses of both hands in the eyes' reference space
+// at the frame's predicted display time. The result is 'frame.hands', or
+// 'headset.hand(&frame, 0)' (0 left, 1 right): a plain 'HeadsetHand' with the
+// poses as 'Vec3' and 'Quat' like the eyes', and each button as down-now and
+// pressed or released since the previous frame ('HeadsetButton'), so a program
+// needs no history of its own for a click or a snap turn. 'headset.vibrate'
+// buzzes a controller. With no controllers, no profile, no input in the
+// runtime, or a session not focused, every hand is inactive (its values at
+// rest) and nothing fails. 'profileName' says which interaction profile the
+// runtime bound to a hand, as it last said ('pollEvents' follows the change).
+//
+//   let left = headset.hand(&frame, 0usize);
+//   if left.active && left.primary.pressed { ... }
+//   if left.stickX > 0.7 && !turned { ...snap turn... }
+//
+// What it does not do yet: hand and eye tracking and other vendor input
+// (extensions), the controllers' own models, the depth layer, foveation, the headset's refresh-rate control, a
 // session that ends and begins again, and comfort (vignetting, a steady
 // horizon, snap turns), which are the program's.
 
@@ -141,7 +165,75 @@ pub struct HeadsetFrame {
   pub displayTime: i64;              // when the frame is predicted to be shown (XrTime, nanoseconds)
   pub displayPeriod: i64;            // the headset's frame period (nanoseconds)
   pub views: Array[openxr.View, 2];  // left, right
+  // The controllers at this frame's display time: left, right ('Headset.hand'
+  // answers one). Every hand is inactive until the session is focused.
+  pub hands: Array[HeadsetHand, 2];
 }
+
+// A pose in the reference space the eyes are in, in the renderer's own types,
+// as 'eyeCamera' takes an eye's: a position in metres and a unit quaternion.
+// Place the player in the world with the same 'followMatrix' as the camera's.
+pub struct HeadsetPose {
+  pub valid: bool;           // position and orientation were both located (else identity at the origin)
+  pub position: Vec3;
+  pub orientation: Quat;
+
+  pub fn none() HeadsetPose { HeadsetPose(false, Vec3(0., 0., 0.), Quat(0., 0., 0., 1.)) }
+
+  // The pose as a model matrix of something 'scale' across (a box mesh made
+  // 'scale' wide at the origin, say, drawn at the controller)
+  pub fn placement(self: &, scale: f32) Mat4 {
+    Mat4.fromTrs(position, orientation, Vec3(scale, scale, scale))
+  }
+
+  // Where its -z axis points: the way a hand points, and the ray of an aim pose
+  pub fn forward(self: &) Vec3 { orientation * Vec3(0., 0., -1.) }
+}
+
+// A button, as the frame found it: held now, and whether that changed since
+// the previous frame, so that a program needs no history of its own
+pub struct HeadsetButton {
+  pub down: bool;
+  pub pressed: bool;         // went down since the previous frame
+  pub released: bool;        // went up since the previous frame
+
+  pub fn none() HeadsetButton { HeadsetButton(false, false, false) }
+}
+
+// One controller, as 'beginFrame' read it. Without controllers (no runtime
+// input, no profile, the session not focused) 'active' is false and all the
+// rest is at rest: no pose, zero values, no button down.
+pub struct HeadsetHand {
+  pub active: bool;          // the runtime is tracking this controller (its grip pose is active)
+  pub grip: HeadsetPose;     // where the hand holds it: draw the controller here
+  pub aim: HeadsetPose;      // where it points: -z is the ray
+  pub trigger: f32;          // 0 to 1
+  pub squeeze: f32;          // 0 to 1
+  pub stickX: f32;           // -1 to 1, right is positive
+  pub stickY: f32;           // -1 to 1, forward (up) is positive
+  pub stickClick: HeadsetButton;
+  pub primary: HeadsetButton;     // A on the right, X on the left
+  pub secondary: HeadsetButton;   // B on the right, Y on the left
+  pub menu: HeadsetButton;        // the left one's menu button (the right has none on a Touch controller)
+
+  pub fn none() HeadsetHand {
+    HeadsetHand(false, HeadsetPose.none(), HeadsetPose.none(), 0., 0., 0., 0., HeadsetButton.none(),
+      HeadsetButton.none(), HeadsetButton.none(), HeadsetButton.none())
+  }
+}
+
+// The actions of the "gameplay" action set, as indices into 'Headset.actions'
+const ACTION_GRIP = 0usize;
+const ACTION_AIM = 1usize;
+const ACTION_TRIGGER = 2usize;
+const ACTION_SQUEEZE = 3usize;
+const ACTION_STICK = 4usize;
+const ACTION_STICK_CLICK = 5usize;
+const ACTION_PRIMARY = 6usize;
+const ACTION_SECONDARY = 7usize;
+const ACTION_MENU = 8usize;
+const ACTION_HAPTIC = 9usize;
+const ACTION_COUNT = 10usize;
 
 // The OpenXR calls that make Vulkan's instance and device carry the program
 // through the gpu package's makers: what 'makeVkInstance' and 'makeVkDevice'
@@ -241,6 +333,11 @@ pub struct Headset {
   imageCount: Array[u32, 2] = [0u32, 0u32];
   heldAt: Array[usize, 2] = [0usize, 0usize];       // the eye's acquired image, as an index into 'colors'
   held: Array[bool, 2] = [false, false];            // the eye's image is acquired and not yet released
+  actionSet: openxr.ActionSet;      // "gameplay": the controller actions
+  actions: Array[openxr.Action, 10];   // by ACTION_
+  poseSpaces: Array[openxr.Space, 4];  // grip left, grip right, aim left, aim right
+  handPaths: Array[u64, 2];         // /user/hand/left, /user/hand/right
+  profiles: Array[String, 2];       // each hand's interaction profile, as the runtime last said ("" for none)
   pub eyeWidth: u32 = 0u32;
   pub eyeHeight: u32 = 0u32;
   pub colorFormat: u32 = TEXTURE_FORMAT_UNDEFINED;     // TEXTURE_FORMAT_: the eye images'
@@ -271,6 +368,10 @@ pub struct Headset {
   gpuSum: Array[f64, 2] = [0., 0.];
   cpuCount: Array[u32, 2] = [0u32, 0u32];
   gpuCount: Array[u32, 2] = [0u32, 0u32];
+  inputReady: bool = false;         // the action set was made, bound and attached
+  buttonDown: Array[bool, 8] = [false, false, false, false, false, false, false, false];   // last frame's, hand * 4 + button
+  syncs: u64 = 0u64;                // xrSyncActions calls so far
+  syncFailures: u64 = 0u64;         // of them, the ones that failed
 
   // No headset: what a field holds before one is opened for it (not valid)
   pub fn none() Headset { Headset.empty() }
@@ -281,7 +382,10 @@ pub struct Headset {
       Buffer.none(), SwapChain.none(), Surface.none(), openxr.InstanceFns(), 0usize as openxr.Instance,
       0usize as openxr.Session, 0usize as openxr.Space,
       [0usize as openxr.Swapchain, 0usize as openxr.Swapchain], 0u64, [0usize, 0usize], [0u32, 0u32], [0usize, 0usize],
-      [false, false], 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
+      [false, false],
+      0usize as openxr.ActionSet, Array[openxr.Action, 10]() <- fill (0usize as openxr.Action),
+      Array[openxr.Space, 4]() <- fill (0usize as openxr.Space), [0u64, 0u64], [String.empty(), String.empty()],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
   }
 
   // Open the headset: the OpenXR runtime's instance and system, the Vulkan
@@ -440,6 +544,9 @@ pub struct Headset {
     r = fns.createReferenceSpace(session, &rci, &mut space);
     if !xrCheck(r, "xrCreateReferenceSpace") { return; }
 
+    // The controllers: a failure here leaves a headset with no input, not no headset
+    self.startInput(appName);
+
     // The eye images' format: the first the runtime lists (its preference
     // first) that is 8-bit sRGB, so that the hardware encodes what the
     // renderer writes in linear light, as a window's swapchain does
@@ -514,6 +621,272 @@ pub struct Headset {
     opened = true;
   }
 
+  // ---- Controllers ----
+
+  // The path of a string such as "/user/hand/left" (0 if the runtime refuses it)
+  fn pathOf(self: &, text: *u8) u64 {
+    var p = 0u64;
+    if openxr.failed(fns.stringToPath(xrInstance, text, &mut p)) { return 0u64; }
+    p
+  }
+
+  // Make one action of the gameplay set, for both hands
+  fn makeAction(self: &mut, index: usize, name: &str, localized: &str, kind: i32) bool {
+    var hands = [handPaths[0], handPaths[1]];
+    let info = openxr.actionCreateInfo(name, localized, kind, 2u32, &hands as *u64);
+    xrCheck(fns.createAction(actionSet, &info, &mut actions[index]), "xrCreateAction")
+  }
+
+  // The "gameplay" action set: grip and aim poses, trigger, squeeze,
+  // thumbstick, its click, the two face buttons, menu and a haptic output,
+  // each for the left hand and the right; suggested bindings for the Touch
+  // controllers (which the Quest 3's pair uses) and the Khronos simple
+  // controller (the fallback); an action space for each hand's two poses; and
+  // the set attached to the session, before it is begun. Leaves 'inputReady'
+  // false, with the reason said, if any step fails.
+  fn startInput(self: &mut, appName: &str) {
+    handPaths[0] = self.pathOf(&"/user/hand/left" as *u8);
+    handPaths[1] = self.pathOf(&"/user/hand/right" as *u8);
+    if handPaths[0] == 0u64 || handPaths[1] == 0u64 { logLine("render: the runtime has no hand paths"); return; }
+    let setInfo = openxr.actionSetCreateInfo("gameplay", "Gameplay", 0u32);
+    if !xrCheck(fns.createActionSet(xrInstance, &setInfo, &mut actionSet), "xrCreateActionSet") { return; }
+    var ok = self.makeAction(ACTION_GRIP, "grip_pose", "Grip pose", openxr.ACTION_TYPE_POSE_INPUT);
+    ok = ok && self.makeAction(ACTION_AIM, "aim_pose", "Aim pose", openxr.ACTION_TYPE_POSE_INPUT);
+    ok = ok && self.makeAction(ACTION_TRIGGER, "trigger", "Trigger", openxr.ACTION_TYPE_FLOAT_INPUT);
+    ok = ok && self.makeAction(ACTION_SQUEEZE, "squeeze", "Squeeze", openxr.ACTION_TYPE_FLOAT_INPUT);
+    ok = ok && self.makeAction(ACTION_STICK, "thumbstick", "Thumbstick", openxr.ACTION_TYPE_VECTOR2F_INPUT);
+    ok = ok && self.makeAction(ACTION_STICK_CLICK, "thumbstick_click", "Thumbstick click", openxr.ACTION_TYPE_BOOLEAN_INPUT);
+    ok = ok && self.makeAction(ACTION_PRIMARY, "primary", "Primary button", openxr.ACTION_TYPE_BOOLEAN_INPUT);
+    ok = ok && self.makeAction(ACTION_SECONDARY, "secondary", "Secondary button", openxr.ACTION_TYPE_BOOLEAN_INPUT);
+    ok = ok && self.makeAction(ACTION_MENU, "menu", "Menu", openxr.ACTION_TYPE_BOOLEAN_INPUT);
+    ok = ok && self.makeAction(ACTION_HAPTIC, "haptic", "Vibration", openxr.ACTION_TYPE_VIBRATION_OUTPUT);
+    if !ok { return; }
+    self.suggestTouchBindings();
+    self.suggestSimpleBindings();
+
+    // The poses' spaces: grip left, grip right, aim left, aim right
+    var h = 0usize;
+    while h < 4usize {
+      let info = openxr.ActionSpaceCreateInfo(action: actions[if h < 2usize { ACTION_GRIP } else { ACTION_AIM }],
+        subactionPath: handPaths[h % 2usize], poseInActionSpace: openxr.identityPose());
+      if !xrCheck(fns.createActionSpace(session, &info, &mut poseSpaces[h]), "xrCreateActionSpace") { return; }
+      h = h + 1usize;
+    }
+    let sets: Array[openxr.ActionSet, 1] = [actionSet];
+    let attach = openxr.SessionActionSetsAttachInfo(countActionSets: 1u32, actionSets: &sets as *openxr.ActionSet);
+    if !xrCheck(fns.attachSessionActionSets(session, &attach), "xrAttachSessionActionSets") { return; }
+    inputReady = true;
+  }
+
+  // Add 'action' bound to 'path' to a suggestion (nothing if the runtime
+  // knows no such path)
+  fn bindTo(self: &, list: &mut List[openxr.ActionSuggestedBinding], action: usize, path: *u8) {
+    let p = self.pathOf(path);
+    if p != 0u64 { list.push(openxr.ActionSuggestedBinding(actions[action], p)); }
+  }
+
+  fn suggest(self: &, profile: *u8, list: &mut List[openxr.ActionSuggestedBinding], what: &str) {
+    let profilePath = self.pathOf(profile);
+    if profilePath == 0u64 { return; }
+    let info = openxr.InteractionProfileSuggestedBinding(interactionProfile: profilePath,
+      countSuggestedBindings: u32.from(list.len()), suggestedBindings: list.viewMut() as *openxr.ActionSuggestedBinding);
+    xrCheck(fns.suggestInteractionProfileBindings(xrInstance, &info), what);
+  }
+
+  // /interaction_profiles/oculus/touch_controller: both hands' grip and aim
+  // poses, trigger and squeeze values, thumbstick and its click, the haptic
+  // output; X and Y (and menu) on the left, A and B on the right
+  fn suggestTouchBindings(self: &) {
+    var b = List[openxr.ActionSuggestedBinding].empty();
+    self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/left/input/grip/pose" as *u8);
+    self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/right/input/grip/pose" as *u8);
+    self.bindTo(&mut b, ACTION_AIM, &"/user/hand/left/input/aim/pose" as *u8);
+    self.bindTo(&mut b, ACTION_AIM, &"/user/hand/right/input/aim/pose" as *u8);
+    self.bindTo(&mut b, ACTION_TRIGGER, &"/user/hand/left/input/trigger/value" as *u8);
+    self.bindTo(&mut b, ACTION_TRIGGER, &"/user/hand/right/input/trigger/value" as *u8);
+    self.bindTo(&mut b, ACTION_SQUEEZE, &"/user/hand/left/input/squeeze/value" as *u8);
+    self.bindTo(&mut b, ACTION_SQUEEZE, &"/user/hand/right/input/squeeze/value" as *u8);
+    self.bindTo(&mut b, ACTION_STICK, &"/user/hand/left/input/thumbstick" as *u8);
+    self.bindTo(&mut b, ACTION_STICK, &"/user/hand/right/input/thumbstick" as *u8);
+    self.bindTo(&mut b, ACTION_STICK_CLICK, &"/user/hand/left/input/thumbstick/click" as *u8);
+    self.bindTo(&mut b, ACTION_STICK_CLICK, &"/user/hand/right/input/thumbstick/click" as *u8);
+    self.bindTo(&mut b, ACTION_PRIMARY, &"/user/hand/left/input/x/click" as *u8);
+    self.bindTo(&mut b, ACTION_PRIMARY, &"/user/hand/right/input/a/click" as *u8);
+    self.bindTo(&mut b, ACTION_SECONDARY, &"/user/hand/left/input/y/click" as *u8);
+    self.bindTo(&mut b, ACTION_SECONDARY, &"/user/hand/right/input/b/click" as *u8);
+    self.bindTo(&mut b, ACTION_MENU, &"/user/hand/left/input/menu/click" as *u8);
+    self.bindTo(&mut b, ACTION_HAPTIC, &"/user/hand/left/output/haptic" as *u8);
+    self.bindTo(&mut b, ACTION_HAPTIC, &"/user/hand/right/output/haptic" as *u8);
+    self.suggest(&"/interaction_profiles/oculus/touch_controller" as *u8, &mut b, "xrSuggestInteractionProfileBindings (touch)");
+  }
+
+  // /interaction_profiles/khr/simple_controller: select (as the trigger),
+  // menu, the grip and aim poses and the haptic output
+  fn suggestSimpleBindings(self: &) {
+    var b = List[openxr.ActionSuggestedBinding].empty();
+    self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/left/input/grip/pose" as *u8);
+    self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/right/input/grip/pose" as *u8);
+    self.bindTo(&mut b, ACTION_AIM, &"/user/hand/left/input/aim/pose" as *u8);
+    self.bindTo(&mut b, ACTION_AIM, &"/user/hand/right/input/aim/pose" as *u8);
+    self.bindTo(&mut b, ACTION_TRIGGER, &"/user/hand/left/input/select/click" as *u8);
+    self.bindTo(&mut b, ACTION_TRIGGER, &"/user/hand/right/input/select/click" as *u8);
+    self.bindTo(&mut b, ACTION_MENU, &"/user/hand/left/input/menu/click" as *u8);
+    self.bindTo(&mut b, ACTION_MENU, &"/user/hand/right/input/menu/click" as *u8);
+    self.bindTo(&mut b, ACTION_HAPTIC, &"/user/hand/left/output/haptic" as *u8);
+    self.bindTo(&mut b, ACTION_HAPTIC, &"/user/hand/right/output/haptic" as *u8);
+    self.suggest(&"/interaction_profiles/khr/simple_controller" as *u8, &mut b, "xrSuggestInteractionProfileBindings (simple)");
+  }
+
+  // Ask the runtime which interaction profile each hand has now
+  fn refreshProfiles(self: &mut) {
+    var h = 0usize;
+    while h < 2usize {
+      profiles[h] = String.empty();
+      if inputReady {
+        var state = openxr.InteractionProfileState();
+        if openxr.succeeded(fns.getCurrentInteractionProfile(session, handPaths[h], &mut state)) && state.interactionProfile != 0u64 {
+          var text = Array[u8, 256]() <- fill 0u8;
+          var count = 0u32;
+          if openxr.succeeded(fns.pathToString(xrInstance, state.interactionProfile, 255u32, &mut count, &text as *u8)) {
+            profiles[h] = cStringOf(&text as *u8);
+          }
+        }
+      }
+      h = h + 1usize;
+    }
+  }
+
+  // The interaction profile the runtime has bound to a hand (0 left, 1 right),
+  // such as "/interaction_profiles/oculus/touch_controller"; "" when it has none
+  pub fn profileName(self: &, hand: usize) &str {
+    if hand > 1usize { return ""; }
+    profiles[hand].view()
+  }
+
+  // Whether the controller actions were made and attached (they are not when
+  // the runtime refused them: the hands are then always inactive)
+  pub fn hasInput(self: &) bool { inputReady }
+
+  // xrSyncActions calls so far, and how many of them failed
+  pub fn inputSyncs(self: &) u64 { syncs }
+  pub fn inputSyncFailures(self: &) u64 { syncFailures }
+
+  fn readBool(self: &, action: usize, hand: usize) bool {
+    let info = openxr.ActionStateGetInfo(action: actions[action], subactionPath: handPaths[hand]);
+    var st = openxr.ActionStateBoolean();
+    if openxr.failed(fns.getActionStateBoolean(session, &info, &mut st)) { return false; }
+    st.isActive == openxr.TRUE && st.currentState == openxr.TRUE
+  }
+
+  fn readFloat(self: &, action: usize, hand: usize) f32 {
+    let info = openxr.ActionStateGetInfo(action: actions[action], subactionPath: handPaths[hand]);
+    var st = openxr.ActionStateFloat();
+    if openxr.failed(fns.getActionStateFloat(session, &info, &mut st)) || st.isActive != openxr.TRUE { return 0.; }
+    st.currentState
+  }
+
+  // A button's state this frame: held now, and the change from last frame's
+  fn buttonOf(self: &mut, slotIndex: usize, down: bool) HeadsetButton {
+    let was = buttonDown[slotIndex];
+    buttonDown[slotIndex] = down;
+    HeadsetButton(down, down && !was, !down && was)
+  }
+
+  // A pose action's space, located in the eyes' reference space at 'time'
+  fn locatePose(self: &, pose: usize, time: i64) HeadsetPose {
+    var loc = openxr.SpaceLocation(pose: openxr.identityPose());
+    let r = fns.locateSpace(poseSpaces[pose], space, time, &mut loc);
+    let needed = openxr.SPACE_LOCATION_ORIENTATION_VALID_BIT | openxr.SPACE_LOCATION_POSITION_VALID_BIT;
+    if openxr.failed(r) || (loc.locationFlags & needed) != needed { return HeadsetPose.none(); }
+    HeadsetPose(true, Vec3(loc.pose.position.x, loc.pose.position.y, loc.pose.position.z),
+      Quat(loc.pose.orientation.x, loc.pose.orientation.y, loc.pose.orientation.z, loc.pose.orientation.w))
+  }
+
+  // Read one controller at 'time'. Only called while the session is focused.
+  fn readHand(self: &mut, hand: usize, time: i64) HeadsetHand {
+    var out = HeadsetHand.none();
+    let info = openxr.ActionStateGetInfo(action: actions[ACTION_GRIP], subactionPath: handPaths[hand]);
+    var pose = openxr.ActionStatePose();
+    if openxr.failed(fns.getActionStatePose(session, &info, &mut pose)) || pose.isActive != openxr.TRUE { return out; }
+    out.active = true;
+    out.grip = self.locatePose(hand, time);
+    out.aim = self.locatePose(2usize + hand, time);
+    out.trigger = self.readFloat(ACTION_TRIGGER, hand);
+    out.squeeze = self.readFloat(ACTION_SQUEEZE, hand);
+    let stickInfo = openxr.ActionStateGetInfo(action: actions[ACTION_STICK], subactionPath: handPaths[hand]);
+    var stick = openxr.ActionStateVector2f();
+    if openxr.succeeded(fns.getActionStateVector2f(session, &stickInfo, &mut stick)) && stick.isActive == openxr.TRUE {
+      out.stickX = stick.currentState.x;
+      out.stickY = stick.currentState.y;
+    }
+    out.stickClick = self.buttonOf(hand * 4usize, self.readBool(ACTION_STICK_CLICK, hand));
+    out.primary = self.buttonOf(hand * 4usize + 1usize, self.readBool(ACTION_PRIMARY, hand));
+    out.secondary = self.buttonOf(hand * 4usize + 2usize, self.readBool(ACTION_SECONDARY, hand));
+    out.menu = self.buttonOf(hand * 4usize + 3usize, self.readBool(ACTION_MENU, hand));
+    out
+  }
+
+  // The controllers for a frame: sync the actions, and read and locate both
+  // hands, while the session is focused (a runtime gives no input to a session
+  // that is not); else every hand is inactive. Buttons that were down when the
+  // hand went inactive are reported released once.
+  fn readHands(self: &mut, time: i64) Array[HeadsetHand, 2] {
+    var hands = [HeadsetHand.none(), HeadsetHand.none()];
+    if inputReady && sessionState == openxr.SESSION_STATE_FOCUSED {
+      let active: Array[openxr.ActiveActionSet, 1] = [openxr.ActiveActionSet(actionSet: actionSet)];
+      let sync = openxr.ActionsSyncInfo(countActiveActionSets: 1u32, activeActionSets: &active as *openxr.ActiveActionSet);
+      syncs = syncs + 1u64;
+      let r = fns.syncActions(session, &sync);
+      if openxr.succeeded(r) {
+        hands[0] = self.readHand(0usize, time);
+        hands[1] = self.readHand(1usize, time);
+      } else {
+        syncFailures = syncFailures + 1u64;
+        xrFail("xrSyncActions", r);
+      }
+    }
+    var h = 0usize;
+    while h < 2usize {
+      if !hands[h].active {            // (a hand that was read has already updated its buttons)
+        var k = 0usize;
+        while k < 4usize {
+          let was = buttonDown[h * 4usize + k];
+          buttonDown[h * 4usize + k] = false;
+          let b = HeadsetButton(false, false, was);
+          if k == 0usize { hands[h].stickClick = b; } else if k == 1usize { hands[h].primary = b; }
+          else if k == 2usize { hands[h].secondary = b; } else { hands[h].menu = b; }
+          k = k + 1usize;
+        }
+      }
+      h = h + 1usize;
+    }
+    hands
+  }
+
+  // The controller 'hand' (0 left, 1 right) of 'frame'
+  pub fn hand(self: &, frame: &HeadsetFrame, hand: usize) HeadsetHand {
+    if hand > 1usize { return HeadsetHand.none(); }
+    frame.hands[hand]
+  }
+
+  // Buzz a controller (0 left, 1 right) for 'seconds' at 'amplitude' 0 to 1;
+  // 'seconds' 0 or less is the shortest pulse the device makes. Nothing
+  // happens without that controller (no input, not focused, no haptics).
+  pub fn vibrate(self: &, hand: usize, seconds: f32, amplitude: f32) {
+    if hand > 1usize || !inputReady || sessionState != openxr.SESSION_STATE_FOCUSED { return; }
+    let info = openxr.HapticActionInfo(action: actions[ACTION_HAPTIC], subactionPath: handPaths[hand]);
+    let duration = if seconds <= 0. { openxr.MIN_HAPTIC_DURATION } else { i64.from(f64.from(seconds) * 1.0e9) };
+    let buzz = openxr.HapticVibration(duration: duration, frequency: openxr.FREQUENCY_UNSPECIFIED, amplitude: amplitude);
+    fns.applyHapticFeedback(session, &info, &buzz as *openxr.HapticBaseHeader);
+  }
+
+  // Stop a controller's vibration (0 left, 1 right)
+  pub fn stopVibration(self: &, hand: usize) {
+    if hand > 1usize || !inputReady { return; }
+    let info = openxr.HapticActionInfo(action: actions[ACTION_HAPTIC], subactionPath: handPaths[hand]);
+    fns.stopHapticFeedback(session, &info);
+  }
+
   // Follow the session: read the runtime's events. READY begins the session,
   // STOPPING ends it, EXITING and LOSS_PENDING (or the instance being lost)
   // end it for good. False once the session is over, when the program leaves
@@ -531,6 +904,7 @@ pub struct Headset {
       } else if buffer.type == openxr.TYPE_EVENT_DATA_SESSION_STATE_CHANGED {
         let ev = &buffer as *openxr.EventDataSessionStateChanged;
         sessionState = ev.state;
+        if ev.state == openxr.SESSION_STATE_FOCUSED { self.refreshProfiles(); }
         if ev.state == openxr.SESSION_STATE_READY {
           let begin = openxr.SessionBeginInfo();
           if xrCheck(fns.beginSession(session, &begin), "xrBeginSession") { sessionRunning = true; }
@@ -540,6 +914,8 @@ pub struct Headset {
         } else if ev.state == openxr.SESSION_STATE_EXITING || ev.state == openxr.SESSION_STATE_LOSS_PENDING {
           quitting = true;
         }
+      } else if buffer.type == openxr.TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED {
+        self.refreshProfiles();
       } else if buffer.type == openxr.TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING {
         quitting = true;
       }
@@ -558,7 +934,8 @@ pub struct Headset {
   // time the frame is predicted to be shown. Answers an inactive frame while
   // the session is not running. Every active frame is ended by 'endFrame'.
   pub fn beginFrame(self: &mut, device: &mut Device) HeadsetFrame {
-    var frame = HeadsetFrame(false, false, false, 0i64, 0i64, [openxr.emptyView(), openxr.emptyView()]);
+    var frame = HeadsetFrame(false, false, false, 0i64, 0i64, [openxr.emptyView(), openxr.emptyView()],
+      [HeadsetHand.none(), HeadsetHand.none()]);
     if !opened || !sessionRunning || frameOpen { return frame; }
     self.collectTimes(device);
     var state = openxr.FrameState();
@@ -573,6 +950,7 @@ pub struct Headset {
     frame.displayTime = state.predictedDisplayTime;
     frame.displayPeriod = state.predictedDisplayPeriod;
     frame.shouldRender = state.shouldRender == openxr.TRUE;
+    frame.hands = self.readHands(state.predictedDisplayTime);
     if frame.shouldRender {
       let locateInfo = openxr.ViewLocateInfo(displayTime: state.predictedDisplayTime, space: space);
       var viewState = openxr.ViewState();
@@ -853,6 +1231,12 @@ pub struct Headset {
         if (swapchains[e] as usize) != 0usize { fns.destroySwapchain(swapchains[e]); }
         e = e + 1usize;
       }
+      var p = 0usize;
+      while p < 4usize {
+        if (poseSpaces[p] as usize) != 0usize { fns.destroySpace(poseSpaces[p]); }
+        p = p + 1usize;
+      }
+      if (actionSet as usize) != 0usize { fns.destroyActionSet(actionSet); }   // (and with it the actions)
       if (space as usize) != 0usize { fns.destroySpace(space); }
       if (session as usize) != 0usize {
         fns.destroySession(session);

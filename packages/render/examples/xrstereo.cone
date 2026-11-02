@@ -24,6 +24,12 @@
 //   set XR_RUNTIME_JSON=<simulator folder>\meta_openxr_simulator.json
 //   set PATH=<OpenXR loader package>\x64\bin;<SDL3>\lib\x64;%PATH%
 //
+// With controllers it also draws a small box at each one's grip pose (red left,
+// green right) and a thin yellow ray along its aim, prints every button that
+// goes down or up, and buzzes a controller when its primary button (A, X) goes
+// down. Without any (a headset off, the simulator in batch mode) the hands stay
+// inactive and the run says so at the end.
+//
 // It prints the runtime, the system, the size of an eye, and, after a warm-up,
 // the mean time of an eye on the CPU (recording and submitting it) and on the
 // GPU (between two timestamps round the pass).
@@ -63,6 +69,13 @@ fn writeShot(headset: &Headset, path: &String, label: &str) {
   let written = image.save(&filepath.Path.from(path.view()));
   print <- "Screenshot of the "; printStr(label); print <- " eye: "; printStr(path.view());
   if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+}
+
+// Say that a button went down or up this frame
+fn reportButton(hand: usize, name: &str, b: &HeadsetButton) {
+  if !b.pressed && !b.released { return; }
+  printStr(if hand == 0usize { "Left " } else { "Right " }); printStr(name);
+  print <- if b.pressed { " pressed\n" } else { " released\n" };
 }
 
 fn named(prefix: &String, suffix: &str) String {
@@ -169,6 +182,7 @@ fn main(argc: i32, argv: **u8) i32 {
   var cpuFrames = 0u32;
   var eyesPrinted = false;
   var mirrorShot = false;         // the mirror's picture was asked for and not yet written
+  var handsActive = [false, false];   // each controller's last reported state
   while headset.pollEvents() {
     if win.isOpen() { win.pollEvents(); }
     let state = headset.beginFrame(&mut gpu.device);
@@ -180,6 +194,36 @@ fn main(argc: i32, argv: **u8) i32 {
       list.add(cubeMesh, red, placed(-0.5, 1.2, -1.8, t, 0.4));
       list.add(cubeMesh, green, placed(0.4, 1.0, -2.8, 0. - t, 0.5));
       list.add(cubeMesh, white, placed(-0.1, 1.5, -5., t * 0.5, 1.2));          // 5 m ahead: hardly any
+      // The controllers: a small box at each active one's grip, a thin long box along its
+      // aim ray, and a line for every button that changed (a primary press also buzzes it)
+      var h = 0usize;
+      while h < 2usize {
+        let hand = headset.hand(&state, h);
+        if hand.active != handsActive[h] {
+          handsActive[h] = hand.active;
+          printStr(if h == 0usize { "Left" } else { "Right" });
+          print <- if hand.active { " controller active" } else { " controller inactive" };
+          if hand.active && hand.grip.valid {
+            print <- ", grip at ("; print <- f64.from(hand.grip.position.x); print <- ", "; print <- f64.from(hand.grip.position.y);
+            print <- ", "; print <- f64.from(hand.grip.position.z); print <- ")";
+          }
+          if hand.active && hand.aim.valid { print <- ", aim pose valid"; }
+          print <- "\n";
+        }
+        if hand.active {
+          if hand.grip.valid { list.add(cubeMesh, if h == 0usize { red } else { green }, hand.grip.placement(0.08)); }
+          if hand.aim.valid {
+            let ray = Mat4.fromTrs(hand.aim.position + hand.aim.forward() * 0.75, hand.aim.orientation, Vec3(0.008, 0.008, 1.5));
+            list.add(cubeMesh, yellow, ray);
+          }
+          reportButton(h, "stick click", &hand.stickClick);
+          reportButton(h, "primary", &hand.primary);
+          reportButton(h, "secondary", &hand.secondary);
+          reportButton(h, "menu", &hand.menu);
+          if hand.primary.pressed { headset.vibrate(h, 0.1, 0.5); }
+        }
+        h = h + 1usize;
+      }
       // Near the end, copy out the left eye on one frame and the right on the next
       let wantShot = shots && state.shouldRender && after == 0u32 && frame + 4u32 >= frames && shotsDone < 2u32;
       if wantShot { headset.captureEye(usize.from(shotsDone)); }
@@ -258,6 +302,9 @@ fn main(argc: i32, argv: **u8) i32 {
     print <- " frames)\n";
     eye = eye + 1usize;
   }
+  print <- "Controllers: "; print <- if headset.hasInput() { "actions attached" } else { "no input" };
+  print <- ", syncs "; print <- headset.inputSyncs(); print <- " ("; print <- headset.inputSyncFailures(); print <- " failed)";
+  print <- ", profiles left '"; printStr(headset.profileName(0usize)); print <- "' right '"; printStr(headset.profileName(1usize)); print <- "'\n";
   print <- "Vulkan failures: "; print <- u64.from(failures());
   print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   0i32
