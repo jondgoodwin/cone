@@ -393,6 +393,12 @@ static LLVMValueRef genlTraceFnOf(GenState *gen, INode *vtype, LLVMTypeRef *fnty
 // own trace. A null reference is passed over.
 static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "ownedref");
+    // An owner of an array body carries its count: the elements are walked one by one
+    LLVMValueRef count = NULL;
+    if (refIsFat(refnode)) {
+        count = LLVMBuildExtractValue(gen->builder, ref, 1, "ownedcount");
+        ref = LLVMBuildExtractValue(gen->builder, ref, 0, "ownedptr");
+    }
     LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "passed");
     LLVMBasicBlockRef passblk = genlInsertBlock(gen, "pass");
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), passblk, doneblk);
@@ -408,6 +414,14 @@ static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnod
         LLVMBasicBlockRef valueblk = genlInsertBlock(gen, "passvalue");
         LLVMBuildCondBr(gen->builder, first, valueblk, doneblk);
         LLVMPositionBuilderAtEnd(gen->builder, valueblk);
+    }
+    if (count != NULL) {
+        INode *elemtype = itypeLenBodyElem(refnode->vtexp);
+        if (genlTraceWants(elemtype))
+            genlEachElem(gen, ref, count, elemtype, genlTraceElem, 0);
+        LLVMBuildBr(gen->builder, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+        return;
     }
     LLVMTypeRef fntype;
     LLVMValueRef tracefn = genlTraceFnOf(gen, refnode->vtexp, &fntype);
@@ -561,7 +575,8 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         if (regionIsTraced(((RefNode *)typedcl)->region))
             genlTraceRef(gen, valptr, (RefNode *)typedcl);
         // Any other owning reference to a value holding one is passed through
-        else if (!genlTraceBarrier && itypeHoldsTraced(typedcl) && !refIsFat((RefNode *)typedcl))
+        else if (!genlTraceBarrier && itypeHoldsTraced(typedcl)
+            && (!refIsFat((RefNode *)typedcl) || itypeIsArrayBody(((RefNode *)typedcl)->vtexp)))
             genlTraceThrough(gen, valptr, (RefNode *)typedcl);
         return;
     case TTupleTag:
@@ -609,7 +624,10 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         // The values a type declaring GcTraceElements holds where it points are
         // reached by its gcTraceElements
         INode *traceelem = structGcTraceElementsElem(strnode);
-        if (traceelem && genlTraceWants(traceelem))
+        // Array[T]'s are reached through a slice, which carries the count a thin
+        // address lacks: whatever holds the slice traces them (a List, by its own
+        // gcTraceElements); the body is never walked as a value
+        if (traceelem && genlTraceWants(traceelem) && strnode->namesym != arrayTypeDcl->namesym)
             genlTraceElements(gen, valptr, strnode, traceelem);
         return;
     }
