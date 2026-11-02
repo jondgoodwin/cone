@@ -821,7 +821,7 @@ static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
     // the types. Not a static, a macro without self, Self, or the value's own
     // finalizer or clone.
     if (fold->star)
-        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL, src);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2136,7 +2136,7 @@ static void structLendExpand(StructNode *node, FieldDclNode *use, StructNode *bo
         lent[cls] = 1;
     }
     if (fold->star)
-        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL, body);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2168,7 +2168,7 @@ static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook
     // An alias for every public member the sibling declares itself, less what
     // 'but' leaves out
     if (fold->star)
-        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib));
+        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib), sib);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
