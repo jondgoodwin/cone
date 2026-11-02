@@ -1481,6 +1481,10 @@ a type expression (`foldSourceDcl`), a star clause's items and its `but`
 would not admit (private, a lifecycle method, a static in a member fold, a field or
 alias in a sibling fold) is an error, since there is nothing to leave out; a private
 name a sibling has from the base is reported as the base's (`foldStarItems`' `base`).
+A name the folded *instance* lacks only because its member's `where` does not hold
+for these arguments is still a name the generic declares, so `but` tolerates it
+(`foldStarItems`' `src`, asked for its template by `genericTypeTemplate`); a name
+the generic never declared stays an error (`ErrorNoMbr`).
 What stays here is what the *site* decides — the copy with its
 hop, the receiver shift, the eligibility rules — because that is where the sites
 differ.
