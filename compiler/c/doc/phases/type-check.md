@@ -156,6 +156,7 @@ A name use analyzes the declaration it names, then reads what it needs:
 | `fnCallLowerMethod` | every candidate a member name declares, before selection compares signatures (`fnCallDemandCandidates`) |
 | `fnCallLowerOverloadFn` | every candidate an overload name declares, a type's or a module's, the same way |
 | `structCheckTraitReqs` | each method a mixed-in trait requires, before the type's own is compared with it |
+| `structMapVtableImpl` | each method of a type that fills a trait's slot, before signatures are compared: a type declared in a later file has not checked its members when an earlier file's method makes it a trait object (Bug 28) |
 | `itypeTypeCheck` | any type named in a signature or a declared type |
 
 **A member name is a use too.** A type checks its methods in order, so from
