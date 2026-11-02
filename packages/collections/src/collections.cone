@@ -327,12 +327,37 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     used = n;
   }
 
+  // Equal when both hold the same number of values and each is '==' to the one in the
+  // same place. Exists only where T is Eq. Compared as borrows, '&a == &b'
+  pub fn `==`(self: &, other: &List[T]) bool where T is Eq {
+    self.view() == other.view()
+  }
+
+  // Whether some value is '==' to x. Only where T is Eq
+  pub fn contains(self: &, x: &T) bool where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + i) as &T) == x { return true; }
+      i = i + 1usize;
+    }
+    false
+  }
+
+  // The place of the first value '==' to x, or None. Only where T is Eq
+  pub fn indexOf(self: &, x: &T) Option[usize] where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + i) as &T) == x { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
+
   // Drop each value that equals the one before it, keeping the first of each run of
   // equals (so a sorted list loses its repeats): [1, 1, 2, 2, 2, 1] becomes [1, 2, 1].
-  // Numbers only, whose '==' is the comparison; a float is equal by '==', so a NaN is
-  // never equal to anything and none of them is dropped. Any other type, or another
-  // meaning of "the same", is 'dedupBy'.
-  pub fn dedup(self: &mut) where T is Integer || T is f32 || T is f64 {
+  // For any Eq type; a float is equal by '==', so a NaN is never equal to anything and
+  // none of them is dropped. Another meaning of "the same" is 'dedupBy'.
+  pub fn dedup(self: &mut) where T is Eq {
     self.dedupBy(&sameValue[T]);
   }
 
@@ -3041,7 +3066,7 @@ pub fn asciiLower(b: u8) u8 { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} }
 // The byte, made a capital if it is an ASCII small letter, a to z
 pub fn asciiUpper(b: u8) u8 { if b >= 'a' && b <= 'z' {b - 32u8} else {b} }
 
-fn sameValue[T](a: &T, b: &T) bool { *a == *b }
+fn sameValue[T](a: &T, b: &T) bool { a == b }
 
 // -------- statistics over numbers: quantile, median, mean --------
 //
