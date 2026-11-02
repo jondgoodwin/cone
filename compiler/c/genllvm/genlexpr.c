@@ -517,7 +517,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case SliceFromPartsUniIntrinsic: {
         LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
         LLVMValueRef slice = LLVMGetUndef(slicetype);
-        slice = LLVMBuildInsertValue(gen->builder, slice, fnargs[0], 0, "sliceptr");
+        // A null pointer is the absence of an Option of a slice, so a slice
+        // never holds one: where there is no block (an unallocated List, a
+        // length of nothing) the pointer is the element's alignment, as Rust's
+        // NonNull::dangling(), aligned and never dereferenced. Every slice made
+        // from a raw pointer comes through here.
+        LLVMValueRef ptr = fnargs[0];
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
+        LLVMValueRef dangling = LLVMConstIntToPtr(LLVMConstInt(genlUsize(gen), align ? align : 1, 0), LLVMTypeOf(ptr));
+        ptr = LLVMBuildSelect(gen->builder, LLVMBuildIsNull(gen->builder, ptr, "noblock"), dangling, ptr, "sliceaddr");
+        slice = LLVMBuildInsertValue(gen->builder, slice, ptr, 0, "sliceptr");
         return LLVMBuildInsertValue(gen->builder, slice, fnargs[1], 1, "slice");
     }
 
