@@ -1,0 +1,52 @@
+// What a '&<uni' reborrowed or lent from an owner (trait_vref_reborrow) still
+// refuses. It is a borrow that nothing else may touch while it is used: two
+// of them to one owner in one call, the owner changed or moved while one is still
+// to be used, and the reference it was reborrowed from used while the reborrow
+// is. One function per case, so that one refusal cannot stand in for another's.
+
+mod trait_flow_vref_reborrow;
+
+trait App {
+  pub fn frame(self: &mut) bool;
+  pub fn look(self: &) i64;
+}
+
+struct Spinner {
+  pub n: i64;
+  pub fn frame(self: &mut) bool {n = n + 1; n < 4}
+  pub fn look(self: &) i64 {n}
+}
+
+fn two(x: &<uni App, y: &<uni App) i64 { x.look() + y.look() }
+
+fn ownerTwice() {
+  let o: Uni[App] = Uni[Spinner](1);
+  two(o, o);                       //~ ErrorFrozen:10 "may not be borrowed"
+}
+
+fn ownerUsedWhileLent() {
+  var o: Uni[App] = Uni[Spinner](1);
+  let b: &<uni App = o;
+  o.frame();                       //~ ErrorFrozen:3 "may not be borrowed"
+  b.look();
+}
+
+fn ownerMovedWhileLent() {
+  let o: Uni[App] = Uni[Spinner](1);
+  let b: &<uni App = o;
+  let p = o;                       //~ ErrorFrozen:11 "may not be moved"
+  b.look();
+}
+
+fn reborrowedFromUsed(b: &<uni App) {
+  let c: &<uni App = b;
+  b.frame();                       //~ ErrorFrozen:3 "may not be borrowed"
+  c.look();
+}
+
+fn reborrowedTwice(b: &<uni App) {
+  two(b, b);                       //~ ErrorFrozen:10 "may not be borrowed"
+}
+
+fn main() {
+}
