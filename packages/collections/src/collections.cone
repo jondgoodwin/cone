@@ -327,6 +327,36 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     used = n;
   }
 
+  // Drop each value that equals the one before it, keeping the first of each run of
+  // equals (so a sorted list loses its repeats): [1, 1, 2, 2, 2, 1] becomes [1, 2, 1].
+  // Numbers only, whose '==' is the comparison; a float is equal by '==', so a NaN is
+  // never equal to anything and none of them is dropped. Any other type, or another
+  // meaning of "the same", is 'dedupBy'.
+  pub fn dedup(self: &mut) where T is Integer || T is f32 || T is f64 {
+    self.dedupBy(&sameValue[T]);
+  }
+
+  // Drop each value that 'same(kept, v)' calls the same as the last one kept, keeping the
+  // first of each run: 'same' is given the value kept before (a borrow) and the next one,
+  // in list order, and answers true to drop the next. Each value dropped is finalized,
+  // first to last; the order of the rest is unchanged and the block is kept.
+  pub fn dedupBy[F: fn(a: &T, b: &T) bool](self: &mut, same: &F) {
+    if used < 2usize { return; }
+    var w = 1usize;
+    var r = 1usize;
+    while r < used {
+      if same((ptr + (w - 1usize)) as &T, (ptr + r) as &T) {
+        if mem.needsFinal[T]() { mem.finalize(ptr + r); }
+      }
+      else {
+        if w != r { mem.moveRaw(ptr + w, ptr + r, 1usize); }
+        w = w + 1usize;
+      }
+      r = r + 1usize;
+    }
+    used = w;
+  }
+
   // Make it exactly n values long. A longer list is truncated: the values
   // beyond n are finalized, first to last. A shorter one grows, each new value
   // a copy of 'value', and the block may move, as for 'reserve'. Only a type
@@ -3010,6 +3040,77 @@ pub fn asciiLower(b: u8) u8 { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} }
 
 // The byte, made a capital if it is an ASCII small letter, a to z
 pub fn asciiUpper(b: u8) u8 { if b >= 'a' && b <= 'z' {b - 32u8} else {b} }
+
+fn sameValue[T](a: &T, b: &T) bool { *a == *b }
+
+// -------- statistics over numbers: quantile, median, mean --------
+//
+// A quantile is a fraction q from 0 to 1 (the median is 0.5, the 95th percentile 0.95),
+// found by linear interpolation between the two values around the rank q * (n - 1): with
+// the values in order, 0 is the first, 1 the last, and a q between two ranks lies that
+// share of the way from the value below to the value above (NumPy's default). A q outside
+// 0 to 1 is taken as the nearest end. There is no value in an empty array, so each
+// answers NaN for one; a NaN q answers NaN. NaN values among the data are ordered as
+// '<=>' orders floats (a positive NaN after every number), so they are best removed first.
+
+// The quantile q of values already in ascending order, for as many q as are asked
+// from one sort: 'xs.sort(); quantileSorted(xs.view(), 0.95)'
+pub fn quantileSorted(xs: &Array[f64], q: f64) f64 {
+  let n = xs.len;
+  if n == 0usize || q != q { return nan(); }
+  if q <= 0.0 { return xs[0usize]; }
+  if q >= 1.0 { return xs[n - 1usize]; }
+  let pos = q * f64.from(n - 1usize);
+  let lo = usize.from(pos);
+  let frac = pos - f64.from(lo);
+  if frac == 0.0 || lo + 1usize >= n { return xs[lo]; }
+  let a = xs[lo];
+  let b = xs[lo + 1usize];
+  if a == b { return a; }
+  a + (b - a) * frac
+}
+
+// The quantile q of values in any order, in O(n) expected time without sorting them all.
+// It reorders the array
+pub fn quantile(xs: &mut Array[f64], q: f64) f64 {
+  let n = xs.len;
+  if n == 0usize || q != q { return nan(); }
+  if q <= 0.0 { return *xs.selectNth(0usize); }
+  if q >= 1.0 { return *xs.selectNth(n - 1usize); }
+  let pos = q * f64.from(n - 1usize);
+  let lo = usize.from(pos);
+  let frac = pos - f64.from(lo);
+  let a = *xs.selectNth(lo);
+  if frac == 0.0 || lo + 1usize >= n { return a; }
+  // Everything after place lo is not before it, so the next value in order is the least of those
+  var b = xs[lo + 1usize];
+  var i = lo + 2usize;
+  while i < n {
+    if xs[i] < b { b = xs[i]; }
+    i = i + 1usize;
+  }
+  if a == b { return a; }
+  a + (b - a) * frac
+}
+
+// The middle value, the mean of the two middle ones when there is an even number of
+// values; reorders the array
+pub fn median(xs: &mut Array[f64]) f64 { quantile(xs, 0.5) }
+
+// The sum divided by the count
+pub fn mean(xs: &Array[f64]) f64 {
+  let n = xs.len;
+  if n == 0usize { return nan(); }
+  var s = 0.0;
+  var i = 0usize;
+  while i < n { s = s + xs[i]; i = i + 1usize; }
+  s / f64.from(n)
+}
+
+fn nan() f64 {
+  let zero = 0.0;
+  zero / zero
+}
 
 // The integer the text spells in decimal: a '-' or a '+' or neither, then one
 // or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
