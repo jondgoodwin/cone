@@ -1098,11 +1098,12 @@ pub struct Loop {
     match r.group {
       case let Some(s) {
         self.linkGroup(p);
-        let w = Waker(port);
-        s.register(loopId, &w);
+        let w = GroupWaker(Waker(port));
+        s.watch(loopId, &w);
         // After the registration: a cancel since is either seen here or
-        // posted to this loop
-        cancelled = s.isCancelled();
+        // posted to this loop. A group past its deadline is not cancelled
+        // here: the operation is answered TimedOut, as its deadline says
+        cancelled = s.isCancelled() && !timedOut(&s);
       }
       else {}
     }
@@ -1760,7 +1761,7 @@ pub struct Loop {
       if (*p).state == stFlight && (*p).asked == askedNone {
         var hit = false;
         match (*p).group {
-          case let Some(s) {hit = s.isCancelled();}
+          case let Some(s) {hit = s.isCancelled() && !timedOut(&s);}
           else {}
         }
         if hit {
