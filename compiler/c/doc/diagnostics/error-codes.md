@@ -424,7 +424,10 @@ whose type holds an atomic value anywhere inline, whose remedy is a global.
 moves and says Copy. `ErrorAtomicPlainWrite` is an assignment or swap over a
 place holding an atomic value, reached through a reference that is not `uni`
 (a `&mut`, an `Rc[mut, T]`): it is reported at the place, and the remedy is the
-atomic's own `store` or a unique path.
+atomic's own `store` or a unique path. A lock guard's `&mut` is refused on
+purpose (design chat, 2 Nov): the lock excludes only other lock holders, and an
+atomic is read without the lock, so a plain write could tear under a lock-free
+reader.
 
 Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
 `Hash` with no `==`, whose remedy is to write one, reported on the type.
