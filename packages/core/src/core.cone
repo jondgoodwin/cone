@@ -2734,7 +2734,10 @@ pub struct @opaque mem {
   // End value without finalizing it: it is moved in and nothing runs, so
   // whatever it owns is leaked
   pub fn @intrinsic forget[T](value: T);
-  // Move count values from 'from' to 'to'; the two ranges may overlap
+  // Move count values from 'from' to 'to'; the two ranges may overlap. For a move that
+  // stays inside one container (a shift, a swap, a merge in a scratch block the container
+  // owns): a collector traces a container whole, so the move tells it nothing. A move into a
+  // different container, which may already be marked, is 'moveRawInto'
   pub fn @intrinsic moveRaw[T](to: *T, from: *T, count: usize) {
     if to < from {
       var i = 0usize;
@@ -2750,6 +2753,14 @@ pub struct @opaque mem {
         mem.writeRaw[T](to + i, mem.readRaw[T](from + i));
       }
     }
+  }
+  // moveRaw into another container than the one the values came from: the same move, then
+  // each value now at 'to' is handed to the write barrier of the region it refers into, as
+  // a writeRaw does, where that region has one (a collector marking while the program runs
+  // may have finished with the container 'to' is in). For a type with no such reference
+  // it is moveRaw exactly
+  pub fn @intrinsic moveRawInto[T](to: *T, from: *T, count: usize) {
+    mem.moveRaw[T](to, from, count);
   }
 
   // The atomic operations on the T at p, each indivisible: no other thread

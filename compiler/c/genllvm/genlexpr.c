@@ -544,11 +544,49 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         genlBarrierAt(gen, fnargs[0], type);
         return NULL;
 
-    // A block move of 'count' values, the two ranges free to overlap
+    // A block move of 'count' values, the two ranges free to overlap. It tells no
+    // write barrier: it is for a move that stays inside one container (a shift, a
+    // swap, a sort's merge), and a collector traces a container whole, so a
+    // reference moved within it is never hidden from a collector that has finished
+    // with the container. A move from one container into another is 'moveRawInto'
     case MoveRawIntrinsic: {
         unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
         LLVMValueRef bytes = LLVMBuildMul(gen->builder, fnargs[2], genlSizeof(gen, type), "movebytes");
         LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
+        return NULL;
+    }
+
+    // The same block move into a container other than the one the values came
+    // from, which a collector may have finished marking: each value now at the
+    // destination is handed to the write barrier (genlBarrierAt) as writeRaw's is,
+    // in a loop over 'count'. A type holding no reference into a region with a
+    // write barrier gets the plain block move and nothing more
+    case MoveRawIntoIntrinsic: {
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
+        LLVMValueRef bytes = LLVMBuildMul(gen->builder, fnargs[2], genlSizeof(gen, type), "movebytes");
+        LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
+        if (!itypeHoldsBarriered(type))
+            return NULL;
+        LLVMTypeRef usize = genlUsize(gen);
+        LLVMTypeRef elemllvm = genlType(gen, type);
+        LLVMBasicBlockRef entryblk = LLVMGetInsertBlock(gen->builder);
+        LLVMBasicBlockRef loopblk = genlInsertBlock(gen, "moveintoloop");
+        LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "moveintodone");
+        LLVMValueRef none = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[2], LLVMConstInt(usize, 0, 0), "moveintonone");
+        LLVMBuildCondBr(gen->builder, none, doneblk, loopblk);
+        LLVMPositionBuilderAtEnd(gen->builder, loopblk);
+        LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "moveintoindex");
+        LLVMValueRef elemptr = LLVMBuildInBoundsGEP2(gen->builder, elemllvm, fnargs[0], &counter, 1, "moveintoelem");
+        genlBarrierAt(gen, elemptr, type);
+        LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "moveintonext");
+        LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, fnargs[2], "moveintomore");
+        // The walk may have split the loop's block, so the back edge leaves from wherever the builder is now
+        LLVMBasicBlockRef loopend = LLVMGetInsertBlock(gen->builder);
+        LLVMBuildCondBr(gen->builder, more, loopblk, doneblk);
+        LLVMValueRef incoming[2] = { LLVMConstInt(usize, 0, 0), next };
+        LLVMBasicBlockRef fromblks[2] = { entryblk, loopend };
+        LLVMAddIncoming(counter, incoming, fromblks, 2);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
         return NULL;
     }
 

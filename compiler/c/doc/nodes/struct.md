@@ -1348,10 +1348,14 @@ holds the declaration to its shape at the end of the type's check
   does not make it untraceable (`itypeCannotTrace`, `HoldsAskElementsCovered`),
   which a pointer to a value that needs tracing, in a type declaring no
   `GcTraceElements`, does. A `GcTraceElements` type's `mem.writeRaw` and
-  `mem.moveRaw` are not refused (`ErrorTracedRaw`); a call from a method of any
-  other type is. Stores through `mem.writeRaw` are handed to a write barrier as
-  any store is (`genlBarrierAt`), and a store of the whole collection is handed
-  the barrier for each reference it holds, by the same walk.
+  `mem.moveRaw` and `mem.moveRawInto` are not refused (`ErrorTracedRaw`); a call
+  from a method of any other type is. Stores through `mem.writeRaw` are handed to a
+  write barrier as any store is (`genlBarrierAt`), and a store of the whole
+  collection is handed the barrier for each reference it holds, by the same walk.
+  A move into the collection from another container (`appendList`, `appendSlice`,
+  `joinPieces`) goes through `mem.moveRawInto`, which hands each value moved the
+  same barrier; a move inside the collection's own block (`mem.moveRaw`) needs none,
+  since a collector traces the block whole.
 - **Core's `Array[T]` declares it.** Its `gcTraceElements` takes the slice reference
   `&mut Array[T]` a method of the body takes (an `ArrayRefTag` whose referent is `T`),
   which `structGcTraceElements` accepts for the struct named `Array` (`arrayTypeDcl`)

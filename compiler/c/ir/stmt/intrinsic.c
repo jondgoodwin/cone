@@ -75,7 +75,7 @@ typedef enum {
 
 // Where the compiler answers an intrinsic: every one built so far is answered
 // or expanded before a back end would need an instruction of its own for it,
-// except moveRaw, a block move, and the atomic operations
+// except moveRaw and moveRawInto, block moves, and the atomic operations
 typedef enum {
     PhaseConstant,      // a constant for the target, from the type alone or the build
     PhaseExpansion,     // expanded at the call into operations every back end has
@@ -118,6 +118,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
     {"writeRaw", WriteRawIntrinsic, "writeRaw[T](p: *T, value: T)",
         1, 2, {ShapePtrT, ShapeT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
     {"moveRaw", MoveRawIntrinsic, "moveRaw[T](to: *T, from: *T, count: usize)",
+        1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    {"moveRawInto", MoveRawIntoIntrinsic, "moveRawInto[T](to: *T, from: *T, count: usize)",
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
     {"forget", ForgetIntrinsic, "forget[T](value: T)",
         1, 1, {ShapeT}, ShapeVoid, 0, 0, PhaseExpansion, 1},
