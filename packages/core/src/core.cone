@@ -1020,7 +1020,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // to 'buf' (room for half the elements; got from 'scratch' if it is still null). Answers
   // the buffer, so the caller can reuse and give it back. Nothing happens, and no buffer is
   // got, when the two are already in order
-  fn mergeRuns[F: fn(a: &T, b: &T) i32](self: &mut, lo: usize, mid: usize, hi: usize, bufIn: *T, scratch: *MemRegion, order: &F) *T {
+  fn mergeRuns[F: fn(a: &T, b: &T) i32](self: &mut, lo: usize, mid: usize, hi: usize, bufIn: *T, scratch: *MemRegion, root: &mut SortScratch[T], order: &F) *T {
     let p = self as *T;
     if order((p + mid) as &T, (p + mid - 1usize) as &T) >= 0i32 { return bufIn; }
     var buf = bufIn;
@@ -1032,6 +1032,8 @@ pub struct @opaque Array[T] is GcTraceElements {
     let nb = hi - mid;
     if na <= nb {
       mem.moveRaw(buf, p + lo, na);
+      root.p = buf;
+      root.n = na;
       var i = 0usize;
       var j = mid;
       var k = lo;
@@ -1051,6 +1053,8 @@ pub struct @opaque Array[T] is GcTraceElements {
     }
     else {
       mem.moveRaw(buf, p + mid, nb);
+      root.p = buf;
+      root.n = nb;
       var i = na;
       var j = nb;
       var k = hi;
@@ -1068,6 +1072,8 @@ pub struct @opaque Array[T] is GcTraceElements {
       // What is left of the first run is already in place
       mem.moveRaw(p + k - j, buf, j);
     }
+    // Every element is back in the array: the buffer holds only stale copies
+    root.n = 0usize;
     buf
   }
 
@@ -1093,6 +1099,7 @@ pub struct @opaque Array[T] is GcTraceElements {
       var top = 0usize;
       var pos = 0usize;
       var buf: *T = null;
+      var root = SortScratch[T](null, 0usize);
       while pos < n {
         var len = self.naturalRun(pos, order);
         if len < 20usize && pos + len < n {
@@ -1105,7 +1112,7 @@ pub struct @opaque Array[T] is GcTraceElements {
         if top > 0usize {
           let power = self.mergePower(bases[top - 1usize], lens[top - 1usize], len);
           while top > 1usize && powers[top - 2usize] > power {
-            buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, order);
+            buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, &mut root, order);
             lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
             top = top - 1usize;
           }
@@ -1117,7 +1124,7 @@ pub struct @opaque Array[T] is GcTraceElements {
         pos = pos + len;
       }
       while top > 1usize {
-        buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, order);
+        buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, &mut root, order);
         lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
         top = top - 1usize;
       }
@@ -1497,6 +1504,20 @@ pub struct ArrayIndexed['a, T] is Iterator[(usize, &T)] {
 
   // The positions and elements left, as a parallel view (see Array's 'parallel')
   pub fn parallel(self) ArrayIndexed['a, T] { self }
+}
+
+// What a stable sort's merge holds in its scratch buffer, which no collector reaches by
+// itself (raw memory): while 'order' runs, an element may live only there. A local of this
+// type is a root, as a List is: its 'gcTraceElements' walks the 'n' elements at 'p'
+// (stale copies of elements that are also in the array, or the run not yet written back),
+// and a type with no traced T has no trace, so nothing is registered for it.
+struct SortScratch[T] is GcTraceElements {
+  p: *T;
+  n: usize;
+
+  fn gcTraceElements(self: &mut) ArrayMutItems[T] {
+    ArrayMutItems[T](mem.sliceFromPartsMut[T](p, n), 0usize)
+  }
 }
 
 // A cursor over a slice's elements for changing them, which 'mutItems' gives: 'next'
