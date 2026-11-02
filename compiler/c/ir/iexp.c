@@ -439,7 +439,11 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // built anyway, so what uses the value says nothing more.
         StructNode *skipbase = NULL;
         StructNode *skipped = structEnrichFinalSkipped(iexpGetTypeDcl(*from), totypedcl, &skipbase);
-        if (skipped)
+        if (skipped && namespaceFind(&skipbase->namespace, finalName) != NULL)
+            errorMsgNode(*from, ErrorEnrichFinalSkipped,
+                "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has a different 'final', and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
+                itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));
+        else if (skipped)
             errorMsgNode(*from, ErrorEnrichFinalSkipped,
                 "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has none, and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
                 itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));

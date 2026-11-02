@@ -430,8 +430,8 @@ atomic is read without the lock, so a plain write could tear under a lock-free
 reader.
 
 `ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
-return, a field, or an owning `Uni`/`Rc`) of an enrichment declaring its own `final`
-into a type that has none: the value would be dropped as the target and the `final`
+return, a field, an owning `Uni`/`Rc`, or an array) of an enrichment declaring its own `final`
+into a type that has none, or a different one: the value would be dropped as the target and the `final`
 never run. It is reported at the value converted, naming both types; the remedy is
 to keep the value typed as the enrichment or lend it as a `&` reference.
 
@@ -443,6 +443,11 @@ itself and whose -0 equals 0, so that no hash of its bits agrees with its `==`,
 and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
+
+Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
+writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
+declaring none), reported at the field. The remedy is an `==` of the struct's own,
+or an `==` for the field's type.
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or

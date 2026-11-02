@@ -779,6 +779,7 @@ enum ErrorCode {
     ErrorEnrichFinalSkipped = 1572, // A value of an enrichment (a type that 'extends' a base) declaring its own 'final', handed on by value as its base or as a sibling without that 'final': a copy, a move or an owning reference (Uni, Rc) converted would be dropped as the target, so the 'final' would never run. Names the enrichment and the target. A borrowed reference is not refused. Pointed at the value converted
     ErrorMetaIf = 1573,         // A '#if' chain malformed or misplaced: an '#elif' or '#else' with no '#if' before it, an '#elif' after the '#else', a second '#else', a '#if' giving a value with no '#else', or a condition's own punctuation missing ('#defined("NAME"' with no ')', a '(' never closed). Pointed at the word
     ErrorMetaFact = 1574,       // A '#if' condition that names a fact outside the closed vocabulary (#os, #arch, #debug, #defined, #define), or uses one wrongly: a member the fact has not ('#os == .window'), a member of another fact, a comparison of unlike kinds, '#defined' of something that is not a string literal, a fact read outside a '#if' condition, a condition that is not a bool. Pointed at the word
+    ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
 
     // Warnings
     WarnCode = 3000,
