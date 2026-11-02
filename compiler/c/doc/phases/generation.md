@@ -576,7 +576,11 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   A slice or a virtual reference is two words, and the value is that pair: its
   first word, the pointer, null is the empty variant, so the literal writes that
   word and the variant test (`genlIsType`) and the drop read it, the second word
-  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
+  left alone. That is why no slice may be made with a null pointer word, empty
+  or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
+  intrinsics, swaps a null pointer for the element's alignment as an address
+  (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
+  reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
