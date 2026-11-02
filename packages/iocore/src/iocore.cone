@@ -80,7 +80,8 @@
 //   Target.Hook(token, sink)  Sink.make(deliver)       deliver: a Uni[fn(c Completion) + Sendable]
 //   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
 //   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
-//     g.cancel() g.isCancelled() g.deadline() g.id()
+//     g.cancel() g.cancelWith(cause) g.isCancelled() g.cause() g.deadline() g.id()
+//     (the cancelgroups package's, re-exported here, with Cause)
 //   Request: r.cancel() r.detach() r.id()
 //   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
 //     c.isCancelRequested() c.isLive() c.id()
@@ -323,7 +324,13 @@
 // cancel still ends it. A group cancelled from another thread posts a
 // packet to each loop with operations in it, so a loop asleep in poll wakes
 // at once; the loop then asks the cancel of each of its operations in a
-// cancelled group.
+// cancelled group. The group itself is the cancelgroups package's (iocore
+// re-exports it), which actors and 'parallel each' reach as well: its header
+// says how it is built, and why 'isCancelled()' is a flag load per level of
+// ancestry with no count touched. A group with a deadline of its own also
+// arms a timer that cancels it with the cause TimedOut ('g.cause()' says
+// why a group ended); the loop does not treat that as a cancel, and answers
+// its operations TimedOut from their deadlines, as it always did.
 //
 // REQUESTS. 'lp.request(id)' is a Request: a handle on operation id that
 // asks its cancel when it dies -- dropping it sends a cancel and abandons
@@ -631,8 +638,37 @@ import timewheel use Wheel, TimerId, Expiry;
 import diag;
 import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 
+// The cancel group is the cancelgroups package's, which actors and 'parallel
+// each' reach as well; iocore's own names for it stay
+pub import cancelgroups use CancelGroup, Cause;
+
+// What a cancel group tells a loop with: a packet carrying keyGroup, posted to
+// its port (see the package's header, CANCEL GROUPS)
+struct GroupWaker is Sendable {
+  w: Waker;
+
+  pub fn signal(self: &) bool {w.signal(keyGroup)}
+  pub fn isGone(self: &) bool {w.isGone()}
+}
+
+// Whether a group ended by its deadline. The loop answers its operations
+// TimedOut itself, at the deadline, from its own timers: a group's timeout is
+// not a cancel to it
+fn timedOut(g: &CancelGroup) bool {
+  match g.cause() {
+    case let Some(c) {
+      match c {
+        case Cause.TimedOut {true}
+        case Cause.Cancelled {false}
+        case Cause.SiblingFinished {false}
+        case Cause.Shutdown {false}
+      }
+    }
+    else {false}
+  }
+}
+
 fn @initpure init() {
-  groupSeq = Atomic[u64].of(0u64);
   poolsLive = Atomic[u32].of(0u32);
   sharedLive = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
