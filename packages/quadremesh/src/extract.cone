@@ -30,6 +30,17 @@ struct Quads {
   fn faceCount(self: &) usize { fcount.len() }
 }
 
+// Half-edges by their angle (a struct, since a function literal cannot be given to an Array's sortBy);
+// equal angles compare equal, so a stable sort keeps their order
+struct AngleOrder['a] {
+  ang: &'a List[f32];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let ka = *ang[usize.from(*a)];
+    let kb = *ang[usize.from(*b)];
+    if ka < kb { -1i32 } else if ka > kb { 1i32 } else { 0i32 }
+  }
+}
+
 fn rootOf(parent: &mut List[u32], v: u32) u32 {
   var r = v;
   while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
@@ -250,19 +261,8 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
   while c < ncl {
     let lo = usize.from(*deg[c]);
     let hi = usize.from(*deg[c + 1usize]);
-    var a = lo + 1usize;
-    while a < hi {
-      let kh = *out[a];
-      let kang = *ang[usize.from(kh)];
-      var b = a;
-      while b > lo && *ang[usize.from(*out[b - 1usize])] > kang {
-        out.set(b, *out[b - 1usize]);
-        b = b - 1usize;
-      }
-      out.set(b, kh);
-      a = a + 1usize;
-    }
-    a = lo;
+    out.sliceMut(lo, hi).sortBy(&AngleOrder(&ang));
+    var a = lo;
     while a < hi { slot.set(usize.from(*out[a]), u32.from(a)); a = a + 1usize; }
     c = c + 1usize;
   }

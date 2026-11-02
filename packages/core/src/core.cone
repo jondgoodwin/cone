@@ -962,12 +962,15 @@ pub struct @opaque Array[T] is GcTraceElements {
   //
   // Equal elements keep the order they had. A merge sort over the runs it finds: an
   // ascending or a strictly descending run (which is reversed) is taken whole, a run
-  // shorter than 20 is lengthened by insertion, and the runs are merged in Powersort's
+  // shorter than 32 is lengthened by insertion, and the runs are merged in Powersort's
   // order (Munro and Wild), which keeps the merges balanced however long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
   // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
-  // it and given back before the sort returns. n log n comparisons at worst.
+  // it and given back before the sort returns. A merge works in blocks of 16 plain steps
+  // and gallops (a doubling search, then a binary one, then one block move) after a block
+  // that one run won whole, so streaks of equal or clustered values cost log time, not linear.
+  // n log n comparisons at worst.
 
   // Powersort's power of the boundary between two adjacent runs, the first starting at s1 with
   // n1 elements, the second n2 long, among the n elements: the depth of the shallowest node of a
@@ -1016,6 +1019,37 @@ pub struct @opaque Array[T] is GcTraceElements {
     end - start
   }
 
+  // How many elements, from 'base' on (or, with 'rev', going down from the one before 'base'),
+  // out of 'len', meet a condition that holds for a leading stretch and then never again:
+  // the order of the element against 'key' (the element first, or with 'swap' the key
+  // first) is below 0 (or, without 'wantNeg', 0 or above). Found by galloping: probes at
+  // doubling distances, then a binary search inside the last stretch, so a streak of c costs
+  // about 2 log2 c comparisons
+  fn gallopCount[F: fn(a: &T, b: &T) i32](self: &, base: *T, len: usize, key: *T, swap: bool, wantNeg: bool, rev: bool, order: &F) usize {
+    var known = 0usize;
+    var step = 1usize;
+    var more = true;
+    while more && known + step <= len {
+      let e = if rev { base - (known + step) } else { base + (known + step - 1usize) };
+      let r = if swap { order(key as &T, e as &T) } else { order(e as &T, key as &T) };
+      if (if wantNeg { r < 0i32 } else { r >= 0i32 }) {
+        known = known + step;
+        step = step << 1usize;
+      }
+      else {
+        more = false;
+      }
+    }
+    var hi = if known + step < len { known + step } else { len };
+    while known < hi {
+      let mid = known + (hi - known) / 2usize;
+      let e = if rev { base - (mid + 1usize) } else { base + mid };
+      let r = if swap { order(key as &T, e as &T) } else { order(e as &T, key as &T) };
+      if (if wantNeg { r < 0i32 } else { r >= 0i32 }) { known = mid + 1usize; } else { hi = mid; }
+    }
+    known
+  }
+
   // Merge the sorted runs [lo, mid) and [mid, hi) into one, stably, copying the shorter one
   // to 'buf' (room for half the elements; got from 'scratch' if it is still null). Answers
   // the buffer, so the caller can reuse and give it back. Nothing happens, and no buffer is
@@ -1038,15 +1072,40 @@ pub struct @opaque Array[T] is GcTraceElements {
       var j = mid;
       var k = lo;
       while i < na && j < hi {
-        if order((p + j) as &T, (buf + i) as &T) < 0i32 {
-          mem.moveRaw(p + k, p + j, 1usize);
-          j = j + 1usize;
+        // Steps in blocks of 16 with nothing but the plain merge step inside (so the compiler
+        // can keep it free of jumps); a block won wholly by one run says a streak may be under
+        // way, and only then is it galloped
+        let left = if na - i < hi - j { na - i } else { hi - j };
+        let steps = if left < 16usize { left } else { 16usize };
+        let j0 = j;
+        var s = 0usize;
+        while s < steps {
+          if order((p + j) as &T, (buf + i) as &T) < 0i32 {
+            mem.moveRaw(p + k, p + j, 1usize);
+            j = j + 1usize;
+          }
+          else {
+            mem.moveRaw(p + k, buf + i, 1usize);
+            i = i + 1usize;
+          }
+          k = k + 1usize;
+          s = s + 1usize;
         }
-        else {
-          mem.moveRaw(p + k, buf + i, 1usize);
-          i = i + 1usize;
+        let tookJ = j - j0;
+        if steps == 16usize {
+          if tookJ == 16usize && j < hi {
+            let c = self.gallopCount(p + j, hi - j, buf + i, false, true, false, order);
+            mem.moveRaw(p + k, p + j, c);
+            j = j + c;
+            k = k + c;
+          }
+          else if tookJ == 0usize && i < na {
+            let c = self.gallopCount(buf + i, na - i, p + j, true, false, false, order);
+            mem.moveRaw(p + k, buf + i, c);
+            i = i + c;
+            k = k + c;
+          }
         }
-        k = k + 1usize;
       }
       // What is left of the second run is already in place
       mem.moveRaw(p + k, buf + i, na - i);
@@ -1059,14 +1118,36 @@ pub struct @opaque Array[T] is GcTraceElements {
       var j = nb;
       var k = hi;
       while i > 0usize && j > 0usize {
-        k = k - 1usize;
-        if order((buf + j - 1usize) as &T, (p + lo + i - 1usize) as &T) < 0i32 {
-          mem.moveRaw(p + k, p + lo + i - 1usize, 1usize);
-          i = i - 1usize;
+        let left = if i < j { i } else { j };
+        let steps = if left < 16usize { left } else { 16usize };
+        let i0 = i;
+        var s = 0usize;
+        while s < steps {
+          k = k - 1usize;
+          if order((buf + j - 1usize) as &T, (p + lo + i - 1usize) as &T) < 0i32 {
+            mem.moveRaw(p + k, p + lo + i - 1usize, 1usize);
+            i = i - 1usize;
+          }
+          else {
+            mem.moveRaw(p + k, buf + j - 1usize, 1usize);
+            j = j - 1usize;
+          }
+          s = s + 1usize;
         }
-        else {
-          mem.moveRaw(p + k, buf + j - 1usize, 1usize);
-          j = j - 1usize;
+        let tookI = i0 - i;
+        if steps == 16usize {
+          if tookI == 16usize && i > 0usize {
+            let c = self.gallopCount(p + lo + i, i, buf + j - 1usize, true, true, true, order);
+            mem.moveRaw(p + k - c, p + lo + i - c, c);
+            i = i - c;
+            k = k - c;
+          }
+          else if tookI == 0usize && j > 0usize {
+            let c = self.gallopCount(buf + j, j, p + lo + i - 1usize, false, false, true, order);
+            mem.moveRaw(p + k - c, buf + j - c, c);
+            j = j - c;
+            k = k - c;
+          }
         }
       }
       // What is left of the first run is already in place
@@ -1102,8 +1183,8 @@ pub struct @opaque Array[T] is GcTraceElements {
       var root = SortScratch[T](null, 0usize);
       while pos < n {
         var len = self.naturalRun(pos, order);
-        if len < 20usize && pos + len < n {
-          let end = if n - pos < 20usize { n } else { pos + 20usize };
+        if len < 32usize && pos + len < n {
+          let end = if n - pos < 32usize { n } else { pos + 32usize };
           let part = mem.sliceFromPartsMut[T](p + pos, end - pos);
           var i = len;
           while i < part.len { part.insertTail(i, order); i = i + 1usize; }
@@ -2151,6 +2232,96 @@ pub trait Iterator[T] {
       }
     }
   }
+
+  // The item 'order' puts first, or None for no items: 'order(a, b)' is negative when a goes
+  // before b, as 'sortBy''s is. Of several that tie for first, the first one (Rust's 'min_by').
+  // 'order' is given borrows of two items, and is written as 'sortBy''s is: a closure there,
+  // or a function referenced, 'xs.iter().minBy(&byName)'
+  pub fn minBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) Option[T] inline {
+    let g = order;
+    match self.next() {
+      case is None { return None; }
+      case let Some(first) {
+        var best = first;
+        while true {
+          match self.next() {
+            case let Some(e) {
+              let v = e;
+              if g(&v, &best) < 0i32 { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T](best);
+      }
+    }
+  }
+
+  // The item 'order' puts last, or None for no items. Of several that tie for last, the last
+  // one (Rust's 'max_by')
+  pub fn maxBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) Option[T] inline {
+    let g = order;
+    match self.next() {
+      case is None { return None; }
+      case let Some(first) {
+        var best = first;
+        while true {
+          match self.next() {
+            case let Some(e) {
+              let v = e;
+              if g(&v, &best) >= 0i32 { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T](best);
+      }
+    }
+  }
+
+  // The item whose key 'key(x)' gives is least (a number or other Ordered type), the first of
+  // those that tie, or None for no items. As in 'sortByKey' the key is asked afresh at every
+  // comparison (of the new item and of the best so far), so it should be cheap
+  pub fn minByKey[K, F: fn(x: &T) K](self: &mut, key: &F) Option[T] inline where K is Ordered {
+    let g = key;
+    match self.next() {
+      case is None { return None; }
+      case let Some(first) {
+        var best = first;
+        while true {
+          match self.next() {
+            case let Some(e) {
+              let v = e;
+              if (g(&v) <=> g(&best)) < 0i32 { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T](best);
+      }
+    }
+  }
+
+  // The item whose key is greatest, the last of those that tie, or None for no items
+  pub fn maxByKey[K, F: fn(x: &T) K](self: &mut, key: &F) Option[T] inline where K is Ordered {
+    let g = key;
+    match self.next() {
+      case is None { return None; }
+      case let Some(first) {
+        var best = first;
+        while true {
+          match self.next() {
+            case let Some(e) {
+              let v = e;
+              if (g(&v) <=> g(&best)) >= 0i32 { best = v; }
+            }
+            case is None { break; }
+          }
+        }
+        return Some[T](best);
+      }
+    }
+  }
 }
 
 // The steps the adapters make: each holds the cursor it wraps and gives the Option
@@ -2734,7 +2905,10 @@ pub struct @opaque mem {
   // End value without finalizing it: it is moved in and nothing runs, so
   // whatever it owns is leaked
   pub fn @intrinsic forget[T](value: T);
-  // Move count values from 'from' to 'to'; the two ranges may overlap
+  // Move count values from 'from' to 'to'; the two ranges may overlap. For a move that
+  // stays inside one container (a shift, a swap, a merge in a scratch block the container
+  // owns): a collector traces a container whole, so the move tells it nothing. A move into a
+  // different container, which may already be marked, is 'moveRawInto'
   pub fn @intrinsic moveRaw[T](to: *T, from: *T, count: usize) {
     if to < from {
       var i = 0usize;
@@ -2750,6 +2924,14 @@ pub struct @opaque mem {
         mem.writeRaw[T](to + i, mem.readRaw[T](from + i));
       }
     }
+  }
+  // moveRaw into another container than the one the values came from: the same move, then
+  // each value now at 'to' is handed to the write barrier of the region it refers into, as
+  // a writeRaw does, where that region has one (a collector marking while the program runs
+  // may have finished with the container 'to' is in). For a type with no such reference
+  // it is moveRaw exactly
+  pub fn @intrinsic moveRawInto[T](to: *T, from: *T, count: usize) {
+    mem.moveRaw[T](to, from, count);
   }
 
   // The atomic operations on the T at p, each indivisible: no other thread

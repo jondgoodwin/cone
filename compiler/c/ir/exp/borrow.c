@@ -229,7 +229,8 @@ void borrowAuto(INode **from, INode *totypedcl) {
 int borrowUniReborrows(INode *from, INode *totypedcl) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
     RefNode *totype = (RefNode*)totypedcl;
-    return (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag) && fromtype->region == borrowRef
+    return (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag || fromtype->tag == VirtRefTag)
+        && fromtype->region == borrowRef
         && itypeGetTypeDcl(fromtype->perm) == (INode*)uniPerm
         && totype->tag == fromtype->tag && totype->region == borrowRef
         && iexpIsLval(from);
@@ -243,6 +244,7 @@ int borrowUniReborrows(INode *from, INode *totypedcl) {
 static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(*from);
     int slice = fromtype->tag == ArrayRefTag;
+    int virt = fromtype->tag == VirtRefTag;
     StarNode *deref = newStarNode(DerefTag);
     inodeLexCopy((INode*)deref, *from);
     deref->vtexp = *from;
@@ -252,10 +254,13 @@ static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     uint16_t scope = 0;
     iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
 
-    if (!slice)
+    if (!slice && !virt)
         narrowBorrowed((INode*)deref, perm, vtexp);
-    RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : RefTag, *from, borrowRef, perm, vtexp);
+    RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : virt ? VirtRefTag : RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
+    // A virtual reference keeps its markers ('+ ShapeKeeping') through a reborrow
+    if (virt)
+        reftype->marks = fromtype->marks;
     RefNode *borrownode = newRefNodeFull(slice ? ArrayBorrowTag : BorrowTag, *from, borrowRef, perm, (INode*)deref);
     borrownode->vtype = (INode*)reftype;
     *from = (INode*)borrownode;
@@ -285,9 +290,10 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
 int borrowOwnerLendsUni(INode *from, INode *totypedcl) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
     RefNode *totype = (RefNode*)totypedcl;
-    return fromtype->tag == RefTag && itypeGetTypeDcl(fromtype->region) != borrowRef
+    return (fromtype->tag == RefTag || fromtype->tag == VirtRefTag)
+        && itypeGetTypeDcl(fromtype->region) != borrowRef
         && itypeIsMove((INode*)fromtype)
-        && totype->tag == RefTag && totype->region == borrowRef && itypeIsMove(totypedcl)
+        && totype->tag == fromtype->tag && totype->region == borrowRef && itypeIsMove(totypedcl)
         && iexpIsLval(from);
 }
 

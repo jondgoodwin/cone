@@ -1,8 +1,10 @@
 // The stable sort of core's Array[T], reached on a List: sort, sortBy, sortByKey.
 //
 // What each check means (every printed line was worked out against the source):
-// - The differential: for each of eight input patterns (random, already sorted, reversed,
-//   four distinct values, an organ pipe, all equal, many ascending runs of 37, nearly sorted)
+// - The differential: for each of ten input patterns (random, already sorted, reversed,
+//   four distinct values, an organ pipe, all equal, many ascending runs of 37, nearly sorted,
+//   three interleaved classes and blocks of about 50 sharing a key: the last two make the merge
+//   gallop)
 //   and every size 0 to 300, then a spread up to 100,000, a list of 40-byte structs keyed by a
 //   u32 that collides often, each carrying its position as an id, is sorted by sortBy. The
 //   expected order is the ids sorted by (key, id): that is exactly what stability means, since
@@ -71,7 +73,11 @@ fn patternValue(kind: i32, i: usize, n: usize, s: &mut u64) u32 {
   else if kind == 4 { if i < n / 2usize { u32.from(i) } else { u32.from(n - i) } }
   else if kind == 5 { 7u32 }
   else if kind == 6 { u32.from(i % 37usize) * 3u32 + r % 3u32 }
-  else { if r % 50u32 == 0u32 { r % 1000u32 } else { u32.from(i) / 2u32 } }
+  else if kind == 7 { if r % 50u32 == 0u32 { r % 1000u32 } else { u32.from(i) / 2u32 } }
+  // 8: three interleaved classes, so merges find long streaks from one run (the gallop)
+  else if kind == 8 { u32.from(i % 3usize) * 1000000u32 + u32.from(i / 3usize) }
+  // 9: blocks of about 50 sharing a key, with ties inside a block and streaks of every length
+  else { (u32.from((i / 50usize) * 2654435761usize % 7usize) << 8u32) + r % 2u32 }
 }
 
 fn lg(n: usize) usize {
@@ -208,7 +214,7 @@ fn differential() {
   var bad = 0i32;
   var kind = 0i32;
   var sorts = 0i32;
-  while kind < 8i32 {
+  while kind < 10i32 {
     var n = 0usize;
     while n <= 300usize {
       bad = bad + checkRec(kind, n, 6364136223846793005u64 + u64.from(n));
@@ -219,11 +225,11 @@ fn differential() {
     }
     kind = kind + 1i32;
   }
-  expectInt(i64.from(bad), 0i64, "sizes 0 to 300, eight patterns, three element types: order, stability, comparison counts");
-  expectInt(i64.from(sorts), 9632i64, "the sorts run");
+  expectInt(i64.from(bad), 0i64, "sizes 0 to 300, ten patterns, three element types: order, stability, comparison counts");
+  expectInt(i64.from(sorts), 12040i64, "the sorts run");
   bad = 0i32;
   kind = 0i32;
-  while kind < 8i32 {
+  while kind < 10i32 {
     bad = bad + checkRec(kind, 1000usize, 99u64 + u64.from(kind));
     bad = bad + checkRec(kind, 4096usize, 77u64 + u64.from(kind));
     bad = bad + checkRec(kind, 100000usize, 55u64 + u64.from(kind));
@@ -231,7 +237,7 @@ fn differential() {
     bad = bad + checkF32(kind, 20000usize, 11u64 + u64.from(kind));
     kind = kind + 1i32;
   }
-  expectInt(i64.from(bad), 0i64, "1,000 to 100,000 values, eight patterns");
+  expectInt(i64.from(bad), 0i64, "1,000 to 100,000 values, ten patterns");
 }
 
 // A counting region: its header first, then the tallies

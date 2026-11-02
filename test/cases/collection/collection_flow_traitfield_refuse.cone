@@ -1,0 +1,35 @@
+// Bug 30. What a trait-object field marked '+ ShapeKeeping' rests on
+// (collection_flow_traitfield_marked): the value becomes the reference only if its type keeps
+// shape. A type whose method pushes to a list it reaches through a shared mutable path, made an
+// owning 'Uni[Waker + ShapeKeeping]' (as cancelgroups makes its watcher one), is refused naming the
+// push; one that touches only its own field is accepted.
+
+mod collection_flow_traitfield_refuse;
+
+import collections use *;
+
+struct World { pub log: List[i64]; }
+
+trait Waker { pub fn wake(self: &mut, w: &mut World); }
+
+struct Quiet is Waker {
+  pub n: i64;
+  pub fn wake(self: &mut, w: &mut World) { n = n + 1i64; }
+}
+
+struct Pushy is Waker {
+  pub n: i64;
+  pub fn wake(self: &mut, w: &mut World) { w.log.push(n); }
+}
+
+fn keep(ws: &mut List[Uni[Waker + ShapeKeeping]], w: Uni[Waker + ShapeKeeping]) {
+  ws.push(w);
+}
+
+fn quiet(ws: &mut List[Uni[Waker + ShapeKeeping]]) {
+  keep(ws, Uni[Quiet](Quiet(1i64)));
+}
+
+fn pushy(ws: &mut List[Uni[Waker + ShapeKeeping]]) {
+  keep(ws, Uni[Pushy](Pushy(1i64)));   //~ ErrorNotShapeKeeping "calls `push`"
+}

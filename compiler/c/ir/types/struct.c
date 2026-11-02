@@ -821,7 +821,7 @@ static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
     // the types. Not a static, a macro without self, Self, or the value's own
     // finalizer or clone.
     if (fold->star)
-        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL, src);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2136,7 +2136,7 @@ static void structLendExpand(StructNode *node, FieldDclNode *use, StructNode *bo
         lent[cls] = 1;
     }
     if (fold->star)
-        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL, body);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2168,7 +2168,7 @@ static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook
     // An alias for every public member the sibling declares itself, less what
     // 'but' leaves out
     if (fold->star)
-        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib));
+        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib), sib);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2209,6 +2209,27 @@ int structExtendsEquiv(INode *type1, INode *type2) {
     if (dcl1 == dcl2 || dcl1->tag != StructTag || dcl2->tag != StructTag)
         return 0;
     return structExtendsRoot((StructNode*)dcl1) == structExtendsRoot((StructNode*)dcl2);
+}
+
+StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep) {
+    INode *fromdcl = itypeGetTypeDcl(fromtype);
+    INode *todcl = itypeGetTypeDcl(totype);
+    // An owning reference moves its owner: the pointee is then dropped as the type
+    // the new reference names. A borrow leaves the owner where it was.
+    while ((fromdcl->tag == RefTag || fromdcl->tag == ArrayRefTag)
+        && todcl->tag == fromdcl->tag
+        && ((RefNode*)fromdcl)->region != borrowRef && ((RefNode*)todcl)->region != borrowRef) {
+        fromdcl = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        todcl = itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
+    }
+    if (!structExtendsEquiv(fromdcl, todcl))
+        return NULL;
+    if (namespaceFind(&((StructNode*)fromdcl)->namespace, finalName) != NULL
+        && namespaceFind(&((StructNode*)todcl)->namespace, finalName) == NULL) {
+        *basep = (StructNode*)todcl;
+        return (StructNode*)fromdcl;
+    }
+    return NULL;
 }
 
 // Hook the entries a trait's expansion added to the namespace, so that a method

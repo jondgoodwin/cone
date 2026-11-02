@@ -101,7 +101,11 @@ fn main() i32 {
 		and <span class="pre">reserve(n)</span>; <span class="pre">set(i, v)</span> and <span class="pre">swap(i, j)</span>,
 		each a panic past the end; <span class="pre">clear()</span>; <span class="pre">truncate(n)</span>, which cuts the
 		list to <span class="pre">n</span> values, finalizing those it drops, and does nothing when
-		<span class="pre">n</span> is not less than its length; <span class="pre">resize(n, v)</span>, which makes it
+		<span class="pre">n</span> is not less than its length; <span class="pre">dedup()</span>, which drops each number that
+		equals the one before it, keeping the first of each run, and <span class="pre">dedupBy(same)</span>, which does the same
+		for any type with <span class="pre">same(kept, next)</span> a function of two borrows answering true to drop
+		<span class="pre">next</span> (the values dropped are finalized);
+		<span class="pre">resize(n, v)</span>, which makes it
 		<span class="pre">n</span> copies of a value long or drops the values past <span class="pre">n</span>, and exists
 		only where <span class="pre">T</span> copies; <span class="pre">appendSlice(src)</span>, which adds a copy of a
 		slice's values at the end with one reserve and one block copy (where <span class="pre">T</span> copies, and
@@ -897,6 +901,8 @@ struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum
 		<tr><td><span class="pre">count()</span></td><td>how many items</td></tr>
 		<tr><td><span class="pre">find(f)</span></td><td>the first item <span class="pre">f</span> (given a borrow) is true of, as an <span class="pre">Option</span></td></tr>
 		<tr><td><span class="pre">sum()</span>, <span class="pre">min()</span>, <span class="pre">max()</span></td><td>for number items: the total (0 for none); the smallest and largest as an <span class="pre">Option</span>, <span class="pre">None</span> for no items (the first of equals)</td></tr>
+		<tr><td><span class="pre">minBy(order)</span>, <span class="pre">maxBy(order)</span></td><td>the item a three-way comparison (<span class="pre">(a, b) =&gt; a.age &lt;=&gt; b.age</span>, or <span class="pre">&amp;byAge</span>) puts first / last, as an <span class="pre">Option</span>; on a tie, as Rust's: <span class="pre">minBy</span> answers the first of the least, <span class="pre">maxBy</span> the last of the greatest</td></tr>
+		<tr><td><span class="pre">minByKey(key)</span>, <span class="pre">maxByKey(key)</span></td><td>the same by a key (a number or other <span class="pre">Ordered</span> type), <span class="pre">p =&gt; p.age</span>; the key is asked afresh at each comparison, so it should be cheap</td></tr>
 	</table>
 	<p>An item is whatever the cursor gives. A cursor that lends (<span class="pre">xs.iter()</span>) gives borrows, so a closure
 		reads through them: <span class="pre">map(x =&gt; *x * 2)</span>. A <span class="pre">filter</span>'s closure is given a borrow
@@ -911,6 +917,14 @@ struct Countdown is Iterator[i64] {         // declared: it has map, filter, sum
 	<p>A chain is compiled into one loop, with each closure's body in line. How that works, and the
 		<span class="pre">Iterator</span> trait that gives a cursor its adapters, are in
 		<a href="mod-substitution.html#iterators">Traits</a> and <a href="mod-generativity.html">Generativity</a>.</p>
+	<p id="statistics">Statistics over an <span class="pre">Array[f64]</span> are free functions of this package. A quantile is a fraction
+		<span class="pre">q</span> from 0 to 1 (the median is 0.5, the 95th percentile 0.95), found by linear
+		interpolation between the two values around the rank <span class="pre">q * (n - 1)</span>, which is NumPy's default;
+		a <span class="pre">q</span> outside 0 to 1 is the first or last value.
+		<span class="pre">quantileSorted(xs, q)</span> reads values already in ascending order, so several quantiles cost one sort
+		(<span class="pre">xs.sort(); quantileSorted(xs.view(), 0.95)</span>); <span class="pre">quantile(xs, q)</span> and
+		<span class="pre">median(xs)</span> take them in any order and reorder the array, in O(n) expected time;
+		<span class="pre">mean(xs)</span> is the sum over the count. Each answers NaN for an empty array.</p>
 	<p><i>Not built yet:</i> a source that runs its own loop around the body of an <span class="pre">each</span>, taking the body
 		as a closure, for a source that cannot hand out its items one by one (a line reader that lends each line from its own
 		buffer, say). <span class="pre">each</span> would use it when the source has it, and otherwise use <span class="pre">next</span>;
@@ -1381,8 +1395,10 @@ let at, found = xs.binarySearch(42);            // earliest position not before 
         that compare equal keep the order they had. A merge sort over the runs it finds (ascending runs, and strictly
         descending ones, which it reverses), short runs lengthened by insertion, merged in Powersort's order, so
         input already in order takes n - 1 comparisons and nothing else, and a merge of two runs already in order
-        is skipped. At worst O(n log n) comparisons. It needs a buffer of half the elements for its merges, got
-        when the first merge needs it (none for 20 or fewer elements, and none for input already in order) and
+        is skipped; a merge gallops (a doubling search, then one block move) when one run keeps winning, so few
+        distinct values and clustered input go faster than n log n. At worst O(n log n) comparisons. It needs a
+        buffer of half the elements for its merges, got
+        when the first merge needs it (none for 32 or fewer elements, and none for input already in order) and
         given back before it returns. An array's methods take a last argument,
         <span class="pre">scratch</span>, the <span class="pre">*MemRegion</span> the buffer comes from
         (<span class="pre">null</span>, the default, is the heap's); a <span class="pre">List</span> has its own
