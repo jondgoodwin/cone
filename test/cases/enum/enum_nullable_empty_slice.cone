@@ -1,0 +1,88 @@
+// An empty slice is never the 'None' of an Option. An 'Option' of a slice is the
+// slice's two words, and 'None' is the one whose pointer word is null, so a slice
+// that was empty and also had a null pointer would read as 'None' where it is
+// 'Some' of nothing -- a silent wrong answer. Every way to make a slice whose
+// length may be zero gives it a pointer that is not null (an aligned, dangling
+// one when there is no block), so the empty slice is 'Some' and its length is 0.
+//
+// Each construction path is put in an 'Option' and read back both ways: as the
+// value it was made from (Some and its length), and as the absent one beside it
+// (None). 'mem.sliceFromParts' is the only function that makes a slice from a
+// raw pointer, so a null pointer reaches a slice only there; the others below
+// are the callers that pass it one: an unallocated List's view, in its three
+// permissions, a String's bytes, and a sub-slice of an empty slice.
+
+mod enum_nullable_empty_slice;
+
+import stdio use *;
+import collections use *;
+
+fn show(label: &str, what: &str, n: i64) {
+  printStr(label);
+  printStr(what);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Some of an empty slice is 1 (and its length is added); None is 0
+fn some(o: &imm Option[&Array[u8]]) i64 {
+  match o {
+    case let &Some[&Array[u8]](s) { 1i64 }
+    else { 0i64 }
+  }
+}
+
+fn lenOf(o: &imm Option[&Array[u8]]) i64 {
+  match o {
+    case let &Some[&Array[u8]](s) { i64.from(s.len) }
+    else { -1i64 }
+  }
+}
+
+fn report(label: &str, s: &Array[u8]) {
+  let o: Option[&Array[u8]] = Some(s);
+  let none: Option[&Array[u8]] = None;
+  show(label, "", some(&imm o));
+  show(label, "-len", lenOf(&imm o));
+  show(label, "-none-beside", some(&imm none));
+}
+
+fn main() {
+  // A null pointer and a zero length, directly
+  let nul = null as *u8;
+  report("from-null", mem.sliceFromParts[u8](nul, 0usize));
+
+  // An unallocated List, in each permission it lends
+  var empty = List[u8]();
+  report("list-view", empty.view());
+  report("list-view-mut", empty.viewMut() as &Array[u8]);
+  report("list-view-uni", (&uni empty).viewUni() as &Array[u8]);
+  report("from-null-mut", mem.sliceFromPartsMut[u8](null as *u8, 0usize) as &Array[u8]);
+
+  // A List that held values and was cleared keeps its block
+  var used = List[u8]();
+  used.push(7u8);
+  used.clear();
+  report("list-cleared", used.view());
+
+  // A String that holds nothing
+  var s = String();
+  report("string-view", s.view() as &Array[u8]);
+  report("string-view-mut", s.viewMut() as &Array[u8]);
+
+  // A slice of nothing taken from the empty slice, and from a full one
+  let e = empty.view();
+  report("sub-of-empty", &e[0usize ..< 0usize]);
+  let full: &Array[u8] = "abc";
+  report("sub-of-full-at-start", &full[0usize ..< 0usize]);
+  report("sub-of-full-at-end", &full[3usize ..< 3usize]);
+
+  // A zero-length array's reference as a slice
+  let zero = Array[u8, 0]() <- fill 0u8;
+  let zs: &Array[u8] = &zero;
+  report("zero-array", zs);
+
+  // A non-empty slice is still Some, unchanged
+  report("full", full);
+}

@@ -201,7 +201,7 @@ type while each call gives its own orderings.
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
-| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
+| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
