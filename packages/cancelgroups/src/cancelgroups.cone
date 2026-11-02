@@ -161,7 +161,7 @@ pub trait Wakeup {
 // operation in it. It declares Sendable, a promise taken on trust: the flag
 // word and the first loop's id are atomics; the lists change only under
 // 'lock'; 'up' points at a state a handle in 'parent' keeps alive
-pub struct GroupState is Sendable {
+pub struct GroupState is Sendable, Move {
   state: Atomic[u32];        // 0 live, else the cause's code: flag and cause in one word
   up: *GroupState;           // the parent's state while its cancel reaches this group, else null
   first: Atomic[u64];        // the first loop registered: the fast path
@@ -169,11 +169,10 @@ pub struct GroupState is Sendable {
   shield: bool;              // its parent's cancel and deadline do not reach it
   parent: Option[CancelGroup];
   lock: Mutex;
-  loops: List[u64];          // the loops registered: their ids...
-  wakers: List[Uni[Wakeup + Sendable]]; // ...and how to tell them
+  reg: *u8;                  // a *Registry: the loops to tell, made with the first; null before. Under 'lock'
   gid: u64;
 
-  // Its lists, changed under its lock through a shared reference
+  // Its registry, changed under its lock through a shared reference
   fn lists(self: &) &mut GroupState {
     let p = self as *GroupState;
     p as &mut GroupState
@@ -185,14 +184,35 @@ pub struct GroupState is Sendable {
     if !ok {return false;}
     let st = self.lists();
     st.lock.lock();
-    var k = 0usize;
-    while k < st.wakers.len() {
-      st.wakers[k].signal();
-      k = k + 1usize;
+    if st.reg as usize != 0usize {
+      let r = st.reg as &mut Registry;
+      var k = 0usize;
+      while k < r.wakers.len() {
+        r.wakers[k].signal();
+        k = k + 1usize;
+      }
     }
     st.lock.unlock();
     true
   }
+
+  fn final(self: &uni) {
+    if reg as usize != 0usize {
+      mem.finalize[Registry](reg as *Registry);
+      libc.free(reg);
+    }
+  }
+}
+
+// The loops a group tells. They live out of line, behind an untyped pointer
+// ('reg'), for two reasons: most groups never have one, and a trait object in
+// a group's type, or behind a typed pointer the checker follows, would make
+// everything that holds a group (the I/O loop and its records) reach
+// "anything", so that it could no longer tell that a call handed a loop leaves
+// the lists beside it alone (aio's offerAll stopped compiling)
+struct Registry {
+  loops: List[u64];                     // the loops registered: their ids...
+  wakers: List[Uni[Wakeup + Sendable]]; // ...and how to tell them
 }
 
 // What a handle holds to keep its group's timer armed: when the last handle
@@ -227,7 +247,7 @@ pub struct CancelGroup {
     let a = Arc[imm, GroupState](GroupState(
       state: Atomic[u32].of(codeLive), up: up, first: Atomic[u64].of(0u64), deadline: deadline,
       shield: shield, parent: parent, lock: Mutex.make(),
-      loops: List[u64].empty(), wakers: List[Uni[Wakeup + Sendable]].empty(),
+      reg: 0usize as *u8,
       gid: groupSeq.add(1u64) + 1u64));
     var g: Option[Arc[imm, TimerGuard]] = None;
     if own && deadline < forever() {g = arm(a, deadline);}
@@ -312,28 +332,34 @@ pub struct CancelGroup {
   fn watchChain[W: Wakeup + Sendable](self: &, loopId: u64, w: &W) {
     let st = s.lists();
     st.lock.lock();
+    if st.reg as usize == 0usize {
+      let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
+      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable]].empty()));
+      st.reg = block as *u8;
+    }
+    let r = st.reg as &mut Registry;
     var found = false;
     var k = 0usize;
-    while k < st.loops.len() {
-      if *st.loops[k] == loopId {
+    while k < r.loops.len() {
+      if *r.loops[k] == loopId {
         found = true;
         k = k + 1usize;
-      } else if st.wakers[k].isGone() {
+      } else if r.wakers[k].isGone() {
         // A loop that has died: its entry goes, last into its place
-        let last = st.loops.len() - 1usize;
-        st.loops.swap(k, last);
-        st.wakers.swap(k, last);
-        st.loops.pop();
-        st.wakers.pop();
+        let last = r.loops.len() - 1usize;
+        r.loops.swap(k, last);
+        r.wakers.swap(k, last);
+        r.loops.pop();
+        r.wakers.pop();
       } else {
         k = k + 1usize;
       }
     }
     if !found {
-      st.loops.push(loopId);
+      r.loops.push(loopId);
       let u = Uni[W](*w);
-      st.wakers.push(u);
-      if st.loops.len() == 1usize {st.first.store(loopId);}
+      r.wakers.push(u);
+      if r.loops.len() == 1usize {st.first.store(loopId);}
     }
     st.lock.unlock();
     if !s.shield {
