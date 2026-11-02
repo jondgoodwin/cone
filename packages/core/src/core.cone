@@ -85,8 +85,16 @@ pub enum Option[T] {
     }
   }
 
+  // A second Option, holding a clone of the value. Exists only where T is Clone
+  pub fn clone(self: &Option[T]) Option[T] where T is Clone {
+    match self {
+      case let Some(a) { Some[T](a.clone()) }
+      case is None { None[T] }
+    }
+  }
+
   // What Some holds; a panic at the caller's line on None
-  pub fn unwrap(self: Option[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+  pub fn unwrap(self: Option[T],file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
     match self {
       case let Some(v) { v }
       case is None { panic("unwrap of None", file, line) }
@@ -235,8 +243,17 @@ pub enum @mustUse Result[T,E] {
     }
   }
 
+  // A second Result, holding a clone of the value or the error. Exists only where T
+  // and E are Clone
+  pub fn clone(self: &Result[T, E]) Result[T, E] where T is Clone && E is Clone {
+    match self {
+      case let Ok(a) { Ok[T, E](a.clone()) }
+      case let Err(a) { Err[T, E](a.clone()) }
+    }
+  }
+
   // What Ok holds; a panic at the caller's line on an Err
-  pub fn unwrap(self: Result[T, E], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
+  pub fn unwrap(self: Result[T, E],file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
     match self {
       case let Ok(v) { v }
       case is Err { panic("unwrap of an Error", file, line) }
@@ -3441,6 +3458,19 @@ pub trait Ordered {
 // have `==` where their element does.
 pub trait Eq {
   pub fn `==`(self: &, o: &Self) bool;
+}
+
+// Values that can be duplicated on request: `x.clone()` makes a second value that
+// is independent of the first (a deep copy: a list's clone holds clones of its
+// elements). `=` never clones and is never user-defined; a duplicate that owns
+// something is always visible as `.clone()`. Every Copy type is Clone by the
+// compiler's grant, its `clone()` being the value itself, so generic code asks
+// for the one bound. A struct that declares `is Clone` and writes no `clone` is
+// given one that clones its fields in order (compiler: structCloneCheck), refused
+// where a field is neither Copy nor Clone. `Option`, `Result`, `List` and `String`
+// have `clone` where their elements do.
+pub trait Clone {
+  pub fn clone(self: &) Self;
 }
 
 pub extern {

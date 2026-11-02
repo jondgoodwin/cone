@@ -195,6 +195,14 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     l
   }
 
+  // A second list, in the same region, holding a clone of each value in order.
+  // Exists only where T is Clone
+  pub fn clone(self: &) List[T] where T is Clone {
+    var l = List(null, 0usize, 0usize, region);
+    l.appendSlice(self.view());
+    l
+  }
+
   // How many values it holds ('len', the body's), and how many its block has
   // room for
   pub fn capacity(self: &) usize { cap }
@@ -234,11 +242,24 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'reserve', so a borrow into this list is stale afterwards. src may not be a
   // slice of this very list: the compiler refuses 'list.appendSlice(list.view())'
   // (1168), since the block may move under the slice being copied.
-  pub fn appendSlice(self: &mut, src: &Array[T]) where T is Copy {
+  // A type that is Clone but moves (a String, a list of them) is added by cloning
+  // each value, in order; a Copy type by the one block copy.
+  pub fn appendSliceCopy overload appendSlice(self: &mut, src: &Array[T]) where T is Copy {
     let n = src.len;
     if n == 0usize { return; }
     self.reserve(n);
     mem.moveRawInto(ptr + used, src as *T, n);
+    used = used + n;
+  }
+  pub fn appendSliceClone overload appendSlice(self: &mut, src: &Array[T]) where T is Move && T is Clone {
+    let n = src.len;
+    if n == 0usize { return; }
+    self.reserve(n);
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw(ptr + used + i, src[i].clone());
+      i = i + 1usize;
+    }
     used = used + n;
   }
 
@@ -391,11 +412,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // This, 'viewMut' and 'truncate' are how a C function fills a list: resize
   // it to the count the function was told it may write, hand it 'viewMut()',
   // and truncate to the count the function says it wrote.
-  pub fn resize(self: &mut, n: usize, value: T) where T is Copy {
+  pub fn resize(self: &mut, n: usize, value: T) where T is Clone {
     if n <= used { self.truncate(n); return; }
     self.reserve(n - used);
     while used < n {
-      mem.writeRaw(ptr + used, value);
+      mem.writeRaw(ptr + used, value.clone());
       used = used + 1usize;
     }
   }
@@ -1176,8 +1197,10 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     out
   }
 
-  // A copy of this one. (Not 'clone': a method of that name is the lifecycle
-  // method that makes a type's values copyable, which a String's are not.)
+  // A second String holding the same bytes: this is Clone
+  pub fn clone(self: &) String { String.from(self.view()) }
+
+  // The same as 'clone', under the name the packages have used (to be renamed)
   pub fn copy(self: &) String { String.from(self.view()) }
 
   pub fn len(self: &) usize { buf.used }
@@ -1785,15 +1808,15 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // A copy of key's value, or None. This is the lookup that answers without a
   // borrow into the table, so it works through a shared owner, and it exists
   // only where V copies: a number, an id, a reference-counted owner
-  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Clone {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
-    Some[V](slots[i].value)
+    Some[V](slots[i].value.clone())
   }
-  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Clone {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
-    Some[V](slots[i].value)
+    Some[V](slots[i].value.clone())
   }
 
   // 'dict[&key]': a borrow of key's value. A key it does not hold is a program
@@ -2287,15 +2310,15 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
 
   // A copy of key's value, or None: the lookup that holds no borrow into the
   // table, so it works through a shared owner, where V copies
-  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Clone {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
-    Some[V](dense[self.posOf(b)].value)
+    Some[V](dense[self.posOf(b)].value.clone())
   }
-  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Clone {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
-    Some[V](dense[self.posOf(b)].value)
+    Some[V](dense[self.posOf(b)].value.clone())
   }
 
   // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic

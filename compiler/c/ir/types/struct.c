@@ -4441,6 +4441,90 @@ static void structEqCheck(StructNode *node) {
     eqfn->value = (INode*)block;
 }
 
+// A type declaring core's Clone has a 'clone': one it wrote, or, when it wrote
+// none, one the compiler supplies as the inherited requirement's body: a new value
+// of the struct built of the fields' own clones, in order, 'Self[self.a.clone(),
+// self.b.clone()]'. A field that is Copy clones as the value (fnCallCloneCopy);
+// one that is Clone, as it says. Refused where a field is neither: a unique
+// owner, an array, a function, a struct that declares no 'clone'. The body is built
+// resolved against the requirement's parameters, as structEqCheck builds the
+// '==', so type check reaches it as it would a written one.
+static void structCloneCheck(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *clonetrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsCloneTrait(*traitp))
+            clonetrait = (StructNode*)*traitp;
+    if (clonetrait == NULL)
+        return;
+    // Only the requirement's own bodiless clone is filled: a 'clone' the author
+    // wrote, or an extern one, stands
+    INode *binding = namespaceFind(&node->namespace, cloneName);
+    if (binding == NULL || binding->tag != FnDclTag)
+        return;
+    FnDclNode *clonefn = (FnDclNode*)binding;
+    if (clonefn->value != NULL || (clonefn->flags & FlagExtern))
+        return;
+    char *name = &node->namesym->namestr;
+
+    int refused = 0;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        // An array, tuple, vector or pointer that copies is cloned as the value
+        // (fnCallCloneCopy); a struct or a number by the trait; a reference not at all
+        int copies = (fldtype->tag == ArrayTag || fldtype->tag == TTupleTag
+            || fldtype->tag == VectorTag || fldtype->tag == PtrTag) && !itypeIsMove(fldtype);
+        if (!copies && !genericTypeIs(field->vtype, clonetrait)) {
+            errorMsgNode((INode*)field, ErrorCloneField,
+                "%s declares Clone and writes no `clone`, and its field %s is %s, which is neither Copy nor Clone. Write a `clone` of your own, or declare the field's type Clone.",
+                name, &field->namesym->namestr, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype));
+            refused = 1;
+        }
+    }
+
+    // A refused struct gets a body whose value is already an error, so type check
+    // says nothing more of it
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)node);
+    clonefn->value = (INode*)block;
+    if (refused) {
+        INode *bad = (INode*)newULitNodeTC(0, (INode*)errorType);
+        inodeLexCopy(bad, (INode*)node);
+        BreakRetNode *badret = newReturnNodeExp(bad);
+        inodeLexCopy((INode*)badret, (INode*)node);
+        nodesAdd(&block->stmts, (INode*)badret);
+        return;
+    }
+    FnSigNode *sig = (FnSigNode*)clonefn->vtype;
+    INode *selfparm = nodesGet(sig->parms, 0);
+    FnCallNode *lit = newFnCallLower((INode*)node, newNameUseFromDclNode((INode*)node, (INode*)node), 0);
+    lit->args = newNodes(node->fields.used + 1);
+    fnCallMarkConstruction(lit);
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        // self.field.clone()
+        FnCallNode *access = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
+        access->methfld = (INode*)newMemberUseNode(field->namesym);
+        inodeLexCopy(access->methfld, (INode*)node);
+        FnCallNode *call = newFnCallLower((INode*)node, (INode*)access, 1);
+        call->methfld = (INode*)newMemberUseNode(cloneName);
+        inodeLexCopy(call->methfld, (INode*)node);
+        nodesAdd(&lit->args, (INode*)call);
+    }
+    BreakRetNode *ret = newReturnNodeExp((INode*)lit);
+    inodeLexCopy((INode*)ret, (INode*)node);
+    nodesAdd(&block->stmts, (INode*)ret);
+}
+
 // Is this method of a type the copy of an 'inline' default of a trait it declares
 // (structInheritTrait)? A copy is the same source as the default it came from; a
 // method the type declares itself under that name replaces the default instead.
@@ -4989,6 +5073,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structHashCheck(node);
     // and one declaring core's Eq has an '==' it is given from its fields
     structEqCheck(node);
+    // and one declaring core's Clone has a 'clone' it is given from its fields
+    structCloneCheck(node);
 
     // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.
