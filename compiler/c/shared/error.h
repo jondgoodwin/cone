@@ -482,7 +482,7 @@ enum ErrorCode {
     // behaviour's argument that is not Sendable is ErrorNotSendable; the state
     // reached through a handle is ErrorNotPublic
     // 1250 was ErrorActorReturn; a behaviour may return a value, which a reply carries back to an 'await'
-    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a 'pub fn' method other than 'init', a behaviour without 'self' or named 'init' or 'final', a generic behaviour, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
+    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a 'pub fn' method other than 'init', a behaviour without 'self' or named 'init' or 'final', a generic behaviour, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor that names a lifetime among its type parameters, its 'is', 'extends' or an attribute
     ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
 
     // GPU targets: what a SPIR-V module cannot hold, refused where it is

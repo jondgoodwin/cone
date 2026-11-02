@@ -1,0 +1,82 @@
+// A generic actor bounded by a trait: 'actor Tally[S: Scorer]' is made only at a
+// type that meets the bound, and its behaviours call the bound's method on the
+// values they are sent, as a generic function bounded by a trait would.
+//
+// - Sword and Shield meet Scorer by declaring it; each message carries one
+//   (they are Sendable, plain numbers).
+// - Tally[Sword] and Tally[Shield] are two actors; each is sent items and asked
+//   for its total, by a third actor that awaits both.
+// - 'Tally[Rock]' is refused at its type argument: Rock does not meet Scorer
+//   (concurrency_actor_generic_refused).
+//
+// Worked out by hand. Sword scores damage * 10, Shield scores armour + 1.
+// Swords of damage 3, 4 and 5 give 30 + 40 + 50 = 120; shields of armour 1 and 6
+// give 2 + 7 = 9. The tally also counts what it was sent: 3 swords, 2 shields.
+
+mod concurrency_actor_generic_bound;
+
+import stdio use *;
+import actors;
+
+trait Scorer {
+  fn score(self: &) u64;
+}
+
+struct Sword is Sendable, Scorer {
+  pub damage: u64;
+  fn score(self: &) u64 { damage * 10u64 }
+}
+
+struct Shield is Sendable, Scorer {
+  pub armour: u64;
+  fn score(self: &) u64 { armour + 1u64 }
+}
+
+actor Tally[S: Scorer] {
+  sum: u64;
+  items: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64, items: 0u64);
+  }
+
+  pub async fn add(self, item: S) {
+    sum = sum + item.score();
+    items = items + 1u64;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+
+  pub async fn count(self) u64 {
+    items
+  }
+}
+
+actor Clerk {
+  pub async fn report(self, swords: Tally[Sword], shields: Tally[Shield]) {
+    let a = await swords.total();
+    let na = await swords.count();
+    let b = await shields.total();
+    let nb = await shields.count();
+    printStr("swords "); printUInt(na); printStr(" scoring "); printUInt(a); printStr("\n");
+    printStr("shields "); printUInt(nb); printStr(" scoring "); printUInt(b); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let swords = Tally[Sword]();
+    let shields = Tally[Shield]();
+    swords.add(Sword(3u64));
+    shields.add(Shield(1u64));
+    swords.add(Sword(4u64));
+    swords.add(Sword(5u64));
+    shields.add(Shield(6u64));
+    let clerk = Clerk();
+    clerk.report(swords, shields);
+  }
+  finalAll();
+}

@@ -35,10 +35,15 @@ typedef struct ActorMessage {
                             // what the behaviour returns is what 'future' holds (actorMessageReturns)
 } ActorMessage;
 
-// What the parser generated for one actor
+// What the parser generated for one actor. A generic actor's is the template's:
+// its nodes are in the type parameters. Each instance of its handle has an info
+// of its own (actorOfHandle, actorOfState), made when it is first asked for, with
+// the instance's counterpart of every node here
 typedef struct ActorInfo {
+    struct ActorInfo *tmpl; // For an instance of a generic actor: the template's; NULL otherwise
     StructNode *handle;     // What the actor's name names
     StructNode *state;      // Its fields and methods, reached only by the runtime
+    StructNode *msg;        // Its message enum (a generic actor's: the template's, in the type parameters)
     Nodes *crossing;        // FnDclNode, VarDclNode pairs: each argument that crosses to the actor
     ActorMessage *msgs;     // Its messages, in the order written
     uint32_t nmsgs;
@@ -164,6 +169,11 @@ void actorCheckAll();
 
 // Is this the state of an actor, whose methods its dispatcher runs?
 int actorIsState(INode *type);
+
+// Is this the message enum of an actor, or an instance of a generic actor's? It
+// declares Sendable on the strength of actorCheckAll, which judges each
+// instance's parameters, so the thread check does not look at its type arguments
+int actorIsMessage(INode *type);
 
 // The actor whose state 'type' is, or NULL
 ActorInfo *actorOfState(INode *type);

@@ -14,7 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: The <span class="pre">actors</span> package runs on Windows and Linux (x86-64),
-		not yet on macOS. Not built yet: a generic actor, and a queued method on a message type.</i></p>
+		not yet on macOS. Not built yet: a queued method on a message type.</i></p>
 
 	<p>The <a href="guide-actors.html">Guide's bakery</a> gave each part of a program an actor of its own, and let them
 		talk. Building something real raises the questions the tour skipped: when is an answer sent back, when does an
@@ -190,7 +190,8 @@ or &amp;'static uni.
 		before the behaviour runs, and the value is dropped, unless the behaviour was awaited or its future kept
 		(<a href="conc-await.html">Awaiting and futures</a>).</li>
 	<li><b>An actor declares no static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
-		type parameters, and has no base.</b> It may say which
+		lifetime parameter, and has no base.</b> It may take type parameters
+		(<a href="#generic-actor">a generic actor</a>). It may say which
 		<a href="#actortrait"><span class="pre">actor traits</span></a>, its abstraction, it conforms to, with
 		<span class="pre">is</span>, and conforms by having the behaviours, with or without it.</li>
 	</ul>
@@ -326,8 +327,9 @@ actor Reader {
 
 	<h3 id="generic-trait">A generic actor trait</h3>
 	<p>The trait may take type parameters, and each type of event, message or answer it is used at is an instance of
-		it, as for any generic type, with a handle and a table of its own. The actors that conform are not generic (a
-		generic actor is still refused); they conform to the instance their behaviours' types make:</p>
+		it, as for any generic type, with a handle and a table of its own. The actors that conform conform to the
+		instance their behaviours' types make (a generic actor to the instance at its own arguments,
+		<a href="#generic-actor">below</a>):</p>
 <pre>
 actor trait Subscriber[Event] {
   pub async fn hear(self, e: Event);
@@ -375,6 +377,44 @@ actor Lacks is ChunkSink {            // Error 1570: Actor Lacks does not confor
 		converted, bounded and sent to the same with or without it, and the assertion is not part of its state or its
 		handle. A name that is not an actor trait, a struct for one, is refused. An actor still has no base to
 		<span class="pre">extends</span>.</p>
+
+	<h2 id="generic-actor">A generic actor</h2>
+	<p>An actor may take type parameters, declared and bounded as a struct's. Each type it is made at is an actor of
+		its own kind: <span class="pre">Counter[i32]</span> and <span class="pre">Counter[f64]</span> have a state, a
+		message type and a handle each, made from the one declaration as any generic type's instances are, and neither
+		is the other's type. Its behaviours take and return the parameter, and so do its initializers:</p>
+<pre>
+actor Counter[T] {
+  total: T;
+  fn init(self: &amp;new, start: T) { *self = Self(total: start); }
+  pub async fn add(self, x: T) { total = total + x; }
+  pub async fn get(self) T { total }
+}
+
+let ints = Counter[i32](10i32);        // the handle of a Counter[i32]
+let reals = Counter[f64](0.5);         // an actor of another kind
+ints.add(5i32);
+let n = await ints.get();              // an i32
+</pre>
+	<p>A parameter may be bounded by a trait, <span class="pre">actor Stage[T: Transform]</span>, and the body calls the
+		argument's methods as a generic struct's does; a type that does not meet the bound is refused where the instance
+		is written. The type parameters stand for types only (no lifetime: no borrow leaves its thread).</p>
+	<p>Everything that crosses to the actor's thread is judged <b>at the instance</b>. A behaviour's parameter of type
+		<span class="pre">T</span> must be <span class="pre">Sendable</span> in each instance, and so must an initializer's
+		and a returned value; the refusal names the instance:</p>
+<pre>
+let box = Box[Rc[mut, Log]]();
+// Error 1194: Actor Box[Rc[mut, Log]]'s behaviour put takes v, a Rc[mut, Log], which is not Sendable: it is an
+// owner whose permission, mut, is not race-safe: ...
+</pre>
+	<p>A generic actor meets an actor trait at an instance too: <span class="pre">actor Collector[E] is Sink[E]</span>
+		says that each <span class="pre">Collector[E]</span> is a <span class="pre">Sink[E]</span>, and the assertion is
+		checked for each instance that is made, as is a conversion to the trait's handle. The compiler's own generated
+		parts of the actor are cloned per instance (<a href="#stands-for">What the declaration stands for</a>), so a
+		behaviour that awaits, sends to itself or names <span class="pre">selfactor</span> does it as a plain actor's
+		does. <span class="pre">packages/stages</span> has two: <span class="pre">Stage[T: Transform]</span>, one stage for
+		every codec (<span class="pre">Stage[deflate.Inflater]</span>, <span class="pre">Stage[zstd.Compressor]</span>), and
+		<span class="pre">HashStage[D: Digester]</span>, whose digest sink is <span class="pre">DigestSink[D.Out]</span>.</p>
 
 	<h2 id="messages">Messages and their order</h2>
 	<p>A send is one-way: it queues the message and returns. An answer comes back only to an
@@ -558,6 +598,13 @@ package's), which the actor collects between its messages.
 	<li><b>The dispatch function</b>, <span class="pre">Counter.dispatch</span>, which the runtime hands each message
 		where it lies, and which moves each argument out of it into the behaviour's call.</li>
 	</ul>
+	<p>A <a href="#generic-actor">generic actor</a> declares its type parameters on the state, the messages and the
+		handle, and every use of one of those is followed by them: <span class="pre">Counter.Msg[T]</span>. A message
+		variant is written with them after it, <span class="pre">Counter.Msg.add[T]</span>. The dispatch function, and the
+		small functions an <span class="pre">await</span>, <span class="pre">selfactor</span> and an <span class="pre">is</span>
+		list need, are statics of the handle rather than the module's, so that each instance of the handle has its own;
+		the compiler finds an instance's by name. The message enum is <span class="pre">Sendable</span> on the strength of
+		the check made of each instance's parameters, not of its type arguments.</p>
 	<p>An <a href="#actortrait">actor trait</a> stands for four declarations too: an ordinary trait with the three methods
 		an actor's handle has for each behaviour (the send, and for one that returns a value the awaited send and the
 		future-giving one); the trait's handle, whose fields are the mailbox, its type erased, and the table; and a

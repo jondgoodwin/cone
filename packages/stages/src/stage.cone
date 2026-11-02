@@ -28,19 +28,18 @@
 //
 //   // sink end first; each stage is made with its downstream
 //   let count = Counter();
-//   let hash  = Sha256Stage(count, whoGetsTheDigest);
-//   let inf   = InflateStage(hash, deflate.Format.Gzip);
+//   let hash  = HashStage[cryptohash.Sha256](count, cryptohash.Sha256.make(), whoGetsTheDigest);
+//   let inf   = Stage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
 //   source.start(inf);
 //
-// TWO CORES, so an actor over a transform is a few lines. 'StageCore[T]' holds
-// any Transform with its Link and does the work of a stage that makes new
-// chunks (inflate, deflate, zstd): feed what arrives, pull what comes out into
-// the link's buffers, and hold the input chunk until all its output is out. A
-// pass-through such as a hash stage is 'HashCore[D]': the chunk goes on as it
-// is, unmoved and uncopied, and comes back through the stage to the source.
-// An actor cannot take type parameters yet, so the actors that wrap a core
-// are written once for each codec (stages.cone); when a generic actor is
-// built, 'Stage[T]' replaces them.
+// TWO ACTORS, each generic. 'Stage[T]' holds any Transform with its Link and
+// does the work of a stage that makes new chunks (inflate, deflate, zstd): feed
+// what arrives, pull what comes out into the link's buffers, and hold the input
+// chunk until all its output is out. A pass-through such as a hash stage is
+// 'HashStage[D]' over a Digester: the chunk goes on as it is, unmoved and
+// uncopied, and comes back through the stage to the source. (Before generic
+// actors each codec was an actor of its own over a 'StageCore[T]' or a
+// 'HashCore[D]' that did the work; the actor is now the work.)
 //
 // 'sink <- chunk' is 'sink.accept(chunk)': the behaviour declares '<-' as its overload name.
 
@@ -86,7 +85,7 @@ pub actor trait ChunkSource {
 // Whoever wants the digest a hash stage worked out, 'Out' being the digest's
 // type (Array[u8, 32] for sha256). It gets exactly one answer, when the stream
 // ends: Ok with the digest if the stream finished, Err with the failure if it
-// did not (the error that ended it, as text: see HashCore.end). So a waiter is
+// did not (the error that ended it, as text: see HashStage.end). So a waiter is
 // never left waiting for a digest that will not come.
 pub actor trait DigestSink[Out] {
   pub async fn digest(self, r: Result[Out, AnyError]);
@@ -100,11 +99,17 @@ fn handBack(up: &Option[ChunkSource], b: IoBuf) {
   }
 }
 
-// ---- a stage that transforms: any Transform, in a few lines per codec ----
+// ---- a stage that transforms: any Transform ----
 
-// The state and the work of a stage over a transform. An actor holds one and
-// its behaviours call the matching methods.
-pub struct StageCore[T: Transform] is Move {
+// A stage over a transform 't', sending its output to 'down' in a link of
+// 'linkBuffers' buffers of 'linkBytes' bytes. The transform comes in whole
+// ('make' it first), and is the stage's from then on:
+//
+//   Stage[deflate.Inflater](down, deflate.Inflater.make(deflate.Format.Gzip))
+//   Stage[deflate.Deflater](down, deflate.Deflater.make(deflate.Format.Gzip, 6i32))
+//   Stage[zstd.Decompressor](down, zstd.Decompressor.make())
+//   Stage[zstd.Compressor](down, zstd.Compressor.make(3i32))
+pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   t: T;
   link: Link;                 // the output's buffers: N, and the credit
   down: ChunkSink;
@@ -117,19 +122,20 @@ pub struct StageCore[T: Transform] is Move {
   upEnded: bool;              // the upstream's 'end' has arrived
   ended: bool;                // our 'end' has been sent downstream
 
-  // A stage over 't' sending to 'down' in a link of 'count' buffers of 'size' bytes
-  pub fn make(t: T, down: ChunkSink, count: usize, size: usize) StageCore[T] {
-    StageCore[T](t, Link.make(count, size), down, None[ChunkSource], None[IoBuf], Deque[IoBuf].empty(),
-      false, false, false, false, false)
+  pub fn init(self: &new, down: ChunkSink, t: T) {
+    *self = Self(t: t, link: Link.make(linkBuffers, linkBytes), down: down, up: None[ChunkSource],
+      cur: None[IoBuf], backlog: Deque[IoBuf].empty(), waiting: false, finishing: false, dry: false,
+      upEnded: false, ended: false);
+    down.attach(selfactor);
   }
 
   // The stage that sends here (the sink's 'attach')
-  pub fn attach(self: &mut, source: ChunkSource) {
+  pub async fn attach(self, source: ChunkSource) {
     up = Some[ChunkSource](source);
   }
 
   // A chunk arrives (the sink's 'accept')
-  pub fn accept(self: &mut, c: IoBuf) {
+  pub async fn accept(self, c: IoBuf) {
     if ended {
       handBack(&up, c);
     } else if cur is Some || upEnded {
@@ -143,7 +149,7 @@ pub struct StageCore[T: Transform] is Move {
   }
 
   // The upstream's end arrives (the sink's 'end')
-  pub fn end(self: &mut, how: Ending) {
+  pub async fn end(self, how: Ending) {
     upEnded = true;
     match how {
       case is Finished {
@@ -157,14 +163,11 @@ pub struct StageCore[T: Transform] is Move {
   }
 
   // An output buffer comes back (the source's 'giveBack')
-  pub fn giveBack(self: &mut, b: IoBuf) {
+  pub async fn giveBack(self, b: IoBuf) {
     link.give(b);
     if waiting { self.drain(); }
     self.settle();
   }
-
-  // The link, for its counters
-  pub fn linkInfo(self: &) &Link { &link }
 
   // Pull while there is a buffer to pull into and something to pull
   fn drain(self: &mut) {
@@ -261,9 +264,12 @@ pub struct StageCore[T: Transform] is Move {
 
 // ---- a stage that passes chunks on and watches them: a digest ----
 
-// The state and the work of a stage over a Digester. The chunk goes on as it
-// is; the buffer comes back through this stage to the source.
-pub struct HashCore[D: Digester] is Move {
+// A stage over a Digester 'd'. The chunk goes on as it is; the buffer comes
+// back through this stage to the source. 'to' gets exactly one answer, when
+// the stream ends, its digest type the digester's own ('D.Out'):
+//
+//   HashStage[cryptohash.Sha256](down, cryptohash.Sha256.make(), to)   // to: DigestSink[Array[u8, 32]]
+pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   d: D;
   down: ChunkSink;
   up: Option[ChunkSource];
@@ -271,21 +277,22 @@ pub struct HashCore[D: Digester] is Move {
   upEnded: bool;
   to: DigestSink[D.Out];      // gets exactly one answer, when the stream ends
 
-  pub fn make(d: D, down: ChunkSink, to: DigestSink[D.Out]) HashCore[D] {
-    HashCore[D](d, down, None[ChunkSource], 0usize, false, to)
+  pub fn init(self: &new, down: ChunkSink, d: D, to: DigestSink[D.Out]) {
+    *self = Self(d: d, down: down, up: None[ChunkSource], out: 0usize, upEnded: false, to: to);
+    down.attach(selfactor);
   }
 
-  pub fn attach(self: &mut, source: ChunkSource) {
+  pub async fn attach(self, source: ChunkSource) {
     up = Some[ChunkSource](source);
   }
 
-  pub fn accept(self: &mut, c: IoBuf) {
+  pub async fn accept(self, c: IoBuf) {
     d.feed(c.view());
     out = out + 1usize;
     down <- c;
   }
 
-  pub fn giveBack(self: &mut, b: IoBuf) {
+  pub async fn giveBack(self, b: IoBuf) {
     out = out - 1usize;
     handBack(&up, b);
     self.settle();
@@ -295,7 +302,7 @@ pub struct HashCore[D: Digester] is Move {
   // error. An AnyError cannot be copied, so the sink gets the failure as text
   // (its report) and the stage after this one gets the original, typed.
   // Then passes the end on.
-  pub fn end(self: &mut, how: Ending) {
+  pub async fn end(self, how: Ending) {
     upEnded = true;
     match &how {
       case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
