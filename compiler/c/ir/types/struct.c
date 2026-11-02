@@ -2211,6 +2211,27 @@ int structExtendsEquiv(INode *type1, INode *type2) {
     return structExtendsRoot((StructNode*)dcl1) == structExtendsRoot((StructNode*)dcl2);
 }
 
+StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep) {
+    INode *fromdcl = itypeGetTypeDcl(fromtype);
+    INode *todcl = itypeGetTypeDcl(totype);
+    // An owning reference moves its owner: the pointee is then dropped as the type
+    // the new reference names. A borrow leaves the owner where it was.
+    while ((fromdcl->tag == RefTag || fromdcl->tag == ArrayRefTag)
+        && todcl->tag == fromdcl->tag
+        && ((RefNode*)fromdcl)->region != borrowRef && ((RefNode*)todcl)->region != borrowRef) {
+        fromdcl = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        todcl = itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
+    }
+    if (!structExtendsEquiv(fromdcl, todcl))
+        return NULL;
+    if (namespaceFind(&((StructNode*)fromdcl)->namespace, finalName) != NULL
+        && namespaceFind(&((StructNode*)todcl)->namespace, finalName) == NULL) {
+        *basep = (StructNode*)todcl;
+        return (StructNode*)fromdcl;
+    }
+    return NULL;
+}
+
 // Hook the entries a trait's expansion added to the namespace, so that a method
 // body resolved afterwards can name an inherited member bare. What the
 // namespace binds for the name is what is hooked: a name the type already
