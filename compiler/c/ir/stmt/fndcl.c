@@ -289,6 +289,7 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         intrinsicDclNameRes(fndclnode);
     else {
         sliceEqDclNameRes(fndclnode);
+        tupleEqDclNameRes(fndclnode);
         heapRegionDclNameRes(fndclnode);
     }
 

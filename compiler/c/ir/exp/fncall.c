@@ -2636,6 +2636,65 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// '==' on two tuples of the same types, from two to four elements, compares them
+// element by element: core's 'mem.tupleEq2' to 'tupleEq4' (tupleEqFn), generic
+// functions whose bodies are the comparison '&a.0 == &b.0 && ...', instantiated at
+// the element types. As for a slice's comparison the instance is then checked as
+// any call is, so an element with no '==' is refused inside it, naming the
+// element's type. Both operands are lent read-only where they lie (a value that is
+// not a place, to the end of its statement), so nothing is copied or moved in.
+// '!=' arrives as '==' under a '!' (fnCallNeFromEq).
+static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    TupleNode *tuple = (TupleNode*)iexpGetTypeDcl(node->objfn);
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two tuples is refused: a tuple has no order. Compare their elements one by one.", &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    if (op == neName) {
+        errorUnreachable((INode*)node, "a tuple's '!=' not derived from its '=='");
+        node->vtype = errorType;
+        return;
+    }
+    uint32_t arity = tuple->elems->used;
+    FnDclNode *tupleeq = arity >= 2 && arity <= 4 ? tupleEqFn(arity) : NULL;
+    if (tupleeq == NULL) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            arity >= 2 && arity <= 4
+                ? "`==` on two tuples calls the core package's 'mem.tupleEq%d', and the core package found declares none."
+                : "`==` compares tuples of two to four elements, and this one has %d. Compare their elements one by one.",
+            (int)arity);
+        node->vtype = errorType;
+        return;
+    }
+    if (node->args == NULL || node->args->used != 1 || !isExpNode(nodesGet(node->args, 0))
+        || !itypeIsSame((INode*)tuple, iexpGetTypeDcl(nodesGet(node->args, 0)))) {
+        errorMsgNode((INode*)node, ErrorInvType,
+            "A tuple is compared with a tuple of the same element types, and this one is not.");
+        node->vtype = errorType;
+        return;
+    }
+    Nodes *typeargs = newNodes(arity);
+    INode **elemp;
+    uint32_t cnt;
+    for (nodesFor(tuple->elems, cnt, elemp))
+        nodesAdd(&typeargs, *elemp);
+    FnDclNode *instance = genericMethodInstance(pstate, node, tupleeq, typeargs, unknownType);
+    if (instance == NULL) {
+        node->vtype = errorType;
+        return;
+    }
+    fnCallLendEnumOperand(pstate, &node->objfn);
+    fnCallLendEnumOperand(pstate, &nodesGet(node->args, 0));
+    nodesInsert(&node->args, node->objfn, 0);
+    node->objfn = (INode*)newNameUseFromDclNode((INode*)instance, (INode*)node);
+    node->methfld = NULL;
+    node->vtype = ((FnSigNode*)instance->vtype)->rettype;
+    fnCallFinalizeArgs(pstate, node);
+}
+
 // An array, a reference to one, or a '&str' (a string literal is one), compared
 // with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
@@ -2722,6 +2781,18 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
             fnCallLowerSliceCompare(pstate, node);
         else
             fnCallLowerPtrMethod(node, ptrType);
+        return;
+    }
+    // An enum against an empty variant of it asks the tag alone, whoever wrote its '=='
+    if (op == eqName && referent->tag == StructTag && (referent->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)referent))
+        return;
+    // Tuples are compared as the values they refer to (fnCallLowerTupleCompare)
+    if (referent->tag == TTupleTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
+        fnCallLowerTupleCompare(pstate, node);
         return;
     }
     if (!isMethodType(referent)) {
@@ -3115,6 +3186,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    // a tuple's, from the '==' that compares its elements (fnCallLowerTupleCompare)
+    if (objtype->tag == TTupleTag)
+        return 1;
     if (objtype->tag == ArrayRefTag) {
         char buf[256];
         return fnCallSliceElemNoEq(((RefNode*)objtype)->vtexp, buf, sizeof(buf)) == NULL;
@@ -5292,6 +5366,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         goto tagtested;
     }
 
+    // An enum against an empty variant of it, 'x == None', asks the tag alone, whether
+    // the enum's '==' is the compiler's or one written (Option's and Result's are
+    // written, where their payload is Eq, against another of the enum)
+    if (opname == eqName && objtype->tag == StructTag && (objtype->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)objtype))
+        goto tagtested;
+
     // An owner of 'Array[T]' indexed is indexed as the slice it lends
     int lent = fnCallBodyAsSlice(pstate, node);
     if (lent < 0) {
@@ -5379,7 +5460,9 @@ dispatch:
 
     // Tuple type
     case TTupleTag:
-        if (fnCallLowerIntField(node) == 0)
+        if (fnCallIsValueCompare(opname) && node->args && node->args->used == 1)
+            fnCallLowerTupleCompare(pstate, node);
+        else if (fnCallLowerIntField(node) == 0)
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid expression on a tuple");
         break;
 

@@ -89,6 +89,7 @@ Name *selectName;
 Name *joinName;
 Name *hashName;
 Name *hashTraitName;
+Name *eqTraitName;
 Name *iteratorTraitName;
 Name *hasherName;
 Name *writeU64Name;

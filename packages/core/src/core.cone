@@ -67,6 +67,24 @@ pub enum Option[T] {
     }
   }
 
+  // Equal when both are None, or both are Some of equal values. Exists only where T is Eq
+  pub fn `==`(self: &Option[T], other: &Option[T]) bool inline where T is Eq {
+    match self {
+      case let Some(a) {
+        match other {
+          case let Some(b) { a == b }
+          case is None { false }
+        }
+      }
+      case is None {
+        match other {
+          case is Some { false }
+          case is None { true }
+        }
+      }
+    }
+  }
+
   // What Some holds; a panic at the caller's line on None
   pub fn unwrap(self: Option[T], file: &Array[u8] = srcFile(), line: u32 = srcLine()) T inline {
     match self {
@@ -195,6 +213,25 @@ pub enum @mustUse Result[T,E] {
     match self {
       case is Ok { true }
       case is Err { false }
+    }
+  }
+
+  // Equal when both are Ok of equal values, or both are Err of equal errors. Exists
+  // only where T and E are Eq
+  pub fn `==`(self: &Result[T, E], other: &Result[T, E]) bool inline where T is Eq && E is Eq {
+    match self {
+      case let Ok(a) {
+        match other {
+          case let Ok(b) { a == b }
+          case is Err { false }
+        }
+      }
+      case let Err(a) {
+        match other {
+          case is Ok { false }
+          case let Err(b) { a == b }
+        }
+      }
     }
   }
 
@@ -2898,6 +2935,18 @@ pub struct @opaque mem {
     }
     true
   }
+  // What '==' on two tuples of two, three or four elements calls, an instance for each
+  // list of element types, which the compiler finds here by name: equal when each
+  // element is '==' to its partner, compared as borrows as 'sliceEq' compares its own
+  pub fn tupleEq2[A, B](a: &(A, B), b: &(A, B)) bool {
+    &a.0 == &b.0 && &a.1 == &b.1
+  }
+  pub fn tupleEq3[A, B, C](a: &(A, B, C), b: &(A, B, C)) bool {
+    &a.0 == &b.0 && &a.1 == &b.1 && &a.2 == &b.2
+  }
+  pub fn tupleEq4[A, B, C, D](a: &(A, B, C, D), b: &(A, B, C, D)) bool {
+    &a.0 == &b.0 && &a.1 == &b.1 && &a.2 == &b.2 && &a.3 == &b.3
+  }
   // Move the T at p out, leaving the slot dead; nothing there is finalized
   pub fn @intrinsic readRaw[T](p: *T) T {*p}
   // Move value into the slot at p, which holds nothing live: nothing is finalized
@@ -3376,6 +3425,22 @@ pub trait Hash {
 // `<=` and `==` stay IEEE's.
 pub trait Ordered {
   pub fn cmp overload `<=>`(self: &, o: &Self) i32;
+}
+
+// Values that can be compared for equality: has `==`, whose answer is true when the
+// receiver and the other are the same value. Met by every number type and bool by
+// its built-in `==` (compiler: genericNumberFits), and by any type that writes
+// `==` against `&Self` as below. A struct that declares `is Eq` and writes no `==`
+// is given one that compares its fields in order (compiler: structEqCheck). `!=`
+// is always the opposite of `==`.
+//
+// The laws are documented, not checked: `==` is symmetric (a == b is b == a),
+// transitive (a == b and b == c make a == c) and, but for floats, reflexive (a == a).
+// A float's `==` is IEEE 754's: NaN is not equal to itself and -0 is equal to 0, so
+// a float is Eq (it has `==`) but is not Hash. `Option`, `Result`, tuples and `List`
+// have `==` where their element does.
+pub trait Eq {
+  pub fn `==`(self: &, o: &Self) bool;
 }
 
 pub extern {

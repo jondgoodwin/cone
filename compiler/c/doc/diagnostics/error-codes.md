@@ -444,6 +444,11 @@ and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
 
+Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
+writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
+declaring none), reported at the field. The remedy is an `==` of the struct's own,
+or an `==` for the field's type.
+
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
 the type itself, or the clause admits a member of `T` that is not a method (a
