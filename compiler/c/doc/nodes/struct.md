@@ -1462,6 +1462,42 @@ too. What the compiler adds:
   variant and a trait are not supplied; one that declares `Hash` is asked for a
   `hash` by the ordinary requirement check.
 
+### Eq, and the `==` it supplies
+
+Core's `Eq` (`pub trait Eq { pub fn `==`(self: &, o: &Self) bool; }`) is known
+by name and package (`coreIsEqTrait`), as `Hash` is. It requires the method by
+the name `==` itself, so a struct's own `==` fills it, and the requirement a
+type inherits bodiless (`structInheritTrait`) is found at `eqName`.
+
+- **The supplied `==`.** A struct declaring `Eq` that writes no `==`
+  (`structEqCheck`, at layout after `structHashCheck`) has the inherited
+  requirement filled: `return &self.f1 == &other.f1 && &self.f2 == &other.f2 ...`
+  in field order, `true` for a struct with no field. The fields are lent
+  because the supplied `==` takes `&Self` (so does every method of `Eq`), and a
+  field's own `==`, whether written for references or for values, is selected
+  through them. A mixin field is skipped. A float is allowed, its `==` being
+  IEEE's.
+- **Refusal.** `ErrorEqField`, at the field, where `structEqFieldHasEq` finds no
+  `==` against its own type: a number and a raw pointer have one, a struct that
+  meets `Eq` (`genericTypeIs`) or has a `==` in its namespace (an instance's
+  conditional `==` is absent when its clause fails), and a reference or slice
+  to such a type, which `==` reads through; an array, a tuple, a function type
+  and a virtual reference do not. A refused struct is given a body that says
+  false so nothing more is said of it.
+- **Not supplied** for an enum, a variant or a trait, as for `Hash`: an enum's
+  `==` is the compiler's (`structEnumAddEquality`).
+- **Number types and `bool`** meet `Eq` by their built-in `==`
+  (`genericNumberFits`, the route `Ordered`'s `<=>` takes); no compiler change
+  beyond L2's was needed. A struct whose `==` is written by value
+  (`fn `==`(self, o: Id)`) does not meet `Eq`, since a trait cannot hold `Self`
+  by value (Error 1069).
+- **`Option` and `Result`** have a conditional `==` of their own in core
+  (`where T is Eq`, and `E is Eq` for `Result`), taking `&` of the enum. The
+  enum's compiler `==` (`NoEqIntrinsic`) is then replaced, and a comparison with
+  an empty variant (`x == None`) still asks the tag alone: `fnCallTypeCheck`
+  and `fnCallLowerRefCompare` try `fnCallLowerEnumTagTest` for any enum
+  receiver before the enum's own method is looked for.
+
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
 (`cone_hashSeed`, `packages/conestd/hash.cone`).
