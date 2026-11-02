@@ -49,4 +49,9 @@ void assignFlow(FlowState *fstate, AssignNode **node);
 // 'lvalscope' that would outlive it (assignment, and each direction of a swap)
 void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype);
 
+// Refuse a plain store into a place holding an atomic value unless every
+// reference on the way to it is 'uni' (assignment, and each side of a swap).
+// Answers 0 where refused.
+int assignAtomicStoreCheck(INode *lval);
+
 #endif
