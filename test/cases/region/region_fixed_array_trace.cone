@@ -1,0 +1,106 @@
+// Bug 34: a fixed-size 'Array[Ref, 40]' of traced references, built by 'fill' (which makes
+// 40 leaves, ids 1 to 40) and then overwritten element by element through a '&mut' (40
+// new leaves, ids 41 to 80), is traced by a collection (mem.traceRoots): all 40 of the
+// leaves the array holds now (ids 41 to 80) must be marked. The fill's 40 leaves are
+// no longer reachable from anywhere (the births keep only the last one made, id 80's
+// neighbour), so they are not counted. The array is used after the collection, so it is
+// live when the collection runs.
+//
+// Each case is its own function, so an earlier case's locals are no longer roots.
+// Cases: (a) a local array; (b) an array that is a field of a struct local; (c) an
+// array inside a heap object (an Rc[mut, Holder], whose trace passes through the Rc).
+
+mod region_fixed_array_trace;
+
+import stdio use *;
+import libc;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal seen = 0u64;
+var @threadlocal epoch = 1u32;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(nextId));
+    nextId = nextId + 1;
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
+    if id > 40 { seen = seen | (1u64 << (u64.from(id) - 41u64)); }
+  }
+}
+struct Leaf { pub n: i32; }
+alias Ref = Tr[mut, Leaf];
+fn leaf(n: i32) Ref { Tr[mut, Leaf](n) }
+
+struct Holder { pub tag: i32; pub arr: Array[Ref, 40]; }
+
+// Collect, and say how many of the leaves with ids 41 to 80 were marked
+fn trace(label: &str) {
+  seen = 0u64;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  var found = 0i64;
+  var bit = 0u64;
+  while bit < 40u64 {
+    if (seen & (1u64 << bit)) != 0u64 { found = found + 1; }
+    bit = bit + 1u64;
+  }
+  printStr(label);
+  printStr(": found ");
+  printInt(found);
+  printStr(" of 40\n");
+}
+
+fn begin() { nextId = 1; }
+
+// The writes, through a '&mut' to the array
+fn writeAll(a: &mut Array[Ref, 40]) {
+  var i = 0;
+  while i < 40 {
+    a[usize.from(i)] = leaf(i);
+    i = i + 1;
+  }
+}
+
+fn sum(a: &Array[Ref, 40]) i64 {
+  var s = 0i64;
+  var i = 0usize;
+  while i < 40usize { s = s + i64.from(a[i].n); i = i + 1usize; }
+  s
+}
+
+fn localCase() {
+  begin();
+  var arr = Array[Ref, 40]() <- fill leaf(0);
+  writeAll(&mut arr);
+  trace("local array");
+  printInt(sum(&arr));
+  printStr(" sum of the local array\n");
+}
+
+fn fieldCase() {
+  begin();
+  var h = Holder(7, Array[Ref, 40]() <- fill leaf(0));
+  writeAll(&mut h.arr);
+  trace("struct field");
+  printInt(sum(&h.arr) + i64.from(h.tag));
+  printStr(" sum of the field plus its tag\n");
+}
+
+fn heapCase() {
+  begin();
+  let h = Rc[mut, Holder](7, Array[Ref, 40]() <- fill leaf(0));
+  writeAll(&mut h.arr);
+  trace("heap object");
+  printInt(sum(&h.arr) + i64.from(h.tag));
+  printStr(" sum of the heap object's array plus its tag\n");
+}
+
+fn main() {
+  localCase();
+  fieldCase();
+  heapCase();
+}
