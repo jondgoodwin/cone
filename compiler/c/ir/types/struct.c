@@ -4976,6 +4976,11 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             if (meth->genericinfo)
                 return NULL;
             INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
+            // The type's method is a use too (Rule 1): this type may be reached
+            // from a body checked before its own members are (a method of a type
+            // declared in an earlier file), and an unchecked signature meets no slot
+            if (strbinding)
+                fnCallDemandCandidates(strbinding);
             FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth, NULL);
             if (strmeth == NULL)
                 return 0;
