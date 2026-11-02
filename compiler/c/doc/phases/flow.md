@@ -1599,6 +1599,14 @@ locals, which only a call that reaches one of them is asked of):
   reference was held to it where it became one (`shapeKeepsVia`, below), so a borrow into a
   collection survives the call. An unmarked one is the "body is not visible" case above, and its
   message says the mark would keep the borrow.
+- **A virtual reference held as a field, walked for what a type reaches** (`rcWalk`,
+  `reshape.c`): unmarked, it reaches "anything" (`ReachVirtual | ReachBorrowed`: a trait is
+  open, so an implementer may hold a shared owner of the very collection a borrow is into), so
+  every struct holding one, at any depth, reaches every container, and a call to code the
+  compiler cannot read that is handed such a struct is refused. One marked `+ ShapeKeeping`
+  reaches nothing more than the struct's other fields do, on the same promise as the call above,
+  held where the value becomes the reference (Bug 30; cancelgroups' registry of `Uni[Wakeup +
+  Sendable + ShapeKeeping]`). Tests: `collection_flow_traitfield_marked`, `_unmarked`, `_refuse`.
 - **Globals**: handed nothing that reaches the type, a visible callee still
   reshapes if it does so by something that is no parameter of its own
   (`SiModeOut`, which skips what is reached from the callee's parameters).
