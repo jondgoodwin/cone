@@ -1152,8 +1152,17 @@ into — gets it as surely as one through a `R` reference.
   run beside cannot have been finished with. A declared init's stores into
   its `self` are stores through a reference, and get it. `mem.writeRaw` gets it
   too, for the value it wrote: a collection's push of a reference into its
-  block is such a store. `mem.moveRaw` gets none: it moves what was stored
-  already.
+  block is such a store. `mem.moveRaw` gets none, and is for moves inside one
+  container only (a shift, a swap, a merge through a scratch block): a collector
+  traces a container whole (`propagateOne`), so a reference moved within it is
+  neither hidden from a collector that has finished with the container nor from
+  one that has not. A move from one container into another (`appendList`,
+  `appendSlice`, the parallel builder's piece join) hides a reference from a
+  collector that has marked the destination but not the source, so it uses
+  `mem.moveRawInto`: the same block move, then `genlBarrierAt` over each of the
+  `count` values now at the destination, in a loop, emitted only where the
+  element type holds a reference into a region with a `writeBarrier`
+  (`itypeHoldsBarriered`); for any other element type it is the plain block move.
 - **What.** `genlBarrierAt` walks the value just stored, at its destination,
   with the trace's walk (`genlTraceWalk`), handing each reference into a
   region with a `writeBarrier` to it as the header of what it points at

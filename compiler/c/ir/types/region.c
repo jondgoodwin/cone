@@ -525,7 +525,8 @@ void regionTracedRootNote(VarDclNode *var) {
 // reaches what the method places.
 void regionTracedRawCall(TypeCheckState *pstate, FnCallNode *call, FnDclNode *fndcl) {
     IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
-    if (intrinsic->intrinsicFn != WriteRawIntrinsic && intrinsic->intrinsicFn != MoveRawIntrinsic)
+    if (intrinsic->intrinsicFn != WriteRawIntrinsic && intrinsic->intrinsicFn != MoveRawIntrinsic
+        && intrinsic->intrinsicFn != MoveRawIntoIntrinsic)
         return;
     // The T of 'writeRaw[T](p *T, ...)' or 'moveRaw[T](dst *T, ...)', read from the
     // instance's signature, which is concrete
