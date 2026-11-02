@@ -2293,10 +2293,14 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   has none. An owning reference (`Uni`, `Rc`, an owning array reference) of the one
   converted to the same of the other is answered through its pointee. Pinned in
   `struct_typecheck_extends_final`, with what is not refused in
-  `struct_extends_final_borrow`. Not covered: two siblings that each declare a
-  *different* `final` (the source's is skipped, the target has one, and nothing
-  refuses it), and a type that merely holds an enrichment inside a generic
-  (`Option[PlainFin]`), which is no conversion of the pointee. A base's own `final`
+  `struct_extends_final_borrow`. Two siblings that each declare a *different*
+  `final` are refused too: a type's `final` has an origin (the top of its `extends`
+  chain that has one, `structFinalOrigin`), and a conversion between types of
+  different origins skips the source's. Types of one origin (two enrichments of one
+  enrichment) carry copies of one `final` and convert freely. An array by value is
+  answered through its element type. A type that merely holds an enrichment inside a
+  generic (`Option[PlainFin]`) is no conversion of the pointee, and is refused as a
+  different type (`ErrorInvType`). A base's own `final`
   has no such gap, since every enrichment carries a copy.
 - **A folded copy is a snapshot until the folding type is laid out.** It takes
   its origin's type node and index at expansion, in name resolution; if the

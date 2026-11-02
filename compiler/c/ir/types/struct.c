@@ -2211,21 +2211,41 @@ int structExtendsEquiv(INode *type1, INode *type2) {
     return structExtendsRoot((StructNode*)dcl1) == structExtendsRoot((StructNode*)dcl2);
 }
 
+// The type whose own 'final' this type's is: an enrichment may not override its base's
+// 'final', so a type that has one declares it or holds a copy of its base's, and the
+// declaring type is the top of the 'extends' chain that has one. Two types with one
+// origin run the same 'final'.
+static StructNode *structFinalOrigin(StructNode *node) {
+    while (node->extendsdcl && namespaceFind(&((StructNode*)node->extendsdcl)->namespace, finalName) != NULL)
+        node = (StructNode*)node->extendsdcl;
+    return node;
+}
+
 StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep) {
     INode *fromdcl = itypeGetTypeDcl(fromtype);
     INode *todcl = itypeGetTypeDcl(totype);
     // An owning reference moves its owner: the pointee is then dropped as the type
     // the new reference names. A borrow leaves the owner where it was.
-    while ((fromdcl->tag == RefTag || fromdcl->tag == ArrayRefTag)
-        && todcl->tag == fromdcl->tag
-        && ((RefNode*)fromdcl)->region != borrowRef && ((RefNode*)todcl)->region != borrowRef) {
+    // An array by value carries its elements: each is dropped as the element type of
+    // the array it is now.
+    while (todcl->tag == fromdcl->tag
+        && (((fromdcl->tag == RefTag || fromdcl->tag == ArrayRefTag)
+            && ((RefNode*)fromdcl)->region != borrowRef && ((RefNode*)todcl)->region != borrowRef)
+          || fromdcl->tag == ArrayTag)) {
+        if (fromdcl->tag == ArrayTag) {
+            fromdcl = itypeGetTypeDcl(arrayElemType(fromdcl));
+            todcl = itypeGetTypeDcl(arrayElemType(todcl));
+            continue;
+        }
         fromdcl = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
         todcl = itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
     }
     if (!structExtendsEquiv(fromdcl, todcl))
         return NULL;
-    if (namespaceFind(&((StructNode*)fromdcl)->namespace, finalName) != NULL
-        && namespaceFind(&((StructNode*)todcl)->namespace, finalName) == NULL) {
+    if (namespaceFind(&((StructNode*)fromdcl)->namespace, finalName) == NULL)
+        return NULL;
+    if (namespaceFind(&((StructNode*)todcl)->namespace, finalName) == NULL
+        || structFinalOrigin((StructNode*)fromdcl) != structFinalOrigin((StructNode*)todcl)) {
         *basep = (StructNode*)todcl;
         return (StructNode*)fromdcl;
     }
