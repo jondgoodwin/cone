@@ -424,13 +424,13 @@
 // it as their cause. The section TRACING HOOKS, below, is the account.
 //
 // THE MAILBOX is a ring of fixed-size slots, grown in linked segments (the
-// code is under "The mailbox", below). A slot is a 32-byte header, then a
+// code is under "The mailbox", below). A slot is a 16-byte header, then a
 // payload. The header's first word, 'seq', is the slot's publication; its
 // second, 'cause', is the id of the send that made the message (TRACING HOOKS,
-// below), 0 when the hooks are off; its last 16 bytes hold the cancel group the
-// message was sent in, written only when there was one (a slot of kind
-// kindMsgGroup; THE GROUP TRAVELS, below). The payload is the message M itself,
-// in the size of M rounded to 16 bytes and not under 32: the size of a slot
+// below), 0 when the hooks are off. The payload is the message M itself, then
+// 16 bytes that hold the cancel group the message was sent in, written only when
+// there was one (a slot of kind kindMsgGroup; THE GROUP TRAVELS, below), all in
+// the size of M plus 16 rounded to 16 bytes and not under 32: the size of a slot
 // follows from M, so it is as big as the actor's largest message needs. A send
 // allocates nothing:
 //
@@ -468,9 +468,9 @@
 // make it, with one compare-and-swap and no waiting). Later segments grow by
 // a factor of 4 up to 256 slots (or the most that fit in 16 KB), but not past
 // what the queue asks (twice its depth, rounded up to a power of two, and not
-// under a "small" segment of about 2 KB of slots). With the 32-byte header and
+// under a "small" segment of about 2 KB of slots). With the 16-byte header and
 // 32-byte minimum payload, an actor sent a message holds a segment of at least
-// 32 + 2 * 64 bytes. Nothing limits a mailbox yet: it grows as the senders
+// 32 + 2 * 48 bytes. Nothing limits a mailbox yet: it grows as the senders
 // outrun the consumer (MAILBOX LIMIT, below).
 //
 // THE IDLE MARK. A mailbox whose actor is not queued or running is idle, and
@@ -947,15 +947,15 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 // The mailbox: a ring of fixed-size slots, grown in linked segments (THE MAILBOX, above)
 // ---------------------------------------------------------------------------
 
-// A slot is a 32-byte header, then its payload. The header: 'seq', which
+// A slot is a 16-byte header, then its payload. The header: 'seq', which
 // says the slot has been written (position * 8 + a kind) and so is the
-// publication; 'cause', one word for the id of the send that made the
-// message (the tracing hooks fill it; zero when they are off); and 16 bytes
-// that hold the sender's cancel group in a slot of kind kindMsgGroup, unwritten
-// in any other (THE GROUP TRAVELS, below). The payload is the message M itself
-// for a message, and for a reply a record of its own (REPLIES, above). The
-// header is 32 bytes, not 24, so that the payload stays aligned to 16.
-const slotHead = 32usize;
+// publication, and 'cause', one word for the id of the send that made the
+// message (the tracing hooks fill it; zero when they are off). The payload is the
+// message M itself for a message, and for a reply a record of its own
+// (REPLIES, above). The last 16 bytes of the slot hold the sender's cancel group
+// in a slot of kind kindMsgGroup, unwritten in any other (THE GROUP TRAVELS,
+// below): payloadBytes leaves them after M.
+const slotHead = 16usize;
 
 // A segment: this header, then 'count' slots. 'base' is the position of its
 // first slot and 'count' its size, both fixed once it is linked; 'next' is
@@ -1013,7 +1013,7 @@ const posMask = 0x7FFFFFFFFFFFFFFFu64;
 
 // The kinds a published slot has
 const kindMsg = 1u64;        // a message: M is in the payload
-const kindMsgGroup = 6u64;   // a message sent in a cancel group (THE GROUP TRAVELS): M is in the payload, the group in the header
+const kindMsgGroup = 6u64;   // a message sent in a cancel group (THE GROUP TRAVELS): M is in the payload, the group in the slot's last 16 bytes
 const kindReply = 2u64;      // a reply (REPLIES): 2 + 1 if its record has an id, + 2 if its value is boxed
 
 // The sizes, named. The first segment, made by the first send, holds
@@ -1048,10 +1048,12 @@ const noLimit = 0xFFFFFFFFu32;
 
 fn nullExtra() *Extra {null}
 
-// The size of a slot's payload for messages M: M rounded to 16 bytes, and not
-// less than minPayload, so that a reply's resume record and a small value fit
+// The size of a slot's payload for messages M: M and then 16 bytes for the
+// cancel group a message may carry (THE GROUP TRAVELS), rounded to 16 bytes, and
+// not less than minPayload, so that a reply's resume record and a small value
+// fit. A message of 16 bytes or less gets its group's room free
 fn payloadBytes[M: Sendable]() usize {
-  let n = roundUp(mem.sizeof[M](), 16usize);
+  let n = roundUp(mem.sizeof[M]() + 16usize, 16usize);
   if n < minPayload {minPayload} else {n}
 }
 
@@ -2134,14 +2136,14 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   }
   mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
   mem.writeRaw[M](payloadOf(c.slot) as *M, msg);
-  // the sender's current cancel group, if it has one, rides in the slot's header
+  // the sender's current cancel group, if it has one, rides in the slot, after M,
   // as a copy of its handle: another owner of the group, moved out by the
   // dispatcher (THE GROUP TRAVELS)
   var kind = kindMsg;
   let gp = curGroup;
   if gp != 0usize {
     let g = *(gp as &CancelGroup);
-    mem.writeRaw[CancelGroup](groupAt(c.slot), g);
+    mem.writeRaw[CancelGroup](groupAt(h, c.slot), g);
     kind = kindMsgGroup;
   }
   if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
@@ -2158,14 +2160,14 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
 fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 
 // Where a slot of kind kindMsgGroup holds the cancel group it was sent in: the
-// header's last 16 bytes, the size of a CancelGroup (startWorkers checks)
-fn groupAt(slot: *u8) *CancelGroup {(slot + 16usize) as *CancelGroup}
+// last 16 bytes of the slot, past M, the size of a CancelGroup (startWorkers checks)
+fn groupAt(h: *Header, slot: *u8) *CancelGroup {(slot + (strideOf(h) - 16usize)) as *CancelGroup}
 
 // THE GROUP TRAVELS. The cancel group (package cancelgroups) the running code
 // works in is the thread's CURRENT GROUP: 'curGroup', a thread-local pointer to a
 // handle some frame on this thread owns, or 0 for none. A send made while there
-// is one puts a copy of that handle in the slot's header (the header's last 16
-// bytes) and publishes the slot as kindMsgGroup; a send made with none writes
+// is one puts a copy of that handle in the slot (its last 16
+// bytes, after M; the header stays 16 bytes) and publishes the slot as kindMsgGroup; a send made with none writes
 // nothing and publishes kindMsg, so the common message pays a thread-local read
 // and a branch. The dispatcher (runInGroup) moves the handle out of the slot
 // into its own frame, makes it the current group for the behaviour, and drops it
@@ -2309,11 +2311,11 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   n
 }
 
-// A message sent in a cancel group: the group is moved out of the slot's header
+// A message sent in a cancel group: the group is moved out of the slot
 // into this frame, made the thread's current group while the behaviour runs, and
 // dropped (the owner this message held let go) when it has returned
 fn runInGroup[S, M: Sendable](f: &fn(s: &uni S, m: *M), h: *Header, slot: *u8) {
-  let g = mem.readRaw[CancelGroup](groupAt(slot));
+  let g = mem.readRaw[CancelGroup](groupAt(h, slot));
   curGroup = &g as *CancelGroup as usize;
   f(stateOf[S, M](h) as &uni S, payloadOf(slot) as *M);
   curGroup = 0usize;
@@ -2642,7 +2644,11 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   holdArc[M](h);
   var flags = 0u64;
   if hasId {flags = replyHasId;}
-  if size > strideOf(h) - slotHead - replyHead || align > 16usize {
+  // the room a reply's value has is the payload before the group's 16 bytes were
+  // added (so a reply is boxed exactly when it was), and not under minPayload
+  var room = strideOf(h) - slotHead - 16usize;
+  if room < minPayload { room = minPayload; }
+  if size > room - replyHead || align > 16usize {
     flags = flags | replyBoxed;
   }
   Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
@@ -4229,9 +4235,9 @@ fn ensureRunning() {
 
 // Start the workers as configure said, once
 fn startWorkers() {
-  // A slot's header holds a CancelGroup in 16 bytes (THE GROUP TRAVELS)
+  // A slot keeps 16 bytes for a CancelGroup (THE GROUP TRAVELS)
   if mem.sizeof[CancelGroup]() > 16usize || mem.alignof[CancelGroup]() > 8usize {
-    die("actors: a CancelGroup no longer fits the slot header");
+    die("actors: a CancelGroup no longer fits its room in a slot");
   }
   let chosenN = chosenWorkers.load();
   let n = if chosenN == 0u32 {thread.parallelism()} else {chosenN};
