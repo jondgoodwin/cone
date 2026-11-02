@@ -34,12 +34,6 @@ struct Bvh {
       keys.push(0.);
       i = i + 1usize;
     }
-    var scratch = List[u32].withCapacity(n);
-    i = 0usize;
-    while i < n {
-      scratch.push(0u32);
-      i = i + 1usize;
-    }
     // Nodes waiting to be made: node number, first item, item count
     var todo = List[u32].empty();
     t.addNode();
@@ -87,7 +81,7 @@ struct Bvh {
           keys.set(it, key);
           k = k + 1usize;
         }
-        sortItems(&mut t.items, start, start + cnt, &keys, &mut scratch);
+        sortItems(&mut t.items, start, start + cnt, &keys);
         let half = cnt / 2usize;
         let left = t.addNode();
         t.addNode();
@@ -151,46 +145,18 @@ fn maxVec(a: Vec3, b: Vec3) Vec3 {
   Vec3(if a.x > b.x {a.x} else {b.x}, if a.y > b.y {a.y} else {b.y}, if a.z > b.z {a.z} else {b.z})
 }
 
-// Items from 'start' to 'end' sorted by key, ties by item number: a merge
-// sort, bottom up, through 'scratch'
-fn sortItems(items: &mut List[u32], start: usize, end: usize, keys: &List[f32], scratch: &mut List[u32]) {
-  let n = end - start;
-  var width = 1usize;
-  while width < n {
-    var lo = start;
-    while lo < end {
-      let mid = if lo + width < end {lo + width} else {end};
-      let hi = if lo + 2usize * width < end {lo + 2usize * width} else {end};
-      var i = lo;
-      var j = mid;
-      var k = lo;
-      while k < hi {
-        var takeLeft = false;
-        if i < mid && j < hi {
-          let a = *items[i];
-          let b = *items[j];
-          let ka = *keys[usize.from(a)];
-          let kb = *keys[usize.from(b)];
-          takeLeft = ka < kb || (ka == kb && a <= b);
-        } else {
-          takeLeft = i < mid;
-        }
-        if takeLeft {
-          scratch.set(k, *items[i]);
-          i = i + 1usize;
-        } else {
-          scratch.set(k, *items[j]);
-          j = j + 1usize;
-        }
-        k = k + 1usize;
-      }
-      lo = hi;
-    }
-    var k = start;
-    while k < end {
-      items.set(k, *scratch[k]);
-      k = k + 1usize;
-    }
-    width = width * 2usize;
+// Items from 'start' to 'end' sorted by key, ties by item number (a total order, so the
+// result is the same whichever sort does it)
+fn sortItems(items: &mut List[u32], start: usize, end: usize, keys: &List[f32]) {
+  items.sliceMut(start, end).sortBy(&ItemOrder(keys));
+}
+
+// The comparison of sortItems (a struct, since a function literal cannot be given to an Array's sortBy)
+struct ItemOrder['a] {
+  keys: &'a List[f32];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let ka = *keys[usize.from(*a)];
+    let kb = *keys[usize.from(*b)];
+    if ka < kb { -1i32 } else if ka > kb { 1i32 } else { *a <=> *b }
   }
 }

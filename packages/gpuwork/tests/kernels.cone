@@ -2502,22 +2502,6 @@ fn compactTwin(inv: Invocation, buffers: &Array[Words]) {
   compact(inv, buffers[0usize].u32s(), buffers[1usize].atomicU32s(), buffers[2usize].u32sMut());
 }
 
-// Sort 'w' ascending (insertion sort: a test's few hundred words)
-fn sortWords(w: &mut List[u32]) {
-  let v = w.viewMut();
-  var i = 1usize;
-  while i < v.len {
-    let x = v[i];
-    var j = i;
-    while j > 0usize && v[j - 1usize] > x {
-      v[j] = v[j - 1usize];
-      j = j - 1usize;
-    }
-    v[j] = x;
-    i = i + 1usize;
-  }
-}
-
 fn sameWords(a: &Array[u32], b: &Array[u32]) bool {
   if a.len != b.len { return false; }
   var i = 0usize;
@@ -2551,7 +2535,7 @@ fn compactOnTwin(kernel: &Kernel, input: &List[u32], gpuCount: u32, gpuKept: &Ar
     kept.push(*buffers[2usize][i]);
     i = i + 1usize;
   }
-  sortWords(&mut kept);
+  kept.sort();
   expect(sameWords(kept.view(), gpuKept), what);
 }
 
@@ -2963,7 +2947,7 @@ fn main() i32 {
       if *input[i] % 3u32 == 0u32 { want.push(*input[i]); }
       i = i + 1usize;
     }
-    sortWords(&mut want);
+    want.sort();
     // The GPU's
     var job = Job.make(&mut device);
     let inS = job.give(upload(&mut device, input.view()));
@@ -2983,7 +2967,7 @@ fn main() i32 {
       gpuKept.push(*ow[i]);
       i = i + 1usize;
     }
-    sortWords(&mut gpuKept);
+    gpuKept.sort();
     expectUInt(u64.from(gpuCount), u64.from(want.len()), "compact on the GPU: a slot for each multiple of 3");
     expect(sameWords(gpuKept.view(), want.view()), "compact on the GPU: the values kept, sorted");
     // Each twin's: the direct one, and the Words adapter's atomic view
