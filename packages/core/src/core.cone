@@ -962,12 +962,15 @@ pub struct @opaque Array[T] is GcTraceElements {
   //
   // Equal elements keep the order they had. A merge sort over the runs it finds: an
   // ascending or a strictly descending run (which is reversed) is taken whole, a run
-  // shorter than 20 is lengthened by insertion, and the runs are merged in Powersort's
+  // shorter than 32 is lengthened by insertion, and the runs are merged in Powersort's
   // order (Munro and Wild), which keeps the merges balanced however long the runs are.
   // Sorted input is one run, so it takes n - 1 comparisons, no merge and no allocation;
   // a merge of two runs already in order is skipped. A merge copies the shorter of its two
   // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
-  // it and given back before the sort returns. n log n comparisons at worst.
+  // it and given back before the sort returns. A merge works in blocks of 16 plain steps
+  // and gallops (a doubling search, then a binary one, then one block move) after a block
+  // that one run won whole, so streaks of equal or clustered values cost log time, not linear.
+  // n log n comparisons at worst.
 
   // Powersort's power of the boundary between two adjacent runs, the first starting at s1 with
   // n1 elements, the second n2 long, among the n elements: the depth of the shallowest node of a
@@ -1016,6 +1019,37 @@ pub struct @opaque Array[T] is GcTraceElements {
     end - start
   }
 
+  // How many elements, from 'base' on (or, with 'rev', going down from the one before 'base'),
+  // out of 'len', meet a condition that holds for a leading stretch and then never again:
+  // the order of the element against 'key' (the element first, or with 'swap' the key
+  // first) is below 0 (or, without 'wantNeg', 0 or above). Found by galloping: probes at
+  // doubling distances, then a binary search inside the last stretch, so a streak of c costs
+  // about 2 log2 c comparisons
+  fn gallopCount[F: fn(a: &T, b: &T) i32](self: &, base: *T, len: usize, key: *T, swap: bool, wantNeg: bool, rev: bool, order: &F) usize {
+    var known = 0usize;
+    var step = 1usize;
+    var more = true;
+    while more && known + step <= len {
+      let e = if rev { base - (known + step) } else { base + (known + step - 1usize) };
+      let r = if swap { order(key as &T, e as &T) } else { order(e as &T, key as &T) };
+      if (if wantNeg { r < 0i32 } else { r >= 0i32 }) {
+        known = known + step;
+        step = step << 1usize;
+      }
+      else {
+        more = false;
+      }
+    }
+    var hi = if known + step < len { known + step } else { len };
+    while known < hi {
+      let mid = known + (hi - known) / 2usize;
+      let e = if rev { base - (mid + 1usize) } else { base + mid };
+      let r = if swap { order(key as &T, e as &T) } else { order(e as &T, key as &T) };
+      if (if wantNeg { r < 0i32 } else { r >= 0i32 }) { known = mid + 1usize; } else { hi = mid; }
+    }
+    known
+  }
+
   // Merge the sorted runs [lo, mid) and [mid, hi) into one, stably, copying the shorter one
   // to 'buf' (room for half the elements; got from 'scratch' if it is still null). Answers
   // the buffer, so the caller can reuse and give it back. Nothing happens, and no buffer is
@@ -1038,15 +1072,40 @@ pub struct @opaque Array[T] is GcTraceElements {
       var j = mid;
       var k = lo;
       while i < na && j < hi {
-        if order((p + j) as &T, (buf + i) as &T) < 0i32 {
-          mem.moveRaw(p + k, p + j, 1usize);
-          j = j + 1usize;
+        // Steps in blocks of 16 with nothing but the plain merge step inside (so the compiler
+        // can keep it free of jumps); a block won wholly by one run says a streak may be under
+        // way, and only then is it galloped
+        let left = if na - i < hi - j { na - i } else { hi - j };
+        let steps = if left < 16usize { left } else { 16usize };
+        let j0 = j;
+        var s = 0usize;
+        while s < steps {
+          if order((p + j) as &T, (buf + i) as &T) < 0i32 {
+            mem.moveRaw(p + k, p + j, 1usize);
+            j = j + 1usize;
+          }
+          else {
+            mem.moveRaw(p + k, buf + i, 1usize);
+            i = i + 1usize;
+          }
+          k = k + 1usize;
+          s = s + 1usize;
         }
-        else {
-          mem.moveRaw(p + k, buf + i, 1usize);
-          i = i + 1usize;
+        let tookJ = j - j0;
+        if steps == 16usize {
+          if tookJ == 16usize && j < hi {
+            let c = self.gallopCount(p + j, hi - j, buf + i, false, true, false, order);
+            mem.moveRaw(p + k, p + j, c);
+            j = j + c;
+            k = k + c;
+          }
+          else if tookJ == 0usize && i < na {
+            let c = self.gallopCount(buf + i, na - i, p + j, true, false, false, order);
+            mem.moveRaw(p + k, buf + i, c);
+            i = i + c;
+            k = k + c;
+          }
         }
-        k = k + 1usize;
       }
       // What is left of the second run is already in place
       mem.moveRaw(p + k, buf + i, na - i);
@@ -1059,14 +1118,36 @@ pub struct @opaque Array[T] is GcTraceElements {
       var j = nb;
       var k = hi;
       while i > 0usize && j > 0usize {
-        k = k - 1usize;
-        if order((buf + j - 1usize) as &T, (p + lo + i - 1usize) as &T) < 0i32 {
-          mem.moveRaw(p + k, p + lo + i - 1usize, 1usize);
-          i = i - 1usize;
+        let left = if i < j { i } else { j };
+        let steps = if left < 16usize { left } else { 16usize };
+        let i0 = i;
+        var s = 0usize;
+        while s < steps {
+          k = k - 1usize;
+          if order((buf + j - 1usize) as &T, (p + lo + i - 1usize) as &T) < 0i32 {
+            mem.moveRaw(p + k, p + lo + i - 1usize, 1usize);
+            i = i - 1usize;
+          }
+          else {
+            mem.moveRaw(p + k, buf + j - 1usize, 1usize);
+            j = j - 1usize;
+          }
+          s = s + 1usize;
         }
-        else {
-          mem.moveRaw(p + k, buf + j - 1usize, 1usize);
-          j = j - 1usize;
+        let tookI = i0 - i;
+        if steps == 16usize {
+          if tookI == 16usize && i > 0usize {
+            let c = self.gallopCount(p + lo + i, i, buf + j - 1usize, true, true, true, order);
+            mem.moveRaw(p + k - c, p + lo + i - c, c);
+            i = i - c;
+            k = k - c;
+          }
+          else if tookI == 0usize && j > 0usize {
+            let c = self.gallopCount(buf + j, j, p + lo + i - 1usize, false, false, true, order);
+            mem.moveRaw(p + k - c, buf + j - c, c);
+            j = j - c;
+            k = k - c;
+          }
         }
       }
       // What is left of the first run is already in place
@@ -1102,8 +1183,8 @@ pub struct @opaque Array[T] is GcTraceElements {
       var root = SortScratch[T](null, 0usize);
       while pos < n {
         var len = self.naturalRun(pos, order);
-        if len < 20usize && pos + len < n {
-          let end = if n - pos < 20usize { n } else { pos + 20usize };
+        if len < 32usize && pos + len < n {
+          let end = if n - pos < 32usize { n } else { pos + 32usize };
           let part = mem.sliceFromPartsMut[T](p + pos, end - pos);
           var i = len;
           while i < part.len { part.insertTail(i, order); i = i + 1usize; }
