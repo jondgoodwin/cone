@@ -1,0 +1,110 @@
+// What is refused of a generic actor, at the instance that causes it.
+//
+// - A behaviour's parameter of type T crosses to the actor's thread, so each
+//   instance must have a Sendable T. 'Box[u64]' is fine (the line has no
+//   annotation); 'Box[Rc[mut, Log]]' is refused at the parameter, naming the
+//   instance and what binds the argument to its thread. So is an 'init' that
+//   makes the state from a T, and a returned T, which goes back in a reply.
+// - The actor's type parameter keeps its bound: 'Tally[Rock]' where Rock does
+//   not meet Scorer.
+// - The 'is' list is judged at the instance: Pair[Key] says it is a Sink[Click]
+//   and has behaviours for a Key, so it does not conform.
+// - A lifetime among the type parameters is refused (concurrency_actor_parse).
+
+mod concurrency_actor_generic_refused;
+
+import actors;
+
+struct Log {pub n: u64;}
+
+struct Click is Sendable {pub x: u64;}
+struct Key is Sendable {pub k: u64;}
+
+actor Box[T] {
+  held: Option[T];
+
+  fn init(self: &new) {
+    *self = Self(held: None[T]);
+  }
+
+  pub async fn put(self, v: T) {            //~ ErrorNotSendable "Actor Box[Rc[mut, Log]]'s behaviour put takes v, a Rc[mut, Log], which is not Sendable"
+    held = Some[T](v);
+  }
+}
+
+actor Seeded[T] {
+  seed: T;
+
+  fn init(self: &new, from: T) {            //~ ErrorNotSendable "Actor Seeded[Rc[mut, Log]]'s initializer takes from, a Rc[mut, Log], which is not Sendable"
+    *self = Self(seed: from);
+  }
+}
+
+actor Asked[T] {
+  asked: u64;
+
+  fn init(self: &new) {
+    *self = Self(asked: 0u64);
+  }
+
+  pub async fn get(self) Option[T] {        //~ ErrorNotSendable "Actor Asked[Rc[mut, Log]]'s behaviour get returns a Option, which is not Sendable: Some is Rc[mut, Log]"
+    asked = asked + 1u64;
+    None[T]
+  }
+}
+
+trait Scorer {
+  fn score(self: &) u64;
+}
+
+struct Rock {pub w: u64;}
+
+struct Gem is Sendable, Scorer {
+  pub carat: u64;
+  fn score(self: &) u64 { carat }
+}
+
+actor Tally[S: Scorer] {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn add(self, item: S) {
+    sum = sum + item.score();
+  }
+}
+
+actor trait Sink[Event] {
+  pub async fn hear(self, e: Event);
+}
+
+actor Pair[E] is Sink[Click] {              //~ ErrorActorTraitConform "Actor Pair[Key] does not conform to actor trait Sink[Click], which it says it is"
+  last: u64;
+
+  fn init(self: &new) {
+    *self = Self(last: 0u64);
+  }
+
+  pub async fn hear(self, e: E) {}
+}
+
+fn main() {
+  initAll();
+  {
+    let fine = Box[u64]();
+    fine.put(1u64);
+    let peek = fine.held;                     //~ ErrorNotPublic "`held` is part of actor Box's private state"
+    let bad = Box[Rc[mut, Log]]();
+    let s = Seeded[Rc[mut, Log]](Rc[mut, Log](0u64));
+    let a = Asked[Rc[mut, Log]]();
+    let gems = Tally[Gem]();
+    let rocks = Tally[Rock]();                //~ ErrorWhereUnmet "Tally requires S is Scorer, and Rock is not Scorer"
+    let ok = Pair[Click]();
+    let sk: Sink[Click] = ok;
+    let no = Pair[Key]();
+    let sno: Sink[Click] = no;                //~ ErrorActorTraitConform "Actor Pair[Key] does not conform to actor trait Sink[Click], which it is converted to here"
+  }
+  finalAll();
+}

@@ -667,7 +667,7 @@ An actor's declaration has five codes of its own and borrows three. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
-macro, `extern`, a `self` of another kind, a generic actor, one with a base to
+macro, `extern`, a `self` of another kind, an actor with a lifetime parameter, one with a base to
 `extends` or an `is` on a condition, an `is` naming something that is not an actor
 trait), is `ErrorActorMember` (the last once types are known, `actorCheckIs`);
 an actor that says it `is` an actor trait and does not conform is

@@ -1,0 +1,94 @@
+// The other forms a generic actor takes, each once: two type parameters, two
+// initializers (the second joins the 'init' overload name and takes one more
+// argument), a 'final', and 'selfactor' naming the instance's own handle, a
+// handle of the same instance (sent a message through).
+//
+// - Swap[A, B] holds an A and a B and a tag. 'init(a, b)' tags it 1;
+//   'initTagged(a, b, tag)' tags it as asked. 'put(a, b)' stores both;
+//   'again(na, nb)' sends 'put' to itself through 'selfactor' and answers its
+//   tag. 'first', 'second' and 'tagOf' answer what it holds.
+// - Two instances, Swap[u64, bool] and Swap[i32, f64], used by a reporter.
+//
+// Worked out by hand. The first is made by 'init' as (1, true), tag 1; put
+// (7, false); then 'again' with (8, false), which answers 1 after sending itself
+// the 'put'. The reporter asks 'first' only after that answer, so the put is
+// already in the swap's mailbox ahead of the question: (8, false), tag 1. The
+// second is made by 'initTagged' as (3, 2.5) with tag 9, put (4, 0.5): it holds
+// (4, 0.5), tag 9.
+
+mod concurrency_actor_generic_forms;
+
+import stdio use *;
+import actors;
+
+actor Swap[A, B] {
+  a: A;
+  b: B;
+  tag: u64;
+
+  fn initPlain overload init(self: &new, a: A, b: B) {
+    *self = Self(a: a, b: b, tag: 1u64);
+  }
+
+  fn initTagged overload init(self: &new, a: A, b: B, tag: u64) {
+    *self = Self(a: a, b: b, tag: tag);
+  }
+
+  pub async fn put(self, na: A, nb: B) {
+    a = na;
+    b = nb;
+  }
+
+  pub async fn again(self, na: A, nb: B) u64 {
+    let me = selfactor;
+    me.put(na, nb);
+    tag
+  }
+
+  pub async fn first(self) A {
+    a
+  }
+
+  pub async fn second(self) B {
+    b
+  }
+
+  pub async fn tagOf(self) u64 {
+    tag
+  }
+
+  fn final(self: &uni) {
+  }
+}
+
+fn word(b: bool) &str {
+  if b { "true" } else { "false" }
+}
+
+actor Reporter {
+  pub async fn report(self, x: Swap[u64, bool], y: Swap[i32, f64]) {
+    x.put(7u64, false);
+    let t = await x.again(8u64, false);
+    let xa = await x.first();
+    let xb = await x.second();
+    y.put(4i32, 0.5);
+    let ya = await y.first();
+    let yb = await y.second();
+    let yt = await y.tagOf();
+    printStr("x tag "); printUInt(t); printStr(" holds "); printUInt(xa);
+    printStr(" "); printStr(word(xb)); printStr("\n");
+    printStr("y tag "); printUInt(yt); printStr(" holds "); printInt(i64.from(ya));
+    printStr(" "); printFloat(yb); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let x = Swap[u64, bool](1u64, true);
+    let y = Swap[i32, f64](3i32, 2.5, 9u64);
+    let reporter = Reporter();
+    reporter.report(x, y);
+  }
+  finalAll();
+}

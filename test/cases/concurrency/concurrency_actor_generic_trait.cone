@@ -1,0 +1,113 @@
+// A generic actor that meets a generic actor trait: 'actor Collector[E: Coded] is
+// Sink[E]' conforms to the instance of 'Sink' at its own argument, so
+// Collector[Click] is a Sink[Click] and Collector[Key] a Sink[Key], and neither
+// is the other's. The 'is' list is judged at each instance, as is the conversion
+// to the trait's handle.
+//
+// - A list of Sink[Click] holds a Collector[Click] and an actor that is not
+//   generic (Doubler, which conforms to the same instance); 'publish' sends a
+//   click to each through the trait's handle, one table call to the actor's own
+//   sending method.
+// - A Collector[Key] is kept as a Sink[Key], by a 'let' with the type written.
+// - 'total', which returns a value, is awaited through each handle: what the
+//   trait's instance says, a u64.
+//
+// Worked out by hand. Each Collector adds the code of what it hears: clicks of
+// 5 and 7 give 12, keys of 65 and 66 give 131. The Doubler adds twice each
+// click's: 24.
+
+mod concurrency_actor_generic_trait;
+
+import stdio use *;
+import collections use List;
+import actors;
+
+trait Coded {
+  fn code(self: &) u64;
+}
+
+struct Click is Sendable, Coded {
+  pub x: u64;
+  fn code(self: &) u64 { x }
+}
+
+struct Key is Sendable, Coded {
+  pub k: u64;
+  fn code(self: &) u64 { k }
+}
+
+actor trait Sink[Event] {
+  pub async fn hear(self, e: Event);
+  pub async fn total(self) u64;
+}
+
+actor Collector[E: Coded] is Sink[E] {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn hear(self, e: E) {
+    sum = sum + e.code();
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+actor Doubler is Sink[Click] {
+  sum: u64;
+
+  fn init(self: &new) {
+    *self = Self(sum: 0u64);
+  }
+
+  pub async fn hear(self, e: Click) {
+    sum = sum + e.x * 2u64;
+  }
+
+  pub async fn total(self) u64 {
+    sum
+  }
+}
+
+// One click to every sink in the list, whatever each is
+fn publish(sinks: &List[Sink[Click]], x: u64) {
+  var i = 0usize;
+  while i < sinks.view().len() {
+    sinks[i].hear(Click(x));
+    i = i + 1usize;
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, sinks: List[Sink[Click]], keys: Sink[Key]) {
+    var i = 0usize;
+    while i < sinks.view().len() {
+      let n = await sinks[i].total();
+      printStr("click sink "); printUInt(u64.from(i)); printStr(" holds "); printUInt(n); printStr("\n");
+      i = i + 1usize;
+    }
+    let k = await keys.total();
+    printStr("key sink holds "); printUInt(k); printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    var clicks = List[Sink[Click]].empty();
+    clicks.push(Collector[Click]());
+    clicks.push(Doubler());
+    let keys: Sink[Key] = Collector[Key]();
+    publish(&clicks, 5u64);
+    publish(&clicks, 7u64);
+    keys.hear(Key(65u64));
+    keys.hear(Key(66u64));
+    let reporter = Reporter();
+    reporter.report(clicks, keys);
+  }
+  finalAll();
+}

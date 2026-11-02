@@ -3,7 +3,7 @@
 // AnyError. Four pipelines run side by side, each over input that goes wrong in
 // its own way, ending at a probe that writes down how the stream ended:
 //
-//   0. a gzip stream whose CRC-32 is corrupt -> InflateStage -> Sha256Stage -> probe:
+//   0. a gzip stream whose CRC-32 is corrupt -> Stage[Inflater] -> HashStage[Sha256] -> probe:
 //      the probe gets Failed with the inflater's message, the DeflateError is
 //      inside (holds[DeflateError], its kind BadChecksum), the data before the
 //      trailer arrived (a failure keeps what was delivered), and no digest was
@@ -11,10 +11,10 @@
 //   1. a gzip stream cut short, its source saying Finished -> the same stages:
 //      the upstream's Finished makes the inflater Truncated, and that is the
 //      probe's Failed (kind Truncated);
-//   2. a zstd frame with a corrupt byte -> ZstdDecodeStage -> Sha256Stage ->
+//   2. a zstd frame with a corrupt byte -> Stage[Decompressor] -> HashStage[Sha256] ->
 //      probe: Failed with the decoder's message and a ZstdError inside;
 //   3. a source that fails after its first chunk (the file went away) -> the
-//      same stages as 0: the upstream's own AnyError passes through InflateStage
+//      same stages as 0: the upstream's own AnyError passes through Stage[Inflater]
 //      and the hash stage unchanged, and no digest is sent.
 //
 // The message each probe expects is the one the codec gives when it is driven
@@ -32,6 +32,7 @@ import streams use *;
 import stages use *;
 import deflate;
 import zstd;
+import cryptohash;
 
 fn corpus(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
@@ -290,23 +291,23 @@ fn main() i32 {
   tx3, rx3 = Oneshot[u64].make();
   {
     let probe0 = Probe(0usize, msg0.copy(), deflateTyped, 1u32, tx0);
-    let hash0 = Sha256Stage(probe0, Checker(0usize, msg0.copy()));
-    let inf = InflateStage(hash0, deflate.Format.Gzip);
+    let hash0 = HashStage[cryptohash.Sha256](probe0, cryptohash.Sha256.make(), Checker(0usize, msg0.copy()));
+    let inf = Stage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Gzip));
     let src0 = Source(inf, badCrc, String.from(""), 0u64);
 
     let probe1 = Probe(1usize, msg1.copy(), deflateTyped, 2u32, tx1);
-    let hash1 = Sha256Stage(probe1, Checker(1usize, msg1.copy()));
-    let inf1 = InflateStage(hash1, deflate.Format.Gzip);
+    let hash1 = HashStage[cryptohash.Sha256](probe1, cryptohash.Sha256.make(), Checker(1usize, msg1.copy()));
+    let inf1 = Stage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Gzip));
     let src1 = Source(inf1, cut, String.from(""), 0u64);
 
     let probe2 = Probe(2usize, msg2.copy(), zstdTyped, 0u32, tx2);
-    let hash2 = Sha256Stage(probe2, Checker(2usize, msg2.copy()));
-    let dec = ZstdDecodeStage(hash2);
+    let hash2 = HashStage[cryptohash.Sha256](probe2, cryptohash.Sha256.make(), Checker(2usize, msg2.copy()));
+    let dec = Stage[zstd.Decompressor](hash2, zstd.Decompressor.make());
     let src2 = Source(dec, frame, String.from(""), 0u64);
 
     let probe3 = Probe(3usize, String.from("the disk went away"), noTyped, 0u32, tx3);
-    let hash3 = Sha256Stage(probe3, Checker(3usize, String.from("the disk went away")));
-    let inf3 = InflateStage(hash3, deflate.Format.Gzip);
+    let hash3 = HashStage[cryptohash.Sha256](probe3, cryptohash.Sha256.make(), Checker(3usize, String.from("the disk went away")));
+    let inf3 = Stage[deflate.Inflater](hash3, deflate.Inflater.make(deflate.Format.Gzip));
     let src3 = Source(inf3, dup(&good), String.from("the disk went away"), 1u64);
 
     src0.start();
