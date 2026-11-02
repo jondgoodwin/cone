@@ -429,6 +429,12 @@ purpose (design chat, 2 Nov): the lock excludes only other lock holders, and an
 atomic is read without the lock, so a plain write could tear under a lock-free
 reader.
 
+`ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
+return, a field, or an owning `Uni`/`Rc`) of an enrichment declaring its own `final`
+into a type that has none: the value would be dropped as the target and the `final`
+never run. It is reported at the value converted, naming both types; the remedy is
+to keep the value typed as the enrichment or lend it as a `&` reference.
+
 Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
 `Hash` with no `==`, whose remedy is to write one, reported on the type.
 `ErrorHashFloat` and `ErrorHashField` are the two fields the compiler cannot

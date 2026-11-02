@@ -2277,12 +2277,27 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   (`structEnrichLifecycle`). `struct_extends_lifecycle` pins both generic
   shapes with a finalizer that calls a method bare.
 - **A finalizer an enrichment adds runs only while the value is typed as the
-  enrichment.** Where the base declares no `final`, the enrichment may declare one,
-  and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `let p: Plain = PlainFin(1)`, or passing
-  a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
-  pinned: nothing refuses it and nothing decides it. A base's own `final` has no
-  such gap, since every enrichment carries a copy.
+  enrichment, so a by-value conversion that would skip it is refused
+  (`ErrorEnrichFinalSkipped`).** Where the base declares no `final`, the enrichment
+  may declare one, and it is this type's drop and not the base's. A value that
+  crosses to the base's name by value is dropped as the base — so
+  `let p: Plain = PlainFin(1)`, or passing a `PlainFin` to a parameter typed
+  `Plain`, ran no finalizer at all (measured on master before the rule). Ruled
+  (design chat, 1 Nov): refuse the copy, move or owning handoff of a value whose
+  type has a `final` into a type that has none, naming the enrichment; a borrowed
+  reference is unaffected, since the owner keeps its type and its drop. It is made in
+  `iexpCoerceShape`'s `CastSubtype` arm, which every by-value path reaches (an
+  initialiser, an assignment, an argument, a return, a constructor's field, a move),
+  by `structEnrichFinalSkipped`: the two types are an enrichment and its base (or
+  siblings, or down a chain), the source's namespace has `final` and the target's
+  has none. An owning reference (`Uni`, `Rc`, an owning array reference) of the one
+  converted to the same of the other is answered through its pointee. Pinned in
+  `struct_typecheck_extends_final`, with what is not refused in
+  `struct_extends_final_borrow`. Not covered: two siblings that each declare a
+  *different* `final` (the source's is skipped, the target has one, and nothing
+  refuses it), and a type that merely holds an enrichment inside a generic
+  (`Option[PlainFin]`), which is no conversion of the pointee. A base's own `final`
+  has no such gap, since every enrichment carries a copy.
 - **A folded copy is a snapshot until the folding type is laid out.** It takes
   its origin's type node and index at expansion, in name resolution; if the
   origin's type is an instantiation of a generic, type check replaces that node
