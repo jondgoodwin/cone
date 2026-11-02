@@ -39,6 +39,7 @@ ModuleNode *newModuleNode() {
     mod->instdeps = NULL;
     mod->spans = NULL;
     mod->holdsexpanded = 0;
+    mod->scratch = 0;
     return mod;
 }
 
@@ -64,6 +65,10 @@ static char *modBuiltinKind(INode *node) {
 //     because permissions and allocators do not support forward references
 // - We remember all public names for later resolution of qualified names
 void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
+
+    // An untaken '#if' branch binds no name, in the global table or anywhere
+    if (mod->scratch)
+        return;
 
     // A word held for a feature not built yet, which a folder or a file named
     // a module after, since no name token reads as one. Reported and released
@@ -130,6 +135,10 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
 // - We remember all public names for later resolution of qualified names
 void modAddNode(ModuleNode *mod, Name *name, INode *node) {
 
+    // An untaken '#if' branch is read for its syntax and keeps nothing
+    if (mod->scratch)
+        return;
+
     // imports need to be processed, as name folding must be finished
     // before we do name resolution on module's nodes
     if (node->tag == ImportTag) {
@@ -162,6 +171,8 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
 // - An overload name binds separately to its own FnOverloadDclNode, which is also owned
 //     by the module so that it is printed and can be folded in by a wildcard import
 void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
+    if (mod->scratch)
+        return;
     modAddNode(mod, fnnode->namesym, (INode*)fnnode);
 
     if (fnnode->overloadsym == NULL)
