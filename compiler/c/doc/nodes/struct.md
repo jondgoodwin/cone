@@ -1363,10 +1363,14 @@ holds the declaration to its shape at the end of the type's check
   (`Uni[Array[T]]`, what `freeze` gives) by the count it carries (`genlTraceThrough`
   reads the pointer and count of the fat owner and walks the elements; before, such an
   owner of traced elements was reported as untraceable). The rule that a value behind an
-  owner may not hold a reference into a collector declaring `writeBarrier` is not applied
-  to an owner of the body (`itypeCannotTrace`): a store into it is not heard of, a gap
-  that was there before and that a list's `freeze` of any element type would otherwise
-  expose as a refusal. A type folding Array in with
+  owner may not hold a reference into a collector declaring `writeBarrier`
+  (`itypeCannotTrace`) does not refuse an owner of the body, since a write barrier hears
+  of it: a store into an element is handed to the barrier as any store through a
+  reference is, and a store of the whole owner into memory that is not a local is handed
+  each element, by the same walk passing through the owner by its count (`genlTraceWalk`,
+  `genlTraceThrough` under `genlTraceBarrier`; no `visit`). Any other owner behind which
+  a barriered reference sits is still refused. (Bug 29: the owner's elements went unheard
+  when it was stored; test `region_barrier_frozen_array`.) A type folding Array in with
   `use Array[T] via ...` names its own `gcTraceElements` in `but`, as `List` does.
 - **One element type.** The cursor gives references to values of one type, so a
   type argument that holds a traced reference and is not `E` is held where nothing
