@@ -775,6 +775,7 @@ enum ErrorCode {
     ErrorEachNoDrain = 1568,    // An 'each' over an owned array whose items move: no cursor consumes a fixed array yet. Pointed at the source
     ErrorActorTraitMember = 1569, // What an 'actor trait' may not hold, or a form of it not built: a field, a 'fn', a behaviour with a body, a behaviour that is not 'pub' or has no 'self', a static, a macro, an 'is' or 'extends', a type parameter. Pointed at the member
     ErrorActorTraitConform = 1570, // An actor handle converted to an actor trait's handle where the actor does not conform: a behaviour of the trait it lacks, declares without 'pub' or with other parameter or return types. Names each. Pointed at the value converted
+    ErrorAtomicPlainWrite = 1571, // A plain write (assignment or swap) of an atomic value, or of a value holding one inline, through a reference that is not 'uni' ('&mut', 'Rc[mut, T]', a borrow of any other permission): another thread may be changing it atomically. Pointed at the place written
 
     // Warnings
     WarnCode = 3000,

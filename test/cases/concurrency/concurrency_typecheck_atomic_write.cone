@@ -1,0 +1,61 @@
+// A plain write of an atomic value goes only through a unique path [Jon 26
+// Sep, point 4]. A '&mut' (or any borrow but '&uni', or an owner such as
+// Rc[mut, T] / Arc[mut, T]) may be one of several names for the value, so
+// replacing it plainly may race with another's atomic operation. A place whose
+// type is an atomic value, or holds one inline, is stored into only where
+// every link on the way to it is 'uni', or it is a variable or a field of a
+// value held by value, or reached through a raw pointer.
+// The atomic's own operations ('store') take '&opaq' and are always fine.
+
+mod concurrency_typecheck_atomic_write;
+
+struct Stats {
+  pub name: u32;
+  pub hits: Atomic[u64];
+}
+
+struct Outer {
+  pub s: Stats;
+}
+
+// A plain write through '&mut': the whole struct, then the atomic field
+fn replaceWhole(r: &mut Stats, s: Stats) {
+  *r = s;                      //~ ErrorAtomicPlainWrite:3 "'mut' reference"
+}
+
+fn replaceField(r: &mut Stats) {
+  r.hits = Atomic[u64].of(0);  //~ ErrorAtomicPlainWrite:4 "holds an atomic value"
+}
+
+// Deeper: a holder of an atomic, reached through the same borrow
+fn replaceDeep(r: &mut Outer, s: Stats) {
+  r.s = s;                     //~ ErrorAtomicPlainWrite:4 "'mut' reference"
+}
+
+// A swap is a plain write of both sides
+fn swapBoth(a: &mut Stats, b: &mut Stats) {
+  *a <-> *b;                   //~ ErrorAtomicPlainWrite:3 "'mut' reference"
+}
+
+// A plain write of a non-atomic part of the same struct is fine
+fn renameOnly(r: &mut Stats) {
+  r.name = 7;
+}
+
+// The atomic's own operations through '&mut' are fine
+fn atomicOps(r: &mut Stats) u64 {
+  r.hits.store(5);
+  r.hits.add(1)
+}
+
+// A unique borrow, an owner held by value, and a local are unique paths
+fn viaUniBorrow(r: &uni Stats, s: Stats) {
+  *r = s;
+}
+
+fn viaLocal(s: Stats) Stats {
+  var mine = Stats(1, Atomic[u64].of(0));
+  mine = s;
+  mine.hits = Atomic[u64].of(2);
+  mine
+}

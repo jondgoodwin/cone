@@ -116,6 +116,9 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
         return;
     }
 
+    if (!assignAtomicStoreCheck(node->lval) || !assignAtomicStoreCheck(node->rval))
+        return;
+
     assignBorrowLifetimeCheck(node->lval, lvalscope, ((IExpNode*)node->rval)->vtype);
     assignBorrowLifetimeCheck(node->rval, rvalscope, ((IExpNode*)node->lval)->vtype);
 

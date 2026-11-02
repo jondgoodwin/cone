@@ -421,7 +421,10 @@ generic's instance such as `Atomic[f64]`, at the outermost place the program
 named it; the remedy is the type argument. `ErrorAtomicValueConst` is a `const`
 whose type holds an atomic value anywhere inline, whose remedy is a global.
 `is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
-moves and says Copy.
+moves and says Copy. `ErrorAtomicPlainWrite` is an assignment or swap over a
+place holding an atomic value, reached through a reference that is not `uni`
+(a `&mut`, an `Rc[mut, T]`): it is reported at the place, and the remedy is the
+atomic's own `store` or a unique path.
 
 Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
 `Hash` with no `==`, whose remedy is to write one, reported on the type.
