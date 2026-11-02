@@ -2421,7 +2421,21 @@ fn runReady[S](st: *S, p: *ParPending) {
   let run = (*p).resume;
   let id = (*p).id;
   let hasId = (*p).hasId;
+  let cell = (*p).group;
   libc.free(p as *u8);
+  if cell as usize != 0usize {
+    // the loop's group (THE GROUP TRAVELS): the rest of the behaviour runs in it
+    let g = mem.readRaw[CancelGroup](cell);
+    libc.free(cell as *u8);
+    curGroup = &g as *CancelGroup as usize;
+    if hasId {
+      resumeId[S](&mut *st, run, id, null);
+    } else {
+      resume[S](&mut *st, run, null);
+    }
+    curGroup = 0usize;
+    return;
+  }
   if hasId {
     resumeId[S](&mut *st, run, id, null);
   } else {
