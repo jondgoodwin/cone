@@ -130,6 +130,14 @@ pub struct EventDataSessionStateChanged {
   pub time: i64;
 }
 
+// The interaction profile of some user path changed (a controller was switched
+// on, or put down): 'getCurrentInteractionProfile' says which profile now
+pub struct EventDataInteractionProfileChanged {
+  pub type: i32;
+  pub next: *u8;
+  pub session: Session;
+}
+
 pub struct EventDataReferenceSpaceChangePending {
   pub type: i32;
   pub next: *u8;
@@ -196,6 +204,17 @@ pub struct SpaceLocation {
   pub next: *u8 = null;
   pub locationFlags: u64 = 0u64;
   pub pose: Posef;
+}
+
+// An action space: a space that follows the pose of a pose action's
+// 'subactionPath' (a hand), placed 'poseInActionSpace' from it. Located like
+// any space, against a reference space, at a time.
+pub struct ActionSpaceCreateInfo {
+  pub type: i32 = TYPE_ACTION_SPACE_CREATE_INFO;
+  pub next: *u8 = null;
+  pub action: Action;
+  pub subactionPath: u64;
+  pub poseInActionSpace: Posef;
 }
 
 // ---- Views ----
@@ -344,6 +363,182 @@ pub struct CompositionLayerProjection {
   pub space: Space;
   pub viewCount: u32 = 0u32;
   pub views: *CompositionLayerProjectionView;
+}
+
+// ---- Actions (input and haptics) ----
+
+// A group of actions the session makes active together; its names are
+// zero-terminated byte arrays ('actionSetCreateInfo' fills them from strings)
+pub struct ActionSetCreateInfo {
+  pub type: i32 = TYPE_ACTION_SET_CREATE_INFO;
+  pub next: *u8 = null;
+  pub actionSetName: Array[u8, 64];
+  pub localizedActionSetName: Array[u8, 128];
+  pub priority: u32 = 0u32;
+}
+
+// An ActionSetCreateInfo of 'name' (lower case letters, digits, '-', '_' and
+// '.') and the 'localizedName' people read, each cut to its array and
+// zero-terminated
+pub fn actionSetCreateInfo(name: &str, localizedName: &str, priority: u32) ActionSetCreateInfo {
+  var info = ActionSetCreateInfo(actionSetName: Array[u8, 64]() <- fill 0u8,
+    localizedActionSetName: Array[u8, 128]() <- fill 0u8, priority: priority);
+  var i = 0usize;
+  while i < name.len && i < 63usize {
+    info.actionSetName[i] = name[i];
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < localizedName.len && i < 127usize {
+    info.localizedActionSetName[i] = localizedName[i];
+    i = i + 1usize;
+  }
+  info
+}
+
+// One action: its 'actionType' (ACTION_TYPE_), and the paths ('subactionPaths',
+// 'countSubactionPaths' of them, such as /user/hand/left) it is read or
+// driven separately for
+pub struct ActionCreateInfo {
+  pub type: i32 = TYPE_ACTION_CREATE_INFO;
+  pub next: *u8 = null;
+  pub actionName: Array[u8, 64];
+  pub actionType: i32;
+  pub countSubactionPaths: u32 = 0u32;
+  pub subactionPaths: *u64;
+  pub localizedActionName: Array[u8, 128];
+}
+
+// An ActionCreateInfo of 'name' and 'localizedName' (cut and zero-terminated
+// as 'actionSetCreateInfo' does) with 'count' sub-action paths from 'paths'
+pub fn actionCreateInfo(name: &str, localizedName: &str, actionType: i32, count: u32, paths: *u64) ActionCreateInfo {
+  var info = ActionCreateInfo(actionName: Array[u8, 64]() <- fill 0u8, actionType: actionType,
+    countSubactionPaths: count, subactionPaths: paths, localizedActionName: Array[u8, 128]() <- fill 0u8);
+  var i = 0usize;
+  while i < name.len && i < 63usize {
+    info.actionName[i] = name[i];
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < localizedName.len && i < 127usize {
+    info.localizedActionName[i] = localizedName[i];
+    i = i + 1usize;
+  }
+  info
+}
+
+// An action and the input or output path (/user/hand/left/input/trigger/value)
+// it is suggested to be bound to
+pub struct ActionSuggestedBinding {
+  pub action: Action;
+  pub binding: u64;
+}
+
+// The bindings an application suggests for one interaction profile
+// (/interaction_profiles/oculus/touch_controller), before the session's
+// action sets are attached
+pub struct InteractionProfileSuggestedBinding {
+  pub type: i32 = TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+  pub next: *u8 = null;
+  pub interactionProfile: u64;
+  pub countSuggestedBindings: u32;
+  pub suggestedBindings: *ActionSuggestedBinding;
+}
+
+pub struct SessionActionSetsAttachInfo {
+  pub type: i32 = TYPE_SESSION_ACTION_SETS_ATTACH_INFO;
+  pub next: *u8 = null;
+  pub countActionSets: u32;
+  pub actionSets: *ActionSet;
+}
+
+// What 'getCurrentInteractionProfile' fills: the profile the runtime bound,
+// as a path (0 when none)
+pub struct InteractionProfileState {
+  pub type: i32 = TYPE_INTERACTION_PROFILE_STATE;
+  pub next: *u8 = null;
+  pub interactionProfile: u64 = 0u64;
+}
+
+// One action set to sync, for one sub-action path (0: all of them)
+pub struct ActiveActionSet {
+  pub actionSet: ActionSet;
+  pub subactionPath: u64 = 0u64;
+}
+
+pub struct ActionsSyncInfo {
+  pub type: i32 = TYPE_ACTIONS_SYNC_INFO;
+  pub next: *u8 = null;
+  pub countActiveActionSets: u32;
+  pub activeActionSets: *ActiveActionSet;
+}
+
+// Which action, and for which sub-action path (0: all of them), to read
+pub struct ActionStateGetInfo {
+  pub type: i32 = TYPE_ACTION_STATE_GET_INFO;
+  pub next: *u8 = null;
+  pub action: Action;
+  pub subactionPath: u64 = 0u64;
+}
+
+// The states the runtime fills in
+pub struct ActionStateBoolean {
+  pub type: i32 = TYPE_ACTION_STATE_BOOLEAN;
+  pub next: *u8 = null;
+  pub currentState: u32 = 0u32;
+  pub changedSinceLastSync: u32 = 0u32;
+  pub lastChangeTime: i64 = 0i64;
+  pub isActive: u32 = 0u32;
+}
+
+pub struct ActionStateFloat {
+  pub type: i32 = TYPE_ACTION_STATE_FLOAT;
+  pub next: *u8 = null;
+  pub currentState: f32 = 0.;
+  pub changedSinceLastSync: u32 = 0u32;
+  pub lastChangeTime: i64 = 0i64;
+  pub isActive: u32 = 0u32;
+}
+
+pub struct ActionStateVector2f {
+  pub type: i32 = TYPE_ACTION_STATE_VECTOR2F;
+  pub next: *u8 = null;
+  pub currentState: Vector2f = Vector2f(0., 0.);
+  pub changedSinceLastSync: u32 = 0u32;
+  pub lastChangeTime: i64 = 0i64;
+  pub isActive: u32 = 0u32;
+}
+
+pub struct ActionStatePose {
+  pub type: i32 = TYPE_ACTION_STATE_POSE;
+  pub next: *u8 = null;
+  pub isActive: u32 = 0u32;
+}
+
+// The header every haptic effect begins with: 'applyHapticFeedback' is given
+// a HapticVibration cast to a pointer to this
+pub struct HapticBaseHeader {
+  pub type: i32;
+  pub next: *u8;
+}
+
+// A buzz of 'duration' nanoseconds (MIN_HAPTIC_DURATION: the shortest the
+// device makes), 'frequency' hertz (FREQUENCY_UNSPECIFIED: the runtime's
+// choice) and 'amplitude' 0 to 1
+pub struct HapticVibration {
+  pub type: i32 = TYPE_HAPTIC_VIBRATION;
+  pub next: *u8 = null;
+  pub duration: i64;
+  pub frequency: f32 = 0.;
+  pub amplitude: f32;
+}
+
+// Which haptic action, and which sub-action path (0: all), to drive
+pub struct HapticActionInfo {
+  pub type: i32 = TYPE_HAPTIC_ACTION_INFO;
+  pub next: *u8 = null;
+  pub action: Action;
+  pub subactionPath: u64 = 0u64;
 }
 
 // ---- XR_KHR_vulkan_enable2 ----

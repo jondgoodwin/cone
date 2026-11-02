@@ -17,6 +17,7 @@
   S(EventDataEventsLost); O(EventDataEventsLost, type); O(EventDataEventsLost, next); O(EventDataEventsLost, lostEventCount);
   S(EventDataInstanceLossPending); O(EventDataInstanceLossPending, type); O(EventDataInstanceLossPending, next); O(EventDataInstanceLossPending, lossTime);
   S(EventDataSessionStateChanged); O(EventDataSessionStateChanged, type); O(EventDataSessionStateChanged, next); O(EventDataSessionStateChanged, session); O(EventDataSessionStateChanged, state); O(EventDataSessionStateChanged, time);
+  S(EventDataInteractionProfileChanged); O(EventDataInteractionProfileChanged, type); O(EventDataInteractionProfileChanged, next); O(EventDataInteractionProfileChanged, session);
   S(EventDataReferenceSpaceChangePending); O(EventDataReferenceSpaceChangePending, type); O(EventDataReferenceSpaceChangePending, next); O(EventDataReferenceSpaceChangePending, session); O(EventDataReferenceSpaceChangePending, referenceSpaceType); O(EventDataReferenceSpaceChangePending, changeTime); O(EventDataReferenceSpaceChangePending, poseValid); O(EventDataReferenceSpaceChangePending, poseInPreviousSpace);
   S(SystemGetInfo); O(SystemGetInfo, type); O(SystemGetInfo, next); O(SystemGetInfo, formFactor);
   S(SystemGraphicsProperties); O(SystemGraphicsProperties, maxSwapchainImageHeight); O(SystemGraphicsProperties, maxSwapchainImageWidth); O(SystemGraphicsProperties, maxLayerCount);
@@ -26,6 +27,7 @@
   S(SessionBeginInfo); O(SessionBeginInfo, type); O(SessionBeginInfo, next); O(SessionBeginInfo, primaryViewConfigurationType);
   S(ReferenceSpaceCreateInfo); O(ReferenceSpaceCreateInfo, type); O(ReferenceSpaceCreateInfo, next); O(ReferenceSpaceCreateInfo, referenceSpaceType); O(ReferenceSpaceCreateInfo, poseInReferenceSpace);
   S(SpaceLocation); O(SpaceLocation, type); O(SpaceLocation, next); O(SpaceLocation, locationFlags); O(SpaceLocation, pose);
+  S(ActionSpaceCreateInfo); O(ActionSpaceCreateInfo, type); O(ActionSpaceCreateInfo, next); O(ActionSpaceCreateInfo, action); O(ActionSpaceCreateInfo, subactionPath); O(ActionSpaceCreateInfo, poseInActionSpace);
   S(ViewConfigurationProperties); O(ViewConfigurationProperties, type); O(ViewConfigurationProperties, next); O(ViewConfigurationProperties, viewConfigurationType); O(ViewConfigurationProperties, fovMutable);
   S(ViewConfigurationView); O(ViewConfigurationView, type); O(ViewConfigurationView, next); O(ViewConfigurationView, recommendedImageRectWidth); O(ViewConfigurationView, maxImageRectWidth); O(ViewConfigurationView, recommendedImageRectHeight); O(ViewConfigurationView, maxImageRectHeight); O(ViewConfigurationView, recommendedSwapchainSampleCount); O(ViewConfigurationView, maxSwapchainSampleCount);
   S(ViewLocateInfo); O(ViewLocateInfo, type); O(ViewLocateInfo, next); O(ViewLocateInfo, viewConfigurationType); O(ViewLocateInfo, displayTime); O(ViewLocateInfo, space);
@@ -44,6 +46,22 @@
   S(CompositionLayerBaseHeader); O(CompositionLayerBaseHeader, type); O(CompositionLayerBaseHeader, next); O(CompositionLayerBaseHeader, layerFlags); O(CompositionLayerBaseHeader, space);
   S(CompositionLayerProjectionView); O(CompositionLayerProjectionView, type); O(CompositionLayerProjectionView, next); O(CompositionLayerProjectionView, pose); O(CompositionLayerProjectionView, fov); O(CompositionLayerProjectionView, subImage);
   S(CompositionLayerProjection); O(CompositionLayerProjection, type); O(CompositionLayerProjection, next); O(CompositionLayerProjection, layerFlags); O(CompositionLayerProjection, space); O(CompositionLayerProjection, viewCount); O(CompositionLayerProjection, views);
+  S(ActionSetCreateInfo); O(ActionSetCreateInfo, type); O(ActionSetCreateInfo, next); O(ActionSetCreateInfo, actionSetName); O(ActionSetCreateInfo, localizedActionSetName); O(ActionSetCreateInfo, priority);
+  S(ActionCreateInfo); O(ActionCreateInfo, type); O(ActionCreateInfo, next); O(ActionCreateInfo, actionName); O(ActionCreateInfo, actionType); O(ActionCreateInfo, countSubactionPaths); O(ActionCreateInfo, subactionPaths); O(ActionCreateInfo, localizedActionName);
+  S(ActionSuggestedBinding); O(ActionSuggestedBinding, action); O(ActionSuggestedBinding, binding);
+  S(InteractionProfileSuggestedBinding); O(InteractionProfileSuggestedBinding, type); O(InteractionProfileSuggestedBinding, next); O(InteractionProfileSuggestedBinding, interactionProfile); O(InteractionProfileSuggestedBinding, countSuggestedBindings); O(InteractionProfileSuggestedBinding, suggestedBindings);
+  S(SessionActionSetsAttachInfo); O(SessionActionSetsAttachInfo, type); O(SessionActionSetsAttachInfo, next); O(SessionActionSetsAttachInfo, countActionSets); O(SessionActionSetsAttachInfo, actionSets);
+  S(InteractionProfileState); O(InteractionProfileState, type); O(InteractionProfileState, next); O(InteractionProfileState, interactionProfile);
+  S(ActiveActionSet); O(ActiveActionSet, actionSet); O(ActiveActionSet, subactionPath);
+  S(ActionsSyncInfo); O(ActionsSyncInfo, type); O(ActionsSyncInfo, next); O(ActionsSyncInfo, countActiveActionSets); O(ActionsSyncInfo, activeActionSets);
+  S(ActionStateGetInfo); O(ActionStateGetInfo, type); O(ActionStateGetInfo, next); O(ActionStateGetInfo, action); O(ActionStateGetInfo, subactionPath);
+  S(ActionStateBoolean); O(ActionStateBoolean, type); O(ActionStateBoolean, next); O(ActionStateBoolean, currentState); O(ActionStateBoolean, changedSinceLastSync); O(ActionStateBoolean, lastChangeTime); O(ActionStateBoolean, isActive);
+  S(ActionStateFloat); O(ActionStateFloat, type); O(ActionStateFloat, next); O(ActionStateFloat, currentState); O(ActionStateFloat, changedSinceLastSync); O(ActionStateFloat, lastChangeTime); O(ActionStateFloat, isActive);
+  S(ActionStateVector2f); O(ActionStateVector2f, type); O(ActionStateVector2f, next); O(ActionStateVector2f, currentState); O(ActionStateVector2f, changedSinceLastSync); O(ActionStateVector2f, lastChangeTime); O(ActionStateVector2f, isActive);
+  S(ActionStatePose); O(ActionStatePose, type); O(ActionStatePose, next); O(ActionStatePose, isActive);
+  S(HapticBaseHeader); O(HapticBaseHeader, type); O(HapticBaseHeader, next);
+  S(HapticVibration); O(HapticVibration, type); O(HapticVibration, next); O(HapticVibration, duration); O(HapticVibration, frequency); O(HapticVibration, amplitude);
+  S(HapticActionInfo); O(HapticActionInfo, type); O(HapticActionInfo, next); O(HapticActionInfo, action); O(HapticActionInfo, subactionPath);
   S(GraphicsBindingVulkanKHR); O(GraphicsBindingVulkanKHR, type); O(GraphicsBindingVulkanKHR, next); O(GraphicsBindingVulkanKHR, instance); O(GraphicsBindingVulkanKHR, physicalDevice); O(GraphicsBindingVulkanKHR, device); O(GraphicsBindingVulkanKHR, queueFamilyIndex); O(GraphicsBindingVulkanKHR, queueIndex);
   S(SwapchainImageVulkanKHR); O(SwapchainImageVulkanKHR, type); O(SwapchainImageVulkanKHR, next); O(SwapchainImageVulkanKHR, image);
   S(GraphicsRequirementsVulkanKHR); O(GraphicsRequirementsVulkanKHR, type); O(GraphicsRequirementsVulkanKHR, next); O(GraphicsRequirementsVulkanKHR, minApiVersionSupported); O(GraphicsRequirementsVulkanKHR, maxApiVersionSupported);
