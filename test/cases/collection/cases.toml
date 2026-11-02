@@ -759,3 +759,24 @@ stderr_mask = ['(?<=core\.cone:)\d+']
 [[scenario.collection_sort_stable_bad_order_debug.run]]
 name = "debug"
 options = ["--debug"]
+
+# Bug 30: a virtual reference reached as a field of a struct was "anything" to the reshape check,
+# so every holder of a trait-object field was refused a call to code the compiler cannot read
+# while a borrow through a shared owner was live. One marked '+ ShapeKeeping' is held to keep
+# shape where it is made (refuse), and reaches nothing more (marked); unmarked it still does
+[scenario.collection_flow_traitfield_marked]
+category = "compile"
+description = "A struct holding a 'Uni[Waker + ShapeKeeping]' in a list, reached through a pointer, handed read-only to an extern while a borrow through an 'Arc' owner is live: accepted"
+tags = ["flow"]
+
+[scenario.collection_flow_traitfield_unmarked]
+category = "reject"
+description = "The same with an unmarked 'Uni[Waker]' field is refused (1339: the call may store over the Arc); the same shape with no trait-object field passes"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_flow_traitfield_refuse]
+category = "reject"
+description = "A type whose method pushes to a list it reaches through a '&mut' parameter, made a 'Uni[Waker + ShapeKeeping]', is refused naming the push; one that writes only its own field is accepted"
+tags = ["flow"]
+diagnostics = 1

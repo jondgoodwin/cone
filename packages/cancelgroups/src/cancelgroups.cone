@@ -154,7 +154,13 @@ fn causeOf(code: u32) Option[Cause] {
 // dead watcher is dropped without a lock of its own: it asks the loop's liveness
 // directly (an atomic read), so 'watch', already under the group's lock, can
 // sweep out the entries of loops that have died without posting to them and
-// without taking any lock of the loop's. It must not block
+// without taking any lock of the loop's. It must not block.
+// What an implementer promises: 'watch' keeps it as a 'Uni[Wakeup + Sendable +
+// ShapeKeeping]', so it must be 'Sendable' and 'ShapeKeeping' (the compiler
+// infers the latter and refuses the call to 'watch' naming the offending call
+// if not): 'signal' and 'isGone' reshape no collection they reach through a
+// shared mutable path, i.e. they post and read an atomic, they do not push to,
+// clear or replace a list the caller of 'cancel' may hold a borrow into
 pub trait Wakeup {
   pub fn signal(self: &) bool;
   pub fn isGone(self: &) bool;
@@ -172,7 +178,7 @@ pub struct GroupState is Sendable, Move {
   shield: bool;              // its parent's cancel and deadline do not reach it
   parent: Option[CancelGroup];
   lock: Mutex;
-  reg: *u8;                  // private: a *Registry, see 'registry'. Under 'lock'
+  reg: *Registry;            // private: a *Registry, see 'registry'. Under 'lock'
   gid: u64;
 
   // Its state changed under its lock through a shared reference
@@ -183,10 +189,9 @@ pub struct GroupState is Sendable, Move {
 
   // The loops this group tells, made empty on the first call. The ONE place
   // 'reg' is cast back to the Registry type; every other use goes through here.
-  // 'reg' is untyped because of Bug 30: a trait-object field (the registry's
-  // Uni[Wakeup]) makes every holder of a group reach "anything" to the
-  // checker, and aio's offerAll stopped compiling. Once Bug 30 is fixed this
-  // field becomes a typed '*Registry' and this function loses its cast.
+  // The registry holds trait objects, which the reshape check takes to reach
+  // "anything" unless marked '+ ShapeKeeping' (Bug 30); the wakers are marked,
+  // so a group reaches no more than its other fields do.
   // LIFETIME: the registry is allocated here, under 'lock', by the first
   // 'watch' (a group nobody watches never has one, and 'cancelWith' and
   // 'final' look at 'reg' before calling this). Only this group's own
@@ -197,8 +202,8 @@ pub struct GroupState is Sendable, Move {
     let st = self.lists();
     if st.reg as usize == 0usize {
       let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
-      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable]].empty()));
-      st.reg = block as *u8;
+      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable + ShapeKeeping]].empty()));
+      st.reg = block;
     }
     st.reg as &mut Registry
   }
@@ -225,17 +230,17 @@ pub struct GroupState is Sendable, Move {
     if reg as usize != 0usize {
       let r = self.registry();
       mem.finalize[Registry](r as *Registry);
-      libc.free(reg);
+      libc.free(reg as *u8);
     }
   }
 }
 
 // The loops a group tells. They live out of line, so that most groups, which
-// never have one, pay 8 bytes; and behind an untyped pointer (see
-// 'GroupState.registry', Bug 30)
+// never have one, pay 8 bytes. The wakers are '+ ShapeKeeping' (see
+// 'Wakeup'), so holding them does not make a group reach "anything"
 struct Registry {
   loops: List[u64];                     // the loops registered: their ids...
-  wakers: List[Uni[Wakeup + Sendable]]; // ...and how to tell them
+  wakers: List[Uni[Wakeup + Sendable + ShapeKeeping]]; // ...and how to tell them
 }
 
 // What a handle holds to keep its group's timer armed: when the last handle
@@ -270,7 +275,7 @@ pub struct CancelGroup {
     let a = Arc[imm, GroupState](GroupState(
       state: Atomic[u32].of(codeLive), up: up, first: Atomic[u64].of(0u64), deadline: deadline,
       shield: shield, parent: parent, lock: Mutex.make(),
-      reg: 0usize as *u8,
+      reg: 0usize as *Registry,
       gid: groupSeq.add(1u64) + 1u64));
     var g: Option[Arc[imm, TimerGuard]] = None;
     if own && deadline < forever() {g = arm(a, deadline);}
