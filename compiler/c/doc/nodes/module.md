@@ -2827,8 +2827,7 @@ says how a collector reaches the values it holds where it points. So
 `itypeHoldsTraced` ("needs tracing") looks through owners and such types, and
 `itypeCannotTrace` ("cannot be traced", also infectious) marks a type holding a
 raw pointer to a value that needs tracing and declaring no `GcTraceElements`, or an owner a trace cannot pass through (a
-region with several owners and no `visit`; one whose value is behind an array
-body; a traced region declaring `writeBarrier`, whose stores a value behind an owner
+region with several owners and no `visit`; a traced region declaring `writeBarrier`, whose stores a value behind an owner
 does not make); both are remembered per struct (`holdstraced`, `cannottrace`,
 `holdsbarrier`) and answered where a cycle through an owner is reached again by
 settling the answers that waited on it where it was first asked

@@ -1336,8 +1336,12 @@ static int litFoldFloat(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) 
     case LeIntrinsic: r->bits = x <= y; r->type = boolType; return 1;
     case GtIntrinsic: r->bits = x > y; r->type = boolType; return 1;
     case GeIntrinsic: r->bits = x >= y; r->type = boolType; return 1;
-    // Two floats neither greater nor less than the other answer 0 (a NaN is never folded)
-    case CmpIntrinsic: r->bits = x > y ? 1 : x < y ? (uint64_t)-1 : 0; r->type = i32Type; return 1;
+    // totalOrder (a NaN is never folded): equal values differ only by -0 < +0
+    case CmpIntrinsic:
+        r->bits = x > y ? 1 : x < y ? (uint64_t)-1
+            : (x == 0.0 && y == 0.0 && signbit(x) != signbit(y)) ? (signbit(x) ? (uint64_t)-1 : 1) : 0;
+        r->type = i32Type;
+        return 1;
     default:
         return 0;
     }

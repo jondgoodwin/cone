@@ -345,8 +345,7 @@ static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef t
 }
 
 // '<=>' on two numbers: the i32 -1, 0 or 1 that is 'greater' minus 'less', each
-// a bool taken as 0 or 1. Two floats neither of which is greater or less than the
-// other, a NaN among them, answer 0.
+// a bool taken as 0 or 1. A float's are compared as IEEE total-order keys.
 static LLVMValueRef genlThreeWay(GenState *gen, LLVMValueRef greater, LLVMValueRef less) {
     LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
     return LLVMBuildSub(gen->builder, LLVMBuildZExt(gen->builder, greater, i32, ""),
@@ -1035,10 +1034,23 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
             case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
             case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
+            // '<=>' and 'cmp' are IEEE 754 totalOrder: each float's bits as a signed integer
+            // key (a negative's other bits flipped), so -NaN < -inf < ... < -0 < +0 < ... < +inf < +NaN
             case CmpIntrinsic:
-                fncallret = genlThreeWay(gen, LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""),
-                    LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""));
+            {
+                LLVMTypeRef inttyp = LLVMIntTypeInContext(gen->context, (unsigned)bitwidth);
+                LLVMValueRef signmask = LLVMConstInt(inttyp, bitwidth - 1, 0);
+                LLVMValueRef one = LLVMConstInt(inttyp, 1, 0);
+                LLVMValueRef keys[2];
+                for (int k = 0; k < 2; ++k) {
+                    LLVMValueRef bits = LLVMBuildBitCast(gen->builder, fnargs[k], inttyp, "");
+                    LLVMValueRef flip = LLVMBuildLShr(gen->builder, LLVMBuildAShr(gen->builder, bits, signmask, ""), one, "");
+                    keys[k] = LLVMBuildXor(gen->builder, bits, flip, "totalkey");
+                }
+                fncallret = genlThreeWay(gen, LLVMBuildICmp(gen->builder, LLVMIntSGT, keys[0], keys[1], ""),
+                    LLVMBuildICmp(gen->builder, LLVMIntSLT, keys[0], keys[1], ""));
                 break;
+            }
             // Intrinsic functions
             case SqrtIntrinsic: 
             {

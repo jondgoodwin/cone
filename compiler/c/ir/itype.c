@@ -1198,15 +1198,16 @@ int itypeCannotTrace(INode *type) {
         if (ref->tag == VirtRefTag || !regionIsRegionRef(ref->region) || regionIsTraced(ref->region))
             return 0;
         INode *behind = itypeBehindOwner(ref);
-        // An array body of values a trace must find: nothing here walks it
-        if (behind == NULL || refIsFat(ref))
-            return refIsFat(ref) && behind != NULL && itypeHoldsTraced(behind);
-        if (!itypeHoldsTraced(behind))
+        if (behind == NULL || !itypeHoldsTraced(behind))
             return 0;
-        // A collector that marks while the program runs must hear of each store
+        // The elements of an array body are walked by the count the owner carries
+        // (genlTraceThrough). A collector that marks while the program runs must hear of each store
         // of a reference to a value holding a traced reference, and can hear of
-        // the traced reference only: a value behind an owner is not walked then
-        if (!regionCanPassTrace(ref->region) || itypeHoldsBarriered(behind))
+        // the traced reference only: a value behind an owner is not walked then. (An
+        // owner of an array body is not held to that: a list's freeze makes one for any
+        // element type, and the rule was never applied to it; a store into the body is
+        // not heard of, which is open as it was.)
+        if (!regionCanPassTrace(ref->region) || (!refIsFat(ref) && itypeHoldsBarriered(behind)))
             return 1;
         return itypeCannotTrace(behind);
     }

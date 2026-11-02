@@ -4,9 +4,10 @@
 // otherwise. The cases below are each built-in comparison and its edges:
 // signed integers (a negative is below a positive, which an unsigned reading
 // of the same bits reverses), unsigned integers at every width (the top half
-// of the range is above the bottom), floats (zero of either sign, infinities,
-// and a NaN, which is neither less nor greater than anything and so answers 0,
-// itself included -- the one place '<=>' disagrees with a total order), text by
+// of the range is above the bottom), floats (IEEE 754 total order: -0 before +0,
+// infinities, and a NaN after every number when its sign is clear and before
+// every number when it is set, two NaNs of the same bits answering 0; NaNs made
+// from explicit bits, since the sign of 0.0 / 0.0 is the machine's), text by
 // byte (a prefix first, so a code point's order), references read through to
 // what they refer to, a literal taking the other operand's type, the answer
 // used as an i32 (in arithmetic and as a match subject), and a constant folded
@@ -32,6 +33,9 @@ const FOLD_SAME = -4i64 <=> -4i64;
 const FOLD_NEG = -1i32 <=> 1i32;
 const FOLD_UNSIGNED = 200u8 <=> 100u8;
 const FOLD_FLOAT = 1.5 <=> 0.5;
+const FOLD_ZEROS = -0.0 <=> 0.0;
+const FOLD_ZEROS_BACK = 0.0 <=> -0.0;
+const FOLD_ZEROS_SAME = -0.0 <=> -0.0;
 
 fn signed() {
   let lo: i32 = -5;
@@ -83,9 +87,20 @@ fn unsigned() {
   show("char astral bmp", '😀' <=> '€');
 }
 
+fn f64FromBits(bits: u64) f64 {
+  var b = bits;
+  *((&mut b) as *u64 as *f64)
+}
+
+fn f32FromBits(bits: u32) f32 {
+  var b = bits;
+  *((&mut b) as *u32 as *f32)
+}
+
 fn floats() {
   var z: f64 = 0.0;
-  let nan = z / z;
+  let nan = f64FromBits(0x7FF8000000000000u64);
+  let negnan = f64FromBits(0xFFF8000000000000u64);
   let one: f64 = 1.0;
   let inf = one / z;
   let neginf = -one / z;
@@ -101,14 +116,31 @@ fn floats() {
   show("f64 nan right", one <=> nan);
   show("f64 nan nan", nan <=> nan);
   show("f64 nan inf", nan <=> inf);
+  show("f64 zero signs back", -z <=> z);
+  show("f64 negzero negzero", -z <=> -z);
+  show("f64 negzero below tiny", -z <=> 5.0e-324);
+  show("f64 zero above negtiny", z <=> -5.0e-324);
+  show("f64 negnan left", negnan <=> one);
+  show("f64 negnan right", one <=> negnan);
+  show("f64 negnan neginf", negnan <=> neginf);
+  show("f64 negnan nan", negnan <=> nan);
+  show("f64 nan negnan", nan <=> negnan);
+  show("f64 negnan negnan", negnan <=> negnan);
+  show("f64 ieee less still false", if nan < one { 1 } else { 0 });
+  show("f64 ieee equal zeros", if z == -z { 1 } else { 0 });
   let a: f32 = 0.5;
   let b: f32 = 0.25;
   show("f32 greater", a <=> b);
   show("f32 less", b <=> a);
   var zf: f32 = 0.0;
-  let nanf = zf / zf;
+  let nanf = f32FromBits(0x7FC00000u32);
+  let negnanf = f32FromBits(0xFFC00000u32);
   show("f32 nan", nanf <=> a);
   show("f32 nan nan", nanf <=> nanf);
+  show("f32 negnan", negnanf <=> a);
+  show("f32 negnan above", a <=> negnanf);
+  show("f32 zero signs", zf <=> -zf);
+  show("f32 zero signs back", -zf <=> zf);
 }
 
 fn text() {
@@ -184,6 +216,9 @@ fn folded() {
   show("fold neg", FOLD_NEG);
   show("fold unsigned", FOLD_UNSIGNED);
   show("fold float", FOLD_FLOAT);
+  show("fold zeros", FOLD_ZEROS);
+  show("fold zeros back", FOLD_ZEROS_BACK);
+  show("fold zeros same", FOLD_ZEROS_SAME);
 }
 
 fn main() {
