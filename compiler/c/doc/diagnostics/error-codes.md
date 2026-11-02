@@ -430,8 +430,8 @@ atomic is read without the lock, so a plain write could tear under a lock-free
 reader.
 
 `ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
-return, a field, or an owning `Uni`/`Rc`) of an enrichment declaring its own `final`
-into a type that has none: the value would be dropped as the target and the `final`
+return, a field, an owning `Uni`/`Rc`, or an array) of an enrichment declaring its own `final`
+into a type that has none, or a different one: the value would be dropped as the target and the `final`
 never run. It is reported at the value converted, naming both types; the remedy is
 to keep the value typed as the enrichment or lend it as a `&` reference.
 
