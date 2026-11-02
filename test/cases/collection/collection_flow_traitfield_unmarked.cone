@@ -1,0 +1,50 @@
+// Bug 30. A trait-object field NOT marked '+ ShapeKeeping' still reaches "anything" (a trait is
+// open: its implementer may hold a shared owner of the very list a borrow is into), so a call
+// to code the compiler cannot read, handed a holder of one, is refused (1339). The same shape
+// with no trait-object field passes, and so does the marked field
+// (collection_flow_traitfield_marked).
+
+mod collection_flow_traitfield_unmarked;
+
+import collections use *;
+import sync use Arc;
+
+trait Waker { pub fn wake(self: &); }
+
+struct Reg { pub ws: List[Uni[Waker]]; }
+
+struct PlainState {
+  pub n: i64;
+  pub parent: Option[PlainHandle];
+  fn lists(self: &) &mut PlainState {
+    let p = self as *PlainState;
+    p as &mut PlainState
+  }
+}
+struct PlainHandle { s: Arc[imm, PlainState]; }
+
+struct State {
+  pub n: i64;
+  pub reg: *Reg;
+  pub parent: Option[Handle];
+  fn lists(self: &) &mut State {
+    let p = self as *State;
+    p as &mut State
+  }
+}
+struct Handle { s: Arc[imm, State]; }
+
+extern fn @c touchPlain(p: &PlainState);
+extern fn @c touch(p: &State);
+
+fn plain(h: &PlainHandle) i64 {
+  let st = h.s.lists();
+  touchPlain(st);
+  st.n
+}
+
+fn unmarked(h: &Handle) i64 {
+  let st = h.s.lists();
+  touch(st);   //~ ErrorShapeReshape "reaches a 'Arc[imm, State]' it may store over"
+  st.n
+}
