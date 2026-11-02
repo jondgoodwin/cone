@@ -150,8 +150,11 @@ fn causeOf(code: u32) Option[Cause] {
 }
 
 // What a loop gives a group to be told by (see WAKING LOOPS). 'signal' posts
-// the loop a message and answers false if the loop has gone; 'isGone' says it
-// without posting
+// the loop a message and answers false if the loop has gone. 'isGone' is how a
+// dead watcher is dropped without a lock of its own: it asks the loop's liveness
+// directly (an atomic read), so 'watch', already under the group's lock, can
+// sweep out the entries of loops that have died without posting to them and
+// without taking any lock of the loop's. It must not block
 pub trait Wakeup {
   pub fn signal(self: &) bool;
   pub fn isGone(self: &) bool;
@@ -169,13 +172,35 @@ pub struct GroupState is Sendable, Move {
   shield: bool;              // its parent's cancel and deadline do not reach it
   parent: Option[CancelGroup];
   lock: Mutex;
-  reg: *u8;                  // a *Registry: the loops to tell, made with the first; null before. Under 'lock'
+  reg: *u8;                  // private: a *Registry, see 'registry'. Under 'lock'
   gid: u64;
 
-  // Its registry, changed under its lock through a shared reference
+  // Its state changed under its lock through a shared reference
   fn lists(self: &) &mut GroupState {
     let p = self as *GroupState;
     p as &mut GroupState
+  }
+
+  // The loops this group tells, made empty on the first call. The ONE place
+  // 'reg' is cast back to the Registry type; every other use goes through here.
+  // 'reg' is untyped because of Bug 30: a trait-object field (the registry's
+  // Uni[Wakeup]) makes every holder of a group reach "anything" to the
+  // checker, and aio's offerAll stopped compiling. Once Bug 30 is fixed this
+  // field becomes a typed '*Registry' and this function loses its cast.
+  // LIFETIME: the registry is allocated here, under 'lock', by the first
+  // 'watch' (a group nobody watches never has one, and 'cancelWith' and
+  // 'final' look at 'reg' before calling this). Only this group's own
+  // 'final' frees it, when the state's last owner (an Arc) goes: so it
+  // outlives every handle, timer slot and ancestor walk that can reach it.
+  // Callers hold 'lock' (final needs none: it is the last owner)
+  fn registry(self: &) &mut Registry {
+    let st = self.lists();
+    if st.reg as usize == 0usize {
+      let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
+      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable]].empty()));
+      st.reg = block as *u8;
+    }
+    st.reg as &mut Registry
   }
 
   // Cancel with a cause: true if this call did it. The first cause is kept
@@ -185,7 +210,7 @@ pub struct GroupState is Sendable, Move {
     let st = self.lists();
     st.lock.lock();
     if st.reg as usize != 0usize {
-      let r = st.reg as &mut Registry;
+      let r = self.registry();
       var k = 0usize;
       while k < r.wakers.len() {
         r.wakers[k].signal();
@@ -198,18 +223,16 @@ pub struct GroupState is Sendable, Move {
 
   fn final(self: &uni) {
     if reg as usize != 0usize {
-      mem.finalize[Registry](reg as *Registry);
+      let r = self.registry();
+      mem.finalize[Registry](r as *Registry);
       libc.free(reg);
     }
   }
 }
 
-// The loops a group tells. They live out of line, behind an untyped pointer
-// ('reg'), for two reasons: most groups never have one, and a trait object in
-// a group's type, or behind a typed pointer the checker follows, would make
-// everything that holds a group (the I/O loop and its records) reach
-// "anything", so that it could no longer tell that a call handed a loop leaves
-// the lists beside it alone (aio's offerAll stopped compiling)
+// The loops a group tells. They live out of line, so that most groups, which
+// never have one, pay 8 bytes; and behind an untyped pointer (see
+// 'GroupState.registry', Bug 30)
 struct Registry {
   loops: List[u64];                     // the loops registered: their ids...
   wakers: List[Uni[Wakeup + Sendable]]; // ...and how to tell them
@@ -323,7 +346,9 @@ pub struct CancelGroup {
 
   // Tell the loop when this group, or an ancestor up to a shield, is
   // cancelled: once per loop. 'w' is copied into the group when the loop is
-  // not yet in it
+  // not yet in it. Each call also drops the entries of loops that have died,
+  // found by their 'isGone' (an atomic read, so no lock but the group's own
+  // is taken and nothing is posted to a dead loop)
   pub fn watch[W: Wakeup + Sendable](self: &, loopId: u64, w: &W) {
     if s.first.load() == loopId {return;}
     self.watchChain(loopId, w);
@@ -332,12 +357,7 @@ pub struct CancelGroup {
   fn watchChain[W: Wakeup + Sendable](self: &, loopId: u64, w: &W) {
     let st = s.lists();
     st.lock.lock();
-    if st.reg as usize == 0usize {
-      let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
-      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable]].empty()));
-      st.reg = block as *u8;
-    }
-    let r = st.reg as &mut Registry;
+    let r = st.registry();
     var found = false;
     var k = 0usize;
     while k < r.loops.len() {
