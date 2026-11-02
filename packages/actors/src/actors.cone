@@ -427,10 +427,9 @@
 // code is under "The mailbox", below). A slot is a 16-byte header, then a
 // payload. The header's first word, 'seq', is the slot's publication; its
 // second, 'cause', is the id of the send that made the message (TRACING HOOKS,
-// below), 0 when the hooks are off. The payload is the message M itself, then
-// 16 bytes that hold the cancel group the message was sent in, written only when
-// there was one (a slot of kind kindMsgGroup; THE GROUP TRAVELS, below), all in
-// the size of M plus 16 rounded to 16 bytes and not under 32: the size of a slot
+// below), 0 when the hooks are off. The payload is the message M itself,
+// in the size of M rounded to 16 bytes and not under 32 (a message sent in a
+// cancel group takes two slots, THE GROUP TRAVELS, below): the size of a slot
 // follows from M, so it is as big as the actor's largest message needs. A send
 // allocates nothing:
 //
@@ -952,9 +951,9 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 // publication, and 'cause', one word for the id of the send that made the
 // message (the tracing hooks fill it; zero when they are off). The payload is the
 // message M itself for a message, and for a reply a record of its own
-// (REPLIES, above). The last 16 bytes of the slot hold the sender's cancel group
-// in a slot of kind kindMsgGroup, unwritten in any other (THE GROUP TRAVELS,
-// below): payloadBytes leaves them after M.
+// (REPLIES, above). A message sent in a cancel group takes two positions, the
+// first a slot of kind kindMsgGroup whose payload holds the group (THE GROUP
+// TRAVELS, below).
 const slotHead = 16usize;
 
 // A segment: this header, then 'count' slots. 'base' is the position of its
@@ -1013,7 +1012,7 @@ const posMask = 0x7FFFFFFFFFFFFFFFu64;
 
 // The kinds a published slot has
 const kindMsg = 1u64;        // a message: M is in the payload
-const kindMsgGroup = 6u64;   // a message sent in a cancel group (THE GROUP TRAVELS): M is in the payload, the group in the slot's last 16 bytes
+const kindMsgGroup = 6u64;   // the first of two positions of a message sent in a cancel group (THE GROUP TRAVELS): the group is in this payload, the message in the next position's slot, a kindMsg
 const kindReply = 2u64;      // a reply (REPLIES): 2 + 1 if its record has an id, + 2 if its value is boxed
 
 // The sizes, named. The first segment, made by the first send, holds
@@ -1048,12 +1047,11 @@ const noLimit = 0xFFFFFFFFu32;
 
 fn nullExtra() *Extra {null}
 
-// The size of a slot's payload for messages M: M and then 16 bytes for the
-// cancel group a message may carry (THE GROUP TRAVELS), rounded to 16 bytes, and
-// not less than minPayload, so that a reply's resume record and a small value
-// fit. A message of 16 bytes or less gets its group's room free
+// The size of a slot's payload for messages M: M rounded to 16 bytes, and not
+// less than minPayload, so that a reply's resume record and a small value fit
+// (and a cancel group, 16 bytes, THE GROUP TRAVELS)
 fn payloadBytes[M: Sendable]() usize {
-  let n = roundUp(mem.sizeof[M]() + 16usize, 16usize);
+  let n = roundUp(mem.sizeof[M](), 16usize);
   if n < minPayload {minPayload} else {n}
 }
 
@@ -2126,6 +2124,12 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
+  // a sender working in a cancel group sends a pair (THE GROUP TRAVELS)
+  let gp = curGroup;
+  if gp != 0usize {
+    sendGrouped[M](h, msg, gp);
+    return;
+  }
   // One atomic add claims the slot's position; the message is written in
   // place, then one store publishes it (THE MAILBOX, above)
   let c = claim(h);
@@ -2136,21 +2140,44 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   }
   mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
   mem.writeRaw[M](payloadOf(c.slot) as *M, msg);
-  // the sender's current cancel group, if it has one, rides in the slot, after M,
-  // as a copy of its handle: another owner of the group, moved out by the
-  // dispatcher (THE GROUP TRAVELS)
-  var kind = kindMsg;
-  let gp = curGroup;
-  if gp != 0usize {
-    let g = *(gp as &CancelGroup);
-    mem.writeRaw[CancelGroup](groupAt(h, c.slot), g);
-    kind = kindMsgGroup;
-  }
   if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
     stallHere();
   }
-  let waited = publish(c, kind);
+  let waited = publish(c, kindMsg);
   if wakeAfter(h, c, waited) {
+    holdArc[M](h);
+    schedule(h);
+  }
+}
+
+// A message sent in a cancel group: TWO consecutive positions, claimed by one
+// atomic add of 2. The first is the carrier (kindMsgGroup): its payload holds a
+// copy of the sender's handle, another owner of the group. The second holds the
+// message exactly as an ungrouped send writes it, kindMsg. The message's slot is
+// published FIRST and the carrier's LAST, so a consumer that finds the carrier
+// published finds the message published too, and a consumer waiting on the
+// carrier's position (the waiting mark) is woken by the one publication that can
+// wake it. The pair may straddle two segments (see THE GROUP TRAVELS).
+fn sendGrouped[M: Sendable](h: *Header, msg: M, gp: usize) {
+  let prev = mem.atomicAdd[u64](&(*h).tail as *u64, 2u64, MemOrder.SeqCst);
+  let pos = prev & posMask;
+  let c1 = Claim(slotFor(h, pos), pos, (prev & idleBit) != 0u64);
+  let c2 = Claim(slotFor(h, pos + 1u64), pos + 1u64, false);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindSend);
+  }
+  mem.atomicStore[u64](ccause(c2.slot), cause, MemOrder.Relaxed);
+  mem.atomicStore[u64](ccause(c1.slot), 0u64, MemOrder.Relaxed);
+  mem.writeRaw[M](payloadOf(c2.slot) as *M, msg);
+  let g = *(gp as &CancelGroup);
+  mem.writeRaw[CancelGroup](payloadOf(c1.slot) as *CancelGroup, g);
+  if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    stallHere();
+  }
+  publish(c2, kindMsg);
+  let waited = publish(c1, kindMsgGroup);
+  if wakeAfter(h, c1, waited) {
     holdArc[M](h);
     schedule(h);
   }
@@ -2159,17 +2186,27 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
 // The slot's cause word (the header's second word)
 fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 
-// Where a slot of kind kindMsgGroup holds the cancel group it was sent in: the
-// last 16 bytes of the slot, past M, the size of a CancelGroup (startWorkers checks)
-fn groupAt(h: *Header, slot: *u8) *CancelGroup {(slot + (strideOf(h) - 16usize)) as *CancelGroup}
-
 // THE GROUP TRAVELS. The cancel group (package cancelgroups) the running code
 // works in is the thread's CURRENT GROUP: 'curGroup', a thread-local pointer to a
 // handle some frame on this thread owns, or 0 for none. A send made while there
-// is one puts a copy of that handle in the slot (its last 16
-// bytes, after M; the header stays 16 bytes) and publishes the slot as kindMsgGroup; a send made with none writes
-// nothing and publishes kindMsg, so the common message pays a thread-local read
-// and a branch. The dispatcher (runInGroup) moves the handle out of the slot
+// is one takes TWO consecutive positions (one atomic add of 2): the first, a
+// CARRIER (kindMsgGroup), holds a copy of that handle in its payload; the
+// second holds the message, written as any other (kindMsg). The message's slot is
+// published first and the carrier's last. A send made with none takes one
+// position and writes nothing more, so the common message pays a thread-local read
+// and a branch, and the slot, its size and its header are what they were. The
+// consumer takes the pair as one message (depth, high-water mark and limit count
+// two for it). THE PAIR AND A SEGMENT'S END: the pair may straddle two segments,
+// the carrier the last slot of one and the message the first of the next. Neither
+// padding the carrier's slot nor moving the pair on is possible with a claim by
+// one atomic add (the positions are taken before the segment is looked at), and
+// nothing needs them: each position's slot is found by its own position, as any
+// send's is (slotFor; the sender links the next segment for the second); the
+// carrier's segment cannot be reused while the carrier is unpublished, and it is
+// published last, after which the sender touches nothing; the consumer finds the
+// message's slot in its own segment or the next (pairSlot), which was linked
+// before the carrier was published; and the retiring mark counts both positions,
+// claimed together, as one claim. The dispatcher (runInGroup) moves the handle out of the carrier
 // into its own frame, makes it the current group for the behaviour, and drops it
 // after: so a behaviour sees the group its sender worked in, and the sends it
 // makes carry that group on. An envelope's group is another owner of the group,
@@ -2283,19 +2320,28 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
       return n;
     }
     let kind = mem.atomicLoad[u64](seqOf(slot), MemOrder.Relaxed) % 8u64;
+    // a message sent in a group is the pair of slots at the head: the carrier
+    // (this one) and the message's, which is published (the carrier's publication
+    // came after it)
+    var mslot = slot;
+    var mkind = kind;
+    if kind == kindMsgGroup {
+      mslot = pairSlot(h);
+      mkind = kindMsg;
+    }
     // the tracing hooks: the message's cause id is in its slot's header
     let tracing = traceLayerOn(traceLayerActors) && (*h).untraced == 0u32;
     var cause = 0u64;
     var bhv = 0u64;
     if tracing {
-      cause = mem.atomicLoad[u64](ccause(slot), MemOrder.Relaxed);
-      bhv = behaviourOf(rec, kind, payloadOf(slot));
+      cause = mem.atomicLoad[u64](ccause(mslot), MemOrder.Relaxed);
+      bhv = behaviourOf(rec, mkind, payloadOf(mslot));
       traceRunStart(h, cause, bhv);
     }
     if kind == kindMsg {
       f(stateOf[S, M](h) as &uni S, payloadOf(slot) as *M);
     } else if kind == kindMsgGroup {
-      runInGroup[S, M](f, h, slot);
+      runInGroup[S, M](f, h, slot, mslot);
     } else {
       resumeSlot[S](st, payloadOf(slot), kind);
     }
@@ -2303,6 +2349,9 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
       traceRunEnd(h, cause, bhv);
     }
     ringDone(h);
+    if kind == kindMsgGroup {
+      ringDone(h);
+    }
     n = n + 1u32;
     afterMessage(h, st as *u8, rec);
   }
@@ -2311,13 +2360,33 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
   n
 }
 
-// A message sent in a cancel group: the group is moved out of the slot
+// The slot of the position after the head, which holds the message of a pair
+// whose carrier is at the head (THE GROUP TRAVELS): in the consumer's segment, or
+// in the next, which the sender linked before it published the carrier
+fn pairSlot(h: *Header) *u8 {
+  var s = ldSeg(&(*h).cur as **Seg);
+  let pos = (*h).head + 1u64;
+  if pos >= (*s).base + u64.from((*s).count) {
+    s = ldSeg(&(*s).next as **Seg);
+    if s as usize == 0usize {
+      die("actors: a grouped message's second slot is in no segment");
+    }
+  }
+  let slot = slotAt(h, s, pos);
+  if !isPublished(mem.atomicLoad[u64](seqOf(slot), MemOrder.Acquire), pos) {
+    die("actors: a grouped message's carrier was published before its message");
+  }
+  slot
+}
+
+// A message sent in a cancel group: the group is moved out of the carrier slot
 // into this frame, made the thread's current group while the behaviour runs, and
-// dropped (the owner this message held let go) when it has returned
-fn runInGroup[S, M: Sendable](f: &fn(s: &uni S, m: *M), h: *Header, slot: *u8) {
-  let g = mem.readRaw[CancelGroup](groupAt(h, slot));
+// dropped (the owner this message held let go) when it has returned. The message
+// is in mslot
+fn runInGroup[S, M: Sendable](f: &fn(s: &uni S, m: *M), h: *Header, slot: *u8, mslot: *u8) {
+  let g = mem.readRaw[CancelGroup](payloadOf(slot) as *CancelGroup);
   curGroup = &g as *CancelGroup as usize;
-  f(stateOf[S, M](h) as &uni S, payloadOf(slot) as *M);
+  f(stateOf[S, M](h) as &uni S, payloadOf(mslot) as *M);
   curGroup = 0usize;
 }
 
@@ -2644,11 +2713,7 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   holdArc[M](h);
   var flags = 0u64;
   if hasId {flags = replyHasId;}
-  // the room a reply's value has is the payload before the group's 16 bytes were
-  // added (so a reply is boxed exactly when it was), and not under minPayload
-  var room = strideOf(h) - slotHead - 16usize;
-  if room < minPayload { room = minPayload; }
-  if size > room - replyHead || align > 16usize {
+  if size > strideOf(h) - slotHead - replyHead || align > 16usize {
     flags = flags | replyBoxed;
   }
   Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
@@ -4235,9 +4300,9 @@ fn ensureRunning() {
 
 // Start the workers as configure said, once
 fn startWorkers() {
-  // A slot keeps 16 bytes for a CancelGroup (THE GROUP TRAVELS)
+  // A group's carrier slot holds a CancelGroup in its payload (THE GROUP TRAVELS)
   if mem.sizeof[CancelGroup]() > 16usize || mem.alignof[CancelGroup]() > 8usize {
-    die("actors: a CancelGroup no longer fits its room in a slot");
+    die("actors: a CancelGroup no longer fits a slot's smallest payload");
   }
   let chosenN = chosenWorkers.load();
   let n = if chosenN == 0u32 {thread.parallelism()} else {chosenN};
