@@ -969,6 +969,35 @@ pub struct @opaque Array[T] is GcTraceElements {
   // runs to a buffer of n / 2 elements, got from 'scratch' at the first merge that needs
   // it and given back before the sort returns. n log n comparisons at worst.
 
+  // Powersort's power of the boundary between two adjacent runs, the first starting at s1 with
+  // n1 elements, the second n2 long, among the n elements: the depth of the shallowest node of a
+  // balanced binary tree over the positions that falls between the two runs' midpoints. A run on
+  // the stack is merged when a later boundary has a smaller power than the one after it.
+  // Positions are doubled so midpoints are whole. (A method, not a free function, so a program
+  // that never sorts carries none of it)
+  fn mergePower(self: &, s1: usize, n1: usize, n2: usize) u32 {
+    let n = self.len;
+    var result = 0u32;
+    var a = 2usize * s1 + n1;
+    var b = a + n1 + n2;
+    var more = true;
+    while more {
+      result = result + 1u32;
+      if a >= n {
+        a = a - n;
+        b = b - n;
+      }
+      else if b >= n {
+        more = false;
+      }
+      if more {
+        a = a << 1usize;
+        b = b << 1usize;
+      }
+    }
+    result
+  }
+
   // How many elements from 'start' make a natural run: an ascending one (no element before
   // the one preceding it), or a strictly descending one, which is reversed in place. At
   // least 1 when there is an element at 'start'
@@ -1074,7 +1103,7 @@ pub struct @opaque Array[T] is GcTraceElements {
           len = end - pos;
         }
         if top > 0usize {
-          let power = mergePower(bases[top - 1usize], lens[top - 1usize], len, n);
+          let power = self.mergePower(bases[top - 1usize], lens[top - 1usize], len);
           while top > 1usize && powers[top - 2usize] > power {
             buf = self.mergeRuns(bases[top - 2usize], bases[top - 1usize], bases[top - 1usize] + lens[top - 1usize], buf, scratch, order);
             lens[top - 2usize] = lens[top - 2usize] + lens[top - 1usize];
@@ -1231,33 +1260,6 @@ pub struct @opaque Array[T] is GcTraceElements {
 
 // The natural order of an Ordered type, as the comparison the sorts and searches take
 fn orderNatural[T](a: &T, b: &T) i32 where T is Ordered { a <=> b }
-
-// Powersort's power of the boundary between two adjacent runs, the first starting at s1 with n1
-// elements, the second n2 long, among n elements: the depth of the shallowest node of a balanced
-// binary tree over the positions that falls between the two runs' midpoints. A run on the stack
-// is merged when a later boundary has a smaller power than the one after it. Positions are
-// doubled so midpoints are whole
-fn mergePower(s1: usize, n1: usize, n2: usize, n: usize) u32 {
-  var result = 0u32;
-  var a = 2usize * s1 + n1;
-  var b = a + n1 + n2;
-  var more = true;
-  while more {
-    result = result + 1u32;
-    if a >= n {
-      a = a - n;
-      b = b - n;
-    }
-    else if b >= n {
-      more = false;
-    }
-    if more {
-      a = a << 1usize;
-      b = b << 1usize;
-    }
-  }
-  result
-}
 
 // The comparison of two elements by the keys a function gives them, for the 'ByKey' forms
 struct KeyOrder['a, T, K, F: fn(x: &T) K] {
