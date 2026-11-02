@@ -422,6 +422,8 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     }
     else {
       p = RawBlocks.alloc(keep, mem.alignof[T]()) as *T;
+      // Into a fresh block this same container owns, so the elements were reachable from its state when it
+      // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.ptr, n); }
       blockFree[T](me.region, me.ptr, me.cap);
     }
@@ -917,6 +919,8 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     let fresh = blockNew[T](region, want);
     if used > 0usize {
       let firstRun = if head + used <= cap {used} else {cap - head};
+      // Into a fresh block owned by this same container: the elements were reachable from its state when it
+      // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       mem.moveRaw(fresh, ptr + head, firstRun);
       mem.moveRaw(fresh + firstRun, ptr, used - firstRun);
     }
@@ -1146,6 +1150,8 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     }
     else {
       p = RawBlocks.alloc(n + 1usize, 1usize);
+      // Into a fresh block owned by the same container (bytes here, holding no reference); the stores that
+      // matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.buf.ptr, n); }
       blockFree[u8](me.buf.region, me.buf.ptr, me.buf.cap);
     }
@@ -1924,6 +1930,8 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
           let hash = self.hashOf(&slots[i].key);
           let j = freeBucket(fresh, freshMask, hash);
           ctrlSet(fresh, freshMask, j, hashTag(hash));
+          // Into a fresh table owned by this same container: the entries were reachable from its state when it
+          // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
           mem.moveRaw(freshSlots + j, slots + i, 1usize);
         }
         i = i + 1usize;
