@@ -392,7 +392,7 @@ by value, an array and a function go on to the table's own rows.
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
-| `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
+| `TTupleTag` | `==`, `!=` to `fnCallLowerTupleCompare` (below); else `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
 | `VectorTag` | `fnCallArrIndex` (a lane, `vectorIndex`) under `FlagIndex`; else fill in `()` as `methfld` if absent and `fnCallLowerMethod`, which finds the operator or method in the vector's own namespace. Four things are lowered by hooks of `fnCallLowerMethodOn` or the call's checks and not found there: a number beside a vector (`vectorBroadcastOperand`, before selection), `select` (`vectorSelectLower`), `.from` (`vectorFromCall`, ahead of `fnCallNumberFrom`) and a vector's contents (`contentsLowerVector`) — [vector](vector.md) |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
@@ -503,6 +503,17 @@ candidate. `fnCallLowerRefCompare`:
   (an array, a function), and a trait other than an enum, whose comparison would
   be dispatched on the variant and is not built. A virtual reference is refused
   the same way in its own arm.
+
+**A comparison of two tuples compares their elements**
+(`fnCallLowerTupleCompare`), for tuples of two to four elements: core's
+`mem.tupleEq2` to `tupleEq4`, generic functions whose body is
+`&a.0 == &b.0 && ...`, found by name and package (`tupleEqDclNameRes`,
+`tupleEqFn`). The node becomes a call of the instance at the element types
+(`genericMethodInstance`) with both operands lent read-only where they lie
+(`fnCallLendEnumOperand`). `!=` is derived under a `!` (`fnCallNeFromEq`); an
+ordering is `ErrorRefNoCompare`, as a longer tuple is. As for a slice, the
+instance is checked as any call, so an element with no `==` is refused in the
+instance. A reference to a tuple is read through to this (`fnCallLowerRefCompare`).
 
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
