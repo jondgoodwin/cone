@@ -1745,25 +1745,94 @@ static void parseDestructDcl(ParseState *parse, BlockNode *blk, VarDclNode *firs
     nodesAdd(&blk->stmts, (INode*)assign);
 }
 
-// Parse a block of statements/expressions
-INode *parseExprBlock(ParseState *parse, int isloop) {
-    BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
-    if (blk->stmts == NULL)
-        blk->stmts = newNodes(8);
-    INode *expstmt = NULL, *expsemi = NULL;   // the latest expression statement, and its ';'
-    int expopen = 0;
-    // The latest statement that ends in a block, and the ';' written directly after it. A
-    // statement that ends in a block delimits itself, so that ';' delimits an empty
-    // statement after it, and the block's last statement is that one
-    INode *blockstmt = NULL, *blocksemi = NULL;
+// Where a block's reading stands as it goes through its statements: the latest
+// expression statement and the ';' after it, and the latest statement that ends
+// in a block and the ';' after that. They are the block's, not one list of
+// statements', because a '#if' in the block reads its taken branch into the same
+// block, as though the branch's statements were written there
+typedef struct BlockTail {
+    INode *expstmt, *expsemi;
+    int expopen;
+    INode *blockstmt, *blocksemi;
+} BlockTail;
 
-    // A block's statements stand at the top level, even inside a list: a
-    // comma there belongs to them, not to the list around the block
-    int svinlist = parse->inlist;
-    parse->inlist = 0;
-    parseBlockStart();
+static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail);
+
+typedef struct BlockIf {
+    BlockNode *blk;
+    BlockTail *tail;
+    int open;           // A branch, taken or not, ended in an expression with no ';' before its '}'
+} BlockIf;
+
+// A branch of a '#if' among a block's statements. A taken one joins the block; one
+// the build does not take is read into a block of its own, which is dropped
+static void parseBlockBranch(ParseState *parse, void *ctx, int taken) {
+    BlockIf *bif = (BlockIf*)ctx;
+    if (taken) {
+        parseBlockStmts(parse, bif->blk, bif->tail);
+        if (bif->tail->expopen && bif->blk->stmts->used > 0 && bif->tail->expstmt == nodesLast(bif->blk->stmts))
+            bif->open = 1;
+        return;
+    }
+    BlockNode *stand = newBlockNode();
+    if (stand->stmts == NULL)
+        stand->stmts = newNodes(8);
+    BlockTail standtail;
+    memset(&standtail, 0, sizeof(standtail));
+    parseBlockStmts(parse, stand, &standtail);
+    if (standtail.expopen && stand->stmts->used > 0 && standtail.expstmt == nodesLast(stand->stmts))
+        bif->open = 1;
+}
+
+// Read statements from just after a '{' through the '}' that closes them, into
+// 'blk'. 'tail' carries the block's reading in and out
+static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) {
+    INode *expstmt = tail->expstmt, *expsemi = tail->expsemi;   // the latest expression statement, and its ';'
+    int expopen = tail->expopen;
+    INode *blockstmt = tail->blockstmt, *blocksemi = tail->blocksemi;   // the latest statement that ends in a block, and its ';'
 
     while (!parseBlockEnd()) {
+        // '#if' chooses which statements exist, from the facts of the build. The
+        // branch it takes is read into this block as though it were written here
+        // (parsemeta.c), so a declaration in it is the block's, and a last
+        // expression without its ';' is the block's value
+        if (lexIsToken(HashIfToken)) {
+            tail->expstmt = expstmt;
+            tail->expsemi = expsemi;
+            tail->expopen = expopen;
+            tail->blockstmt = blockstmt;
+            tail->blocksemi = blocksemi;
+            BlockIf bif;
+            bif.blk = blk;
+            bif.tail = tail;
+            bif.open = 0;
+            uint32_t before = blk->stmts->used;
+            parseHashIf(parse, parseBlockBranch, &bif);
+            expstmt = tail->expstmt;
+            expsemi = tail->expsemi;
+            expopen = tail->expopen;
+            blockstmt = tail->blockstmt;
+            blocksemi = tail->blocksemi;
+            // Like any statement that ends in a block, it delimits itself
+            if (blk->stmts->used > before) {
+                blockstmt = nodesLast(blk->stmts);
+                blocksemi = NULL;
+            }
+            // A last line of a branch with no ';' stood at its '}', which
+            // closed the branch and not this block: unless this block ends
+            // here, that line is missing its ';'. The branch that says so is
+            // any of them, taken or not, so a mistake is reported on every build
+            if (bif.open && !lexIsToken(RCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+                errorMsgLexAfter(ErrorNoSemi, "Expected ';' to end the statement");
+                expopen = 0;
+                expsemi = NULL;
+            }
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
         int endsinblock = lex->toktype == IfToken || lex->toktype == MatchToken || lex->toktype == WhileToken
             || lex->toktype == EachToken || lex->toktype == WithToken || lex->toktype == LCurlyToken
             || lex->toktype == LifetimeToken
@@ -1967,6 +2036,39 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             blocksemi = NULL;
         }
     }
+    tail->expstmt = expstmt;
+    tail->expsemi = expsemi;
+    tail->expopen = expopen;
+    tail->blockstmt = blockstmt;
+    tail->blocksemi = blocksemi;
+}
+
+// Parse a block of statements/expressions
+INode *parseExprBlock(ParseState *parse, int isloop) {
+    BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
+    if (blk->stmts == NULL)
+        blk->stmts = newNodes(8);
+    INode *expstmt = NULL, *expsemi = NULL;   // the latest expression statement, and its ';'
+    int expopen = 0;
+    // The latest statement that ends in a block, and the ';' written directly after it. A
+    // statement that ends in a block delimits itself, so that ';' delimits an empty
+    // statement after it, and the block's last statement is that one
+    INode *blockstmt = NULL, *blocksemi = NULL;
+
+    // A block's statements stand at the top level, even inside a list: a
+    // comma there belongs to them, not to the list around the block
+    int svinlist = parse->inlist;
+    parse->inlist = 0;
+    parseBlockStart();
+
+    BlockTail tail;
+    memset(&tail, 0, sizeof(tail));
+    parseBlockStmts(parse, blk, &tail);
+    expstmt = tail.expstmt;
+    expsemi = tail.expsemi;
+    expopen = tail.expopen;
+    blockstmt = tail.blockstmt;
+    blocksemi = tail.blocksemi;
 
     // Whether the block's last line is an expression, and whether it ends in ';'. Whether
     // that is right depends on whether the block's value is used, which the construct the
