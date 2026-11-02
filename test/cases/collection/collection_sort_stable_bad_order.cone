@@ -1,0 +1,66 @@
+// A comparison that is not a consistent order (always "before", always "after", or an
+// answer that changes as it is asked) never makes the stable sort unsafe: it returns
+// with every value still present exactly once, in some order. In a release build that is
+// all there is; a debug build panics when the result is not in order by the comparison
+// (collection_sort_stable_bad_order_debug). The values are 0 to 299 in a scrambled order, so
+// the sort finds runs, lengthens them by insertion and merges through its buffer, and after
+// each sort a bitmap says each came out once.
+// Every printed value was checked by hand against the source: 300 values, 3 comparisons.
+
+mod collection_sort_stable_bad_order;
+
+import stdio use *;
+import collections use *;
+
+var @threadlocal asked = 0u64;
+
+fn alwaysBefore(a: &i32, b: &i32) i32 { -1i32 }
+
+fn alwaysAfter(a: &i32, b: &i32) i32 { 1i32 }
+
+// An answer that depends on how many times it has been asked, not on the values
+fn drifting(a: &i32, b: &i32) i32 {
+  asked = asked * 6364136223846793005u64 + 1442695040888963407u64;
+  let r = u32.from(asked >> 33u64) % 3u32;
+  if r == 0u32 { -1i32 } else if r == 1u32 { 0i32 } else { 1i32 }
+}
+
+fn scrambled() List[i32] {
+  var l = List[i32]();
+  var i = 0i32;
+  while i < 300i32 { l.push((i * 137i32) % 300i32); i = i + 1i32; }
+  l
+}
+
+// Does each of 0 to 299 appear exactly once?
+fn eachOnce(l: &List[i32]) bool {
+  if l.len() != 300usize { return false; }
+  var seen = List[bool]();
+  var i = 0usize;
+  while i < 300usize { seen.push(false); i = i + 1usize; }
+  i = 0usize;
+  while i < 300usize {
+    let v = usize.from(l[i]);
+    if v >= 300usize || seen[v] { return false; }
+    seen[v] = true;
+    i = i + 1usize;
+  }
+  true
+}
+
+fn report(label: &str, ok: bool) {
+  printStr(label);
+  printStr(if ok { ": every value once\n" } else { ": VALUES LOST\n" });
+}
+
+fn main() {
+  var a = scrambled();
+  a.sortBy(&alwaysBefore);
+  report("always before", eachOnce(&a));
+  var b = scrambled();
+  b.sortBy(&alwaysAfter);
+  report("always after", eachOnce(&b));
+  var c = scrambled();
+  c.sortBy(&drifting);
+  report("answers that drift", eachOnce(&c));
+}

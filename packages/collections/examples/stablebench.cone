@@ -1,0 +1,219 @@
+// Bench: the stable sort (Array.sortBy as List.sortBy reaches it: runs found, short runs
+// lengthened by insertion, Powersort's merge order, a buffer of half the values) against the
+// bottom-up merge sort List.sortBy was before (a copy of it is below: it always makes
+// log2 n passes through a second block as big as the list). Part 1 sorts 1,000,000 values of
+// seven input patterns (random, already sorted, reversed, four distinct values, an organ pipe,
+// ascending runs of 37, nearly sorted) of two element types (u32 and a 40-byte struct ordered
+// by a u32 key). Every way is timed 5 times, alternating the ways, and the median and the
+// spread (least to greatest) of the five are printed in milliseconds, with the ratio of the
+// medians (below 100% means the new sort is faster). A checksum of the sorted keys is printed
+// for each way, and the ways must agree. Run on a machine that other work shares, the
+// numbers move by the load; read the ratios.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/stablebench.cone
+
+mod stablebench;
+
+import stdio use *;
+import time use Instant;
+import collections use *;
+import libc;
+
+struct Rec {
+  pub key: u32;
+  pub id: u32;
+  pub a: u64;
+  pub b: u64;
+  pub c: u64;
+  pub d: u64;
+}
+
+fn nextRand(s: &mut u64) u64 {
+  var x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x
+}
+
+fn value(kind: i32, i: usize, n: usize, s: &mut u64) u32 {
+  let r = u32.from(nextRand(s) >> 40u64);
+  if kind == 0 { r }
+  else if kind == 1 { u32.from(i) }
+  else if kind == 2 { u32.from(n - i) }
+  else if kind == 3 { r % 4u32 }
+  else if kind == 4 { if i < n / 2usize { u32.from(i) } else { u32.from(n - i) } }
+  else if kind == 5 { u32.from(i % 37usize) * 3u32 + r % 3u32 }
+  else { if r % 50u32 == 0u32 { r } else { u32.from(i) / 2u32 } }
+}
+
+fn kindName(kind: i32) &str {
+  if kind == 0 { "random" }
+  else if kind == 1 { "sorted" }
+  else if kind == 2 { "reversed" }
+  else if kind == 3 { "4 distinct" }
+  else if kind == 4 { "organ pipe" }
+  else if kind == 5 { "runs of 37" }
+  else { "nearly sorted" }
+}
+
+fn u32Order(a: &u32, b: &u32) i32 { a <=> b }
+fn recOrder(a: &Rec, b: &Rec) i32 { a.key <=> b.key }
+
+// The merge sort List.sortBy was: each pass merges runs of 'width' values from one block into
+// the other, through a second block as big as the list
+fn oldSortBy[T, F: fn(a: &T, b: &T) i32](v: &mut List[T], order: &F) {
+  let used = v.len();
+  if used < 2usize { return; }
+  let ptr = v.viewMut() as *T;
+  let spare = libc.malloc(used * mem.sizeof[T]()) as *T;
+  var from = ptr;
+  var to = spare;
+  var width = 1usize;
+  while width < used {
+    var lo = 0usize;
+    while lo < used {
+      let mid = if lo + width < used {lo + width} else {used};
+      let hi = if mid + width < used {mid + width} else {used};
+      var a = lo;
+      var b = mid;
+      var k = lo;
+      while a < mid && b < hi {
+        if order((from + b) as &T, (from + a) as &T) < 0i32 {
+          mem.moveRaw(to + k, from + b, 1usize);
+          b = b + 1usize;
+        }
+        else {
+          mem.moveRaw(to + k, from + a, 1usize);
+          a = a + 1usize;
+        }
+        k = k + 1usize;
+      }
+      mem.moveRaw(to + k, from + a, mid - a);
+      mem.moveRaw(to + k + (mid - a), from + b, hi - b);
+      lo = hi;
+    }
+    let was = from;
+    from = to;
+    to = was;
+    width = width * 2usize;
+  }
+  if from != ptr { mem.moveRaw(ptr, from, used); }
+  libc.free(spare as *u8);
+}
+
+fn sorted5(v: &mut List[i64]) {
+  v.sortBy(fn(a: &i64, b: &i64) i32 { a <=> b });
+}
+
+fn show(label: &str, ways: &str, a: &List[i64], b: &List[i64], sum: u64) {
+  printStr(label);
+  printStr(": ");
+  printStr(ways);
+  printStr(" median ");
+  printInt(a[2usize] / 1000000i64);
+  printStr(".");
+  printInt((a[2usize] / 10000i64) % 100i64);
+  printStr(" ms (");
+  printInt(a[0usize] / 1000000i64);
+  printStr("-");
+  printInt(a[4usize] / 1000000i64);
+  printStr("), old median ");
+  printInt(b[2usize] / 1000000i64);
+  printStr(".");
+  printInt((b[2usize] / 10000i64) % 100i64);
+  printStr(" ms (");
+  printInt(b[0usize] / 1000000i64);
+  printStr("-");
+  printInt(b[4usize] / 1000000i64);
+  printStr("), ratio ");
+  printInt(a[2usize] * 100i64 / b[2usize]);
+  printStr("%, checksum ");
+  printInt(i64.from(sum));
+  printStr("\n");
+}
+
+fn benchU32(kind: i32, n: usize) {
+  var s = 12345u64;
+  var src = List[u32]();
+  var i = 0usize;
+  while i < n { src.push(value(kind, i, n, &mut s)); i = i + 1usize; }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[u32].withCapacity(n);
+    i = 0usize;
+    while i < n { w.push(src[i]); i = i + 1usize; }
+    let t0 = Instant.now();
+    w.sortBy(&u32Order);
+    news.push(t0.elapsed().nanos());
+    sumNew = u64.from(w[0usize]) + u64.from(w[n / 2usize]) * 3u64 + u64.from(w[n - 1usize]) * 7u64;
+    var v = List[u32].withCapacity(n);
+    i = 0usize;
+    while i < n { v.push(src[i]); i = i + 1usize; }
+    let t1 = Instant.now();
+    oldSortBy(&mut v, &u32Order);
+    olds.push(t1.elapsed().nanos());
+    sumOld = u64.from(v[0usize]) + u64.from(v[n / 2usize]) * 3u64 + u64.from(v[n - 1usize]) * 7u64;
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("u32 ");
+  show(kindName(kind), "sortBy", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+fn benchRec(kind: i32, n: usize) {
+  var s = 12345u64;
+  var src = List[Rec]();
+  var i = 0usize;
+  while i < n {
+    let k = value(kind, i, n, &mut s);
+    src.push(Rec(k, u32.from(i), 1u64, 2u64, 3u64, u64.from(k)));
+    i = i + 1usize;
+  }
+  var news = List[i64]();
+  var olds = List[i64]();
+  var sumNew = 0u64;
+  var sumOld = 0u64;
+  var round = 0;
+  while round < 5 {
+    var w = List[Rec].withCapacity(n);
+    i = 0usize;
+    while i < n { w.push(Rec(src[i].key, src[i].id, 1u64, 2u64, 3u64, u64.from(src[i].key))); i = i + 1usize; }
+    let t0 = Instant.now();
+    w.sortBy(&recOrder);
+    news.push(t0.elapsed().nanos());
+    sumNew = u64.from(w[0usize].id) + u64.from(w[n / 2usize].id) * 3u64 + u64.from(w[n - 1usize].id) * 7u64;
+    var v = List[Rec].withCapacity(n);
+    i = 0usize;
+    while i < n { v.push(Rec(src[i].key, src[i].id, 1u64, 2u64, 3u64, u64.from(src[i].key))); i = i + 1usize; }
+    let t1 = Instant.now();
+    oldSortBy(&mut v, &recOrder);
+    olds.push(t1.elapsed().nanos());
+    sumOld = u64.from(v[0usize].id) + u64.from(v[n / 2usize].id) * 3u64 + u64.from(v[n - 1usize].id) * 7u64;
+    round = round + 1;
+  }
+  sorted5(&mut news);
+  sorted5(&mut olds);
+  printStr("40-byte struct ");
+  show(kindName(kind), "sortBy", &news, &olds, sumNew);
+  if sumNew != sumOld { printStr("  CHECKSUMS DIFFER\n"); }
+}
+
+fn main() {
+  let n = 1000000usize;
+  var kind = 0;
+  while kind < 7 {
+    benchU32(kind, n);
+    benchRec(kind, n);
+    kind = kind + 1;
+  }
+}
