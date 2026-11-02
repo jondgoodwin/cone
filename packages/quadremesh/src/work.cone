@@ -19,9 +19,7 @@ fn keyLo(k: u64) u32 { u32.from(k >> 32u64) }
 fn keyHi(k: u64) u32 { u32.from(k & 0xFFFFFFFFu64) }
 
 fn sortKeys(keys: &mut List[u64]) {
-  keys.sortBy(fn(a: &u64, b: &u64) i32 {
-    if *a < *b {-1i32} else if *a > *b {1i32} else {0i32}
-  });
+  keys.sort();
 }
 
 // The sorted list without its repeats
@@ -479,25 +477,25 @@ fn graphFrom(n: usize, ca: &List[u32], cb: &List[u32], cw: &List[f32]) Graph {
   // Each row sorted by neighbour, repeats added
   var g = Graph(List[u32].withCapacity(n + 1usize), List[u32].withCapacity(ca.len()), List[f32].withCapacity(ca.len()));
   g.start.push(0u32);
+  var ord = List[usize].empty();
+  var rowB = List[u32].empty();
+  var rowW = List[f32].empty();
   var v = 0usize;
   while v < n {
     let lo = usize.from(*cnt[v]);
     let hi = usize.from(*cnt[v + 1usize]);
-    // insertion sort
-    var a = lo + 1usize;
-    while a < hi {
-      let kb = *sb[a];
-      let kw = *sw[a];
-      var b = a;
-      while b > lo && *sb[b - 1usize] > kb {
-        sb.set(b, *sb[b - 1usize]);
-        sw.set(b, *sw[b - 1usize]);
-        b = b - 1usize;
-      }
-      sb.set(b, kb);
-      sw.set(b, kw);
-      a = a + 1usize;
-    }
+    // a stable sort of the row's places by neighbour (the weights are summed in the order given),
+    // then the row laid out in that order
+    ord.clear();
+    var a = lo;
+    while a < hi { ord.push(a); a = a + 1usize; }
+    ord.sortByKey(fn(x: &usize) u32 { *sb[*x] });
+    rowB.clear();
+    rowW.clear();
+    a = 0usize;
+    while a < ord.len() { rowB.push(*sb[*ord[a]]); rowW.push(*sw[*ord[a]]); a = a + 1usize; }
+    a = 0usize;
+    while a < ord.len() { sb.set(lo + a, *rowB[a]); sw.set(lo + a, *rowW[a]); a = a + 1usize; }
     a = lo;
     while a < hi {
       var wsum = *sw[a];
