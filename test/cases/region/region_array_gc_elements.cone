@@ -1,0 +1,173 @@
+// Core's Array[T] declares GcTraceElements, so it places any T by mem.writeRaw: a
+// List of traced references is reversed, sorted and selected in place, and a collection
+// (mem.traceRoots, run from inside the sort's comparison) finds every element,
+// mid-permutation as well as before and after.
+//
+// What a trace finds here: the list is a local, so the shadow stack finds it and its
+// gcTraceElements walks the elements. A trace also finds other roots (the most recent
+// leaf made, and the locals the sort holds an element in while it moves it), which are
+// copies of elements and so mark one again; so this counts which of the 40 leaves
+// were marked at all (their ids 7 to 46: a leaf the permutation lost from the list
+// would be missing), not how many marks were made. Each trace prints "found 40 of 40".
+// Also: a fixed-size array of traced references reversed (ids 4 to 6: 3 of 3), and an
+// owned array of them (what a list's freeze gives, a Uni carrying the count) walked by
+// that count: the three leaves of ids 1 to 3 are made, held in a list (a trace makes 6
+// marks: three from the list, three from the births of the leaves, each in its own
+// slot of the frame), then the list is frozen, and the trace makes 9: the moved-from
+// list's slot is still a root and marks the same three, and the owner's three are new.
+// Every printed value was checked by hand against the source.
+
+mod region_array_gc_elements;
+
+import stdio use *;
+import libc;
+import collections;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal marks = 0i64;
+var @threadlocal seen = 0u64;
+var @threadlocal calls = 0i64;
+var @threadlocal traces = 0i64;
+var @threadlocal epoch = 1u32;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(nextId));
+    nextId = nextId + 1;
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
+    marks = marks + 1;
+    seen = seen | (1u64 << u64.from(id));
+  }
+}
+
+struct Leaf { pub n: i32; }
+alias Ref = Tr[mut, Leaf];
+
+fn leaf(n: i32) Ref { Tr[mut, Leaf](n) }
+
+// Collect, and say how many of the leaves with ids lo to hi were marked
+fn trace(label: &str, lo: i64, hi: i64) {
+  marks = 0;
+  seen = 0u64;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  var found = 0i64;
+  var id = lo;
+  while id <= hi {
+    if (seen & (1u64 << u64.from(id))) != 0u64 { found = found + 1; }
+    id = id + 1;
+  }
+  printStr(label);
+  printStr(": found ");
+  printInt(found);
+  printStr(" of ");
+  printInt(hi - lo + 1);
+  printStr("\n");
+}
+
+// Orders by the leaf's number; on the 50th and 150th call it collects, mid-permutation
+fn byN(a: &Ref, b: &Ref) i32 {
+  calls = calls + 1;
+  if calls == 50 || calls == 150 {
+    traces = traces + 1;
+    trace("  collection inside the comparison", 7, 46);
+  }
+  a.n <=> b.n
+}
+
+fn keyOf(a: &Ref) i32 { a.n }
+
+fn firstFew(l: &collections.List[Ref]) {
+  var i = 0usize;
+  while i < 6usize {
+    printInt(i64.from(l[i].n));
+    printStr(" ");
+    i = i + 1usize;
+  }
+  printStr("...\n");
+}
+
+fn sorted(l: &collections.List[Ref]) bool {
+  var i = 1usize;
+  while i < l.len() {
+    if l[i - 1usize].n > l[i].n { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// Freezing a list gives a Uni that carries the count
+fn frozenCase() {
+  var held = collections.List[Ref].empty();
+  held.push(leaf(1));
+  held.push(leaf(2));
+  held.push(leaf(3));
+  marks = 0;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  let before = marks;
+  let frozen = held.freeze();
+  marks = 0;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  printStr("a list of 3: ");
+  printInt(before);
+  printStr(" marks; frozen: ");
+  printInt(marks);
+  printStr(" marks; ");
+  printInt(i64.from(frozen.len()));
+  printStr(" in the frozen array\n");
+}
+
+fn fixedCase() {
+  var arr = Array[Ref, 3]() <- leaf(7), leaf(8), leaf(9);
+  arr.reverse();
+  trace("a fixed array of 3, reversed", 4, 6);
+  printInt(i64.from(arr[0usize].n));
+  printStr(" ");
+  printInt(i64.from(arr[2usize].n));
+  printStr(" first and last of the reversed array\n");
+}
+
+fn main() {
+  frozenCase();
+  fixedCase();
+  var list = collections.List[Ref].empty();
+  var i = 0;
+  while i < 40 {
+    list.push(leaf((i * 17) % 40));
+    i = i + 1;
+  }
+  trace("before", 7, 46);
+  firstFew(&list);
+  list.reverse();
+  trace("after reverse", 7, 46);
+  firstFew(&list);
+  calls = 0;
+  list.sortUnstableBy(&byN);
+  printStr("sort collected ");
+  printInt(traces);
+  printStr(" times, in order: ");
+  printStr(if sorted(&list) { "yes\n" } else { "no\n" });
+  trace("after sortUnstableBy", 7, 46);
+  firstFew(&list);
+
+  // Reversed again and sorted by key: the same 40 leaves
+  list.reverse();
+  list.sortUnstableByKey(&keyOf);
+  trace("after sortUnstableByKey", 7, 46);
+  printStr(if sorted(&list) { "in order\n" } else { "not in order\n" });
+
+  // The 25th smallest, the elements before and after it moved around it
+  list.reverse();
+  calls = 0;
+  list.selectNthBy(24usize, &byN);
+  printInt(i64.from(list[24usize].n));
+  printStr(" is the 25th smallest\n");
+  trace("after selectNthBy", 7, 46);
+}

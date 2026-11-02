@@ -392,8 +392,8 @@ fn main() i32 {
 		<span class="pre">8 tidy desk</span>.</p>
 	<p>Priorities are ordered by <span class="pre">&lt;=&gt;</span> on <span class="pre">P</span>: any number, text, or a
 		struct that defines <span class="pre">&lt;=&gt;</span>; nothing else is asked of <span class="pre">P</span>.
-		A NaN float priority's place is not specified (the queue stays memory-safe and every item still comes out,
-		but where the NaN pops is not promised). Priorities that compare equal come out in no particular order; a queue that needs one order among
+		A float priority is ordered by IEEE total order, so a NaN has a place (after every number, or before every
+		number when its sign bit is set). Priorities that compare equal come out in no particular order; a queue that needs one order among
 		equals puts the tie-breaker into the priority, a struct whose <span class="pre">&lt;=&gt;</span> compares it
 		second. Values move in and out and are never copied, so <span class="pre">T</span> may be a type that moves
 		or has a <span class="pre">final</span>; a pair popped dies where it ends up, and the queue's death (or
@@ -1332,6 +1332,49 @@ let slice2 = &amp;ptr[0..=5];
         place), <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> (the elements in runs of
         <span class="pre">n</span>, each run a slice, a <span class="pre">&amp;mut</span> one from
         <span class="pre">mutChunks</span>), which <a href="#eachitems">each</a> walks.</p>
+
+    <h4 id="sorting">Sorting, selecting and searching</h4>
+    <p>These are methods of core's <span class="pre">Array[T]</span>, so a slice, an array and a
+        <span class="pre">List</span> (which lends its body) all have them. They never allocate, and they put
+        any element type in place, a type holding garbage-collected references included. The comparison is the
+        three-way <span class="pre">a &lt;=&gt; b</span>: an <span class="pre">i32</span> that is negative when
+        <span class="pre">a</span> goes before <span class="pre">b</span>, 0 when either may go first, positive
+        otherwise. The natural order, <span class="pre">xs.sortUnstable()</span>, is for any
+        <span class="pre">T</span> that is <span class="pre">Ordered</span> (every number type, text, and a type
+        that writes <span class="pre">fn cmp overload `&lt;=&gt;`(self: &amp;, o: &amp;Self) i32</span>); floats
+        are in IEEE total order, so a NaN has a place. A descending sort is
+        <span class="pre">(a, b) =&gt; b &lt;=&gt; a</span>.</p>
+<pre>
+xs.sortUnstable();                              // natural order, in place
+xs.sortUnstableBy((a, b) =&gt; b &lt;=&gt; a);          // by a comparison; this one descending
+people.sortUnstableByKey(p =&gt; p.age);           // by a key (a number or other Ordered)
+let median = xs.selectNth(xs.len() / 2);        // the k-th value in place, smaller before it, larger after
+let at, found = xs.binarySearch(42);            // earliest position not before 42, and whether it is 42
+</pre>
+    <ul>
+        <li><span class="pre">sortUnstable</span>, <span class="pre">sortUnstableBy(order)</span>,
+            <span class="pre">sortUnstableByKey(key)</span>: in place, O(n log n) comparisons at worst, O(log n)
+            stack; values that compare equal may change their order. A pattern-defeating quicksort, so sorted,
+            reversed and few-valued input is fast. Whatever the comparison answers they are memory-safe and keep
+            each value once; a comparison that is not a consistent order leaves some permutation, and a debug
+            build panics when the result is not in order by it.</li>
+        <li><span class="pre">selectNth(k)</span>, <span class="pre">selectNthBy</span>,
+            <span class="pre">selectNthByKey</span>: puts the value that would be at position
+            <span class="pre">k</span> in sorted order there, none after it before it and none before it after
+            it, in O(n) expected time, and answers a <span class="pre">&amp;mut</span> to it. A panic if
+            <span class="pre">k</span> is not within the elements.</li>
+        <li><span class="pre">isSorted()</span>, <span class="pre">isSortedBy(order)</span>.</li>
+        <li><span class="pre">binarySearch(x)</span>, <span class="pre">binarySearchBy(probe)</span> (where
+            <span class="pre">probe(e)</span> answers <span class="pre">e &lt;=&gt; target</span>): on sorted
+            data, the pair (earliest position not before the target, whether the value there equals it);
+            <span class="pre">partitionPoint(pred)</span>: how many leading values satisfy a predicate that is
+            true then false; and core's free function <span class="pre">partitionIndex(n, pred)</span> for a table
+            that is not an array.</li>
+        <li><span class="pre">reverse()</span>, <span class="pre">slice(start, end)</span> and
+            <span class="pre">sliceMut(start, end)</span>.</li>
+    </ul>
+    <p>A <span class="pre">List</span>'s own <span class="pre">sortBy(f)</span> is the stable sort (equal values
+        keep their order), through a second block.</p>
 
     <h4>Access an Element</h4>
     <p>A single element within an array may be accessed using
