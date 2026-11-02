@@ -1201,13 +1201,14 @@ int itypeCannotTrace(INode *type) {
         if (behind == NULL || !itypeHoldsTraced(behind))
             return 0;
         // The elements of an array body are walked by the count the owner carries
-        // (genlTraceThrough). A collector that marks while the program runs must hear of each store
-        // of a reference to a value holding a traced reference, and can hear of
-        // the traced reference only: a value behind an owner is not walked then. (An
-        // owner of an array body is not held to that: a list's freeze makes one for any
-        // element type, and the rule was never applied to it; a store into the body is
-        // not heard of, which is open as it was.)
-        if (!regionCanPassTrace(ref->region) || (!refIsFat(ref) && itypeHoldsBarriered(behind)))
+        // (genlTraceThrough), for a trace and for a write barrier alike: a store of
+        // the whole owner hands the barrier each element, as a store into the body
+        // does. A collector that marks while the program runs must hear of each store
+        // of a reference to a value holding a traced reference, and can hear of the
+        // traced reference only: a value behind any other owner is not walked then,
+        // so such an owner is refused.
+        int arrayowner = refIsFat(ref) && itypeIsArrayBody(ref->vtexp);
+        if (!regionCanPassTrace(ref->region) || (!arrayowner && itypeHoldsBarriered(behind)))
             return 1;
         return itypeCannotTrace(behind);
     }

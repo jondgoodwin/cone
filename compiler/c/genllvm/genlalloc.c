@@ -404,7 +404,9 @@ static void genlTraceThrough(GenState *gen, LLVMValueRef refptr, RefNode *refnod
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), passblk, doneblk);
     LLVMPositionBuilderAtEnd(gen->builder, passblk);
     FnDclNode *visitmeth = regionMethod(refnode->region, visitMethodName);
-    if (visitmeth) {
+    // (A barrier's walk is of an owner of an array body only, a store of the owner
+    // handing over each element; there is no visit to make for it.)
+    if (visitmeth && !genlTraceBarrier) {
         LLVMValueRef vargs[2];
         vargs[0] = genlRegionHeader(gen, ref, refnode);
         vargs[1] = genlTraceMode;
@@ -574,8 +576,13 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         // (ErrorTracedRefKind), so a traced reference is a single one
         if (regionIsTraced(((RefNode *)typedcl)->region))
             genlTraceRef(gen, valptr, (RefNode *)typedcl);
-        // Any other owning reference to a value holding one is passed through
-        else if (!genlTraceBarrier && itypeHoldsTraced(typedcl)
+        // Any other owning reference to a value holding one is passed through. A barrier's
+        // walk passes through only an owner of an array body: the owner stored carries the
+        // count, so every element is handed over (a store of the whole owner puts them all
+        // where the collector cannot see). Any other owner holding a barriered reference is
+        // refused (itypeCannotTrace), since a store of it could not be heard.
+        else if (itypeHoldsTraced(typedcl)
+            && (!genlTraceBarrier || (refIsFat((RefNode *)typedcl) && itypeIsArrayBody(((RefNode *)typedcl)->vtexp)))
             && (!refIsFat((RefNode *)typedcl) || itypeIsArrayBody(((RefNode *)typedcl)->vtexp)))
             genlTraceThrough(gen, valptr, (RefNode *)typedcl);
         return;
