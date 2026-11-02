@@ -920,18 +920,33 @@ int fnCallIsNever(INode *node) {
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
 // points at (pwOwnedLent), so the owner stays, frozen while the call uses it.
 // Passed as it is, the owner was moved into the call. A 'self: &uni' method
-// is lent nothing: the recast to a move type would still move the owner.
+// is lent by a borrow of what the owner points at (borrowOwnerLend), for a recast
+// to a move type would move the owner. A '&<uni' receiver held in a place is
+// reborrowed (borrowUniReborrow), and so is not used up by its first call.
 static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
     RefNode *owner = (RefNode*)iexpGetTypeDcl(*selfp);
     RefNode *parm = (RefNode*)itypeGetTypeDcl(parmtype);
-    if (owner->tag != VirtRefTag || itypeGetTypeDcl(owner->region) == borrowRef || parm->tag != RefTag)
+    if (owner->tag != VirtRefTag || parm->tag != RefTag)
         return;
     RefNode *lent = newRefNodeFull(VirtRefTag, *selfp, borrowRef, parm->perm, owner->vtexp);
     // The owner's markers are the lent borrow's: a call through an owner marked
     // '+ ShapeKeeping' keeps the caller's borrows
     lent->marks = owner->marks;
-    if (itypeIsMove((INode*)lent))
+    // A '&<uni' held in a place is reborrowed, not used up, by a call through
+    // it, as a '&uni' is by one of its methods: the method gets a borrow of the
+    // place, with the permission 'self' declares
+    if (itypeGetTypeDcl(owner->region) == borrowRef) {
+        if (borrowUniReborrows(*selfp, (INode*)lent))
+            borrowUniReborrow(selfp, (INode*)lent);
         return;
+    }
+    // A 'self: &uni' method is lent the owner as a '&<uni', a move type that
+    // would move it: lend it by a borrow of what it owns, so that it stays
+    if (itypeIsMove((INode*)lent)) {
+        if (iexpIsLval(*selfp))
+            borrowOwnerLend(selfp, (INode*)lent);
+        return;
+    }
     iexpCoerce(selfp, (INode*)lent);
 }
 

@@ -196,7 +196,7 @@ type is interned and shared and cannot hold a lifetime — that is what keeps a
 `&<Trait` or a widening to a base trait's reference from reading as global.
 
 A `&uni` reference held in a place (`borrowUniReborrows`: a single borrowed
-reference or a borrowed slice, not a virtual reference), wanted as a borrowed
+reference, a borrowed slice or a borrowed virtual reference `&<uni`), wanted as a borrowed
 reference of its kind, whatever the permission (`&`, `&imm`, `&mut`, `&mut1`,
 `&opaq`, `&uni`), is an `EqMatch`, and handed over as it is it would be the
 reference itself, moved if its permission is `uni`. `iexpCoerce` rewrites it
@@ -234,9 +234,15 @@ method's `self` is a plain reference to the trait, which a virtual reference
 does not match — so `fnCallFinalizeArgs` first recasts an owning receiver to
 the borrowed virtual reference `&<perm Trait`, `perm` the method's own for
 `self` (`fnCallLendVirtOwner`); left alone, the owner was passed as itself and
-moved. Nothing builds `&uni *o` for a virtual reference, which may not be
-dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self: &uni`
-receiver, which is not recast) still moves.
+moved. A virtual reference may not be dereferenced in source, but the compiler
+builds the borrow `&perm *v` anyway (`borrowDerefOf`, typed `VirtRefTag`, markers
+kept; generation copies the (data, vtable) pair, forming no object place), so flow
+sees a borrow of `*v`, as for any reference: an owner wanted as a `&<uni` (a
+parameter, a `let`, or a `self: &uni` receiver) is lent by it (`borrowOwnerLendsUni`
+accepts a `VirtRefTag` owner), and a `&<uni` held in a place, wanted as a `&<uni` or
+dispatched through, is reborrowed (`borrowUniReborrows`, and `fnCallLendVirtOwner`
+for the receiver, with the permission `self` declares), so a second call is no use
+after a move (Bug 19). The written spelling `&uni *v` is still refused (1031).
 
 **One rule, spelled once, for a callable meeting a signature** (`fnSigMeetKind`):
 a function reference's type (`fnSigMatches`), a callable made of a plain function

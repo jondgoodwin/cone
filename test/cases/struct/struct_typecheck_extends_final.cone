@@ -1,0 +1,79 @@
+// An enrichment's own 'final' may not be skipped by a conversion by value.
+//
+// Where the base declares no 'final', an enrichment may declare one, and it is the
+// drop of values typed as the enrichment. A value handed on BY VALUE as the base
+// (a copy, a move, or an owning reference converted) is dropped as the base, which
+// runs none: the resource the 'final' releases would leak, silently. So each such
+// conversion is refused, wherever the value goes: a variable, an argument, a
+// return, a field, an assignment, an owning reference. What is not refused is
+// pinned in struct_extends_final_borrow: a borrowed reference, an enrichment
+// without a 'final' of its own, and a base that has one.
+
+mod struct_typecheck_extends_final;
+
+struct Plain {
+  pub n: i32;
+}
+
+struct PlainFin extends Plain {
+  fn final(self: &uni) {
+  }
+}
+
+// Down a chain the copy of an enrichment's 'final' is still its 'final': the
+// base of the chain has none
+struct PlainFin2 extends PlainFin {
+}
+
+// Two enrichments of one base: the one with the 'final' may not become the other
+struct PlainSib extends Plain {
+}
+
+struct Holder {
+  pub p: Plain;
+}
+
+fn take(p: Plain) {
+}
+
+fn make() Plain {
+  PlainFin(3)                   //~ ErrorEnrichFinalSkipped:3 "which would be skipped"
+}
+
+fn viaInit() {
+  let p: Plain = PlainFin(1);   //~ ErrorEnrichFinalSkipped:18 "which would be skipped"
+}
+
+fn viaMove() {
+  let f = PlainFin(8);
+  let p: Plain = f;             //~ ErrorEnrichFinalSkipped:18 "which would be skipped"
+}
+
+fn viaParm() {
+  take(PlainFin(2));            //~ ErrorEnrichFinalSkipped:8 "which would be skipped"
+}
+
+fn viaField() {
+  let h = Holder(PlainFin(4));  //~ ErrorEnrichFinalSkipped:18 "which would be skipped"
+}
+
+fn viaAssign() {
+  var v: Plain = Plain(0);
+  v = PlainFin(6);              //~ ErrorEnrichFinalSkipped:7 "which would be skipped"
+}
+
+fn viaChain() {
+  let p: Plain = PlainFin2(9);  //~ ErrorEnrichFinalSkipped:18 "which would be skipped"
+}
+
+fn viaSibling() {
+  let s: PlainSib = PlainFin(10); //~ ErrorEnrichFinalSkipped:21 "which would be skipped"
+}
+
+fn viaUni() {
+  let u: Uni[Plain] = Uni[PlainFin](PlainFin(11)); //~ ErrorEnrichFinalSkipped:23 "which would be skipped"
+}
+
+fn viaRc() {
+  let r: Rc[Plain] = Rc[PlainFin](PlainFin(12)); //~ ErrorEnrichFinalSkipped:22 "which would be skipped"
+}
