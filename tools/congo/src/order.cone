@@ -200,7 +200,7 @@ struct Plan {
     var i = 0usize;
     while i < order.len() {
       let u = *order[i];
-      if reg.packages[units[u].pkg].name.equals(name) {
+      if !reg.packages[units[u].pkg].lone && reg.packages[units[u].pkg].name.equals(name) {
         *found = u;
         return true;
       }
@@ -215,8 +215,8 @@ struct Plan {
   }
 
   pub fn visit(self: &mut, reg: &Registry, p: usize) Result[void, String] {
-    let name = reg.packages[p].name.view();
-    state.insert(String.from(name), visiting);
+    let key = reg.packages[p].key();
+    state.insert(key.copy(), visiting);
     var scanned = List[Module].empty();
     match scanPackage(&reg.packages[p]) {
       case var Ok(ok) { scanned <-> ok; }
@@ -237,7 +237,7 @@ struct Plan {
       let depName = reg.packages[dep].name.view();
       if self.stateOf(depName) == visiting {
         var at = 0usize;
-        while !reg.packages[units[*stack[at]].pkg].name.equals(depName) { at = at + 1usize; }
+        while !reg.packages[units[*stack[at]].pkg].key().equals(depName) { at = at + 1usize; }
         var chain = String.empty();
         var text = String.empty();
         var j = at;
@@ -265,7 +265,7 @@ struct Plan {
       d = d + 1usize;
     }
     stack.pop();
-    state.insert(String.from(name), visited);
+    state.insert(key.copy(), visited);
     order.push(u);
     succeeded()
   }
@@ -294,6 +294,7 @@ fn emptyPlan() Plan {
 fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   var plan = emptyPlan();
   let topName = reg.packages[top].name.view();
+  let topKey = reg.packages[top].key();
   if topName != "core" {
     var core = 0usize;
     match reg.find("core") {
@@ -307,7 +308,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
       case is Ok {}
       case let Err(e) { return Err[Plan, String](e.copy()); }
     }
-    if plan.state.contains(topName) {
+    if plan.state.contains(topKey.view()) {
       // One of core's own imports: built with what it imports, and no core
       plan = emptyPlan();
     }

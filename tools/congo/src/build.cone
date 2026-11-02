@@ -115,6 +115,18 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
   Ok[Path, String](exe)
 }
 
+// Does a lone file's module share its name with a package of its build?
+fn programNamedLikeAPackage(plan: &Plan, reg: &Registry, top: usize) bool {
+  if !reg.packages[top].lone { return false; }
+  var i = 0usize;
+  while i < plan.order.len() {
+    let p = plan.units[*plan.order[i]].pkg;
+    if p != top && reg.packages[p].name.equals(reg.packages[top].name.view()) { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
 // A test or example program, built as a lone file of its own that imports
 // the package by name: its imports resolved through the session's
 // registry, where the package under test is found first; the packages it
@@ -414,7 +426,8 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     let u = *plan.order[i];
     let pkg = &s.reg.packages[plan.units[u].pkg];
     let compiledForGpu = plan.units[u].kernels || (plan.units[u].pkg == top && (pkg.gpu || plan.units[u].hasGpu));
-    if compiledForGpu && !holdsName(&s.gpuChecked, pkg.name.view()) {
+    let pkgKey = pkg.key();
+    if compiledForGpu && !holdsName(&s.gpuChecked, pkgKey.view()) {
       match checkGpuMarks(plan, &s.reg, u) {
         case is Ok {}
         case let Err(e) {
@@ -422,7 +435,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
           return Err[List[Path], String](e.copy());
         }
       }
-      s.gpuChecked.push(pkg.name.copy());
+      s.gpuChecked.push(pkgKey.copy());
     }
     i = i + 1usize;
   }
@@ -436,8 +449,15 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
       objs.push(s.objs[name.view()].copy());
     }
     else {
-      let own = isTop && !topOut.isEmpty();
-      let dest = if own {topOut.copy()} else {out.copy()};
+      var own = isTop && !topOut.isEmpty();
+      var dest = if own {topOut.copy()} else {out.copy()};
+      if isTop && !own && programNamedLikeAPackage(plan, &s.reg, top) {
+        // A program named like a package it reaches (Bug 24): the files of
+        // its compile are named for the module, and would be the package's
+        // own, beside which they would otherwise be written
+        own = true;
+        dest = out.join("program");
+      }
       makeFolder(&dest);
       var obj: Path = "";
       match compileUnit(&s.conec, &s.reg, plan, u, &dest, &out, s.mode.view(), &s.defines, s.strip, isTop,
@@ -462,7 +482,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
   i = 0usize;
   while i < plan.order.len() {
     let u = *plan.order[i];
-    let name = s.reg.packages[plan.units[u].pkg].name.copy();
+    let name = s.reg.packages[plan.units[u].pkg].key();
     if plan.units[u].kernels && hasCore && !s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
         case let Ok(ok) { s.spvs.insert(name, ok.copy()); }
@@ -789,9 +809,9 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   // runtime DLL is, where gpuwork's readSpirv finds it by its name
   i = 0usize;
   while i < units.len() {
-    let name = reg.packages[plan.units[*units[i]].pkg].name.view();
-    if s.spvs.contains(name) {
-      let spv = s.spvs[name].copy();
+    let name = reg.packages[plan.units[*units[i]].pkg].key();
+    if s.spvs.contains(name.view()) {
+      let spv = s.spvs[name.view()].copy();
       let spvFolder = spv.parent();
       if !samePath(&spvFolder, &exeFolder) {
         let target = exeFolder.join(spv.name());

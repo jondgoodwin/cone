@@ -230,6 +230,15 @@ class Package:
         package root. Congo no longer reads one, and says so where it finds one."""
         return self.root / f"{self.name}.cone"
 
+    @property
+    def key(self) -> str:
+        """What the build's tables are keyed by: a package's name, but for a
+        lone file, a program. Its module is named by its own 'mod' line and may
+        be named like a package it imports, directly or through another
+        (Bug 24); a program's module is not a package, so the two never share
+        a key."""
+        return f"{self.name}#program" if self.lone else self.name
+
     def label(self) -> str:
         return f"{self.name} v{self.version}" if self.version else self.name
 
@@ -1260,13 +1269,13 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
     stack: list[Unit] = []
 
     def visit(pkg: Package) -> None:
-        state[pkg.name] = "visiting"
+        state[pkg.key] = "visiting"
         unit = resolve_imports(pkg, scan_package(pkg), registry)
-        units[pkg.name] = unit
+        units[pkg.key] = unit
         stack.append(unit)
         for name, dep in unit.deps.items():
             if state.get(name) == "visiting":
-                at = next(i for i, u in enumerate(stack) if u.pkg.name == name)
+                at = next(i for i, u in enumerate(stack) if u.pkg.key == name)
                 loop = stack[at:]
                 chain = " -> ".join([u.pkg.name for u in loop] + [name])
                 steps = "; ".join(
@@ -1277,7 +1286,7 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
             if state.get(name) is None:
                 visit(dep)
         stack.pop()
-        state[pkg.name] = "done"
+        state[pkg.key] = "done"
         order.append(unit)
 
     if top.name != PRELUDE:
@@ -1286,7 +1295,7 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
             raise CongoError(f"no package named '{PRELUDE}', the prelude, in the"
                              f" registries searched: {registry.searched()}")
         visit(core)
-        if top.name in state:
+        if top.key in state:
             # One of core's own imports: built with what it imports, and no core
             order.clear()
             state.clear()
@@ -1334,13 +1343,13 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
-        for name, dep in units[pkg.name].deps.items():
+        for name, dep in units[pkg.key].deps.items():
             if name not in seen:
                 visit(dep)
                 seen[name] = dep
 
     if (registry_core is not None and unit.pkg.name != PRELUDE
-            and PRELUDE in units and unit.pkg.name not in prelude_needs(units)):
+            and PRELUDE in units and unit.pkg.key not in prelude_needs(units)):
         visit(registry_core)
         seen[PRELUDE] = registry_core
     visit(unit.pkg)
@@ -2252,7 +2261,7 @@ def gpu_closure(unit: Unit, units: dict[str, Unit], core: Package) -> list[Packa
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
-        for name, dep in units[pkg.name].deps.items():
+        for name, dep in units[pkg.key].deps.items():
             if name not in seen:
                 visit(dep)
                 seen[name] = dep
@@ -2334,7 +2343,7 @@ def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, 
         files += [("searched", p) for p in cone_sources(pkg.root / GPU_FOLDER)]
     else:
         files += searched_sources(pkg)
-    compiled = {dep.name: dep for dep in [core, *packages] if dep.name != pkg.name}
+    compiled = {dep.name: dep for dep in [core, *packages] if dep.key != pkg.key}
     for dep in compiled.values():
         files += searched_sources(dep)
     inputs = key_inputs(command, env, files)
@@ -2431,22 +2440,28 @@ class Session:
                 print(f"warning: {unit.pkg.hand_include} is not used: a package's importers"
                       f" compile against the include file its own compile generates,"
                       f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
-        by_name = {unit.pkg.name: unit for unit in order}
+        by_name = {unit.pkg.key: unit for unit in order}
         # Before anything is compiled: a package compiled for the GPU, and a
         # marked package being built, import only packages marked for it
         for unit in order:
             if ((unit.kernels or (unit.pkg is top and (unit.pkg.gpu
                                                         or unit.gpu_deps is not None)))
-                    and unit.pkg.name not in self.gpu_checked):
+                    and unit.pkg.key not in self.gpu_checked):
                 check_gpu_marks(unit, by_name)
-                self.gpu_checked.add(unit.pkg.name)
+                self.gpu_checked.add(unit.pkg.key)
         objs = []
         for unit in order:
             is_top = unit.pkg is top
-            if not is_top and unit.pkg.name in self.objs:
-                objs.append(self.objs[unit.pkg.name])
+            if not is_top and unit.pkg.key in self.objs:
+                objs.append(self.objs[unit.pkg.key])
                 continue
             into = top_out if is_top and top_out is not None else self.out
+            if (is_top and into == self.out and top.lone
+                    and any(u.pkg.name == top.name for u in order if u.pkg is not top)):
+                # A program named like a package it reaches (Bug 24): the files
+                # of its compile are named for the module, and would be the
+                # package's own, beside which they would otherwise be written
+                into = self.out / "program"
             into.mkdir(parents=True, exist_ok=True)
             packages = closure(unit, by_name, core)
             # A description with no package line for core (core's own, and
@@ -2464,13 +2479,13 @@ class Session:
             obj = compile_unit(conec, unit, into, self.mode, is_top, env,
                                packages, self.out, announce or not is_top, prelude)
             if into == self.out and (not is_top or unit.pkg.output == "library"):
-                self.objs[unit.pkg.name] = obj
+                self.objs[unit.pkg.key] = obj
             objs.append(obj)
         # Then the kernels of each marked package that has them, once a
         # session, into the build folder, beside its object
         for unit in order:
-            if unit.kernels and core is not None and unit.pkg.name not in self.spvs:
-                self.spvs[unit.pkg.name] = compile_gpu(conec, unit, by_name, core, self.out,
+            if unit.kernels and core is not None and unit.pkg.key not in self.spvs:
+                self.spvs[unit.pkg.key] = compile_gpu(conec, unit, by_name, core, self.out,
                                                        self.mode, env)
         return objs
 
@@ -2542,7 +2557,7 @@ class Session:
         # The kernels of every package of the build, each beside the program
         # as a runtime DLL is, where gpuwork's readSpirv finds it by its name
         for u in units:
-            spv = self.spvs.get(u.pkg.name)
+            spv = self.spvs.get(u.pkg.key)
             if spv is not None and spv.parent != exe.parent:
                 if copy_if_changed(spv, exe.parent / spv.name) and announce:
                     say("Copying", shown(spv))
