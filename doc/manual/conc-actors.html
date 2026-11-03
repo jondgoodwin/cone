@@ -427,6 +427,51 @@ let box = Box[Rc[mut, Log]]();
 		<span class="pre">uni</span> or <span class="pre">Uni</span> owner) arrives whole, and a counted one (a handle, an
 		<span class="pre">Arc</span>, a lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
 
+	<h3 id="group-travels">A message carries its sender's cancel group</h3>
+	<p>Code runs in a <a href="conc-ioloop.html#cancel-groups">cancel group</a> (the <span class="pre">cancelgroups</span>
+		package's <span class="pre">CancelGroup</span>), its <i>current group</i>: <span class="pre">actors.currentGroup()</span>
+		answers it. A message carries its sender's current group, and the behaviour that handles it runs in that group, so
+		a cancel of the sender's group reaches the work its messages started with nothing passed along. A behaviour that
+		sends on carries the group forward the same way. Where the sender is in no group, the handler is in the process's
+		own group, which nothing cancels, and a message sent from there costs no more than one always did.</p>
+	<p><span class="pre">actors.isCancelled()</span> asks whether the current group is cancelled, a flag read cheap
+		enough for a loop to ask between pieces of work. To send in another group, call
+		<span class="pre">actors.withGroup(&amp;g, body)</span>: the messages <span class="pre">body</span> sends carry
+		<span class="pre">g</span>, and when it returns the current group is what it was.</p>
+<pre>
+mod travel;
+
+import actors;
+import cancelgroups use CancelGroup;
+
+actor Worker {
+  pub async fn crunch(self, pieces: u64) {
+    var i = 0u64;
+    while i &lt; pieces &amp;&amp; !actors.isCancelled() {   // the group its sender worked in
+      // ...one piece of work...
+      i = i + 1u64;
+    }
+  }
+}
+
+fn main() {
+  let job = CancelGroup.make();
+  let w = Worker();
+  actors.withGroup(&amp;job, fn() [w] { w.crunch(1000000u64); });   // crunch runs in job
+  job.cancel();                                                // ...and sees it
+}
+</pre>
+	<p>The message holds the group as another owner, so a group with a deadline still times out when the sender has
+		dropped every handle of it before the message is handled. The pieces of a <span class="pre">parallel each</span>,
+		the messages they send and the rest of the behaviour after the loop run in the group of the code that began it.
+		The code that resumes after an <span class="pre">await</span> runs in the group the await was made in, however
+		long the answer took and on whatever worker takes the actor, and sees that group's cancellation; an await made
+		in no group resumes in the process's own, as always.</p>
+	<p>A message sent in a group takes two places in its actor's queue (one holds the group, one the message), so the
+		mailbox's depth, high-water mark and limit (<span class="pre">mailboxDepth</span>,
+		<span class="pre">mailboxHighWater</span>, <span class="pre">setMailboxLimit</span>) count it as two. A message
+		sent in no group takes one place and is as large as it always was.</p>
+
 	<h2 id="life">An actor's life</h2>
 	<p>The <span class="pre">actors</span> package starts and stops by itself. The first actor made starts the worker
 		threads, and when <span class="pre">main</span> returns, the module's
