@@ -260,6 +260,10 @@ int coreIsHashTrait(INode *dcl);
 // Core's Eq trait, known the same way; a struct that declares it and writes no
 // '==' is given one (structEqCheck)
 int coreIsEqTrait(INode *dcl);
+// Core's Clone trait, known the same way; every Copy type meets it by grant
+// (genericTypeIs), and a struct that declares it and writes no 'clone' is given
+// one (structCloneCheck)
+int coreIsCloneTrait(INode *dcl);
 // Core's Iterator trait, known by its name and its package; the compiler keeps the
 // declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
 // does not declare it, that the shared methods come with the declaration

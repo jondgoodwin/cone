@@ -449,6 +449,11 @@ writes no `==` whose type has no `==` against itself (an array, a tuple, a struc
 declaring none), reported at the field. The remedy is an `==` of the struct's own,
 or an `==` for the field's type.
 
+Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
+`Clone` and writes no `clone` whose type is neither Copy nor Clone (a struct that
+moves and has no `clone`, a unique owner, a reference), reported at the field.
+The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
+
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
 the type itself, or the clause admits a member of `T` that is not a method (a
