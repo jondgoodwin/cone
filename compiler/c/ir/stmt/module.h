@@ -44,6 +44,7 @@ typedef struct ModuleNode {
     Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
     DclSpans *spans;         // Where each of its statements sits in its files, in the order parsed (dclspan.h); NULL for none
     uint16_t holdsexpanded;  // Whether it declares a body an importer expands (export.c): 0 not yet asked, 1 no, 2 yes
+    uint8_t scratch;         // Made by the parser to read an untaken '#if' branch for its syntax (parsemeta.c): it keeps and binds nothing, and is dropped
 } ModuleNode;
 
 ModuleNode *newModuleNode();

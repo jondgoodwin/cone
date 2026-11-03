@@ -237,6 +237,8 @@ void nametblInit() {
     joinName = nametblFind("join", 4);
     hashName = nametblFind("hash", 4);
     hashTraitName = nametblFind("Hash", 4);
+    eqTraitName = nametblFind("Eq", 2);
+    cloneTraitName = nametblFind("Clone", 5);
     hasherName = nametblFind("Hasher", 6);
     iteratorTraitName = nametblFind("Iterator", 8);
     writeU64Name = nametblFind("writeU64", 8);

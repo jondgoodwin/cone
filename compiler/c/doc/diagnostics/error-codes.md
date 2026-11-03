@@ -430,8 +430,8 @@ atomic is read without the lock, so a plain write could tear under a lock-free
 reader.
 
 `ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
-return, a field, or an owning `Uni`/`Rc`) of an enrichment declaring its own `final`
-into a type that has none: the value would be dropped as the target and the `final`
+return, a field, an owning `Uni`/`Rc`, or an array) of an enrichment declaring its own `final`
+into a type that has none, or a different one: the value would be dropped as the target and the `final`
 never run. It is reported at the value converted, naming both types; the remedy is
 to keep the value typed as the enrichment or lend it as a `&` reference.
 
@@ -443,6 +443,16 @@ itself and whose -0 equals 0, so that no hash of its bits agrees with its `==`,
 and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
+
+Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
+writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
+declaring none), reported at the field. The remedy is an `==` of the struct's own,
+or an `==` for the field's type.
+
+Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
+`Clone` and writes no `clone` whose type is neither Copy nor Clone (a struct that
+moves and has no `clone`, a unique owner, a reference), reported at the field.
+The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
@@ -1000,3 +1010,17 @@ complaint from every enclosing node.
 - Finding out what the compiler actually reports: [Measuring](measuring.md)
 - The three type sentinels and `newErrorNode`: [IR Nodes](../nodes/_index.md)
 - Which codes each phase owns: the "Diagnostics" section of each phase note
+
+`ErrorMetaIf` and `ErrorMetaFact` are the meta layer's `#if` on the facts of the build.
+`ErrorMetaIf` is the chain's shape: an `#elif` or `#else` with no `#if` or `#elif`
+before it (including one after an `#else`), a `#if` that gives a value with no
+`#else`, and a condition's own punctuation missing (`#defined("NAME"`). A block
+missing its `{` is `ErrorNoLCurly`, and a branch missing a `;` the ordinary
+`ErrorNoSemi`. `ErrorMetaFact` is the condition: a fact outside the closed
+vocabulary used as a name or a call, a `.member` the fact lacks (naming the
+members it has), a comparison of unlike kinds, `#defined` or `#define` of
+something that is not a string literal, `!`, `&&` or `||` of what is not a
+bool, a condition that is not a bool, and a fact met outside a condition. A
+misspelt `#` word is `ErrorReserved`, from the lexer. Each is reported at the
+word it is about, and the rest of the condition is read past so that nothing
+follows it.

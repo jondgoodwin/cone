@@ -12,6 +12,9 @@ LogicNode *newLogicNode(int16_t typ) {
     LogicNode *node;
     newNode(node, LogicNode, typ);
     node->vtype = (INode*)boolType;
+    // A '!' has no right operand, and the arena is not zeroed: say so
+    node->lexp = NULL;
+    node->rexp = NULL;
     return node;
 }
 
@@ -21,7 +24,9 @@ INode *cloneLogicNode(CloneState *cstate, LogicNode *node) {
     newnode = memAllocBlk(sizeof(LogicNode));
     memcpy(newnode, node, sizeof(LogicNode));
     newnode->lexp = cloneNode(cstate, node->lexp);
-    newnode->rexp = cloneNode(cstate, node->rexp);
+    // (a '!' has no right operand)
+    if (node->rexp)
+        newnode->rexp = cloneNode(cstate, node->rexp);
     return (INode *)newnode;
 }
 

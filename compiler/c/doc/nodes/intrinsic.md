@@ -273,7 +273,10 @@ comparison of two slices compares their elements"). Its body is its
 implementation, compiled as any generic function's, and it has no registry
 entry; the compiler knows it the way it knows `TypeRecord`, by its name and its
 package, and `sliceEqDclNameRes` holds the declaration to that one signature
-(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`).
+(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`). So are
+`tupleEq2[A, B]`, `tupleEq3` and `tupleEq4`, what `==` on two tuples calls
+([fncall](fncall.md), "A comparison of two tuples compares their elements"):
+`tupleEqDclNameRes` remembers each generic declaration with a body (`tupleEqFn`).
 
 ## Hazards
 
