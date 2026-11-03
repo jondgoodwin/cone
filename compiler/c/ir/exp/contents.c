@@ -937,9 +937,10 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
 //   in by the writer's own '<-', and any other value by its own toText.
 // - A record maker (a type with 'record(self: &) TextOut', the console): the
 //   whole send is one record. A list of pieces is a block holding the writer in
-//   a variable, so it is finalized at the statement's end, and its finalizer
-//   hands the finished record to the function its maker supplied:
-//       { var -w = receiver.record(); -w <- piece; -w <- piece; ... }
+//   a variable, so it is finalized at the statement's end if an early exit
+//   leaves first, and 'finish' after the last piece hands the finished record to
+//   the function its maker supplied, before the statement's temporaries die:
+//       { var -w = receiver.record(); -w <- piece; -w <- piece; ...; -w.finish() }
 //   A single piece is the maker's own '<-' when it takes it (a text), and
 //   otherwise  piece.toText(&uni receiver.record())  with the writer a
 //   temporary, finalized at the end of the statement.
