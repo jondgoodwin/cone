@@ -1532,6 +1532,27 @@ name and package (`coreIsCloneTrait`), as `Eq` is.
   is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
 - `=` never clones; no copy or move calls a `clone`.
 
+### Default, and the `T()` it supplies
+
+Core's `Default` (`pub trait Default {}`, no method) is known by name and package
+(`coreIsDefaultTrait`). A trait with nothing to ask is a marker (`genericTraitIsMarker`):
+a struct is `Default` only by declaring it.
+
+- **The grant.** Every number type and `bool` (`genericTypeIsHow`, not `char`). Their
+  `T()` is a zero literal, made where a construction of a number with no arguments
+  is type checked (`typeLitNewChecked`); a number given arguments is still `ErrorNewType`.
+- **The supplied `T()`.** A struct declaring `Default` that has no `init`
+  (`structDefaultCheck`, after `structCloneCheck`) is constructed by its implicit init:
+  a field left out takes its declared `= value` (constants only) or, where it declared
+  none and its type is `Default`, a fresh `FieldType()` (`structFieldDefault`, built by
+  `typeLitFieldFill` for each literal, since the shared `= value` node is a constant). A
+  struct with an `init` is made by it and nothing is supplied; the collections declare
+  `Default` for their `init`s whose last argument, the region, a construction may leave out.
+- **Refusal.** `ErrorDefaultField` (1575), at the field, where it has no `= value` and its
+  type is not `Default`.
+- **Regions.** A generic `T()` has no region argument, so a `CarriesRegion` type is made in
+  the heap's (`typeLitRegionArg`); a container that makes a `V` of its own writes `V(region)`.
+
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
 (`cone_hashSeed`, `packages/conestd/hash.cone`).

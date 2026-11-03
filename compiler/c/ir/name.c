@@ -91,6 +91,7 @@ Name *hashName;
 Name *hashTraitName;
 Name *eqTraitName;
 Name *cloneTraitName;
+Name *defaultTraitName;
 Name *iteratorTraitName;
 Name *hasherName;
 Name *writeU64Name;
