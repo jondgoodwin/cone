@@ -62,6 +62,25 @@ DclSpan *dclSpanAdd(DclSpans **listp, INode *node, Lexer *lexer, char *start, ch
 // The 1-based line and column of a position in a span's file
 void dclSpanLineCol(Lexer *lexer, char *pos, uint32_t *line, uint32_t *col);
 
+// A stretch of source the include file leaves out or replaces: a '#if' chain is
+// resolved while parsing (compiler/c/doc/phases/parse.md, "The meta layer"), and
+// the include file keeps only the branch the package was built with, so that an
+// importer built with other facts reads the code the package's object holds.
+// 'text' replaces [from, to), or is NULL to leave it out. They are kept apart
+// from the spans because a '#if' stands in bodies as well as among declarations
+typedef struct DclCut {
+    Lexer *lexer;
+    char *from;
+    char *to;
+    char *text;
+} DclCut;
+
+// Note a cut of the include file
+void dclCutAdd(Lexer *lexer, char *from, char *to, char *text);
+
+// Every cut noted so far, in the order noted
+DclCut *dclCuts(uint32_t *count);
+
 // Print each span of a module to stdout, and each member span of its types:
 // the debug switch '--spans', which measures what the parser recorded
 void dclSpanPrintModule(ModuleNode *mod);

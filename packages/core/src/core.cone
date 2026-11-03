@@ -650,7 +650,7 @@ pub struct @opaque Array[T] is GcTraceElements {
   // pattern-defeating quicksort, which also detects sorted, reversed and few-valued input.
   // Whatever 'order' answers they are memory-safe and keep every element exactly once; a
   // comparison that is not a consistent order leaves some permutation, and a debug build
-  // (isDebugBuild) panics when the result is not in order by 'order'.
+  // (#debug) panics when the result is not in order by 'order'.
 
   // Is element i before element j by 'order'?
   fn lessAt[F: fn(a: &T, b: &T) i32](self: &, i: usize, j: usize, order: &F) bool inline {
@@ -995,8 +995,10 @@ pub struct @opaque Array[T] is GcTraceElements {
     else {
       self.pdqSort(order, null, true, self.splitLimit());
     }
-    if isDebugBuild() && !self.isSortedBy(order) {
-      panic("sortUnstableBy: the comparison is not a consistent order: the result is not in order by it");
+    #if #debug {
+      if !self.isSortedBy(order) {
+        panic("sortUnstableBy: the comparison is not a consistent order: the result is not in order by it");
+      }
     }
   }
 
@@ -1267,8 +1269,10 @@ pub struct @opaque Array[T] is GcTraceElements {
         (scratch as &MemRegion).release(buf as *u8, (n / 2usize) * mem.sizeof[T]());
       }
     }
-    if isDebugBuild() && !self.isSortedBy(order) {
-      panic("sortBy: the comparison is not a consistent order: the result is not in order by it");
+    #if #debug {
+      if !self.isSortedBy(order) {
+        panic("sortBy: the comparison is not a consistent order: the result is not in order by it");
+      }
     }
   }
 
@@ -1293,7 +1297,7 @@ pub struct @opaque Array[T] is GcTraceElements {
       panic("selectNth: the position is not within the elements", file, line);
     }
     self.selectRecurse(k, order);
-    if isDebugBuild() {
+    #if #debug {
       let p = self as *T;
       var i = 0usize;
       while i < self.len {
@@ -2591,10 +2595,10 @@ pub fn assert(cond: bool, msg: &str = "assertion failed", file: &Array[u8] = src
 // is used, so the panic names the caller's line. A macro takes no default, so
 // the form with a message has a name of its own
 pub macro assertDebug[cond: lazy bool] {
-  if isDebugBuild() {assert(cond, "assertion failed", srcFile(), srcLine())} else {}
+  #if #debug {assert(cond, "assertion failed", srcFile(), srcLine())} #else {}
 }
 pub macro assertDebugMsg[cond: lazy bool, msg: lazy &str] {
-  if isDebugBuild() {assert(cond, msg, srcFile(), srcLine())} else {}
+  #if #debug {assert(cond, msg, srcFile(), srcLine())} #else {}
 }
 
 // Code the author knows cannot be reached, reached

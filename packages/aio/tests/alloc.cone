@@ -44,13 +44,18 @@ fn @initpure init() {
   counted = Array[u64, 15]() <- fill 0u64;
 }
 
-extern {
-  fn @c("_malloc_base") winMalloc(size: usize) *u8;
-  fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
-  fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
-  fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
-  fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
-  fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+#if #os == .windows {
+  extern {
+    fn @c("_malloc_base") winMalloc(size: usize) *u8;
+    fn @c("_calloc_base") winCalloc(n: usize, size: usize) *u8;
+    fn @c("_realloc_base") winRealloc(p: *u8, size: usize) *u8;
+  }
+} #else {
+  extern {
+    fn @c("__libc_malloc") lxMalloc(size: usize) *u8;
+    fn @c("__libc_calloc") lxCalloc(n: usize, size: usize) *u8;
+    fn @c("__libc_realloc") lxRealloc(p: *u8, size: usize) *u8;
+  }
 }
 
 // What the program has allocated, less what the actor runtime has for its
@@ -60,17 +65,17 @@ fn allocs() u64 {mallocs.load() - actors.messageAllocs()}
 
 pub fn @c("malloc") countMalloc(size: usize) *u8 {
   mallocs.add(1u64);
-  if isWindows() {winMalloc(size)} else {lxMalloc(size)}
+  #if #os == .windows {winMalloc(size)} #else {lxMalloc(size)}
 }
 
 pub fn @c("calloc") countCalloc(n: usize, size: usize) *u8 {
   mallocs.add(1u64);
-  if isWindows() {winCalloc(n, size)} else {lxCalloc(n, size)}
+  #if #os == .windows {winCalloc(n, size)} #else {lxCalloc(n, size)}
 }
 
 pub fn @c("realloc") countRealloc(p: *u8, size: usize) *u8 {
   mallocs.add(1u64);
-  if isWindows() {winRealloc(p, size)} else {lxRealloc(p, size)}
+  #if #os == .windows {winRealloc(p, size)} #else {lxRealloc(p, size)}
 }
 
 // The kinds, in the order measured
@@ -164,8 +169,8 @@ actor Counter {
     let f = fileOf(await aio.openFile(&name, Access.Create));
     let here = Path.from(".");
     var args = List[String]();
-    args.push(String.from(if isWindows() {"cmd"} else {"true"}));
-    if isWindows() {
+    args.push(String.from(#if #os == .windows {"cmd"} #else {"true"}));
+    #if #os == .windows {
       args.push(String.from("/c"));
       args.push(String.from("exit"));
     }
@@ -306,7 +311,7 @@ fn main() i32 {
   var k = 0usize;
   while k < kinds {
     let n = if k == kBase {base} else if counted[k] > base {counted[k] - base} else {0u64};
-    if isDefined("ALLOC_REPORT") {
+    #if #defined("ALLOC_REPORT") {
       printStr(kindName(k));
       printStr(": ");
       printUInt(n);

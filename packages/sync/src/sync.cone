@@ -412,8 +412,8 @@ pub struct Arc is RegionRef, ThreadSafe {
 // channels measure their timeouts by is the time package's). The futex's wait
 // and wake are what differ between Linux and macOS, which has no futex, so
 // those, the barrier and the thread identity are the C file's, one set a
-// system; sched_yield is POSIX's, the same on both. 'isWindows()' is a
-// constant of the compile, so only the target's calls are generated, and a
+// system; sched_yield is POSIX's, the same on both. '#if #os == .windows'
+// chooses in the parse, so only the target's calls are generated, and a
 // function only the other system's branch calls is not part of the program;
 // every extern is declared on every platform.
 // ---------------------------------------------------------------------------
@@ -485,7 +485,7 @@ pub fn futexWakeAll(word: &opaq Atomic[u32]) {
 
 // The same three on the word's address, as the locks reach their own words
 fn rawWait(word: *u32, expected: u32, timeoutNs: u64) bool {
-  if isWindows() {windowsWait(word, expected, timeoutNs)} else {linuxWait(word, expected, timeoutNs)}
+  #if #os == .windows {windowsWait(word, expected, timeoutNs)} #else {linuxWait(word, expected, timeoutNs)}
 }
 
 // Each system's calls are a function of their own, called from the branch for
@@ -504,16 +504,16 @@ fn linuxWait(word: *u32, expected: u32, timeoutNs: u64) bool {
 }
 
 fn rawWake(word: *u32) {
-  if isWindows() {WakeByAddressSingle(word);} else {cone_futexWake(word, 1i32);}
+  #if #os == .windows {WakeByAddressSingle(word);} #else {cone_futexWake(word, 1i32);}
 }
 
 fn rawWakeAll(word: *u32) {
-  if isWindows() {WakeByAddressAll(word);} else {cone_futexWake(word, wakeAll);}
+  #if #os == .windows {WakeByAddressAll(word);} #else {cone_futexWake(word, wakeAll);}
 }
 
 // Let another thread ready to run on this processor have it
 fn yieldProcessor() {
-  if isWindows() {SwitchToThread();} else {sched_yield();}
+  #if #os == .windows {SwitchToThread();} #else {sched_yield();}
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,7 +1503,7 @@ const soloClosed = 1u64;               // tail: the sender has gone
 // of this process drains its stores, as if each had made a full fence where
 // it stands
 fn flushWrites() {
-  if isWindows() {FlushProcessWriteBuffers();} else {cone_flushProcessWriteBuffers();}
+  #if #os == .windows {FlushProcessWriteBuffers();} #else {cone_flushProcessWriteBuffers();}
 }
 
 // A sender that found the ring full sleeps until the receiver takes a value

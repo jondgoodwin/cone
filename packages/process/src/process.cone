@@ -39,8 +39,8 @@
 //   process.currentExe()          this program's executable, a Path
 //
 // Two systems run programs by two designs, and the package gives the same
-// interface over both; where they differ it is said below ('isWindows()', a
-// constant of the compile, chooses, so only the target's calls are generated).
+// interface over both; where they differ it is said below ('#if #os == .windows'
+// chooses, so only the target's calls are generated).
 //
 // **Paths.** A folder is a 'path' package 'Path': the working folder is the
 // last parameter of 'run' and 'runLine', a '&Path' that defaults to "", the
@@ -448,13 +448,13 @@ pub struct ProcessError is Error {
   // Whether it failed because there is no such program (or no folder on its
   // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND; on POSIX ENOENT
   pub fn notFound(self: &) bool {
-    if isWindows() {code == errorFileNotFound || code == errorPathNotFound} else {code == errnoNoEntry}
+    #if #os == .windows {code == errorFileNotFound || code == errorPathNotFound} #else {code == errnoNoEntry}
   }
 }
 
 // The error number for an argument the system cannot be given (a NUL byte, no
 // program at all): ERROR_INVALID_PARAMETER, or POSIX's EINVAL
-fn invalidParameter() u32 { if isWindows() {errorInvalidParameter} else {errnoInvalid} }
+fn invalidParameter() u32 { #if #os == .windows {errorInvalidParameter} #else {errnoInvalid} }
 
 fn failure(op: &str, program: &str, dir: &Path, code: u32) ProcessError {
   ProcessError(String.from(op), String.from(program), dir.clone(), code)
@@ -463,7 +463,7 @@ fn failure(op: &str, program: &str, dir: &Path, code: u32) ProcessError {
 // The system's text for an error number: Windows' own (in English where it
 // has it; empty where it has none), or on POSIX the C library's strerror
 fn systemText(code: u32) String {
-  if isWindows() {windowsText(code)} else {String.from(libc.strerror(i32.from(code)).view())}
+  #if #os == .windows {windowsText(code)} #else {String.from(libc.strerror(i32.from(code)).view())}
 }
 
 // Windows' text for an error number, in English where the system has it,
@@ -677,14 +677,16 @@ pub fn run(args: &Array[String], opts: Options = Options(), dir: &Path = "") Res
     i = i + 1usize;
   }
   // The program's name may not hold a '"' on Windows, which cannot write it
-  if isWindows() && hasByte(program, '"') {
-    return Err[Output, ProcessError](failure("run", program, dir, errorInvalidName));
+  #if #os == .windows {
+    if hasByte(program, '"') {
+      return Err[Output, ProcessError](failure("run", program, dir, errorInvalidName));
+    }
   }
-  if isWindows() {
+  #if #os == .windows {
     let line = commandLine(args);
     start("run", program, line.view(), dir, opts)
   }
-  else {
+  #else {
     startPosix("run", program, args, dir, opts)
   }
 }
@@ -696,10 +698,10 @@ pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Ou
   if hasByte(line, 0u8) {
     return Err[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
   }
-  if isWindows() {
+  #if #os == .windows {
     start("runLine", line, line, dir, opts)
   }
-  else {
+  #else {
     var shell = List[String]();
     shell.push(String.from("/bin/sh"));
     shell.push(String.from("-c"));
@@ -1464,7 +1466,7 @@ fn currentExePosix() Result[Path, ProcessError] {
 // (CommandLineToArgvW) splits its command line, each in UTF-8, whatever the
 // system's code page: what 'main''s argv holds when every one is ASCII
 pub fn args() List[String] {
-  if isWindows() {argsWindows()} else {argsPosix()}
+  #if #os == .windows {argsWindows()} #else {argsPosix()}
 }
 
 fn argsWindows() List[String] {
@@ -1484,7 +1486,7 @@ fn argsWindows() List[String] {
 
 // The path of this program's executable, normalized ('C:/work/build/app.exe')
 pub fn currentExe() Result[Path, ProcessError] {
-  if isWindows() {currentExeWindows()} else {currentExePosix()}
+  #if #os == .windows {currentExeWindows()} #else {currentExePosix()}
 }
 
 fn currentExeWindows() Result[Path, ProcessError] {

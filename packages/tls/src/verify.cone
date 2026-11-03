@@ -137,17 +137,17 @@ const cryptRevoked = 0x80092010u32;           // CRYPT_E_REVOKED
 // The verifier's own number for a failure with no more specific one, and for
 // a job with no certificate in it: E_FAIL and TRUST_E_NOSIGNATURE on
 // Windows; on Linux OpenSSL's X509_V_ERR_UNSPECIFIED for both
-pub fn genericFailure() u32 {if isWindows() {0x80004005u32} else {1u32}}
-fn trustNoSigner() u32 {if isWindows() {0x800B0100u32} else {1u32}}
+pub fn genericFailure() u32 {#if #os == .windows {0x80004005u32} #else {1u32}}
+fn trustNoSigner() u32 {#if #os == .windows {0x800B0100u32} #else {1u32}}
 
 // The OS's verdict on a job: 0 trusted, else the verifier's own number
 // (Windows' error; on Linux OpenSSL's verify result). On Windows it blocks
 // while the chain engine fetches, unless offline; on Linux it fetches
 // nothing and reads the system's roots once
 fn osVerify(job: &Array[u8], offline: bool) u32 {
-  if isWindows() {
+  #if #os == .windows {
     crypt32Verify(job, offline)
-  } else {
+  } #else {
     opensslVerify(job)
   }
 }
@@ -262,13 +262,13 @@ fn opensslVerify(job: &Array[u8]) u32 {
 // as crypt32 says for the test chains whose root it does not know. A number
 // of neither table is CertOther
 pub fn certErrorKind(code: u32) TlsErrorKind {
-  if isWindows() {
+  #if #os == .windows {
     if code == certExpired {TlsErrorKind.CertExpired}
     else if code == certCnNoMatch {TlsErrorKind.CertNameMismatch}
     else if code == certUntrustedRoot || code == certChaining {TlsErrorKind.CertUntrusted}
     else if code == cryptRevoked {TlsErrorKind.CertRevoked}
     else {TlsErrorKind.CertOther}
-  } else {
+  } #else {
     let vr = i32.from(code);
     if vr == x509Expired || vr == x509NotYetValid {TlsErrorKind.CertExpired}
     else if vr == x509HostnameMismatch || vr == x509IpMismatch {TlsErrorKind.CertNameMismatch}
@@ -285,13 +285,13 @@ pub fn certErrorKind(code: u32) TlsErrorKind {
 // verify result 20'
 pub fn certErrorText(code: u32) String {
   var d = String();
-  if isWindows() {
+  #if #os == .windows {
     let text = IoError(code).message();
     d.append(text.view());
     d.append(" (Windows 0x");
     d.appendHex(u64.from(code), 8usize);
     d.append(")");
-  } else {
+  } #else {
     d.append(cText(X509_verify_cert_error_string(i64.from(code))));
     d.append(" (OpenSSL's verify result ");
     d.appendUInt(u64.from(code));

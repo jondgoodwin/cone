@@ -10,7 +10,7 @@
 //   import ioerror use *;
 //
 //   fn main() {
-//     let k = osKind(if isWindows() {1225u32} else {111u32});   // a refused connection
+//     let k = osKind(#if #os == .windows {1225u32} #else {111u32});   // a refused connection
 //     if k == IoErrorKind.ConnectionRefused {printStr(k.name());}
 //   }
 //
@@ -115,7 +115,7 @@ pub enum IoErrorKind {
 
 // The kind of the system's own error number, on the system the program runs on
 pub fn osKind(code: u32) IoErrorKind {
-  if isWindows() {winKind(code)} else {lxKind(code)}
+  #if #os == .windows {winKind(code)} #else {lxKind(code)}
 }
 
 // The kind of a Windows error number: Win32's (GetLastError's, or an NTSTATUS
@@ -183,28 +183,31 @@ pub fn errnoKind(e: i32) IoErrorKind {
   else if e == 32i32 {IoErrorKind.BrokenPipe}                      // EPIPE
   else if e == 22i32 || e == 9i32 {IoErrorKind.InvalidInput}       // EINVAL, EBADF
   else if e == 12i32 {IoErrorKind.OutOfMemory}                     // ENOMEM
-  else if isWindows() {
-    if e == 38i32 {IoErrorKind.InvalidFilename}                    // ENAMETOOLONG
-    else if e == 41i32 {IoErrorKind.DirectoryNotEmpty}             // ENOTEMPTY
-    else if e == 40i32 {IoErrorKind.Unsupported}                   // ENOSYS
-    else if e == 105i32 {IoErrorKind.Cancelled}                    // ECANCELED
-    else {IoErrorKind.Other}
+  else {
+    #if #os == .windows {
+      if e == 38i32 {IoErrorKind.InvalidFilename}                  // ENAMETOOLONG
+      else if e == 41i32 {IoErrorKind.DirectoryNotEmpty}           // ENOTEMPTY
+      else if e == 40i32 {IoErrorKind.Unsupported}                 // ENOSYS
+      else if e == 105i32 {IoErrorKind.Cancelled}                  // ECANCELED
+      else {IoErrorKind.Other}
+    } #else {
+      if e == 36i32 {IoErrorKind.InvalidFilename}                  // ENAMETOOLONG
+      else if e == 39i32 {IoErrorKind.DirectoryNotEmpty}           // ENOTEMPTY
+      else if e == 38i32 {IoErrorKind.Unsupported}                 // ENOSYS
+      else if e == 125i32 {IoErrorKind.Cancelled}                  // ECANCELED
+      else if e == 111i32 {IoErrorKind.ConnectionRefused}          // ECONNREFUSED
+      else if e == 104i32 {IoErrorKind.ConnectionReset}            // ECONNRESET
+      else if e == 103i32 {IoErrorKind.ConnectionAborted}          // ECONNABORTED
+      else if e == 107i32 {IoErrorKind.NotConnected}               // ENOTCONN
+      else if e == 98i32 {IoErrorKind.AddressInUse}                // EADDRINUSE
+      else if e == 99i32 {IoErrorKind.AddressNotAvailable}         // EADDRNOTAVAIL
+      else if e == 113i32 {IoErrorKind.HostUnreachable}            // EHOSTUNREACH
+      else if e == 101i32 {IoErrorKind.NetworkUnreachable}         // ENETUNREACH
+      else if e == 100i32 {IoErrorKind.NetworkDown}                // ENETDOWN
+      else if e == 110i32 {IoErrorKind.TimedOut}                   // ETIMEDOUT
+      else {IoErrorKind.Other}
+    }
   }
-  else if e == 36i32 {IoErrorKind.InvalidFilename}                 // ENAMETOOLONG
-  else if e == 39i32 {IoErrorKind.DirectoryNotEmpty}               // ENOTEMPTY
-  else if e == 38i32 {IoErrorKind.Unsupported}                     // ENOSYS
-  else if e == 125i32 {IoErrorKind.Cancelled}                      // ECANCELED
-  else if e == 111i32 {IoErrorKind.ConnectionRefused}              // ECONNREFUSED
-  else if e == 104i32 {IoErrorKind.ConnectionReset}                // ECONNRESET
-  else if e == 103i32 {IoErrorKind.ConnectionAborted}              // ECONNABORTED
-  else if e == 107i32 {IoErrorKind.NotConnected}                   // ENOTCONN
-  else if e == 98i32 {IoErrorKind.AddressInUse}                    // EADDRINUSE
-  else if e == 99i32 {IoErrorKind.AddressNotAvailable}             // EADDRNOTAVAIL
-  else if e == 113i32 {IoErrorKind.HostUnreachable}                // EHOSTUNREACH
-  else if e == 101i32 {IoErrorKind.NetworkUnreachable}             // ENETUNREACH
-  else if e == 100i32 {IoErrorKind.NetworkDown}                    // ENETDOWN
-  else if e == 110i32 {IoErrorKind.TimedOut}                       // ETIMEDOUT
-  else {IoErrorKind.Other}
 }
 
 // getaddrinfo's failures, EAI_ numbers, are below 0: kept in a u32 error
@@ -223,4 +226,4 @@ pub fn gaiOf(code: u32) i32 {0i32 - i32.from(~code + 1u32)}
 // The system's own number for a host name that has no address (a lookup
 // that answered with none): WSAHOST_NOT_FOUND on Windows, EAI_NONAME on
 // Linux. Its kind is NotFound
-pub fn noAddress() u32 {if isWindows() {11001u32} else {gaiNumber(eaiNoName)}}
+pub fn noAddress() u32 {#if #os == .windows {11001u32} #else {gaiNumber(eaiNoName)}}
