@@ -2248,6 +2248,27 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         }
     }
 
+    // A comparison whose '==' (or ordering) takes its other operand by '&' lends it:
+    // 'a == b' is '&a == &b' for a type that wrote its comparison against '&Self'
+    // (the receiver was lent just above). Read-only, where the operand lies; a
+    // temporary lasts to the end of its statement. Only the comparison operators,
+    // and only after the operands as written found no candidate, so a comparison
+    // declared for values or written with its borrows is selected as before.
+    if (selected == NULL && status == OverloadNone && (callnode->flags & FlagOperator)
+        && (methsym == eqName || methsym == ltName || methsym == leName || methsym == gtName
+            || methsym == geName)
+        && callnode->args && callnode->args->used == 1 && isExpNode(nodesGet(callnode->args, 0))) {
+        INode **argp = &nodesGet(callnode->args, 0);
+        INode *arg = *argp;
+        // (a struct: a number has its own comparison, which a borrow cannot cure)
+        if (iexpGetTypeDcl(arg)->tag == StructTag) {
+            fnCallLendEnumOperand(pstate, argp);
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                *argp = arg;
+        }
+    }
+
     // 'x[i].m()' where no 'm' takes the element's read-only borrow: the index
     // is in set position, so a type declaring '&[]' lends its mutable borrow
     if (selected == NULL && status == OverloadNone && fnCallIndexAsMut(pstate, callnode)) {
@@ -4680,6 +4701,55 @@ int fnCallLogicMethod(TypeCheckState *pstate, LogicNode **nodep) {
     return 1;
 }
 
+// 'x.clone()' on a Copy type that declares no 'clone' of its own is the value:
+// every Copy type is core's Clone by the compiler's grant (genericTypeIs), and
+// this is the method it grants. The call becomes the receiver, read through its
+// borrow when it is one, so a copy is made as any read of a Copy value makes it.
+// A type that has a 'clone' (written, derived, or core's for Option) keeps it, and
+// a type that moves and has none is not asked: the call is refused as any missing
+// method is. Answers 1 when the node was replaced.
+static int fnCallCloneCopy(FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != cloneName
+        || node->args == NULL || node->args->used != 0
+        || (node->flags & (FlagIndex | FlagLvalOp | FlagOperator | FlagBorrow | FlagRange)))
+        return 0;
+    INode *recvtype = iexpGetTypeDcl(node->objfn);
+    INode *valtype = recvtype;
+    if (recvtype->tag == RefTag) {
+        if (itypeGetTypeDcl(((RefNode*)recvtype)->region) != borrowRef)
+            return 0;
+        valtype = itypeGetTypeDcl(((RefNode*)recvtype)->vtexp);
+    }
+    // (A reference is not asked for: it is no Clone, genericTypeIs)
+    switch (valtype->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case VectorTag:
+    case TTupleTag:
+    case ArrayTag:
+    case PtrTag:
+    case VoidTag:
+        break;
+    case StructTag:
+        if ((valtype->flags & TraitType) && !(valtype->flags & EnumType))
+            return 0;
+        if (iNsTypeFindFnField((INsTypeNode*)valtype, cloneName) != NULL)
+            return 0;
+        break;
+    default:
+        return 0;
+    }
+    if (itypeIsMove(valtype))
+        return 0;
+    if (recvtype->tag == RefTag)
+        derefInject(&node->objfn);
+    *nodep = (FnCallNode*)node->objfn;
+    return 1;
+}
+
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
@@ -5304,6 +5374,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
 
     // 'v.x': a vector's lane named x, y, z or w is the index 'v[0]' ... 'v[3]'
     if (vectorLaneName(node) && node->vtype == errorType)
+        return;
+
+    // 'x.clone()' of a Copy type with no 'clone' is the value
+    if (fnCallCloneCopy(nodep))
         return;
 
     // Handle when method operator requires an lval

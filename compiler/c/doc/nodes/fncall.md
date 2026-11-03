@@ -777,6 +777,25 @@ Three adjustments, two of them asymmetric on purpose:
   overload taking the borrow still wins over one taking the value. (A `&u8`
   still meets `*u8` first: the borrow converts to a raw pointer, so
   `print <- n` for a borrowed byte selects the C-string overload, as it did.)
+- **A comparison lends its other operand.** `==`, `<`, `<=`, `>` and `>=` (`!=`
+  arrives as `==`; `<=>` is not included) whose candidates, after the borrowed
+  receiver, still found none and whose argument is a struct value, try again
+  with the argument lent read-only (`fnCallLendEnumOperand`: a place is borrowed
+  where it lies, a temporary to the end of its statement) and the receiver
+  borrowed (`fnCallBorrowReceiver`). So `a == b` is `&a == &b` for a `==` written
+  against `&Self` (hand-written, derived, Option's, List's); a candidate taking
+  values, or the borrows written out, is selected first as before. A number's
+  comparison needs no lending and is not retried. The retry is the last of the
+  operator retries and runs only on failure, so it changes no call that
+  compiled.
+- **`x.clone()` of a Copy type is the value** (`fnCallCloneCopy`, ahead of the
+  dispatch on the receiver's type). A call of `clone` with no arguments on a
+  receiver (or a borrow of one) whose type does not move, is a number, vector,
+  tuple, array, pointer, `void`, a struct or an enum, and has no `clone` in its
+  namespace, is replaced by the receiver (read through the borrow). This is the
+  method core's `Clone` grants every Copy type ([struct](struct.md), "Clone, and
+  the `clone` it supplies"). A type that moves and has no `clone` falls through
+  to the ordinary missing-member refusal.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self: &`, `self: &mut` or `self: &uni`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self: &`
