@@ -348,7 +348,15 @@
 // holding it -- the pending table drops its record, through the drop function
 // the compiler made for the seam, so each value the paused behaviour held is
 // finalized in the order its one scope gives, and the rest of the behaviour
-// never runs.
+// never runs. An actor does not always die by count: two actors parked on
+// one another (one awaits the other, holding its handle across the await,
+// while the other is itself parked on an operation, holding the envelope that
+// counts the first) hold each other for ever. So the program's end does not
+// rely on the count: once the runtime is quiescent, and before the workers
+// stop, it drops the parked records of every actor still alive, by a registry
+// of the tables that have parked (ABANDONING AT THE END, at pendingRegister).
+// An actor's own death drops its table as before, and the end finds a
+// table the death emptied empty.
 //
 // THE RUNTIME starts and stops by itself. Its workers start with the first
 // actor, on whichever thread starts it (sync's Once makes two first starts
@@ -366,7 +374,10 @@
 //
 // The module's finalizer, run by the program's final, stops them. It waits
 // until the runtime is QUIESCENT -- no actor is queued or running, so no
-// message is in any mailbox -- then stops the workers and joins them. The
+// message is in any mailbox -- then drops the records still parked in any
+// actor's table (ABANDONING AT THE END; the workers run on to take what the
+// dropped frames' finalizers send, and it waits for quiet again), then stops the
+// workers and joins them. The
 // final finalizes the program's own module first, so the handles its globals
 // hold are let go before the wait; handles in main's locals are let go when
 // main returns, before the final begins. (A program that calls finalAll()
@@ -3378,6 +3389,7 @@ pub struct Pending is GcTraceElements {
   cap: usize = 0usize;
   free: usize = 0usize;     // The first free slot's index + 1, or 0
   count: usize = 0usize;    // How many records are parked
+  node: *PNode = null;      // This table's entry in the registry of tables (ABANDONING AT THE END), made by its first park
 
   // How a collector reaches the values the parked records hold, whatever the
   // seams' types: each record, as an Erased value, is traced by its own type
@@ -3393,25 +3405,193 @@ pub struct Pending is GcTraceElements {
   // when that envelope was dropped unanswered: the I/O it awaited was ended
   // at the program's end (the aio package), or the actor that was to answer
   // abandoned its own continuation holding the envelope, or the future it
-  // was parked on was abandoned so (futures.cone)
+  // was parked on was abandoned so (futures.cone). Where two parked actors
+  // hold each other (an actor awaiting one that is itself parked, its handle
+  // held across the await) neither count ever reaches 0: the program's end
+  // drops those tables itself (ABANDONING AT THE END)
   fn final(self: &uni) {
+    if node as usize != 0usize {
+      pendingUnregister(node);
+    }
     if slots as usize == 0usize {
       return;
     }
-    var i = 0usize;
-    while count != 0usize && i < cap {
-      let v = *(slots + i);
-      if v & 1usize == 0usize {
-        let block = v as *u8;
-        let drop = (*recordType(block)).finalize;
-        drop(block + recordHead);
-        libc.free(block);
-        blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
-        count = count - 1usize;
-      }
-      i = i + 1usize;
+    dropRecords(slots, cap, count);
+  }
+}
+
+// Drop the count records parked in a table's slots, and free the slots: the
+// order is the slots', by index
+fn dropRecords(slots: *usize, cap: usize, n: usize) {
+  var left = n;
+  var i = 0usize;
+  while left != 0usize && i < cap {
+    let v = *(slots + i);
+    if v & 1usize == 0usize {
+      let block = v as *u8;
+      let drop = (*recordType(block)).finalize;
+      drop(block + recordHead);
+      libc.free(block);
+      blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
+      left = left - 1usize;
     }
-    libc.free(slots as *u8);
+    i = i + 1usize;
+  }
+  libc.free(slots as *u8);
+}
+
+// ABANDONING AT THE END. Every pending table that has ever parked a record is
+// in a registry: an entry (PNode) made by its first park, taken out by the
+// table's own death. It costs an actor that awaits one lock and one small
+// allocation, once; an actor that never awaits is not in it, and a park after
+// the first costs nothing. The registry exists so that the program's end can
+// find every table with records parked and drop them (abandonParked, run by
+// stopWorkers), however the actors hold one another. It is not the only way
+// a table's records are dropped -- an actor's death still drops its own --
+// and it takes no count of any actor.
+struct PNode {
+  prev: *PNode;
+  next: *PNode;
+  owner: *Pending;     // the table, where it lay when it parked first: only read while it is in the registry
+}
+
+var regLock: u32 = 0u32;
+var regHead: usize = 0usize;      // the newest entry, a *PNode
+
+fn regAcquire() {
+  var spins = 0u32;
+  while true {
+    var seen = 0u32;
+    var won = false;
+    seen, won = mem.atomicCompareSwap[u32](&regLock, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if won {
+      return;
+    }
+    spins = spins + 1u32;
+    if spins > 64u32 {
+      yieldProcessor();
+    }
+  }
+}
+
+fn regRelease() {
+  mem.atomicStore[u32](&regLock, 0u32, MemOrder.Release);
+}
+
+// Enter table p, which is about to park its first record
+fn pendingRegister(p: &mut Pending) {
+  let n = libc.malloc(mem.sizeof[PNode]()) as *PNode;
+  if n as usize == 0usize {
+    die("actors: out of memory for the pending registry");
+  }
+  (*n).prev = null;
+  (*n).owner = p as *Pending;
+  regAcquire();
+  let head = regHead as *PNode;
+  (*n).next = head;
+  if head as usize != 0usize {
+    (*head).prev = n;
+  }
+  regHead = n as usize;
+  regRelease();
+  p.node = n;
+}
+
+// Take a table's entry out, as its death does
+fn pendingUnregister(n: *PNode) {
+  regAcquire();
+  let prev = (*n).prev;
+  let next = (*n).next;
+  if prev as usize != 0usize {
+    (*prev).next = next;
+  } else {
+    regHead = next as usize;
+  }
+  if next as usize != 0usize {
+    (*next).prev = prev;
+  }
+  regRelease();
+  libc.free(n as *u8);
+}
+
+// The end of the program drops every parked record of every actor still
+// alive, by the registry. Called by stopWorkers once the runtime is quiescent,
+// the workers still running, on the thread that is stopping them.
+//
+// A round has two steps. Step one runs while the runtime is quiescent -- no
+// actor is running and nothing is queued, so no table is being read or
+// written -- and runs no program code: every table with records parked is
+// emptied, its slots array and count taken into a list. Step two drops the
+// records in that list, in the order the registry gives (the newest table to
+// have parked first), each table's by slot index, as an actor's death drops
+// them. Running a record's drop runs the finalizers of what its paused
+// behaviour held, which may send messages, print through a console actor, or
+// let go of the last count of an actor (that actor dies there, and its own
+// table, already emptied or empty, is not dropped twice). The workers are
+// still running to take what those finalizers send. A round ends by waiting
+// for quiet again; the next round finds what the finalizers' messages parked,
+// and the end is the first round that finds none.
+//
+// WHY THE ORDER IS SAFE. A dropped record is unreachable by any reply: a
+// reply is answered only through an envelope (Reply) or a future waiter, which
+// the owed side holds in ITS parked record or in a message in a mailbox; at
+// quiescence no mailbox holds a message, and every parked record is in the
+// list being dropped, so an envelope is let go (unanswered) with its record
+// and never used. The aio threads are joined before this runs, so nothing
+// answers from outside. A record's drop uses only counted handles its frame
+// held, so each actor it names is alive until the drop lets it go, in
+// whatever order the tables fall; and it sends only to live actors, whose
+// workers still run. Slots emptied in step one may be parked in again by what
+// step two starts (the table is a plain id table with nothing owed to any
+// older id: no older reply can arrive), so that a reused id is never resumed
+// by an old reply.
+//
+// SEAM FOR THE CONSOLE (text PR 1b): the owner of the console must drain
+// BEFORE any table is dropped, so that what the dropped frames' finalizers
+// print goes through a console that is still there. That drain belongs at the
+// marked line in stopWorkers, ahead of this call, not in here.
+fn abandonParked(s: *Sched) {
+  while true {
+    var lists: *usize = null;       // pairs: slots, cap, count
+    var used = 0usize;
+    var room = 0usize;
+    regAcquire();
+    var np = regHead as *PNode;
+    while np as usize != 0usize {
+      let p = (*np).owner;
+      if (*p).count != 0usize {
+        if used + 3usize > room {
+          var grown = room * 2usize;
+          if grown == 0usize {grown = 24usize;}
+          let bigger = libc.realloc(lists as *u8, grown * mem.sizeof[usize]()) as *usize;
+          if bigger as usize == 0usize {
+            die("actors: out of memory to abandon the parked records");
+          }
+          lists = bigger;
+          room = grown;
+        }
+        *(lists + used) = (*p).slots as usize;
+        *(lists + used + 1usize) = (*p).cap;
+        *(lists + used + 2usize) = (*p).count;
+        used = used + 3usize;
+        (*p).slots = null;
+        (*p).cap = 0usize;
+        (*p).free = 0usize;
+        (*p).count = 0usize;
+      }
+      np = (*np).next;
+    }
+    regRelease();
+    if used == 0usize {
+      return;
+    }
+    var i = 0usize;
+    while i < used {
+      dropRecords(*(lists + i) as *usize, *(lists + i + 1usize), *(lists + i + 2usize));
+      i = i + 3usize;
+    }
+    libc.free(lists as *u8);
+    quiesce(s);
   }
 }
 
@@ -3459,6 +3639,9 @@ fn noTrace(record: *u8, mode: u32) {}
 // flight, and nothing has a timeout path yet: an I/O operation's answer
 // comes exactly once too, and its envelope counts the actor the same way.
 pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
+  if p.node as usize == 0usize {
+    pendingRegister(p);
+  }
   if p.free == 0usize {
     var newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}
@@ -3627,7 +3810,8 @@ fn giveBlock(block: *u8) {
 }
 
 // What the record blocks have cost the allocator: blocks it was asked for, and
-// blocks it was given back (by an actor's death, or a full keep), and the
+// blocks it was given back (by an actor's death, the program's end dropping
+// the tables still parked, or a full keep), and the
 // per-thread keeps made and freed. For tests and for finding leaks, as
 // liveFutures is for futures. After finalAll() each pair is equal: every
 // block and every keep has been given back (a block still in a keep when it
@@ -4731,6 +4915,11 @@ fn stopWorkers() {
   }
   let s = running.load() as *Sched;
   quiesce(s);
+  // SEAM (text PR 1b): the console's owner drains HERE, before any table is
+  // dropped, so that what the dropped frames' finalizers print has a console
+  // to go through. Then the parked records of every actor still alive are
+  // dropped (ABANDONING AT THE END), the workers still running
+  abandonParked(s);
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
   // Mark every worker and wake its word (THE PARK WORD): a worker asleep
   // wakes chosen and sees 'stopping'; one not yet asleep finds its word not
