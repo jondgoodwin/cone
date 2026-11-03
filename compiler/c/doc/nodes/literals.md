@@ -477,7 +477,8 @@ first field, in place of the heap's ([struct](struct.md), "CarriesRegion"). An a
 contents, after `<-`, which `contentsLower` takes before this is reached, so
 one here has none (`ErrorArrayContents`); so is an allocation of an array
 with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Otherwise its type must be a struct
-(`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
+(`ErrorNewType` otherwise: a number converts with `from`, except that `i32()` with
+no arguments is its zero literal, core's `Default` grant for numbers and `bool`; an enum's variant
 keeps its brackets). One positional argument whose type is the struct itself
 is a finished value, which needs no construction (`ErrorNewFinished`); an
 allocation takes one as its value instead. A generic
@@ -520,7 +521,8 @@ number (and for `bool` a reference or pointer, as `typeLitConvertsToBool` says),
 and retags the call `TypeLitTag` with the number as its type, so it never passes
 through `typeLitTypeCheck`. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
-into position; a missing field takes its default; a field flagged `IsTagField`
+into position; a missing field takes its default (a struct declaring `Default` gives a field
+with none its type's `T()`, `typeLitFieldFill`); a field flagged `IsTagField`
 gets the variant's `tagnbr` **inserted** — which is how a variant's discriminant is
 materialized, and why a constructor never writes one. Inserted where the field
 sits, so an enum that placed its discriminant itself is served by the same walk. A

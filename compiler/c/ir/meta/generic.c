@@ -257,7 +257,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     // Reorder the literal's arguments to match the type's field order
-    if (typeLitStructReorder(srcgencall, genstruct,
+    if (typeLitStructReorder(pstate, srcgencall, genstruct,
             (INode*)genstruct == pstate->typenode || structSeesPrivate(pstate, (INode*)genstruct)) == 0)
         return 0;
 
@@ -1887,6 +1887,16 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         && ((dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag)
             || refIsCopyBorrow(dcl)))
         return 1;
+    // and every number type and bool is Default: its 'T()' is 0 (0.0, false). A
+    // char is not a number and has no default.
+    // Any other type is Default only if it declares it (the trait is a marker).
+    if (coreIsDefaultTrait((INode*)trait)) {
+        if (dcl->tag == IntNbrTag || dcl->tag == FloatNbrTag
+            || (dcl->tag == UintNbrTag && dcl != (INode*)charType))
+            return 1;
+        if (dcl->tag != StructTag)
+            return 0;
+    }
     // and the number markers: Float is f32 and f64, Signed the signed integers
     // and the floats, Unsigned the unsigned integers, Numeric all of them.
     // bool and char are unsigned in the tree but are not numbers.
