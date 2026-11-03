@@ -62,6 +62,12 @@
 //   setMailboxLimit(mb, n), mailboxTooFull(mb)
 //                                   what a mailbox holds and when it is too
 //                                   full (MAILBOX LIMIT, below)
+//   actors.groupAwaitsLive()        the awaits parked in a cancel group (THE GROUP SURVIVES AN AWAIT)
+//   actors.testGroupedReply(), testActorWithGroupedAwait(), testKillActor(a)
+//                                   TEST-ONLY, not for programs (Cone has no test-only
+//                                   visibility, so they are public): reach the drop of an
+//                                   unanswered grouped Reply and the death of an actor with a
+//                                   grouped await outstanding
 //   actors.waitQuiet()            wait until no actor is queued or running
 //   actors.waitUntilIdle()          INTERIM: wait until no actor is queued or
 //                                   running and no awaited operation is
@@ -2794,6 +2800,55 @@ var gCount: usize = 0usize;       // entries in the table
 // How many awaits made in a cancel group are parked: for tests and finding leaks
 pub fn groupAwaitsLive() usize {
   mem.atomicLoad[usize](&gCount, MemOrder.Acquire)
+}
+
+// TEST-ONLY hooks, not for programs (Cone has no test-only visibility, so they
+// are public, as aio.testLateQuiet is), that reach the two removal paths no
+// program can provoke: the drop of a Reply never answered, and the death of an
+// actor with a grouped await outstanding. They stand a made-up actor in for the
+// awaiting one (a Header that only frees itself), with the table code the real
+// paths run: Reply.final and finalizeState's groupSweep.
+fn fakeRelease(h: *Header) {
+  libc.free(h as *u8);
+}
+
+fn fakeActor() *Header {
+  let h = libc.calloc(1usize, mem.sizeof[Header]()) as *Header;
+  if h as usize == 0usize {
+    die("actors: out of memory for a test actor");
+  }
+  (*h).release = &fakeRelease;
+  h
+}
+
+// A Reply, as replyFor makes one for an await made in the current group, owed to
+// a made-up actor: dropped unanswered, it removes its entry and lets the actor go
+pub fn testGroupedReply() Reply {
+  let h = fakeActor();
+  let gp = curGroup;
+  var word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
+  if gp != 0usize {
+    groupNote(h, word, gp);
+    word = word | groupBit;
+  }
+  Reply(to: h, at: null, id: word, meta: metaOf(8usize, 0u64))
+}
+
+// A made-up actor with a grouped await outstanding (an entry for the current
+// group), as an address for testKillActor
+pub fn testActorWithGroupedAwait() usize {
+  let h = fakeActor();
+  let gp = curGroup;
+  if gp != 0usize {
+    groupNote(h, mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64, gp);
+  }
+  h as usize
+}
+
+// That actor's death: what finalizeState does for its entries
+pub fn testKillActor(a: usize) {
+  groupSweep(a as *Header);
+  libc.free(a as *u8);
 }
 
 fn gAcquire() {

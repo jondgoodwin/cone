@@ -16,6 +16,10 @@
 //    second half in g, the table empty at the end.
 // 6. A second await after the first in the same behaviour is in g too, and the
 //    table is empty after the chain.
+// 7. A Reply dropped unanswered removes its entry (the test-only hook
+//    actors.testGroupedReply makes one owed to a made-up actor).
+// 8. An actor dying with a grouped await outstanding has its entries swept,
+//    and only its own (testActorWithGroupedAwait, testKillActor).
 
 mod awaitgroup;
 
@@ -225,5 +229,23 @@ fn main() i32 {
   expectUInt(seen.chain1.load(), 1u64, "6: after the first await, in g");
   expectUInt(seen.chain2.load(), 1u64, "6: after the second, in g");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "6: the table is empty");
+
+  // 7. a Reply never answered, dropped (the test-only hook makes one, owed to a made-up actor)
+  actors.withGroup(&g, fn() {
+    let r = actors.testGroupedReply();
+    expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "7: an await in g has an entry while its reply is owed");
+  });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "7: the unanswered reply's drop removed the entry");
+
+  // 8. an actor dying with a grouped await outstanding
+  actors.withGroup(&g, fn() {
+    let one = actors.testActorWithGroupedAwait();
+    let two = actors.testActorWithGroupedAwait();
+    expectUInt(u64.from(actors.groupAwaitsLive()), 2u64, "8: two actors, each with an entry");
+    actors.testKillActor(one);
+    expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "8: one dying removed only its own entry");
+    actors.testKillActor(two);
+  });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "8: the table is empty after both deaths");
   done()
 }
