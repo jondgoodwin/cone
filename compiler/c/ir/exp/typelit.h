@@ -17,7 +17,7 @@ void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
 // Reorder the literal's field values to the same order as the type's fields.
 // Also refuse a value for a private field where 'private' says the literal is
 // written outside the module that declares the type (structSeesPrivate).
-int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
+int typeLitStructReorder(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode, int private);
 
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);

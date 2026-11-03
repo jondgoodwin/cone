@@ -448,6 +448,16 @@ int coreIsEqTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+// Core's Default trait, known the same way
+int coreIsDefaultTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == defaultTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 // Core's Clone trait, known as Hash is
 int coreIsCloneTrait(INode *dcl) {
     if (dcl == NULL || dcl->tag != StructTag)
