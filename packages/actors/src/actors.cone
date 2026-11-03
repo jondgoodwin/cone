@@ -2225,13 +2225,18 @@ fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 // the call (it cannot 'await'), so a group named never outlives its call and
 // the current group is back to what it was when the call returns.
 //
-// A 'parallel each' runs in the group of the code that began it: a loop begun
-// from a thread (inside withGroup, or in a behaviour whose frame holds the group)
-// hands the pieces the address of that handle (EachLoop.group), and a loop a
-// behaviour's seam cut (ParPending) holds a copy of the handle, another owner,
-// which the pieces, the sends they gather and the rest of the behaviour use and
-// the end of the behaviour drops. Each piece sets the group as its thread's
-// current group around its body and restores the thread's own.
+// A 'parallel each' begun in a group runs in a CHILD of it, made for the loop
+// (parallelEach, startHeld): a piece that cancels its current group stops this loop
+// alone, a cancel of the group above reaches the pieces by the child relation, and
+// gatherPiece skips the pieces not yet begun once the child is cancelled. A loop
+// begun from a thread (inside withGroup, or in a behaviour whose frame holds the
+// group) hands the pieces the address of the child (EachLoop.group); a loop a
+// behaviour's seam cut (ParPending) holds a copy of the behaviour's group, another
+// owner, from which the loop's child is made when it begins. The sends the pieces
+// gather and the rest of the behaviour use the group itself, not the child, and the
+// end of the behaviour drops the copy. Each piece sets the child as its thread's
+// current group around its body and restores the thread's own. A loop begun in no
+// group runs in none.
 //
 // The rest of a behaviour after an 'await' runs in the group the await was made
 // in, kept in a side table until the reply comes (THE GROUP SURVIVES AN AWAIT,
