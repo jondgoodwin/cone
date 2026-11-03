@@ -237,9 +237,7 @@ pub struct Deflater {
     if format == Format.Zlib { adler.update(chunk, 0usize, chunk.len); }
     else if format == Format.Gzip { crcv = crc.update(crcv, chunk, 0usize, chunk.len); }
     inTotal = inTotal + u64.from(chunk.len);
-    buf.reserve(chunk.len);
-    var i = 0usize;
-    while i < chunk.len { buf.push(chunk[i]); i += 1usize; }
+    buf.appendSlice(chunk);
   }
 
   // Says that no more input will come; the stream is then completed by
@@ -350,11 +348,15 @@ pub struct Deflater {
   fn slide(self: &mut) {
     let used = usize.from(cur - base);
     if used < 98304usize { return; }
+    // Slide only when the used part is at least half of buf, so each slide's
+    // copy of the unread input is paid for by the input it drops: the total
+    // copied stays linear in the input, even when all of it was fed at once
+    if used * 2usize < buf.len() { return; }
     let drop = if level == 0 {used} else {used - 32768usize};
     let keep = buf.len() - drop;
-    var i = 0usize;
-    while i < keep { buf.set(i, *buf[drop + i]); i += 1usize; }
-    buf.truncate(keep);
+    var kept = List[u8].withCapacity(keep + 65536usize);
+    kept.appendSlice(&buf.view()[drop ..< drop + keep]);
+    buf = kept;
     base = base + i64.from(drop);
   }
 
