@@ -1462,6 +1462,72 @@ too. What the compiler adds:
   variant and a trait are not supplied; one that declares `Hash` is asked for a
   `hash` by the ordinary requirement check.
 
+### Eq, and the `==` it supplies
+
+Core's `Eq` (`pub trait Eq { pub fn `==`(self: &, o: &Self) bool; }`) is known
+by name and package (`coreIsEqTrait`), as `Hash` is. It requires the method by
+the name `==` itself, so a struct's own `==` fills it, and the requirement a
+type inherits bodiless (`structInheritTrait`) is found at `eqName`.
+
+- **The supplied `==`.** A struct declaring `Eq` that writes no `==`
+  (`structEqCheck`, at layout after `structHashCheck`) has the inherited
+  requirement filled: `return &self.f1 == &other.f1 && &self.f2 == &other.f2 ...`
+  in field order, `true` for a struct with no field. The fields are lent
+  because the supplied `==` takes `&Self` (so does every method of `Eq`), and a
+  field's own `==`, whether written for references or for values, is selected
+  through them. A mixin field is skipped. A float is allowed, its `==` being
+  IEEE's.
+- **Refusal.** `ErrorEqField`, at the field, where `structEqFieldHasEq` finds no
+  `==` against its own type: a number and a raw pointer have one, a struct that
+  meets `Eq` (`genericTypeIs`) or has a `==` in its namespace (an instance's
+  conditional `==` is absent when its clause fails), and a reference or slice
+  to such a type, which `==` reads through; an array, a tuple, a function type
+  and a virtual reference do not. A refused struct is given a body that says
+  false so nothing more is said of it.
+- **Not supplied** for an enum, a variant or a trait, as for `Hash`: an enum's
+  `==` is the compiler's (`structEnumAddEquality`).
+- **Number types and `bool`** meet `Eq` by their built-in `==`
+  (`genericNumberFits`, the route `Ordered`'s `<=>` takes); no compiler change
+  beyond L2's was needed. A struct whose `==` is written by value
+  (`fn `==`(self, o: Id)`) does not meet `Eq`, since a trait cannot hold `Self`
+  by value (Error 1069).
+- **`Option` and `Result`** have a conditional `==` of their own in core
+  (`where T is Eq`, and `E is Eq` for `Result`), taking `&` of the enum. The
+  enum's compiler `==` (`NoEqIntrinsic`) is then replaced, and a comparison with
+  an empty variant (`x == None`) still asks the tag alone: `fnCallTypeCheck`
+  and `fnCallLowerRefCompare` try `fnCallLowerEnumTagTest` for any enum
+  receiver before the enum's own method is looked for.
+
+### Clone, and the `clone` it supplies
+
+Core's `Clone` (`pub trait Clone { pub fn clone(self: &) Self; }`) is known by
+name and package (`coreIsCloneTrait`), as `Eq` is.
+
+- **The grant.** Every type that does not move is `Clone` (`genericTypeIsHow`,
+  beside `Copy`): numbers, `bool`, a Copy struct, tuple, array, pointer. Not a
+  reference of any kind (`RefTag`, `ArrayRefTag`, `VirtRefTag`): cloning a
+  reference would have to carry its lifetime, and `Option[&T]` would otherwise
+  instance a `clone` that cannot be typed. The grant has no method of its own to
+  call: `x.clone()` on a Copy type with no `clone` of its namespace is the value
+  (`fnCallCloneCopy` in [fncall](fncall.md): the call is replaced by its
+  receiver, read through its borrow when it is one).
+- **The supplied `clone`.** A struct declaring `Clone` that writes no `clone`
+  (`structCloneCheck`, at layout after `structEqCheck`) has the inherited
+  requirement filled: `return Self(self.f1.clone(), self.f2.clone(), ...)` in
+  field order, built as a construction (`fnCallMarkConstruction`), so the fields
+  clone by their own `clone` or, for a Copy field, by the grant. A mixin field
+  is skipped, as for `hash` and `==`.
+- **Refusal.** `ErrorCloneField` (1577), at the field, where the field's type is
+  neither Clone by `genericTypeIs` nor a Copy array, tuple, vector or pointer
+  (a struct that moves and has no `clone`, a unique owner, a reference). The
+  struct gets a body whose value is already an error, so nothing more is said.
+- **Core and collections.** `Option` and `Result` have an `inline` conditional
+  `clone` (inline, so no instance of the enum compiles one unasked, as `==`);
+  `List` and `String` have `clone`. `List`'s `resize`, `appendSlice` (two
+  overloads: the block copy where `T` is Copy, a cloning loop where it moves and
+  is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
+- `=` never clones; no copy or move calls a `clone`.
+
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
 (`cone_hashSeed`, `packages/conestd/hash.cone`).
@@ -2293,10 +2359,14 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   has none. An owning reference (`Uni`, `Rc`, an owning array reference) of the one
   converted to the same of the other is answered through its pointee. Pinned in
   `struct_typecheck_extends_final`, with what is not refused in
-  `struct_extends_final_borrow`. Not covered: two siblings that each declare a
-  *different* `final` (the source's is skipped, the target has one, and nothing
-  refuses it), and a type that merely holds an enrichment inside a generic
-  (`Option[PlainFin]`), which is no conversion of the pointee. A base's own `final`
+  `struct_extends_final_borrow`. Two siblings that each declare a *different*
+  `final` are refused too: a type's `final` has an origin (the top of its `extends`
+  chain that has one, `structFinalOrigin`), and a conversion between types of
+  different origins skips the source's. Types of one origin (two enrichments of one
+  enrichment) carry copies of one `final` and convert freely. An array by value is
+  answered through its element type. A type that merely holds an enrichment inside a
+  generic (`Option[PlainFin]`) is no conversion of the pointee, and is refused as a
+  different type (`ErrorInvType`). A base's own `final`
   has no such gap, since every enrichment carries a copy.
 - **A folded copy is a snapshot until the folding type is laid out.** It takes
   its origin's type node and index at expansion, in name resolution; if the

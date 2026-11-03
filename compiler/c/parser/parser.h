@@ -360,4 +360,23 @@ void parseCloseTok(uint16_t closetok);
 // parseVarDcl just read
 DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start, char *kw, uint16_t kind);
 
+// parsemeta.c: '#if' on facts of the build, resolved while parsing. The four
+// places a list of items is read (a module, a type's braces, an 'extern' block,
+// a block of statements) each give parseHashIf the function that reads their
+// items. It is called with the lexer after a branch's '{', and reads through the
+// matching '}'; 'taken' says whether the build takes the branch. When it does
+// not, parse->mod is a scratch module that keeps and binds nothing, and the
+// function reads into scratch of its own for anything else it would add to.
+typedef void (*MetaBranchFn)(ParseState *parse, void *ctx, int taken);
+// The options the facts come from
+void parseMetaInit(ConeOptions *opt);
+// A chain, with the lexer on its '#if'
+void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx);
+// A chain that gives a value, with the lexer on its '#if'
+INode *parseHashIfExpr(ParseState *parse);
+// A '#elif' or '#else' met where no chain is waiting for it: reported and read past
+void parseMetaStray(ParseState *parse);
+// '#os', '#arch', '#debug', '#defined' or '#define' met outside a '#if' condition: reported and passed
+void parseMetaFactStray(void);
+
 #endif

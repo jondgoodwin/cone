@@ -1161,6 +1161,73 @@ let number = h.finish();
 		<span class="pre">Hasher.withSeed(n)</span> starts it from a seed of your own, and then the same keys give the
 		same numbers on every run and build, for a table whose order must be reproducible.</p>
 
+	<h3 id="eqtrait">Eq, and the == the compiler supplies</h3>
+	<p>Core's <span class="pre">Eq</span> is "has <span class="pre">==</span>": a function asks for it to compare
+		two values, and <span class="pre">!=</span> follows from <span class="pre">==</span> as it always does.</p>
+<pre>
+pub trait Eq {
+  pub fn `==`(self: &amp;, o: &amp;Self) bool;
+}
+</pre>
+	<p>Every number type and <span class="pre">bool</span> meets it by its built-in <span class="pre">==</span>, and so
+		does a struct that writes an <span class="pre">==</span> against <span class="pre">&amp;Self</span>. (A trait
+		cannot hold <span class="pre">Self</span> by value, so an <span class="pre">==</span> written for values, as
+		<span class="pre">fn `==`(self, o: Id)</span> is, does not meet it; a number's is read through, as for
+		<a href="mod-generativity.html#constraints">Ordered</a>.) A float is <span class="pre">Eq</span>, its
+		<span class="pre">==</span> being IEEE's: NaN is not equal to itself and -0 is equal to 0, which is also why a
+		float is not <span class="pre">Hash</span>. The laws are documented and not checked: <span class="pre">==</span>
+		is symmetric (<span class="pre">a == b</span> is <span class="pre">b == a</span>) and transitive, and, but for
+		a float's NaN, reflexive (<span class="pre">a == a</span>).</p>
+	<p>A <span class="pre">struct</span> that declares <span class="pre">Eq</span> and writes no
+		<span class="pre">==</span> is given one by the compiler, as <span class="pre">Hash</span> gives a
+		<span class="pre">hash</span>: it compares each field, in the order declared, with the field's own
+		<span class="pre">==</span>, and the fields are equal when every one is.</p>
+<pre>
+struct Pt is Eq { x: i32; y: i32; w: f64 }
+
+Pt(1, 2, 0.5) == Pt(1, 2, 0.5)     // true
+</pre>
+	<p>It is refused, at the field, where a field has no <span class="pre">==</span> against its own type (an
+		array, a tuple, a function, a struct that declares none): write the <span class="pre">==</span> instead, or
+		give the field's type one. The supplied (and every <span class="pre">&amp;Self</span>) <span class="pre">==</span>
+		takes borrows, and a comparison lends them: <span class="pre">a == b</span> means
+		<span class="pre">&amp;a == &amp;b</span> for any type whose <span class="pre">==</span> (or
+		<span class="pre">&lt;</span>, <span class="pre">&lt;=</span>, <span class="pre">&gt;</span>,
+		<span class="pre">&gt;=</span>) is written against <span class="pre">&amp;Self</span>, and a temporary
+		compared (<span class="pre">a == make()</span>) is lent to the end of its statement. Writing the
+		<span class="pre">&amp;</span> out still works, and a bound's comparison reads the same,
+		<span class="pre">fn same[T: Eq](a: &amp;T, b: &amp;T) bool { a == b }</span>. An
+		<span class="pre">Option</span> or <span class="pre">Result</span>, a <span class="pre">List</span> and a
+		tuple of two to four elements have an <span class="pre">==</span> where their elements do (the tuple's takes
+		values or borrows, <span class="pre">(1, 2) == (1, 2)</span>), and a generic struct says the same of its own
+		<span class="pre">==</span> with a <span class="pre">where T is Eq</span> clause on the method, which then
+		exists only where it holds.</p>
+
+	<h3 id="clonetrait">Clone, and the clone the compiler supplies</h3>
+	<p>Core's <span class="pre">Clone</span> is "can be duplicated on request": <span class="pre">x.clone()</span> makes a
+		second value independent of the first, so a list's clone holds clones of its values.</p>
+<pre>
+pub trait Clone {
+  pub fn clone(self: &amp;) Self;
+}
+</pre>
+	<p>Every <a href="rec-moves.html">Copy</a> type is <span class="pre">Clone</span> by the compiler's grant, and its
+		<span class="pre">clone()</span> is the value itself, so generic code asks for the one bound:
+		<span class="pre">fn dup[T: Clone](a: &amp;T) T { a.clone() }</span> works for an <span class="pre">i32</span>, a
+		plain struct and a tuple of numbers. (A reference is not asked for: a reference is copied by
+		<span class="pre">=</span>, but is not <span class="pre">Clone</span>, and <span class="pre">r.clone()</span> on a
+		borrow clones the value it lends.) A struct that declares <span class="pre">Clone</span> and writes no
+		<span class="pre">clone</span> is given one that clones each field, in order, into a new value; it is refused, at
+		the field, where a field is neither Copy nor Clone (a unique owner, a struct that moves and has no
+		<span class="pre">clone</span>, a reference). <span class="pre">Option</span> and <span class="pre">Result</span>, a
+		<span class="pre">List</span> and a <span class="pre">String</span> have a <span class="pre">clone</span> where
+		their elements do. <span class="pre">resize</span>, <span class="pre">appendSlice</span> and
+		<span class="pre">getCopy</span> on the collections are present where the element is Clone.</p>
+	<p><span class="pre">=</span> never clones and is never written by the programmer: assigning or passing a value
+		either copies it (a type that owns nothing) or moves it (one that owns something), and a duplicate that owns
+		something is always visible as <span class="pre">.clone()</span>. A <span class="pre">clone</span> method of a
+		type's own is an ordinary method; no copy calls it.</p>
+
 	<h3 id="iterators"><span id="iterator"></span>Iterator and Iterable</h3>
 	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that is generic over
 		them. A type is an <span class="pre">Iterator[T]</span> by having <span class="pre">next</span>, and an
