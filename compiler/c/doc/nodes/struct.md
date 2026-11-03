@@ -1498,6 +1498,36 @@ type inherits bodiless (`structInheritTrait`) is found at `eqName`.
   and `fnCallLowerRefCompare` try `fnCallLowerEnumTagTest` for any enum
   receiver before the enum's own method is looked for.
 
+### Clone, and the `clone` it supplies
+
+Core's `Clone` (`pub trait Clone { pub fn clone(self: &) Self; }`) is known by
+name and package (`coreIsCloneTrait`), as `Eq` is.
+
+- **The grant.** Every type that does not move is `Clone` (`genericTypeIsHow`,
+  beside `Copy`): numbers, `bool`, a Copy struct, tuple, array, pointer. Not a
+  reference of any kind (`RefTag`, `ArrayRefTag`, `VirtRefTag`): cloning a
+  reference would have to carry its lifetime, and `Option[&T]` would otherwise
+  instance a `clone` that cannot be typed. The grant has no method of its own to
+  call: `x.clone()` on a Copy type with no `clone` of its namespace is the value
+  (`fnCallCloneCopy` in [fncall](fncall.md): the call is replaced by its
+  receiver, read through its borrow when it is one).
+- **The supplied `clone`.** A struct declaring `Clone` that writes no `clone`
+  (`structCloneCheck`, at layout after `structEqCheck`) has the inherited
+  requirement filled: `return Self(self.f1.clone(), self.f2.clone(), ...)` in
+  field order, built as a construction (`fnCallMarkConstruction`), so the fields
+  clone by their own `clone` or, for a Copy field, by the grant. A mixin field
+  is skipped, as for `hash` and `==`.
+- **Refusal.** `ErrorCloneField` (1577), at the field, where the field's type is
+  neither Clone by `genericTypeIs` nor a Copy array, tuple, vector or pointer
+  (a struct that moves and has no `clone`, a unique owner, a reference). The
+  struct gets a body whose value is already an error, so nothing more is said.
+- **Core and collections.** `Option` and `Result` have an `inline` conditional
+  `clone` (inline, so no instance of the enum compiles one unasked, as `==`);
+  `List` and `String` have `clone`. `List`'s `resize`, `appendSlice` (two
+  overloads: the block copy where `T` is Copy, a cloning loop where it moves and
+  is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
+- `=` never clones; no copy or move calls a `clone`.
+
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
 (`cone_hashSeed`, `packages/conestd/hash.cone`).

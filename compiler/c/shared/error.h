@@ -780,6 +780,7 @@ enum ErrorCode {
     ErrorMetaIf = 1573,         // A '#if' chain malformed or misplaced: an '#elif' or '#else' with no '#if' before it, an '#elif' after the '#else', a second '#else', a '#if' giving a value with no '#else', or a condition's own punctuation missing ('#defined("NAME"' with no ')', a '(' never closed). Pointed at the word
     ErrorMetaFact = 1574,       // A '#if' condition that names a fact outside the closed vocabulary (#os, #arch, #debug, #defined, #define), or uses one wrongly: a member the fact has not ('#os == .window'), a member of another fact, a comparison of unlike kinds, '#defined' of something that is not a string literal, a fact read outside a '#if' condition, a condition that is not a bool. Pointed at the word
     ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
+    ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
 
     // Warnings
     WarnCode = 3000,
