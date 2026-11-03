@@ -264,6 +264,10 @@ int coreIsEqTrait(INode *dcl);
 // (genericTypeIs), and a struct that declares it and writes no 'clone' is given
 // one (structCloneCheck)
 int coreIsCloneTrait(INode *dcl);
+// Core's Default trait, known the same way; every number type and bool meet it by
+// grant (genericTypeIs): `T()` is 0 or false. A struct that declares it is made by
+// `T()` from its fields' defaults or their types' own `T()` (structDefaultCheck)
+int coreIsDefaultTrait(INode *dcl);
 // Core's Iterator trait, known by its name and its package; the compiler keeps the
 // declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
 // does not declare it, that the shared methods come with the declaration

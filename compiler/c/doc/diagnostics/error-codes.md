@@ -454,6 +454,12 @@ Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
 moves and has no `clone`, a unique owner, a `&mut`), reported at the field.
 The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
 
+Core's `Default` takes one. `ErrorDefaultField` is a field of a struct that declares
+`Default` and writes no `init` that has neither a declared `= value` nor a type that
+is `Default` (a number, `bool`, or a type declaring it), reported at the field. The
+remedy is a `= value` on the field, an `init` of the struct's own, or declaring the
+field's type `Default`.
+
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
 the type itself, or the clause admits a member of `T` that is not a method (a
