@@ -849,8 +849,11 @@ a plain path is `ErrorAwaitLeftCall`, also a rule, its message naming the fix
 an I/O operation) whose answer nothing uses, a statement of its own, is
 warned by the rule for every dropped value, `WarnDiscard` (below); 1280 and 3005
 are holds. An `await`
-on anything but a behaviour's reply, a future or an operation, which waits for
-no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
+on anything but a behaviour's reply, a future, an operation or a value whose type
+has an `await` method, which waits for
+no answer, is `ErrorAwaitNotFuture`, a rule; a type's `await` method that takes
+more than `self` or gives neither an `Awaitable[R]` nor a `Future[T]` is
+`ErrorAwaitMethod`, also a rule. `ErrorAwaitNotFuture`'s message also says what the
 seam's continuation would carry, which is how the seam's rules are pinned on a
 plain function's call; where it stands and is not built is
 `ErrorUnbuiltAwait`, whose message says why: in a construct the split does not

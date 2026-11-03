@@ -823,8 +823,9 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     if (lexIsToken(LParenToken))
         return parseFieldList(parse, node);
 
-    // Get field/method name
-    if (lexIsToken(IdentToken))
+    // Get field/method name. 'await' is a keyword, but no expression follows a
+    // '.', so it may name the convention method a type is awaited by (ir/exp/await.c)
+    if (lexIsToken(IdentToken) || lexIsToken(AwaitToken))
         fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
     // Or integer constant (for tuple element)
     else if (lexIsToken(IntLitToken)) {

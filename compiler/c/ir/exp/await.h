@@ -26,7 +26,9 @@
  * package's Future[T], which a call of a behaviour returning a T gives where
  * its value is used (actorFutureCall): the seam parks on it unless it has
  * its ending already, when the behaviour goes on at once, and the 'await''s
- * value is the T opened out of it. An 'await' on anything else waits for no
+ * value is the T opened out of it. Or the operand's type has a method named
+ * 'await' taking only 'self', giving one of those two (awaitMethod): the
+ * operand is made the call of it. An 'await' on anything else waits for no
  * answer, and is refused (ErrorAwaitNotFuture), naming what its continuation
  * would carry, unless '--await-direct', for tests, hands its record straight
  * to its second half. compiler/c/doc/phases/flow.md, "A seam", and

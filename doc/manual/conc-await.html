@@ -517,12 +517,38 @@ behaviour owing it (request 1) ended without answering
 		is one the program should handle, the behaviour declares it in its return type, a
 		<a href="guide-functions.html#result-tour"><span class="pre">Result</span></a>, and the future's value is that
 		<span class="pre">Result</span>.</p>
-	<p>Only a future, a behaviour's answer and an I/O operation are awaited. An <span class="pre">await</span> on anything
+	<p>Only a future, a behaviour's answer, an I/O operation and a value whose type declares an
+		<a href="#await-method"><span class="pre">await</span> method</a> are awaited. An <span class="pre">await</span> on anything
 		else waits for no answer, and is refused: an <span class="pre">await</span> on a function's call, whose value is
 		there as soon as the call returns (<a href="#await-unbuilt">below</a>), or on a number. And a behaviour that returns
 		nothing gives no future (<a href="#await-nothing">next</a>). The compiler's <span class="pre">--await-direct</span>
 		option, which is for testing the cut, runs the rest of the behaviour at once after an <span class="pre">await</span>
 		on anything else, with the value awaited.</p>
+
+	<h2 id="await-method">Making a type awaitable</h2>
+	<p>A library type becomes awaitable by declaring a method named <span class="pre">await</span> that takes only
+		<span class="pre">self</span> and gives the thing to wait on: an <span class="pre">actors.Awaitable[R]</span>, an
+		operation its maker starts at the seam, or an <span class="pre">actors.Future[T]</span>. Then
+		<span class="pre">await x</span> is <span class="pre">await x.await()</span>, and its value is the
+		<span class="pre">R</span> or <span class="pre">T</span>. (The word is a keyword, but it names a method right
+		after <span class="pre">fn</span> and right after a <span class="pre">.</span>, where no expression can begin.)</p>
+<pre>
+struct Delay {
+  pub n: u64;
+
+  pub fn await(self) actors.Awaitable[u64] {
+    let v = n;
+    actors.Awaitable[u64].make(fn(rp: actors.Reply) [v] {
+      actors.answerNow[u64](rp, v + 1u64);
+    })
+  }
+}
+
+// in a behaviour:  let v = await Delay(4u64);    // v is 5
+</pre>
+	<p>The contract is the operation's: <span class="pre">Awaitable.make</span> and <span class="pre">Awaitable.of</span>
+		hand the closure the reply's envelope, which it answers exactly once. A method that takes more than
+		<span class="pre">self</span>, or gives neither type, is refused.</p>
 
 	<h2 id="await-nothing">A behaviour that returns nothing</h2>
 	<p>Whether an answer is sent is the behaviour's declaration to say, never its caller's: one with no return type sends
