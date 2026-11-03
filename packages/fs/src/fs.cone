@@ -252,10 +252,11 @@ fn useUtf8() {
 
 fn setUtf8() {
   // POSIX hands a name's bytes to the system as they are
-  if !isWindows() { return; }
-  let now = libc.setlocale(libc.LC_CTYPE, null);
-  if now != null && libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
-    libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
+  #if #os == .windows {
+    let now = libc.setlocale(libc.LC_CTYPE, null);
+    if now != null && libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
+      libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
+    }
   }
 }
 
@@ -453,9 +454,9 @@ pub fn chmod(path: &Path, mode: u32) Result[void, FsError] {
   useUtf8();
   var c = cText(path);
   let bits = mode & modeBits;
-  let failed = if isWindows() {
+  let failed = #if #os == .windows {
     _chmod(c.cstr(), if (bits & ownerWrite) != 0u32 {winWritable} else {winReadable}) != 0i32
-  } else {
+  } #else {
     posixChmod(c.cstr(), bits) != 0i32
   };
   if failed { return fail[void]("chmod", path, lastErrno()); }
@@ -475,8 +476,8 @@ pub fn chmod(path: &Path, mode: u32) Result[void, FsError] {
 pub fn utime(path: &Path, accessed: time.Timestamp, modified: time.Timestamp) Result[void, FsError] {
   if hasNul(path) { return fail[void]("utime", path, posix.EINVAL); }
   useUtf8();
-  let code = if isWindows() {setTimesWindows(path, accessed, modified)}
-    else {setTimesLinux(path, accessed, modified)};
+  let code = #if #os == .windows {setTimesWindows(path, accessed, modified)}
+    #else {setTimesLinux(path, accessed, modified)};
   if code != 0i32 { return fail[void]("utime", path, code); }
   succeeded()
 }
@@ -531,8 +532,8 @@ fn setTimesWindows(path: &Path, accessed: time.Timestamp, modified: time.Timesta
 // -------- mapped files --------
 
 // What the OS is asked for. Every extern is declared on every system;
-// 'isWindows()', a constant of the compile, chooses, so only the target's calls
-// are generated.
+// '#if #os == .windows', resolved as the file is parsed, chooses, so only the
+// target's calls are generated.
 extern {
   // Windows: kernel32 (on every link line), and the C runtime's way from a
   // stream to the handle under it
@@ -601,7 +602,7 @@ pub struct MappedFile is Move, Sendable {
   // Unmap the view
   fn final(self: &uni) {
     if ptr as usize != 0usize {
-      if isWindows() { UnmapViewOfFile(ptr); } else { munmap(ptr, bytes); }
+      #if #os == .windows { UnmapViewOfFile(ptr); } #else { munmap(ptr, bytes); }
     }
   }
 }
@@ -623,7 +624,7 @@ pub fn mapFile(path: &Path) Result[MappedFile, FsError] {
   let f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[MappedFile]("mapFile", path, openErrno(path)); }
   // The mapping holds the file once made, so the stream can go at once
-  let mapped = if isWindows() {mapWindows(path, f)} else {mapLinux(path, f)};
+  let mapped = #if #os == .windows {mapWindows(path, f)} #else {mapLinux(path, f)};
   libc.fclose(f);
   mapped
 }
@@ -915,7 +916,7 @@ pub fn setCurrentDir(path: &Path) Result[void, FsError] {
 pub fn absolute(path: &Path) Result[Path, FsError] {
   if hasNul(path) { return fail[Path]("absolute", path, posix.EINVAL); }
   if path.isEmpty() { return currentDir(); }
-  if !isWindows() {
+  #if #os != .windows {
     // POSIX's realpath asks the file system (the path must be there, links
     // are followed); this reads the text alone, as Windows' does: the
     // current folder, then the path, normalized

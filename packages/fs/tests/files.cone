@@ -32,9 +32,9 @@ import time use Duration, Timestamp;
 // that it is that and nothing shorter
 fn makeRoot(name: &str) Path {
   var variable: cstr = "TMPDIR";
-  if isWindows() { variable = "TEMP"; }
+  #if #os == .windows { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null || !isWindows(), "TEMP is set");
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
@@ -209,7 +209,7 @@ fn renaming(root: &Path) {
   // Windows refuses to rename onto a file that is there; POSIX replaces it
   // (and it is put back, so the rest reads the same)
   ok(fs.writeFile(&c, "C"), "write c");
-  if isWindows() {
+  #if #os == .windows {
     failsWith(root, fs.rename(&b, &c),
       "rename <root>/b.txt to <root>/c.txt: File exists", "Windows: rename onto a file refused");
     match fs.rename(&b, &c) {
@@ -219,7 +219,7 @@ fn renaming(root: &Path) {
       }
       case is Ok { expect(false, "rename onto a file fails"); }
     }
-  } else {
+  } #else {
     ok(fs.rename(&b, &c), "POSIX: rename onto a file replaces it");
     let replaced = contents(&c);
     expectStr(replaced.view(), "A", "the replaced file holds what b did");
