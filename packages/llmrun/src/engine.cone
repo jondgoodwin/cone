@@ -18,7 +18,7 @@ pub struct WRef {
   pub rows: usize;
   pub cols: usize;
 
-  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+  pub fn clone(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
 }
 
 // The resident slots of one layer
@@ -38,9 +38,9 @@ pub struct LayerRefs {
   pub wDown: WRef;
 
   // A value of its own: recording a layer lends nothing out of the engine's list of layers while the kernels run
-  pub fn copy(self: &) LayerRefs {
-    LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache, wq.copy(), wk.copy(), wv.copy(), wo.copy(),
-      wGate.copy(), wUp.copy(), wDown.copy())
+  pub fn clone(self: &) LayerRefs {
+    LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache, wq.clone(), wk.clone(), wv.clone(), wo.clone(),
+      wGate.clone(), wUp.clone(), wDown.clone())
   }
 }
 
@@ -177,7 +177,7 @@ fn layerName(l: usize, suffix: &str) String {
 fn pushSpec(specs: &mut List[Spec], r: Result[Spec, LlmError]) Option[String] {
   match r {
     case let Ok(s) { specs.push(Spec(s.tensor, s.rows, s.cols, s.qtype, s.bytes, s.buf, s.off)); None }
-    case let Err(e) { Some[String](e.reason.copy()) }
+    case let Err(e) { Some[String](e.reason.clone()) }
   }
 }
 
@@ -405,7 +405,7 @@ pub struct Engine {
   }
 
   fn placed(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, info: ModelInfo, options: &LoadOptions) Result[Engine, LlmError] {
-    let shape = info.shape.copy();
+    let shape = info.shape.clone();
     var plan = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes)?;
     let specs, sizes = plan.(specs, sizes);
 
@@ -686,7 +686,7 @@ fn recordForward(e: &Engine, job: &mut Job, device: &mut Device, n: usize, pos0:
   var b = sc.r2;
   var l = 0usize;
   while l < s.layers {
-    let w = e.layers[l].copy();
+    let w = e.layers[l].clone();
     ok = k.rmsnorm(job, device, cur, w.attnNorm, sc.xn, dim, n, s.eps) && ok;
     ok = mm(k, job, device, &w.wq, sc.xn, sc.q, n) && ok;
     ok = mm(k, job, device, &w.wk, sc.xn, sc.k, n) && ok;

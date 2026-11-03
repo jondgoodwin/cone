@@ -48,7 +48,7 @@ struct Session {
 }
 
 fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool) Session {
-  Session(repo.copy(), reg, out.copy(), String.from(mode), Dict[String, Path].empty(),
+  Session(repo.clone(), reg, out.clone(), String.from(mode), Dict[String, Path].empty(),
     Dict[String, Path].empty(), List[String].empty(), List[String].empty(), Path.from(""), false, noLinkerYet(),
     copyStrings(defines), useCache, strip)
 }
@@ -69,7 +69,7 @@ fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], u
       built <-> ok;
       built
     }
-    case let Err(e) { fail(e.copy()) }
+    case let Err(e) { fail(e.clone()) }
   }
 }
 
@@ -77,23 +77,23 @@ fn buildPackage(repo: &Path, pkg: Package, mode: &str, defines: &List[String], u
 // session; answer the executable, or for a library its object
 fn build(s: &mut Session, top: usize) Result[Path, String] {
   let isLibrary = s.reg.packages[top].output.equals("library");
-  let name = s.reg.packages[top].name.copy();
+  let name = s.reg.packages[top].name.clone();
   match restore(&mut s.reg, top) {
     case is Ok {}
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   var plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case var Ok(ok) { plan <-> ok; }
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   var objs = List[Path].empty();
   match compile(s, &plan, top, "", true) {
     case var Ok(ok) { objs <-> ok; }
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   if isLibrary {
-    let obj = objs[objs.len() - 1usize].copy();
+    let obj = objs[objs.len() - 1usize].clone();
     let place = shown(&obj);
     var finished = cat(s.mode.view(), " library object ", place.view());
     if s.spvs.contains(name.view()) {
@@ -107,7 +107,7 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
   let exe = s.out.join(exeName.view());
   match link(s, &plan, &objs, &exe, true) {
     case is Ok {}
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   let place = shown(&exe);
   let finished = cat(s.mode.view(), " ", place.view());
@@ -137,28 +137,28 @@ fn buildProgram(s: &mut Session, file: &Path, dest: &Path) Result[Path, String] 
   var pkg = emptyPackage();
   match lonePackage(file) {
     case var Ok(ok) { pkg <-> ok; }
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   let exeName = cat(pkg.name.view(), ".exe");
   let top = s.reg.add(pkg);
   match restore(&mut s.reg, top) {
     case is Ok {}
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   var plan = emptyPlan();
   match buildOrder(&s.reg, top) {
     case var Ok(ok) { plan <-> ok; }
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   var objs = List[Path].empty();
   match compile(s, &plan, top, dest, false) {
     case var Ok(ok) { objs <-> ok; }
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   let exe = dest.join(exeName.view());
   match link(s, &plan, &objs, &exe, false) {
     case is Ok {}
-    case let Err(e) { return Err[Path, String](e.copy()); }
+    case let Err(e) { return Err[Path, String](e.clone()); }
   }
   Ok[Path, String](exe)
 }
@@ -190,9 +190,9 @@ fn lonePackage(given: &Path) Result[Package, String] {
   var header = noHeader();
   match scanHeader(&file) {
     case var Ok(ok) { header <-> ok; }
-    case let Err(e) { return Err[Package, String](e.copy()); }
+    case let Err(e) { return Err[Package, String](e.clone()); }
   }
-  let name = if header.hasMod {header.modName.copy()} else {String.from(file.stem())};
+  let name = if header.hasMod {header.modName.clone()} else {String.from(file.stem())};
   let fault = nameFault(name.view());
   if !header.hasMod && !fault.isEmpty() {
     return Err[Package, String](cat(place.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
@@ -203,7 +203,7 @@ fn lonePackage(given: &Path) Result[Package, String] {
       "; rename the module, and the file where it is named for it"));
   }
   let folder = file.parent();
-  Ok[Package, String](Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
+  Ok[Package, String](Package(name, String.empty(), String.from("executable"), folder, file.clone(), true,
     List[String].empty(), List[Path].empty(), List[String].empty(), false))
 }
 
@@ -227,7 +227,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
     defines: &List[String], strip: bool, top: bool, announce: bool, useCache: bool, hasCore: bool, coreUnit: usize) Result[Path, String] {
   let unit = &plan.units[u];
   let pkg = &reg.packages[unit.pkg];
-  let output = if top {pkg.output.copy()} else {String.from("library")};
+  let output = if top {pkg.output.clone()} else {String.from("library")};
   let descName = cat(pkg.name.view(), ".conebuild");
   let desc = out.join(descName.view());
   let packages = closure(plan, reg, u);
@@ -243,8 +243,8 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let obj = out.join(objName.view());
   let isLibrary = output.equals("library");
   var outputs = List[Path].empty();
-  outputs.push(obj.copy());
-  if isLibrary { outputs.push(incl.copy()); }
+  outputs.push(obj.clone());
+  if isLibrary { outputs.push(incl.clone()); }
   let outText = native(out);
   let descText = native(&desc);
   let rest = argList("-o", outText.view(), descText.view());
@@ -351,7 +351,7 @@ fn runConec(args: &List[String]) bool {
   var i = 0usize;
   while i < lines.len() {
     if !isBlank(lines[i].view()) && !lines[i].startsWith("Compile finished") {
-      shownLines.push(lines[i].copy());
+      shownLines.push(lines[i].clone());
     }
     i = i + 1usize;
   }
@@ -385,10 +385,10 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
   if s.conec.isEmpty() {
     match findConec(&s.repo) {
       case var Ok(ok) { s.conec <-> ok; }
-      case let Err(e) { return Err[List[Path], String](e.copy()); }
+      case let Err(e) { return Err[List[Path], String](e.clone()); }
     }
   }
-  let out = s.out.copy();
+  let out = s.out.clone();
   makeFolder(&out);
   var changes = noChanges();
   // Every package after core loads the prelude from core's generated
@@ -412,7 +412,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     let pkg = &s.reg.packages[plan.units[*plan.order[i]].pkg];
     let hand = pkg.handInclude();
     if !pkg.lone && fs.isFile(&hand) && !holdsName(&s.warned, pkg.name.view()) {
-      s.warned.push(pkg.name.copy());
+      s.warned.push(pkg.name.clone());
       let place = native(&hand);
       warn(cat("warning: ", place.view(), " is not used: a package's importers compile against the include file its own compile generates, build/<mode>/",
         pkg.name.view(), ".cone"));
@@ -432,10 +432,10 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
         case is Ok {}
         case let Err(e) {
           changes.restore();
-          return Err[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
-      s.gpuChecked.push(pkgKey.copy());
+      s.gpuChecked.push(pkgKey.clone());
     }
     i = i + 1usize;
   }
@@ -444,13 +444,13 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
   while i < plan.order.len() {
     let u = *plan.order[i];
     let isTop = plan.units[u].pkg == top;
-    let name = s.reg.packages[plan.units[u].pkg].name.copy();
+    let name = s.reg.packages[plan.units[u].pkg].name.clone();
     if !isTop && s.objs.contains(name.view()) {
-      objs.push(s.objs[name.view()].copy());
+      objs.push(s.objs[name.view()].clone());
     }
     else {
       var own = isTop && !topOut.isEmpty();
-      var dest = if own {topOut.copy()} else {out.copy()};
+      var dest = if own {topOut.clone()} else {out.clone()};
       if isTop && !own && programNamedLikeAPackage(plan, &s.reg, top) {
         // A program named like a package it reaches (Bug 24): the files of
         // its compile are named for the module, and would be the package's
@@ -465,11 +465,11 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
         case var Ok(ok) { obj <-> ok; }
         case let Err(e) {
           changes.restore();
-          return Err[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
       if !own && (!isTop || s.reg.packages[top].output.equals("library")) {
-        s.objs.insert(name, obj.copy());
+        s.objs.insert(name, obj.clone());
       }
       objs.push(obj);
     }
@@ -485,10 +485,10 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     let name = s.reg.packages[plan.units[u].pkg].key();
     if plan.units[u].kernels && hasCore && !s.spvs.contains(name.view()) {
       match compileGpu(s, plan, u, coreUnit) {
-        case let Ok(ok) { s.spvs.insert(name, ok.copy()); }
+        case let Ok(ok) { s.spvs.insert(name, ok.clone()); }
         case let Err(e) {
           changes.restore();
-          return Err[List[Path], String](e.copy());
+          return Err[List[Path], String](e.clone());
         }
       }
     }
@@ -595,7 +595,7 @@ fn runtimeFolders(repo: &Path, paths: &List[Path]) List[Path] {
     }
     var i = 0usize;
     while i < entries.len() {
-      if fs.isDir(&entries[i].path) { folders.push(entries[i].path.copy()); }
+      if fs.isDir(&entries[i].path) { folders.push(entries[i].path.clone()); }
       i = i + 1usize;
     }
   }
@@ -674,11 +674,11 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
     var conestd: Path = "";
     match findConestd(&s.conec) {
       case var Ok(ok) { conestd <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     match findLinker(&conestd, s.useCache) {
       case var Ok(ok) { s.linker <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     s.hasLinker = true;
   }
@@ -688,12 +688,12 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   var objOrder = List[Path].empty();
   let n = plan.order.len();
   units.push(*plan.order[n - 1usize]);
-  objOrder.push(objs[n - 1usize].copy());
+  objOrder.push(objs[n - 1usize].clone());
   var i = n - 1usize;
   while i > 0usize {
     i = i - 1usize;
     units.push(*plan.order[i]);
-    objOrder.push(objs[i].copy());
+    objOrder.push(objs[i].clone());
   }
   var libraries = List[String].empty();
   var paths = List[Path].empty();
@@ -708,12 +708,12 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
         if libraries[k].equals(pkg.libraries[j].view()) { seen = true; }
         k = k + 1usize;
       }
-      if !seen { libraries.push(pkg.libraries[j].copy()); }
+      if !seen { libraries.push(pkg.libraries[j].clone()); }
       j = j + 1usize;
     }
     j = 0usize;
     while j < pkg.linkPaths.len() {
-      if !holdsPath(&paths, &pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].copy()); }
+      if !holdsPath(&paths, &pkg.linkPaths[j]) { paths.push(pkg.linkPaths[j].clone()); }
       j = j + 1usize;
     }
     i = i + 1usize;
@@ -732,10 +732,10 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
       let name = pkg.runtime[j].view();
       if !holdsName(&runtimeNames, name) {
         match findRuntime(&s.repo, name, pkg.name.view(), &folders, &paths) {
-          case let Ok(ok) { runtimeFiles.push(ok.copy()); }
+          case let Ok(ok) { runtimeFiles.push(ok.clone()); }
           case let Err(e) {
             _ = fs.removeFile(exe);
-            return Err[void, String](e.copy());
+            return Err[void, String](e.clone());
           }
         }
         runtimeNames.push(String.from(name));
@@ -801,7 +801,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
           say("Copying", place.view());
         }
       }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     i = i + 1usize;
   }
@@ -811,7 +811,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   while i < units.len() {
     let name = reg.packages[plan.units[*units[i]].pkg].key();
     if s.spvs.contains(name.view()) {
-      let spv = s.spvs[name.view()].copy();
+      let spv = s.spvs[name.view()].clone();
       let spvFolder = spv.parent();
       if !samePath(&spvFolder, &exeFolder) {
         let target = exeFolder.join(spv.name());
@@ -822,7 +822,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
               say("Copying", place.view());
             }
           }
-          case let Err(e) { return Err[void, String](e.copy()); }
+          case let Err(e) { return Err[void, String](e.clone()); }
         }
       }
     }

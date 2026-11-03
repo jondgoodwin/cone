@@ -30,7 +30,7 @@ pub struct WRef {
   pub rows: usize;
   pub cols: usize;
 
-  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+  pub fn clone(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
 }
 
 struct LayerRefs {
@@ -62,9 +62,9 @@ struct LayerRefs {
   dwB: usize;
 
   // A value of its own: recording a layer lends nothing out of the model's list of layers while the kernels run
-  fn copy(self: &) LayerRefs {
-    LayerRefs(ff1a.copy(), ff1b.copy(), q.copy(), k.copy(), v.copy(), o.copy(), pos.copy(), pw1.copy(), pw2.copy(), ff2a.copy(),
-      ff2b.copy(), nFf1W, nFf1B, nAttW, nAttB, nConvW, nConvB, nFf2W, nFf2B, nOutW, nOutB, posU, posV, dwW, dwB)
+  pub fn clone(self: &) LayerRefs {
+    LayerRefs(ff1a.clone(), ff1b.clone(), q.clone(), k.clone(), v.clone(), o.clone(), pos.clone(), pw1.clone(), pw2.clone(), ff2a.clone(),
+      ff2b.clone(), nFf1W, nFf1B, nAttW, nAttB, nConvW, nConvB, nFf2W, nFf2B, nOutW, nOutB, posU, posV, dwW, dwB)
   }
 }
 
@@ -133,7 +133,7 @@ fn isMatrix(name: &str) bool {
 pub struct SpeechToTextError is Error, Sendable {
   pub reason: String;
 
-  pub fn message(self: &) String { reason.copy() }
+  pub fn message(self: &) String { reason.clone() }
 
   // What '?' makes of a model file that could not be read
   pub fn fromSafetensors overload from(e: SafetensorsError) SpeechToTextError {
@@ -254,7 +254,7 @@ pub struct Parakeet {
       case let Ok(text) {
         let lines = text.lines();
         var i = 0usize;
-        while i < lines.len() { vocab.push(lines[i].copy()); i = i + 1usize; }
+        while i < lines.len() { vocab.push(lines[i].clone()); i = i + 1usize; }
       }
       case let Err(e) { return Err[Parakeet, SpeechToTextError](SpeechToTextError(describe("speechtotext: the vocabulary: ", e.message().view(), ""))); }
     }
@@ -302,12 +302,12 @@ pub struct Parakeet {
             var q = QTYPE_F32;
             if ti.dtype == ST_F16 { q = QTYPE_F16; }
             specs.push(Spec(ti.begin, ti.rows(), ti.cols(), q, u64.from(ti.bytes()), 0u32, 0usize));
-            specNames.push(ti.name.copy());
+            specNames.push(ti.name.clone());
           } else {
             if ti.dtype != ST_F32 {
               return Err[Parakeet, SpeechToTextError](SpeechToTextError(describe("speechtotext: tensor ", name, " must be F32 (a small tensor)")));
             }
-            smallNames.push(ti.name.copy());
+            smallNames.push(ti.name.clone());
             smallOffs.push(smallWords.len());
             let w = packWords(st.bytesOf(bytes, ti));
             var i = 0usize;
@@ -485,7 +485,7 @@ pub struct Parakeet {
       frames, enc = e.(frames, trace);
       t2 = Instant.now();
       match decodeGreedy(self, device, frames, &mut steps, trace, &mut tokens, &mut times) {
-        case let Some(m) { return Err[Run, SpeechToTextError](SpeechToTextError(m.copy())); }
+        case let Some(m) { return Err[Run, SpeechToTextError](SpeechToTextError(m.clone())); }
         case is None {}
       }
     }

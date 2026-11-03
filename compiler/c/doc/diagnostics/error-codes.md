@@ -451,7 +451,7 @@ or an `==` for the field's type.
 
 Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
 `Clone` and writes no `clone` whose type is neither Copy nor Clone (a struct that
-moves and has no `clone`, a unique owner, a reference), reported at the field.
+moves and has no `clone`, a unique owner, a `&mut`), reported at the field.
 The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
