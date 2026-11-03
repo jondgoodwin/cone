@@ -251,6 +251,13 @@ static void awaitMethod(TypeCheckState *pstate, AwaitNode *node) {
     if (type == NULL || !isMethodType(type))
         return;
     INode *found = iNsTypeFindFnField((INsTypeNode *)type, awaitName);
+    if (found != NULL && found->tag == FnOverloadDclTag) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s is overloaded, and the convention needs exactly one: it takes only 'self', 'await x' being 'await x.await()'. Keep the one that takes only 'self' and rename the others.",
+            itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+        return;
+    }
     if (found == NULL || found->tag != FnDclTag)
         return;
     FnDclNode *dcl = (FnDclNode *)found;
@@ -266,6 +273,10 @@ static void awaitMethod(TypeCheckState *pstate, AwaitNode *node) {
     FnCallNode *call = newFnCallLower(node->exp, node->exp, 1);
     call->methfld = (INode *)newMemberUseNode(awaitName);
     inodeLexCopy(call->methfld, node->exp);
+    // The operand was checked above, once: the call's own check must not walk it
+    // again, which would repeat its diagnostics and, for an operand holding an
+    // 'await' of its own, check that one twice at every level of nesting
+    call->flags |= FlagRcvChecked;
     node->exp = (INode *)call;
     if (!iexpTypeCheckAny(pstate, &node->exp)) {
         node->vtype = errorType;
