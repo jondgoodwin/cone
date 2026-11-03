@@ -1456,6 +1456,32 @@ static void incEditModule(IncGen *g, IncMod *m) {
 
 // ---- The file ---------------------------------------------------------------
 
+// A '#if' chain is resolved where it is parsed (parsemeta.c), for the facts the
+// package was built with, so the file keeps the branch taken and leaves out the
+// rest: an importer built with other facts would read another branch than the
+// one the package's object holds. A cut that has its lines to itself takes them
+static void incEditCuts(IncGen *g) {
+    uint32_t count;
+    DclCut *cuts = dclCuts(&count);
+    for (uint32_t i = 0; i < count; ++i) {
+        char *from = cuts[i].from, *to = cuts[i].to;
+        if (cuts[i].text == NULL) {
+            char *filestart = cuts[i].lexer->source;
+            char *linefrom = from;
+            while (linefrom > filestart && incIsBlank(linefrom[-1]))
+                --linefrom;
+            char *lineto = to;
+            while (incIsBlank(*lineto))
+                ++lineto;
+            if ((linefrom == filestart || linefrom[-1] == '\n') && (*lineto == '\n' || *lineto == '\0')) {
+                from = linefrom;
+                to = *lineto == '\n' ? lineto + 1 : lineto;
+            }
+        }
+        incEdit(g, cuts[i].lexer, from, to, cuts[i].text);
+    }
+}
+
 static int incEditOrder(const void *a, const void *b) {
     const IncEdit *x = (const IncEdit*)a, *y = (const IncEdit*)b;
     if (x->from != y->from)
@@ -1762,6 +1788,9 @@ char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     }
     if (g->failed)
         return NULL;
+
+    // The '#if' chains are resolved: what a chain leaves out, the file leaves out
+    incEditCuts(g);
 
     // The banner, then the root's text with its edits made, its submodules'
     // blocks inside it

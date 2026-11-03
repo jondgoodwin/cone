@@ -171,7 +171,7 @@ ANNOTATABLE = ("reject", "warn")
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
-    "stderr_mask", "timeout",
+    "stderr_mask", "timeout", "link_options",
 }
 
 # Wall-clock seconds per process (R1.3) where neither the command line nor the
@@ -716,6 +716,10 @@ class Scenario:
     # 'run' only: sources compiled on their own before the scenario's, each to
     # an object of its own, and linked into the program with it
     link: tuple[Path, ...] = ()
+    # 'run' only: the compiler options the 'link' sources are built with, where
+    # they are not the run's own: a package built with one set of facts and a
+    # program importing it with another
+    link_options: tuple[str, ...] | None = None
     # 'run' only: the include file each package 'link' builds must generate,
     # byte for byte, pinned beside the program, which compiles against it.
     # Named for its package, so 'include/q.cone' is what 'q/q.conebuild' writes
@@ -825,6 +829,12 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                         f"{where}: 'link' names {path.name}, whose object would"
                         f" overwrite the scenario's own")
 
+        link_options: tuple[str, ...] | None = None
+        if "link_options" in table:
+            if not link:
+                raise SuiteError(f"{where}: 'link_options' are the options the 'link' sources are built with, so it needs 'link'")
+            link_options = tuple(table["link_options"])
+
         # The round trip: a package 'link' builds writes its include file, which
         # must be the golden file pinned here, and the program's build
         # description names that golden file, so the program compiles against
@@ -924,6 +934,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             unlocated=tuple(table.get("unlocated", [])),
             argv=argv,
             link=link,
+            link_options=link_options,
             includes=includes,
             program_exit=program_exit,
             stderr_mask=tuple(stderr_mask),
@@ -2604,7 +2615,8 @@ class Runner:
                     result.seconds = time.monotonic() - started
                     return result
                 continue
-            lib_cmd = [str(self.conec), *spec.options, "--checktree", "--verify",
+            lib_options = spec.options if scenario.link_options is None else scenario.link_options
+            lib_cmd = [str(self.conec), *lib_options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
             if any(c.object == lib.stem for c in scenario.checks):
                 lib_cmd.insert(-3, "--llvmir")

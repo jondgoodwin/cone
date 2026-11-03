@@ -367,6 +367,10 @@ what the package generated, and a change to the generator shows as a diff of
 the golden file. `--bless` records a generated file that differs as its golden
 file, and nothing else in that pass (`module_include_roundtrip`).
 
+`link_options` gives the options the `link` packages are built with where they
+are not the run's own, so a package built with one set of facts and a program
+importing it with another can be tested (`meta_if_include_facts`).
+
 ## 4. Assert
 
 Every scenario declares a **category** in `cases.toml`. It tells the runner what

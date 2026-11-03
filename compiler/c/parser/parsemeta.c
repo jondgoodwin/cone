@@ -515,6 +515,10 @@ void parseMetaStray(ParseState *parse) {
 // take is still refused
 void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx) {
     int done = 0;       // A branch has been taken
+    Lexer *lexer = lex;
+    char *chainat = lex->tokp;
+    char *openend = NULL;       // Just past the taken branch's '{'
+    char *closeat = NULL;       // The taken branch's '}'
     while (1) {
         int iselse = lexIsToken(HashElseToken);
         int holds = 1;
@@ -524,6 +528,8 @@ void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx) {
             holds = metaReadCond();
         int taken = !done && holds;
         done |= taken;
+        if (taken)
+            openend = lex->tokp + 1;
         parseBlockStart();
         MetaScratch scratch;
         if (!taken)
@@ -531,11 +537,18 @@ void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx) {
         branch(parse, ctx, taken);
         if (!taken)
             metaScratchEnd(parse, &scratch);
-        if (iselse)
-            return;
-        if (!lexIsToken(HashElifToken) && !lexIsToken(HashElseToken))
-            return;
+        else
+            closeat = lex->prevend - 1;
+        if (iselse || (!lexIsToken(HashElifToken) && !lexIsToken(HashElseToken)))
+            break;
     }
+    // The include file keeps the branch taken and nothing of the chain around it
+    if (openend && closeat > openend - 1) {
+        dclCutAdd(lexer, chainat, openend, NULL);
+        dclCutAdd(lexer, closeat, lex->prevend, NULL);
+    }
+    else if (!done)
+        dclCutAdd(lexer, chainat, lex->prevend, NULL);
 }
 
 // A '#if' that gives a value, where an expression is read, with the lexer on the
@@ -548,6 +561,10 @@ INode *parseHashIfExpr(ParseState *parse) {
     INode *value = NULL;
     int done = 0;
     int sawelse = 0;
+    Lexer *lexer = lex;
+    char *chainat = lex->tokp;
+    char *openat = NULL;        // The taken branch's '{'
+    char *closeat = NULL;       // Its '}'
     while (1) {
         int iselse = lexIsToken(HashElseToken);
         int holds = 1;
@@ -557,14 +574,18 @@ INode *parseHashIfExpr(ParseState *parse) {
             holds = metaReadCond();
         int taken = !done && holds;
         done |= taken;
+        if (taken)
+            openat = lex->tokp;
         MetaScratch scratch;
         if (!taken)
             metaScratchBegin(parse, &scratch);
         INode *block = parseExprBlock(parse, 0);
         if (!taken)
             metaScratchEnd(parse, &scratch);
-        else
+        else {
             value = block;
+            closeat = lex->prevend - 1;
+        }
         if (iselse) {
             sawelse = 1;
             break;
@@ -578,7 +599,14 @@ INode *parseHashIfExpr(ParseState *parse) {
     if (value == NULL)
         return (INode*)newNilLitNode();
     BlockNode *blk = (BlockNode*)value;
-    if (blk->tag == BlockTag && blk->stmts->used == 1 && (blk->flags & FlagTailOpen))
+    int single = blk->tag == BlockTag && blk->stmts->used == 1 && (blk->flags & FlagTailOpen);
+    // The include file keeps the taken value alone: a single expression in
+    // parentheses, since it is no block, and a longer block as the block it is
+    if (openat && closeat > openat) {
+        dclCutAdd(lexer, chainat, single ? openat + 1 : openat, single ? "(" : NULL);
+        dclCutAdd(lexer, single ? closeat : closeat + 1, lex->prevend, single ? ")" : NULL);
+    }
+    if (single)
         return nodesGet(blk->stmts, 0);
     return value;
 }
