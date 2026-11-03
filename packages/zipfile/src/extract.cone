@@ -102,8 +102,10 @@ fn safeName(name: &str) Result[String, ZipError] {
       } else if comp == ".." {
         return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "has a '..' component").view());
       } else {
-        if isWindows() && badOnWindows(comp.view()) {
-          return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "is not a name a Windows file can have").view());
+        #if #os == .windows {
+          if badOnWindows(comp.view()) {
+            return refusal[String](ErrorKind.UnsafePath, 0u64, about("the name", name, "is not a name a Windows file can have").view());
+          }
         }
         if out.len() > 0usize { out.appendByte('/'); }
         out.append(comp.view());
@@ -201,7 +203,8 @@ fn restoreOne(e: &Entry, path: &Path, folder: bool, opts: &ExtractOptions) bool 
   }
   let mode = e.unixMode();
   // On Windows a folder's read-only attribute asks nothing of anyone and gets in the way of removing it
-  if opts.restoreMode && mode != 0u32 && !(folder && isWindows()) {
+  let skipFolder = #if #os == .windows { folder } #else { false };
+  if opts.restoreMode && mode != 0u32 && !skipFolder {
     if fs.chmod(path, mode & permissionBits) is Err { ok = false; }
   }
   ok

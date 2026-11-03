@@ -37,9 +37,9 @@ import time use Timestamp;
 
 fn makeRoot(name: &str) Path {
   var variable: cstr = "TMPDIR";
-  if isWindows() { variable = "TEMP"; }
+  #if #os == .windows { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null || !isWindows(), "TEMP is set");
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
@@ -79,7 +79,7 @@ fn failsWith[T](root: &Path, r: Result[T, fs.FsError], want: &Array[u8], label: 
 // may hold a space
 fn junction(link: &Path, target: &Path) bool {
   var command = String.empty();
-  if isWindows() {
+  #if #os == .windows {
     var paths = String.from(link.view());
     paths.append("\" \"");
     paths.append(target.view());
@@ -87,7 +87,7 @@ fn junction(link: &Path, target: &Path) bool {
     command.append("mklink /J \"");
     command.append(paths.view());
     command.append("\" >nul");
-  } else {
+  } #else {
     command.append("ln -s '");
     command.append(target.view());
     command.append("' '");
@@ -182,11 +182,11 @@ fn links(root: &Path) {
   }
   // POSIX's stat follows the link and finds nothing; the Windows runtime's,
   // finding a junction whose folder is gone, answers for the junction itself
-  if isWindows() {
+  #if #os == .windows {
     expect(fs.exists(&link), "Windows' stat answers for a dangling junction itself");
     expect(fs.isDir(&link), "Windows' stat calls a dangling junction a folder");
     expect(fs.stat(&link) is Ok, "Windows' stat of a dangling junction succeeds");
-  } else {
+  } #else {
     expect(!fs.exists(&link), "exists follows a dangling link");
     expect(!fs.isDir(&link), "isDir follows a dangling link");
     failsWith(root, fs.stat(&link), "stat <root>/link: No such file or directory", "stat refuses a dangling link");
@@ -205,34 +205,34 @@ fn modes(root: &Path) {
   ok(fs.writeFile(&file, "abc"), "make a file for chmod");
 
   ok(fs.chmod(&file, 0x1A4u32), "chmod 0644");
-  if isWindows() {
+  #if #os == .windows {
     expect((modeOf(&file) & 0x80u32) != 0u32, "0644 leaves the file writable");
-  } else {
+  } #else {
     expectInt(i64.from(modeOf(&file)), 0x1A4, "0644 is set exactly");
   }
   ok(fs.writeFile(&file, "abcd"), "a writable file is written");
 
   ok(fs.chmod(&file, 0x124u32), "chmod 0444");
-  if isWindows() {
+  #if #os == .windows {
     expect((modeOf(&file) & 0x80u32) == 0u32, "0444 makes the file read-only");
     failsWith(root, fs.writeFile(&file, "x"), "writeFile <root>/mode.txt: Permission denied",
       "a read-only file is refused");
-  } else {
+  } #else {
     expectInt(i64.from(modeOf(&file)), 0x124, "0444 is set exactly");
     expect(true, "(the superuser may write a read-only file, so POSIX does not try)");
   }
 
   // Windows reads only the owner's write bit: 0o200 alone makes it writable
   ok(fs.chmod(&file, 0x80u32), "chmod 0200");
-  if isWindows() {
+  #if #os == .windows {
     expect((modeOf(&file) & 0x80u32) != 0u32, "0200 is writable on Windows");
-  } else {
+  } #else {
     expectInt(i64.from(modeOf(&file)), 0x80, "0200 is set exactly");
   }
   ok(fs.chmod(&file, 0x1EDu32), "chmod 0755");
-  if isWindows() {
+  #if #os == .windows {
     expect((modeOf(&file) & 0x80u32) != 0u32, "0755 is writable on Windows");
-  } else {
+  } #else {
     expectInt(i64.from(modeOf(&file)), 0x1ED, "0755 is set exactly");
   }
   // Bits above the permissions are ignored; a folder takes a mode too
@@ -271,9 +271,9 @@ fn times(root: &Path) {
   ok(fs.utime(&file, Timestamp.fromUnixSeconds(-43200i64), Timestamp.fromUnixSeconds(-86400i64)),
     "utime before 1970");
   // (the Windows runtime's stat shows no time before 1970, only -1)
-  if isWindows() {
+  #if #os == .windows {
     expect(modifiedOf(&file) != 1700000001, "a time before 1970 was set");
-  } else {
+  } #else {
     expectInt(modifiedOf(&file), -86400, "a modified time before 1970");
   }
 

@@ -1788,7 +1788,7 @@ int lexStatementHasElse() {
         else if (c == ';' && depth == 0)
             return 0;
         else if (c == 'e' && depth == 0 && strncmp(srcp, "else", 4) == 0
-            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_'))
+            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_' || srcp[-1] == '#'))
             && !(isalnum((unsigned char)srcp[4]) || srcp[4] == '_'))
             return 1;
     }

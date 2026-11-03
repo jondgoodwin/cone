@@ -137,8 +137,8 @@ import sync use Mutex;
 
 // ---------------------------------------------------------------------------
 // The slabs come from the OS: VirtualAlloc and VirtualFree on Windows, mmap
-// and munmap on Linux. 'isWindows()', a constant of the compile, chooses, so
-// only the target's calls are generated; every extern is declared everywhere
+// and munmap on Linux. '#if #os == .windows' chooses, so only the target's
+// calls are generated; every extern is declared everywhere
 // ---------------------------------------------------------------------------
 
 extern {
@@ -180,7 +180,7 @@ const maxCache = 32u32;
 // osFreeSlab wants back. Null when the OS refuses
 fn osAllocSlab() *u8, *u8 {
   let total = slabBytes + slabBytes + page;
-  if isWindows() {
+  #if #os == .windows {
     let r = VirtualAlloc(null, total, memReserve, pageNoAccess);
     if r as usize == 0usize {return null, null;}
     let aligned = (r as usize + page + slabBytes - 1usize) & (0usize - slabBytes);
@@ -192,23 +192,24 @@ fn osAllocSlab() *u8, *u8 {
     liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
     liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
     return aligned as *u8, r;
+  } #else {
+    let p = mmap(null, total, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
+    if p as usize == mapFailed {return null, null;}
+    let aligned = (p as usize + page + slabBytes - 1usize) & (0usize - slabBytes);
+    let head = aligned - page - p as usize;
+    if head > 0usize {munmap(p, head);}
+    let tail = p as usize + total - (aligned + slabBytes);
+    if tail > 0usize {munmap((aligned + slabBytes) as *u8, tail);}
+    liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
+    liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
+    aligned as *u8, (aligned - page) as *u8
   }
-  let p = mmap(null, total, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
-  if p as usize == mapFailed {return null, null;}
-  let aligned = (p as usize + page + slabBytes - 1usize) & (0usize - slabBytes);
-  let head = aligned - page - p as usize;
-  if head > 0usize {munmap(p, head);}
-  let tail = p as usize + total - (aligned + slabBytes);
-  if tail > 0usize {munmap((aligned + slabBytes) as *u8, tail);}
-  liveBlocks.addOrdered(1u64, MemOrder.Relaxed);
-  liveBytes.addOrdered(u64.from(slabBytes), MemOrder.Relaxed);
-  aligned as *u8, (aligned - page) as *u8
 }
 
 // A slab's whole reservation back to the OS: 'osBase' is what osAllocSlab
 // answered second
 fn osFreeSlab(osBase: *u8) {
-  if isWindows() {VirtualFree(osBase, 0usize, memRelease);} else {munmap(osBase, slabBytes + page);}
+  #if #os == .windows {VirtualFree(osBase, 0usize, memRelease);} #else {munmap(osBase, slabBytes + page);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
   liveBytes.subOrdered(u64.from(slabBytes), MemOrder.Relaxed);
 }
@@ -216,9 +217,9 @@ fn osFreeSlab(osBase: *u8) {
 // An oversize block of size bytes (whole pages), page-aligned and of its own
 fn osAlloc(size: usize) *u8 {
   var b = null as *u8;
-  if isWindows() {
+  #if #os == .windows {
     b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
-  } else {
+  } #else {
     b = mmap(null, size, protReadWrite, mapPrivateAnonymous, 0i32 - 1i32, 0i64);
     if b as usize == mapFailed {b = null;}
   }
@@ -230,7 +231,7 @@ fn osAlloc(size: usize) *u8 {
 }
 
 fn osFree(block: *u8, size: usize) {
-  if isWindows() {VirtualFree(block, 0usize, memRelease);} else {munmap(block, size);}
+  #if #os == .windows {VirtualFree(block, 0usize, memRelease);} #else {munmap(block, size);}
   liveBlocks.subOrdered(1u64, MemOrder.Relaxed);
   liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed);
 }

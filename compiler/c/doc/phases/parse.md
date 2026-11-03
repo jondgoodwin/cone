@@ -1223,15 +1223,24 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   `selfactor`s, a generator's `yield` count -- are put back as they were (`MetaScratch`).
   Its syntax errors are real. A last expression with no `;` in any branch, taken or not, is
   `ErrorNoSemi` unless the block ends there, so a mistake shows on every build.
-- **Imports and the `mod` line are not branch material**: a branch is read as `parseGlobalStmts` with
-  `AtInHashIf`, which is past the header, so an `import` in one is `ErrorImportLate`.
+- **Imports are branch material in the header alone.** A branch is read as `parseGlobalStmts` with
+  `AtInHashIfHeader` where the `#if` stands in the header (after the `mod` line, before any other
+  statement), and an `import` in it is the module's, as it would be written there; a branch that
+  holds any other statement ends the header, taken or not, and a later `import` is `ErrorImportLate`
+  (`AtInHashIf`, or `AtInHashIfNoMod` in a file with no `mod` line). The `mod` line is not branch
+  material. An import in a branch not taken is read for syntax and never found or loaded
+  (`parseImport` returns at once when `parse->mod->scratch`).
+- **A `return` in a taken branch** is spliced into the enclosing block, so it must be the block's
+  last statement (`return` may only end a block): a guard `#if c { return x; }` followed by more
+  statements is written `#if c { x } #else { the rest }`.
 - **Spans and the include file.** Each declaration of a taken branch records its span as any
-  statement does; the `#if` and its braces are in no span, so the include file keeps them as written
-  and cuts the declarations between (`incfile.c` edits the text, it does not print it). A branch
-  not taken has no spans and is copied whole. A program that imports the package reads that
-  text with its own facts, so it must be built with the package's `-D` options and kind of
-  build; ⚠ an importer whose `#debug` or `-D` facts differ from the package's reads a different
-  branch than the object was built from.
+  statement does. The chain itself is recorded as cuts (`dclCutAdd`, `DclCut`): the `#if cond {`
+  before the taken branch, the `}` and everything after it to the chain's end, or the whole chain
+  where no branch is taken. `incEditCuts` makes them edits, so the include file holds the branch
+  taken and no `#if`, and an importer reads the layout and the definitions the package's object
+  holds whatever its own facts are. In expression position the taken value is kept in parentheses
+  (a single expression) or as its block. Cuts are also made in bodies the file keeps (a generic
+  function's). A cut with its lines to itself takes them.
 
 ## 7. Contract
 

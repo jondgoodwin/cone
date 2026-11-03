@@ -50,10 +50,13 @@ fn endsWith(p: *u8, end: cstr) bool {
 
 // The folder for temporary files: Windows' TEMP, Linux's TMPDIR or /tmp
 fn tempFolder() *u8 {
-  if isWindows() {return getenv("TEMP");}
-  let dir = getenv("TMPDIR");
-  if dir == null {return &"/tmp" as *u8;}
-  dir
+  #if #os == .windows {
+    getenv("TEMP")
+  } #else {
+    let dir = getenv("TMPDIR");
+    if dir == null {return &"/tmp" as *u8;}
+    dir
+  }
 }
 
 // The temporary folder, a separator, and the name, NUL included, into buf
@@ -61,7 +64,7 @@ fn tempPath(buf: *u8, name: cstr) {
   let temp = tempFolder();
   let templen = strlen(cstr.fromPtr(temp));
   memcpy(buf, temp, templen);
-  buf[templen] = if isWindows() {'\\'} else {'/'};
+  buf[templen] = #if #os == .windows {'\\'} #else {'/'};
   memcpy(buf + templen + 1usize, name.ptr(), strlen(name) + 1usize);
 }
 
@@ -71,7 +74,7 @@ fn main() i32 {
   show("unknown-null", isNull(setlocale(LC_ALL, lit("no-such-locale"))));
   show("still-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, asking)), "C") == 0i32));
 
-  let utf8 = setlocale(LC_ALL, if isWindows() {lit(".UTF-8")} else {lit("C.UTF-8")});
+  let utf8 = setlocale(LC_ALL, #if #os == .windows {lit(".UTF-8")} #else {lit("C.UTF-8")});
   show("utf8-null", isNull(utf8));
   show("utf8-ends-utf8", yes(endsWith(utf8, ".utf8") || endsWith(utf8, ".UTF-8")));
   let ctype = setlocale(LC_CTYPE, asking);
@@ -97,7 +100,7 @@ fn main() i32 {
   let badName: *u8 = &[]bad as *u8;
   tempPath(badName, "module_package_libc_\xE9.tmp");
   let made = fopen(cstr.fromPtr(badName), "wb");
-  show("not-utf8-name-platform-rule", if isWindows() {isNull(made as *u8)} else {1i64 - isNull(made as *u8)});
+  show("not-utf8-name-platform-rule", #if #os == .windows {isNull(made as *u8)} #else {1i64 - isNull(made as *u8)});
   if (made as *u8) != null {
     fclose(made);
     remove(cstr.fromPtr(badName));
