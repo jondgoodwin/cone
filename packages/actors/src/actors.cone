@@ -2761,10 +2761,13 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   var word = id;
   let gp = curGroup;
   if gp != 0usize {
-    if !hasId {
+    var table = 0usize;
+    if hasId {
+      table = lastPending;
+    } else {
       word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
     }
-    groupNote(h, word, gp);
+    groupNote(h, word, gp, table);
     word = word | groupBit;
   }
   Reply(to: h, at: run, id: word, meta: metaOf(size, flags))
@@ -2794,8 +2797,25 @@ struct GNode {
   pub next: *GNode;
   pub h: *Header;
   pub w: u64;
+  pub pending: usize;       // the awaiting actor's pending table where the await parked a record (its id is w), else 0
   pub g: CancelGroup;
 }
+
+// THE LATE REPLY. A reply to an await made in a group that is cancelled by the time
+// the answer is made is no longer wanted. It is not dropped on the answering side
+// (the parked record and the continuation are the awaiting actor's, and it frees
+// what it owns, in the order of its own mailbox, so that nothing races): the
+// answering side drops the VALUE, pushes the reply's slot with droppedBit set in
+// its id word (beside groupBit) and no value in it, and the awaiting actor, on
+// reaching the slot, frees the parked record (looking its table up in the entry
+// noted at the await) and never runs the continuation (resumeSlot). A cancel that
+// comes after the answer is pushed does not drop it: the continuation runs, in a
+// group that is now cancelled, as it always did. An await on a stored future is not
+// dropped (the slot carries the future, not a value of the answerer's).
+const droppedBit = 0x4000000000000000u64;
+
+// The pending table the awaiting thread parked in last
+var @threadlocal lastPending: usize = 0usize;
 
 var gTicket: u64 = 0u64;
 var gLock: u32 = 0u32;
@@ -2833,7 +2853,7 @@ pub fn testGroupedReply() Reply {
   let gp = curGroup;
   var word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
   if gp != 0usize {
-    groupNote(h, word, gp);
+    groupNote(h, word, gp, 0usize);
     word = word | groupBit;
   }
   Reply(to: h, at: null, id: word, meta: metaOf(8usize, 0u64))
@@ -2845,7 +2865,7 @@ pub fn testActorWithGroupedAwait() usize {
   let h = fakeActor();
   let gp = curGroup;
   if gp != 0usize {
-    groupNote(h, mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64, gp);
+    groupNote(h, mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64, gp, 0usize);
   }
   h as usize
 }
@@ -2882,13 +2902,14 @@ fn gBucket(h: *Header, w: u64) usize {
 }
 
 // Note a copy of the group at gp for (h, w)
-fn groupNote(h: *Header, w: u64, gp: usize) {
+fn groupNote(h: *Header, w: u64, gp: usize, pending: usize) {
   let n = libc.malloc(mem.sizeof[GNode]()) as *GNode;
   if n as usize == 0usize {
     die("actors: out of memory for an await's group");
   }
   (*n).h = h;
   (*n).w = w;
+  (*n).pending = pending;
   mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
   gAcquire();
   if gTable == 0usize {
@@ -2925,6 +2946,35 @@ fn groupTake(h: *Header, w: u64) *GNode {
   }
   gRelease();
   found
+}
+
+// Whether the group noted for the await (h, w) is cancelled now (false if none is noted)
+fn groupCancelled(h: *Header, w: u64) bool {
+  var gone = false;
+  gAcquire();
+  if gTable != 0usize {
+    var n = *((gTable as *usize) + gBucket(h, w)) as *GNode;
+    while n as usize != 0usize {
+      if (*n).h as usize == h as usize && (*n).w == w {
+        gone = (&(*n).g as *CancelGroup as &CancelGroup).isCancelled();
+        n = null;
+      } else {
+        n = (*n).next;
+      }
+    }
+  }
+  gRelease();
+  gone
+}
+
+// Free the record the await (the entry's w) parked, its continuation never to run:
+// what Pending.final does for a record it abandons, for one record
+fn dropParked(pending: usize, id: u64) {
+  let rec = unpark(&mut *(pending as *Pending), id);
+  let block = ((rec as usize) - recordHead) as *u8;
+  let drop = (*recordType(block)).finalize;
+  drop(rec);
+  recordFree(rec);
 }
 
 // Remove the entry for (h, w) and let go of its group
@@ -2980,6 +3030,31 @@ struct Put {
 
 fn replyPrep(r: &Reply) Put {
   replyPrepLent(r, null, null)
+}
+
+// Whether the reply is to an await made in a group that is cancelled now: no
+// longer wanted (THE LATE REPLY). One lookup in the group table, for a grouped await only
+fn replyDropped(r: &Reply) bool {
+  (r.id & groupBit) != 0u64 && groupCancelled(r.to, r.id ^ groupBit)
+}
+
+// The slot of a reply no longer wanted: claimed, with the resume record and no
+// value, droppedBit set in its id word, and no box. The awaiting actor frees its
+// record on reaching it (resumeSlot)
+fn replyPrepDropped(r: &Reply) Put {
+  let h = r.to;
+  let c = claim(h);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindReply);
+  }
+  mem.atomicStore[u64](ccause(c.slot), cause, MemOrder.Relaxed);
+  let p = payloadOf(c.slot);
+  *(p as **u8) = r.at;
+  *((p + 8usize) as *u64) = r.id | droppedBit;
+  var kind = kindReply;
+  if (r.meta & replyHasId) != 0u64 {kind = kind + 1u64;}
+  Put(c, kind, p + replyHead)
 }
 
 // The same, for a value that is already written elsewhere and stays there
@@ -3076,6 +3151,13 @@ pub fn answerNowIn[R](rp: &mut Reply, v: R) {
     return;
   }
   let h = rp.to;
+  if replyDropped(rp) {
+    // no longer wanted: the value is let go (v, not moved, drops here), the awaiter told
+    let d = replyPrepDropped(rp);
+    spend(rp);
+    replyFinish(h, d);
+    return;
+  }
   let p = replyPrep(rp);
   mem.writeRaw[R](p.at as *R, v);
   spend(rp);
@@ -3157,6 +3239,23 @@ pub fn answerLentIn[R](rp: &mut Reply, p: *R, take: &fn(p: *u8, to: *u8)) {
     return;
   }
   let h = rp.to;
+  if replyDropped(rp) {
+    // no longer wanted (THE LATE REPLY): the answerer's place is given back by take, into
+    // a scratch place, and the value let go; the awaiter is told with no value
+    let tmp = libc.malloc(mem.sizeof[R]() + 16usize);
+    if tmp as usize == 0usize {
+      die("actors: out of memory for a reply");
+    }
+    let d = replyPrepDropped(rp);
+    spend(rp);
+    opHold(op);
+    take(p as *u8, tmp);
+    mem.finalize[R](tmp as *R);
+    libc.free(tmp);
+    replyFinish(h, d);
+    opRelease(op);
+    return;
+  }
   if (rp.meta & replyBoxed) != 0u64 && mem.sizeof[R]() <= lentMax && mem.alignof[R]() <= 8usize {
     var tk = take;
     let takep = mem.readRaw[*u8](&mut tk as *(*u8));
@@ -3227,6 +3326,15 @@ pub fn answerTo(slot: &mut Answer) *u8 {
   if slot.reply.cell as usize != 0usize {
     return slot.reply.at;
   }
+  if replyDropped(&slot.reply) {
+    // no longer wanted (THE LATE REPLY): the awaiter is told now, with no value, and
+    // the caller drops the value it has (answerAt)
+    let h = slot.reply.to;
+    let d = replyPrepDropped(&slot.reply);
+    spend(&mut slot.reply);
+    replyFinish(h, d);
+    return 1usize as *u8;
+  }
   // An actor awaits it: its slot is claimed now, and the caller writes the
   // value in, a moment later (answered publishes it)
   slot.put = replyPrep(&slot.reply);
@@ -3293,10 +3401,20 @@ fn resumeSlot[S](st: *S, h: *Header, p: *u8, kind: u64) {
   // an await made in a cancel group (THE GROUP SURVIVES AN AWAIT): the entry
   // noted at the await is taken, its group made the thread's current group for
   // the second half, and let go after
-  let w = id0 ^ groupBit;
+  let w = id0 & ~(groupBit | droppedBit);
   let node = groupTake(h, w);
   if node as usize == 0usize {
     die("actors: a reply made in a cancel group has no group noted");
+  }
+  if (id0 & droppedBit) != 0u64 {
+    // THE LATE REPLY: the group was cancelled before the answer; no value came. The
+    // record the await parked is freed, its continuation never runs
+    if (*node).pending != 0usize {
+      dropParked((*node).pending, w);
+    }
+    mem.finalize[CancelGroup](&(*node).g as *CancelGroup);
+    libc.free(node as *u8);
+    return;
   }
   let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
   libc.free(node as *u8);
@@ -3437,6 +3555,9 @@ fn noTrace(record: *u8, mode: u32) {}
 // flight, and nothing has a timeout path yet: an I/O operation's answer
 // comes exactly once too, and its envelope counts the actor the same way.
 pub fn parkReserve(p: &mut Pending, size: usize, drop: *u8, trace: *u8) u64 {
+  // the table this thread parked in last, for the await's reply that follows at once
+  // (replyFor notes it beside the await's group, THE LATE REPLY)
+  lastPending = p as *Pending as usize;
   if p.free == 0usize {
     var newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}

@@ -8,8 +8,11 @@
 //    the answer is held, the table has one entry; after the answer the second
 //    half sees g, not cancelled, and the table is empty.
 // 2. An await with an empty record (nothing live across it): the same.
-// 3. A cancel while parked: g is cancelled after the await was made and before the
-//    answer; the second half sees g cancelled, with the cause; the table is empty.
+// 3. A late reply (THE LATE REPLY): g is cancelled after the await was made and
+//    before the answer. The answer is pushed with the dropped bit and no value; the
+//    awaiter frees its parked record (a value with a drop that was live across the
+//    await is dropped once) and the second half NEVER runs; the table is empty. A
+//    control without the cancel runs it. The same for an empty-record await.
 // 4. An await made in no group notes nothing (the table stays empty throughout)
 //    and the second half sees the process's own group, as before.
 // 5. Many at once: 200 awaits in g, half with records, answered together: every
@@ -46,8 +49,20 @@ struct Seen {
 }
 
 let seen: Seen;
+let lateRan: Atomic[u64];        // continuations of the late-reply awaits that ran
+let lateKeep: Atomic[u64];
+let markerDrops: Atomic[u64];    // Markers dropped
+
+struct Marker {
+  pub x: u64;
+
+  fn final(self: &uni) {markerDrops.add(1u64);}
+}
 
 fn @initpure init() {
+  lateRan = Atomic[u64].of(0u64);
+  lateKeep = Atomic[u64].of(0u64);
+  markerDrops = Atomic[u64].of(0u64);
   seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
@@ -90,6 +105,20 @@ actor Asker {
     seen.value.store(base + s);
     seen.cancelRec.store(if actors.isCancelled() {1u64} else {2u64});
     seen.causeRec.store(causeNum());
+  }
+
+  // a value with a drop live across the await, so that the record frees it if the
+  // continuation never runs
+  pub async fn lateRecord(self, slow: Slow) {
+    let m = Marker(1u64);
+    let s = await slow.answer(5u64);
+    lateRan.add(1u64);
+    lateKeep.store(m.x + s);
+  }
+
+  pub async fn lateEmpty(self, slow: Slow) {
+    let s = await slow.answer(6u64);
+    lateRan.add(1u64);
   }
 
   // nothing live across it: an empty record
@@ -180,18 +209,43 @@ fn main() i32 {
   expectUInt(seen.value.load(), 9u64, "2: ... with the value");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "2: the table is empty after the resume");
 
-  // 3. a cancel while parked
+  // 3. a cancel while parked: the late reply is told to the awaiter with no value, which frees its
+  // parked record and never runs the continuation (THE LATE REPLY). A control first: no cancel
+  lateRan.store(0u64);
+  markerDrops.store(0u64);
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.lateRecord(slow); });
+  waitHeld(1u64);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(lateRan.load(), 1u64, "3: control, no cancel: the continuation ran");
+  expectUInt(markerDrops.load(), 1u64, "3: ... and the value it held was dropped once");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "3: ... the table is empty");
+
+  lateRan.store(0u64);
+  markerDrops.store(0u64);
   reset();
   let g3 = CancelGroup.make();
-  actors.withGroup(&g3, fn() [a, slow] { a.withRecord(slow, 0u64); });
+  actors.withGroup(&g3, fn() [a, slow] { a.lateRecord(slow); });
   waitHeld(1u64);
-  expectUInt(seen.cancelRec.load(), 0u64, "3: the second half has not run");
+  expectUInt(markerDrops.load(), 0u64, "3: the record is parked, its value alive");
   g3.cancelWith(Cause.Shutdown);
   seen.gate.store(1u64);
   actors.waitQuiet();
-  expectUInt(seen.idRec.load(), g3.id(), "3: the second half runs in the group that was cancelled meanwhile");
-  expectUInt(seen.cancelRec.load(), 1u64, "3: ... and sees it cancelled");
-  expectUInt(seen.causeRec.load(), 4u64, "3: ... with the cause");
+  expectUInt(lateRan.load(), 0u64, "3: a reply after the group's cancel: the continuation never ran");
+  expectUInt(markerDrops.load(), 1u64, "3: ... and the parked record was freed, its value dropped once");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "3: the table is empty");
+
+  // ... an await with an empty record
+  lateRan.store(0u64);
+  reset();
+  let g3b = CancelGroup.make();
+  actors.withGroup(&g3b, fn() [a, slow] { a.lateEmpty(slow); });
+  waitHeld(1u64);
+  g3b.cancel();
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(lateRan.load(), 0u64, "3: an empty-record await: the continuation never ran either");
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "3: the table is empty");
 
   // 4. no group
