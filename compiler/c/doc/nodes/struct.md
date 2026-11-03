@@ -1550,6 +1550,9 @@ a struct is `Default` only by declaring it.
   `Default` for their `init`s whose last argument, the region, a construction may leave out.
 - **Refusal.** `ErrorDefaultField` (1575), at the field, where it has no `= value` and its
   type is not `Default`.
+  A struct that declares `Default` and writes an `init` is refused (`ErrorDefaultInit`, 1578, at the
+  struct) unless one of its inits can be called with no arguments (`typeLitZeroArgConstructible`:
+  parameters with defaults and a CarriesRegion type's last region may be left out).
 - **Regions.** A generic `T()` has no region argument, so a `CarriesRegion` type is made in
   the heap's (`typeLitRegionArg`); a container that makes a `V` of its own writes `V(region)`.
 

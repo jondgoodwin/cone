@@ -18,6 +18,8 @@ void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
 // Also refuse a value for a private field where 'private' says the literal is
 // written outside the module that declares the type (structSeesPrivate).
 int typeLitStructReorder(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode, int private);
+// Can the struct be made with no arguments, `T()`? (core's Default asks)
+int typeLitZeroArgConstructible(StructNode *strnode);
 
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);

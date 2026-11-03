@@ -4583,8 +4583,17 @@ static int structDefaultFieldFills(StructNode *defaulttrait, FieldDclNode *field
 // each construction, so each gets a node of its own.
 static void structDefaultCheck(StructNode *node) {
     StructNode *defaulttrait = structDeclaredDefault(node);
-    if (defaulttrait == NULL || iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL)
+    if (defaulttrait == NULL)
         return;
+    // A struct with an init of its own is made by it, so one must be callable
+    // with no arguments
+    if (iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL) {
+        if (!typeLitZeroArgConstructible(node))
+            errorMsgNode((INode*)node, ErrorDefaultInit,
+                "%s declares Default, and writes an `init`, but none of its inits can be called with no arguments, so `%s()` is not a construction. Give an init no required parameter (the region of a CarriesRegion type may be left out), or do not declare Default.",
+                &node->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
     uint32_t cnt;
     INode **nodesp;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
