@@ -464,7 +464,7 @@ pub struct Client {
         j = j + 1usize;
       }
     }
-    origins.add(Origin(key: key, secure: secure, host: u.host.copy(),
+    origins.add(Origin(key: key, secure: secure, host: u.host.clone(),
       port: port, queue: List[u32].empty(), idle: List[u32].empty(), shared: List[u32].empty(),
       open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge,
       h3Port: if prior {port} else {0u16}, h3Until: if prior {forever()} else {Instant()}, h3Prior: prior,
@@ -505,7 +505,7 @@ pub struct Client {
     f.headers = headers;
     if !f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
-      let agent = cfg.userAgent.copy();
+      let agent = cfg.userAgent.clone();
       f.headers.add("User-Agent", agent.view());
     }
     if !f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
@@ -1042,7 +1042,7 @@ pub struct Client {
         let fi = *og.queue[0usize];
         let f = self.fetchAt(fi) as &mut Fetch;
         f.timing.attempts = f.timing.attempts + 1u32;
-        self.finishFetch(lp, fi, endFailed, Some[Failure](fl.copy()));
+        self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
       }
     }
     self.freeConnRec(pc);
@@ -1215,7 +1215,7 @@ pub struct Client {
     let sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc));
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
-    let host = og.host.copy();
+    let host = og.host.clone();
     if !og.secure {
       p.id = drv.connect(lp, host.view(), og.port, sink);
       return;
@@ -1225,7 +1225,7 @@ pub struct Client {
       case let &Ok(c) {
         p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view())), sink);
       }
-      case let &Err(x) {why = Some[Failure](x.copy());}
+      case let &Err(x) {why = Some[Failure](x.clone());}
     }
     match why {
       case var Some(fl) {
@@ -1236,7 +1236,7 @@ pub struct Client {
         self.freeConnRec(pc);
         while og.queue.len() > 0usize {
           let fi = *og.queue[0usize];
-          self.finishFetch(lp, fi, endFailed, Some[Failure](fl.copy()));
+          self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
         }
       }
       else {}
@@ -1307,7 +1307,7 @@ pub struct Client {
     var k = 0usize;
     while k < headers.len() {
       if fieldIs(headers.nameAt(k), "alt-svc") {
-        let host = og.host.copy();
+        let host = og.host.clone();
         match readAltSvc(headers.valueAt(k), host.view()) {
           case is Clear {
             if !og.h3Prior {
@@ -1396,7 +1396,7 @@ pub struct Client {
     st.h3Attempts = st.h3Attempts + 1u64;
     attempts.push(pc);
     let tok = drv.upperToken(lp, kWatch, resolveBit | (u64.from(p.gen & watchGenMask) << 24u64) | u64.from(pc));
-    let host = og.host.copy();
+    let host = og.host.clone();
     p.lookup = lp.submitBy(resolveOp(host.view(), og.h3Port, IoBuf(resolveSize)), Target.Here(tok), p.h3By);
   }
 
@@ -1428,7 +1428,7 @@ pub struct Client {
       return;
     }
     let og = self.originAt(p.origin) as &Origin;
-    let host = og.host.copy();
+    let host = og.host.clone();
     let token = tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc);
     match h3.connect(lp, addr, host.view(), token) {
       case let Ok(q) {p.qid = q;}
@@ -1703,8 +1703,8 @@ pub struct Client {
     let target = f.url.target();
     let authority = f.url.authority();
     var head = RequestHead.make(f.methodName(), target.view(), authority.view());
-    head.scheme = f.url.scheme.copy();
-    head.headers = f.headers.copy();
+    head.scheme = f.url.scheme.clone();
+    head.headers = f.headers.clone();
     let body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength.empty()};
     f.timing.dispatched = Instant.now();
     f.timing.attempts = f.timing.attempts + 1u32;
@@ -1970,7 +1970,7 @@ pub struct Client {
       f.headers.remove("Cookie");
     }
     if !next.hasFragment && f.url.hasFragment {
-      next.fragment = f.url.fragment.copy();
+      next.fragment = f.url.fragment.clone();
       next.hasFragment = true;
     }
     f.url = next;
@@ -2098,7 +2098,7 @@ fn alpnFor(names: &List[String], http2: bool) List[String] {
   if http2 && !has {out.push(String.from("h2"));}
   k = 0usize;
   while k < names.len() {
-    if http2 || names[k].view() != "h2" {out.push(names[k].copy());}
+    if http2 || names[k].view() != "h2" {out.push(names[k].clone());}
     k = k + 1usize;
   }
   out

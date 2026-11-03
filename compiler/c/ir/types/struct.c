@@ -4529,12 +4529,22 @@ static void structCloneCheck(StructNode *node) {
     fnCallMarkConstruction(lit);
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
+        // (A mixin placeholder is the trait a type names in 'is': it stands for
+        // the trait's requirements and holds no storage. The fields the trait
+        // requires are declared by the type itself and cloned here as any other;
+        // an enum variant's base is no 'is' target, a variant cannot declare Clone.)
         if (field->flags & IsMixin)
             continue;
         // self.field.clone()
         FnCallNode *access = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
         access->methfld = (INode*)newMemberUseNode(field->namesym);
         inodeLexCopy(access->methfld, (INode*)node);
+        // a read-only borrow field is copied as it lies: its clone is the same borrow
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        if (refIsCopyBorrow(fldtype)) {
+            nodesAdd(&lit->args, (INode*)access);
+            continue;
+        }
         FnCallNode *call = newFnCallLower((INode*)node, (INode*)access, 1);
         call->methfld = (INode*)newMemberUseNode(cloneName);
         inodeLexCopy(call->methfld, (INode*)node);
@@ -4543,6 +4553,80 @@ static void structCloneCheck(StructNode *node) {
     BreakRetNode *ret = newReturnNodeExp((INode*)lit);
     inodeLexCopy((INode*)ret, (INode*)node);
     nodesAdd(&block->stmts, (INode*)ret);
+}
+
+// The core Default trait this struct declares, or NULL
+static StructNode *structDeclaredDefault(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return NULL;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsDefaultTrait(*traitp))
+            return (StructNode*)*traitp;
+    return NULL;
+}
+
+// Does this field of a struct that declares Default have a value `T()` can give it
+// when the field names none: a type that is Default itself?
+static int structDefaultFieldFills(StructNode *defaulttrait, FieldDclNode *field) {
+    if (field->flags & (IsMixin | IsTagField))
+        return 0;
+    return genericTypeIs(field->vtype, defaulttrait);
+}
+
+// A type declaring core's Default is made by `T()`, with no arguments: a type
+// that declares an `init` says how itself (List and Dict make an empty value), and
+// any other is made from its fields, each the `= value` its declaration gave or,
+// where it gave none, its type's own `T()` (structFieldDefault). Refused where a
+// field has neither. Only the field's check is made here; the value is made by
+// each construction, so each gets a node of its own.
+static void structDefaultCheck(StructNode *node) {
+    StructNode *defaulttrait = structDeclaredDefault(node);
+    if (defaulttrait == NULL || iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL)
+        return;
+    uint32_t cnt;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if ((field->flags & (IsMixin | IsTagField)) || field->value != NULL)
+            continue;
+        if (!structDefaultFieldFills(defaulttrait, field))
+            errorMsgNode((INode*)field, ErrorDefaultField,
+                "%s declares Default, and its field %s has no `= value` and is %s, which is not Default. Give the field a default value, or declare its type Default, or write an `init` for %s.",
+                &node->namesym->namestr, &field->namesym->namestr, itypeName(itypeGetTypeDcl(field->vtype)),
+                &node->namesym->namestr);
+    }
+}
+
+// The value a construction `T()` of a struct declaring Default (and writing no
+// `init`) gives a field it was told nothing of and whose declaration gave no
+// `= value`: the field type's own `T()`, a node for this construction alone.
+// NULL where the struct does not declare Default or the field's type is not.
+INode *structFieldDefault(StructNode *node, FieldDclNode *field) {
+    StructNode *defaulttrait = structDeclaredDefault(node);
+    if (defaulttrait == NULL || field->value != NULL
+        || iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL
+        || !structDefaultFieldFills(defaulttrait, field))
+        return NULL;
+    INode *fldtype = itypeGetTypeDcl(field->vtype);
+    INode *value;
+    if (fldtype->tag == FloatNbrTag)
+        {
+        FLitNode *zero = newFLitNode(0.0, fldtype);
+        zero->vtype = fldtype;
+        value = (INode*)zero;
+    }
+    else if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
+        value = (INode*)newULitNodeTC(0, fldtype);
+    else {
+        FnCallNode *lit = newFnCallLower((INode*)node, newNameUseFromDclNode(fldtype, (INode*)node), 0);
+        lit->args = newNodes(1);
+        fnCallMarkConstruction(lit);
+        value = (INode*)lit;
+    }
+    inodeLexCopy(value, (INode*)node);
+    return value;
 }
 
 // Is this method of a type the copy of an 'inline' default of a trait it declares
@@ -5095,6 +5179,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structEqCheck(node);
     // and one declaring core's Clone has a 'clone' it is given from its fields
     structCloneCheck(node);
+    // and one declaring core's Default has a field with a value for `T()`
+    structDefaultCheck(node);
 
     // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.

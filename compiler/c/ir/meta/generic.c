@@ -257,7 +257,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     // Reorder the literal's arguments to match the type's field order
-    if (typeLitStructReorder(srcgencall, genstruct,
+    if (typeLitStructReorder(pstate, srcgencall, genstruct,
             (INode*)genstruct == pstate->typenode || structSeesPrivate(pstate, (INode*)genstruct)) == 0)
         return 0;
 
@@ -1880,12 +1880,23 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     if (trait == copyTrait)
         return !itypeIsMove(dcl);
     // and every Copy type is Clone: its 'clone()' is the value (fnCallCloneCopy)
-    // except a reference of any kind: it is copied, but what a value held by
-    // reference clones to is the value, never the reference (a borrow's lifetime
-    // does not carry to the clone), so it is not asked for
+    // including a read-only borrow ('&T', a slice, a virtual reference), which
+    // copies: its clone is the same borrow (refIsCopyBorrow). Not a reference that
+    // moves ('&mut', 'uni'), and not an owner such as Rc, whose copy counts
     if (coreIsCloneTrait((INode*)trait) && !itypeIsMove(dcl)
-        && dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag)
+        && ((dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag)
+            || refIsCopyBorrow(dcl)))
         return 1;
+    // and every number type and bool is Default: its 'T()' is 0 (0.0, false). A
+    // char is not a number and has no default.
+    // Any other type is Default only if it declares it (the trait is a marker).
+    if (coreIsDefaultTrait((INode*)trait)) {
+        if (dcl->tag == IntNbrTag || dcl->tag == FloatNbrTag
+            || (dcl->tag == UintNbrTag && dcl != (INode*)charType))
+            return 1;
+        if (dcl->tag != StructTag)
+            return 0;
+    }
     // and the number markers: Float is f32 and f64, Signed the signed integers
     // and the floats, Unsigned the unsigned integers, Numeric all of them.
     // bool and char are unsigned in the tree but are not numbers.

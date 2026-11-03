@@ -1214,12 +1214,19 @@ pub trait Clone {
 	<p>Every <a href="rec-moves.html">Copy</a> type is <span class="pre">Clone</span> by the compiler's grant, and its
 		<span class="pre">clone()</span> is the value itself, so generic code asks for the one bound:
 		<span class="pre">fn dup[T: Clone](a: &amp;T) T { a.clone() }</span> works for an <span class="pre">i32</span>, a
-		plain struct and a tuple of numbers. (A reference is not asked for: a reference is copied by
-		<span class="pre">=</span>, but is not <span class="pre">Clone</span>, and <span class="pre">r.clone()</span> on a
-		borrow clones the value it lends.) A struct that declares <span class="pre">Clone</span> and writes no
-		<span class="pre">clone</span> is given one that clones each field, in order, into a new value; it is refused, at
+		plain struct and a tuple of numbers. A read-only borrow, <span class="pre">&amp;T</span>, is copied by
+		<span class="pre">=</span> and so is <span class="pre">Clone</span>: its clone is the same borrow, so
+		<span class="pre">Option[&amp;T]</span> has a <span class="pre">clone</span> and
+		<span class="pre">dup(&amp;r)</span> returns the <span class="pre">&amp;T</span> that <span class="pre">r</span> holds.
+		(<span class="pre">r.clone()</span> on a <span class="pre">&amp;T</span> held directly clones the value it lends, as
+		any method called through a borrow acts on what it lends; on a <span class="pre">&amp;&amp;T</span> it copies the
+		inner borrow.) A <span class="pre">&amp;mut</span> and a <span class="pre">&amp;uni</span> are not asked for. A
+		struct that declares <span class="pre">Clone</span> and writes no
+		<span class="pre">clone</span> is given one that clones each field, in order, into a new value (a
+		<span class="pre">&amp;</span> field is copied as it lies; the fields a trait in its <span class="pre">is</span>
+		list requires are the struct's own and are cloned like the rest); it is refused, at
 		the field, where a field is neither Copy nor Clone (a unique owner, a struct that moves and has no
-		<span class="pre">clone</span>, a reference). <span class="pre">Option</span> and <span class="pre">Result</span>, a
+		<span class="pre">clone</span>, a <span class="pre">&amp;mut</span>). <span class="pre">Option</span> and <span class="pre">Result</span>, a
 		<span class="pre">List</span> and a <span class="pre">String</span> have a <span class="pre">clone</span> where
 		their elements do. <span class="pre">resize</span>, <span class="pre">appendSlice</span> and
 		<span class="pre">getCopy</span> on the collections are present where the element is Clone.</p>
@@ -1227,6 +1234,36 @@ pub trait Clone {
 		either copies it (a type that owns nothing) or moves it (one that owns something), and a duplicate that owns
 		something is always visible as <span class="pre">.clone()</span>. A <span class="pre">clone</span> method of a
 		type's own is an ordinary method; no copy calls it.</p>
+
+	<h3 id="defaulttrait">Default, and T() for any T</h3>
+	<p>Core's <span class="pre">Default</span> is "made by <span class="pre">T()</span>, with no arguments", and it
+		is the one spelling for an empty or zero value, so generic code writes
+		<span class="pre">T()</span> and needs nothing else:</p>
+<pre>
+fn make[T: Default]() T { T() }
+
+struct Pt is Default { x: i32; y: i32 = 5; w: f64 }
+
+make[i32]()          // 0
+make[bool]()         // false
+make[List[i32]]()    // an empty list
+make[Pt]()           // Pt(0, 5, 0.0)
+</pre>
+	<p>Every number type and <span class="pre">bool</span> is <span class="pre">Default</span> by the compiler's grant
+		(<span class="pre">i32()</span> is 0, <span class="pre">f64()</span> is 0.0, <span class="pre">bool()</span> is
+		false). Nothing else is unless it says so, with <span class="pre">is Default</span>: a type with no obvious
+		default (a matrix, which keeps <span class="pre">identity()</span>) has none. A struct that declares
+		<span class="pre">Default</span> and writes no <span class="pre">init</span> is made from its fields, each the
+		<span class="pre">= value</span> its declaration gave or, where it gave none, its type's own
+		<span class="pre">T()</span>; it is refused, at the field, where a field has neither. A struct with an
+		<span class="pre">init</span> that takes no arguments (the collections' takes only the region, which a
+		construction may leave out) declares <span class="pre">Default</span> to say so, and <span class="pre">T()</span> calls
+		it. <span class="pre">List</span>, <span class="pre">Deque</span>, <span class="pre">String</span>,
+		<span class="pre">Dict</span>, <span class="pre">OrderedDict</span>, <span class="pre">Set</span> and
+		<span class="pre">PriorityQueue</span> do. A <span class="pre">T()</span> written in generic code builds in the
+		default (heap) region; a collection made with a region named lives in that region, and a container that carries a
+		region and makes a value of a region-carrying type hands its own on, <span class="pre">V(self.region)</span>, as
+		<a href="mem-collections.html#carriesregion">a type made of collections</a> does.</p>
 
 	<h3 id="iterators"><span id="iterator"></span>Iterator and Iterable</h3>
 	<p>Two more of core's traits name the shapes a sequence of values is walked by, for code that is generic over

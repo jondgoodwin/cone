@@ -779,6 +779,7 @@ enum ErrorCode {
     ErrorEnrichFinalSkipped = 1572, // A value of an enrichment (a type that 'extends' a base) declaring its own 'final', handed on by value as its base or as a sibling without that 'final': a copy, a move or an owning reference (Uni, Rc) converted would be dropped as the target, so the 'final' would never run. Names the enrichment and the target. A borrowed reference is not refused. Pointed at the value converted
     ErrorMetaIf = 1573,         // A '#if' chain malformed or misplaced: an '#elif' or '#else' with no '#if' before it, an '#elif' after the '#else', a second '#else', a '#if' giving a value with no '#else', or a condition's own punctuation missing ('#defined("NAME"' with no ')', a '(' never closed). Pointed at the word
     ErrorMetaFact = 1574,       // A '#if' condition that names a fact outside the closed vocabulary (#os, #arch, #debug, #defined, #define), or uses one wrongly: a member the fact has not ('#os == .window'), a member of another fact, a comparison of unlike kinds, '#defined' of something that is not a string literal, a fact read outside a '#if' condition, a condition that is not a bool. Pointed at the word
+    ErrorDefaultField = 1575,   // A struct declaring Default and writing no 'init' has a field with no declared default ('= value') whose type is not Default, so the compiler has nothing to construct it with in 'T()'. Pointed at the field
     ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
     ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
 
@@ -786,7 +787,7 @@ enum ErrorCode {
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
     // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
-    WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
+    // 3003 was WarnCopy, never raised; a value that owns something moves, and a duplicate of it is its .clone()
     WarnLoop = 3004,       // Infinite loop with no break
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
