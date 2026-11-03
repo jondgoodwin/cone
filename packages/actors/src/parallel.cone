@@ -426,9 +426,38 @@ pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
   ensureRunning();
   let s = running.load() as *Sched;
   let grain = eachGrain(hi - lo, usize.from((*s).nworkers));
-  var job = EachLoop(body, data, 0usize, curGroup);
+  // A loop begun in a group runs in a CHILD group of its own (a group's life is a
+  // block's): a piece that cancels its current group stops this loop's later
+  // pieces and nothing above it, and a cancel of the group above reaches the
+  // pieces by the child relation. The loop's sends are sent after it, by this
+  // thread, in the group it works in.
+  let parent = curGroup;
+  var cell = null as *CancelGroup;
+  if parent != 0usize {
+    cell = childCell(parent);
+  }
+  var job = EachLoop(body, data, 0usize, cell as usize);
   rangeRun(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
+  dropCell(cell);
+}
+
+// A new cell holding a child group of the one at address parent
+fn childCell(parent: usize) *CancelGroup {
+  let cell = libc.malloc(mem.sizeof[CancelGroup]()) as *CancelGroup;
+  if cell as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  mem.writeRaw[CancelGroup](cell, (*(parent as &CancelGroup)).child());
+  cell
+}
+
+// Let go of a cell's group and free it (null: nothing)
+fn dropCell(cell: *CancelGroup) {
+  if cell as usize != 0usize {
+    mem.finalize[CancelGroup](cell);
+    libc.free(cell as *u8);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +537,12 @@ fn nullPieceRec() *PieceRec {null}
 // to be running while the compiler's body runs, and passes on the records
 fn gatherPiece(data: *u8, lo: usize, hi: usize) {
   let job = data as *EachLoop;
+  // a loop whose group is cancelled skips the pieces not yet begun (as
+  // findFirst's loop skips them); a piece begun runs to its end
+  let grp = (*job).group;
+  if grp != 0usize && (*(grp as &CancelGroup)).isCancelled() {
+    return;
+  }
   var piece = Piece(job, lo, nullPieceRec(), curPiece);
   curPiece = &mut piece as *Piece as usize;
   // the piece runs in the loop's cancel group, whatever thread it is on
@@ -719,7 +754,8 @@ struct ParPending {
   pub id: u64;                  // the record's slot in the pending table
   pub hasId: bool;              // false where the record is empty
   pub job: *EachLoop;           // the loop's gathering of sends, once it has begun
-  pub group: *CancelGroup;      // a copy of the behaviour's cancel group (another owner), or null: the pieces and the rest of the behaviour run in it
+  pub group: *CancelGroup;      // a copy of the behaviour's cancel group (another owner), or null: the rest of the behaviour and the loop's sends run in it
+  pub child: *CancelGroup;      // the loop's own child of that group, made when the loop begins, which its pieces run in; null with no group
 }
 
 fn nullPar() *ParPending {null}
@@ -756,7 +792,7 @@ pub fn parSeam(lo: usize, hi: usize, body: PieceFn, caps: *u8, resume: *u8, id: 
     }
     mem.writeRaw[CancelGroup](cell, *(gp as &CancelGroup));
   }
-  mem.writeRaw[ParPending](p, ParPending(h, lo, hi, body, caps, resume, id, hasId, null, cell));
+  mem.writeRaw[ParPending](p, ParPending(h, lo, hi, body, caps, resume, id, hasId, null, cell, null));
   (*h).par = p;
 }
 
@@ -771,7 +807,10 @@ fn startHeld(w: *Worker, h: *Header) {
   if job as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize, (*p).group as usize));
+  if (*p).group as usize != 0usize {
+    (*p).child = childCell((*p).group as usize);
+  }
+  mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize, (*p).child as usize));
   (*p).job = job;
   rangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
 }
@@ -792,6 +831,8 @@ fn parSeamDone(arg: *u8) {
   curGroup = savedGroup;
   curPiece = saved;
   libc.free((*p).job as *u8);
+  dropCell((*p).child);
+  (*p).child = null;
   if (*p).caps as usize != 0usize {
     libc.free((*p).caps);
   }
