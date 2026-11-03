@@ -2871,8 +2871,11 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // cannot name a function. It is reported once and read past, so the rest of
     // the declaration parses as written instead of cascading from a missing
     // name. The function is left unnamed, which keeps it out of every namespace:
-    // bound, it would also clash with the built-in permission
-    if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)) {
+    // bound, it would also clash with the built-in permission. 'await' is a keyword,
+    // but nothing that begins an expression can follow 'fn', so it may name the
+    // convention method a type is awaited by (ir/exp/await.c)
+    if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)
+        || lexIsToken(AwaitToken)) {
         if (lexIsToken(PermToken))
             errorMsgLex(ErrorNoName, "'%s' is a permission, so it cannot name a function. Rename it.",
                 &lex->val.ident->namestr);

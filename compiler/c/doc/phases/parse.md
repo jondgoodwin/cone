@@ -741,7 +741,10 @@ init's `self`, `&new`; in a value, `&Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
-`x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
+`x` in an actor's behaviour; the behaviour is cut there, a seam. The keyword is
+also a method's name, right after `fn` (`parseFn`) and right after `.`
+(`parseDotCall`): no expression can begin in either place, so nothing is
+ambiguous (a type is awaitable by such a method, `ir/exp/await.c`). Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
 the wait gives and `await` binds no looser than `-` does. **The one exception
 is the suffix `?`** [Jon 26 Oct]: `await x?` is `(await x)?`. `parsePrefix`
