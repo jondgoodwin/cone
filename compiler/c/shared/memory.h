@@ -15,7 +15,9 @@
 extern size_t gMemBlkArenaSize;    // Default is 256 pages
 extern size_t gMemStrArenaSize;    // Default is 128 pages
 
-// Allocate memory for a block, aligned to a 16-byte boundary
+// Allocate memory for a block, aligned to a 16-byte boundary. The block is ZEROED, as
+// calloc's is, and callers may rely on it (a node constructor need not clear the
+// fields it does not set)
 void *memAllocBlk(size_t size);
 
 // Allocate memory for a string and copy contents over, if not NULL
