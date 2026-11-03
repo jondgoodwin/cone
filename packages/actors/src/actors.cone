@@ -2218,11 +2218,17 @@ fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 // the call (it cannot 'await'), so a group named never outlives its call and
 // the current group is back to what it was when the call returns.
 //
+// A 'parallel each' runs in the group of the code that began it: a loop begun
+// from a thread (inside withGroup, or in a behaviour whose frame holds the group)
+// hands the pieces the address of that handle (EachLoop.group), and a loop a
+// behaviour's seam cut (ParPending) holds a copy of the handle, another owner,
+// which the pieces, the sends they gather and the rest of the behaviour use and
+// the end of the behaviour drops. Each piece sets the group as its thread's
+// current group around its body and restores the thread's own.
+//
 // What does not carry the group, because the code runs where no behaviour's
-// frame holds it: the rest of a behaviour after an 'await' or a 'parallel each'
-// (the continuation is resumed from a reply's slot, which has none), the pieces
-// of a 'parallel each' and the sends they gather. Those run with no current group
-// until the cancellation work that follows gives them one.
+// frame holds it: the rest of a behaviour after an 'await' (the continuation is
+// resumed from a reply's slot, which has none). It runs with no current group.
 var @threadlocal curGroup: usize = 0usize;
 
 // The process's own group, made on first use: the group of code running in none,
@@ -2425,7 +2431,21 @@ fn runReady[S](st: *S, p: *ParPending) {
   let run = (*p).resume;
   let id = (*p).id;
   let hasId = (*p).hasId;
+  let cell = (*p).group;
   libc.free(p as *u8);
+  if cell as usize != 0usize {
+    // the loop's group (THE GROUP TRAVELS): the rest of the behaviour runs in it
+    let g = mem.readRaw[CancelGroup](cell);
+    libc.free(cell as *u8);
+    curGroup = &g as *CancelGroup as usize;
+    if hasId {
+      resumeId[S](&mut *st, run, id, null);
+    } else {
+      resume[S](&mut *st, run, null);
+    }
+    curGroup = 0usize;
+    return;
+  }
   if hasId {
     resumeId[S](&mut *st, run, id, null);
   } else {
