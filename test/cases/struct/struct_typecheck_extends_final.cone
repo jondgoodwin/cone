@@ -77,3 +77,40 @@ fn viaUni() {
 fn viaRc() {
   let r: Rc[Plain] = Rc[PlainFin](PlainFin(12)); //~ ErrorEnrichFinalSkipped:22 "which would be skipped"
 }
+
+// Two enrichments of one base that each declare a 'final' of their own: the one
+// becoming the other would be dropped by the other's, so the first's never runs
+struct FinA extends Plain {
+  fn final(self: &uni) {
+  }
+}
+
+struct FinB extends Plain {
+  fn final(self: &uni) {
+  }
+}
+
+fn viaSiblingFinal() {
+  let s: FinB = FinA(13);       //~ ErrorEnrichFinalSkipped:17 "which has a different 'final'"
+}
+
+fn viaSiblingUni() {
+  let u: Uni[FinB] = Uni[FinA](FinA(14)); //~ ErrorEnrichFinalSkipped:22 "which has a different 'final'"
+}
+
+// An array by value carries its elements, each dropped as the target's element type
+fn viaArray() {
+  let x = [FinA(15), FinA(16)];
+  let a: Array[Plain, 2] = x;   //~ ErrorEnrichFinalSkipped:28 "which would be skipped"
+}
+
+fn viaArraySibling() {
+  let x = [FinA(17), FinA(18)];
+  let a: Array[FinB, 2] = x;    //~ ErrorEnrichFinalSkipped:27 "which has a different 'final'"
+}
+
+// An 'Option' of an enrichment is no conversion of the enrichment: it is a different
+// type altogether, which an Option of its base is not substituted for
+fn viaOption() {
+  let o: Option[Plain] = Some[FinA](FinA(19)); //~ ErrorInvType:36 "does not match"
+}

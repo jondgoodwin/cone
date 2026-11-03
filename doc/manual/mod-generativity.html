@@ -494,7 +494,9 @@ max(&amp;low, &amp;high).cents;   // 475
 		<span class="pre">i32</span> values as it is on two <span class="pre">Money</span>. A number's methods take the
 		number by value where a trait writes <span class="pre">&amp;Self</span>; the call reads the referent. A number
 		that lacks the method is refused as a struct is ("greetOf requires T is Greeter, and i32 is not Greeter"), and a
-		<span class="pre">bool</span> has no ordering. Core's <span class="pre">Ordered</span> asks for
+		<span class="pre">bool</span> has no ordering. Core's <span class="pre">Eq</span> asks for
+		<span class="pre">==</span> and is met by every number type and <span class="pre">bool</span>
+		(<a href="mod-substitution.html#eqtrait">Eq</a>). Core's <span class="pre">Ordered</span> asks for
 		<span class="pre">&lt;=&gt;</span> and is met by every number type but <span class="pre">bool</span>, by
 		<span class="pre">str</span> and by <span class="pre">String</span>. A trait's static function is not yet called
 		through a type parameter whose argument is a number (except <span class="pre">from</span>).</p>
@@ -1062,30 +1064,89 @@ struct Cells {
 		<span class="pre">x is Some &amp;&amp; ...</span>. A number is still a condition, and still stands on the
 		right of a bool's operator.</p>
 
-	<h2 id="meta">Metaprogramming (not built)</h2>
-	<p style="margin-left: 40px;"><i>Not built yet: none of this is implemented. The compiler reports a word
-		beginning with <span class="pre">#</span> and ignores the rest of its line.</i></p>
-	<p>Metaprogramming would give fine-grained control over what program logic gets compiled: including or leaving
-		out certain code, and generating data or logic by algorithm. In effect it is a second, similar-looking language,
-		its constructs marked with <span class="pre">#</span>, that manipulates the program's logic as data.
-		Meta-conditionals are control-flow blocks that decide what logic gets compiled, as ordinary ones decide what gets
-		run, and inside generics or macros they are evaluated when an instance is made.</p>
+	<h2 id="meta">Metaprogramming</h2>
+	<p style="margin-left: 40px;"><i>Only <span class="pre">#if</span> on the facts of the build is built. Meta
+		variables, <span class="pre">#each</span> and <span class="pre">#if</span> on facts about a type are not: the
+		compiler reports any other word beginning with <span class="pre">#</span> and ignores the rest of its
+		line.</i></p>
+	<p>Metaprogramming gives fine-grained control over what program logic gets compiled: including or leaving
+		out certain code, and (not yet built) generating data or logic by algorithm. In effect it is a second,
+		similar-looking language, its constructs marked with <span class="pre">#</span>, that manipulates the program's
+		logic as data. Meta-conditionals are control-flow blocks that decide what logic gets compiled, as ordinary ones
+		decide what gets run, and inside generics or macros they would be evaluated when an instance is made.</p>
 	<p id="metavars"><b>Meta variables</b> would be immutable and exist only while the program is compiled, holding
 		typed constant values calculated from an expression: <span class="pre">let #arrsize = 10;</span>. Some would have
 		their values set by the compiler, giving information about the compile-time environment, such as the target
 		platform and architecture (<a href="safe-platforms.html">Platforms and targets</a>), and a compiler option could
 		pass data into a program in others.</p>
-	<p id="metaif"><b><span class="pre">#if</span></b> would decide whether to include specific logic in the compiled
-		program, and <b id="metaeach"><span class="pre">#each</span></b> would generate the same logic once for each
-		entry of a collection:</p>
+	<p id="metaif"><b><span class="pre">#if</span></b> decides which code exists, from facts about the build that the
+		compiler knows before it reads a line of source. It is the compile-time conditional that C's
+		<span class="pre">#if</span> is, without the preprocessor: the condition is Cone's own, and what a branch holds
+		is checked as Cone. Its branches are written with <span class="pre">#elif</span> and
+		<span class="pre">#else</span>:</p>
 <pre>
-#if #target == "windows" {
-	... Windows-specific logic ...
+#if #os == .windows {
+	extern fn GetTickCount64() u64;
+	const sep = '\\';
 }
-#else #if #target == "linux" {
-	... Linux-specific logic ...
+#elif #os == .linux || #os == .macos {
+	extern fn clock_gettime(clock: i32, out: &mut Timespec) i32;
+	const sep = '/';
 }
+#else {
+	fn ticks() u64 { 0 }
+}
+</pre>
+	<p>The branch the build takes is read as though it were written where the <span class="pre">#if</span> stands.
+		A branch it does not take is read only to be sure it is well formed, and then dropped. Nothing in it is looked
+		up, so code for another platform may name functions, types and constants that do not exist on this one, and an
+		<span class="pre">extern</span> declared there is not declared at all: the program holds no reference to a
+		symbol that only another platform defines. The braces open no scope. What the taken branch declares belongs to
+		the module, the type or the block around the <span class="pre">#if</span>, and a name may be declared in
+		several branches, only one of which exists.</p>
+	<p id="metafacts">A condition is built from the facts of the build, compared with <span class="pre">==</span> and
+		<span class="pre">!=</span>, and joined with <span class="pre">!</span>, <span class="pre">&amp;&amp;</span>,
+		<span class="pre">||</span> and parentheses. There are no others, and a misspelt fact is an error, never code
+		that is quietly left out:</p>
+	<table>
+		<tr><td><span class="pre">#os</span></td>
+			<td>the target's operating system: <span class="pre">.windows</span>, <span class="pre">.linux</span>,
+				<span class="pre">.macos</span>, <span class="pre">.wasm</span> or <span class="pre">.gpu</span> (a
+				SPIR-V target)</td></tr>
+		<tr><td><span class="pre">#arch</span></td>
+			<td>the target's architecture: <span class="pre">.x64</span>, <span class="pre">.arm64</span>,
+				<span class="pre">.wasm32</span> or <span class="pre">.spirv</span></td></tr>
+		<tr><td><span class="pre">#debug</span></td>
+			<td>a bool: whether this is a debug build</td></tr>
+		<tr><td><span class="pre">#defined("NAME")</span></td>
+			<td>a bool: whether the compiler was given <span class="pre">-D NAME</span> (or <span class="pre">-D NAME=value</span>)</td></tr>
+		<tr><td><span class="pre">#define("NAME")</span></td>
+			<td>a number: the value <span class="pre">-D NAME=value</span> gave, 1 for a bare <span class="pre">-D NAME</span>, 0 for a name never defined</td></tr>
+	</table>
+	<p>A <span class="pre">.name</span> is a member of the fact it is compared with, and is checked against that
+		fact's members. <span class="pre">#defined</span> and <span class="pre">#define</span> take a string literal,
+		since the name is read while the program is read.</p>
+	<p><span class="pre">#if</span> stands wherever a list of items is read: among a module's declarations, in the braces of a
+		struct, trait, enum or actor, in an <span class="pre">extern</span> block, and among a block's statements. It
+		also gives a value, in which case it ends in an <span class="pre">#else</span> and each branch is a block whose
+		value is the chain's. A block of one expression is that expression, so a constant can come from one:</p>
+<pre>
+const wordbits = #if #arch == .x64 || #arch == .arm64 {64} #else {32};
 
+fn level() i32 {
+	#if #define("LEVEL") == 3 { 30 }
+	#elif #define("LEVEL") == 2 { 20 }
+	#else { 0 }
+}
+</pre>
+	<p>An <span class="pre">import</span> is not a declaration of the kind a branch holds: imports belong in a
+		module's header, right after its <span class="pre">mod</span> line. A package's include file keeps its
+		<span class="pre">#if</span> text as written, with the declarations of each branch cut as any are, and a program
+		that imports the package reads it for its own build: it must be compiled with the same <span class="pre">-D</span>
+		options and kind of build as the package.</p>
+	<p id="metaeach"><b><span class="pre">#each</span></b> would generate the same logic once for each entry of a
+		collection:</p>
+<pre>
 #each #x in #table {
 	... some logic ...
 }

@@ -19,7 +19,12 @@
 //   ChunkSource    an actor trait: giveBack(b), the credit coming back
 //   DigestSink[Out] an actor trait: digest(r), where a hash stage sends its digest (Ok)
 //                  or the failure that ended the stream (Err): one answer, always
-//   Link           N buffers one stage sends in: the credit (link.cone)
+//   Link           a stream's window of bytes in flight, its buffers from a Pool: the
+//                  credit, the sending half (link.cone)
+//   Pool           the buffers a connection or pipeline may hold, a cap shared by its
+//                  links (pool.cone)
+//   Inbox, Turn    the receiving half of a link, in a sink whose 'accept' awaits: keeps
+//                  one stream's chunks in order and its 'end' after the last (inbox.cone)
 //   Stage[T]       a generic actor: a stage over any Transform T, one that makes new
 //                  chunks. The codecs are the instances:
 //                    Stage[deflate.Inflater](down, inflater)     inflate a gzip, zlib or raw deflate stream
@@ -35,14 +40,17 @@
 //                    HashStage[cryptohash.Sha1](down, sha1, to)       to: DigestSink[Array[u8, 20]]
 //
 // stage.cone is the longer account: the end and an error travel forward as the
-// call 'end(how)', credit is the buffers, and a pipeline is wired from the sink
-// end back. A corrupt gzip stream reaches the last sink as 'Ending.Failed(e)',
-// with the inflater's own message and its DeflateError inside the AnyError.
+// call 'end(how)', credit is a window of bytes and memory a pool, and a pipeline is
+// wired from the sink end back. A corrupt gzip stream reaches the last sink as
+// 'Ending.Failed(e)', with the inflater's own message and its DeflateError inside
+// the AnyError.
 //
 // A SINK THAT AWAITS inside 'accept' (to write a file, say) is parked there and
-// the actor runs its next message meanwhile, so the 'end' that follows the last
-// chunk can run before that chunk's behaviour has finished. Such a sink counts
-// the chunks it holds and finishes its own end when the last is given back.
+// the actor runs its next message meanwhile, so the next chunk, or the 'end' that
+// follows the last, can start before that chunk is finished. Such a sink keeps an
+// Inbox per stream (inbox.cone): it queues what arrives while a chunk is in hand,
+// gives each buffer back only when its chunk is finished, and lets the 'end' out
+// after the last. A stage that never awaits needs none.
 //
 // The stages are generic actors: 'Stage[T: Transform]' is one declaration, and
 // each T it is made at is an actor of its own, with its own state, messages and
@@ -60,7 +68,9 @@ import streams use *;
 import deflate;
 import zstd;
 import cryptohash;
+import sync use Arc;
 
-// How many buffers a stage's output link owns, and how large each is
-pub const linkBuffers = 4usize;
+// How far ahead a stream's link may run by default (its window, in bytes), and the
+// size a stage makes its chunks at most
+pub const linkWindow = 262144usize;
 pub const linkBytes = 65536usize;

@@ -441,10 +441,12 @@ INode *parseTerm(ParseState *parse) {
     case LifetimeToken:
     case LCurlyToken:
     case TryToken:
+    case HashIfToken:
     {
         INode *node;
         ++parse->genoperand;
         switch (lex->toktype) {
+        case HashIfToken: node = parseHashIfExpr(parse); break;
         case TryToken: node = parseTry(parse); break;
         case IfToken: node = parseIf(parse); break;
         case MatchToken: node = parseMatch(parse); break;
@@ -462,6 +464,18 @@ INode *parseTerm(ParseState *parse) {
     // as 'async' alone is, and the declaration passed over
     case AsyncToken:
         parseBehaviourWords("a function's body");
+        return NULL;
+    // A fact of the build is read in a '#if' condition; a '#elif' or '#else' continues a '#if'
+    case HashOsToken:
+    case HashArchToken:
+    case HashDebugToken:
+    case HashDefinedToken:
+    case HashDefineToken:
+        parseMetaFactStray();
+        return NULL;
+    case HashElifToken:
+    case HashElseToken:
+        parseMetaStray(parse);
         return NULL;
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
