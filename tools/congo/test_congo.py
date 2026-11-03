@@ -488,8 +488,8 @@ class Scenarios(unittest.TestCase):
             import stdio use *;
 
             fn main() i32 {
-              if isDefined("FAST") {print <- "fast ";} else {print <- "slow ";}
-              print <- definedInt("LEVEL");
+              #if #defined("FAST") {print <- "fast ";} #else {print <- "slow ";}
+              print <- #define("LEVEL");
               print <- "\\n";
               0i32
             }
@@ -3200,7 +3200,7 @@ class BuildCache(unittest.TestCase):
             import mid;
 
             fn main() i32 {
-              stdio.print <- mid.twice() + definedInt("N");
+              stdio.print <- mid.twice() + #define("N");
               stdio.print <- "\\n";
               0i32
             }

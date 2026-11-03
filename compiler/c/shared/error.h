@@ -459,8 +459,7 @@ enum ErrorCode {
     ErrorBoolNotNbr = 1238,     // A bool where a number is wanted: a bool converts to a number only explicitly, 'T.from(b)'
     ErrorPtrSizedAs = 1257,     // 'as' between usize or isize and a fixed-width number: a pointer's width differs by target, so it converts, 'T.from(x)'
 
-    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
-    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+    // 1239 was ErrorDefineName (isDefined, definedInt), retired with them
 
     // Invariant lifetimes (ir/types/lifetime.h)
     ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained

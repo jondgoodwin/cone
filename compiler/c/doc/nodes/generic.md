@@ -1194,7 +1194,7 @@ alone, as before.
 A `lazy` parameter, and a macro method's `self`, are substituted whole: what
 makes `twice[bump()]`, its parameter `lazy`, call `bump()` twice. It is also what
 lets an argument go unevaluated: core's `assertDebug[cond: lazy bool]` puts
-`cond` inside `if isDebugBuild() {...}`, so a release build never runs it.
+`cond` inside `#if #debug {...}`, so a release build never runs it.
 
 **A parameter typed by a trait is refused**, at name resolution, as
 `ErrorGenParmConstr` (`macroParmTrait`): `[a: Ordered]` or an instance of a
