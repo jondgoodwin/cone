@@ -11,7 +11,7 @@ pub const BvhLeafSize = 4usize;
 const BvhBins = 12usize;
 
 fn triBounds(verts: &List[Vec3], idx: &List[u32], t: usize) Aabb3 {
-  Aabb3.empty().enclose(*verts[usize.from(*idx[3usize * t])]).enclose(*verts[usize.from(*idx[3usize * t + 1usize])])
+  Aabb3().enclose(*verts[usize.from(*idx[3usize * t])]).enclose(*verts[usize.from(*idx[3usize * t + 1usize])])
     .enclose(*verts[usize.from(*idx[3usize * t + 2usize])])
 }
 
@@ -34,8 +34,8 @@ pub fn edgeIsActive(t: Tri, nb: Tri) bool {
 // that runs the other way in another triangle. An edge with no partner is active.
 fn computeEdgeFlags(verts: &List[Vec3], idx: &List[u32]) List[u8] {
   let nt = idx.len() / 3usize;
-  var owner = Dict[u64, u32].empty();
-  var flags = List[u8].empty();
+  var owner = Dict[u64, u32]();
+  var flags = List[u8]();
   var t = 0usize;
   while t < nt { flags.push(7u8); t = t + 1usize; }
   t = 0usize;
@@ -79,8 +79,8 @@ struct Job {
 pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
   var p = Prim.blank(KMesh);
   let nt = indices.len() / 3usize;
-  var boxes = List[Aabb3].empty();
-  var cents = List[Vec3].empty();
+  var boxes = List[Aabb3]();
+  var cents = List[Vec3]();
   var t = 0usize;
   while t < nt {
     let b = triBounds(&verts, &indices, t);
@@ -88,10 +88,10 @@ pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
     cents.push(b.center());
     t = t + 1usize;
   }
-  var order = List[u32].empty();
+  var order = List[u32]();
   t = 0usize;
   while t < nt { order.push(u32.from(t)); t = t + 1usize; }
-  var stack = List[Job].empty();
+  var stack = List[Job]();
   if nt > 0usize { stack.push(Job(0usize, nt, -1i32, false)); }
   while stack.len() > 0usize {
     let job = *stack[stack.len() - 1usize];
@@ -102,8 +102,8 @@ pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
       pn.first = u32.from(me);
       p.bvh.set(usize.from(job.parent), pn);
     }
-    var bb = Aabb3.empty();
-    var cb = Aabb3.empty();
+    var bb = Aabb3();
+    var cb = Aabb3();
     var k = job.lo;
     while k < job.hi {
       bb = bb.union(*boxes[usize.from(*order[k])]);
@@ -125,10 +125,10 @@ pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
         isLeaf = count <= 16usize;
         split = job.lo + count / 2usize;
       } else {
-        var binBox = List[Aabb3].empty();
-        var binCount = List[usize].empty();
+        var binBox = List[Aabb3]();
+        var binCount = List[usize]();
         var b = 0usize;
-        while b < BvhBins { binBox.push(Aabb3.empty()); binCount.push(0usize); b = b + 1usize; }
+        while b < BvhBins { binBox.push(Aabb3()); binCount.push(0usize); b = b + 1usize; }
         k = job.lo;
         while k < job.hi {
           let ti = usize.from(*order[k]);
@@ -143,8 +143,8 @@ pub fn meshPrim(verts: List[Vec3], indices: List[u32]) Prim {
         var bestBin = 0usize;
         var s = 0usize;
         while s + 1usize < BvhBins {
-          var lb = Aabb3.empty();
-          var rb = Aabb3.empty();
+          var lb = Aabb3();
+          var rb = Aabb3();
           var ln = 0usize;
           var rn = 0usize;
           b = 0usize;
@@ -212,7 +212,7 @@ fn boxesOverlap(lo: Vec3, hi: Vec3, b: Aabb3) bool {
 // space) whose boxes meet 'lb'
 pub fn meshTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List[Tri], flags: &mut List[u8]) {
   if p.bvh.len() == 0usize { return; }
-  var stack = List[usize].empty();
+  var stack = List[usize]();
   stack.push(0usize);
   while stack.len() > 0usize {
     let ni = *stack[stack.len() - 1usize];
@@ -226,7 +226,7 @@ pub fn meshTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut List
         var k = usize.from(nd.first);
         while k < usize.from(nd.first + nd.count) {
           let t = meshTriangle(p, k);
-          let tb = Aabb3.empty().enclose(t.a).enclose(t.b).enclose(t.c);
+          let tb = Aabb3().enclose(t.a).enclose(t.b).enclose(t.c);
           if boxesOverlap(tb.min, tb.max, lb) { ids.push(*p.triId[k]); tris.push(t); flags.push(*p.edgeActive[k]); }
           k = k + 1usize;
         }
@@ -241,7 +241,7 @@ pub fn refitMesh(p: &mut Prim) {
   while i > 0usize {
     i = i - 1usize;
     var nd = *p.bvh[i];
-    var b = Aabb3.empty();
+    var b = Aabb3();
     if nd.count == 0u32 {
       let l = *p.bvh[i + 1usize];
       let r = *p.bvh[usize.from(nd.first)];
@@ -321,7 +321,7 @@ pub fn heightTrianglesIn(p: &Prim, lb: Aabb3, ids: &mut List[u32], tris: &mut Li
       var s = 0usize;
       while s < 2usize {
         let t = heightCellTriangle(p, i, j, s == 1usize);
-        let tb = Aabb3.empty().enclose(t.a).enclose(t.b).enclose(t.c);
+        let tb = Aabb3().enclose(t.a).enclose(t.b).enclose(t.c);
         if boxesOverlap(tb.min, tb.max, lb) { ids.push(u32.from(2usize * cell + s)); tris.push(t); flags.push(heightEdgeFlags(p, i, j, s == 1usize)); }
         s = s + 1usize;
       }

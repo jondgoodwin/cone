@@ -17,7 +17,7 @@
 // allocation does is tests/nomemory.cone's and tests/overflow.cone's.
 //
 // An allocation held in a local keeps its scratch alive: 'consume(a)',
-// '{ imm b = a; }', 'a <-> other' and 'a = Arena.empty()' while one is still
+// '{ imm b = a; }', 'a <-> other' and 'a = Arena()' while one is still
 // used are refused (test/cases/region/region_flow_arena_freeze.cone). It
 // loans nothing else of the scratch, so several live at once and a function
 // lent the scratch may allocate into it twice for its caller (allocForCaller).
@@ -27,7 +27,7 @@
 //
 //   struct Holder { pub r &mut Pt; }
 //   fn field() Holder {
-//     mut a = Arena.empty();
+//     mut a = Arena();
 //     Holder(a.alloc(Pt(1, 2)));   // a borrow in a field of a returned value
 //   }
 //
@@ -62,7 +62,7 @@ struct Watches {
 
 // Values that are made and read in a scratch, and never leave it
 fn readBack() i64 {
-  var s = Arena.empty();
+  var s = Arena();
   let p = s.alloc(Pt(3, 4));
   let q = s.alloc(Pt(p.x + 1, p.y + 1));
   p.x + q.y
@@ -73,7 +73,7 @@ fn getX(p: &Pt) i64 { p.x }
 
 // Borrows passed down to functions that write and read through them
 fn passDown() i64 {
-  var s = Arena.empty();
+  var s = Arena();
   let p = s.alloc(Pt(1, 2));
   bump(p);
   bump(p);
@@ -83,7 +83,7 @@ fn passDown() i64 {
 // A value of the scratch refers to others of it, built with the reference
 // and then pointed at another by assignment
 fn siblings() i64 {
-  var s = Arena.empty();
+  var s = Arena();
   let x = s.alloc(Fin(1));
   let w = s.alloc(Watches(2, x));
   let y = s.alloc(Fin(3));
@@ -93,11 +93,11 @@ fn siblings() i64 {
 
 // A shorter-lived scratch's value refers into a longer-lived one's
 fn innerRefersOuter() i64 {
-  var outer = Arena.empty();
+  var outer = Arena();
   let keep = outer.alloc(Fin(1));
   var seen = 0i64;
   {
-    var inner = Arena.empty();
+    var inner = Arena();
     let w = inner.alloc(Watches(3, keep));
     seen = w.r.n;
   }
@@ -107,14 +107,14 @@ fn innerRefersOuter() i64 {
 
 // A callee with a scratch of its own, handed a borrow into its caller's
 fn helper(up: &mut Fin) i64 {
-  var mine = Arena.empty();
+  var mine = Arena();
   let w = mine.alloc(Watches(2, up));
   let f = mine.alloc(Fin(3));
   w.r.n + f.n
 }
 
 fn nestedCalls() i64 {
-  var s = Arena.empty();
+  var s = Arena();
   let f = s.alloc(Fin(1));
   helper(f) * 10 + f.n
 }
@@ -124,7 +124,7 @@ fn nestedCalls() i64 {
 fn make(s: &mut Arena, n: i64) &mut Fin { s.alloc(Fin(n)) }
 
 fn allocForCaller() i64 {
-  var s = Arena.empty();
+  var s = Arena();
   let x = make(&mut s, 4);
   let y = make(&mut s, 5);
   x.n * 10 + y.n
@@ -132,7 +132,7 @@ fn allocForCaller() i64 {
 
 // An early return ends the scratch too, with what it held so far
 fn earlyReturn(stop: bool) i64 {
-  var s = Arena.empty();
+  var s = Arena();
   s.alloc(Fin(1));
   if stop { return 7; }
   s.alloc(Fin(2));
@@ -144,7 +144,7 @@ fn earlyReturn(stop: bool) i64 {
 fn perPass() {
   var i = 1i64;
   while i <= 3i64 {
-    var s = Arena.empty();
+    var s = Arena();
     s.alloc(Fin(i));
     s.alloc(Fin(i + 4i64));
     i = i + 1i64;

@@ -32,7 +32,7 @@
 //   classSize(c), page, largestClass, classCount        (SIZE CLASSES)
 //   osBlocks(), osBytes() what the pool holds from the OS now
 //
-//   IoBuf.empty()         a buffer with no block, capacity 0      (BUFFERS)
+//   IoBuf()         a buffer with no block, capacity 0      (BUFFERS)
 //   b.len()  b.capacity()  b.room()  b.isEmpty()
 //   b.view()              the bytes it holds, '&Array[u8]'
 //   b.spare()             the room after them, '&mut Array[u8]', to fill
@@ -78,12 +78,12 @@
 // as it comes back, and nothing clears it. A block never used before is
 // zeroed by the OS, but for its first 16 bytes, which the stock has linked.
 //
-// IoBuf.empty() is a buffer with no block, from no pool, which does nothing
+// IoBuf() is a buffer with no block, from no pool, which does nothing
 // when it dies: what a buffer slot holds when it holds none (a read of no
 // room, the end of a stream), and the start of a buffer that 'popFront' or a
 // refused 'push' may or may not fill in:
 //
-//   var b = IoBuf.empty();
+//   var b = IoBuf();
 //   match chain.popFront() {
 //     case let Some(s) {b = s;}
 //     case is None[IoBuf] {...}
@@ -290,7 +290,7 @@ fn outOfMemory(file: &Array[u8], line: u32) {
 // moved, never copied; its death gives the block back to the pool. It
 // declares Sendable, a promise taken on trust, for its block's raw pointer:
 // the block is its alone while it lives (see the package's header, BUFFERS)
-pub struct IoBuf is Move, Sendable {
+pub struct IoBuf is Default, Move, Sendable {
   data: *u8;
   used: usize;
   cap: usize;
@@ -300,12 +300,12 @@ pub struct IoBuf is Move, Sendable {
   // holds size, or a block of its own from the OS when size is over 1 MiB.
   // Out of memory (the bound on bytes held is reached, or the OS refuses) is
   // a panic at the caller's line
-  pub fn init(self: &new, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
+  pub fn initSized overload init(self: &new, size: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     *self = acquire(size, file, line);
   }
 
   // A buffer with no block: capacity 0, from no pool
-  pub fn empty() IoBuf {IoBuf(null, 0usize, 0usize)}
+  pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize);}
 
   pub fn len(self: &) usize {used}
   pub fn capacity(self: &) usize {cap}

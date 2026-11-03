@@ -36,7 +36,7 @@ fn pageText(target: &str) &'static Array[u8] {
 fn answer(drv: &mut Driver, e: &mut Event) {
   let body = pageText(e.request.target.view());
   if body.len == 0usize {
-    drv.respond(e.req, ResponseHead.make(404u16), BodyLength.empty());
+    drv.respond(e.req, ResponseHead.make(404u16), BodyLength());
     return;
   }
   var h = ResponseHead.make(200u16);
@@ -76,11 +76,11 @@ fn fetchAll(drv: &mut Driver, lp: &mut Loop, port: u16, targets: &Array[&str], s
   let conn = drv.connect(lp, "127.0.0.1", port, Sink.Here(tokConn));
   var next = 0usize;
   var inFlight = false;
-  var body = String.empty();
-  var events = List[Event].empty();
+  var body = String();
+  var events = List[Event]();
   while next < targets.len || inFlight {
     if !inFlight && drv.isIdle(conn) {
-      drv.request(lp, conn, RequestHead.get(targets[next], "127.0.0.1"), BodyLength.empty(), Sink.Here(10u64 + u64.from(next)));
+      drv.request(lp, conn, RequestHead.get(targets[next], "127.0.0.1"), BodyLength(), Sink.Here(10u64 + u64.from(next)));
       printStr("GET ");
       printStr(targets[next]);
       printStr("\n");
@@ -159,7 +159,7 @@ fn serve(a: ServerArgs) u64 {
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make());
   a.portTx.send(listenOn(&mut drv, &mut lp));
-  var events = List[Event].empty();
+  var events = List[Event]();
   var served = 0u64;
   while !a.stop.load() {
     drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
@@ -244,8 +244,8 @@ fn main() {
     let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
     printStr("GET /about, its events to a channel\n");
     let before = finals(&drv);
-    drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength.empty(), Sink.Chan(50u64, tx));
-    var events = List[Event].empty();
+    drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength(), Sink.Chan(50u64, tx));
+    var events = List[Event]();
     let until = Instant.now() + Duration.fromSeconds(3i64);
     // Driven until its final answer has gone into the channel
     while (finals(&drv) == before || drv.held() > 0usize) && Instant.now() < until {

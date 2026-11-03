@@ -112,7 +112,7 @@ fn errText(e: &HttpError) String {
 }
 
 fn drain(c: &mut Connection, release: bool) String {
-  var log = String.empty();
+  var log = String();
   var going = true;
   while going {
     match c.pollEvent() {
@@ -193,7 +193,7 @@ fn peerWith(fc: FrameConfig, client: bool) Peer {
 fn rawClient(s: &mut Connection, now: Instant) Peer {
   var p = peerWith(FrameConfig.make(), true);
   s.handleInput(buf("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), now);
-  let w = p.w.settings(List[Setting].empty().view());
+  let w = p.w.settings(List[Setting]().view());
   send(&mut p, s, now);
   p
 }
@@ -217,20 +217,20 @@ fn sendRaw(c: &mut Connection, kind: u8, flags: u8, stream: u32, payload: &'p Ar
 }
 
 fn requestBlock(p: &mut Peer, path: &str) List[u8] {
-  var f = List[HeaderField].empty();
+  var f = List[HeaderField]();
   f.push(HeaderField.make(":method", "GET"));
   f.push(HeaderField.make(":scheme", "https"));
   f.push(HeaderField.make(":authority", "example.com"));
   f.push(HeaderField.make(":path", path));
-  var out = List[u8].empty();
+  var out = List[u8]();
   p.enc.encode(f.view(), &mut out);
   out
 }
 
 fn statusBlock(p: &mut Peer, status: &str) List[u8] {
-  var f = List[HeaderField].empty();
+  var f = List[HeaderField]();
   f.push(HeaderField.make(":status", status));
-  var out = List[u8].empty();
+  var out = List[u8]();
   p.enc.encode(f.view(), &mut out);
   out
 }
@@ -250,7 +250,7 @@ fn heard(p: &mut Peer, c: &mut Connection, now: Instant) String {
     p.inbox.advance(p.skip);
     p.skip = 0usize;
   }
-  var log = String.empty();
+  var log = String();
   var going = true;
   while going {
     match p.r.next(&mut p.inbox) {
@@ -280,7 +280,7 @@ fn frameText(p: &mut Peer, f: Frame, log: &mut String) {
       log.append("HEADERS ");
       log.appendUInt(u64.from(h.stream));
       if h.endStream {log.append(" end");}
-      var fields = List[HeaderField].empty();
+      var fields = List[HeaderField]();
       match p.dec.decode(h.block.view(), &mut fields) {
         case let Ok(n) {
           var i = 0usize;
@@ -407,7 +407,7 @@ fn clientQueue() {
   expectUInt(u64.from(c.peerMaxConcurrentStreams()), 2u64, "the client has the server's limit");
   var sent = 0u32;
   while c.canSendRequest() {
-    let id = c.sendRequest(req("GET", "/q"), BodyLength.empty());
+    let id = c.sendRequest(req("GET", "/q"), BodyLength());
     sent = sent + 1u32;
   }
   expectUInt(u64.from(sent), 5u64, "two open and three queued, then canSendRequest says no");
@@ -422,7 +422,7 @@ fn clientQueue() {
     var going = true;
     while going {
       match s.pollEvent() {
-        case let Request(r) {s.sendResponse(r.stream, ResponseHead.make(200u16), BodyLength.empty());}
+        case let Request(r) {s.sendResponse(r.stream, ResponseHead.make(200u16), BodyLength());}
         case let End(e) {}
         else {going = false;}
       }
@@ -550,10 +550,10 @@ fn emptyFrames() {
   let h0 = heard(&mut p, &mut s, at(0));
   let b = requestBlock(&mut p, "/e");
   p.w.headers(1u32, b.view(), false);
-  p.w.data(1u32, IoBuf.empty(), false);
+  p.w.data(1u32, IoBuf(), false);
   send(&mut p, &mut s, at(1));
   expect(!s.isClosed(), "one empty DATA (maxEmptyFrames) passes");
-  p.w.data(1u32, IoBuf.empty(), false);
+  p.w.data(1u32, IoBuf(), false);
   send(&mut p, &mut s, at(1));
   expect(has(&heard(&mut p, &mut s, at(1)), "GOAWAY 1 ENHANCE_YOUR_CALM"), "a second in a row: GOAWAY ENHANCE_YOUR_CALM");
 }
@@ -567,12 +567,12 @@ fn controlFlood(ping: bool) {
   let h0 = heard(&mut p, &mut s, at(0));       // what the server had queued is taken
   var k = 0u32;
   while k < 100u32 {
-    if ping {let w = p.w.ping(u64.from(k), false);} else {let w = p.w.settings(List[Setting].empty().view());}
+    if ping {let w = p.w.ping(u64.from(k), false);} else {let w = p.w.settings(List[Setting]().view());}
     k = k + 1u32;
   }
   send(&mut p, &mut s, at(1));
   expect(!s.isClosed(), "100 answers queued untaken: maxQueuedControlFrames, allowed");
-  if ping {let w = p.w.ping(999u64, false);} else {let w = p.w.settings(List[Setting].empty().view());}
+  if ping {let w = p.w.ping(999u64, false);} else {let w = p.w.settings(List[Setting]().view());}
   send(&mut p, &mut s, at(1));
   expect(s.isClosed(), "the 101st: the connection ends");
   let h = heard(&mut p, &mut s, at(1));
@@ -601,7 +601,7 @@ fn peerFrameSize() {
   var fc = FrameConfig.make();
   fc.maxFrameSize = 32768usize;           // the test server's reader takes what it will advertise
   var p = peerWith(fc, false);
-  var v = List[Setting].empty();
+  var v = List[Setting]();
   v.push(Setting(settingInitialWindowSize, 1048576u32));
   let w0 = p.w.settings(v.view());
   let w1 = p.w.windowUpdate(0u32, 1000000u32);
@@ -611,7 +611,7 @@ fn peerFrameSize() {
   c.finish(id);
   let h1 = heard(&mut p, &mut c, at(1));
   expect(has(&h1, "DATA 1 16384;DATA 1 16384;DATA 1 7232 end;"), "cut at the default 16384");
-  var v2 = List[Setting].empty();
+  var v2 = List[Setting]();
   v2.push(Setting(settingMaxFrameSize, 32768u32));
   let w2 = p.w.settings(v2.view());
   send(&mut p, &mut c, at(2));
@@ -630,19 +630,19 @@ fn headerList() {
   var s = Connection.server(Config.make(), at(0));
   var p = rawClient(&mut s, at(0));
   let h0 = heard(&mut p, &mut s, at(0));
-  var f = List[HeaderField].empty();
+  var f = List[HeaderField]();
   f.push(HeaderField.make(":method", "GET"));
   f.push(HeaderField.make(":scheme", "https"));
   f.push(HeaderField.make(":authority", "example.com"));
   f.push(HeaderField.make(":path", "/h"));
-  var big = String.empty();
+  var big = String();
   var k = 0usize;
   while k < 20000usize {
     big.append("v");
     k = k + 1usize;
   }
   f.push(HeaderField.make("x-big", big.view()));
-  var blk = List[u8].empty();
+  var blk = List[u8]();
   p.enc.encode(f.view(), &mut blk);
   p.w.headers(1u32, blk.view(), true);
   send(&mut p, &mut s, at(1));
@@ -654,12 +654,12 @@ fn headerList() {
   expectStr(drain(&mut s, true).view(), "req 3;end 3;", "the connection goes on, its HPACK tables in step");
 
   // The HPACK bomb: a 4 KB entry referred to again and again
-  var g = List[HeaderField].empty();
+  var g = List[HeaderField]();
   g.push(HeaderField.make(":method", "GET"));
   g.push(HeaderField.make(":scheme", "https"));
   g.push(HeaderField.make(":authority", "example.com"));
   g.push(HeaderField.make(":path", "/bomb"));
-  var v4 = String.empty();
+  var v4 = String();
   k = 0usize;
   while k < 4000usize {
     v4.append("w");
@@ -670,7 +670,7 @@ fn headerList() {
     g.push(HeaderField.make("x-bomb", v4.view()));
     k = k + 1usize;
   }
-  var bomb = List[u8].empty();
+  var bomb = List[u8]();
   p.enc.encode(g.view(), &mut bomb);
   expect(bomb.len() < 4200usize, "the bomb's block is small");
   p.w.headers(5u32, bomb.view(), true);
@@ -683,20 +683,20 @@ fn headerList() {
 fn clientHeaderList() {
   var c = Connection.client(Config.make(), at(0));
   var p = rawServer();
-  let w0 = p.w.settings(List[Setting].empty().view());
+  let w0 = p.w.settings(List[Setting]().view());
   send(&mut p, &mut c, at(0));
-  let id = c.sendRequest(req("GET", "/x"), BodyLength.empty());
+  let id = c.sendRequest(req("GET", "/x"), BodyLength());
   let h1 = heard(&mut p, &mut c, at(1));
-  var f = List[HeaderField].empty();
+  var f = List[HeaderField]();
   f.push(HeaderField.make(":status", "200"));
-  var big = String.empty();
+  var big = String();
   var k = 0usize;
   while k < 20000usize {
     big.append("v");
     k = k + 1usize;
   }
   f.push(HeaderField.make("x-big", big.view()));
-  var blk = List[u8].empty();
+  var blk = List[u8]();
   p.enc.encode(f.view(), &mut blk);
   p.w.headers(1u32, blk.view(), true);
   send(&mut p, &mut c, at(2));
@@ -741,7 +741,7 @@ fn connectionWindow() {
   fc.maxFrameSize = 65536usize;
   var p = peerWith(fc, true);
   s.handleInput(buf("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), at(0));
-  let w0 = p.w.settings(List[Setting].empty().view());
+  let w0 = p.w.settings(List[Setting]().view());
   send(&mut p, &mut s, at(0));
   let h0 = heard(&mut p, &mut s, at(0));
   expect(has(&h0, "SETTINGS 3=100 4=1048576 5=65536 6=16384;"), "the server advertises its windows and frame size");
@@ -755,7 +755,7 @@ fn connectionWindow() {
   var s2 = Connection.server(cfg, at(0));
   var p2 = peerWith(fc, true);
   s2.handleInput(buf("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), at(0));
-  let w1 = p2.w.settings(List[Setting].empty().view());
+  let w1 = p2.w.settings(List[Setting]().view());
   send(&mut p2, &mut s2, at(0));
   let h2 = heard(&mut p2, &mut s2, at(0));
   p2.w.setPeerMaxFrameSize(65536usize);
@@ -785,7 +785,7 @@ fn windowOverflow() {
 fn peerWindows() {
   var c = Connection.client(Config.make(), at(0));
   var p = rawServer();
-  var v = List[Setting].empty();
+  var v = List[Setting]();
   v.push(Setting(settingInitialWindowSize, 100u32));
   let w0 = p.w.settings(v.view());
   send(&mut p, &mut c, at(0));
@@ -795,7 +795,7 @@ fn peerWindows() {
   let h1 = heard(&mut p, &mut c, at(1));
   expect(has(&h1, "DATA 1 100;") && !has(&h1, "DATA 1 900"), "100 bytes, the peer's stream window, and no more");
   expect(c.streamSendWindow(id) == 0i64, "the window is spent");
-  var v2 = List[Setting].empty();
+  var v2 = List[Setting]();
   v2.push(Setting(settingInitialWindowSize, 50u32));
   let w1 = p.w.settings(v2.view());
   send(&mut p, &mut c, at(2));

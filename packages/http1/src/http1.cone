@@ -16,7 +16,7 @@
 //   import time use Instant;
 //
 //   var conn = Connection.client(Config.make(), Instant.now());
-//   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
+//   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength());
 //   while true {                                     // the driver's loop:
 //     send(conn.pollTransmit(now));                  // a Chain: one gather write
 //     if conn.readCredit() >= 65536usize { recv(...) }  // read only with credit
@@ -351,7 +351,7 @@ pub struct Connection is Move {
       headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
       idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
       armHead: false, armExpect: false,
-      closed: false, failed: false, failure: List[Event].empty(),
+      closed: false, failed: false, failure: List[Event](),
       exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64)
   }
 
@@ -494,7 +494,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.Head {return self.readHead();}
       if rs == ReadState.Sized {
-        if remaining == 0u64 {return self.endMessage(Headers.empty());}
+        if remaining == 0u64 {return self.endMessage(Headers());}
         return self.deliver();
       }
       if rs == ReadState.ChunkData {
@@ -530,7 +530,7 @@ pub struct Connection is Move {
       }
       if rs == ReadState.Trailers {return self.readTrailers();}
       if rs == ReadState.UntilClose {
-        if input.len() == 0usize && eof {return self.endMessage(Headers.empty());}
+        if input.len() == 0usize && eof {return self.endMessage(Headers());}
         return self.deliver();
       }
       if rs == ReadState.Done {
@@ -716,7 +716,7 @@ pub struct Connection is Move {
   // connection closed) does nothing; short of a Content-Length is a program
   // error
   pub fn finish(self: &mut, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(Headers.empty(), file, line);
+    self.finishWith(Headers(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body
@@ -972,7 +972,7 @@ pub struct Connection is Move {
     if mode == frameSized {
       rs = ReadState.Sized;
       remaining = n;
-      return if n == 0u64 {BodyLength.empty()} else {BodyLength.sized(n)};
+      return if n == 0u64 {BodyLength()} else {BodyLength.sized(n)};
     }
     if mode == frameChunked {
       rs = ReadState.ChunkSize;
@@ -984,7 +984,7 @@ pub struct Connection is Move {
     }
     rs = ReadState.Sized;
     remaining = 0u64;
-    BodyLength.empty()
+    BodyLength()
   }
 
   // The next piece of a body that has arrived, as Data: a whole segment of
@@ -999,7 +999,7 @@ pub struct Connection is Move {
     if self.blocked() {return Event.Paused;}
     var n = avail;
     if rs != ReadState.UntilClose && remaining < n {n = remaining;}
-    var buf = IoBuf.empty();
+    var buf = IoBuf();
     if u64.from(input.contiguousLen()) <= n {
       match input.popFront() {
         case let Some(s) {buf = s;}
@@ -1105,7 +1105,7 @@ pub struct Connection is Move {
   fn readTrailers(self: &mut) Event {
     if clientRole && input.len() >= 1usize && input.byteAt(0usize) == '\n' {
       input.consume(1usize);
-      return self.endMessage(Headers.empty());
+      return self.endMessage(Headers());
     }
     if input.len() < 2usize {
       if eof {return self.closedMidBody();}
@@ -1113,7 +1113,7 @@ pub struct Connection is Move {
     }
     if input.matchesAt(0usize, "\r\n") {
       input.consume(2usize);
-      return self.endMessage(Headers.empty());
+      return self.endMessage(Headers());
     }
     let len = self.gatherHead();
     if failed {return self.failedEvent();}

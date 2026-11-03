@@ -78,7 +78,7 @@ fn serve(s: &mut Connection, sv: &mut Serving) {
         sv.body.clear();
         sv.requests = sv.requests + 1u64;
         if sv.target.equals("/early") {
-          s.sendResponse(ResponseHead.make(413u16), BodyLength.empty());
+          s.sendResponse(ResponseHead.make(413u16), BodyLength());
         }
       }
       case var Data(d) {
@@ -90,7 +90,7 @@ fn serve(s: &mut Connection, sv: &mut Serving) {
         if sv.head {
           s.sendResponse(ResponseHead.make(200u16), BodyLength.sized(1234u64));
         } else if t == "/204" {
-          s.sendResponse(ResponseHead.make(204u16), BodyLength.empty());
+          s.sendResponse(ResponseHead.make(204u16), BodyLength());
         } else if t == "/echo" {
           s.sendResponse(ResponseHead.make(200u16), BodyLength.unsized());
           var b = IoBuf(sv.body.len() + 1usize);
@@ -129,7 +129,7 @@ struct Got {
   pub failed: bool;
 }
 
-fn got() Got {Got(0u16, String.empty(), false, false, false)}
+fn got() Got {Got(0u16, String(), false, false, false)}
 
 fn read(c: &mut Connection, g: &mut Got) {
   while true {
@@ -170,7 +170,7 @@ fn exchange(c: &mut Connection, s: &mut Connection, sv: &mut Serving, head: Requ
     }
     c.finish();
   } else {
-    c.sendRequest(head, BodyLength.empty());
+    c.sendRequest(head, BodyLength());
   }
   var rounds = 0u32;
   while !g.ended && !g.closed && rounds < 10u32 {
@@ -185,7 +185,7 @@ fn exchange(c: &mut Connection, s: &mut Connection, sv: &mut Serving, head: Requ
 fn reuse() {
   var c = Connection.client(Config.make(), at());
   var s = Connection.server(Config.make(), at());
-  var sv = Serving(String.empty(), false, String.empty(), 0u64);
+  var sv = Serving(String(), false, String(), 0u64);
   var wrong = 0u64;
   var n = 0u64;
   while n < 200u64 {
@@ -205,7 +205,7 @@ fn reuse() {
       }
       if !ok {wrong = wrong + 1u64;}
     } else if kind == 2u64 {
-      var text = String.empty();
+      var text = String();
       var i = 0u64;
       while i < n * 3u64 + 1u64 {
         text.appendByte(u8.from(97u64 + (i + n) % 26u64));
@@ -236,7 +236,7 @@ fn closing() {
   {
     var c = Connection.client(Config.make(), at());
     var s = Connection.server(Config.make(), at());
-    var sv = Serving(String.empty(), false, String.empty(), 0u64);
+    var sv = Serving(String(), false, String(), 0u64);
     var g = got();
     var h = RequestHead.get("/get/5", "h");
     h.headers.add("Connection", "close");
@@ -250,11 +250,11 @@ fn closing() {
   {
     var c = Connection.client(Config.make(), at());
     var s = Connection.server(Config.make(), at());
-    var sv = Serving(String.empty(), false, String.empty(), 0u64);
+    var sv = Serving(String(), false, String(), 0u64);
     var g = got();
     exchange(&mut c, &mut s, &mut sv, RequestHead.get("/get/9", "h"), "", false, &mut g);
     expect(c.canSendRequest(), "kept alive");
-    c.handleInput(IoBuf.empty(), at());    // the server closed its end
+    c.handleInput(IoBuf(), at());    // the server closed its end
     var g2 = got();
     read(&mut c, &mut g2);
     expect(g2.closed && !g2.failed, "the server finished while idle: closed, cleanly");
@@ -264,7 +264,7 @@ fn closing() {
     // A request whose body the server answers before reading: both close
     var c = Connection.client(Config.make(), at());
     var s = Connection.server(Config.make(), at());
-    var sv = Serving(String.empty(), false, String.empty(), 0u64);
+    var sv = Serving(String(), false, String(), 0u64);
     var g = got();
     c.sendRequest(RequestHead.make("POST", "/early", "h"), BodyLength.sized(100000u64));
     pump(&mut c, &mut s);
@@ -283,7 +283,7 @@ fn closing() {
   }
   {
     var c = Connection.client(Config.make(), at());
-    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength());
     c.abort();
     var g = got();
     read(&mut c, &mut g);

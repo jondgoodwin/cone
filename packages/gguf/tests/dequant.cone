@@ -22,7 +22,7 @@ fn push16(out: &mut List[u8], v: u32) {
 fn eq(got: f32, want: f64, label: &str) { expectFloat(f64.from(got), want, 0.0, label); }
 
 fn decode(kind: TensorType, bytes: &List[u8], count: usize) List[f32] {
-  var out = List[f32].empty();
+  var out = List[f32]();
   match dequantize(&kind, bytes.view(), count, &mut out) {
     case is Ok {}
     case let Err(e) {
@@ -35,7 +35,7 @@ fn decode(kind: TensorType, bytes: &List[u8], count: usize) List[f32] {
 
 fn main() i32 {
   // -------- the plain float types --------
-  var f = List[u8].empty();
+  var f = List[u8]();
   // F32: 1.0, -2.5
   f.push(0x00u8); f.push(0x00u8); f.push(0x80u8); f.push(0x3fu8);
   f.push(0x00u8); f.push(0x00u8); f.push(0x20u8); f.push(0xc0u8);
@@ -44,7 +44,7 @@ fn main() i32 {
   eq(*f32s[1usize], -2.5, "F32 -2.5");
 
   // F16: 1.0 (0x3c00), -2.0 (0xc000), 0.5 (0x3800), 65504 (0x7bff)
-  var h = List[u8].empty();
+  var h = List[u8]();
   push16(&mut h, 0x3c00u32); push16(&mut h, 0xc000u32); push16(&mut h, 0x3800u32); push16(&mut h, 0x7bffu32);
   let f16s = decode(TensorType.F16, &h, 4usize);
   eq(*f16s[0usize], 1.0, "F16 1");
@@ -53,7 +53,7 @@ fn main() i32 {
   eq(*f16s[3usize], 65504.0, "F16 65504");
 
   // BF16: 1.0 (0x3f80), -1.5 (0xbfc0), 256 (0x4380)
-  var b = List[u8].empty();
+  var b = List[u8]();
   push16(&mut b, 0x3f80u32); push16(&mut b, 0xbfc0u32); push16(&mut b, 0x4380u32);
   let bf = decode(TensorType.BF16, &b, 3usize);
   eq(*bf[0usize], 1.0, "BF16 1");
@@ -61,7 +61,7 @@ fn main() i32 {
   eq(*bf[2usize], 256.0, "BF16 256");
 
   // -------- Q8_0: d = 0.5, qs[j] = j - 16 --------
-  var q8 = List[u8].empty();
+  var q8 = List[u8]();
   push16(&mut q8, 0x3800u32);
   var j = 0i32;
   while j < 32i32 { q8.push(u8.from(j - 16i32)); j = j + 1i32; }
@@ -87,7 +87,7 @@ fn main() i32 {
   eq(*q8two[63usize], -2.0, "Q8_0 two blocks: last");
 
   // -------- Q4_0: d = 2.0, qs[j] = j | ((15 - j) << 4) --------
-  var q4 = List[u8].empty();
+  var q4 = List[u8]();
   push16(&mut q4, 0x4000u32);
   j = 0i32;
   while j < 16i32 { q4.push(u8.from(j | ((15i32 - j) << 4i32))); j = j + 1i32; }
@@ -111,7 +111,7 @@ fn main() i32 {
   //   bytes 4..7  = mn[0..3] | (mn[4..7] >> 4) << 6 = 0|0, 1|64, 2|128, 3|192
   //   bytes 8..11 = (sc[4..7] & 15) | (mn[4..7] & 15) << 4
   //               = 1|(5<<4), 2|(4<<4), 3|(8<<4), 15|(15<<4)
-  var k4 = List[u8].empty();
+  var k4 = List[u8]();
   push16(&mut k4, 0x3c00u32);
   push16(&mut k4, 0x3800u32);
   k4.push(65u8); k4.push(130u8); k4.push(195u8); k4.push(196u8);
@@ -163,7 +163,7 @@ fn main() i32 {
     e = e + 1usize;
   }
   let scales6 = [1, -2, 3, -4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, -16];
-  var k6 = List[u8].empty();
+  var k6 = List[u8]();
   j = 0i32;
   while j < 128i32 { k6.push(ql[usize.from(j)]); j = j + 1i32; }
   j = 0i32;
@@ -187,7 +187,7 @@ fn main() i32 {
   // -------- bad sizes --------
   let tq8 = TensorType.Q8_0;
   let tk4 = TensorType.Q4_K;
-  var out = List[f32].empty();
+  var out = List[f32]();
   match dequantize(&tq8, q8.view(), 33usize, &mut out) {
     case is Ok { expect(false, "33 elements is not whole Q8_0 blocks"); }
     case let Err(er) { expect(er.kind == ErrorKind.BadSize, "33 elements: BadSize"); }

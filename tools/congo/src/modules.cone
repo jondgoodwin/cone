@@ -24,10 +24,10 @@ struct Module {
 }
 
 fn newModule(name: &str, file: &Path, hasParent: bool, parent: usize) Module {
-  var files = List[Path].empty();
+  var files = List[Path]();
   files.push(file.clone());
-  Module(String.from(name), files, List[usize].empty(), hasParent, parent,
-    List[Import].empty(), false, noImport(), List[Line].empty(), false)
+  Module(String.from(name), files, List[usize](), hasParent, parent,
+    List[Import](), false, noImport(), List[Line](), false)
 }
 
 // A file's imports join its module's, each once
@@ -57,14 +57,14 @@ struct Listing {
 }
 
 fn coneFiles(folder: &Path) Listing {
-  var entries = List[fs.DirEntry].empty();
+  var entries = List[fs.DirEntry]();
   match fs.readDir(folder) {
     case var Ok(ok) { entries <-> ok; }
     case let Err(e) {
       fail(fsMessage(&e));
     }
   }
-  var out = Listing(List[Path].empty(), List[Path].empty());
+  var out = Listing(List[Path](), List[Path]());
   var i = 0usize;
   while i < entries.len() {
     let entry = &entries[i];
@@ -88,7 +88,7 @@ fn byName(a: &Named, b: &Named) i32 { a.name.compare(b.name.view()) }
 
 // Give module m its children, sorted by name
 fn setChildren(mods: &mut List[Module], m: usize, kids: &List[usize]) {
-  var named = List[Named].empty();
+  var named = List[Named]();
   var i = 0usize;
   while i < kids.len() {
     let k = *kids[i];
@@ -118,7 +118,7 @@ fn scanFolderModule(mods: &mut List[Module], name: &str, folder: &Path, designat
     case let Ok(h) { addImports(&mut mods[me], &h); }
     case let Err(e) { return Err[usize, String](e.clone()); }
   }
-  var kids = List[usize].empty();
+  var kids = List[usize]();
   let listing = coneFiles(folder);
   var i = 0usize;
   while i < listing.files.len() {
@@ -235,7 +235,7 @@ fn scanPackage(pkg: &Package) Result[List[Module], String] {
     return Err[List[Module], String](cat("package ", pkg.name.view(), " has no ", place.view(),
       ": a package's root module is src/<name>.cone, named as its manifest names it"));
   }
-  var mods = List[Module].empty();
+  var mods = List[Module]();
   if pkg.lone {
     mods.push(newModule(pkg.name.view(), &pkg.src, false, 0usize));
     match scanHeader(&pkg.src) {
@@ -279,13 +279,13 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     return Err[void, String](cat(place.view(), ": ", pkg.name.view(),
       " is marked for the GPU (targets = [\"native\", \"gpu\"]), so all of it is compiled for the GPU already; a gpu/ folder is for a package that is not: move gpu/'s modules into src/, or take \"gpu\" out of targets"));
   }
-  var inSrc = List[usize].empty();
+  var inSrc = List[usize]();
   var i = 0usize;
   while i < mods[0usize].children.len() {
     inSrc.push(*mods[0usize].children[i]);
     i = i + 1usize;
   }
-  var found = List[usize].empty();
+  var found = List[usize]();
   let listing = coneFiles(folder);
   i = 0usize;
   while i < listing.files.len() {
@@ -335,7 +335,7 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     }
     i = i + 1usize;
   }
-  var kids = List[usize].empty();
+  var kids = List[usize]();
   i = 0usize;
   while i < inSrc.len() {
     kids.push(*inSrc[i]);
@@ -366,21 +366,21 @@ fn scanGpuFolder(pkg: &Package, mods: &mut List[Module], folder: &Path) Result[v
     i = i + 1usize;
   }
   let root = &mut mods[0usize];
-  root.children = List[usize].empty();
+  root.children = List[usize]();
   setChildren(mods, 0usize, &kids);
   succeeded()
 }
 
 // Module m and every module inside it
 fn walkSubtree(mods: &List[Module], m: usize) List[usize] {
-  var out = List[usize].empty();
+  var out = List[usize]();
   walkFrom(mods, m, &mut out);
   out
 }
 
 // The modules in walk order: each module, then each of its children's walks
 fn walkOrder(mods: &List[Module]) List[usize] {
-  var out = List[usize].empty();
+  var out = List[usize]();
   walkFrom(mods, 0usize, &mut out);
   out
 }
@@ -436,7 +436,7 @@ struct Step {
 // What a module depends on: each sister it imports or extends, its parent
 // where it imports a name of the parent, and each of its own submodules
 fn edges(mods: &List[Module], reg: &Registry, m: usize) List[Step] {
-  var out = List[Step].empty();
+  var out = List[Step]();
   var sister = 0usize;
   let module = &mods[m];
   if module.hasExtends && sisterNamed(mods, m, module.extended.name.view(), &mut sister) {
@@ -467,7 +467,7 @@ fn stepText(mods: &List[Module], s: &Step) String {
   let from = qualified(mods, s.from);
   let to = qualified(mods, s.to);
   if s.kind == edgeContains { return cat(from.view(), " contains ", to.view()); }
-  var verb = String.empty();
+  var verb = String();
   if s.kind == edgeImports { verb <- "imports"; }
   else if s.kind == edgeExtends { verb <- "extends"; }
   else { verb <- "imports ", s.imp.name.view(), " of"; }
@@ -482,13 +482,13 @@ fn stepText(mods: &List[Module], s: &Step) String {
 // naming it, as the compiler would refuse it (ErrorImportLoop); the
 // compiler's own check is the backstop for a direct conec run.
 fn checkModuleLoops(pkg: &Package, mods: &List[Module], reg: &Registry) Result[void, String] {
-  var state = List[u8].empty();
+  var state = List[u8]();
   var i = 0usize;
   while i < mods.len() {
     state.push(0u8);
     i = i + 1usize;
   }
-  var steps = List[Step].empty();
+  var steps = List[Step]();
   visitModule(pkg, mods, reg, 0usize, &mut state, &mut steps)
 }
 
@@ -508,8 +508,8 @@ fn visitModule(pkg: &Package, mods: &List[Module], reg: &Registry, m: usize,
     if *state[to] == visiting {
       var at = 0usize;
       while steps[at].from != to { at = at + 1usize; }
-      var chain = String.empty();
-      var text = String.empty();
+      var chain = String();
+      var text = String();
       var contains = false;
       var j = at;
       while j < steps.len() {

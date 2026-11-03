@@ -101,11 +101,11 @@ fn settle(lp: &mut Loop, s: &mut Side, out: &mut List[Completion]) {
     } else if c.token == tokRecv {
       s.recvOut = false;
       if c.count() > 0usize {
-        var b = IoBuf.empty();
+        var b = IoBuf();
         b <-> c.buf;
         s.conn.handleInput(b, now);
       } else {
-        s.conn.handleInput(IoBuf.empty(), now);       // the end of the stream, or a failure
+        s.conn.handleInput(IoBuf(), now);       // the end of the stream, or a failure
       }
     } else if c.token == tokSend {
       s.sendsOut = s.sendsOut - 1u32;
@@ -150,9 +150,9 @@ fn serve(a: ServerArgs) ServerReport {
   a.portTx.send(port);
   lp.submit(Op.Accept(listener), Target.Here(tokConnect));
   var s = Side(Handle.none(), Connection.server(Config.make(), Instant.now()), false, 0u32, false);
-  var ans = Answer(0u32, 0u64, 0u64, IoBuf.empty());
+  var ans = Answer(0u32, 0u64, 0u64, IoBuf());
   var rep = ServerReport(0u64, 0u64, 0u64);
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   while true {
     respond(&mut s.conn, &mut ans, &mut rep);
     drive(&mut lp, &mut s);
@@ -186,7 +186,7 @@ fn respond(c: &mut Connection, ans: &mut Answer, rep: &mut ServerReport) {
   }
   // An echo buffer refused earlier goes first
   if ans.held.len() > 0usize {
-    var b = IoBuf.empty();
+    var b = IoBuf();
     b <-> ans.held;
     let n = b.len();
     match c.sendData(b) {
@@ -228,7 +228,7 @@ fn respond(c: &mut Connection, ans: &mut Answer, rep: &mut ServerReport) {
       case var Data(d) {
         // An echo: the buffer that came is the one sent back
         let n = d.buf.len();
-        var b = IoBuf.empty();
+        var b = IoBuf();
         b <-> d.buf;
         match c.sendData(b) {
           case var Some(back) {
@@ -300,7 +300,7 @@ fn client(a: ClientArgs) ClientReport {
     Duration.zero(), 0u64, 0u64, 0u64, 0usize, 0u64);
   lp.submit(Op.Connect(SocketAddr.localhost(a.port)), Target.Here(tokConnect));
   var s = Side(Handle.none(), Connection.client(Config.make(), Instant.now()), false, 0u32, false);
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   var phase = 0u32;          // 0 GETs, 1 POSTs, 2 the large GET, 3 done
   var n = 0u64;              // requests made in this phase
   var inFlight = false;
@@ -404,7 +404,7 @@ fn client(a: ClientArgs) ClientReport {
       if phase == 0u32 {
         var t = String.from("/small/");
         t.appendUInt(n);
-        s.conn.sendRequest(RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty());
+        s.conn.sendRequest(RequestHead.get(t.view(), "127.0.0.1"), BodyLength());
       } else if phase == 1u32 {
         s.conn.sendRequest(RequestHead.make("POST", "/echo", "127.0.0.1"), BodyLength.unsized());
         let len = postLen(n);
@@ -425,7 +425,7 @@ fn client(a: ClientArgs) ClientReport {
         s.conn.finish();
       } else {
         largeAt = Instant.now();
-        s.conn.sendRequest(RequestHead.get("/large", "127.0.0.1"), BodyLength.empty());
+        s.conn.sendRequest(RequestHead.get("/large", "127.0.0.1"), BodyLength());
       }
       inFlight = true;
     }

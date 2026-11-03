@@ -54,15 +54,11 @@ struct NetPass {
 // A run of the kernels over numbered slots, the same for the GPU (each slot
 // a buffer given to the job in order, so its job slot is its number) and
 // for the twin (each slot a list of words)
-struct NetPlan {
+struct NetPlan is Default {
   kinds: List[u32];
   sizes: List[u64];               // words
   starts: List[List[u32]];        // a SlotWords slot's words
   passes: List[NetPass];
-
-  fn empty() NetPlan {
-    NetPlan(List[u32].empty(), List[u64].empty(), List[List[u32]].empty(), List[NetPass].empty())
-  }
 
   fn add(self: &mut, kind: u32, size: u64, words: List[u32]) u32 {
     kinds.push(kind);
@@ -74,9 +70,9 @@ struct NetPlan {
     let n = u64.from(words.len());
     self.add(SlotWords, n, words)
   }
-  fn zeros(self: &mut, n: u64) u32 { self.add(SlotZero, n, List[u32].empty()) }
-  fn scratch(self: &mut, n: u64) u32 { self.add(SlotScratch, n, List[u32].empty()) }
-  fn drawable(self: &mut, n: u64) u32 { self.add(SlotDrawable, n, List[u32].empty()) }
+  fn zeros(self: &mut, n: u64) u32 { self.add(SlotZero, n, List[u32]()) }
+  fn scratch(self: &mut, n: u64) u32 { self.add(SlotScratch, n, List[u32]()) }
+  fn drawable(self: &mut, n: u64) u32 { self.add(SlotDrawable, n, List[u32]()) }
 
   fn pass(self: &mut, kernel: u32, slots: &Array[u32], invocations: u32) {
     var s = List[u32].withCapacity(slots.len);
@@ -143,10 +139,10 @@ const SQuadStarts = 5u32;
 // sample's quad count, both scanned, and the two totals into the plan's
 // last slot (its answer)
 fn planCounts(grid: SampleGrid, tables: &List[u32]) NetPlan {
-  var plan = NetPlan.empty();
+  var plan = NetPlan();
   let cells = grid.cellCount();
   let samples = grid.sampleCount();
-  plan.add(SlotSamples, u64.from(samples), List[u32].empty());
+  plan.add(SlotSamples, u64.from(samples), List[u32]());
   var t = List[u32].withCapacity(tables.len());
   var i = 0usize;
   while i < tables.len() {
@@ -250,11 +246,11 @@ pub struct GridNet {
   // the triangle pairs, so that 'toMesh' gives these triangles back. It
   // waits for the GPU. The buffers stay on the GPU, in the GridNet
   pub fn readBack(self: &mut, device: &mut Device) SurfaceNet {
-    var p = List[u32].empty();
-    var n = List[u32].empty();
-    var ix = List[u32].empty();
+    var p = List[u32]();
+    var n = List[u32]();
+    var ix = List[u32]();
     if !self.readWords(device, &mut p, &mut n, &mut ix) {
-      return netOfWords(grid, &List[u32].empty(), &List[u32].empty(), &List[u32].empty(), 0u32, 0u32);
+      return netOfWords(grid, &List[u32](), &List[u32](), &List[u32](), 0u32, 0u32);
     }
     netOfWords(grid, &p, &n, &ix, vertexCount, triangleCount)
   }
@@ -263,10 +259,10 @@ pub struct GridNet {
   // GPU's own triangles, its index buffer's words as they are. It waits for
   // the GPU; the buffers stay on the GPU
   pub fn readBackMesh(self: &mut, device: &mut Device) mesh.Mesh {
-    var p = List[u32].empty();
-    var n = List[u32].empty();
-    var ix = List[u32].empty();
-    var m = mesh.Mesh.empty();
+    var p = List[u32]();
+    var n = List[u32]();
+    var ix = List[u32]();
+    var m = mesh.Mesh();
     if !self.readWords(device, &mut p, &mut n, &mut ix) { return m; }
     var v = 0usize;
     while v < usize.from(vertexCount) && 3usize * v + 2usize < p.len() && 3usize * v + 2usize < n.len() {
@@ -312,7 +308,7 @@ pub struct GridNet {
     let bn = job.readback(device, sn);
     let bi = job.readback(device, si);
     let ticket = works.submit(device, job, Target.Here(0u64));
-    var done = List[Completion].empty();
+    var done = List[Completion]();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize { return false; }
     let read = done[0usize].ok;
@@ -454,11 +450,11 @@ pub struct GridMesher {
     self.record(device, &mut job, &plan, 0usize);
     let answer = job.readback(device, u32.from(plan.kinds.len() - 1usize));
     let ticket = works.submit(device, job, Target.Here(0u64));
-    var done = List[Completion].empty();
+    var done = List[Completion]();
     works.waitFor(device, ticket, &mut done);
     if done.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
     let ran = done[0usize].ok;
-    let totals = if ran { done[0usize].words(answer) } else { List[u32].empty() };
+    let totals = if ran { done[0usize].words(answer) } else { List[u32]() };
     var kept = List[u32].withCapacity(plan.kinds.len());
     s = 0usize;
     while s < plan.kinds.len() {
@@ -474,7 +470,7 @@ pub struct GridMesher {
 
     // The vertices and the triangles
     let before = plan.passes.len();
-    var outs = List[u32].empty();
+    var outs = List[u32]();
     planMesh(&mut plan, grid, vertices, quads, &mut outs);
     if plan.largest() > MaxBufferWords {
       return GridNet.failed(grid, firstBuffer(buffers));
@@ -490,7 +486,7 @@ pub struct GridMesher {
     }
     self.record(device, &mut job2, &plan, before);
     let ticket2 = works.submit(device, job2, Target.Here(0u64));
-    var done2 = List[Completion].empty();
+    var done2 = List[Completion]();
     works.waitFor(device, ticket2, &mut done2);
     if done2.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
     let ok = done2[0usize].ok;
@@ -514,7 +510,7 @@ pub struct GridMesher {
   // makes and 'readBack' reads. Slow; for tests
   pub fn meshOnTwin(self: &, grid: SampleGrid, samples: &Array[f32]) SurfaceNet {
     var plan = planCounts(grid, &tables);
-    var store = List[List[u32]].empty();
+    var store = List[List[u32]]();
     var s = 0usize;
     while s < plan.kinds.len() {
       store.push(twinWords(&plan, s, samples));
@@ -525,7 +521,7 @@ pub struct GridMesher {
     let vertices = *store[last][0usize];
     let quads = *store[last][1usize];
     let before = plan.passes.len();
-    var outs = List[u32].empty();
+    var outs = List[u32]();
     planMesh(&mut plan, grid, vertices, quads, &mut outs);
     while s < plan.kinds.len() {
       store.push(twinWords(&plan, s, samples));
@@ -567,7 +563,7 @@ fn firstBuffer(list: List[Buffer]) Buffer {
 fn takeApart(done: &mut List[Completion], slots: &Array[u32]) List[Buffer] {
   match done.pop() {
     case var Some(c) { c.buffersIn(slots) }
-    case is None { List[Buffer].empty() }
+    case is None { List[Buffer]() }
   }
 }
 

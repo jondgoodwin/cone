@@ -31,7 +31,7 @@
 // ('region'), and every block comes from it and goes back to it. A construction
 // that names none is handed the heap's ('heapRegion()': the raw blocks layer's
 // 'alloc', 'resize' and 'release', a static object that is never null), so 'List[i64]()' and
-// 'List[i64].empty()' behave as they always have. Another is passed as the
+// 'List[i64]()' behave as they always have. Another is passed as the
 // construction's last argument, 'List[i64](100, r)', where 'r' is a '*MemRegion'.
 // A collection holding others hands them its own region where they are made
 // inside it (a String its List, a Set its Dict), and a block no region can own
@@ -85,7 +85,7 @@
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // Pool[Npc](100)' for its slots. A function a type offers without a receiver
-// makes one too: 'List[i64].empty()', 'List[i64].withCapacity(n)' (never less
+// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (never less
 // than 4), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
@@ -184,9 +184,6 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
       self.cap = room;
     }
   }
-
-  // An empty list: no block until the first value arrives
-  pub fn empty() List { List(null, 0usize, 0usize, heapRegion()) }
 
   // An empty list whose block already has room for n values
   pub fn withCapacity(n: usize) List {
@@ -867,9 +864,6 @@ pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceE
     }
   }
 
-  // An empty deque: no block until the first value arrives
-  pub fn empty() Deque { Deque(null, 0usize, 0usize, 0usize, heapRegion()) }
-
   // An empty deque whose block already has room for n values
   pub fn withCapacity(n: usize) Deque {
     var d = Deque(null, 0usize, 0usize, 0usize, heapRegion());
@@ -1142,11 +1136,9 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     else { *self = String(List[u8](n + 1usize, region)); }
   }
 
-  pub fn empty() String { String(List[u8].empty()) }
-
   // An empty String with room for n bytes (and the NUL after them)
   pub fn withCapacity(n: usize) String {
-    if n == 0usize { return String.empty(); }
+    if n == 0usize { return String(); }
     String(List[u8].withCapacity(n + 1usize))
   }
 
@@ -1193,7 +1185,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
   pub fn join(parts: &Array[String], sep: &str) String {
-    var out = String.empty();
+    var out = String();
     var i = 0usize;
     while i < parts.len {
       if i > 0usize { out.append(sep); }
@@ -1508,7 +1500,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // is none.
   pub fn lines(self: &) List[String] {
     let v = self.raw();
-    var out = List[String].empty();
+    var out = List[String]();
     var start = 0usize;
     var i = 0usize;
     while i < v.len {
@@ -1532,7 +1524,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // third empty; "" is one empty piece
   pub fn split(self: &, sep: u8) List[String] {
     let v = self.raw();
-    var out = List[String].empty();
+    var out = List[String]();
     var start = 0usize;
     var i = 0usize;
     while i < v.len {
@@ -1707,8 +1699,6 @@ pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, 
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
-
-  pub fn empty() Dict { Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose block already has room for n entries without growing
   pub fn withCapacity(n: usize) Dict {
@@ -2222,8 +2212,6 @@ pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesR
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
-
-  pub fn empty() OrderedDict { OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose blocks already have room for n entries without growing
   pub fn withCapacity(n: usize) OrderedDict {
@@ -2765,8 +2753,6 @@ pub struct Set[T: Hash] is Default, ShapeChanging, Sendable, CarriesRegion {
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = Set(Dict[T, Member](n, region));
   }
-
-  pub fn empty() Set { Set(Dict[T, Member].empty()) }
 
   // An empty set whose block already has room for n elements without growing
   pub fn withCapacity(n: usize) Set { Set(Dict[T, Member].withCapacity(n)) }

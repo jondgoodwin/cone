@@ -29,7 +29,7 @@ import cryptohash;
 
 fn words(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
-  var d = List[u8].empty();
+  var d = List[u8]();
   var s = 11u64;
   while d.len() < n {
     s = s * 6364136223846793005u64 + 1442695040888963407u64;
@@ -83,19 +83,19 @@ fn smallRooms() {
   while k < 4usize {
     let room = rooms[k];
     var bad = false;
-    var gz = List[u8].empty();
+    var gz = List[u8]();
     var d = deflate.Deflater.make(deflate.Format.Gzip, 2);
     expect(throughRoom(&mut d, data.view(), room, &mut gz, &mut bad) == Status.Done, "deflate: Done through small rooms");
     expect(gz.view() == deflate.gzipCompress(data.view(), 2).view(), "deflate: rooms do not change the bytes");
-    var back = List[u8].empty();
+    var back = List[u8]();
     var i = deflate.Inflater.make(deflate.Format.Gzip);
     expect(throughRoom(&mut i, gz.view(), room, &mut back, &mut bad) == Status.Done, "inflate: Done through small rooms");
     expect(back.view() == data.view(), "inflate: rooms do not change the bytes");
 
-    var zp = List[u8].empty();
+    var zp = List[u8]();
     var c = zstd.Compressor.make(1);
     expect(throughRoom(&mut c, data.view(), room, &mut zp, &mut bad) == Status.Done, "zstd: Done through small rooms");
-    var zb = List[u8].empty();
+    var zb = List[u8]();
     var z = zstd.Decompressor.make();
     expect(throughRoom(&mut z, zp.view(), room, &mut zb, &mut bad) == Status.Done, "unzstd: Done through small rooms");
     expect(zb.view() == data.view(), "unzstd: rooms do not change the bytes");
@@ -115,7 +115,7 @@ fn pullOnce[T: Transform](t: &mut T, wrote: &mut usize) Status {
 fn doneIsFinal() {
   let data = words(500usize);
   var d = deflate.Deflater.make(deflate.Format.Raw, 2);
-  var out = List[u8].empty();
+  var out = List[u8]();
   var bad = false;
   expect(throughRoom(&mut d, data.view(), 4096usize, &mut out, &mut bad) == Status.Done, "deflate: Done");
   var wrote = 99usize;
@@ -127,18 +127,18 @@ fn doneIsFinal() {
   expectUInt(u64.from(wrote), 0u64, "deflate: and nothing is written");
 
   var inf = deflate.Inflater.make(deflate.Format.Raw);
-  var back = List[u8].empty();
+  var back = List[u8]();
   expect(throughRoom(&mut inf, out.view(), 4096usize, &mut back, &mut bad) == Status.Done, "inflate: Done");
   expect(pullOnce(&mut inf, &mut wrote) == Status.Done, "inflate: a pull after Done says Done");
   expectUInt(u64.from(wrote), 0u64, "inflate: and writes nothing");
 
   var c = zstd.Compressor.make(2);
-  var zp = List[u8].empty();
+  var zp = List[u8]();
   expect(throughRoom(&mut c, data.view(), 4096usize, &mut zp, &mut bad) == Status.Done, "zstd: Done");
   expect(pullOnce(&mut c, &mut wrote) == Status.Done, "zstd: a pull after Done says Done");
   expectUInt(u64.from(wrote), 0u64, "zstd: and writes nothing");
   var z = zstd.Decompressor.make();
-  var zb = List[u8].empty();
+  var zb = List[u8]();
   expect(throughRoom(&mut z, zp.view(), 4096usize, &mut zb, &mut bad) == Status.Done, "unzstd: Done");
   expect(pullOnce(&mut z, &mut wrote) == Status.Done, "unzstd: a pull after Done says Done");
   expectUInt(u64.from(wrote), 0u64, "unzstd: and writes nothing");
@@ -146,11 +146,11 @@ fn doneIsFinal() {
 
 fn failedIsFinal() {
   // Not a gzip file at all
-  var junk = List[u8].empty();
+  var junk = List[u8]();
   var i = 0usize;
   while i < 64usize { junk.push(u8.from((i * 37usize + 5usize) & 255usize)); i += 1usize; }
   var inf = deflate.Inflater.make(deflate.Format.Gzip);
-  var out = List[u8].empty();
+  var out = List[u8]();
   var bad = false;
   expect(throughRoom(&mut inf, junk.view(), 4096usize, &mut out, &mut bad) == Status.Failed, "inflate: junk is Failed");
   var wrote = 99usize;
@@ -160,13 +160,13 @@ fn failedIsFinal() {
   // A good prefix, then damage: what came out before the damage is right
   let data = words(200000usize);
   let packed = deflate.zlibCompress(data.view(), 2);
-  var bent = List[u8].empty();
+  var bent = List[u8]();
   bent.appendSlice(packed.view());
   let at = bent.len() / 2usize;
   bent.set(at, *bent[at] ^ 0xFFu8);
   bent.set(at + 1usize, *bent[at + 1usize] ^ 0xFFu8);
   var inf2 = deflate.Inflater.make(deflate.Format.Zlib);
-  var got = List[u8].empty();
+  var got = List[u8]();
   let st = throughRoom(&mut inf2, bent.view(), 4096usize, &mut got, &mut bad);
   expect(st == Status.Failed, "inflate: damaged data is Failed");
   expect(got.len() <= data.len(), "inflate: no more came out than there was");
@@ -177,7 +177,7 @@ fn failedIsFinal() {
   expect(!bad, "inflate: a failing pull stays in its room");
 
   var zj = zstd.Decompressor.make();
-  var zout = List[u8].empty();
+  var zout = List[u8]();
   expect(throughRoom(&mut zj, junk.view(), 4096usize, &mut zout, &mut bad) == Status.Failed, "unzstd: junk is Failed");
   expect(pullOnce(&mut zj, &mut wrote) == Status.Failed, "unzstd: a pull after Failed says Failed");
   expectUInt(u64.from(wrote), 0u64, "unzstd: and writes nothing");
@@ -231,18 +231,18 @@ fn stage(t: &<mut Transform, input: &Array[u8], out: &mut List[u8]) Status {
 fn virtualStage() {
   let data = words(50000usize);
   var d = deflate.Deflater.make(deflate.Format.Gzip, 1);
-  var packed = List[u8].empty();
+  var packed = List[u8]();
   expect(stage(&mut d, data.view(), &mut packed) == Status.Done, "stage: a Deflater behind &<mut Transform is Done");
   var inf = deflate.Inflater.make(deflate.Format.Gzip);
-  var back = List[u8].empty();
+  var back = List[u8]();
   expect(stage(&mut inf, packed.view(), &mut back) == Status.Done, "stage: an Inflater behind &<mut Transform is Done");
   expect(back.view() == data.view(), "stage: gzip through the virtual stage round-trips");
 
   var c = zstd.Compressor.make(2);
-  var zp = List[u8].empty();
+  var zp = List[u8]();
   expect(stage(&mut c, data.view(), &mut zp) == Status.Done, "stage: a Compressor behind &<mut Transform is Done");
   var z = zstd.Decompressor.make();
-  var zb = List[u8].empty();
+  var zb = List[u8]();
   expect(stage(&mut z, zp.view(), &mut zb) == Status.Done, "stage: a Decompressor behind &<mut Transform is Done");
   expect(zb.view() == data.view(), "stage: zstd through the virtual stage round-trips");
 }
@@ -253,7 +253,7 @@ fn oneStatus() {
   var d = deflate.Deflater.make(deflate.Format.Raw, 2);
   d.feed(data.view());
   d.finish();
-  var out = List[u8].empty();
+  var out = List[u8]();
   let a: Status = d.pull(&mut out, 100usize);
   let b: deflate.Status = a;
   let c: zstd.Status = b;
@@ -287,7 +287,7 @@ fn same(a: &Array[u8], b: &Array[u8]) bool { a == b }
 fn secondFinish() {
   let data = words(1000usize);
   let more = words(300usize);
-  var all = List[u8].empty();
+  var all = List[u8]();
   all.appendSlice(data.view());
   all.appendSlice(more.view());
 
@@ -361,7 +361,7 @@ fn drainRoom[T: Transform](t: &mut T, room: usize, out: &mut List[u8]) Status {
 // say MoreOutput, 8 the end was not Done, 16 the tail is missing or differs.
 fn exactFill[T: Transform](probe: &mut T, subj: &mut T, first: &Array[u8], rest: &Array[u8]) u32 {
   var mask = 0u32;
-  var want = List[u8].empty();
+  var want = List[u8]();
   probe.feed(first);
   var big = IoBuf(262144usize);
   let ps = probe.pull(&mut big);
@@ -373,7 +373,7 @@ fn exactFill[T: Transform](probe: &mut T, subj: &mut T, first: &Array[u8], rest:
   probe.finish();
   if drainRoom(probe, 4096usize, &mut want) != Status.Done { mask = mask | 8u32; }
 
-  var got = List[u8].empty();
+  var got = List[u8]();
   subj.feed(first);
   var bad = false;
   let st = pullRoom(subj, n, &mut got, &mut bad);

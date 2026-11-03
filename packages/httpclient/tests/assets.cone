@@ -85,11 +85,11 @@ struct Srv {
 
 fn server() Srv {
   Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
-    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
-    reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
-    targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
-    cookies: List[String].empty(), streams: List[httpconn.ReqId].empty(), sent: List[u64].empty(),
-    totals: List[u64].empty())
+    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String](),
+    reqs: List[httpconn.ReqId](), conns: List[httpconn.ConnId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), auths: List[String](),
+    cookies: List[String](), streams: List[httpconn.ReqId](), sent: List[u64](),
+    totals: List[u64]())
 }
 
 fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
@@ -279,7 +279,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
     sv.conns.push(e.conn);
     sv.methods.push(e.request.method);
     sv.targets.push(e.request.target.clone());
-    sv.bodies.push(String.empty());
+    sv.bodies.push(String());
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } else if kind == httpconn.EventKind.Data {
@@ -303,7 +303,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   cl.pump(lp, out);
   sv.drv.pump(lp, &uni sevs);
   var limit = until;
@@ -312,7 +312,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], unt
   let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -333,7 +333,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], unt
 // The server's every connection reset, and its buffers home
 fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   sv.drv.pump(lp, &uni sevs);
 }
 
@@ -361,8 +361,8 @@ struct Seen {
 }
 
 fn seen() Seen {
-  Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero())
+  Seen(status: 0u16, body: String(), url: String(), kinds: String(), finals: 0u64,
+    last: EventKind.Done, failure: String(), stage: Stage.Url, timing: Timing.zero())
 }
 
 fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
@@ -387,7 +387,7 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
@@ -413,7 +413,7 @@ fn fetchSeen(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
 
 // Drive for a while
 fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &uni out, until);
@@ -446,14 +446,14 @@ struct Tier {
 }
 
 fn tier() Tier {
-  var gs = List[CancelGroup].empty();
+  var gs = List[CancelGroup]();
   var r = 0u32;
   while r < regions {
     gs.push(CancelGroup.make());
     r = r + 1u32;
   }
-  Tier(List[FetchId].empty(), List[Intent].empty(), List[i64].empty(), List[u32].empty(),
-    List[u32].empty(), List[EventKind].empty(), List[u32].empty(), List[String].empty(), List[Instant].empty(),
+  Tier(List[FetchId](), List[Intent](), List[i64](), List[u32](),
+    List[u32](), List[EventKind](), List[u32](), List[String](), List[Instant](),
     gs, 0u32)
 }
 
@@ -490,13 +490,13 @@ fn want(tr: &mut Tier, cl: &mut Client, lp: &mut Loop, port: u16, t: u32, intent
   tr.finals.push(0u32);
   tr.kinds.push(EventKind.Data);
   tr.after.push(0u32);
-  tr.bodies.push(String.empty());
+  tr.bodies.push(String());
   tr.dispatched.push(Instant());
 }
 
 // The frame's arrival phase: what came, within the budget
 fn arrivals(tr: &mut Tier, cl: &mut Client, sv: &mut Srv, lp: &mut Loop, budget: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   step(cl, sv, lp, &uni out, Instant.now() + budget);
   var k = 0usize;
   while k < out.len() {
@@ -534,7 +534,7 @@ fn intentRank(i: Intent) u32 {
 
 // The tiles the origin should see, in order: those not cancelled, sorted
 fn expected(tr: &Tier, skip: &List[u32]) String {
-  var left = List[usize].empty();
+  var left = List[usize]();
   var t = 0usize;
   while t < tr.ids.len() {
     var skipped = false;
@@ -546,7 +546,7 @@ fn expected(tr: &Tier, skip: &List[u32]) String {
     if !skipped {left.push(t);}
     t = t + 1usize;
   }
-  var out = String.empty();
+  var out = String();
   while left.len() > 0usize {
     var best = 0usize;
     var j = 1usize;
@@ -565,7 +565,7 @@ fn expected(tr: &Tier, skip: &List[u32]) String {
 }
 
 fn orderSince(sv: &Srv, from: usize) String {
-  var out = String.empty();
+  var out = String();
   var k = from;
   while k < sv.order.len() {
     let t = sv.order[k].view();
@@ -598,7 +598,7 @@ fn run(lp: &mut Loop, sv: &mut Srv, port: u16, conns: u32, exactOrder: bool) {
   // its group; five Prefetch tiles come into view; tiles 12 and 13 are
   // superseded by finer levels, asked for as tiles 160 and 161
   expect(tr.groups[3usize].cancel(), "region 3's group cancelled");
-  var skip = List[u32].empty();
+  var skip = List[u32]();
   t = 0u32;
   while t < tiles {
     if t % regions == 3u32 {skip.push(t);}

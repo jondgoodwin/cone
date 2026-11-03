@@ -188,10 +188,10 @@ pub struct Loop {
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
-      decided: List[*OpCore].empty(), done: List[*OpCore].empty(), cancels: List[Asked].empty(),
-      held: List[Held].empty(),
+      decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
+      held: List[Held](),
       handles: SlotTable[HEntry].make(64u32),
-      wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
+      wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
       stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false, shared: Shared.none())
@@ -815,7 +815,7 @@ pub struct Loop {
       // The target is used where it lies, in the record (no other reference
       // reaches it while the answer is sent)
       let a = &mut (*(p as *OpRec[OldAsk])).ask;
-      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf.empty(), None, made, peer,
+      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf(), None, made, peer,
         submitted, dequeued, at);
       return self.send(c, &mut a.target as *Target as &uni Target, out);
     }
@@ -824,7 +824,7 @@ pub struct Loop {
     let core, ask = rec.(core, ask);
     let buf, bufs = core.(buf, bufs);
     let target, token = ask.(target, token);
-    let b = buf || IoBuf.empty();
+    let b = buf || IoBuf();
     var t = target;
     let c = Completion(loopId, id, token, kind, status, n, code, b, bufs, made, peer, submitted, dequeued, at);
     self.send(c, &uni t, out)
@@ -941,7 +941,7 @@ pub struct Loop {
   // are done with)
   fn retryHeld(self: &mut) {
     if held.len() == 0usize {return;}
-    var keep = List[Held].empty();
+    var keep = List[Held]();
     each h in held.drain() {
       let c, tx = h.(c, tx);
       match tx.trySend(c) {
@@ -1018,7 +1018,7 @@ pub struct Loop {
   // answers -- another thread, a GPU fence's watcher -- from any thread,
   // its answer delivered where 'to' says as any operation's is (see the
   // package's header, EXTERNAL OPERATIONS). buf is lent to the completer
-  // (IoBuf.empty() for none) and comes back in the answer
+  // (IoBuf() for none) and comes back in the answer
   pub fn external(self: &mut, to: Target, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Completer {
     self.startExternal(to, buf, forever(), None, file, line)
   }
@@ -2217,7 +2217,7 @@ pub struct Loop {
     lxSettleCancels(self);
     // An asker's record answered early and still on the done list is away: it
     // is its job's thread's, and is dissolved when it comes home
-    var kept = List[*OpCore].empty();
+    var kept = List[*OpCore]();
     var k = 0usize;
     while k < done.len() {
       let d = *done[k];
@@ -2228,7 +2228,7 @@ pub struct Loop {
     // Wait until the kernel has given back every record, and deliver what
     // was owed to other loops and threads; what was owed here dies, buffers
     // going home
-    var scratch = List[Completion].empty();
+    var scratch = List[Completion]();
     self.flush(&mut scratch);
     scratch.clear();
     while kernelHeld > 0u32 {

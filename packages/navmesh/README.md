@@ -10,7 +10,7 @@ not ported from the C++. `src/navmesh.cone` has the overview and the file map;
 ```cone
 import navmesh use *;
 
-var input = NavInput.empty();
+var input = NavInput();
 input.addHeightfield(0., 0., 2., 101, 101, heights.view(), AreaGround);   // ground
 input.addCircleObstacle(40., 60., 1.5, -10., 20., AreaNull);             // a pillar
 let door = input.addBoxObstacle(12., 8., 0.2, 1., 0., 0., 2.2, AreaNull); // a shut door

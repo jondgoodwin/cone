@@ -69,11 +69,11 @@ fn serve(a: ServerArgs) ServerReport {
   }
   a.portTx.send(port);
   var rep = ServerReport(0u64, 0u64, 0u64, 0u64);
-  var events = List[Event].empty();
+  var events = List[Event]();
   // Bodies being sent: a request and how far it has got
-  var sending = List[ReqId].empty();
-  var sentTo = List[u64].empty();
-  var which = List[u64].empty();
+  var sending = List[ReqId]();
+  var sentTo = List[u64]();
+  var which = List[u64]();
   while rep.closed < a.closes {
     drv.poll(&mut lp, forever(), &uni events);
     var k = 0usize;
@@ -212,9 +212,9 @@ fn main() i32 {
 
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make());
-  var cs = List[ConnId].empty();
-  var next = List[u64].empty();       // each connection's requests made
-  var have = List[u64].empty();       // body bytes of its request in flight
+  var cs = List[ConnId]();
+  var next = List[u64]();       // each connection's requests made
+  var have = List[u64]();       // body bytes of its request in flight
   var k = 0u64;
   while k < conns {
     cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(k)));
@@ -224,13 +224,13 @@ fn main() i32 {
   }
   // The big one, on a fourth connection, to the channel
   let bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(99u64));
-  drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength.empty(), Sink.Chan(500u64, evTx));
+  drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength(), Sink.Chan(500u64, evTx));
 
   var wrong = 0u64;
   var dones = 0u64;
   var notDone = 0u64;
   var closed = 0u64;
-  var events = List[Event].empty();
+  var events = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(30i64);
   var bigDone = false;
   while (closed < conns + 1u64 || drv.held() > 0usize) && Instant.now() < giveUp {
@@ -243,7 +243,7 @@ fn main() i32 {
         let i = 1u64 + k * perConn + made;
         var t = String.from("/n/");
         t.appendUInt(i);
-        drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty(), Sink.Here(1000u64 + i));
+        drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength(), Sink.Here(1000u64 + i));
         next.set(usize.from(k), made + 1u64);
         have.set(usize.from(k), 0u64);
       } else if made == perConn && drv.isIdle(c) {
