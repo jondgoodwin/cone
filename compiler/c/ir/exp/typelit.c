@@ -146,10 +146,20 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
     return 0;
 }
 
+// The value a field takes when a literal gives none and its declaration has no
+// `= value`: its type's own `T()` where the struct declares Default
+// (structFieldDefault), made and checked for this literal alone. NULL otherwise.
+static INode *typeLitFieldFill(TypeCheckState *pstate, StructNode *strnode, FieldDclNode *field) {
+    INode *fill = structFieldDefault(strnode, field);
+    if (fill)
+        inodeTypeCheck(pstate, &fill, field->vtype);
+    return fill;
+}
+
 // Reorder the literal's field values to the same order as the type's fields.
 // Also refuse a value for a private field where 'private' says the literal is
 // written outside the module that declares the type.
-int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
+int typeLitStructReorder(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode, int private) {
 
     int retcode = 1;
     INode **nodesp;
@@ -157,6 +167,7 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
     uint32_t argi = 0;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
+        INode *dflt = NULL;
 
         // If field represents a discriminated tag, inject struct's discriminant nbr.
         // A negative one's 64 bits are cut to the discriminant's width where the
@@ -175,8 +186,9 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
                 // Use default value for unmatched field, if the type defined one.
                 // The default is the type's own value, not one the literal gives,
                 // so leaving a private field to it is allowed from anywhere.
-                if (field->value) {
-                    nodesInsert(&arrlit->args, field->value, argi);
+                INode *dflt = field->value ? field->value : typeLitFieldFill(pstate, strnode, field);
+                if (dflt) {
+                    nodesInsert(&arrlit->args, dflt, argi);
                     ++argi;
                     continue;
                 }
@@ -195,8 +207,8 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
             }
         }
         // Append default value if no value specified
-        else if (field->value) {
-            nodesAdd(&arrlit->args, field->value);
+        else if (field->value || (dflt = typeLitFieldFill(pstate, strnode, field))) {
+            nodesAdd(&arrlit->args, field->value ? field->value : dflt);
         }
         else {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on type literal");
@@ -223,7 +235,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     // field is given a value by any code of the module that declares the type
     // (structSeesPrivate).
     int private = (INode*)strnode == pstate->typenode || structSeesPrivate(pstate, (INode*)strnode);
-    if (typeLitStructReorder(arrlit, strnode, private) == 0)
+    if (typeLitStructReorder(pstate, arrlit, strnode, private) == 0)
         return;
 
     // A struct naming invariant lifetimes binds each to the brand its fields'
@@ -374,7 +386,7 @@ static int typeLitImplicitViable(StructNode *strnode, Nodes *args) {
             if (iexpMatches(&nodesGet(args, argi), field->vtype, Coercion) == NoMatch)
                 return 0;
         }
-        else if (field->value == NULL)
+        else if (field->value == NULL && structFieldDefault(strnode, field) == NULL)
             return 0;
         ++argi;
     }
@@ -1000,6 +1012,23 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         errorMsgNode((INode*)node, ErrorTryNewValue,
             "'trynew' is an allocation in a region, which may run out of memory, and %s is not a managed reference type: a value is constructed by its name, '%s(...)'.",
             written ? &written->namestr : "this type", written ? &written->namestr : "T");
+        return;
+    }
+    // A number or bool made with no arguments is its zero (core's Default, granted
+    // to them): `T()` of a generic's number is 0, 0.0 or false. A char is no number.
+    if (typeLitIsNbrType(typedcl) && typedcl != (INode*)charType
+        && (node->args == NULL || node->args->used == 0)) {
+        INode *zero;
+        if (typedcl->tag == FloatNbrTag) {
+            FLitNode *flit = newFLitNode(0.0, typedcl);
+            flit->vtype = typedcl;
+            zero = (INode*)flit;
+        }
+        else
+            zero = (INode*)newULitNodeTC(0, typedcl);
+        inodeLexCopy(zero, (INode*)node);
+        *nodep = (FnCallNode*)zero;
+        inodeTypeCheck(pstate, (INode**)nodep, expectType);
         return;
     }
     if (typeLitIsNbrType(typedcl)) {

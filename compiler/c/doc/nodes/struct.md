@@ -1504,10 +1504,10 @@ Core's `Clone` (`pub trait Clone { pub fn clone(self: &) Self; }`) is known by
 name and package (`coreIsCloneTrait`), as `Eq` is.
 
 - **The grant.** Every type that does not move is `Clone` (`genericTypeIsHow`,
-  beside `Copy`): numbers, `bool`, a Copy struct, tuple, array, pointer. Not a
-  reference of any kind (`RefTag`, `ArrayRefTag`, `VirtRefTag`): cloning a
-  reference would have to carry its lifetime, and `Option[&T]` would otherwise
-  instance a `clone` that cannot be typed. The grant has no method of its own to
+  beside `Copy`): numbers, `bool`, a Copy struct, tuple, array, pointer, and a
+  read-only borrow (`refIsCopyBorrow`: `&T`, a slice, a virtual reference; its
+  clone is the same borrow). Not `&mut`, which the compiler lets alias and so
+  copies, nor `&uni`, nor an owner. The grant has no method of its own to
   call: `x.clone()` on a Copy type with no `clone` of its namespace is the value
   (`fnCallCloneCopy` in [fncall](fncall.md): the call is replaced by its
   receiver, read through its borrow when it is one).
@@ -1515,11 +1515,15 @@ name and package (`coreIsCloneTrait`), as `Eq` is.
   (`structCloneCheck`, at layout after `structEqCheck`) has the inherited
   requirement filled: `return Self(self.f1.clone(), self.f2.clone(), ...)` in
   field order, built as a construction (`fnCallMarkConstruction`), so the fields
-  clone by their own `clone` or, for a Copy field, by the grant. A mixin field
-  is skipped, as for `hash` and `==`.
+  clone by their own `clone` or, for a Copy field, by the grant; a read-only
+  borrow field is copied as it lies. A mixin field is skipped, as for `hash` and
+  `==`: it is the placeholder for a trait named in `is`, which holds no storage
+  (the fields the trait requires are the struct's own and are cloned as fields),
+  and an enum variant cannot declare `Clone`, so no derive meets a mixin that
+  stands for data.
 - **Refusal.** `ErrorCloneField` (1577), at the field, where the field's type is
   neither Clone by `genericTypeIs` nor a Copy array, tuple, vector or pointer
-  (a struct that moves and has no `clone`, a unique owner, a reference). The
+  (a struct that moves and has no `clone`, a unique owner, a `&mut`). The
   struct gets a body whose value is already an error, so nothing more is said.
 - **Core and collections.** `Option` and `Result` have an `inline` conditional
   `clone` (inline, so no instance of the enum compiles one unasked, as `==`);
@@ -1527,6 +1531,27 @@ name and package (`coreIsCloneTrait`), as `Eq` is.
   overloads: the block copy where `T` is Copy, a cloning loop where it moves and
   is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
 - `=` never clones; no copy or move calls a `clone`.
+
+### Default, and the `T()` it supplies
+
+Core's `Default` (`pub trait Default {}`, no method) is known by name and package
+(`coreIsDefaultTrait`). A trait with nothing to ask is a marker (`genericTraitIsMarker`):
+a struct is `Default` only by declaring it.
+
+- **The grant.** Every number type and `bool` (`genericTypeIsHow`, not `char`). Their
+  `T()` is a zero literal, made where a construction of a number with no arguments
+  is type checked (`typeLitNewChecked`); a number given arguments is still `ErrorNewType`.
+- **The supplied `T()`.** A struct declaring `Default` that has no `init`
+  (`structDefaultCheck`, after `structCloneCheck`) is constructed by its implicit init:
+  a field left out takes its declared `= value` (constants only) or, where it declared
+  none and its type is `Default`, a fresh `FieldType()` (`structFieldDefault`, built by
+  `typeLitFieldFill` for each literal, since the shared `= value` node is a constant). A
+  struct with an `init` is made by it and nothing is supplied; the collections declare
+  `Default` for their `init`s whose last argument, the region, a construction may leave out.
+- **Refusal.** `ErrorDefaultField` (1575), at the field, where it has no `= value` and its
+  type is not `Default`.
+- **Regions.** A generic `T()` has no region argument, so a `CarriesRegion` type is made in
+  the heap's (`typeLitRegionArg`); a container that makes a `V` of its own writes `V(region)`.
 
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd

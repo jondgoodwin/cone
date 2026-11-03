@@ -290,6 +290,9 @@ StructNode *structGetBaseTrait(StructNode *node);
 // Type check a struct type: its layout. Its members are checked once no layout
 // is in flight.
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+// The value `T()` gives a field of a struct declaring core's Default that names none
+// and whose declaration gave no `= value`, or NULL (structFieldDefault)
+INode *structFieldDefault(StructNode *node, FieldDclNode *field);
 
 // An array type checked as a reference's target waits for its element's
 // layout before it asks the element's size and takes its move and thread

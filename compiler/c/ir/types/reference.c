@@ -171,6 +171,23 @@ void refAdoptInfections(RefNode *refnode) {
         refnode->flags |= MoveType;
 }
 
+// Is this type a read-only borrow, '&T', a slice or a virtual reference: a
+// borrow that copies, so core's Clone is granted to it and its clone is the same
+// borrow? Asks the permission itself (it may alias and may not write). Not
+// '&mut' (which the compiler lets alias, so it copies, but which is not granted
+// Clone: design chat's ruling) or '&uni', and not an owner such as Rc.
+int refIsCopyBorrow(INode *type) {
+    type = itypeGetTypeDcl(type);
+    if (type->tag != RefTag && type->tag != ArrayRefTag && type->tag != VirtRefTag)
+        return 0;
+    RefNode *ref = (RefNode*)type;
+    if (ref->perm == NULL)
+        return 0;
+    int flags = permGetFlags(ref->perm);
+    return (flags & MayAlias) && !(flags & MayWrite)
+        && itypeGetTypeDcl(ref->region) == borrowRef && !itypeIsMove(type);
+}
+
 // Whether a reference may cross to another thread, as far as the reference
 // itself says: the thread check's rule, with what it points at asked
 // separately (itypeThreadBound). In order:
