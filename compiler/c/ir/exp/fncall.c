@@ -4049,6 +4049,14 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
         RefNode *held = (RefNode*)itypeGetTypeDcl(step->vtexp);
         if (held->tag != RefTag && held->tag != ArrayRefTag && held->tag != VirtRefTag)
             return;
+        // 'clone' takes '&Self': on a borrow of a read-only borrow, Self is that
+        // inner borrow, which copies (core's Clone, genericTypeIs), so the call
+        // stops at the outer level instead of reading through it
+        if (node->methfld && isNameUseNode(node->methfld)
+            && ((NameUseNode*)node->methfld)->namesym == cloneName
+            && (node->args == NULL || node->args->used == 0)
+            && refIsCopyBorrow((INode*)held))
+            return;
         if (clamp == NULL && !(permGetFlags(step->perm) & MayWrite))
             clamp = step->perm;
         derefInject(&node->objfn);
@@ -4722,8 +4730,16 @@ static int fnCallCloneCopy(FnCallNode **nodep) {
             return 0;
         valtype = itypeGetTypeDcl(((RefNode*)recvtype)->vtexp);
     }
-    // (A reference is not asked for: it is no Clone, genericTypeIs)
     switch (valtype->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        // A read-only borrow held behind a borrow ('a' of 'Option[&T]'s Some(a)):
+        // its clone is the same borrow, genericTypeIs. Reached only through the
+        // outer borrow, since a borrow named directly clones to what it points at.
+        if (recvtype->tag != RefTag || !refIsCopyBorrow(valtype))
+            return 0;
+        break;
     case IntNbrTag:
     case UintNbrTag:
     case FloatNbrTag:

@@ -4529,12 +4529,22 @@ static void structCloneCheck(StructNode *node) {
     fnCallMarkConstruction(lit);
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
+        // (A mixin placeholder is the trait a type names in 'is': it stands for
+        // the trait's requirements and holds no storage. The fields the trait
+        // requires are declared by the type itself and cloned here as any other;
+        // an enum variant's base is no 'is' target, a variant cannot declare Clone.)
         if (field->flags & IsMixin)
             continue;
         // self.field.clone()
         FnCallNode *access = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
         access->methfld = (INode*)newMemberUseNode(field->namesym);
         inodeLexCopy(access->methfld, (INode*)node);
+        // a read-only borrow field is copied as it lies: its clone is the same borrow
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        if (refIsCopyBorrow(fldtype)) {
+            nodesAdd(&lit->args, (INode*)access);
+            continue;
+        }
         FnCallNode *call = newFnCallLower((INode*)node, (INode*)access, 1);
         call->methfld = (INode*)newMemberUseNode(cloneName);
         inodeLexCopy(call->methfld, (INode*)node);

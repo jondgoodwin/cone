@@ -786,7 +786,7 @@ enum ErrorCode {
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
     // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
-    WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
+    // 3003 was WarnCopy, never raised; a value that owns something moves, and a duplicate of it is its .clone()
     WarnLoop = 3004,       // Infinite loop with no break
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
