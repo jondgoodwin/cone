@@ -438,6 +438,26 @@ int coreIsHashTrait(INode *dcl) {
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
+// Core's Eq trait, known as Hash is
+int coreIsEqTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == eqTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's Clone trait, known as Hash is
+int coreIsCloneTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == cloneTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 INode *coreIteratorTrait = NULL;
 
 int coreIsIteratorTrait(INode *dcl) {
@@ -518,6 +538,30 @@ void sliceEqDclNameRes(FnDclNode *fndcl) {
 
 FnDclNode *sliceEqFn(void) {
     return sliceEqCore;
+}
+
+// Core's 'mem.tupleEq2' to 'mem.tupleEq4', what '==' on two tuples calls
+// (fnCallLowerTupleCompare): generic functions with bodies, known by name and
+// package as sliceEq is, one for each count of elements
+static FnDclNode *tupleEqCore[5] = {NULL, NULL, NULL, NULL, NULL};
+
+void tupleEqDclNameRes(FnDclNode *fndcl) {
+    if (fndcl->namesym == NULL || strncmp(&fndcl->namesym->namestr, "tupleEq", 7) != 0)
+        return;
+    int arity = (&fndcl->namesym->namestr)[7] - '0';
+    if (arity < 2 || arity > 4 || (&fndcl->namesym->namestr)[8] != '\0'
+        || (fndcl->dclinfo.facts & DclIntrinsic) || !intrinsicInCore(fndcl))
+        return;
+    if (fndcl->value == NULL || fndcl->genericinfo == NULL) {
+        errorMsgNode((INode *)fndcl, ErrorIntrinsicSig,
+            "'==' on two tuples calls core's generic 'fn tupleEq%d', with a body, and this declaration says something else.", arity);
+        return;
+    }
+    tupleEqCore[arity] = fndcl;
+}
+
+FnDclNode *tupleEqFn(uint32_t arity) {
+    return arity < 5 ? tupleEqCore[arity] : NULL;
 }
 
 // Core's 'MemRegion', the header every region at run time begins with and the type

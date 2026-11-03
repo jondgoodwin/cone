@@ -1,0 +1,127 @@
+# meta - the '#' layer that runs while a program is read (mod-generativity.html#meta).
+# Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# What is built is '#if', '#elif' and '#else' on the facts of the build -- #os,
+# #arch, #debug, #defined("NAME") and #define("NAME") -- resolved while parsing
+# (compiler/c/doc/phases/parse.md, "The meta layer"). The macros and generics the
+# manual also describes under metaprogramming are the `generic` group's.
+
+support = []
+
+# The construct in each place a list of items is read, and as a value, on the
+# hosts the suite runs on. A release and a debug build alike, '-D' facts in both
+[scenario.meta_if_build]
+category = "run"
+description = "'#if' in a module, a type's braces, an 'extern' block and a block of statements, and giving a value: the taken branch joins the enclosing list (a declaration of it belongs there, a last expression is the block's value), untaken branches naming nothing that exists compile, '#elif' chains and nested '#if', '-D' facts (#defined, #define), '!', '&&', '||', '==' and '!='"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.meta_if_build.run]]
+name = "release"
+options = ["-D", "FAST", "-DLEVEL=3", "--define=NEG=-7"]
+
+[[scenario.meta_if_build.run]]
+name = "debug"
+options = ["--debug", "-D", "FAST", "-DLEVEL=3", "--define=NEG=-7"]
+
+# One source, a run per target: '-D' tells each what to expect, so one set of
+# checks holds for every run. A debug build is among them (a GPU target, which
+# cannot call what the calls here are, is meta_if_gpu)
+[scenario.meta_if_facts]
+category = "compile"
+description = "#os and #arch read the target triple (x86_64 Windows, Linux and macOS, WebAssembly, each one member and no other), #debug the kind of build, #defined and #define the '-D' options: the call a run expects is the only one in the code"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_facts.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc", "-D", "LEVEL=3", "-D", "EXPECT_WINDOWS", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu", "-D", "LEVEL=3", "-D", "EXPECT_LINUX", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "macos"
+options = ["--triple=x86_64-apple-macosx14.0", "-D", "LEVEL=3", "-D", "EXPECT_MACOS", "-D", "EXPECT_X64"]
+
+[[scenario.meta_if_facts.run]]
+name = "wasm"
+options = ["--wasm", "-D", "LEVEL=3", "-D", "EXPECT_WASM", "-D", "EXPECT_WASM32"]
+
+[[scenario.meta_if_facts.run]]
+name = "debug"
+options = ["--debug", "-D", "LEVEL=3", "-D", "EXPECT_DEBUG", "-D", "EXPECT_WINDOWS", "-D", "EXPECT_X64", "--triple=x86_64-pc-windows-msvc"]
+
+[[scenario.meta_if_facts.check]]
+name = "the-expected-facts-alone-hold"
+target = "preir"
+contains = ["call %void @matchedOs(", "call %void @matchedArch(", "call %void @matchedDebug(", "call %void @matchedDefine("]
+excludes = ["call %void @mismatched("]
+
+[scenario.meta_if_gpu]
+category = "compile"
+description = "A SPIR-V target is #os .gpu and #arch .spirv: the branch for them is the only one in the code, and a branch calling what a GPU cannot call compiles, for it is read for syntax alone"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_gpu.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.meta_if_gpu.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.meta_if_gpu.check]]
+name = "the-gpu-branch-alone-is-generated"
+target = "preir"
+contains = ["ret i32 7"]
+excludes = ["call i32 @hostOnlyDefinedNowhere("]
+
+# The extern declarations of a branch the build does not take are not declared:
+# not even a 'declare' is left in the object for a symbol only another platform defines
+[scenario.meta_if_extern]
+category = "compile"
+description = "An 'extern' block and a lone 'extern fn' in a '#if' branch: the taken branch's functions are declared and called, the others' are declared nowhere"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_if_extern.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc"]
+
+[[scenario.meta_if_extern.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu"]
+
+[[scenario.meta_if_extern.check]]
+name = "only-the-taken-declarations-exist"
+target = "preir"
+contains = ["call i32 @takenInBlockDefinedNowhere(", "call i32 @takenAloneDefinedNowhere("]
+excludes = ["otherInBlock", "otherAlone", "macInBlock"]
+
+[scenario.meta_if_reject_parse]
+category = "reject"
+description = "A syntax error in a branch the build does not take; a fact outside the closed vocabulary or used wrongly (a member the fact lacks, unlike kinds, a name for a string literal, a call, a fact outside a condition); '#elif' and '#else' with no '#if' or after an '#else'; a '#if' giving a value with no '#else'"
+tags = ["parse"]
+
+# A package whose include file holds '#if': q is compiled alone and writes it, the
+# program compiles against it. The golden file under include/ is that file byte for
+# byte; the program evaluates its '#if' for its own target
+[scenario.meta_if_include]
+category = "run"
+description = "An include file keeps a package's '#if' text whole and cuts the declarations inside the branches as it cuts any (a public function an 'extern', a private one and a private member left out); a program imports it, evaluates the '#if' for its own target, links and runs"
+tags = ["parse", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# An actor's declarations are generated from the text of its fields; a branch not
+# taken adds none, and a behaviour is one the taken branch declares
+[scenario.meta_if_actor]
+category = "run"
+description = "'#if' in an actor's body, a field and a behaviour: the taken branch's join the actor and reach the declarations generated from its text, the untaken branch's (a field of an undeclared type, a behaviour naming nothing) leave no trace"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.meta_if_actor.run]]
+name = "fast"
+options = ["-D", "FAST"]

@@ -1879,6 +1879,13 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return itypeIsMove(dcl);
     if (trait == copyTrait)
         return !itypeIsMove(dcl);
+    // and every Copy type is Clone: its 'clone()' is the value (fnCallCloneCopy)
+    // except a reference of any kind: it is copied, but what a value held by
+    // reference clones to is the value, never the reference (a borrow's lifetime
+    // does not carry to the clone), so it is not asked for
+    if (coreIsCloneTrait((INode*)trait) && !itypeIsMove(dcl)
+        && dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag)
+        return 1;
     // and the number markers: Float is f32 and f64, Signed the signed integers
     // and the floats, Unsigned the unsigned integers, Numeric all of them.
     // bool and char are unsigned in the tree but are not numbers.

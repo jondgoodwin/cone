@@ -150,6 +150,7 @@ add_executable(conec
 	compiler/c/parser/parseexpr.c
 	compiler/c/parser/parsetype.c
 	compiler/c/parser/parsehelper.c
+	compiler/c/parser/parsemeta.c
 
 	compiler/c/genllvm/genllvm.c
 	compiler/c/genllvm/genlstmt.c

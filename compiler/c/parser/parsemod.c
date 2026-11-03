@@ -1329,7 +1329,71 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
 // [Jon 24 Sep], and its imports come right after it, before anything else it
 // declares. A module's other files have no 'mod' line, and so no place for an
 // import: a module's whole inbound dependency list is in its designated file
-// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it
+// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it, or AtInHashIf
+// for the statements of a '#if' branch, which read to the branch's '}' and are
+// past the header: a branch holds declarations, and neither the 'mod' line nor an import
+#define AtInHashIf 3
+
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
+
+// The items of a '#if' chain at a module's level. A branch the build takes joins
+// the module; one it does not is read into the scratch module parse->mod then is
+typedef struct GlobalIf {
+    ModuleNode *mod;
+} GlobalIf;
+
+static void parseGlobalBranch(ParseState *parse, void *ctx, int taken) {
+    parseGlobalStmts(parse, taken ? ((GlobalIf*)ctx)->mod : parse->mod, AtInHashIf);
+}
+
+// The items of an 'extern' block's braces, to the '}' that closes them or
+// the branch of a '#if' inside them; 'items' is where their spans go
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items);
+
+typedef struct ExternIf {
+    uint16_t extflag;
+    DclSpans **items;
+} ExternIf;
+
+static void parseExternBranch(ParseState *parse, void *ctx, int taken) {
+    ExternIf *xif = (ExternIf*)ctx;
+    DclSpans *dropped = NULL;
+    parseExternItems(parse, xif->extflag, taken ? xif->items : &dropped);
+}
+
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items) {
+    while (!parseBlockEnd()) {
+        // A lone ';' is an empty declaration, as in a type's braces
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (lexIsToken(HashIfToken)) {
+            ExternIf xif;
+            xif.extflag = extflag;
+            xif.items = items;
+            parseHashIf(parse, parseExternBranch, &xif);
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        char *itemat = lex->tokp;
+        uint16_t itemflag = extflag | parsePub();
+        char *itemkw = lex->tokp;
+        if (lexIsToken(FnToken) || lexIsDclStart()) {
+            INode *item = parseFnOrVarIn(parse, itemflag, 1);
+            if (item)
+                parseSpan(parse, items, item, itemat, itemkw, SpanDcl);
+        }
+        else {
+            errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
+            parseSkipToNextStmt();
+        }
+    }
+}
+
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
     // An empty first file has no statement to report against, so the end of
     // the file stands in for it
@@ -1338,7 +1402,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
             &mod->namesym->namestr, &mod->namesym->namestr);
     // Set by the first statement that is neither the 'mod' line nor an import
-    int pastheader = 0;
+    int pastheader = atmodstart == AtInHashIf;
     // A file of the module other than its first has no 'mod' line to follow
     int nomodline = atmodstart == 2;
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
@@ -1352,6 +1416,25 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         stmtat.srcp = lex->tokp;
         stmtat.linep = lex->linep;
         stmtat.linenbr = lex->linenbr;
+        // '#if' chooses which declarations exist, from the facts of the build.
+        // The branch it takes is read into this module as though it were written
+        // here (parsemeta.c); no 'pub' goes before it, since it declares nothing
+        // itself. It is not part of the header, so it ends it
+        if (lexIsToken(HashIfToken)) {
+            if (atstart == 1)
+                errorMsgNode(&stmtat, ErrorNoModDcl,
+                    "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
+                    &mod->namesym->namestr, &mod->namesym->namestr);
+            GlobalIf gif;
+            gif.mod = mod;
+            parseHashIf(parse, parseGlobalBranch, &gif);
+            pastheader = 1;
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
         uint16_t pubflag = parsePub();
         // Where the statement's keyword is, after its 'pub', and what it makes:
         // its span is recorded once it is parsed (dclspan.h)
@@ -1529,25 +1612,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 spankind = SpanExternBlock;
-                while (!parseBlockEnd()) {
-                    // A lone ';' is an empty declaration, as in a type's braces
-                    if (lexIsToken(SemiToken)) {
-                        lexNextToken();
-                        continue;
-                    }
-                    char *itemat = lex->tokp;
-                    uint16_t itemflag = extflag | parsePub();
-                    char *itemkw = lex->tokp;
-                    if (lexIsToken(FnToken) || lexIsDclStart()) {
-                        INode *item = parseFnOrVarIn(parse, itemflag, 1);
-                        if (item)
-                            parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
-                    }
-                    else {
-                        errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
-                        parseSkipToNextStmt();
-                    }
-                }
+                parseExternItems(parse, extflag, &items);
             }
             else
                 made = parseFnOrVar(parse, extflag);
@@ -2108,6 +2173,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
 void parseInit(ConeOptions *opt) {
     nametblInit();
     lexInit(opt);
+    parseMetaInit(opt);
 }
 
 // Parse a program = the main module. 'desc' is the build description the

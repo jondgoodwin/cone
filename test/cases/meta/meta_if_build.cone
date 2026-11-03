@@ -1,0 +1,174 @@
+// '#if' on the facts of the build (mod-generativity.html#meta): which code exists is
+// decided while the file is read, from the target's operating system and
+// architecture, the build's kind and conec's '-D' options.
+//
+// The scenario runs on Windows and on Linux and prints the same on both, so the
+// branches it takes are those two hosts' and the branches it must not read are
+// macOS's, WebAssembly's and the rest: each of those names things that exist
+// nowhere (a function declared 'extern' and defined nowhere, an undeclared type, a
+// call to a function nothing declares). They are read only for their syntax, so
+// the program compiles and links; were any of them looked up it would not.
+//
+// Each place a list of items is read is here: a module, a type's braces, an
+// 'extern' block, a block of statements; and the form that gives a value. The
+// braces open no scope: what a taken branch declares belongs to the module, the
+// type or the block around it.
+//
+// '-D FAST -D LEVEL=3 -D NEG=-7' in both runs (release and debug).
+
+mod meta_if_build;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- a module's declarations --------
+
+// One 'platform' function per branch; a name declared in the branch the build
+// does not take is not declared at all, so three functions share one name
+#if #os == .windows || #os == .linux {
+  fn platform() i32 { 1 }
+  const slash = 47;
+}
+#elif #os == .macos {
+  fn platform() i32 { macDefinedNowhere() }
+  const slash = macConstNowhere;
+}
+#else {
+  fn platform() i32 { 3 + undeclaredHelper(Nowhere) }
+}
+
+// Branches nest, and the untaken one's inside it are read for syntax too
+#if #os == .macos {
+  #if #debug {
+    fn flavor() i32 { macDebugNowhere() }
+  }
+  #else {
+    fn flavor() i32 { macReleaseNowhere() }
+  }
+}
+#else {
+  #if #os == .windows || #os == .linux {
+    fn flavor() i32 { 2 }
+  }
+  #else {
+    fn flavor() i32 { 0 }
+  }
+}
+
+// An 'extern' block holds them too
+extern {
+  #if #os == .macos {
+    fn macDefinedNowhere() i32;
+  }
+  #elif #os == .wasm {
+    fn wasmDefinedNowhere() i32;
+  }
+}
+
+// A constant from the build, for the form that gives a value
+const wordbits = #if #arch == .x64 || #arch == .arm64 {64} #else {32};
+
+// -------- a type's braces --------
+
+struct Conn {
+  id: i32;
+  #if #os == .windows || #os == .linux {
+    handle: i32;
+  }
+  #else {
+    socket: UndeclaredType;
+    other: Nowhere.At.All;
+  }
+
+  // The same name in two branches, one of which exists
+  #if #defined("FAST") {
+    fn mode(self: &) i32 { self.handle + 1 }
+  }
+  #else {
+    fn mode(self: &) i32 { self.slowHandleNowhere }
+  }
+}
+
+// An enum's variants: the common field and the first variant are the enum's own, the
+// rest are those of the branch taken
+enum Pick {
+  Home;
+  #if #os == .windows || #os == .linux {
+    Work;
+    Mobile;
+  }
+  #else {
+    Elsewhere;
+    Unknown(Nowhere);
+  }
+}
+use Pick;
+
+fn pick() i32 {
+  let p: Pick = Mobile;
+  if p == Mobile {1} else {0}
+}
+
+// -------- a block of statements --------
+
+// A branch that ends in an expression gives the function its value
+fn level() i32 {
+  #if #define("LEVEL") == 3 { 30 }
+  #elif #define("LEVEL") == 2 { 20 }
+  #else { 0 }
+}
+
+// A declaration in a branch is the block's, whichever branch declares it and
+// whatever type it gives the name
+fn locals() i32 {
+  #if #os == .windows || #os == .linux { let a = 5; } #else { let a = "five"; }
+  #if #defined("FAST") { let b = a * 2; } #else { let b = a; }
+  a + b
+}
+
+// Facts joined and negated
+fn joined() i32 {
+  var n = 0;
+  #if !(#os == .macos) && #os != .wasm { n = n + 1; }
+  #if #os == .macos || #os == .wasm { macDefinedNowhere(); }
+  #if (#defined("FAST") || #defined("SLOW")) && !#defined("SLOW") { n = n + 10; }
+  #if #defined("MISSING") == false { n = n + 100; }
+  #if #define("MISSING") == 0 { n = n + 1000; }
+  #if #define("NEG") == -7 { n = n + 10000; }
+  #if #define("NEG") != -7 { n = n + 100000; }
+  n
+}
+
+fn main() {
+  show("platform", platform());
+  show("slash", slash);
+  show("flavor", flavor());
+  show("wordbits", wordbits);
+  let c = Conn(7, 9);
+  show("handle", c.handle);
+  show("mode", c.mode());
+  show("pick", pick());
+  show("level", level());
+  show("locals", locals());
+  show("joined", joined());
+
+  // The untaken statements name what does not exist, a branch inside a branch among them
+  #if #os == .macos {
+    macDefinedNowhere();
+    #if #debug { nothingNamedThis(Nope); } #else { let t = alsoNothing; }
+    let u: NoSuchType = 1;
+  }
+
+  // A branch that gives a value: a single expression is that expression, a longer block a block
+  let bits = #if #arch == .x64 {64} #elif #arch == .arm64 {65} #else {32};
+  show("bits", bits);
+  let v = #if #defined("FAST") { let t = 2; t * 21 } #else { 0 };
+  show("block value", v);
+  show("else value", #if #defined("SLOW") {1} #else {2});
+}

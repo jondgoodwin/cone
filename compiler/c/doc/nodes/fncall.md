@@ -392,7 +392,7 @@ by value, an array and a function go on to the table's own rows.
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent (`fnCallImplicitName`, below), then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetPlace`) takes `&[]` |
-| `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
+| `TTupleTag` | `==`, `!=` to `fnCallLowerTupleCompare` (below); else `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice`; else a method of core's `Array[T]` (`fnCallLowerSliceMethod`, below), `len` excepted |
 | `VectorTag` | `fnCallArrIndex` (a lane, `vectorIndex`) under `FlagIndex`; else fill in `()` as `methfld` if absent and `fnCallLowerMethod`, which finds the operator or method in the vector's own namespace. Four things are lowered by hooks of `fnCallLowerMethodOn` or the call's checks and not found there: a number beside a vector (`vectorBroadcastOperand`, before selection), `select` (`vectorSelectLower`), `.from` (`vectorFromCall`, ahead of `fnCallNumberFrom`) and a vector's contents (`contentsLowerVector`) — [vector](vector.md) |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType`, else a method of core's `Array[T]` |
@@ -503,6 +503,17 @@ candidate. `fnCallLowerRefCompare`:
   (an array, a function), and a trait other than an enum, whose comparison would
   be dispatched on the variant and is not built. A virtual reference is refused
   the same way in its own arm.
+
+**A comparison of two tuples compares their elements**
+(`fnCallLowerTupleCompare`), for tuples of two to four elements: core's
+`mem.tupleEq2` to `tupleEq4`, generic functions whose body is
+`&a.0 == &b.0 && ...`, found by name and package (`tupleEqDclNameRes`,
+`tupleEqFn`). The node becomes a call of the instance at the element types
+(`genericMethodInstance`) with both operands lent read-only where they lie
+(`fnCallLendEnumOperand`). `!=` is derived under a `!` (`fnCallNeFromEq`); an
+ordering is `ErrorRefNoCompare`, as a longer tuple is. As for a slice, the
+instance is checked as any call, so an element with no `==` is refused in the
+instance. A reference to a tuple is read through to this (`fnCallLowerRefCompare`).
 
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
@@ -766,6 +777,25 @@ Three adjustments, two of them asymmetric on purpose:
   overload taking the borrow still wins over one taking the value. (A `&u8`
   still meets `*u8` first: the borrow converts to a raw pointer, so
   `print <- n` for a borrowed byte selects the C-string overload, as it did.)
+- **A comparison lends its other operand.** `==`, `<`, `<=`, `>` and `>=` (`!=`
+  arrives as `==`; `<=>` is not included) whose candidates, after the borrowed
+  receiver, still found none and whose argument is a struct value, try again
+  with the argument lent read-only (`fnCallLendEnumOperand`: a place is borrowed
+  where it lies, a temporary to the end of its statement) and the receiver
+  borrowed (`fnCallBorrowReceiver`). So `a == b` is `&a == &b` for a `==` written
+  against `&Self` (hand-written, derived, Option's, List's); a candidate taking
+  values, or the borrows written out, is selected first as before. A number's
+  comparison needs no lending and is not retried. The retry is the last of the
+  operator retries and runs only on failure, so it changes no call that
+  compiled.
+- **`x.clone()` of a Copy type is the value** (`fnCallCloneCopy`, ahead of the
+  dispatch on the receiver's type). A call of `clone` with no arguments on a
+  receiver (or a borrow of one) whose type does not move, is a number, vector,
+  tuple, array, pointer, `void`, a struct or an enum, and has no `clone` in its
+  namespace, is replaced by the receiver (read through the borrow). This is the
+  method core's `Clone` grants every Copy type ([struct](struct.md), "Clone, and
+  the `clone` it supplies"). A type that moves and has no `clone` falls through
+  to the ordinary missing-member refusal.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self: &`, `self: &mut` or `self: &uni`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self: &`
