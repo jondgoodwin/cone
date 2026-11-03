@@ -196,10 +196,10 @@ import time;
 // Parking sleeps and wakes through the sync package's futex.
 //
 // Each call below is made through a small function, 'osThreadId', 'osJoin' and
-// so on, choosing by 'isWindows()', a constant of the compile, so only the
-// target's calls are generated, and a function only the other system's branch
-// calls ('launchWindows', 'sleepPosix') is not part of the program; every
-// extern is declared on every platform.
+// so on, choosing by '#if #os == .windows', resolved as the file is parsed, so
+// only the target's calls are generated, and the other system's externs and
+// the functions only its branch calls ('launchWindows', 'sleepPosix') are not
+// declared at all.
 // ---------------------------------------------------------------------------
 
 // A thread's entry, as '_beginthreadex' calls it: its argument, and the exit
@@ -207,17 +207,19 @@ import time;
 // whose value nothing reads (the thread is joined for its end alone)
 alias Entry = &fn @c (arg: *u8) u32;
 
-extern fn @c _beginthreadex(security: *u8, stack: u32, entry: Entry, arg: *u8, flags: u32, id: *u32) usize;
+#if #os == .windows {
+  extern fn @c _beginthreadex(security: *u8, stack: u32, entry: Entry, arg: *u8, flags: u32, id: *u32) usize;
 
-extern {
-  fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
-  fn @c(system) CloseHandle(handle: usize) i32;
-  fn @c(system) GetCurrentThreadId() u32;
-  fn @c(system) SwitchToThread() i32;
-  fn @c(system) Sleep(ms: u32);
-  fn @c(system) GetActiveProcessorCount(group: u16) u32;
-  fn @c(system) CreateWaitableTimerExW(attrs: *u8, name: *u16, flags: u32, access: u32) usize;
-  fn @c(system) SetWaitableTimer(timer: usize, due: *i64, period: i32, routine: *u8, arg: *u8, resume: i32) i32;
+  extern {
+    fn @c(system) WaitForSingleObject(handle: usize, ms: u32) u32;
+    fn @c(system) CloseHandle(handle: usize) i32;
+    fn @c(system) GetCurrentThreadId() u32;
+    fn @c(system) SwitchToThread() i32;
+    fn @c(system) Sleep(ms: u32);
+    fn @c(system) GetActiveProcessorCount(group: u16) u32;
+    fn @c(system) CreateWaitableTimerExW(attrs: *u8, name: *u16, flags: u32, access: u32) usize;
+    fn @c(system) SetWaitableTimer(timer: usize, due: *i64, period: i32, routine: *u8, arg: *u8, resume: i32) i32;
+  }
 }
 
 // POSIX's 'pthread_attr_t', as bytes enough for the C libraries of Linux (56)
@@ -241,17 +243,19 @@ struct Timespec {
 }
 
 // A pthread_t is an integer the size of a pointer, which is what 'handle' holds
-extern {
-  fn @c pthread_create(thread: *usize, attr: *PthreadAttr, entry: Entry, arg: *u8) i32;
-  fn @c pthread_join(thread: usize, result: *u8) i32;
-  fn @c pthread_detach(thread: usize) i32;
-  fn @c pthread_attr_init(attr: *PthreadAttr) i32;
-  fn @c pthread_attr_setstacksize(attr: *PthreadAttr, size: usize) i32;
-  fn @c pthread_attr_destroy(attr: *PthreadAttr) i32;
-  fn @c sched_yield() i32;
-  fn @c nanosleep(request: *Timespec, remaining: *Timespec) i32;
-  fn @c cone_threadId() u32;
-  fn @c cone_processors() i32;
+#if #os != .windows {
+  extern {
+    fn @c pthread_create(thread: *usize, attr: *PthreadAttr, entry: Entry, arg: *u8) i32;
+    fn @c pthread_join(thread: usize, result: *u8) i32;
+    fn @c pthread_detach(thread: usize) i32;
+    fn @c pthread_attr_init(attr: *PthreadAttr) i32;
+    fn @c pthread_attr_setstacksize(attr: *PthreadAttr, size: usize) i32;
+    fn @c pthread_attr_destroy(attr: *PthreadAttr) i32;
+    fn @c sched_yield() i32;
+    fn @c nanosleep(request: *Timespec, remaining: *Timespec) i32;
+    fn @c cone_threadId() u32;
+    fn @c cone_processors() i32;
+  }
 }
 
 const infinite = 0xFFFFFFFFu32;                // INFINITE
@@ -265,28 +269,28 @@ const nsPerSecond = 1000000000u64;
 
 // The OS's id for the calling thread
 fn osThreadId() u32 {
-  if isWindows() {GetCurrentThreadId()} else {cone_threadId()}
+  #if #os == .windows {GetCurrentThreadId()} #else {cone_threadId()}
 }
 
 // Let another thread ready to run on this processor have it
 fn osYield() {
-  if isWindows() {SwitchToThread();} else {sched_yield();}
+  #if #os == .windows {SwitchToThread();} #else {sched_yield();}
 }
 
 // Wait for the thread to end, and let go of its handle
 fn osJoin(handle: usize) {
-  if isWindows() {
+  #if #os == .windows {
     WaitForSingleObject(handle, infinite);
     CloseHandle(handle);
   }
-  else {
+  #else {
     pthread_join(handle, null);
   }
 }
 
 // Let go of the thread's handle; the thread runs on alone
 fn osDetach(handle: usize) {
-  if isWindows() {CloseHandle(handle);} else {pthread_detach(handle);}
+  #if #os == .windows {CloseHandle(handle);} #else {pthread_detach(handle);}
 }
 
 // ---------------------------------------------------------------------------
@@ -454,49 +458,53 @@ fn leave() {
 // starter the new thread's id; POSIX does not, so there the starter waits for
 // the thread to store it, which is the first thing it does.
 fn launch(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
-  if isWindows() {
+  #if #os == .windows {
     launchWindows(entry, pkt, info, stackSize)
   }
-  else {
+  #else {
     launchPosix(entry, pkt, info, stackSize)
   }
 }
 
 // Each system's calls are a function of their own, called from the branch for
-// that system alone: on the other system it is not part of the program
-fn launchWindows(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
-  let stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(stackSize)};
-  var id = 0u32;
-  let handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
-  (*info).id.storeOrdered(id, MemOrder.Relaxed);
-  handle
+// that system alone: on the other system it is not declared
+#if #os == .windows {
+  fn launchWindows(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
+    let stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32} else {u32.from(stackSize)};
+    var id = 0u32;
+    let handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+    (*info).id.storeOrdered(id, MemOrder.Relaxed);
+    handle
+  }
 }
 
-fn launchPosix(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
-  var handle = 0usize;
-  var result = 0i32;
-  if stackSize == 0usize {
-    result = pthread_create(&mut handle as *usize, null, entry, pkt);
-  }
-  else {
-    var attr = PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-    pthread_attr_init(&mut attr as *PthreadAttr);
-    let size = if stackSize < minPosixStack {minPosixStack} else {stackSize};
-    result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
-    if result == 0i32 {
-      result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
+#if #os != .windows {
+  fn launchPosix(entry: Entry, pkt: *u8, info: *Info, stackSize: usize) usize {
+    var handle = 0usize;
+    var result = 0i32;
+    if stackSize == 0usize {
+      result = pthread_create(&mut handle as *usize, null, entry, pkt);
     }
-    pthread_attr_destroy(&mut attr as *PthreadAttr);
-  }
-  if result != 0i32 {
-    handle = 0usize;
-  }
-  else {
-    while (*info).id.loadOrdered(MemOrder.Acquire) == 0u32 {
-      sched_yield();
+    else {
+      var attr = PthreadAttr(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+      pthread_attr_init(&mut attr as *PthreadAttr);
+      let size = if stackSize < minPosixStack {minPosixStack} else {stackSize};
+      result = pthread_attr_setstacksize(&mut attr as *PthreadAttr, size);
+      if result == 0i32 {
+        result = pthread_create(&mut handle as *usize, &mut attr as *PthreadAttr, entry, pkt);
+      }
+      pthread_attr_destroy(&mut attr as *PthreadAttr);
     }
+    if result != 0i32 {
+      handle = 0usize;
+    }
+    else {
+      while (*info).id.loadOrdered(MemOrder.Acquire) == 0u32 {
+        sched_yield();
+      }
+    }
+    handle
   }
-  handle
 }
 
 // How to start a thread, for 'startWith': its name, and the bytes to reserve
@@ -628,7 +636,7 @@ pub fn current() ThreadRef {
 
 // How many logical processors the machine has, at least 1
 pub fn parallelism() u32 {
-  let n = if isWindows() {GetActiveProcessorCount(allProcessorGroups)} else {u32.from(cone_processors())};
+  let n = #if #os == .windows {GetActiveProcessorCount(allProcessorGroups)} #else {u32.from(cone_processors())};
   if n == 0u32 {1u32} else {n}
 }
 
@@ -641,36 +649,40 @@ pub fn yieldNow() {
 // less gives up the rest of the time slice
 pub fn sleep(d: time.Duration) {
   if d.nanos() <= 0i64 {
-    if isWindows() {Sleep(0u32);} else {sched_yield();}
+    #if #os == .windows {Sleep(0u32);} #else {sched_yield();}
     return;
   }
   let ns = u64.from(d.nanos());
-  if isWindows() {sleepWindows(ns);} else {sleepPosix(ns);}
+  #if #os == .windows {sleepWindows(ns);} #else {sleepPosix(ns);}
 }
 
-fn sleepWindows(ns: u64) {
-  var slept = false;
-  let timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
-  if timer != 0usize {
-    // Relative (negative), in 100 ns units, rounded up
-    var due = 0i64 - i64.from((ns + 99u64) / 100u64);
-    if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
-      WaitForSingleObject(timer, infinite);
-      slept = true;
+#if #os == .windows {
+  fn sleepWindows(ns: u64) {
+    var slept = false;
+    let timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+    if timer != 0usize {
+      // Relative (negative), in 100 ns units, rounded up
+      var due = 0i64 - i64.from((ns + 99u64) / 100u64);
+      if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
+        WaitForSingleObject(timer, infinite);
+        slept = true;
+      }
+      CloseHandle(timer);
     }
-    CloseHandle(timer);
-  }
-  if !slept {
-    Sleep(msCeil(ns));
+    if !slept {
+      Sleep(msCeil(ns));
+    }
   }
 }
 
 // POSIX's nanosleep, resumed for the time left when a signal ends it early
-fn sleepPosix(ns: u64) {
-  var request = Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
-  var left = Timespec(0i64, 0i64);
-  while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 && *libc.errno() == eintr {
-    request = left;
+#if #os != .windows {
+  fn sleepPosix(ns: u64) {
+    var request = Timespec(i64.from(ns / nsPerSecond), i64.from(ns % nsPerSecond));
+    var left = Timespec(0i64, 0i64);
+    while nanosleep(&mut request as *Timespec, &mut left as *Timespec) != 0i32 && *libc.errno() == eintr {
+      request = left;
+    }
   }
 }
 
