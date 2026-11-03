@@ -2027,6 +2027,7 @@ fn actorDied(h: *Header) {
 // Finalize actor h's state: moved out of the block and dropped, so its own
 // 'final' runs, then its fields'
 fn finalizeState[S, M: Sendable](h: *Header) {
+  groupSweep(h);
   let st = mem.readRaw[S](stateOf[S, M](h));
 }
 
@@ -2226,9 +2227,9 @@ fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 // the end of the behaviour drops. Each piece sets the group as its thread's
 // current group around its body and restores the thread's own.
 //
-// What does not carry the group, because the code runs where no behaviour's
-// frame holds it: the rest of a behaviour after an 'await' (the continuation is
-// resumed from a reply's slot, which has none). It runs with no current group.
+// The rest of a behaviour after an 'await' runs in the group the await was made
+// in, kept in a side table until the reply comes (THE GROUP SURVIVES AN AWAIT,
+// below).
 var @threadlocal curGroup: usize = 0usize;
 
 // The process's own group, made on first use: the group of code running in none,
@@ -2349,7 +2350,7 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
     } else if kind == kindMsgGroup {
       runInGroup[S, M](f, h, slot, mslot);
     } else {
-      resumeSlot[S](st, payloadOf(slot), kind);
+      resumeSlot[S](st, h, payloadOf(slot), kind);
     }
     if tracing {
       traceRunEnd(h, cause, bhv);
@@ -2674,6 +2675,10 @@ pub struct Reply is Sendable {
   // longer outstanding (waitUntilIdle)
   fn final(self: &uni) {
     if to as usize != 0usize {
+      // a reply never answered: the group noted at its await goes with it
+      if (id & groupBit) != 0u64 {
+        groupForget(to, id ^ groupBit);
+      }
       let release = (*to).release;
       release(to);
     }
@@ -2740,7 +2745,167 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   if size > strideOf(h) - slotHead - replyHead || align > 16usize {
     flags = flags | replyBoxed;
   }
-  Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
+  // an await made in a cancel group notes the group, keyed by this actor and
+  // the id word, and marks the id word (THE GROUP SURVIVES AN AWAIT)
+  var word = id;
+  let gp = curGroup;
+  if gp != 0usize {
+    if !hasId {
+      word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
+    }
+    groupNote(h, word, gp);
+    word = word | groupBit;
+  }
+  Reply(to: h, at: run, id: word, meta: metaOf(size, flags))
+}
+
+// THE GROUP SURVIVES AN AWAIT. An await is a seam: its second half runs when the
+// reply's slot reaches the front of the awaiting actor's mailbox, on whatever
+// worker takes the actor, long after the behaviour that began it has returned and
+// the frame that held its group has gone. So an await made while a cancel group
+// is current notes a copy of the group's handle (another owner) in a SIDE TABLE,
+// global, keyed by the awaiting actor and a word: the record's id where the
+// await has a record, else a ticket from a counter. The same word, with its top
+// bit set (groupBit), is the Reply's id word, and so the id word of the reply's
+// slot, which nothing else reads except the second half's resume through here.
+// resumeSlot sees the bit, takes the entry, makes the group the current group
+// for the second half and lets go of it after. An await made in no group sets
+// nothing, notes nothing, and costs the resume one bit test of a word it loads.
+// An entry is removed on every path: by the resume (above); by the drop of a
+// Reply never answered (Reply.final), the reply's hold on its actor let go with
+// it; and by the death of the actor (finalizeState), which sweeps what is
+// left of its entries. Nothing has a timeout or a cancel path of its own that
+// frees a parked record while its reply is in flight, so those are all.
+const groupBit = 0x8000000000000000u64;
+const gBuckets = 1024usize;
+
+struct GNode {
+  pub next: *GNode;
+  pub h: *Header;
+  pub w: u64;
+  pub g: CancelGroup;
+}
+
+var gTicket: u64 = 0u64;
+var gLock: u32 = 0u32;
+var gTable: usize = 0usize;       // the buckets, gBuckets pointers, made by the first note
+var gCount: usize = 0usize;       // entries in the table
+
+// How many awaits made in a cancel group are parked: for tests and finding leaks
+pub fn groupAwaitsLive() usize {
+  mem.atomicLoad[usize](&gCount, MemOrder.Acquire)
+}
+
+fn gAcquire() {
+  var spins = 0u32;
+  while true {
+    var seen = 0u32;
+    var won = false;
+    seen, won = mem.atomicCompareSwap[u32](&gLock, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if won {
+      return;
+    }
+    spins = spins + 1u32;
+    if spins > 64u32 {
+      yieldProcessor();
+    }
+  }
+}
+
+fn gRelease() {
+  mem.atomicStore[u32](&gLock, 0u32, MemOrder.Release);
+}
+
+fn gBucket(h: *Header, w: u64) usize {
+  let x = u64.from((h as usize) >> 4usize) ^ (w * 0x9E3779B97F4A7C15u64);
+  usize.from((x >> 20u64) % u64.from(gBuckets))
+}
+
+// Note a copy of the group at gp for (h, w)
+fn groupNote(h: *Header, w: u64, gp: usize) {
+  let n = libc.malloc(mem.sizeof[GNode]()) as *GNode;
+  if n as usize == 0usize {
+    die("actors: out of memory for an await's group");
+  }
+  (*n).h = h;
+  (*n).w = w;
+  mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
+  gAcquire();
+  if gTable == 0usize {
+    let t = libc.calloc(gBuckets, mem.sizeof[usize]());
+    if t as usize == 0usize {
+      die("actors: out of memory for the group table");
+    }
+    gTable = t as usize;
+  }
+  let at = (gTable as *usize) + gBucket(h, w);
+  (*n).next = *at as *GNode;
+  *at = n as usize;
+  gCount = gCount + 1usize;
+  gRelease();
+}
+
+// Take the entry for (h, w) out of the table: its node, which the caller moves
+// the group out of and frees, or 0
+fn groupTake(h: *Header, w: u64) *GNode {
+  gAcquire();
+  var found = null as *GNode;
+  if gTable != 0usize {
+    var link = (gTable as *usize) + gBucket(h, w);
+    while *link != 0usize && found as usize == 0usize {
+      let n = *link as *GNode;
+      if (*n).h as usize == h as usize && (*n).w == w {
+        *link = (*n).next as usize;
+        found = n;
+        gCount = gCount - 1usize;
+      } else {
+        link = &(*n).next as *usize;
+      }
+    }
+  }
+  gRelease();
+  found
+}
+
+// Remove the entry for (h, w) and let go of its group
+fn groupForget(h: *Header, w: u64) {
+  let n = groupTake(h, w);
+  if n as usize != 0usize {
+    mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
+    libc.free(n as *u8);
+  }
+}
+
+// Remove every entry of actor h (its death), letting go of their groups
+fn groupSweep(h: *Header) {
+  if mem.atomicLoad[usize](&gCount, MemOrder.Acquire) == 0usize {
+    return;
+  }
+  var gone = null as *GNode;
+  gAcquire();
+  var b = 0usize;
+  while gTable != 0usize && b < gBuckets {
+    var link = (gTable as *usize) + b;
+    while *link != 0usize {
+      let n = *link as *GNode;
+      if (*n).h as usize == h as usize {
+        *link = (*n).next as usize;
+        (*n).next = gone;
+        gone = n;
+        gCount = gCount - 1usize;
+      } else {
+        link = &(*n).next as *usize;
+      }
+    }
+    b = b + 1usize;
+  }
+  gRelease();
+  while gone as usize != 0usize {
+    let n = gone;
+    gone = (*n).next;
+    mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
+    libc.free(n as *u8);
+  }
 }
 
 // A reply's slot, claimed in the awaiting actor's ring and its resume record
@@ -3059,9 +3224,29 @@ pub fn resumeId[S](st: &mut S, run: *u8, id: u64, data: *u8) {
 // resume function and the id, then the value (or a pointer to the box that
 // holds it). The resume function takes the value out; a box is freed after
 // it has (REPLIES, above)
-fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
+fn resumeSlot[S](st: *S, h: *Header, p: *u8, kind: u64) {
+  let id0 = *((p + 8usize) as *u64);
+  if (id0 & groupBit) == 0u64 {
+    resumeSlotIn[S](st, p, kind, id0);
+    return;
+  }
+  // an await made in a cancel group (THE GROUP SURVIVES AN AWAIT): the entry
+  // noted at the await is taken, its group made the thread's current group for
+  // the second half, and let go after
+  let w = id0 ^ groupBit;
+  let node = groupTake(h, w);
+  if node as usize == 0usize {
+    die("actors: a reply made in a cancel group has no group noted");
+  }
+  let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
+  libc.free(node as *u8);
+  curGroup = &g as *CancelGroup as usize;
+  resumeSlotIn[S](st, p, kind, w);
+  curGroup = 0usize;
+}
+
+fn resumeSlotIn[S](st: *S, p: *u8, kind: u64, id: u64) {
   let run = *(p as **u8);
-  let id = *((p + 8usize) as *u64);
   var data = p + replyHead;
   let boxed = kind >= kindReply + 2u64;
   if boxed {
