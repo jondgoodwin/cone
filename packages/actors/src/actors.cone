@@ -73,6 +73,9 @@
 //   actors.waitUntilIdle()          INTERIM: wait until no actor is queued or
 //                                   running and no awaited operation is
 //                                   outstanding (WAITING FOR IDLE, below)
+//   actors.waitUntilIdleFor(limit)  the same with a deadline (a time.Duration): true if
+//                                   idle in time, false if not; what is unfinished
+//                                   goes on, and finalAll abandons it as usual
 //   actors.parallelRange(lo, hi, grain, body)
 //                                   run body, a callable taking (lo, hi), over
 //                                   [lo, hi) in pieces spread over the workers,
@@ -403,7 +406,8 @@
 // operation is outstanding: every operation an 'await' started (an
 // Awaitable's, which the aio package's I/O all is) has been answered, and
 // what its answer started has run. A program that never goes idle, a
-// listening server above all, never returns from the call; it has no timeout.
+// listening server above all, never returns from the call; waitUntilIdleFor(limit)
+// is the form with a deadline, returning whether all finished.
 // A call made when nothing is going on returns at once, and one before any
 // actor starts starts no worker. The call is a stopgap: how a program ends
 // with I/O in flight is to be designed (the concurrency skein), and this
@@ -893,6 +897,7 @@ mod actors use ActorGc;
 import libc;
 import sync use Arc;
 import thread;
+import time;
 import cancelgroups use CancelGroup, Cancelled, Cause;
 
 // ---------------------------------------------------------------------------
@@ -3551,7 +3556,9 @@ fn pendingUnregister(n: *PNode) {
 // print goes through a console that is still there. That drain belongs at the
 // marked line in stopWorkers, ahead of this call, not in here.
 fn abandonParked(s: *Sched) {
+  var round = 0u32;
   while true {
+    round = round + 1u32;
     var lists: *usize = null;       // pairs: slots, cap, count
     var used = 0usize;
     var room = 0usize;
@@ -3587,12 +3594,40 @@ fn abandonParked(s: *Sched) {
     }
     var i = 0usize;
     while i < used {
-      dropRecords(*(lists + i) as *usize, *(lists + i + 1usize), *(lists + i + 2usize));
+      if round > abandonRounds {
+        freeRecords(*(lists + i) as *usize, *(lists + i + 1usize), *(lists + i + 2usize));
+      } else {
+        dropRecords(*(lists + i) as *usize, *(lists + i + 1usize), *(lists + i + 2usize));
+      }
       i = i + 3usize;
     }
     libc.free(lists as *u8);
     quiesce(s);
   }
+}
+
+// ROUND CAP. Dropping a record runs its finalizers, which may start a new
+// await that parks a new record, so the rounds above could go on for ever.
+// After this many rounds, what is still parked is freed WITHOUT running its
+// finalizers (freeRecords): the process is ending, the values those records
+// held are leaked, and the exit goes on
+const abandonRounds = 64u32;
+
+// Free the count records parked in a table's slots, and the slots, running no
+// finalizer (the round cap's last resort)
+fn freeRecords(slots: *usize, cap: usize, n: usize) {
+  var left = n;
+  var i = 0usize;
+  while left != 0usize && i < cap {
+    let v = *(slots + i);
+    if v & 1usize == 0usize {
+      libc.free(v as *u8);
+      blocksGiven.addOrdered(1u64, MemOrder.Relaxed);
+      left = left - 1usize;
+    }
+    i = i + 1usize;
+  }
+  libc.free(slots as *u8);
 }
 
 // A cursor over the parked records, each as an Erased value: the first thing
@@ -4906,6 +4941,37 @@ pub fn waitUntilIdle() {
     sync.futexWait(&(*s).quiet, q);
   }
   mem.atomicStore[u32](&(*s).done as *u32, 0u32, MemOrder.SeqCst);
+}
+
+// The deadline form of waitUntilIdle: wait at most 'limit', and say whether
+// the runtime went idle in time. false leaves the runtime running with the
+// unfinished work still going; ending the program (finalAll) abandons it as
+// usual. A limit of zero or less only looks once
+pub fn waitUntilIdleFor(limit: time.Duration) bool {
+  if running.load() == 0usize {
+    return true;
+  }
+  if me != 0usize {
+    die("actors: waitUntilIdleFor called on one of the runtime's own workers, which would wait for itself");
+  }
+  let s = running.load() as *Sched;
+  let start = time.Instant.now();
+  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst);
+  var ok = false;
+  while true {
+    let q = ld32(&(*s).quiet as *u32);
+    if idleNow(s) {
+      ok = true;
+      break;
+    }
+    let left = limit - start.elapsed();
+    if left.isNegative() || left.isZero() {
+      break;
+    }
+    sync.futexWaitTimeout(&(*s).quiet, q, left);
+  }
+  mem.atomicStore[u32](&(*s).done as *u32, 0u32, MemOrder.SeqCst);
+  ok
 }
 
 // Wait until quiescent, then stop and join the workers, keeping their totals
