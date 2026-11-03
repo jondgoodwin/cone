@@ -93,7 +93,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case let Err(e) { return Err[Unit, String](e.copy()); }
+    case let Err(e) { return Err[Unit, String](e.clone()); }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -105,7 +105,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
       while f < mods[m].files.len() && !kernels {
         match holdsKernel(&mods[m].files[f]) {
           case let Ok(ok) { kernels = ok; }
-          case let Err(e) { return Err[Unit, String](e.copy()); }
+          case let Err(e) { return Err[Unit, String](e.clone()); }
         }
         f = f + 1usize;
       }
@@ -151,7 +151,7 @@ fn importsOf(m: &Module) List[Import] {
   var out = List[Import].empty();
   var i = 0usize;
   while i < m.imports.len() {
-    out.push(m.imports[i].copy());
+    out.push(m.imports[i].clone());
     i = i + 1usize;
   }
   out
@@ -179,7 +179,7 @@ fn firstImport(unit: &Unit, name: &str, gpuOnly: bool = false) Import {
     let m = *order[w];
     var i = 0usize;
     while i < unit.mods[m].imports.len() && (unit.mods[m].gpu || !gpuOnly) {
-      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
+      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].clone(); }
       i = i + 1usize;
     }
     w = w + 1usize;
@@ -216,16 +216,16 @@ struct Plan {
 
   pub fn visit(self: &mut, reg: &Registry, p: usize) Result[void, String] {
     let key = reg.packages[p].key();
-    state.insert(key.copy(), visiting);
+    state.insert(key.clone(), visiting);
     var scanned = List[Module].empty();
     match scanPackage(&reg.packages[p]) {
       case var Ok(ok) { scanned <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     var unit = Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
       case var Ok(ok) { unit <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     units.push(unit);
     let u = units.len() - 1usize;
@@ -259,13 +259,13 @@ struct Plan {
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case let Err(e) { return Err[void, String](e.copy()); }
+          case let Err(e) { return Err[void, String](e.clone()); }
         }
       }
       d = d + 1usize;
     }
     stack.pop();
-    state.insert(key.copy(), visited);
+    state.insert(key.clone(), visited);
     order.push(u);
     succeeded()
   }
@@ -306,7 +306,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case let Err(e) { return Err[Plan, String](e.copy()); }
+      case let Err(e) { return Err[Plan, String](e.clone()); }
     }
     if plan.state.contains(topKey.view()) {
       // One of core's own imports: built with what it imports, and no core
@@ -315,7 +315,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case let Err(e) { return Err[Plan, String](e.copy()); }
+    case let Err(e) { return Err[Plan, String](e.clone()); }
   }
   Ok[Plan, String](plan)
 }
@@ -439,7 +439,7 @@ fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &
   let module = &unit.mods[m];
   // The names are copied before they are appended: 'text' and 'unit' are both reached
   // through references, and nothing shows 'text' is none of the Strings 'unit' holds
-  let moduleName = module.name.copy();
+  let moduleName = module.name.clone();
   text <- pad.view(), moduleName.view(), ": {\r\n";
   var i = 0usize;
   while i < module.files.len() {
@@ -452,7 +452,7 @@ fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &
     let line = &module.lines[i];
     let incl = includeFor(&reg.packages[line.pkg], out);
     let place = conePath(&incl);
-    let importName = line.name.copy();
+    let importName = line.name.clone();
     text <- pad.view(), "    import ", importName.view(), ": \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }
