@@ -795,7 +795,10 @@ Three adjustments, two of them asymmetric on purpose:
   namespace, is replaced by the receiver (read through the borrow). This is the
   method core's `Clone` grants every Copy type ([struct](struct.md), "Clone, and
   the `clone` it supplies"). A type that moves and has no `clone` falls through
-  to the ordinary missing-member refusal.
+  to the ordinary missing-member refusal. `clone` takes `&Self`, so on a borrow
+  of a read-only borrow (`Option[&T]`'s payload, `T` instanced as `&U`) the call
+  does not read through the outer level (`fnCallReadThroughRefs` stops there):
+  `Self` is the inner borrow (`refIsCopyBorrow`), and the call is that borrow.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self: &`, `self: &mut` or `self: &uni`: it is probed as a `ro`
   borrow, then (for a receiver whose type declares `Immutable`, whose `self: &`

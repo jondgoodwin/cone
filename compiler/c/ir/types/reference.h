@@ -124,6 +124,9 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode);
 
+// Is this type a read-only borrow, which copies and so is Clone?
+int refIsCopyBorrow(INode *type);
+
 // Whether a reference may cross to another thread, as far as the reference
 // itself says (refThreadBinds): what it points at is asked separately
 typedef enum {
