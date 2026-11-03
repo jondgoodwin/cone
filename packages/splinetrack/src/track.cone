@@ -46,7 +46,7 @@ pub struct TrackSample {
 // The Track's samples per segment between control points
 pub const TRACK_SUB = 48;
 
-pub struct Track {
+pub struct Track is Default {
   pub points: List[TrackPoint];
   pub closed: bool;
   pub length: f32;
@@ -64,7 +64,7 @@ pub struct Track {
     let n = points.len();
     let nseg = if closed { n } else { n - 1usize };
     // chord lengths
-    var chord = List[f32].empty();
+    var chord = List[f32]();
     var i = 0usize;
     while i < nseg {
       let j = (i + 1usize) % n;
@@ -73,7 +73,7 @@ pub struct Track {
     }
     // Hermite tangents (position derivative per unit of the segment's u, so scaled by the chord of the
     // segment it is used in)
-    var tg = List[Vec3].empty();
+    var tg = List[Vec3]();
     i = 0usize;
     while i < n {
       var m = Vec3(0., 0., 0.);
@@ -94,7 +94,7 @@ pub struct Track {
       i = i + 1usize;
     }
     // roll tangents: central differences in the control index
-    var rt = List[f32].empty();
+    var rt = List[f32]();
     i = 0usize;
     while i < n {
       var r = 0.f;
@@ -111,9 +111,9 @@ pub struct Track {
       i = i + 1usize;
     }
     // sample
-    var ps = List[Vec3].empty();
-    var ds = List[Vec3].empty();      // derivative directions (not unit)
-    var rolls = List[f32].empty();
+    var ps = List[Vec3]();
+    var ds = List[Vec3]();      // derivative directions (not unit)
+    var rolls = List[f32]();
     var seg = 0usize;
     while seg < nseg {
       let a = seg;
@@ -160,8 +160,8 @@ pub struct Track {
     }
     let count = ps.len();
     // arc length and unit tangents
-    var ts = List[f32].empty();
-    var tans = List[Vec3].empty();
+    var ts = List[f32]();
+    var tans = List[Vec3]();
     ts.push(0.);
     i = 0usize;
     while i < count {
@@ -171,7 +171,7 @@ pub struct Track {
     }
     let total = *ts[count - 1usize];
     // the rotation-minimising frame by double reflection, from a first up
-    var frameUp = List[Vec3].empty();
+    var frameUp = List[Vec3]();
     let t0 = *tans[0usize];
     var up0 = Vec3(0., 1., 0.);
     if libc.fabsf(t0.y) > 0.95 { up0 = Vec3(0., 0., 1.); }
@@ -223,8 +223,8 @@ pub struct Track {
     // inverted, not flipped); between those nodes (the steep parts, where "vertical" has no meaning) the
     // turn is interpolated along the arc length, and beyond the first or last it is held. Roll is then
     // the banking away from level.
-    var valid = List[bool].empty();
-    var level = List[f32].empty();
+    var valid = List[bool]();
+    var level = List[f32]();
     i = 0usize;
     while i < count {
       let tn = *tans[i];
@@ -274,14 +274,14 @@ pub struct Track {
       }
     }
     // the banking: roll each up about its tangent
-    var ups = List[Vec3].empty();
+    var ups = List[Vec3]();
     i = 0usize;
     while i < count {
       ups.push(Quat.angleAxis(*rolls[i], *tans[i]) * *frameUp[i]);
       i = i + 1usize;
     }
     // curvature vectors dT/ds: central differences over the neighbouring nodes
-    var kaps = List[Vec3].empty();
+    var kaps = List[Vec3]();
     i = 0usize;
     while i < count {
       var lo = if i > 0usize { i - 1usize } else { 0usize };
@@ -299,12 +299,6 @@ pub struct Track {
       i = i + 1usize;
     }
     Track(points, closed, total, ts, ps, tans, ups, kaps, rolls)
-  }
-
-  // A track with no nodes, to be filled by a network's route (network.cone)
-  pub fn empty() Track {
-    Track(List[TrackPoint].empty(), false, 0., List[f32].empty(), List[Vec3].empty(), List[Vec3].empty(),
-      List[Vec3].empty(), List[Vec3].empty(), List[f32].empty())
   }
 
   pub fn nodeCount(self: &) usize { ts.len() }

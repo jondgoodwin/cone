@@ -1306,7 +1306,7 @@ an access conflicting with every loan of it: a holder still alive holding one
 — declared outside the block, or before the variable in it and so finalized
 after it — and used afterwards, is refused. That is the borrow kept past its
 source, `{ var a = 1i64; var b: &i64 = &zero; b = &a; r = b } *r`, or `{ var a
-= Arena.empty(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
+= Arena(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
 follows what it holds now, so the stores themselves are legal, and so is
 `r` never used again after `a` ends; this is where a borrow kept past its
 source in a variable of the function is refused. A block handing a value on to a holder — its final

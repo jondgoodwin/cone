@@ -48,8 +48,8 @@ struct Session {
 }
 
 fn newSession(repo: &Path, reg: Registry, out: &Path, mode: &str, defines: &List[String], useCache: bool, strip: bool) Session {
-  Session(repo.clone(), reg, out.clone(), String.from(mode), Dict[String, Path].empty(),
-    Dict[String, Path].empty(), List[String].empty(), List[String].empty(), Path.from(""), false, noLinkerYet(),
+  Session(repo.clone(), reg, out.clone(), String.from(mode), Dict[String, Path](),
+    Dict[String, Path](), List[String](), List[String](), Path.from(""), false, noLinkerYet(),
     copyStrings(defines), useCache, strip)
 }
 
@@ -87,7 +87,7 @@ fn build(s: &mut Session, top: usize) Result[Path, String] {
     case var Ok(ok) { plan <-> ok; }
     case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  var objs = List[Path].empty();
+  var objs = List[Path]();
   match compile(s, &plan, top, "", true) {
     case var Ok(ok) { objs <-> ok; }
     case let Err(e) { return Err[Path, String](e.clone()); }
@@ -150,7 +150,7 @@ fn buildProgram(s: &mut Session, file: &Path, dest: &Path) Result[Path, String] 
     case var Ok(ok) { plan <-> ok; }
     case let Err(e) { return Err[Path, String](e.clone()); }
   }
-  var objs = List[Path].empty();
+  var objs = List[Path]();
   match compile(s, &plan, top, dest, false) {
     case var Ok(ok) { objs <-> ok; }
     case let Err(e) { return Err[Path, String](e.clone()); }
@@ -203,8 +203,8 @@ fn lonePackage(given: &Path) Result[Package, String] {
       "; rename the module, and the file where it is named for it"));
   }
   let folder = file.parent();
-  Ok[Package, String](Package(name, String.empty(), String.from("executable"), folder, file.clone(), true,
-    List[String].empty(), List[Path].empty(), List[String].empty(), false))
+  Ok[Package, String](Package(name, String(), String.from("executable"), folder, file.clone(), true,
+    List[String](), List[Path](), List[String](), false))
 }
 
 // Write the package's build description into out and compile the package
@@ -242,7 +242,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   let objName = cat(pkg.name.view(), ".obj");
   let obj = out.join(objName.view());
   let isLibrary = output.equals("library");
-  var outputs = List[Path].empty();
+  var outputs = List[Path]();
   outputs.push(obj.clone());
   if isLibrary { outputs.push(incl.clone()); }
   let outText = native(out);
@@ -253,7 +253,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
   // the package, the include file of every package the description names,
   // and where conec loads the prelude from the packages folder, what it
   // reads there
-  var files = List[KeyFile].empty();
+  var files = List[KeyFile]();
   if !pkg.lone {
     let manifest = pkg.root.join("congo.toml");
     files.push(keyFileOf("manifest", &manifest));
@@ -333,7 +333,7 @@ fn compileUnit(conec: &Path, reg: &Registry, plan: &Plan, u: usize, out: &Path, 
 // Run conec as the command line says (conecCommand), and show what it said
 // but its closing 'Compile finished' line; whether it succeeded
 fn runConec(args: &List[String]) bool {
-  var chatter = String.empty();
+  var chatter = String();
   var code = 0u32;
   match process.run(args.view()) {
     case let Ok(ok) {
@@ -347,7 +347,7 @@ fn runConec(args: &List[String]) bool {
     }
   }
   let lines = splitLines(chatter.view());
-  var shownLines = List[String].empty();
+  var shownLines = List[String]();
   var i = 0usize;
   while i < lines.len() {
     if !isBlank(lines[i].view()) && !lines[i].startsWith("Compile finished") {
@@ -439,7 +439,7 @@ fn compile(s: &mut Session, plan: &Plan, top: usize, topOut: &Path, announce: bo
     }
     i = i + 1usize;
   }
-  var objs = List[Path].empty();
+  var objs = List[Path]();
   i = 0usize;
   while i < plan.order.len() {
     let u = *plan.order[i];
@@ -588,7 +588,7 @@ fn runtimeFolders(repo: &Path, paths: &List[Path]) List[Path] {
   var folders = copyPaths(paths);
   let deps = depsFolder(repo);
   if fs.isDir(&deps) {
-    var entries = List[fs.DirEntry].empty();
+    var entries = List[fs.DirEntry]();
     match fs.readDir(&deps) {
       case var Ok(ok) { entries <-> ok; }
       case is Err {}
@@ -634,7 +634,7 @@ fn copyRuntime(source: &Path, folder: &Path, name: &str) Result[bool, String] {
 // Copy a file, unless the copy at target is the same already, byte for byte;
 // whether it copied
 fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
-  var data = String.empty();
+  var data = String();
   match fs.readFile(source) {
     case var Ok(ok) { data <-> ok; }
     case let Err(e) {
@@ -645,7 +645,7 @@ fn copyIfChanged(source: &Path, target: &Path) Result[bool, String] {
     }
   }
   if fs.isFile(target) {
-    var there = String.empty();
+    var there = String();
     match fs.readFile(target) {
       case var Ok(ok) { there <-> ok; }
       case is Err {}
@@ -684,8 +684,8 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   }
   let reg = &s.reg;
   // The units, the program's first, then the rest last built first
-  var units = List[usize].empty();
-  var objOrder = List[Path].empty();
+  var units = List[usize]();
+  var objOrder = List[Path]();
   let n = plan.order.len();
   units.push(*plan.order[n - 1usize]);
   objOrder.push(objs[n - 1usize].clone());
@@ -695,8 +695,8 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
     units.push(*plan.order[i]);
     objOrder.push(objs[i].clone());
   }
-  var libraries = List[String].empty();
-  var paths = List[Path].empty();
+  var libraries = List[String]();
+  var paths = List[Path]();
   i = 0usize;
   while i < units.len() {
     let pkg = &reg.packages[plan.units[*units[i]].pkg];
@@ -721,8 +721,8 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   // The runtime DLLs every one of them names, each once, found before the
   // link: a missing one stops the build with no program linked, an earlier
   // build's removed, as a failed link leaves none
-  var runtimeNames = List[String].empty();
-  var runtimeFiles = List[Path].empty();
+  var runtimeNames = List[String]();
+  var runtimeFiles = List[Path]();
   let folders = runtimeFolders(&s.repo, &paths);
   i = 0usize;
   while i < units.len() {
@@ -762,7 +762,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
   let pdb = exe.parent().join(pdbName.view());
   _ = fs.removeFile(&pdb);
   var attempt = runLink(s, &objOrder, exe, &libraries, &paths);
-  var again = String.empty();
+  var again = String();
   // A link that failed the way a stale Visual Studio environment makes one
   // fail is tried once more, in the environment captured afresh
   if attempt.code != 0u32 && s.linker.environmental(attempt.said.view(), attempt.code, attempt.ran, &libraries)
@@ -771,7 +771,7 @@ fn link(s: &mut Session, plan: &Plan, objs: &List[Path], exe: &Path, announce: b
     again = String.from("\n(linked twice: the second time in Visual Studio's environment captured again from vcvars64.bat)");
   }
   if attempt.code != 0u32 {
-    var named = String.empty();
+    var named = String();
     i = 0usize;
     while i < units.len() {
       let pkg = &reg.packages[plan.units[*units[i]].pkg];
@@ -849,7 +849,7 @@ struct LinkRun {
 // [link.windows]. Built each time it is run, since a capture of Visual
 // Studio's environment again may find another link.exe.
 fn runLink(s: &mut Session, objOrder: &List[Path], exe: &Path, libraries: &List[String], paths: &List[Path]) LinkRun {
-  var command = List[String].empty();
+  var command = List[String]();
   command.push(native(&s.linker.tool));
   command.push(String.from("/NOLOGO"));
   var i = 0usize;
@@ -886,7 +886,7 @@ fn runLink(s: &mut Session, objOrder: &List[Path], exe: &Path, libraries: &List[
   s.linker.apply(&mut changes);
   var code = 0u32;
   var ran = true;
-  var said = String.empty();
+  var said = String();
   match process.run(command.view()) {
     case let Ok(ok) {
       code = ok.exitCode;

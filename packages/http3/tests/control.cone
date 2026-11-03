@@ -34,7 +34,7 @@ import http3 use *;
 fn t0() Instant {Instant.fromNanos(1000000000i64)}
 
 fn hex(b: &Array[u8]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < b.len {
     s.appendHex(u64.from(b[i]), 2usize);
@@ -44,7 +44,7 @@ fn hex(b: &Array[u8]) String {
 }
 
 fn bufOf(b: &Array[u8]) IoBuf {
-  if b.len == 0usize {return IoBuf.empty();}
+  if b.len == 0usize {return IoBuf();}
   var x = IoBuf(b.len);
   x.append(b);
   x
@@ -73,10 +73,10 @@ fn idFrame(out: &mut List[u8], kind: u64, id: u64) {encodeIdFrame(out, kind, id)
 // A unidirectional stream's type, then an empty SETTINGS frame for a
 // control stream
 fn opens(t: u64) List[u8] {
-  var b = List[u8].empty();
+  var b = List[u8]();
   encodeVarint(&mut b, t);
   if t == streamControl {
-    let none = List[u64].empty();
+    let none = List[u64]();
     encodeSettings(&mut b, none.view(), none.view());
   }
   b
@@ -98,10 +98,10 @@ fn errorText(e: &HttpError) String {
 // What the connection would do, writes to its own unidirectional streams
 // left out: 'w0 fin; stop 8 H3_REQUEST_REJECTED; close H3_FRAME_ERROR'
 fn sent(c: &mut Connection) String {
-  var s = String.empty();
+  var s = String();
   var going = true;
   while going {
-    var t = String.empty();
+    var t = String();
     match c.pollTransmit(t0()) {
       case let Write(w) {
         if (w.stream & 2u64) == 0u64 {
@@ -178,7 +178,7 @@ fn settledClient() Connection {
 // ---------------------------------------------------------------------------
 
 fn wire() {
-  var b = List[u8].empty();
+  var b = List[u8]();
   encodeVarint(&mut b, 0u64);
   encodeVarint(&mut b, 63u64);
   encodeVarint(&mut b, 64u64);
@@ -190,7 +190,7 @@ fn wire() {
   expectStr(hex(b.view()).view(), "003f40407fff80004000bfffffffc000000040000000ffffffffffffffff", "integers at each length's edges");
   var pos = 0usize;
   var v = 0u64;
-  var all = String.empty();
+  var all = String();
   while pos < b.len() {
     if !decodeVarint(b.view(), &mut pos, &mut v) {break;}
     all.appendUInt(v);
@@ -222,7 +222,7 @@ fn wire() {
   expectUInt(v, 151288809941952652u64, "...read");
   expectUInt(u64.from(peekVarint(&c, 8usize, &mut v)), 0u64, "a 4-byte integer of which 1 byte has come: 0");
   // A frame's head
-  var f = List[u8].empty();
+  var f = List[u8]();
   encodeFrameHead(&mut f, 0x21u64, 300u64);
   var fc = Chain.make(100usize);
   fc.push(bufOf(f.view()));
@@ -237,7 +237,7 @@ fn wire() {
 }
 
 fn settingsPayloads() {
-  var p = List[u8].empty();
+  var p = List[u8]();
   encodeVarint(&mut p, settingQpackMaxTableCapacity);
   encodeVarint(&mut p, 4096u64);
   encodeVarint(&mut p, settingMaxFieldSectionSize);
@@ -277,7 +277,7 @@ fn settingsPayloads() {
 fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
 
 fn unhex(s: &Array[u8]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   var i = 0usize;
   while i < s.len {
     if s[i] == ' ' {
@@ -331,8 +331,8 @@ fn controlStream() {
   }
   // Once
   var c = settled();
-  var two = List[u8].empty();
-  let none = List[u64].empty();
+  var two = List[u8]();
+  let none = List[u64]();
   encodeSettings(&mut two, none.view(), none.view());
   feed(&mut c, 2u64, two.view(), false);
   expectStr(closeOf(&mut c).view(), "H3_FRAME_UNEXPECTED", "a second SETTINGS");
@@ -341,7 +341,7 @@ fn controlStream() {
   var k = 0usize;
   while k < 7usize {
     var d = settled();
-    var f = List[u8].empty();
+    var f = List[u8]();
     frame(&mut f, kinds[k], "ab");
     feed(&mut d, 2u64, f.view(), false);
     var l = String.from("type ");
@@ -354,8 +354,8 @@ fn controlStream() {
   var e = server();
   var g = opens(streamControl);
   g.truncate(1usize);
-  var ids = List[u64].empty();
-  var vals = List[u64].empty();
+  var ids = List[u64]();
+  var vals = List[u64]();
   ids.push(0x21u64);
   vals.push(5u64);
   ids.push(0x1234u64);
@@ -384,12 +384,12 @@ fn controlStream() {
   expectStr(closeOf(&mut h2).view(), "H3_FRAME_ERROR", "SETTINGS cut off inside a parameter");
   // One-integer frames: bytes over, or longer than 8
   var i = settledClient();
-  var ib = List[u8].empty();
+  var ib = List[u8]();
   frame(&mut ib, frameGoAway, unhex("0400").view());
   feed(&mut i, 3u64, ib.view(), false);
   expectStr(closeOf(&mut i).view(), "H3_FRAME_ERROR", "a GOAWAY of an integer and a byte over");
   var j = settledClient();
-  var jb = List[u8].empty();
+  var jb = List[u8]();
   encodeFrameHead(&mut jb, frameGoAway, 9u64);
   feed(&mut j, 3u64, jb.view(), false);
   expectStr(closeOf(&mut j).view(), "H3_FRAME_ERROR", "a GOAWAY 9 bytes long, refused from its head");
@@ -458,59 +458,59 @@ fn streamTypes() {
 fn ids() {
   // GOAWAY at a client: a client's bidirectional stream, never rising
   var a = settledClient();
-  var ab = List[u8].empty();
+  var ab = List[u8]();
   idFrame(&mut ab, frameGoAway, 6u64);
   feed(&mut a, 3u64, ab.view(), false);
   expectStr(closeOf(&mut a).view(), "H3_ID_ERROR", "a GOAWAY naming stream 6");
   var b = settledClient();
-  let r = b.sendRequest(RequestHead.make("GET", "/", "example.com"), BodyLength.empty());
-  var bb = List[u8].empty();
+  let r = b.sendRequest(RequestHead.make("GET", "/", "example.com"), BodyLength());
+  var bb = List[u8]();
   idFrame(&mut bb, frameGoAway, 400u64);
   idFrame(&mut bb, frameGoAway, 100u64);
   feed(&mut b, 3u64, bb.view(), false);
   expectStr(sent(&mut b).view(), "w0 fin", "GOAWAY 400 then 100: the request on 0 goes on");
   expect(!b.canSendRequest(), "...and no new one may be sent");
-  var bb2 = List[u8].empty();
+  var bb2 = List[u8]();
   idFrame(&mut bb2, frameGoAway, 104u64);
   feed(&mut b, 3u64, bb2.view(), false);
   expectStr(closeOf(&mut b).view(), "H3_ID_ERROR", "then 104: rising");
   // GOAWAY at a server names a push ID, never rising
   var c = settled();
-  var cb = List[u8].empty();
+  var cb = List[u8]();
   idFrame(&mut cb, frameGoAway, 3u64);
   idFrame(&mut cb, frameGoAway, 3u64);
   feed(&mut c, 2u64, cb.view(), false);
   expectStr(closeOf(&mut c).view(), "open", "a client's GOAWAY: push ID 3, twice");
   // MAX_PUSH_ID
   var d = settledClient();
-  var db = List[u8].empty();
+  var db = List[u8]();
   idFrame(&mut db, frameMaxPushId, 3u64);
   feed(&mut d, 3u64, db.view(), false);
   expectStr(closeOf(&mut d).view(), "H3_FRAME_UNEXPECTED", "MAX_PUSH_ID from a server");
   var e = settled();
-  var eb = List[u8].empty();
+  var eb = List[u8]();
   idFrame(&mut eb, frameMaxPushId, 5u64);
   idFrame(&mut eb, frameCancelPush, 5u64);
   idFrame(&mut eb, frameMaxPushId, 5u64);
   feed(&mut e, 2u64, eb.view(), false);
   expectStr(closeOf(&mut e).view(), "open", "MAX_PUSH_ID 5, CANCEL_PUSH 5, MAX_PUSH_ID 5");
-  var eb2 = List[u8].empty();
+  var eb2 = List[u8]();
   idFrame(&mut eb2, frameCancelPush, 6u64);
   feed(&mut e, 2u64, eb2.view(), false);
   expectStr(closeOf(&mut e).view(), "H3_ID_ERROR", "CANCEL_PUSH 6, past MAX_PUSH_ID");
   var f = settled();
-  var fb = List[u8].empty();
+  var fb = List[u8]();
   idFrame(&mut fb, frameMaxPushId, 5u64);
   idFrame(&mut fb, frameMaxPushId, 4u64);
   feed(&mut f, 2u64, fb.view(), false);
   expectStr(closeOf(&mut f).view(), "H3_ID_ERROR", "MAX_PUSH_ID falling");
   var g = settled();
-  var gb = List[u8].empty();
+  var gb = List[u8]();
   idFrame(&mut gb, frameCancelPush, 0u64);
   feed(&mut g, 2u64, gb.view(), false);
   expectStr(closeOf(&mut g).view(), "H3_ID_ERROR", "CANCEL_PUSH with no MAX_PUSH_ID");
   var h = settledClient();
-  var hb = List[u8].empty();
+  var hb = List[u8]();
   idFrame(&mut hb, frameCancelPush, 0u64);
   feed(&mut h, 3u64, hb.view(), false);
   expectStr(closeOf(&mut h).view(), "H3_ID_ERROR", "CANCEL_PUSH to a client, which allowed none");
@@ -523,13 +523,13 @@ fn opening() {
   cfg.qpack.maxTableCapacity = 4096usize;
   cfg.qpack.blockedStreams = 10usize;
   var c = Connection.client(cfg, t0());
-  var out = String.empty();
+  var out = String();
   var going = true;
   while going {
     match c.pollTransmit(t0()) {
       case let Write(w) {
         let stream, data, fin = w.(stream, data, fin);
-        var b = List[u8].empty();
+        var b = List[u8]();
         b.resize(data.len(), 0u8);
         let n = data.copyOut(0usize, b.viewMut());
         out.appendUInt(stream);
@@ -543,11 +543,11 @@ fn opening() {
   }
   expectStr(out.view(), "2: 00040a0150000680004000070a; 6: 02; 10: 03; ", "control (SETTINGS: capacity 4096, field section 16384, blocked 10), encoder, decoder");
   var s = Connection.server(Config.make(), t0());
-  var first = String.empty();
+  var first = String();
   match s.pollTransmit(t0()) {
     case let Write(w) {
       let stream, data, fin = w.(stream, data, fin);
-      var b = List[u8].empty();
+      var b = List[u8]();
       b.resize(data.len(), 0u8);
       let n = data.copyOut(0usize, b.viewMut());
       first.appendUInt(stream);

@@ -16,7 +16,7 @@ import iobuf use IoBuf, Chain;
 import http2 use *;
 
 fn hex(b: &Array[u8]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < b.len {
     s.appendHex(u64.from(b[i]), 2usize);
@@ -28,7 +28,7 @@ fn hex(b: &Array[u8]) String {
 fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
 
 fn unhex(s: &Array[u8]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   var i = 0usize;
   while i + 1usize < s.len {
     out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
@@ -39,7 +39,7 @@ fn unhex(s: &Array[u8]) List[u8] {
 
 // Every byte a chain holds, as hex
 fn chainHex(c: &Chain) String {
-  var b = List[u8].empty();
+  var b = List[u8]();
   b.resize(c.len(), 0u8);
   _ = c.copyOut(0usize, b.viewMut());
   hex(b.view())
@@ -72,7 +72,7 @@ fn errText(e: &FrameError) String {
 
 // One frame, in a line
 fn describe(f: Frame) String {
-  var s = String.empty();
+  var s = String();
   match f {
     case let Data(d) {
       s.append("DATA s");
@@ -171,7 +171,7 @@ fn describe(f: Frame) String {
 // a line, ending at a connection error
 fn readIn(r: &mut FrameReader, bytes: &'b Array[u8], piece: usize) String {
   var input = Chain.make(1048576usize);
-  var out = String.empty();
+  var out = String();
   var at = 0usize;
   while at < bytes.len {
     let n = if bytes.len - at < piece {bytes.len - at} else {piece};
@@ -202,7 +202,7 @@ fn client() FrameReader {FrameReader.client(FrameConfig.make())}
 // whether it is the buffer whose block is at 'mark'
 fn segments(c: Chain, mark: usize) String {
   var chain = c;
-  var s = String.empty();
+  var s = String();
   while true {
     match chain.popFront() {
       case let Some(b) {
@@ -241,7 +241,7 @@ fn main() i32 {
   expectStr(segments(w.take(), ma).view(), "26 2* 9 3 9 4 13", "PING and header, data, header, data, header, data, WINDOW_UPDATE");
 
   // Control frames alone pack into one buffer
-  var values = List[Setting].empty();
+  var values = List[Setting]();
   values.push(Setting(settingMaxConcurrentStreams, 100u32));
   expect(w.settings(values.view()) && w.settingsAck() && w.ping(2u64, true) && w.rstStream(3u32, ErrorCode.Cancel),
     "four control frames queued");
@@ -257,12 +257,12 @@ fn main() i32 {
   expectStr(segments(pc, mp).view(), "10 3* 4", "header and pad length, the data, the padding");
 
   // An empty DATA (END_STREAM alone) is its header
-  w.data(7u32, IoBuf.empty(), true);
+  w.data(7u32, IoBuf(), true);
   expectStr(segments(w.take(), 0usize).view(), "9", "an empty DATA");
 
   // A field block of 20000 at the default 16384: HEADERS of 16384 and a
   // CONTINUATION of 3616, packed (the block is copied in)
-  var block = List[u8].empty();
+  var block = List[u8]();
   block.resize(20000usize, 0x41u8);
   w.headers(1u32, block.view(), false);
   let hc = w.take();
@@ -288,7 +288,7 @@ fn main() i32 {
   expect(w.windowUpdate(0u32, 9u32), "WINDOW_UPDATE queued");
   var input = w.take();
   var r = server();
-  var got = String.empty();
+  var got = String();
   while true {
     match r.next(&mut input) {
       case is NeedData {break;}

@@ -8,7 +8,7 @@ pub struct Usage {
 }
 
 // A whole reply: the first choice of the server's answer
-pub struct ChatReply {
+pub struct ChatReply is Default {
   pub id: String;
   pub model: String;           // the model that answered, as the server names it
   pub created: i64;            // seconds since the epoch, or 0 when the server sent none
@@ -17,13 +17,13 @@ pub struct ChatReply {
   pub finishReason: String;    // 'stop', 'length', ...; empty when the server sent none
   pub usage: Option[Usage];
 
-  pub fn empty() ChatReply {
-    ChatReply(String.empty(), String.empty(), 0i64, String.empty(), String.empty(), String.empty(), None)
+  pub fn init(self: &new) {
+    *self = ChatReply(String(), String(), 0i64, String(), String(), String(), None[Usage]);
   }
 }
 
 // One piece of a streamed reply: what one chunk of the stream added
-pub struct Delta {
+pub struct Delta is Default {
   pub id: String;
   pub model: String;
   pub role: String;            // set on the first chunk ('assistant'), empty after
@@ -31,8 +31,8 @@ pub struct Delta {
   pub finishReason: String;    // set on the chunk that ends the reply, empty before
   pub usage: Option[Usage];    // set on the last chunk when the request asked (includeUsage)
 
-  pub fn empty() Delta {
-    Delta(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(), None)
+  pub fn init(self: &new) {
+    *self = Delta(String(), String(), String(), String(), String(), None[Usage]);
   }
 }
 
@@ -41,7 +41,7 @@ pub struct Delta {
 fn textOr(j: &json.Json, key: &str) String {
   match j.getText(key) {
     case let Some(s) {String.from(s)}
-    case is None {String.empty()}
+    case is None {String()}
   }
 }
 
@@ -158,7 +158,7 @@ fn replyOf(doc: &json.Json) Result[ChatReply, ChatError] {
     case let Some(e) {return Err[ChatReply, ChatError](e);}
     case is None {}
   }
-  var r = ChatReply.empty();
+  var r = ChatReply();
   r.id = textOr(doc, "id");
   r.model = textOr(doc, "model");
   r.created = doc.i64Or("created", 0i64);
@@ -217,7 +217,7 @@ fn deltaOf(doc: &json.Json) Result[Delta, ChatError] {
     case let Some(e) {return Err[Delta, ChatError](e);}
     case is None {}
   }
-  var d = Delta.empty();
+  var d = Delta();
   d.id = textOr(doc, "id");
   d.model = textOr(doc, "model");
   d.usage = usageOf(doc);

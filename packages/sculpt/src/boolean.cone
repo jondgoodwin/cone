@@ -115,7 +115,7 @@ pub fn boolean(a: &PolyMesh, b: &PolyMesh, op: u32, problems: &mut List[String])
 // the curve, or inside a cut face) takes each edge channel's fill, the
 // curve's "crease" raised to 'crease'.
 pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &mut List[String]) PolyMesh {
-  var empty = PolyMesh.empty();
+  var empty = PolyMesh();
   if !solidChecked(a, "the first mesh", problems) || !solidChecked(b, "the second mesh", problems) {
     return empty;
   }
@@ -133,7 +133,7 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
   }
 
   // The channels: the join of the two
-  var parts = List[PolyMesh].empty();
+  var parts = List[PolyMesh]();
   parts.push(copyPolyMesh(a));
   parts.push(copyPolyMesh(b));
   let joined = join(&parts, problems);
@@ -141,7 +141,7 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
   // Where each mesh's edges cross the other's triangles
   let bvhA = Bvh.build(&ta.tlo, &ta.thi);
   let bvhB = Bvh.build(&tb.tlo, &tb.thi);
-  var fault = List[String].empty();
+  var fault = List[String]();
   var recA = crossings(&ta, &tb, &bvhB, &mut fault);
   var recB = crossings(&tb, &ta, &bvhA, &mut fault);
   recA.indexTriangles(tb.triCount());
@@ -157,14 +157,14 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
   }
 
   // The result's vertices: the kept ones of each mesh, then the crossings
-  var verts = OutVerts.empty();
+  var verts = OutVerts();
   let outA = verts.addKept(&ta, &wa, keepInA, 0u32);
   let outB = verts.addKept(&tb, &wb, keepInB, u32.from(ta.vertexCount()));
   let baseA = verts.addCrossings(&ta, &recA, 0u32);
   let baseB = verts.addCrossings(&tb, &recB, u32.from(ta.vertexCount()));
 
   // The pieces, as loops
-  var loops = Loops.empty();
+  var loops = Loops();
   var sc = Scratch.make(verts.pos.len(), ta.triCount(), tb.triCount());
   let offA = JOffsets(0u32, 0u32, 0u32, 0u32);
   let offB = JOffsets(u32.from(a.vertexCount()), u32.from(a.halfedgeCount()), u32.from(a.edgeCount()),
@@ -184,11 +184,11 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
   // by construction). The first with nothing folded, nothing of no size and
   // nothing forced is taken, else the best of them, in that order.
   var built = false;
-  var out = PolyMesh.empty();
+  var out = PolyMesh();
   var outRough = 0u32;
   var outFolded = 0u64;
   var outFlat = 0u64;
-  var why = List[String].empty();
+  var why = List[String]();
   let everywhere = samePointVertices(&verts);
   var attemptNo = 0u32;
   while attemptNo < 6u32 && !(built && outRough == 0u32 && outFolded == 0u64 && outFlat == 0u64) {
@@ -197,10 +197,10 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
     let rep = if mode == 0u32 {copyList(&everywhere)} else if mode == 1u32 {mergedVertices(&loops, &verts)}
       else {identityMap(verts.pos.len())};
     if mode != 1u32 || anyMerge(&rep) {
-      var faces = OutFaces.empty();
+      var faces = OutFaces();
       var rough = 0u32;
       if facesOf(&loops, &rep, &verts, &mut faces, &mut rough, &mut why) {
-        var ready = OutFaces.empty();
+        var ready = OutFaces();
         if cleaning {
           let kept = dropPillows(&faces);
           let clean1 = cleanDegenerate(&kept, &verts);
@@ -210,7 +210,7 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
         } else {
           ready = mergeFacePieces(&faces);
         }
-        var attempt = PolyMesh.empty();
+        var attempt = PolyMesh();
         if buildResult(&joined, &verts, &ready, crease, &mut attempt) {
           let folds = foldedCount(&attempt, &ready.face, &joined, offB.f, reverseB);
           let flat = degenerateCount(&attempt);
@@ -469,11 +469,11 @@ fn triMeshOf(m: &PolyMesh, name: &str,moved: i32, towards: f64, problems: &mut L
   let ne = m.edgeCount();
   let nf = m.faceCount();
   var t = TriMesh(List[DVec3].withCapacity(nv), List[Vec3].withCapacity(nv), List[DVec3].withCapacity(nv), moved,
-    List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[bool].empty(),
+    List[u32](), List[u32](), List[u32](), List[u32](), List[bool](),
     List[u32].withCapacity(nf + 1usize), List[u32].withCapacity(ne), List[u32].withCapacity(ne),
     List[u32].withCapacity(ne), List[u32].withCapacity(ne), List[u32].withCapacity(ne),
-    List[u32].empty(), List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(), List[u32].withCapacity(nf + 1usize),
-    List[u32].empty(), List[u32].empty());
+    List[u32](), List[u32](), List[Vec3](), List[Vec3](), List[u32].withCapacity(nf + 1usize),
+    List[u32](), List[u32]());
   var v = 0usize;
   while v < nv {
     let p = *m.positions[v];
@@ -491,13 +491,13 @@ fn triMeshOf(m: &PolyMesh, name: &str,moved: i32, towards: f64, problems: &mut L
     e = e + 1usize;
   }
 
-  var slots = List[u32].empty();
-  var xs = List[f64].empty();
-  var ys = List[f64].empty();
-  var nodes = List[u32].empty();
-  var dA = List[u32].empty();      // the face's cuts: their slots, and edge
-  var dB = List[u32].empty();
-  var dE = List[u32].empty();
+  var slots = List[u32]();
+  var xs = List[f64]();
+  var ys = List[f64]();
+  var nodes = List[u32]();
+  var dA = List[u32]();      // the face's cuts: their slots, and edge
+  var dB = List[u32]();
+  var dE = List[u32]();
   var f = 0usize;
   while f < nf {
     t.faceTri.push(u32.from(t.tf.len()));
@@ -667,9 +667,9 @@ fn triMeshOf(m: &PolyMesh, name: &str,moved: i32, towards: f64, problems: &mut L
   var sz = List[List[f64]].withCapacity(nv);
   v = 0usize;
   while v < nv {
-    sx.push(List[f64].empty());
-    sy.push(List[f64].empty());
-    sz.push(List[f64].empty());
+    sx.push(List[f64]());
+    sy.push(List[f64]());
+    sz.push(List[f64]());
     v = v + 1usize;
   }
   if towards != 0.0 {
@@ -825,16 +825,16 @@ fn triPoint(o: &TriMesh, s: u32, k: usize) PPoint {o.point(*o.tv[3usize * usize.
 
 // The crossings of m's edges with o's triangles
 fn crossings(m: &TriMesh, o: &TriMesh, bvh: &Bvh, fault: &mut List[String]) Records {
-  var r = Records(List[u32].empty(), List[u32].empty(), List[i32].empty(), List[List[f64]].empty(),
-    List[List[f64]].empty(), List[Vec3].empty(), List[f64].empty(), List[u32].withCapacity(m.edgeCount() + 1usize),
-    List[u32].empty(), List[u32].empty());
-  var cands = List[u32].empty();
-  var stack = List[u32].empty();
-  var hTri = List[u32].empty();
-  var hSign = List[i32].empty();
-  var hP = List[List[f64]].empty();
-  var hQ = List[List[f64]].empty();
-  var order = List[u32].empty();
+  var r = Records(List[u32](), List[u32](), List[i32](), List[List[f64]](),
+    List[List[f64]](), List[Vec3](), List[f64](), List[u32].withCapacity(m.edgeCount() + 1usize),
+    List[u32](), List[u32]());
+  var cands = List[u32]();
+  var stack = List[u32]();
+  var hTri = List[u32]();
+  var hSign = List[i32]();
+  var hP = List[List[f64]]();
+  var hQ = List[List[f64]]();
+  var order = List[u32]();
   var e = 0usize;
   while e < m.edgeCount() {
     r.edgeStart.push(u32.from(r.edge.len()));
@@ -904,7 +904,7 @@ fn crossings(m: &TriMesh, o: &TriMesh, bvh: &Bvh, fault: &mut List[String]) Reco
         }
         if !found {
           tieFault(fault);
-          r.pa.push(List[f64].empty());
+          r.pa.push(List[f64]());
           r.pb.push(expOf(1.0));
         }
       } else {
@@ -973,9 +973,9 @@ fn windings(m: &TriMesh, o: &TriMesh, bvh: &Bvh, rec: &Records, farX: f32, fault
   var w = List[i32].withCapacity(nv);
   var v = 0usize;
   while v < nv { w.push(unset); v = v + 1usize; }
-  var queue = List[u32].empty();
-  var cands = List[u32].empty();
-  var stack = List[u32].empty();
+  var queue = List[u32]();
+  var cands = List[u32]();
+  var stack = List[u32]();
   v = 0usize;
   while v < nv {
     if *w[v] == unset {
@@ -1061,7 +1061,7 @@ fn castWinding(m: &TriMesh, v: u32, o: &TriMesh, bvh: &Bvh, farX: f32, cands: &m
 
 // The result's vertices before merging, each with where its values come
 // from: a joined vertex 'va', or a blend of 'va' and 'vb' by 't'
-struct OutVerts {
+struct OutVerts is Default {
   pub pos: List[Vec3];
   pub va: List[u32];
   pub vb: List[u32];
@@ -1071,11 +1071,6 @@ struct OutVerts {
   pub hy: List[List[f64]];
   pub hz: List[List[f64]];
   pub hw: List[List[f64]];
-
-  fn empty() OutVerts {
-    OutVerts(List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[List[f64]].empty(),
-      List[List[f64]].empty(), List[List[f64]].empty(), List[List[f64]].empty())
-  }
 
   // m's kept vertices, in order: each one's result number, NoIndex for one
   // not kept; 'jv' is m's first vertex in the join
@@ -1168,7 +1163,7 @@ struct Side {
 // grouped: a face kept whole, a triangle kept whole, or a crossed
 // triangle's pieces; a group knows whether it turns over, and for a crossed
 // triangle its points for the geometry of loops inside it.
-struct Loops {
+struct Loops is Default {
   pub start: List[u32];       // per loop, and one more: its first corner
   pub inner: List[bool];      // per loop: touches no side of its triangle
   pub node: List[u32];        // per corner
@@ -1185,13 +1180,13 @@ struct Loops {
   pub gReverse: List[bool];
   pub gNormal: List[DVec3];   // per group: its triangle's normal (a whole face's is 0)
 
-  fn empty() Loops {
-    var l = Loops(List[u32].empty(), List[bool].empty(), List[u32].empty(), List[u32].empty(), List[bool].empty(),
-      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(),
-      List[u32].empty(), List[u32].empty(), List[bool].empty(), List[DVec3].empty());
+  fn init(self: &new) {
+    var l = Loops(List[u32](), List[bool](), List[u32](), List[u32](), List[bool](),
+      List[u32](), List[u32](), List[u32](), List[f32](), List[f32](), List[f32](),
+      List[u32](), List[u32](), List[bool](), List[DVec3]());
     l.start.push(0u32);
     l.gStart.push(0u32);
-    l
+    *self = l;
   }
 
   fn loopCount(self: &) usize {inner.len()}
@@ -1259,10 +1254,10 @@ struct Scratch {
     let nt = if nta > ntb {nta} else {ntb};
     var s = Scratch(List[u32].withCapacity(nverts), List[u32].withCapacity(nverts), List[u32].withCapacity(nt),
       List[u32].withCapacity(nt), 0u32,
-      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(),
-      List[f32].empty(), List[u32].empty(), List[u32].empty(),
-      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[bool].empty(), List[bool].empty(), List[bool].empty(),
-      List[u32].empty(), List[u32].empty(), List[bool].empty(), List[u32].empty(), List[u32].empty());
+      List[u32](), List[u32](), List[u32](), List[u32](), List[f32](), List[f32](),
+      List[f32](), List[u32](), List[u32](),
+      List[u32](), List[u32](), List[u32](), List[bool](), List[bool](), List[bool](),
+      List[u32](), List[u32](), List[bool](), List[u32](), List[u32]());
     var i = 0usize;
     while i < nverts {
       s.nodeOf.push(0u32);
@@ -1704,7 +1699,7 @@ fn anyMerge(rep: &List[u32]) bool {
 // The result's faces, flat: per face its corner count and joined face; per
 // corner its vertex (before compaction), corner values' sources, incoming
 // side
-struct OutFaces {
+struct OutFaces is Default {
   pub counts: List[u32];
   pub face: List[u32];
   pub node: List[u32];
@@ -1716,11 +1711,6 @@ struct OutFaces {
   pub w0: List[f32];
   pub w1: List[f32];
   pub w2: List[f32];
-
-  fn empty() OutFaces {
-    OutFaces(List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[bool].empty(),
-      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty())
-  }
 
   // Corner c of the loops as the next corner of a face, its incoming side
   // that of loop corner 'sideFrom' (NoIndex for a new side)
@@ -1785,8 +1775,8 @@ fn contracted(loops: &Loops, l: usize, rep: &List[u32], keep: &mut List[u32], si
 // is a piece of its own, one running clockwise a hole in the piece that
 // holds it, and a piece with holes is cut into triangles.
 fn facesOf(loops: &Loops, rep: &List[u32], verts: &OutVerts, faces: &mut OutFaces, rough: &mut u32, why: &mut List[String]) bool {
-  var keep = List[u32].empty();
-  var sideOf = List[u32].empty();
+  var keep = List[u32]();
+  var sideOf = List[u32]();
   var g = 0usize;
   while g < loops.groupCount() {
     let l0 = usize.from(*loops.gStart[g]);
@@ -1859,9 +1849,9 @@ fn emitLoop(loops: &Loops, rep: &List[u32], keep: &List[u32], sideOf: &List[u32]
 fn emitSplit(loops: &Loops, rep: &List[u32], keep: &List[u32], sideOf: &List[u32], face: u32, reverse: bool,
     faces: &mut OutFaces) {
   let n = keep.len();
-  var stack = List[usize].empty();
-  var sub = List[u32].empty();
-  var subSide = List[u32].empty();
+  var stack = List[usize]();
+  var sub = List[u32]();
+  var subSide = List[u32]();
   var k = 0usize;
   while k < n {
     let v = *rep[usize.from(*loops.node[usize.from(*keep[k])])];
@@ -1961,8 +1951,8 @@ fn dropPillows(faces: &OutFaces) OutFaces {
   f = 0usize;
   while f < nf { gone.push(false); f = f + 1usize; }
   // Faces chained by their lowest vertex
-  var lowHead = List[u32].empty();
-  var lowKey = List[u32].empty();
+  var lowHead = List[u32]();
+  var lowKey = List[u32]();
   var chain = List[u32].withCapacity(nf);
   var any = false;
   f = 0usize;
@@ -1980,7 +1970,7 @@ fn dropPillows(faces: &OutFaces) OutFaces {
     f = f + 1usize;
   }
   // Pair each face with an earlier one of the same lowest vertex run the other way
-  var byLow = List[u32].empty();
+  var byLow = List[u32]();
   let nv = faces.node.len();
   var maxV = 0u32;
   var c = 0usize;
@@ -2010,7 +2000,7 @@ fn dropPillows(faces: &OutFaces) OutFaces {
     }
     f = f + 1usize;
   }
-  var out = OutFaces.empty();
+  var out = OutFaces();
   f = 0usize;
   while f < nf {
     if !*gone[f] {
@@ -2093,9 +2083,9 @@ fn zipFlatFaces(faces: &OutFaces, verts: &OutVerts) OutFaces {
       touched.push(false);
       f = f + 1usize;
     }
-    var insBefore = List[u32].empty();   // the corner they go before
-    var insFrom = List[u32].empty();     // the flat face's corner put in
-    var insT = List[f32].empty();        // where it lies from the side's start
+    var insBefore = List[u32]();   // the corner they go before
+    var insFrom = List[u32]();     // the flat face's corner put in
+    var insT = List[f32]();        // where it lies from the side's start
     var changed = false;
     f = 0usize;
     while f < nf {
@@ -2171,7 +2161,7 @@ fn zipFlatFaces(faces: &OutFaces, verts: &OutVerts) OutFaces {
     }
     if !changed { return cur; }
     // Rebuild: the faces kept, each corner preceded by what goes before it
-    var next = OutFaces.empty();
+    var next = OutFaces();
     f = 0usize;
     while f < nf {
       if !*gone[f] {
@@ -2300,7 +2290,7 @@ fn mergeFacePieces(faces: &OutFaces) OutFaces {
       f = f + 1usize;
     }
     if !changed { return cur; }
-    var next = OutFaces.empty();
+    var next = OutFaces();
     f = 0usize;
     while f < nf {
       let g = *partner[f];
@@ -2440,7 +2430,7 @@ fn dropStraightVertices(faces: &OutFaces, verts: &OutVerts, firstNew: u32) OutFa
       f = f + 1usize;
     }
   }
-  var out = OutFaces.empty();
+  var out = OutFaces();
   f = 0usize;
   while f < nf {
     let s = usize.from(*first[f]);
@@ -2536,9 +2526,9 @@ fn unspike(faces: &OutFaces, verts: &OutVerts) OutFaces {
       sideFrom.push(NoIndex);
       i = i + 1usize;
     }
-    var insBefore = List[u32].empty();
-    var insNode = List[u32].empty();
-    var insT = List[f32].empty();
+    var insBefore = List[u32]();
+    var insNode = List[u32]();
+    var insT = List[f32]();
     var changed = false;
     f = 0usize;
     while f < nf {
@@ -2607,7 +2597,7 @@ fn unspike(faces: &OutFaces, verts: &OutVerts) OutFaces {
       f = f + 1usize;
     }
     if !changed { return cur; }
-    var next = OutFaces.empty();
+    var next = OutFaces();
     f = 0usize;
     while f < nf {
       let s = usize.from(*first[f]);
@@ -2827,9 +2817,9 @@ fn unslit(faces: &OutFaces, verts: &OutVerts) OutFaces {
       splitD.push(NoIndex);
       f = f + 1usize;
     }
-    var insBefore = List[u32].empty();
-    var insNode = List[u32].empty();
-    var insT = List[f32].empty();
+    var insBefore = List[u32]();
+    var insNode = List[u32]();
+    var insT = List[f32]();
     var changed = false;
     f = 0usize;
     while f < nf {
@@ -2874,7 +2864,7 @@ fn unslit(faces: &OutFaces, verts: &OutVerts) OutFaces {
       f = f + 1usize;
     }
     if !changed { return cur; }
-    var next = OutFaces.empty();
+    var next = OutFaces();
     f = 0usize;
     while f < nf {
       let s = usize.from(*first[f]);
@@ -2914,7 +2904,7 @@ fn unslit(faces: &OutFaces, verts: &OutVerts) OutFaces {
         let dInside = strictlyInside(verts, va, vb, vd);
         let cInside = strictlyInside(verts, va, vb, vc);
         // Part one: a, d, Q (from d's next round to a)
-        var part = List[u32].empty();
+        var part = List[u32]();
         part.push(u32.from(ca));
         var k = cd;
         var going = true;
@@ -3091,9 +3081,9 @@ fn exactCollinear(verts: &OutVerts, u: u32, v: u32, w: u32) bool {
   let d3x = scaledDiff(&verts.hx[wu], &verts.hw[uu], &verts.hx[uu], &verts.hw[wu]);
   let d3y = scaledDiff(&verts.hy[wu], &verts.hw[uu], &verts.hy[uu], &verts.hw[wu]);
   let d3z = scaledDiff(&verts.hz[wu], &verts.hw[uu], &verts.hz[uu], &verts.hw[wu]);
-  var cx = List[f64].empty();
-  var cy = List[f64].empty();
-  var cz = List[f64].empty();
+  var cx = List[f64]();
+  var cy = List[f64]();
+  var cz = List[f64]();
   expCross(&d2x, &d2y, &d2z, &d3x, &d3y, &d3z, &mut cx, &mut cy, &mut cz);
   expSign(&cx) == 0i32 && expSign(&cy) == 0i32 && expSign(&cz) == 0i32
 }
@@ -3153,8 +3143,8 @@ fn copyCornerBlend(src: &OutFaces, p: usize, c: usize, t: f32, node: u32, dst: &
   dst.node.push(node);
   dst.side.push(*src.side[c]);
   dst.curve.push(*src.curve[c]);
-  var hs = List[u32].empty();
-  var ws = List[f32].empty();
+  var hs = List[u32]();
+  var ws = List[f32]();
   addWeighted(&mut hs, &mut ws, *src.h0[p], *src.w0[p] * (1. - t));
   addWeighted(&mut hs, &mut ws, *src.h1[p], *src.w1[p] * (1. - t));
   addWeighted(&mut hs, &mut ws, *src.h2[p], *src.w2[p] * (1. - t));
@@ -3227,15 +3217,15 @@ fn innerLoops(loops: &Loops, g: usize, rep: &List[u32], verts: &OutVerts, faces:
   var flip = false;
   dropAxis(*loops.gNormal[g], &mut axis, &mut flip);
   // Every loop contracted: its corners in 'cc' from cStart, its points
-  var cc = List[u32].empty();      // loop corner kept
-  var cs = List[u32].empty();      // loop corner whose incoming side it takes
-  var cStart = List[u32].empty();
-  var xs = List[f64].empty();
-  var ys = List[f64].empty();
-  var isOuter = List[bool].empty();
-  var lid = List[u32].empty();     // the loop each contracted loop came from
-  var keep = List[u32].empty();
-  var sideOf = List[u32].empty();
+  var cc = List[u32]();      // loop corner kept
+  var cs = List[u32]();      // loop corner whose incoming side it takes
+  var cStart = List[u32]();
+  var xs = List[f64]();
+  var ys = List[f64]();
+  var isOuter = List[bool]();
+  var lid = List[u32]();     // the loop each contracted loop came from
+  var keep = List[u32]();
+  var sideOf = List[u32]();
   var l = l0;
   while l < l1 {
     contracted(loops, l, rep, &mut keep, &mut sideOf);
@@ -3308,7 +3298,7 @@ fn innerLoops(loops: &Loops, g: usize, rep: &List[u32], verts: &OutVerts, faces:
   a = 0usize;
   while a < nl {
     if *isOuter[a] {
-      var holes = List[u32].empty();
+      var holes = List[u32]();
       var b = 0usize;
       while b < nl {
         if *owner[b] == u32.from(a) { holes.push(u32.from(b)); }
@@ -3335,7 +3325,7 @@ fn innerLoops(loops: &Loops, g: usize, rep: &List[u32], verts: &OutVerts, faces:
 
 // The sign of the area of contracted loop corners s to e - 1, exactly
 fn areaSign(xs: &List[f64], ys: &List[f64], s: usize, e: usize) i32 {
-  var acc = List[f64].empty();
+  var acc = List[f64]();
   var i = s;
   while i < e {
     let j = if i + 1usize < e {i + 1usize} else {s};
@@ -3351,7 +3341,7 @@ fn areaSign(xs: &List[f64], ys: &List[f64], s: usize, e: usize) i32 {
 // Whether contracted loop a lies inside loop b: 1 inside, -1 outside, 0 when
 // every point of a is on b's outline
 fn loopInside(xs: &List[f64], ys: &List[f64], cStart: &List[u32], a: usize, b: usize) i32 {
-  var cyc = List[u32].empty();
+  var cyc = List[u32]();
   var i = usize.from(*cStart[b]);
   while i < usize.from(*cStart[b + 1usize]) {
     cyc.push(u32.from(i));
@@ -3373,8 +3363,8 @@ fn holeyPiece(loops: &Loops, rep: &List[u32], cc: &List[u32], cs: &List[u32], cS
     outer: usize, holes: &List[u32], face: u32, reverse: bool, faces: &mut OutFaces, rough: &mut u32, why: &mut List[String]) bool {
   // The keyhole polygon: per slot its contracted corner, and the loop corner
   // whose side enters it (NoIndex for a bridge)
-  var slot = List[u32].empty();
-  var slotSide = List[u32].empty();
+  var slot = List[u32]();
+  var slotSide = List[u32]();
   var i = usize.from(*cStart[outer]);
   while i < usize.from(*cStart[outer + 1usize]) {
     slot.push(u32.from(i));
@@ -3382,10 +3372,10 @@ fn holeyPiece(loops: &Loops, rep: &List[u32], cc: &List[u32], cs: &List[u32], cS
     i = i + 1usize;
   }
   // Holes by their furthest x, greatest first
-  var order = List[u32].empty();
-  var hx = List[f64].empty();
-  var hy = List[f64].empty();
-  var hm = List[u32].empty();
+  var order = List[u32]();
+  var hx = List[f64]();
+  var hy = List[f64]();
+  var hm = List[u32]();
   var k = 0usize;
   while k < holes.len() {
     let h = usize.from(*holes[k]);
@@ -3502,7 +3492,7 @@ fn holeyPiece(loops: &Loops, rep: &List[u32], cc: &List[u32], cs: &List[u32], cS
     pnode.push(*rep[usize.from(*loops.node[usize.from(*cc[c])])]);
     i = i + 1usize;
   }
-  var tris = List[u32].empty();
+  var tris = List[u32]();
   // A keyhole that no longer clips cleanly after rounding is still cut into
   // its n - 2 triangles, some of them maybe folded
   if !earClip(&px, &py, &pnode, &mut tris) { *rough = *rough + 1u32; }
@@ -3613,8 +3603,8 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
     newId.set(usize.from(*faces.node[c]), 0u32);
     c = c + 1usize;
   }
-  var pos = List[Vec3].empty();
-  var src = List[u32].empty();
+  var pos = List[Vec3]();
+  var src = List[u32]();
   v = 0usize;
   while v < nv {
     if *newId[v] != NoIndex {
@@ -3630,7 +3620,7 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
     idx.push(*newId[usize.from(*faces.node[c])]);
     c = c + 1usize;
   }
-  var problems = List[String].empty();
+  var problems = List[String]();
   var m = PolyMesh.fromPolygons(pos.view(), faces.counts.view(), idx.view(), &mut problems);
   if problems.len() > 0usize || m.faceCount() != faces.counts.len() { return false; }
   var h = 0usize;
@@ -3661,8 +3651,8 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
     e = e + 1usize;
   }
   // and every joined edge each one gathers, for the crease's greatest
-  var eMore = List[u32].empty();
-  var eMoreOf = List[u32].empty();
+  var eMore = List[u32]();
+  var eMoreOf = List[u32]();
   f = 0usize;
   while f < m.faceCount() {
     let hs = m.faceHalfedges(u32.from(f));
@@ -3687,7 +3677,7 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
     let domain = j.floats[ch].domain;
     let fill = j.floats[ch].fill;
     let isCrease = domain == EdgeDomain && j.floats[ch].name.equals("crease");
-    var vals = List[f32].empty();
+    var vals = List[f32]();
     if domain == VertexDomain {
       v = 0usize;
       while v < pos.len() {
@@ -3750,7 +3740,7 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
   while ch < j.vec2s.len() {
     let domain = j.vec2s[ch].domain;
     let fill = j.vec2s[ch].fill;
-    var vals = List[Vec2].empty();
+    var vals = List[Vec2]();
     if domain == VertexDomain {
       v = 0usize;
       while v < pos.len() {
@@ -3799,7 +3789,7 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
   while ch < j.vec3s.len() {
     let domain = j.vec3s[ch].domain;
     let fill = j.vec3s[ch].fill;
-    var vals = List[Vec3].empty();
+    var vals = List[Vec3]();
     if domain == VertexDomain {
       v = 0usize;
       while v < pos.len() {

@@ -39,7 +39,7 @@ fn certs(name: &str) Path {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}
@@ -100,7 +100,7 @@ fn h3Reply(sv: &mut H3Srv, req: h3driver.ReqId, body: &str) {
 }
 
 fn h3Serve(sv: &mut H3Srv, lp: &mut Loop) {
-  var evs = List[h3driver.Event].empty();
+  var evs = List[h3driver.Event]();
   sv.drv.pump(lp, &mut evs);
   var k = 0usize;
   while k < evs.len() {
@@ -124,7 +124,7 @@ fn h3Serve(sv: &mut H3Srv, lp: &mut Loop) {
         let conn = sv.qs[j].conn;
         let t = sv.qs[j].target.clone();
         if t.view() == "/post" {
-          var s = String.empty();
+          var s = String();
           s.appendUInt(sv.qs[j].got);
           h3Reply(sv, req, s.view());
         } else if t.view() == "/goaway" {
@@ -153,7 +153,7 @@ fn h3Serve(sv: &mut H3Srv, lp: &mut Loop) {
 
 fn h3Server(lp: &mut Loop) H3Srv {
   var sv = H3Srv(drv: h3driver.Driver.make(h3driver.Config.make()), accepted: 0u64, requests: 0u64, inFlight: 0u64,
-    maxInFlight: 0u64, aborted: false, qs: List[Q].empty(), port: 0u16);
+    maxInFlight: 0u64, aborted: false, qs: List[Q](), port: 0u16);
   let cert = certs("server.pem");
   let key = certs("server.key");
   match quic.Context.server(quic.Config.make(), &cert, &key) {
@@ -188,7 +188,7 @@ fn tlsServer() tls.Server {
   let certFile = certs("server.pem");
   let keyFile = certs("server.key");
   var cfg = tls.ServerConfig.make(&certFile, &keyFile);
-  var names = List[String].empty();
+  var names = List[String]();
   names.push(String.from("h2"));
   names.push(String.from("http/1.1"));
   cfg.alpn = names;
@@ -228,7 +228,7 @@ fn tcpListen(sv: &mut TcpSrv, lp: &mut Loop, altSvc: &str) u16 {
 }
 
 fn tcpServe(sv: &mut TcpSrv, lp: &mut Loop) {
-  var evs = List[httpconn.Event].empty();
+  var evs = List[httpconn.Event]();
   sv.drv.pump(lp, &uni evs);
   var k = 0usize;
   while k < evs.len() {
@@ -274,7 +274,7 @@ fn step(cl: &mut Client, w: &mut World, lp: &mut Loop, out: &uni List[Event], un
   let c = w.tcp.drv.wakeAt();
   if c < limit {limit = c;}
   if out.len() > 0usize {limit = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -302,12 +302,12 @@ struct Seen {
 }
 
 fn seen(id: FetchId) Seen {
-  Seen(id: id, status: 0u16, version: Version.Http10, body: String.empty(), finals: 0u64, last: EventKind.Done,
-    timing: Timing.zero(), failText: String.empty())
+  Seen(id: id, status: 0u16, version: Version.Http10, body: String(), finals: 0u64, last: EventKind.Done,
+    timing: Timing.zero(), failText: String())
 }
 
 fn drive(cl: &mut Client, w: &mut World, lp: &mut Loop, ss: &uni List[Seen]) bool {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while Instant.now() < giveUp {
     var all = true;
@@ -348,14 +348,14 @@ fn drive(cl: &mut Client, w: &mut World, lp: &mut Loop, ss: &uni List[Seen]) boo
 }
 
 fn fetchOne(cl: &mut Client, w: &mut World, lp: &mut Loop, r: Request) Seen {
-  var ss = List[Seen].empty();
+  var ss = List[Seen]();
   ss.push(seen(cl.send(lp, r, Sink.Here(1u64))));
   drive(cl, w, lp, &uni ss);
   ss.pop() || seen(FetchId.none())
 }
 
 fn idleFor(cl: &mut Client, w: &mut World, lp: &mut Loop, d: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, w, lp, &uni out, until);
@@ -402,7 +402,7 @@ fn client(plain: bool, origins: &List[String], timeoutMs: i64) Client {
 fn main() i32 {
   var lp = Loop.mustMake();
   var w = World(h3: h3Server(&mut lp), tcp: TcpSrv(drv: httpconn.Driver.make(httpconn.Config.make()), requests: 0u64,
-    altSvc: List[String].empty(), ports: List[u16].empty()));
+    altSvc: List[String](), ports: List[u16]()));
   let up = w.h3.port;
   let longAlt = altSvc(up, "60");
   let shortAlt = altSvc(up, "1");
@@ -412,7 +412,7 @@ fn main() i32 {
   require(up != 0u16 && tA != 0u16 && tB != 0u16 && tC != 0u16, "the servers listen");
 
   // 1. Prior knowledge
-  var origins = List[String].empty();
+  var origins = List[String]();
   origins.push(url(up, ""));
   origins.push(url(tC, ""));
   var cl = client(false, &origins, 300i64);
@@ -422,7 +422,7 @@ fn main() i32 {
   expectUInt(cl.stats().h3, 1u64, "...sent over HTTP/3");
   expectUInt(w.h3.accepted, 1u64, "...on one QUIC connection");
 
-  var many = List[Seen].empty();
+  var many = List[Seen]();
   var k = 0u32;
   while k < 32u32 {
     many.push(seen(cl.get(&mut lp, url(up, "/hello").view(), Sink.Here(2u64))));
@@ -440,7 +440,7 @@ fn main() i32 {
   expect(w.h3.maxInFlight > 1u64, "...many in flight on it at once");
 
   var post = Request.make("POST", url(up, "/post").view());
-  var big = String.empty();
+  var big = String();
   while big.len() < 100000usize {big.append("0123456789");}
   post.body = big;
   let p = fetchOne(&mut cl, &mut w, &mut lp, post);
@@ -493,7 +493,7 @@ fn main() i32 {
   idleFor(&mut cl, &mut w, &mut lp, Duration.fromMillis(50i64));
 
   // 6. No plug-in: Alt-Svc is not read, every fetch is TCP's
-  var none = List[String].empty();
+  var none = List[String]();
   var tcpOnly = client(true, &none, 300i64);
   let x1 = fetchOne(&mut tcpOnly, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));
   let x2 = fetchOne(&mut tcpOnly, &mut w, &mut lp, Request.get(url(tA, "/hello").view()));

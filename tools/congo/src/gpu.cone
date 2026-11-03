@@ -30,15 +30,15 @@ const gpuTriple = "spirv1.6-unknown-vulkan1.3";
 // no package imports, is not asked; what it holds that a GPU lacks is the
 // compiler's to refuse where it is used.
 fn checkGpuMarks(plan: &Plan, reg: &Registry, u: usize) Result[void, String] {
-  var names = List[String].empty();
-  var chains = List[String].empty();
-  var seen = List[String].empty();
+  var names = List[String]();
+  var chains = List[String]();
+  var seen = List[String]();
   // Every package a marked package imports; or, for a package with a gpu/
   // folder, every one that folder imports
   let folder = plan.units[u].hasGpu && !reg.packages[plan.units[u].pkg].gpu;
   visitGpuMarks(plan, reg, u, folder, "", &mut names, &mut chains, &mut seen);
   if names.len() == 0usize { return succeeded(); }
-  var listed = String.empty();
+  var listed = String();
   var i = 0usize;
   while i < names.len() {
     if i > 0usize { listed <- "\n"; }
@@ -86,7 +86,7 @@ fn visitGpuMarks(plan: &Plan, reg: &Registry, u: usize, start: bool, chain: &str
 }
 
 fn copyIndices(from: &List[usize]) List[usize] {
-  var out = List[usize].empty();
+  var out = List[usize]();
   var i = 0usize;
   while i < from.len() {
     out.push(*from[i]);
@@ -147,13 +147,13 @@ fn gpuSearchFolders(plan: &Plan, reg: &Registry, u: usize, all: &List[usize], co
       same = samePath(&a, &b);
     }
     if !same {
-      var there = String.empty();
+      var there = String();
       if found.isEmpty() { there <- "finds no ", pkg.name.view(); }
       else {
         let place = native(&found);
         there <- "finds ", place.view();
       }
-      var hint = String.empty();
+      var hint = String();
       if pkg.root.name() != pkg.name.view() {
         let rootPlace = native(&pkg.root);
         hint <- "; it looks for a package in a folder named for it, and ", pkg.name.view(), " is in ", rootPlace.view();
@@ -175,7 +175,7 @@ fn gpuSearchFolders(plan: &Plan, reg: &Registry, u: usize, all: &List[usize], co
 // folder imports and everything they import, each after what it imports, the
 // prelude first, after what it imports itself (libc)
 fn gpuClosure(plan: &Plan, reg: &Registry, u: usize, core: usize) List[usize] {
-  var seen = List[usize].empty();
+  var seen = List[usize]();
   closureOf(plan, reg, core, &mut seen);
   seen.push(plan.units[core].pkg);
   var i = 0usize;
@@ -196,8 +196,8 @@ fn gpuClosure(plan: &Plan, reg: &Registry, u: usize, core: usize) List[usize] {
 // that each is compiled into the module, not only declared (an import conec
 // meets first beside its importer's file is declared alone)
 fn gpuModuleOrder(mods: &List[Module]) List[usize] {
-  var order = List[usize].empty();
-  var done = List[usize].empty();
+  var order = List[usize]();
+  var done = List[usize]();
   var i = 0usize;
   while i < mods[0usize].children.len() {
     let c = *mods[0usize].children[i];
@@ -209,7 +209,7 @@ fn gpuModuleOrder(mods: &List[Module]) List[usize] {
 
 fn visitGpuModule(mods: &List[Module], m: usize, done: &mut List[usize], order: &mut List[usize]) {
   done.push(m);
-  var needs = List[String].empty();
+  var needs = List[String]();
   if mods[m].hasExtends { needs.push(mods[m].extended.name.clone()); }
   var i = 0usize;
   while i < mods[m].imports.len() {
@@ -244,8 +244,8 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   let module = cat(name.view(), "_gpu");
   let hasGpu = plan.units[u].hasGpu;
   let gpuFolder = pkg.root.join("gpu");
-  var packages = List[usize].empty();
-  var lead = List[Path].empty();
+  var packages = List[usize]();
+  var lead = List[Path]();
   if hasGpu {
     packages = gpuClosure(plan, &s.reg, u, core);
     lead.push(gpuFolder.clone());
@@ -259,7 +259,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
       i = i + 1usize;
     }
   }
-  var folders = List[Path].empty();
+  var folders = List[Path]();
   match gpuSearchFolders(plan, &s.reg, u, &packages, core, &lead) {
     case var Ok(ok) { folders <-> ok; }
     case let Err(e) { return Err[Path, String](e.clone()); }
@@ -270,7 +270,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   let sourceName = cat(module.view(), ".cone");
   let source = work.join(sourceName.view());
   // Its lines end as Python's write_text ends them on Windows, in '\r\n'
-  var text = String.empty();
+  var text = String();
   if hasGpu {
     text <- "// The GPU build of ", name.view(), "'s gpu/ folder, written by Congo for conec; rewritten\r\n";
     text <- "// on every build. Its compute entry points are the kernels of ", name.view(), ".spv. Each\r\n";
@@ -302,7 +302,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   let spv = s.out.join(spvName.view());
   let writtenName = cat(module.view(), ".spv");
   let written = work.join(writtenName.view());
-  var rest = List[String].empty();
+  var rest = List[String]();
   rest.push(cat("--triple=", gpuTriple));
   if s.mode.equals("debug") { rest.push(String.from("--debug")); }
   if folders.len() > 0usize {
@@ -318,7 +318,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   // less: the gpu/ folder's modules where that is what is compiled, else the
   // marked package's, and those of every package of the closure, core's among
   // them
-  var files = List[KeyFile].empty();
+  var files = List[KeyFile]();
   let manifest = pkg.root.join("congo.toml");
   files.push(keyFileOf("manifest", &manifest));
   files.push(keyFileOf("module", &source));
@@ -331,7 +331,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
     }
   }
   else { searchedSources(pkg, "searched", &mut files); }
-  var compiled = List[usize].empty();
+  var compiled = List[usize]();
   compiled.push(plan.units[core].pkg);
   var c = 0usize;
   while c < packages.len() {
@@ -349,7 +349,7 @@ fn compileGpu(s: &mut Session, plan: &Plan, u: usize, core: usize) Result[Path, 
   let key = keyOf(&inputs);
   let keyName = cat(module.view(), ".key");
   let keyPath = work.join(keyName.view());
-  var outputs = List[Path].empty();
+  var outputs = List[Path]();
   outputs.push(spv.clone());
   if s.useCache && cacheFresh(&keyPath, key.view(), &outputs) { return Ok[Path, String](spv); }
   removeIfThere(&keyPath);
@@ -398,11 +398,11 @@ struct Validation {
 fn validateKernels(spv: &Path) Validation {
   let pathList = envOr("PATH", "");
   let validator = which("spirv-val", pathList.view());
-  if validator.isEmpty() { return Validation(false, false, String.empty()); }
+  if validator.isEmpty() { return Validation(false, false, String()); }
   let tool = native(&validator);
   let kernels = native(spv);
   let args = argList(tool.view(), "--target-env", "vulkan1.3", kernels.view());
-  var said = String.empty();
+  var said = String();
   var code = 0u32;
   match process.run(args.view()) {
     case let Ok(ok) {

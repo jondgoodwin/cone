@@ -35,7 +35,7 @@ struct St {
 }
 
 fn newSt(ws: u32) St {
-  St(true, ws, List[String].empty(), List[u32].empty(), List[u32].empty(), List[usize].empty(), List[bool].empty())
+  St(true, ws, List[String](), List[u32](), List[u32](), List[usize](), List[bool]())
 }
 
 // One of the intermediate tensors of a synthesis, read back for a test
@@ -114,7 +114,7 @@ pub struct Engine {
   pub fn open(device: &mut Device, dir: &str) Result[Engine, TextToSpeechError] {
     let loaded = Weights.load(device, dir)?;
     let weights, buf = loaded;
-    var vocab = Dict[String, u32].empty();
+    var vocab = Dict[String, u32]();
     var path = String.from(dir);
     path <- "/vocab.tsv";
     match fs.readFile(&Path.from(path.view())) {
@@ -143,18 +143,18 @@ pub struct Engine {
     let kernels = Kernels.make(device);
     let llm = llmkernels.Kernels.make(device);
     if !kernels.isValid() || !llm.isValid() { return Err[Engine, TextToSpeechError](TextToSpeechError(String.from("texttospeech: the kernels could not be made on this device"))); }
-    var held = List[Buffer].empty();
+    var held = List[Buffer]();
     held.push(buf);
-    Ok[Engine, TextToSpeechError](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32].empty()))
+    Ok[Engine, TextToSpeechError](Engine(kernels, llm, Works.make(), weights, held, vocab, 0i64, 0i64, 0i64, false, List[f32]()))
   }
 
   // The ids of the model's tokens for a phoneme string (characters it has no id for are left out), with the two
   // padding tokens at the ends
   pub fn tokens(self: &, phonemes: &str) List[u32] {
-    var ids = List[u32].empty();
+    var ids = List[u32]();
     ids.push(0u32);
     each c in phonemes.chars() {
-      var one = List[u32].empty();
+      var one = List[u32]();
       one.push(u32.from(c));
       let key = textOf(one.view());
       match vocab.get(key.view()) {
@@ -507,7 +507,7 @@ pub struct Engine {
     // [f, 512] -> [512, f]
     let x0 = self.zbuf(job, device, 512usize * f);
     st.ok = self.kernels.copy2d(job, device, sh, x0, f, 512usize, 0usize, 512usize, 1usize, 0usize, 1usize, f) && st.ok;
-    var curve = List[u32].empty();
+    var curve = List[u32]();
     var branch = 0usize;
     while branch < 2usize {
       var prefix = "predictor.F0";
@@ -665,11 +665,11 @@ pub struct Engine {
   // Submit the job and wait for it; the weights' buffer is taken back, and the probes read
   fn finishJob(self: &mut, device: &mut Device, job: Job, st: &St, keep: &Array[u32], wantBack: &Array[u32]) (List[Buffer], List[List[f32]], List[Probe], bool) {
     let ticket = works.submit(device, job, Target.Here(1u64));
-    var done = List[Completion].empty();
+    var done = List[Completion]();
     works.waitFor(device, ticket, &mut done);
-    var buffers = List[Buffer].empty();
-    var backs = List[List[f32]].empty();
-    var probes = List[Probe].empty();
+    var buffers = List[Buffer]();
+    var backs = List[List[f32]]();
+    var probes = List[Probe]();
     if done.len() != 1usize { return (buffers, backs, probes, false); }
     var k = 0usize;
     while k < wantBack.len {
@@ -692,7 +692,7 @@ pub struct Engine {
     }
     var back = match done.pop() {
       case var Some(c) { c.buffersIn(slots.view()) }
-      case is None { List[Buffer].empty() }
+      case is None { List[Buffer]() }
     };
     {
       var wsFirst = true;
@@ -719,7 +719,7 @@ pub struct Engine {
       return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a piece of 1 to 510 phonemes is what the model takes")));
     }
     if style.len < 256usize { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a style is 256 floats"))); }
-    var probes = List[Probe].empty();
+    var probes = List[Probe]();
 
     // ---- A: the text ----
     var jobA = Job.make(device);
@@ -783,7 +783,7 @@ pub struct Engine {
     self.gpuNanos = self.gpuNanos + t5.since(t4).nanos();
     if !okB { return Err[Spoken, TextToSpeechError](TextToSpeechError(String.from("texttospeech: a kernel refused its arguments or failed on the GPU (stage B)"))); }
     appendProbes(&mut probes, probesB);
-    let f0 = backsB.pop() || List[f32].empty();
+    let f0 = backsB.pop() || List[f32]();
 
     // ---- the source, on the CPU ----
     let samples = 600usize * f;
@@ -809,7 +809,7 @@ pub struct Engine {
     let harSlot = self.ubuf(&mut jobC, device, har.view());
     let postSlot, backC = self.stageC(&mut jobC, device, &mut stC, asrC, f0C, nC, harSlot, f, style);
     let t7 = Instant.now();
-    let keepC = List[u32].empty();
+    let keepC = List[u32]();
     let backC1 = [backC];
     var bufsC, backsC, probesC, okC = self.finishJob(device, jobC, &stC, keepC.view(), &backC1);
     let t8 = Instant.now();

@@ -393,6 +393,34 @@ static int typeLitImplicitViable(StructNode *strnode, Nodes *args) {
     return argi >= args->used;
 }
 
+// Can this struct be made with no arguments, `T()`: a declared init that takes none
+// (the region of a CarriesRegion type, and parameters with defaults, may be left
+// out), or its implicit init with every field given a default? Core's Default asks it.
+int typeLitZeroArgConstructible(StructNode *strnode) {
+    Nodes *none = newNodes(1);
+    // (Not typeLitDeclaredInits: it demands the candidates' types, too early here)
+    INode *inits = iNsTypeFindFnField((INsTypeNode*)strnode, initMethodName);
+    if (inits != NULL && (inits->tag == FnDclTag || inits->tag == FnOverloadDclTag)) {
+        int carries = structDeclaresTrait(strnode, carriesRegionTrait);
+        INode **candp;
+        uint32_t ncand;
+        if (inits->tag == FnDclTag) {
+            candp = &inits;
+            ncand = 1;
+        }
+        else {
+            candp = &nodesGet(((FnOverloadDclNode*)inits)->overloads, 0);
+            ncand = ((FnOverloadDclNode*)inits)->overloads->used;
+        }
+        while (ncand--) {
+            FnDclNode *cand = (FnDclNode*)*candp++;
+            if (fnDclIsInit(cand) && typeLitInitViable(cand, none, carries))
+                return 1;
+        }
+    }
+    return typeLitImplicitViable(strnode, none);
+}
+
 // The region a construction of a CarriesRegion type is handed when it names
 // none: the region of the arena it is made in ('new a[T](...)': 'hereregion', the
 // head's region field, typeLitNewInRegion), else the heap's, core's

@@ -8,7 +8,7 @@
 //   import fs;
 //
 //   fn main() i32 {
-//     var text = String.empty();
+//     var text = String();
 //     match fs.readFile("notes.txt") {
 //       case let Ok(ok) { text = ok; }              // the String moved out
 //       case let Err(e) {
@@ -365,7 +365,7 @@ pub fn readFile(path: &Path) Result[String, FsError] {
   var c = cText(path);
   let f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[String]("readFile", path, openErrno(path)); }
-  var out = String.empty();
+  var out = String();
   var buf = Array[u8, 65536]() <- fill 0u8;
   let bp: *u8 = &[]buf as *u8;
   var going = true;
@@ -579,11 +579,11 @@ fn errnoOfWindows(code: u32) i32 {
 // declares Sendable, a promise taken on trust, for its raw pointer: the view is
 // the owner's alone and read-only, so it may be handed to another thread, and
 // 'Arc[imm, MappedFile]' shares it among threads.
-pub struct MappedFile is Move, Sendable {
+pub struct MappedFile is Default, Move, Sendable {
   ptr: *u8;          // the view's first byte; null for an empty file
   bytes: usize;      // the file's size when it was mapped
 
-  fn empty() MappedFile { MappedFile(null, 0usize) }
+  fn init(self: &new) { *self = MappedFile(null, 0usize); }
 
   // The file's size in bytes, as it was when mapped
   pub fn size(self: &) usize { bytes }
@@ -637,7 +637,7 @@ fn mapWindows(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
   if GetFileSizeEx(h, &mut size) == 0i32 {
     return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError()));
   }
-  if size == 0i64 { return Ok[MappedFile, FsError](MappedFile.empty()); }
+  if size == 0i64 { return Ok[MappedFile, FsError](MappedFile()); }
   // The size as the two halves Windows takes it in
   let n = u64.from(size);
   let map = CreateFileMappingW(h, null, pageReadonly, u32.from(n >> 32u64),
@@ -655,7 +655,7 @@ fn mapLinux(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
   let fd = fileno(f);
   let end = lseek(fd, 0i64, seekEnd);
   if end < 0i64 { return fail[MappedFile]("mapFile", path, lastErrno()); }
-  if end == 0i64 { return Ok[MappedFile, FsError](MappedFile.empty()); }
+  if end == 0i64 { return Ok[MappedFile, FsError](MappedFile()); }
   let n = usize.from(end);
   let view = mmap(null, n, protRead, mapPrivate, fd, 0i64);
   if view as usize == mmapFailed { return fail[MappedFile]("mapFile", path, lastErrno()); }
@@ -756,7 +756,7 @@ pub fn readDir(path: &Path) Result[List[DirEntry], FsError] {
   var c = cText(path);
   let dir = posix.opendir(c.cstr());
   if dir == null { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
-  var out = List[DirEntry].empty();
+  var out = List[DirEntry]();
   *libc.errno() = 0i32;
   var e = posix.readdir(dir);
   while e != null {
@@ -791,7 +791,7 @@ pub fn readDir(path: &Path) Result[List[DirEntry], FsError] {
 // names down to it. A linked folder is listed but not gone into. The first
 // folder that cannot be read ends the walk with its error.
 pub fn walk(root: &Path) Result[List[DirEntry], FsError] {
-  var out = List[DirEntry].empty();
+  var out = List[DirEntry]();
   walkInto(root, &mut out)?;
   Ok[List[DirEntry], FsError](out)
 }

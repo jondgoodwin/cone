@@ -35,7 +35,7 @@ fn checksum(bytes: &List[u8]) u32 {
 }
 
 fn quant(kind: &TensorType, x: &List[f32]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   match quantize(kind, x.view(), &mut out) {
     case is Ok {}
     case let Err(e) {
@@ -49,7 +49,7 @@ fn quant(kind: &TensorType, x: &List[f32]) List[u8] {
 // The largest difference between x and what its bytes read back as
 fn worst(kind: &TensorType, x: &List[f32]) f64 {
   let bytes = quant(kind, x);
-  var back = List[f32].empty();
+  var back = List[f32]();
   match dequantize(kind, bytes.view(), x.len(), &mut back) {
     case is Ok {}
     case is Err { expect(false, kind.name()); }
@@ -97,7 +97,7 @@ fn main() i32 {
 
   // zero in, zero out: every type reads a quantised zero back as zero (the bytes are not
   // all zero: Q4_0 stores the value 8 and Q6_K 32, for the 0 they stand for)
-  var zeros = List[f32].empty();
+  var zeros = List[f32]();
   var i = 0usize;
   while i < 512usize { zeros.push(0.0); i = i + 1usize; }
   k = 0usize;
@@ -108,13 +108,13 @@ fn main() i32 {
 
   // a block that sits exactly on the grid reads back exactly: Q4_0 values
   // (j - 8) * 0.25 for j in 0..16 and 0..16 again with the largest at -2
-  var grid = List[f32].empty();
+  var grid = List[f32]();
   i = 0usize;
   while i < 32usize { grid.push(f32.from(i32.from(i % 16usize) - 8i32) * 0.25); i = i + 1usize; }
   expectFloat(worst(&TensorType.Q4_0, &grid), 0.0, 0.0, "Q4_0 on its grid");
 
   // the plain floats, by their bytes
-  var few = List[f32].empty();
+  var few = List[f32]();
   few.push(1.0); few.push(-2.0);
   let f16b = quant(&TensorType.F16, &few);
   expectUInt(u64.from(*f16b[1usize]), 0x3cu64, "F16 1.0 high byte");
@@ -123,7 +123,7 @@ fn main() i32 {
   expectUInt(u64.from(*bf16b[0usize]) + 256u64 * u64.from(*bf16b[1usize]), 0x3f80u64, "BF16 1.0");
 
   // a count that is not whole blocks
-  var out = List[u8].empty();
+  var out = List[u8]();
   match quantize(&TensorType.Q8_0, few.view(), &mut out) {
     case is Ok { expect(false, "2 values are not a Q8_0 block"); }
     case let Err(er) { expect(er.kind == ErrorKind.BadSize, "BadSize"); }

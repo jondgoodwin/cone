@@ -167,11 +167,11 @@ struct Run {
 
 fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64, serveHere: bool) Run {
   var run = Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero(), ConnectFails.none());
-  var cs = List[ConnId].empty();
-  var made = List[u64].empty();
-  var busy = List[bool].empty();
+  var cs = List[ConnId]();
+  var made = List[u64]();
+  var busy = List[bool]();
   var connected = 0u64;
-  var events = List[Event].empty();
+  var events = List[Event]();
   let batch = 64u64;
   var t0 = Instant.now();
   var started = false;
@@ -194,7 +194,7 @@ fn clients(drv: &mut Driver, lp: &mut Loop, port: u16, conns: u64, perConn: u64,
       var k = 0usize;
       while k < cs.len() {
         if !*busy[k] && *made[k] < perConn {
-          drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+          drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength(),
             Sink.Here(tokReq + u64.from(k)));
           busy.set(k, true);
           made.set(k, *made[k] + 1u64);
@@ -285,7 +285,7 @@ fn serve(a: ServerArgs) u64 {
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make());
   a.portTx.send(listenOn(&mut drv, &mut lp));
-  var events = List[Event].empty();
+  var events = List[Event]();
   var served = 0u64;
   while !a.stop.load() {
     drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
@@ -331,17 +331,17 @@ fn idleMemory(n: u64, readyIdle: bool) {
   // n connections, one GET each, then left idle. A connection is settled
   // once it is Connected or Closed (its connect failed, or it broke): no
   // more than 64 are opened beyond those
-  var cs = List[ConnId].empty();
+  var cs = List[ConnId]();
   var connected = 0u64;
   var closed = 0u64;
   var dones = 0u64;
   var failed = 0u64;
-  var events = List[Event].empty();
+  var events = List[Event]();
   while dones + failed < n {
     if u64.from(cs.len()) < n && u64.from(cs.len()) < connected + closed + 64u64 {
       let k = u64.from(cs.len());
       let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn + k));
-      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq + k));
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength(), Sink.Here(tokReq + k));
       cs.push(c);
       continue;
     }

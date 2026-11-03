@@ -95,7 +95,7 @@ struct Stream {
   gone: bool;               // ngtcp2 has closed it; the record waits for its bytes' release
 
   fn make(id: i64) Stream {
-    Stream(id: id, out: Deque[Piece].empty(), offered: 0u64, queued: 0u64, acked: 0u64, fin: false,
+    Stream(id: id, out: Deque[Piece](), offered: 0u64, queued: 0u64, acked: 0u64, fin: false,
       finSent: false, writeShut: false, unreleased: 0u64, gone: false)
   }
 
@@ -325,7 +325,7 @@ pub struct Connection is Move {
     self.expire(now);
     var buf = IoBuf(maxUdp);
     let n = self.transmitInto(buf.base(), maxUdp, now);
-    if n == 0usize {return IoBuf.empty();}
+    if n == 0usize {return IoBuf();}
     buf.setLen(n);
     buf
   }
@@ -532,7 +532,7 @@ pub struct Connection is Move {
     var p = null as *u8;
     var n = 0u32;
     SSL_get0_alpn_selected(ssl, &mut p, &mut n);
-    var out = String.empty();
+    var out = String();
     if n > 0u32 {out.appendBytes(mem.sliceFromParts(p, usize.from(n)));}
     out
   }
@@ -905,7 +905,7 @@ pub struct Connection is Move {
     var delivered = 0u64;
     // Consecutive records of one stream's bytes go into one IoBuf while it
     // has room
-    var cur = IoBuf.empty();
+    var cur = IoBuf();
     var curOn = false;
     var curStream = 0i64;
     var curFin = false;
@@ -923,7 +923,7 @@ pub struct Connection is Move {
           curFin = fin;
         } else {
           if curOn {events.push(Event.Data(curStream, cur, curFin));}
-          cur = if n == 0usize {IoBuf.empty()} else {IoBuf(n)};
+          cur = if n == 0usize {IoBuf()} else {IoBuf(n)};
           if n > 0usize {cur.append(mem.sliceFromParts(data, n));}
           curOn = true;
           curStream = r.stream;
@@ -932,7 +932,7 @@ pub struct Connection is Move {
       } else {
         if curOn {
           events.push(Event.Data(curStream, cur, curFin));
-          cur = IoBuf.empty();
+          cur = IoBuf();
           curOn = false;
         }
         if r.kind == recOpen {
@@ -1018,7 +1018,7 @@ const alertNoApplicationProtocol = 120u32;
 // A connection's record, its handles made
 fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &str, cfg: &Config,
     now: Instant) Connection {
-  var pins = List[u8].empty();
+  var pins = List[u8]();
   let keys = cfg.verify.pinnedKeys();
   var k = 0usize;
   while k < keys.len {
@@ -1028,7 +1028,7 @@ fn made(conn: *u8, ossl: *u8, ssl: *u8, b: *u8, ps: *u8, server: bool, host: &st
   Connection(conn: conn, ossl: ossl, ssl: ssl, box: b, ps: ps, server: server, host: String.from(host),
     alpnName: cfg.alpn.clone(), kind: cfg.verify.kind, pins: pins, offline: cfg.offline,
     lane: cfg.verifyLane, maxUdp: cfg.maxUdpPayload, streams: SlotTable[Stream].make(16u32),
-    byId: Dict[i64, u32].empty(), cursor: 0usize, events: Deque[Event].empty(), verifyStage: stageIdle,
+    byId: Dict[i64, u32](), cursor: 0usize, events: Deque[Event](), verifyStage: stageIdle,
     lastNow: now, closed: false, closing: None, err: None)
 }
 

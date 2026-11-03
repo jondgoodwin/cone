@@ -42,8 +42,8 @@ struct Srv {
 
 fn server() Srv {
   Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
-    open: 0u64, maxOpen: 0u64, requests: 0u64, reqs: List[httpconn.ReqId].empty(),
-    methods: List[Method].empty(), targets: List[String].empty(), bodies: List[String].empty())
+    open: 0u64, maxOpen: 0u64, requests: 0u64, reqs: List[httpconn.ReqId](),
+    methods: List[Method](), targets: List[String](), bodies: List[String]())
 }
 
 fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
@@ -122,7 +122,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
     sv.reqs.push(e.req);
     sv.methods.push(e.request.method);
     sv.targets.push(e.request.target.clone());
-    sv.bodies.push(String.empty());
+    sv.bodies.push(String());
   } else if kind == httpconn.EventKind.Data {
     let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
@@ -139,7 +139,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   cl.pump(lp, out);
   sv.drv.pump(lp, &uni sevs);
   var limit = until;
@@ -148,7 +148,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], unt
   let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -183,8 +183,8 @@ struct Seen {
 }
 
 fn seen() Seen {
-  Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero())
+  Seen(status: 0u16, body: String(), url: String(), kinds: String(), finals: 0u64,
+    last: EventKind.Done, failure: String(), stage: Stage.Url, timing: Timing.zero())
 }
 
 fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
@@ -220,7 +220,7 @@ fn numberAt(text: &str, at: usize) u32 {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
@@ -242,7 +242,7 @@ var @threadlocal peakOpen = 0u32;
 // Drive until n final answers have come, every Data released: how many
 // were Done, and each failure's message in fails
 fn drain(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, n: u64, fails: &mut List[String]) u64 {
-  var out = List[Event].empty();
+  var out = List[Event]();
   var dones = 0u64;
   var finals = 0u64;
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
@@ -269,7 +269,7 @@ fn drain(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, n: u64, fails: &mut List[
 
 // Drive for a while
 fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &uni out, until);
@@ -297,7 +297,7 @@ fn main() i32 {
   let port = listen(&mut sv, &mut lp);
   let port2 = listen(&mut sv, &mut lp);
   require(port != 0u16 && port2 != 0u16, "the server listens on two ports: two origins");
-  var fails = List[String].empty();
+  var fails = List[String]();
 
   // ---- One client, at most two connections to an origin ----
   {
@@ -448,7 +448,7 @@ fn main() i32 {
     let a = cl.get(&mut lp, "http://127.0.0.1:1/a", Sink.Here(1u64));
     cl.get(&mut lp, "http://127.0.0.1:1/b", Sink.Here(1u64));
     cl.get(&mut lp, "http://127.0.0.1:1/c", Sink.Here(1u64));
-    var fl = List[String].empty();
+    var fl = List[String]();
     expectUInt(drain(&mut cl, &mut sv, &mut lp, 3u64, &mut fl), 0u64, "three to a port no one listens on: none Done");
     expectUInt(u64.from(fl.len()), 3u64, "...all three Failed");
     // The message names the kind and keeps the system's own number (1225
@@ -528,7 +528,7 @@ fn main() i32 {
 
   expectUInt(u64.from(fails.len()), 0u64, "no other failures");
   sv.drv.abortAll(&mut lp);
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   sv.drv.pump(&mut lp, &uni sevs);
   sevs.clear();
   expectUInt(stats().lent, 0u64, "every buffer back in the pool");

@@ -177,7 +177,7 @@ pub struct UrlError is Error {
   pub why: String;
 
   pub fn make(at: usize, why: &str) UrlError {UrlError(at, String.from(why))}
-  pub fn none() UrlError {UrlError(0usize, String.empty())}
+  pub fn none() UrlError {UrlError(0usize, String())}
   pub fn isNone(self: &) bool {why.len() == 0usize}
 
   // 'url: a port is 0 to 65535 (at 22)'
@@ -207,7 +207,7 @@ pub fn defaultPort(scheme: &str) u16 {
 
 // A URL, or during resolution a reference, as its parts (see the package's
 // header)
-pub struct Url {
+pub struct Url is Default {
   pub scheme: String;        // lower case; empty in a reference that has none
   pub hasAuthority: bool;    // '//' was there
   pub userinfo: String;      // before '@', as written (httpclient sends none of it)
@@ -222,15 +222,15 @@ pub struct Url {
   pub hasFragment: bool;
 
   // No parts: a reference that is empty
-  pub fn empty() Url {
-    Url(scheme: String.empty(), hasAuthority: false, userinfo: String.empty(), host: String.empty(),
-      hostKind: HostKind.Empty, port: 0u16, hasPort: false, path: String.empty(), query: String.empty(),
-      hasQuery: false, fragment: String.empty(), hasFragment: false)
+  pub fn init(self: &new) {
+    *self = Url(scheme: String(), hasAuthority: false, userinfo: String(), host: String(),
+      hostKind: HostKind.Empty, port: 0u16, hasPort: false, path: String(), query: String(),
+      hasQuery: false, fragment: String(), hasFragment: false);
   }
 
   // An absolute URL read from text (see the package's header, READING)
   pub fn parse(text: &str) Result[Url, UrlError] {
-    var u = Url.empty();
+    var u = Url();
     let t = trimEnds(text);
     let e = parseInto(t, &mut u);
     if !e.isNone() {return Err[Url, UrlError](e);}
@@ -262,7 +262,7 @@ pub struct Url {
   // Host and port as HTTP writes them in Host: the port only when it is not
   // the scheme's default
   pub fn authority(self: &) String {
-    var out = String.empty();
+    var out = String();
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     if hasPort && port != defaultPort(scheme.view()) {
       out.append(":");
@@ -300,7 +300,7 @@ pub struct Url {
 
   // The URL as text (see the package's header, WRITING)
   pub fn text(self: &) String {
-    var out = String.empty();
+    var out = String();
     if scheme.len() > 0usize {
       out.append(scheme.view());
       out.append(":");
@@ -618,7 +618,7 @@ fn dropLastSegment(s: &String) String {
     k = k - 1usize;
     if v[k] == '/' {return String.from(&v[0usize ..< k]);}
   }
-  String.empty()
+  String()
 }
 
 // base's path merged with a relative path (RFC 3986, 5.2.3)
@@ -639,10 +639,10 @@ fn merge(base: &Url, rel: &str) String {
 // The reference ref resolved against base, an absolute URL (RFC 3986,
 // 5.2.2), and checked as Url.parse checks one
 pub fn resolveRef(base: &Url, ref: &str) Result[Url, UrlError] {
-  var r = Url.empty();
+  var r = Url();
   let e = parseInto(trimEnds(ref), &mut r);
   if !e.isNone() {return Err[Url, UrlError](e);}
-  var t = Url.empty();
+  var t = Url();
   if r.scheme.len() > 0usize {
     t = r;
   } else {

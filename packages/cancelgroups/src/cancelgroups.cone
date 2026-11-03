@@ -109,8 +109,8 @@ fn @initpure init() {
   timerLock = Mutex.make();
   timerWake = Condvar.make();
   let t = libc.malloc(mem.sizeof[Timers]()) as *Timers;
-  mem.writeRaw[Timers](t, Timers(Wheel.make(Instant.now()), List[Option[Arc[imm, GroupState]]].empty(),
-    List[u32].empty(), List[Expiry].empty()));
+  mem.writeRaw[Timers](t, Timers(Wheel.make(Instant.now()), List[Option[Arc[imm, GroupState]]](),
+    List[u32](), List[Expiry]()));
   timersAt = Atomic[usize].of(t as usize);
   timerStarted = Atomic[u32].of(0u32);
 }
@@ -138,7 +138,7 @@ pub struct Cancelled is Error, Sendable {
   pub cause: Cause;
 
   pub fn message(self: &) String {
-    var s = String.empty();
+    var s = String();
     match cause {
       case Cause.Cancelled { s.append("cancelled"); }
       case Cause.TimedOut { s.append("cancelled: its deadline came"); }
@@ -225,7 +225,7 @@ pub struct GroupState is Sendable, Move {
     let st = self.lists();
     if st.reg as usize == 0usize {
       let block = libc.malloc(mem.sizeof[Registry]()) as *Registry;
-      mem.writeRaw[Registry](block, Registry(List[u64].empty(), List[Uni[Wakeup + Sendable + ShapeKeeping]].empty()));
+      mem.writeRaw[Registry](block, Registry(List[u64](), List[Uni[Wakeup + Sendable + ShapeKeeping]]()));
       st.reg = block;
     }
     st.reg as &mut Registry
@@ -498,7 +498,7 @@ fn collectDue(firing: &mut List[Arc[imm, GroupState]]) {
 }
 
 fn timerMain(a: TimerArg) {
-  var firing = List[Arc[imm, GroupState]].empty();
+  var firing = List[Arc[imm, GroupState]]();
   let tm = timers();
   timerLock.lock();
   while true {

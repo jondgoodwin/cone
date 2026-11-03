@@ -30,11 +30,11 @@
 //     h.hasToken(name, token)  h.joined(name)  h.len()  h.nameAt(i)  h.valueAt(i)
 //     h.clone()  h.clear()
 //   isToken(s)  checkFieldName(s)  checkFieldValue(s)  trimOws(s)
-//   RequestHead.make(method, target, authority)  RequestHead.empty()     (HEADS)
+//   RequestHead.make(method, target, authority)  RequestHead()     (HEADS)
 //     r.method  r.methodName()  r.target  r.authority  r.scheme  r.version  r.headers
-//   ResponseHead.make(status)  ResponseHead.empty()
+//   ResponseHead.make(status)  ResponseHead()
 //     r.status  r.version  r.headers
-//   BodyLength.empty()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
+//   BodyLength()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
 //   HttpError: e.kind  e.status  e.noResponse  e.detail  e.message()     (ERRORS)
 //     e.code  e.scope  e.isRetrySafe()  HttpError.coded(kind, code, scope, detail)
 //   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset
@@ -256,11 +256,11 @@ pub enum BodyKind {
   Empty, Sized, Unsized
 }
 
-pub struct BodyLength {
+pub struct BodyLength is Default {
   pub kind: BodyKind;
   pub length: u64;          // Sized's byte count; 0 otherwise
 
-  pub fn empty() BodyLength {BodyLength(BodyKind.Empty, 0u64)}
+  pub fn init(self: &new) {*self = BodyLength(BodyKind.Empty, 0u64);}
   pub fn sized(n: u64) BodyLength {BodyLength(BodyKind.Sized, n)}
   pub fn unsized() BodyLength {BodyLength(BodyKind.Unsized, 0u64)}
 
@@ -296,7 +296,7 @@ pub enum ErrorScope {
 }
 
 // Why an exchange or a connection failed
-pub struct HttpError is Error {
+pub struct HttpError is Default, Error {
   pub kind: ErrorKind;
   pub status: u16;          // what a server answers it with, or 0
   pub noResponse: bool;     // no byte of a response had arrived
@@ -306,7 +306,7 @@ pub struct HttpError is Error {
 
   // A failure of the whole connection, with no protocol code
   pub fn make(kind: ErrorKind, status: u16, detail: &str) HttpError {
-    HttpError(kind, status, false, String.from(detail), None, ErrorScope.Connection)
+    HttpError(kind, status, false, String.from(detail), None[u64], ErrorScope.Connection)
   }
 
   // A failure the protocol named with its own error code, of one stream or
@@ -316,7 +316,7 @@ pub struct HttpError is Error {
   }
 
   // Nothing yet: an error to swap another out with
-  pub fn empty() HttpError {HttpError(ErrorKind.Malformed, 0u16, false, String.empty(), None, ErrorScope.Connection)}
+  pub fn init(self: &new) {*self = HttpError(ErrorKind.Malformed, 0u16, false, String(), None[u64], ErrorScope.Connection);}
 
   // Whether the peer is known not to have processed the request, so it may
   // be sent again on another connection whatever its method (RFC 9113,
