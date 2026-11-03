@@ -160,7 +160,7 @@ fn answer(sv: &mut Srv, k: usize) {
   } else if path == "/nobody" {
     reply(sv, req, head, 204u16, "");
   } else if path == "/conns" {
-    var b = String.empty();
+    var b = String();
     b.appendUInt(sv.accepted);
     reply(sv, req, head, 200u16, b.view());
   } else if path.len > 10usize && &path[0usize ..< 10usize] == "/redirect/" {
@@ -202,7 +202,7 @@ fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
     sv.reqs.push(e.req);
     sv.methods.push(e.request.method);
     sv.targets.push(e.request.target.clone());
-    sv.bodies.push(String.empty());
+    sv.bodies.push(String());
   } else if kind == httpconn.EventKind.Data {
     let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
@@ -229,7 +229,7 @@ fn certs(name: &str) Path {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}
@@ -284,13 +284,13 @@ fn listenOn(sv: &mut Srv, lp: &mut Loop, s: Option[tls.Server]) u16 {
 fn serve(portTx: Sender[u16]) Report {
   var lp = Loop.mustMake();
   var sv = Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
-    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
-    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
-    sent: List[u64].empty(), totals: List[u64].empty());
+    requests: 0u64, reqs: List[httpconn.ReqId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), streams: List[httpconn.ReqId](),
+    sent: List[u64](), totals: List[u64]());
   portTx.send(listenOn(&mut sv, &mut lp, None));
   portTx.send(listenOn(&mut sv, &mut lp, Some[tls.Server](tlsServer("server.pem", "server.key"))));
   portTx.send(listenOn(&mut sv, &mut lp, Some[tls.Server](tlsServer("untrusted.pem", "untrusted.key"))));
-  var events = List[httpconn.Event].empty();
+  var events = List[httpconn.Event]();
   while halt.load() == 0u32 {
     sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
     var k = 0usize;
@@ -415,30 +415,30 @@ actor Prober {
   pub async fn run(self, port: u16, goodPort: u16, untrustedPort: u16, done: OneshotSender[u64]) {
     // A plain connection: two requests on it, one server accept
     let c = connOf("connect", await actorhttp.connect("127.0.0.1", port));
-    say("get", await c.request(get("/hello"), String.empty()));
-    say("accepts so far", await c.request(get("/conns"), String.empty()));
+    say("get", await c.request(get("/hello"), String()));
+    say("accepts so far", await c.request(get("/conns"), String()));
     var ping = RequestHead.make("POST", "/echo", "127.0.0.1");
     ping.headers.add("Content-Type", "text/plain");
     say("post", await c.request(ping, String.from("ping")));
 
     // A request cancelled while paused: the connection is reset
     let g1 = CancelGroup.make();
-    let r1 = c.requestIn(get("/hang"), String.empty(), IoLimits.within(g1));
+    let r1 = c.requestIn(get("/hang"), String(), IoLimits.within(g1));
     selfactor.stop(g1);
     say("cancel while paused", await r1);
-    say("a request after it", await c.request(get("/hello"), String.empty()));
+    say("a request after it", await c.request(get("/hello"), String()));
 
     // A deadline ahead, then one past, on new connections
     let c2 = connOf("connect again", await actorhttp.connect("127.0.0.1", port));
     let t2 = Instant.now();
-    say("deadline ahead", await c2.requestIn(get("/hang"), String.empty(), IoLimits.until(t2 + Duration.fromMillis(100i64))));
+    say("deadline ahead", await c2.requestIn(get("/hang"), String(), IoLimits.until(t2 + Duration.fromMillis(100i64))));
     note("  and it had passed", waitedAtLeast(t2, 90i64));
     let c3 = connOf("connect a third", await actorhttp.connect("127.0.0.1", port));
-    say("deadline past", await c3.requestIn(get("/hello"), String.empty(), IoLimits.until(Instant.now())));
-    say("and the connection is still good", await c3.request(get("/hello"), String.empty()));
+    say("deadline past", await c3.requestIn(get("/hello"), String(), IoLimits.until(Instant.now())));
+    say("and the connection is still good", await c3.request(get("/hello"), String()));
     let g4 = CancelGroup.make();
     g4.cancel();
-    say("group cancelled before it starts", await c3.requestIn(get("/hello"), String.empty(), IoLimits.within(g4)));
+    say("group cancelled before it starts", await c3.requestIn(get("/hello"), String(), IoLimits.within(g4)));
 
     // A connection that cannot be made
     let none = connOf("refused", await actorhttp.connect("127.0.0.1", 1u16));
@@ -448,15 +448,15 @@ actor Prober {
     cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
     cfg.offline = true;
     let s1 = connOf("secure connect", await actorhttp.connectSecure("127.0.0.1", goodPort, cfg));
-    say("secure get", await s1.request(get("/hello"), String.empty()));
-    say("secure again", await s1.request(get("/hello"), String.empty()));
+    say("secure get", await s1.request(get("/hello"), String()));
+    say("secure again", await s1.request(get("/hello"), String()));
 
     // ...and one it does not: the connection is made, the first request fails
     var cfg2 = tls.ClientConfig.make();
     cfg2.verify = tls.Verifier.roots(readText("ca.pem").view());
     cfg2.offline = true;
     let s2 = connOf("untrusted connect", await actorhttp.connectSecure("127.0.0.1", untrustedPort, cfg2));
-    note("untrusted get failed at the handshake", refusedTls(await s2.request(get("/hello"), String.empty())));
+    note("untrusted get failed at the handshake", refusedTls(await s2.request(get("/hello"), String())));
 
     // The same two servers through a Client, whose config carries the root
     var hcfg = httpclient.Config.make();
@@ -489,7 +489,7 @@ actor Dropper {
   }
 
   pub async fn run(self, done: OneshotSender[u64]) {
-    say("conn dropped under a request", await conn.request(get("/hang"), String.empty()));
+    say("conn dropped under a request", await conn.request(get("/hang"), String()));
     var d = done;
     d.send(1u64);
   }
@@ -501,7 +501,7 @@ fn main() i32 {
   var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
   let server = thread.start(portTx, &serve);
-  var ports = List[u16].empty();
+  var ports = List[u16]();
   while ports.len() < 3usize {
     match portRx.recv() {
       case let Some(p) {ports.push(p);}

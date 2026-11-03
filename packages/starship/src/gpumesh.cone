@@ -126,7 +126,7 @@ struct ShipMesher {
   // sign
   pub fn checkSamples(self: &, device: &mut Device, ship: &ShipData, box: Aabb3, cell: f32, sparse: bool, band: f32) bool {
     let grid = SampleGrid.covering(box, cell);
-    var slabs = List[u32].empty();
+    var slabs = List[u32]();
     slabsOf(grid, slabLayers, &mut slabs);
     let nslabs = slabs.len() / 2usize;
     let blockCount = blocksAlong(grid.samplesX - 1u32) * blocksAlong(grid.samplesY - 1u32)
@@ -157,7 +157,7 @@ struct ShipMesher {
       job.dispatch(device, &sample, &[sweepSlot, shipSlot, centres, far, out], groupsX(n), groupsY(n));
       let back = job.readback(device, out);
       let ticket = works.submit(device, job, Target.Here(0u64));
-      var done = List[Completion].empty();
+      var done = List[Completion]();
       works.waitFor(device, ticket, &mut done);
       if done.len() != 1usize || !done[0usize].ok { print <- "  sampling on the GPU FAILED\n"; return false; }
       let words = done[0usize].words(back);
@@ -199,7 +199,7 @@ struct ShipMesher {
       times: &mut GpuTimes, stats: &mut GpuStats) mesh.Mesh {
     let grid = SampleGrid.covering(box, cell);
     let h = cell * 0.1;
-    var slabs = List[u32].empty();
+    var slabs = List[u32]();
     slabsOf(grid, slabLayers, &mut slabs);
     let nslabs = slabs.len() / 2usize;
     let blx = blocksAlong(grid.samplesX - 1u32);
@@ -224,7 +224,7 @@ struct ShipMesher {
     if sparse {
       job.dispatch(device, &blocks, &[wholeSlot, shipSlot, centres, far], groupsX(blockCount), groupsY(blockCount));
     }
-    var sampleSlots = List[u32].empty();
+    var sampleSlots = List[u32]();
     var k = 0usize;
     while k < nslabs {
       let z0 = *slabs[2usize * k];
@@ -238,18 +238,18 @@ struct ShipMesher {
       k = k + 1usize;
     }
     let ticket = works.submit(device, job, Target.Here(0u64));
-    var done = List[Completion].empty();
+    var done = List[Completion]();
     works.waitFor(device, ticket, &mut done);
-    if done.len() != 1usize || !done[0usize].ok { return mesh.Mesh.empty(); }
+    if done.len() != 1usize || !done[0usize].ok { return mesh.Mesh(); }
     // Taken apart: the slabs' samples go on to be meshed, and the job's other buffers are kept to the end
     // ('spent'): a buffer's end waits for the GPU to be idle, and ending these before the meshing makes the
     // sampling and the meshing slower (measured: 6% in all)
     var all = match done.pop() {
       case var Some(c) { c.(buffers) }
-      case is None { List[Buffer].empty() }
+      case is None { List[Buffer]() }
     };
     var samples = List[Buffer].withCapacity(nslabs);
-    var spent = List[Buffer].empty();
+    var spent = List[Buffer]();
     {
       var slot = 0u32;
       var next = 0usize;      // the slabs' slots are in order
@@ -267,14 +267,14 @@ struct ShipMesher {
 
     // Meshing: each slab its own grid, its points the whole grid's
     let t1 = Instant.now();
-    var nets = List[GridNet].empty();
+    var nets = List[GridNet]();
     k = 0usize;
     each b in samples.drain() {
       let z0 = *slabs[2usize * k];
       let layers = *slabs[2usize * k + 1usize];
       let slabGrid = SampleGrid(grid.point(0u32, 0u32, z0), grid.cellSize, grid.samplesX, grid.samplesY, layers);
       let net = mesher.mesh(device, slabGrid, b);
-      if !net.ok { return mesh.Mesh.empty(); }
+      if !net.ok { return mesh.Mesh(); }
       nets.push(net);
       k = k + 1usize;
     }
@@ -283,7 +283,7 @@ struct ShipMesher {
     // Relaxation, normals and the quads cut again, a job a slab; and how
     // many of each slab's vertices are in its first layer of cells
     let t2 = Instant.now();
-    var drops = List[u32].empty();
+    var drops = List[u32]();
     var relaxed = List[GridNet].withCapacity(nslabs);
     k = 0usize;
     each net in nets.drain() {
@@ -310,19 +310,19 @@ struct ShipMesher {
       var xs = 0u32;
       match pos {
         case var Some(b) { ps = rjob.give(b); }
-        case is None { return mesh.Mesh.empty(); }
+        case is None { return mesh.Mesh(); }
       }
       match nor {
         case var Some(b) { ns = rjob.give(b); }
-        case is None { return mesh.Mesh.empty(); }
+        case is None { return mesh.Mesh(); }
       }
       match cel {
         case var Some(b) { cs = rjob.give(b); }
-        case is None { return mesh.Mesh.empty(); }
+        case is None { return mesh.Mesh(); }
       }
       match ind {
         case var Some(b) { xs = rjob.give(b); }
-        case is None { return mesh.Mesh.empty(); }
+        case is None { return mesh.Mesh(); }
       }
       let probed = rjob.give(scratch(device, 7u64 * u64.from(nv)));
       let endSlot = rjob.give(scratch(device, 1u64));
@@ -338,15 +338,15 @@ struct ShipMesher {
       rjob.dispatch(device, &layerEnd, &[verts, cs, endSlot], 1u32);
       let back = rjob.readback(device, endSlot);
       let rt = works.submit(device, rjob, Target.Here(0u64));
-      var rdone = List[Completion].empty();
+      var rdone = List[Completion]();
       works.waitFor(device, rt, &mut rdone);
-      if rdone.len() != 1usize { return mesh.Mesh.empty(); }
-      if !rdone[0usize].ok { return mesh.Mesh.empty(); }
+      if rdone.len() != 1usize { return mesh.Mesh(); }
+      if !rdone[0usize].ok { return mesh.Mesh(); }
       let w = rdone[0usize].words(back);
       drops.push(if w.len() > 0usize { *w[0usize] } else { 0u32 });
       var got = match rdone.pop() {
         case var Some(c) { c.buffersIn(&[ps, ns, cs, xs]) }
-        case is None { List[Buffer].empty() }
+        case is None { List[Buffer]() }
       };
       let indices = got.pop();
       let cells = got.pop();
@@ -359,7 +359,7 @@ struct ShipMesher {
 
     // Read back, and the slabs joined
     let t3 = Instant.now();
-    var joined = mesh.Mesh.empty();
+    var joined = mesh.Mesh();
     k = 0usize;
     while k < nslabs {
       let part = relaxed[k].readBackMesh(device);

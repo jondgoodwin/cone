@@ -565,7 +565,7 @@ reference's type promises what it does.
 (`lifeBindBegin`) while it coerces the arguments: each name is bound at its
 first meeting and compared after, so an arena and another arena's key are
 refused at the key (`ErrorBrand`). A static function reached through a use
-naming brands (`List[&'=a T].empty()`) is bound to them first
+naming brands (`List[&'=a T]()`) is bound to them first
 (`fnCallBrandPathAdd`, `lifeBindUse`), and so is a generic function's instance
 to the type arguments it was called with (`lifeBindArgs`, from the instance
 use's `lifeuse`). The callee's `where '=a == '=b` pairs are then held to one

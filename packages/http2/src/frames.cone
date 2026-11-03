@@ -456,7 +456,7 @@ fn parseControl(h: FrameHeader, p: &Array[u8], client: bool) Result[Frame, Frame
     return Ok[Frame, FrameError](Frame.RstStream(h.stream, ErrorCode.of(readU32(p, 0usize))));
   }
   if h.kind == typeSettings {
-    var values = List[Setting].empty();
+    var values = List[Setting]();
     if let Some(e) = parseSettings(p, client, &mut values) {return Err[Frame, FrameError](e);}
     return Ok[Frame, FrameError](Frame.Settings(h.has(flagAck), values));
   }
@@ -465,7 +465,7 @@ fn parseControl(h: FrameHeader, p: &Array[u8], client: bool) Result[Frame, Frame
     return Ok[Frame, FrameError](Frame.Ping(h.has(flagAck), d));
   }
   if h.kind == typeGoAway {
-    var debug = List[u8].empty();
+    var debug = List[u8]();
     appendBytes(&mut debug, &p[8usize ..< p.len]);
     return Ok[Frame, FrameError](Frame.GoAway(readU32(p, 0usize) & maxStreamId, ErrorCode.of(readU32(p, 4usize)), debug));
   }
@@ -527,7 +527,7 @@ pub struct FrameReader {
       panic("http2: FrameConfig.maxFrameSize outside 2^14 to 2^24-1");
     }
     FrameReader(cfg: cfg, isClient: client, pending: None, discard: 0usize, empties: 0usize,
-      failed: None, scratch: List[u8].empty())
+      failed: None, scratch: List[u8]())
   }
 
   // Whether a field block has begun and its END_HEADERS not yet arrived:
@@ -697,7 +697,7 @@ pub struct FrameReader {
         match st {
           case let Err(e) {return self.fail(e);}
           case let Ok(s) {
-            var fragments = List[u8].empty();
+            var fragments = List[u8]();
             appendBytes(&mut fragments, &scratch.view()[s.from ..< s.to]);
             var se: Option[FrameError] = None;
             match s.priority {
@@ -791,7 +791,7 @@ fn blockFrame(b: Block) Frame {
 
 // n bytes at offset 'at' of input, copied into a buffer of their own
 fn copyOutBuf(input: &Chain, at: usize, n: usize) IoBuf {
-  if n == 0usize {return IoBuf.empty();}
+  if n == 0usize {return IoBuf();}
   var buf = IoBuf(n);
   let room = buf.spare();
   let k = input.copyOut(at, &mut room[0usize ..< n]);
@@ -816,7 +816,7 @@ pub struct FrameWriter {
   control: usize;             // control frames queued since the last take
 
   pub fn make(cfg: &FrameConfig) FrameWriter {
-    FrameWriter(out: Chain.make(noBound), pack: IoBuf.empty(), peerMax: defaultMaxFrameSize,
+    FrameWriter(out: Chain.make(noBound), pack: IoBuf(), peerMax: defaultMaxFrameSize,
       maxControl: cfg.maxQueuedControlFrames, control: 0usize)
   }
 
@@ -1057,7 +1057,7 @@ pub struct FrameWriter {
   // The packing buffer to the queue; until the next byte, there is none
   fn flush(self: &mut) {
     if pack.len() == 0usize {return;}
-    var p = IoBuf.empty();
+    var p = IoBuf();
     p <-> pack;
     _ = out.push(p);
   }

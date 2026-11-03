@@ -459,6 +459,10 @@ Core's `Default` takes one. `ErrorDefaultField` is a field of a struct that decl
 is `Default` (a number, `bool`, or a type declaring it), reported at the field. The
 remedy is a `= value` on the field, an `init` of the struct's own, or declaring the
 field's type `Default`.
+`ErrorDefaultInit` is a struct that declares `Default` and writes an `init`, none of
+whose inits can be called with no arguments (the region of a CarriesRegion type, and
+parameters with defaults, may be left out), reported at the struct. The remedy is an
+init that needs none, or not declaring `Default`.
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or

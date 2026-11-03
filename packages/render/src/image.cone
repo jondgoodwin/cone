@@ -13,14 +13,14 @@
 // It also writes a 24-bit BMP ('toBmp', 'save'), and makes an image of pixels
 // read back from the GPU ('fromTexels'), which is how a frame is saved.
 
-pub struct Image {
+pub struct Image is Default {
   pub width: i32;
   pub height: i32;
   pub channels: i32;       // bytes per pixel: 3 red, green, blue; 4 with alpha
   pub pixels: List[u8];    // bottom row first
 
   // No pixels: what a decode that fails gives
-  pub fn empty() Image { Image(0, 0, 3, List[u8].empty()) }
+  pub fn init(self: &new) { *self = Image(0, 0, 3, List[u8]()); }
 
   pub fn isEmpty(self: &) bool { width == 0 || height == 0 }
 
@@ -86,7 +86,7 @@ pub struct Image {
   pub fn load(path: &Path) Image {
     var ok = true;
     let data = readFile(path, &mut ok);
-    if !ok { return Image.empty(); }
+    if !ok { return Image(); }
     Image.fromBmp(data.view())
   }
 
@@ -94,8 +94,8 @@ pub struct Image {
   // 32 (RGBA, its masks the usual ones), stored bottom-up or top-down. Any
   // other BMP, or bytes that are not one, give an empty image.
   pub fn fromBmp(data: &Array[u8]) Image {
-    if data.len < 54usize { return Image.empty(); }
-    if data[0] != 'B' || data[1] != 'M' { return Image.empty(); }
+    if data.len < 54usize { return Image(); }
+    if data[0] != 'B' || data[1] != 'M' { return Image(); }
     let offset = usize.from(le32(data, 10usize));
     let headerSize = le32(data, 14usize);
     let width = i32.from(le32(data, 18usize));
@@ -106,25 +106,25 @@ pub struct Image {
     // A negative height means the rows are stored top row first
     let topDown = height < 0;
     if topDown { height = -height; }
-    if width <= 0 || height <= 0 { return Image.empty(); }
-    if bpp != 24u16 && bpp != 32u16 { return Image.empty(); }
+    if width <= 0 || height <= 0 { return Image(); }
+    if bpp != 24u16 && bpp != 32u16 { return Image(); }
 
     // Compression 0 is none. 3 (BI_BITFIELDS) says masks give each channel's
     // bits; only the usual 32-bit masks (blue, green, red, alpha bytes) are read.
     if compression == 3u32 {
-      if bpp != 32u16 || data.len < 66usize { return Image.empty(); }
+      if bpp != 32u16 || data.len < 66usize { return Image(); }
       if le32(data, 54usize) != 0x00FF0000u32 || le32(data, 58usize) != 0x0000FF00u32
         || le32(data, 62usize) != 0x000000FFu32 {
-        return Image.empty();
+        return Image();
       }
     } else if compression != 0u32 {
-      return Image.empty();
+      return Image();
     }
     let channels = i32.from(bpp) / 8;
 
     // Each stored row is padded to a multiple of four bytes
     let rowSize = usize.from((width * i32.from(bpp) + 31) / 32 * 4);
-    if offset + rowSize * usize.from(height) > data.len { return Image.empty(); }
+    if offset + rowSize * usize.from(height) > data.len { return Image(); }
 
     // A 32-bit BMP without masks leaves its fourth byte unused: opaque
     let alphaStored = channels == 4 && compression == 3u32 && headerSize >= 56u32;

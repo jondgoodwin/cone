@@ -244,11 +244,11 @@ pub struct Driver {
   pub fn make(cfg: Config, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Driver {
     let number = u64.from(takeNumber(file, line));
     Driver(cfg: cfg, tokBase: tokTop | (number << numberShift),
-      connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
-      reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
-      listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
-      dirty: List[u32].empty(), work: List[u32].empty(), ready: List[Event].empty(),
-      heldEvents: List[Held].empty(), comps: List[Completion].empty(), st: DriverStats.zero())
+      connBlocks: List[*Conn](), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
+      reqBlocks: List[*Req](), reqCount: 0u32, freeReq: noEntry,
+      listeners: List[Lst](), acceptsOut: 0u32, rearm: false,
+      dirty: List[u32](), work: List[u32](), ready: List[Event](),
+      heldEvents: List[Held](), comps: List[Completion](), st: DriverStats.zero())
   }
 
   // Its counters, as they are now
@@ -343,19 +343,19 @@ pub struct Driver {
     Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
       sock: Handle.none(), core: http1.Connection.client(cfg.protocol, Instant()), h2: None, isH2: false,
       decided: false, cleartext: false,
-      layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr].empty(), nextAddr: 0usize,
+      layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr](), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
-      waiting: Deque[Waiting].empty(), flushing: List[u32].empty(), failure: None, openBy: forever(),
+      waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
       dirty: false, held: 0u32, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
-      streams: Dict[u32, u32].empty(), writers: List[u32].empty(), goAway: false, shutAsked: false,
+      streams: Dict[u32, u32](), writers: List[u32](), goAway: false, shutAsked: false,
       lastActive: Instant())
   }
 
   fn blankReq(self: &, next: u32) Req {
     Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
-      sink: Sink.Here(0u64), body: BodyLength.empty(), isHead: false,
+      sink: Sink.Here(0u64), body: BodyLength(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
       gotResponse: false, wantWritable: false, timing: Timing.zero(),
       stream: 0u32, txAt: 0u64, marked: false, flushAt: 0u64, held: 0u32)
@@ -477,7 +477,7 @@ pub struct Driver {
     r.gotResponse = false;
     r.wantWritable = false;
     r.isHead = false;
-    r.body = BodyLength.empty();
+    r.body = BodyLength();
     r.timing = Timing.zero();
     r.stream = 0u32;
     r.txAt = 0u64;
@@ -591,11 +591,11 @@ pub struct Driver {
   // events stay behind its first still held
   fn retryHeld(self: &mut) {
     if heldEvents.len() == 0usize {return;}
-    var kept = List[Held].empty();
-    var blocked = List[u64].empty();
+    var kept = List[Held]();
+    var blocked = List[u64]();
     // Credit goes back once the list is drained: a core's release is
     // another package's, whose body the drain cannot see
-    var credits = List[Credit].empty();
+    var credits = List[Credit]();
     {
       each h in heldEvents.drain() {
         let e, var sink, route, credit = h.(e, sink, route, credit);
@@ -672,7 +672,7 @@ pub struct Driver {
     let w = self.wakeAt();
     if w < limit {limit = w;}
     if n > 0usize || heldEvents.len() < heldBefore {limit = Instant();}
-    var cs = List[Completion].empty();
+    var cs = List[Completion]();
     cs <-> comps;
     lp.poll(limit, &mut cs);
     var k = 0usize;
@@ -784,7 +784,7 @@ pub struct Driver {
     }
     if c.layer.peerEnded() && !c.eofFed {
       c.eofFed = true;
-      coreInput(c, IoBuf.empty(), now);
+      coreInput(c, IoBuf(), now);
     }
     if c.layer.failed() {
       let text = c.layer.failureText();
@@ -1189,7 +1189,7 @@ pub struct Driver {
   // server's whose last bytes have gone is Done
   fn answerAll2(self: &mut, lp: &mut Loop, i: u32, cancelAll: bool) {
     let c = self.connAt(i) as &mut Conn;
-    var all = List[u32].empty();
+    var all = List[u32]();
     {
       each ri in c.streams.values() {all.push(*ri);}
     }
@@ -1614,9 +1614,9 @@ pub struct Driver {
         st.bytesIn = st.bytesIn + u64.from(n);
         if n == 0usize {
           c.eof = true;
-          c.layer.wireIn(IoBuf.empty(), now);
+          c.layer.wireIn(IoBuf(), now);
         } else {
-          var b = IoBuf.empty();
+          var b = IoBuf();
           b <-> comp.buf;
           c.layer.wireIn(b, now);
         }
@@ -2026,7 +2026,7 @@ pub struct Driver {
     }
     if r.finished {panic("httpconn: sendData after the body was finished", file, line);}
     let c = self.connAt(r.conn) as &mut Conn;
-    var back = IoBuf.empty();
+    var back = IoBuf();
     var refused = false;
     match coreSendData(c, r.stream, buf, file, line) {
       case let Some(s) {
@@ -2046,7 +2046,7 @@ pub struct Driver {
 
   // The body is whole
   pub fn finish(self: &mut, req: ReqId, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(req, Headers.empty(), file, line);
+    self.finishWith(req, Headers(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body)
@@ -2225,7 +2225,7 @@ pub struct Driver {
   // connection names none
   pub fn layerInfo(self: &, conn: ConnId) String {
     let ci = self.connIndex(conn);
-    if ci == noEntry {return String.empty();}
+    if ci == noEntry {return String();}
     (self.connAt(ci) as &Conn).layer.describe()
   }
 

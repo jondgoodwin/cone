@@ -119,8 +119,8 @@ struct Stream {
 fn newStream(id: u32, ours: bool, sendWindow: i64, recvWindow: i64) Stream {
   Stream(id: id, ours: ours, opened: false, counted: false, sendDone: false, recvDone: false,
     wireClosed: false, resetByUs: false, announced: false, events: 0usize,
-    fields: List[HeaderField].empty(), trailerFields: List[HeaderField].empty(), hasTrailers: false,
-    bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf].empty(), outOff: 0usize,
+    fields: List[HeaderField](), trailerFields: List[HeaderField](), hasTrailers: false,
+    bodyFollows: false, sized: false, left: 0u64, outQ: Deque[IoBuf](), outOff: 0usize,
     outBytes: 0usize, finishing: false, sendWindow: sendWindow, ready: false, responded: false,
     headRequest: false, recvWindow: recvWindow, unacked: 0usize, outstanding: 0usize,
     finalSeen: false, noBody: false, expect: 0u64, expectSet: false, got: 0u64)
@@ -252,17 +252,17 @@ pub struct Connection is Move {
       input: Chain.make(cfg.maxBuffered),
       reader: if client {FrameReader.client(cfg.frames)} else {FrameReader.server(cfg.frames)},
       decoder: HpackDecoder.make(cfg.hpack), prefaceLeft: if client {0usize} else {prefaceLen},
-      sawSettings: false, eof: false, fields: List[HeaderField].empty(),
+      sawSettings: false, eof: false, fields: List[HeaderField](),
       writer: FrameWriter.make(&cfg.frames), encoder: HpackEncoder.make(&cfg.hpack),
-      block: List[u8].empty(), prefaceOut: !client,
+      block: List[u8](), prefaceOut: !client,
       settingsOut: 0u32, settingsAt: now, peerMaxStreams: cfg.assumedPeerStreams,
       peerWindow: i64.from(protocolWindow), peerMaxHeaderList: 0xFFFFFFFFu32,
       connSend: i64.from(protocolWindow), connRecv: i64.from(protocolWindow), connUnacked: 0usize,
-      streams: SlotTable[Stream].make(64u32), byId: Dict[u32, Slot].empty(),
-      ready: Deque[u32].empty(), waiting: Deque[u32].empty(), gone: Deque[Gone].empty(),
+      streams: SlotTable[Stream].make(64u32), byId: Dict[u32, Slot](),
+      ready: Deque[u32](), waiting: Deque[u32](), gone: Deque[Gone](),
       goneMax: usize.from(cfg.maxConcurrentStreams) * 2usize + 32usize,
       nextLocal: if client {1u32} else {2u32}, lastLocal: 0u32, lastPeer: 0u32,
-      localOpen: 0u32, peerLive: 0u32, events: Deque[Event].empty(), pingsOut: 0u32,
+      localOpen: 0u32, peerLive: 0u32, events: Deque[Event](), pingsOut: 0u32,
       goAwaySent: false, goAwayLast: maxStreamId, shutdownPinged: false,
       peerGoAway: false, peerLast: maxStreamId, failed: false, closed: false,
       peerResets: Budget(0u32, now), localResets: Budget(0u32, now),
@@ -274,7 +274,7 @@ pub struct Connection is Move {
   // Our SETTINGS (section 3.4: the first frame either end sends), and the
   // connection's window raised to connectionWindowSize
   fn start(self: &mut) {
-    var values = List[Setting].empty();
+    var values = List[Setting]();
     if cfg.hpack.headerTableSize != defaultHeaderTableSize {
       values.push(Setting(settingHeaderTableSize, u32.from(cfg.hpack.headerTableSize)));
     }
@@ -441,7 +441,7 @@ pub struct Connection is Move {
   pub fn sendRequest(self: &mut, head: RequestHead, body: BodyLength, file: &Array[u8] = srcFile(), line: u32 = srcLine()) u32 {
     if !clientRole {panic("http2: sendRequest on a server's connection", file, line);}
     if !self.canSendRequest() {panic("http2: sendRequest when canSendRequest() is false", file, line);}
-    var f = List[HeaderField].empty();
+    var f = List[HeaderField]();
     requestFields(&head, &body, &mut f, file, line);
     let id = nextLocal;
     nextLocal = nextLocal + 2u32;
@@ -535,7 +535,7 @@ pub struct Connection is Move {
   // do (ended, finished) does nothing; short of a Content-Length is a
   // program error
   pub fn finish(self: &mut, stream: u32, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(stream, Headers.empty(), file, line);
+    self.finishWith(stream, Headers(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it
@@ -799,7 +799,7 @@ pub struct Connection is Move {
     }
     if endStream {
       s.recvDone = true;
-      self.emit(s, Event.End(id, Headers.empty()));
+      self.emit(s, Event.End(id, Headers()));
       self.settle(s);
       return;
     }
@@ -916,11 +916,11 @@ pub struct Connection is Move {
         s.headRequest = head.method == Method.Head;
         s.expect = length;
         s.expectSet = hasLength;
-        let body = if endStream {BodyLength.empty()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
+        let body = if endStream {BodyLength()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
         self.emit(s, Event.Request(id, head, body));
         if endStream {
           s.recvDone = true;
-          self.emit(s, Event.End(id, Headers.empty()));
+          self.emit(s, Event.End(id, Headers()));
         }
       }
     }
@@ -951,11 +951,11 @@ pub struct Connection is Move {
           self.streamError(id, ErrorCode.ProtocolError, "a body shorter than its Content-Length");
           return;
         }
-        let body = if s.noBody || endStream {BodyLength.empty()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
+        let body = if s.noBody || endStream {BodyLength()} else if hasLength {BodyLength.sized(length)} else {BodyLength.unsized()};
         self.emit(s, Event.Response(id, head, body));
         if endStream {
           s.recvDone = true;
-          self.emit(s, Event.End(id, Headers.empty()));
+          self.emit(s, Event.End(id, Headers()));
           self.settle(s);
         }
       }
@@ -1014,7 +1014,7 @@ pub struct Connection is Move {
   fn answer(self: &mut, id: u32, status: u16, requestEnded: bool) {
     if !self.spendLocal() {return;}
     fields.clear();
-    var s = String.empty();
+    var s = String();
     s.appendUInt(u64.from(status));
     fields.push(HeaderField(String.from(":status"), s, false));
     self.writeBlock(id, true);
@@ -1527,7 +1527,7 @@ pub struct Connection is Move {
         s.trailerFields.clear();
         writer.headers(id, block.view(), true);
       } else {
-        writer.data(id, IoBuf.empty(), true);
+        writer.data(id, IoBuf(), true);
       }
       s.sendDone = true;
       s.ready = false;
@@ -1545,7 +1545,7 @@ pub struct Connection is Move {
     if s.outOff == 0usize && have <= room {
       match s.outQ.popFront() {
         case let Some(b) {return b;}
-        case is None[IoBuf] {return IoBuf.empty();}
+        case is None[IoBuf] {return IoBuf();}
       }
     }
     let n = if have < room {have} else {room};

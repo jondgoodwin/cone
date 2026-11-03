@@ -737,7 +737,7 @@ class Scenarios(unittest.TestCase):
             pub struct Bag {
               items: List[Pt];
 
-              pub fn empty() Bag { Bag(List[Pt].empty()) }
+              pub fn empty() Bag { Bag(List[Pt]()) }
               pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -746,7 +746,7 @@ class Scenarios(unittest.TestCase):
             pub struct Shelf is Sendable {
               items: List[Pt];
 
-              pub fn empty() Shelf { Shelf(List[Pt].empty()) }
+              pub fn empty() Shelf { Shelf(List[Pt]()) }
               pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -1872,7 +1872,7 @@ class Testing(unittest.TestCase):
               total: u64;
 
               pub fn init(self: &new) {
-                *self = Self(entries: List[Entry].empty(), total: 0u64);
+                *self = Self(entries: List[Entry](), total: 0u64);
               }
 
               pub async fn add(self, n: u64) {

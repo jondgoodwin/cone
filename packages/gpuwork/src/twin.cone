@@ -52,7 +52,7 @@ pub fn runTwin(kernel: &Kernel, buffers: &mut List[List[u32]], x: u32, y: u32 = 
     return false;
   }
   if !fitsTogether(kernel) { return false; }
-  var words = List[Words].empty();
+  var words = List[Words]();
   var b = 0usize;
   while b < buffers.len() {
     if !bindWords(kernel, b, &mut buffers[b], &mut words) { return false; }
@@ -88,7 +88,7 @@ pub fn runTwinIn(kernel: &Kernel, store: &mut List[List[u32]], slots: &Array[u32
     b = b + 1usize;
   }
   if !fitsTogether(kernel) { return false; }
-  var words = List[Words].empty();
+  var words = List[Words]();
   b = 0usize;
   while b < slots.len {
     if !bindWords(kernel, b, &mut store[usize.from(slots[b])], &mut words) { return false; }
@@ -258,7 +258,7 @@ fn runTogether(kernel: &Kernel, view: &Array[Words], x: u32, y: u32, z: u32) {
   let pt = &mut t as *Together;
   {
     // A handle dropped joins its thread: every one, at the block's end
-    var lanes = List[thread.Thread[void]].empty();
+    var lanes = List[thread.Thread[void]]();
     var l = 0u32;
     while l < size {
       lanes.push(thread.start(Lane(pt, l), &runLane));
@@ -296,26 +296,26 @@ pub fn checkParity(device: &mut Device, kernel: &Kernel, buffers: &List[List[u32
   // The GPU's run: its own Works, so that no one else's completions are taken
   var works = Works.make();
   var job = Job.make(device);
-  var slots = List[u32].empty();
+  var slots = List[u32]();
   var b = 0usize;
   while b < buffers.len() {
     slots.push(job.give(upload(device, buffers[b].view())));
     b = b + 1usize;
   }
   job.dispatch(device, kernel, slots.view(), x, y, z);
-  var backs = List[u32].empty();
+  var backs = List[u32]();
   b = 0usize;
   while b < buffers.len() {
     backs.push(if kernel.accessOf(u32.from(b)) == READ_WRITE { job.readback(device, u32.from(b)) } else { 0u32 });
     b = b + 1usize;
   }
   let ticket = works.submit(device, job, Target.Here(0u64));
-  var done = List[Completion].empty();
+  var done = List[Completion]();
   works.waitFor(device, ticket, &mut done);
   if done.len() != 1usize || !done[0usize].ok { return result; }
 
   // The twin's run, over copies
-  var cpu = List[List[u32]].empty();
+  var cpu = List[List[u32]]();
   b = 0usize;
   while b < buffers.len() {
     let src = buffers[b].view();

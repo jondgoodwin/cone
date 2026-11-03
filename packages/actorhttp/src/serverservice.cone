@@ -57,7 +57,7 @@ struct ExRec {
 fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bool) ExRec {
   ExRec(used: true, id: newId(), req: req, qreq: qreq, onH3: onH3, stage: exReading, rejected: false, isHead: isHead, bodyless: false,
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
-    finished: false, finishReply: None, writes: List[PendingWrite].empty(), wi: 0usize, handle: false,
+    finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false)
 }
 
@@ -158,13 +158,13 @@ fn freeEx(srv: &mut SrvRec, slot: usize) {
 // ---------------------------------------------------------------------------
 
 fn pumpServer(srv: &mut SrvRec, lp: &mut Loop) {
-  var evs = List[httpconn.Event].empty();
+  var evs = List[httpconn.Event]();
   srv.drv.pump(lp, &uni evs);
   each e in evs.drain() {
     onServerEvent(srv, lp, e);
   }
   if !srv.h3on {return;}
-  var hs = List[httpclient.H3Event].empty();
+  var hs = List[httpclient.H3Event]();
   srv.h3.turn(lp);
   srv.h3.takeEvents(&mut hs);
   each e in hs.drain() {
@@ -246,7 +246,7 @@ fn onSrvEv(srv: &mut SrvRec, lp: &mut Loop, e: SrvEv) {
       answerText(srv, x, 413u16, "the request body is too large", true);
     } else {
       if head.headers.hasToken("Expect", "100-continue") {sendContinue(srv, x);}
-      srv.reading.insert(key, Request(head, String.empty(), peer, srv.secure));
+      srv.reading.insert(key, Request(head, String(), peer, srv.secure));
     }
   } else if k == sData {
     let n = e.buf.len();
@@ -374,7 +374,7 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
   // HTTP/3 has no Connection field: its stream ends the exchange, the connection carries on
   if closeAfter && !x.onH3 {h.headers.add("Connection", "close");}
   let n = text.len;
-  var b = IoBuf.empty();
+  var b = IoBuf();
   if !x.isHead && n > 0usize {
     b = IoBuf(n);
   }
@@ -444,7 +444,7 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
     let w = &mut x.writes[x.wi];
     let sentAll = w.data.len();
     answerKeptIn[Result[usize, ServerError]](&mut w.reply, Ok[usize, ServerError](sentAll));
-    w.data = String.empty();
+    w.data = String();
     x.wi = x.wi + 1usize;
   }
   x.writes.clear();
@@ -549,9 +549,9 @@ struct ListenJob {
         // HTTP/3 beside it: UDP on the same address and port
         var h3 = httpclient.http3From(http3, &tls.ClientConfig.make());
         var h3listener = 0u64;
-        var altSvc = String.empty();
+        var altSvc = String();
         if h3on {
-          var why = String.empty();
+          var why = String();
           var code = 0u32;
           match &h3tls {
             case let &Some(ht) {
@@ -577,9 +577,9 @@ struct ListenJob {
         }
         let id = newId();
         sv.srvs.add(SrvRec(id, 1u32, false, false, secure, maxBody, maxPending, drv, l,
-          SlotTable[ExRec].make(16u32), Dict[u64, usize].empty(), Dict[u64, Request].empty(),
-          Deque[ReadyEx].empty(), Deque[actors.Reply].empty(), 0usize, h3, h3on, h3listener, altSvc,
-          Dict[QKey, u64].empty(), 1u64, Deque[actors.Reply].empty()));
+          SlotTable[ExRec].make(16u32), Dict[u64, usize](), Dict[u64, Request](),
+          Deque[ReadyEx](), Deque[actors.Reply](), 0usize, h3, h3on, h3listener, altSvc,
+          Dict[QKey, u64](), 1u64, Deque[actors.Reply]()));
         actors.answerNow[Result[Server, ServerError]](rp, Ok[Server, ServerError](Server(id, bound, secure, h3on)));
       }
       case let Err(e) {
@@ -730,7 +730,7 @@ struct RespondJob {
     if x.over || x.responded {return;}
     let st = head.status;
     let n = body.len();
-    let framing = if st == 204u16 || st == 304u16 {BodyLength.empty()} else {BodyLength.sized(u64.from(n))};
+    let framing = if st == 204u16 || st == 304u16 {BodyLength()} else {BodyLength.sized(u64.from(n))};
     beginResponse(s, x, head, framing);
     if !x.bodyless {
       let w = PendingWrite(body, 0usize, None);

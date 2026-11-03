@@ -31,7 +31,7 @@ fn zooStream(file: &String, want: &str) List[u8] {
     let streamLen = le32(file, at);
     at += 4usize;
     if name.view() == want {
-      var out = List[u8].empty();
+      var out = List[u8]();
       var i = 0usize;
       while i < streamLen { out.push(file[at + i]); i += 1usize; }
       return out;
@@ -41,7 +41,7 @@ fn zooStream(file: &String, want: &str) List[u8] {
     at += 8usize + (if wantLen <= 4096usize {wantLen} else {0usize});
     r += 1usize;
   }
-  List[u8].empty()
+  List[u8]()
 }
 
 fn text(b: &Array[u8]) String { String.fromBytes(b) }
@@ -65,14 +65,14 @@ fn let_append(out: &mut List[u8], piece: &List[u8]) {
 }
 
 fn main() i32 {
-  var file = String.empty();
+  var file = String();
   match fs.readFile(&Path.from("../../../../tests/data/zoo.bin")) {
     case var Ok(ok) { file <-> ok; }
     case let Err(e) { expect(false, "the data file is there"); return done(); }
   }
 
   // ---------------- reading every header field ----------------
-  var out = List[u8].empty();
+  var out = List[u8]();
   let all = zooStream(&file, "gzhdr-all");
   expect(all.len() > 0usize, "gzhdr-all is in the file");
   let inf1 = readAll(all.view(), &mut out);
@@ -89,7 +89,7 @@ fn main() i32 {
   expectInt(i64.from(out.len()), 3000i64, "all: 3000 bytes of data");
   expectInt(i64.from(inf1.memberCount()), 1i64, "all: one member");
 
-  out = List[u8].empty();
+  out = List[u8]();
   let nm = zooStream(&file, "gzhdr-name");
   let inf2 = readAll(nm.view(), &mut out);
   expectUInt(u64.from(inf2.gzipHeader().mtime), 1700000000u64, "name: time");
@@ -97,19 +97,19 @@ fn main() i32 {
   expectInt(i64.from(inf2.gzipHeader().comment.len()), 0i64, "name: no comment");
   expect(!inf2.gzipHeader().text, "name: no text flag");
 
-  out = List[u8].empty();
+  out = List[u8]();
   let cm = zooStream(&file, "gzhdr-comment");
   let inf3 = readAll(cm.view(), &mut out);
   expectStr(text(inf3.gzipHeader().comment.view()).view(), "only a comment", "comment: comment");
   expectInt(i64.from(inf3.gzipHeader().name.len()), 0i64, "comment: no name");
   expectUInt(u64.from(inf3.gzipHeader().os), 255u64, "comment: system 255");
 
-  out = List[u8].empty();
+  out = List[u8]();
   let ex = zooStream(&file, "gzhdr-extra");
   let inf4 = readAll(ex.view(), &mut out);
   expectInt(i64.from(inf4.gzipHeader().extra.len()), 7i64, "extra: field length");
 
-  out = List[u8].empty();
+  out = List[u8]();
   let hc = zooStream(&file, "gzhdr-hcrc");
   let inf5 = readAll(hc.view(), &mut out);
   expectUInt(u64.from(inf5.gzipHeader().mtime), 5u64, "hcrc: time");
@@ -118,7 +118,7 @@ fn main() i32 {
   expectStr(text(out.view()).view(), "hello hello hello", "hcrc: data");
 
   // ---------------- several members ----------------
-  out = List[u8].empty();
+  out = List[u8]();
   let multi = zooStream(&file, "multi");
   let infm = readAll(multi.view(), &mut out);
   expectInt(i64.from(infm.memberCount()), 4i64, "multi: four members");
@@ -130,7 +130,7 @@ fn main() i32 {
     case let Err(e) { expect(false, "multi: the one-shot helper joins the members the same"); }
   }
   // with zero padding between and after
-  var padded = List[u8].empty();
+  var padded = List[u8]();
   var i = 0usize;
   while i < multi.len() { padded.push(*multi[i]); i += 1usize; }
   padded.push(0u8); padded.push(0u8);
@@ -144,8 +144,8 @@ fn main() i32 {
     var at = 0usize;
     while at <= multi.len() {
       var sp = Inflater.make(Format.Gzip);
-      var got = List[u8].empty();
-      var piece = List[u8].empty();
+      var got = List[u8]();
+      var piece = List[u8]();
       var st: Status = Status.NeedInput;
       if at > 0usize {
         sp.feed(&multi.view()[0usize..<at]);
@@ -167,7 +167,7 @@ fn main() i32 {
     var one = Inflater.make(Format.Gzip);
     one.setMultiMember(false);
     one.feed(multi.view());
-    var got = List[u8].empty();
+    var got = List[u8]();
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput { st = one.pull(&mut got, 100usize); }
     expect(st == Status.Done, "single-member: Done after the first member, no 'finish' needed");
@@ -177,7 +177,7 @@ fn main() i32 {
     var again = Inflater.make(Format.Gzip);
     again.setMultiMember(false);
     again.feed(rest.view());
-    var got2 = List[u8].empty();
+    var got2 = List[u8]();
     st = Status.MoreOutput;
     while st == Status.MoreOutput { st = again.pull(&mut got2, 100usize); }
     expect(st == Status.Done && got2.len() == 3000usize, "single-member: the second member is next in the rest");
@@ -190,7 +190,7 @@ fn main() i32 {
   hdr.xfl = 0u8;
   hdr.os = 3u8;
   hdr.text = true;
-  hdr.name = List[u8].empty();
+  hdr.name = List[u8]();
   hdr.name.push('a'); hdr.name.push('.'); hdr.name.push('t'); hdr.name.push('x'); hdr.name.push('t');
   hdr.comment.push('c');
   hdr.extra.push(1u8); hdr.extra.push(2u8); hdr.extra.push(3u8);
@@ -201,7 +201,7 @@ fn main() i32 {
   let want: Array[u8, 30] = [0x1Fu8, 0x8Bu8, 8u8, 29u8, 0x15u8, 0xCDu8, 0x5Bu8, 0x07u8, 0u8, 3u8, 3u8, 0u8, 1u8, 2u8, 3u8,
     97u8, 46u8, 116u8, 120u8, 116u8, 0u8, 99u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
   expect(same(&written.view()[0usize..<23usize], &want[0usize..<23usize]), "the written header's bytes");
-  out = List[u8].empty();
+  out = List[u8]();
   let back = readAll(written.view(), &mut out);
   expectStr(text(out.view()).view(), "hello hello hello", "the written member reads back");
   expectUInt(u64.from(back.gzipHeader().mtime), 123456789u64, "written and read: time");
@@ -234,7 +234,7 @@ fn main() i32 {
     def.setGzipHeader(&hdr);
     def.feed(hello);
     def.finish();
-    var o = List[u8].empty();
+    var o = List[u8]();
     def.pull(&mut o, 1000000usize);
     expect(same(o.view(), written.view()), "the streaming Deflater writes the same member as the helper");
   }
@@ -242,7 +242,7 @@ fn main() i32 {
   // two compressed members and some zeros: one stream of both
   let a1 = gzipCompress("first ", 2);
   let a2 = gzipCompress("second", 1);
-  var both = List[u8].empty();
+  var both = List[u8]();
   i = 0usize;
   while i < a1.len() { both.push(*a1[i]); i += 1usize; }
   i = 0usize;
