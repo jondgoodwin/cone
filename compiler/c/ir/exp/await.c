@@ -234,6 +234,54 @@ static void awaitFuture(TypeCheckState *pstate, AwaitNode *node) {
     node->vtype = result;
 }
 
+// What is awaited is none of the three above, but its type has a method named
+// 'await' (the convention: C#'s GetAwaiter). It takes only 'self' and gives the
+// operation or the future the wait is on, an Awaitable[R] or a Future[T], so
+// 'await x' is 'await x.await()' and the call's type gives the seam its case.
+// A library type builds its answer with Awaitable.make or Awaitable.of, which
+// hand it the envelope and carry the exactly-once contract; nothing in the
+// reply protocol knows of the type. A type without the method is left as it
+// was (refused by the seam's report, ErrorAwaitNotFuture); one whose method
+// takes more than 'self' or gives neither type is ErrorAwaitMethod
+static void awaitMethod(TypeCheckState *pstate, AwaitNode *node) {
+    static Name *awaitName = NULL;
+    if (awaitName == NULL)
+        awaitName = nametblFind("await", 5);
+    INode *type = iexpGetDerefTypeDcl(node->exp);
+    if (type == NULL || !isMethodType(type))
+        return;
+    INode *found = iNsTypeFindFnField((INsTypeNode *)type, awaitName);
+    if (found == NULL || found->tag != FnDclTag)
+        return;
+    FnDclNode *dcl = (FnDclNode *)found;
+    if (dcl->vtype == NULL || dcl->vtype->tag != FnSigTag)
+        return;
+    if (((FnSigNode *)dcl->vtype)->parms->used != 1) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s makes it awaitable, and takes only 'self': it is called for the wait, 'await x' being 'await x.await()', and gives the Awaitable[R] or Future[T] to wait on.",
+            itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+        return;
+    }
+    FnCallNode *call = newFnCallLower(node->exp, node->exp, 1);
+    call->methfld = (INode *)newMemberUseNode(awaitName);
+    inodeLexCopy(call->methfld, node->exp);
+    node->exp = (INode *)call;
+    if (!iexpTypeCheckAny(pstate, &node->exp)) {
+        node->vtype = errorType;
+        return;
+    }
+    awaitOperation(pstate, node);
+    if (node->awaitable == NULL)
+        awaitFuture(pstate, node);
+    if (node->awaitable == NULL && node->future == NULL) {
+        errorMsgNode((INode *)node, ErrorAwaitMethod,
+            "The 'await' method of %s gives %s, and the wait is on an Awaitable[R], an operation its maker starts at the seam, or a Future[T]: build one with Awaitable.make or Awaitable.of, or return the future to wait on.",
+            itypeName(type), itypeName(((IExpNode *)node->exp)->vtype));
+        node->vtype = errorType;
+    }
+}
+
 // The seam at the end of a 'parallel each' written in a behaviour: what it
 // waits for is the loop's last piece, which makes the actor runnable with the
 // rest of the behaviour ahead of its mailbox (the actors package's parSeam).
@@ -290,6 +338,8 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
         awaitOperation(pstate, node);
     if (node->message == NULL && node->awaitable == NULL)
         awaitFuture(pstate, node);
+    if (node->message == NULL && node->awaitable == NULL && node->future == NULL)
+        awaitMethod(pstate, node);
 }
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
@@ -444,7 +494,7 @@ static void awaitReportSeams(Nodes *awaits, int notfuture) {
                 itypeSpellCat(tname, sizeof(tname), type, 0);
             code = ErrorAwaitNotFuture;
             snprintf(lead, sizeof(lead),
-                "'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, or an operation. This one awaits a %s, which is none of them, so nothing is generated for it.",
+                "'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, an operation, or a value whose type has an 'await' method taking only 'self' that gives one. This one awaits a %s, which is none of them, so nothing is generated for it.",
                 tname);
         }
         char *unbuilt = lead;
