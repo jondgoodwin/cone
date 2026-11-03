@@ -7,10 +7,12 @@
 // round main also waits, so that a calm rest comes and the ring shrinks back).
 // Checked after every round: all 24,000 messages arrived once, each sender's in
 // order, each in its group or none; and at the end the segments the mailbox
-// holds do not grow with the rounds (the count after round 40 is within 8 of the
-// count after round 20) and total under a megabyte, and every group handle was
-// let go (the group's timer, a far deadline, is disarmed once the sink has taken
-// the last).
+// holds do not grow with the rounds (the most held at a round's end in the last
+// twenty rounds is within 8 of the most in the first twenty; the count at any one
+// round's end is NOT compared, since it swings between about 5 and 25 with whether a
+// calm rest has come yet, on a loaded 2-core box more than on a quiet one) and total
+// under a megabyte, and every group handle was let go (the group's timer, a far
+// deadline, is disarmed once the sink has taken the last).
 
 mod ringgroupsrest;
 
@@ -95,7 +97,8 @@ fn main() i32 {
   let per = if isDebugBuild() {2000u64} else {6000u64};
   let rounds = 40usize;
   var bad = 0u64;
-  var segsAt20 = 0u64;
+  var earlyMax = 0u64;
+  var lateMax = 0u64;
   var r = 0usize;
   {
     // a group whose far deadline arms a timer: held only by the messages in flight and here
@@ -116,7 +119,13 @@ fn main() i32 {
       if r % 2usize == 1usize {
         thread.sleep(Duration.fromMillis(20i64));
       }
-      if r == 19usize {segsAt20 = u64.from(actors.liveSegments());}
+      // the segments held at the end of the round: the most in each half of the run
+      let held = u64.from(actors.liveSegments());
+      if r < 20usize {
+        if held > earlyMax {earlyMax = held;}
+      } else if held > lateMax {
+        lateMax = held;
+      }
       r += 1usize;
     }
   }
@@ -124,7 +133,8 @@ fn main() i32 {
   expectUInt(bad, 0u64, "forty rounds: each had every message once, in order, in its group or none");
   expectUInt(seen.badOrder.load(), 0u64, "none out of order, none twice");
   expectUInt(seen.badGroup.load(), 0u64, "none in the wrong group");
-  expect(u64.from(actors.liveSegments()) <= segsAt20 + 8u64, "the segments held do not grow with the rounds: reclaim and rest give back what a burst needed");
+  expect(lateMax <= earlyMax + 8u64, "the segments held at the end of a round do not grow with the rounds: the most in the last twenty is within 8 of the most in the first twenty");
+  expect(u64.from(actors.liveSegments()) <= earlyMax + 8u64, "and at the end no more are held than the first twenty rounds ever held, plus a few");
   expect(actors.liveSegmentBytes() < 1048576usize, "and a quiet mailbox holds under a megabyte");
   expectUInt(u64.from(armedTimers()), u64.from(before), "every copy of the group was let go: its timer is disarmed");
   done()

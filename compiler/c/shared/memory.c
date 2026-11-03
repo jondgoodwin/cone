@@ -29,7 +29,10 @@ static size_t gMemStrArenaLeft = 0;
 
 static size_t memAllocated = 0;
 
-/** Allocate memory for a block, aligned to a 16-byte boundary */
+/** Allocate memory for a block, aligned to a 16-byte boundary.
+ *  CONTRACT: the block is ZEROED, as calloc's is, and callers may rely on it (a node
+ *  constructor need not clear the fields it does not set). Arenas are calloc'ed and
+ *  handed out by bumping, never reused, so every block is still zero when returned. */
 void *memAllocBlk(size_t size) {
     void *memp;
 
@@ -46,7 +49,7 @@ void *memAllocBlk(size_t size) {
 
     // Return a newly allocated area, if bigger than arena can hold
     if (size > gMemBlkArenaSize) {
-        memp = malloc(size);
+        memp = calloc(1, size);
         memAllocated += size;
         if (memp==NULL)
             errorExit(ExitMem, "Error: Out of memory");
@@ -54,7 +57,7 @@ void *memAllocBlk(size_t size) {
     }
 
     // Allocate a new Arena and return next bite out of it
-    gMemBlkArenaPos = malloc(gMemBlkArenaSize);
+    gMemBlkArenaPos = calloc(1, gMemBlkArenaSize);
     memAllocated += gMemBlkArenaSize;
     if (gMemBlkArenaPos==NULL)
         errorExit(ExitMem, "Error: Out of memory");
