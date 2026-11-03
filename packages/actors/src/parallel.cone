@@ -426,7 +426,7 @@ pub fn parallelEach(lo: usize, hi: usize, body: PieceFn, data: *u8) {
   ensureRunning();
   let s = running.load() as *Sched;
   let grain = eachGrain(hi - lo, usize.from((*s).nworkers));
-  var job = EachLoop(body, data, 0usize);
+  var job = EachLoop(body, data, 0usize, curGroup);
   rangeRun(lo, hi, grain, &gatherPiece, &mut job as *EachLoop as *u8);
   sendGathered(&mut job as *EachLoop);
 }
@@ -465,6 +465,7 @@ struct EachLoop {
   pub body: PieceFn;
   pub data: *u8;
   pub records: usize;
+  pub group: usize;         // the cancel group the pieces run in: a handle the loop's starter keeps alive until the loop ends, or 0 (THE GROUP TRAVELS)
 }
 
 // What a piece is while it runs: on the stack of gatherPiece
@@ -509,8 +510,12 @@ fn gatherPiece(data: *u8, lo: usize, hi: usize) {
   let job = data as *EachLoop;
   var piece = Piece(job, lo, nullPieceRec(), curPiece);
   curPiece = &mut piece as *Piece as usize;
+  // the piece runs in the loop's cancel group, whatever thread it is on
+  let savedGroup = curGroup;
+  curGroup = (*job).group;
   let body = (*job).body;
   body((*job).data, lo, hi);
+  curGroup = savedGroup;
   curPiece = piece.prev;
   if piece.rec as usize != 0usize {
     let headp = &(*job).records as *usize;
@@ -714,6 +719,7 @@ struct ParPending {
   pub id: u64;                  // the record's slot in the pending table
   pub hasId: bool;              // false where the record is empty
   pub job: *EachLoop;           // the loop's gathering of sends, once it has begun
+  pub group: *CancelGroup;      // a copy of the behaviour's cancel group (another owner), or null: the pieces and the rest of the behaviour run in it
 }
 
 fn nullPar() *ParPending {null}
@@ -741,7 +747,16 @@ pub fn parSeam(lo: usize, hi: usize, body: PieceFn, caps: *u8, resume: *u8, id: 
   if p as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[ParPending](p, ParPending(h, lo, hi, body, caps, resume, id, hasId, null));
+  var cell = null as *CancelGroup;
+  let gp = curGroup;
+  if gp != 0usize {
+    cell = libc.malloc(mem.sizeof[CancelGroup]()) as *CancelGroup;
+    if cell as usize == 0usize {
+      die("actors: out of memory for a parallel loop");
+    }
+    mem.writeRaw[CancelGroup](cell, *(gp as &CancelGroup));
+  }
+  mem.writeRaw[ParPending](p, ParPending(h, lo, hi, body, caps, resume, id, hasId, null, cell));
   (*h).par = p;
 }
 
@@ -756,7 +771,7 @@ fn startHeld(w: *Worker, h: *Header) {
   if job as usize == 0usize {
     die("actors: out of memory for a parallel loop");
   }
-  mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize));
+  mem.writeRaw[EachLoop](job, EachLoop((*p).body, (*p).caps, 0usize, (*p).group as usize));
   (*p).job = job;
   rangeThen((*p).lo, (*p).hi, grain, &gatherPiece, job as *u8, &parSeamDone, p as *u8);
 }
@@ -770,7 +785,11 @@ fn parSeamDone(arg: *u8) {
   // The thread may be inside a piece of another loop; these sends are its own
   let saved = curPiece;
   curPiece = 0usize;
+  // ... and carry the loop's group, not that of whatever this thread was doing
+  let savedGroup = curGroup;
+  curGroup = (*p).group as usize;
   sendGathered((*p).job);
+  curGroup = savedGroup;
   curPiece = saved;
   libc.free((*p).job as *u8);
   if (*p).caps as usize != 0usize {
