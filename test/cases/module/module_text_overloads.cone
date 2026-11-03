@@ -1,0 +1,62 @@
+// A receiver's own '<-' is tried first: a List receiving a point appends the
+// point, even though the point has a 'toText'; a String receiving a text appends
+// the text, and a type that is a text sink with its own '<-' for a point takes
+// the point itself, not the point's text. The text that a point writes goes
+// into a String, a writer and the console only where no '<-' of the receiver
+// takes the point.
+
+mod module_text_overloads;
+
+import stdio use *;
+import collections use *;
+
+struct Point {
+  x: i64;
+  y: i64;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "(", self.x, ", ", self.y, ")";
+  }
+}
+
+// A String-like receiver that counts the points it was given as points, and
+// is a text sink too (it lends a writer onto its own String)
+struct Tally {
+  text: String;
+  points: i64;
+  pub fn init(self: &new) {*self = Tally(String(), 0i64);}
+  pub fn takePoint overload `<-`(self: &mut, p: Point) {
+    self.points = self.points + 1i64;
+  }
+  pub fn takeText overload `<-`(self: &mut, s: &str) {
+    self.text <- s;
+  }
+  pub fn textOut(self: &mut) TextOut {
+    self.text.textOut()
+  }
+}
+
+fn main() i32 {
+  let p = Point(1i64, 2i64);
+
+  // A list's own element append
+  var points = List[Point]();
+  points <- Point(3i64, 4i64);
+  points <- Point(5i64, 6i64), Point(7i64, 8i64);
+  print <- "points ", points.len(), " first ", points[0usize], "\n";
+
+  // A String's own text, then the text a point writes
+  var s = String();
+  s <- "t=", "x";
+  s <- p;
+  s <- 9;
+  print <- s, "\n";
+
+  // The receiver's own '<-' for a point wins over the point's text
+  var t = Tally();
+  t <- p;
+  t <- "a";
+  t <- 12;
+  t <- p;
+  print <- "tally ", t.points, " [", t.text, "]\n";
+  0
+}

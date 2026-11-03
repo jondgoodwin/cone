@@ -374,6 +374,12 @@ pub struct @opaque str {
   // The bytes themselves
   pub fn bytes(self: &) &Array[u8] inline { self }
 
+  // This text, written into a writer: a str's own 'toText', which a String has
+  // as its own through the fold. (The other types core writes as text are the
+  // numbers, bool and char, which a text send writes through the writer's
+  // 'put' methods directly: nothing written in Cone can add a method to a number.)
+  pub fn toText(self: &, out: &uni TextOut) inline { out.writeStr(self); }
+
   // The code points, in order: a cursor whose 'next' gives each as a char. A
   // byte that is not part of well-formed UTF-8 reads as U+FFFD, one for each
   // such byte, so every char given is valid. Code points, not graphemes: a
@@ -3665,4 +3671,239 @@ pub struct FloatText {
 extern {
   fn @c("cone_floatShortest") floatShortest(buf: *u8, x: f64) usize;
   fn @c("cone_floatShortest32") floatShortest32(buf: *u8, x: f32) usize;
+}
+
+// ---------------------------------------------------------------------------
+// Text out: where a value writes its text
+// ---------------------------------------------------------------------------
+
+// A block of a record's text that outgrew the writer's inline buffer: this
+// header, then 'cap' bytes of text, 'len' of them used. A record's blocks are
+// chained in the order written. (conestd makes and walks them.)
+pub struct TextChunk {
+  pub next: *TextChunk;
+  pub len: usize;
+  pub cap: usize;
+}
+
+pub const textInlineBytes = 128usize;
+
+// The function that takes a finished record away and the one that makes room
+// in a writer whose bytes are another value's (a String's), as the addresses
+// of Cone functions. (A writer calls them through conestd, which owns what is
+// slow.)
+pub alias TextDone = &fn(out: &uni TextOut);
+pub alias TextSpill = &fn(out: &uni TextOut, need: usize);
+pub alias TextVisit = &fn @c(p: *u8, n: usize, ctx: *u8);
+
+// A writer: where text is made. 'toText(self: &, out: &uni TextOut)' writes a
+// value's text into one, and a send statement's pieces all go into the same
+// writer. It is one concrete type, so each 'toText' is compiled once and a
+// piece is a bounds check and a copy into a buffer, never a virtual call.
+// What differs between writers is data, not code:
+//
+//   - a record (TextOut.record): starts in the 'store' buffer, which lives in
+//     the writer, and spills into heap blocks chained in order, so one record
+//     is any size. When the writer dies (it is a temporary or a local, so at
+//     the end of its statement or scope), the function its maker gave is
+//     called with it, and the record is that function's to take away whole.
+//   - a window onto bytes that are another value's (TextOut.over): a String
+//     lends one that writes straight into its storage, so nothing is copied
+//     twice. When it needs room it calls the function its lender gave, which
+//     makes the room and says where the bytes now are (setBuffer); when the
+//     writer dies the lender's 'done' is told how much was written.
+//     With no function, the window is of a fixed size, and text past the end
+//     is cut.
+//
+// A writer is used by one thread at a time (it is lent '&uni'), so nothing in
+// it is shared and nothing locks. Nothing in it points at itself, so it may be
+// moved before it is used.
+//
+// Everything here is 'inline', as everything in core is (a program that never
+// writes text carries none of it); what is slow or rare is conestd's, called
+// through the two 'extern' functions at the end: making room for a record, and
+// the writer's death. Its fields are public for conestd to read and write; a
+// program leaves them alone.
+pub struct TextOut {
+  // The bytes being written: 'base' is null while the 'store' buffer is in use
+  pub base: *u8;
+  pub len: usize;
+  pub cap: usize;
+  // 0: a record (blocks chain on), 1: a window made roomy by 'spill', 2: a
+  // window of fixed size
+  pub mode: u32;
+  // What the maker tagged the record with (the console's: which stream)
+  pub tag: u32;
+  pub spill: usize;
+  pub done: usize;
+  pub owner: *u8;
+  // A record's text before the current bytes: 'inlen' bytes in the 'store'
+  // buffer, then the blocks from 'first' to 'last', the current one not yet
+  // counted in its 'len'
+  pub inlen: usize;
+  pub first: *TextChunk;
+  pub last: *TextChunk;
+  pub store: Array[u8, 128];
+
+  // A record: starts in its store. 'done' is the address of the function that
+  // takes the record away when the writer dies (a TextDone), 0 for none; 'tag'
+  // and 'owner' are the maker's, read back by that function.
+  pub fn record(done: usize, owner: *u8, tag: u32) TextOut inline {
+    TextOut(null, 0usize, textInlineBytes, 0u32, tag, 0usize, done, owner, 0usize, null, null,
+      Array[u8, 128]() <- fill 0u8)
+  }
+
+  // A window onto 'cap' bytes at 'base', the first 'len' of them written. A
+  // 'spill' (the address of a TextSpill, 0 for none) is called when the writer
+  // needs more bytes than 'cap' leaves, and 'done' (a TextDone) when the
+  // writer dies.
+  pub fn over(base: *u8, len: usize, cap: usize, owner: *u8, spill: usize, done: usize) TextOut inline {
+    TextOut(base, len, cap, if spill == 0usize {2u32} else {1u32}, 0u32, spill, done, owner, 0usize, null, null,
+      Array[u8, 128]() <- fill 0u8)
+  }
+
+  // The maker's: the tag, and the thing the record was made for
+  pub fn tagOf(self: &) u32 inline {tag}
+  pub fn ownerOf(self: &) *u8 inline {owner}
+  // How many bytes the current bytes hold: for a window, all it has written
+  pub fn used(self: &) usize inline {len}
+
+  // After a lender's spill has made room, where the window now is
+  pub fn setBuffer(self: &uni, base: *u8, cap: usize) inline {
+    self.base = base;
+    self.cap = cap;
+  }
+
+  // Where the next byte goes' buffer starts
+  pub fn dest(self: &uni) *u8 inline {
+    if base == null {&mut store as *u8} else {base}
+  }
+
+  // Make room for 'need' more bytes. Answers whether there is, so a fixed
+  // window cuts what does not fit.
+  fn room(self: &uni, need: usize) bool inline {
+    if len + need <= cap {return true;}
+    textGrow(self, need)
+  }
+
+  // These bytes, written whole or cut at the end of a window
+  pub fn writeBytes(self: &uni, p: *u8, n: usize) inline {
+    var count = n;
+    if !self.room(n) {
+      if len >= cap {return;}
+      count = cap - len;
+    }
+    if count > 0usize {
+      mem.moveRaw[u8](self.dest() + len, p, count);
+      len = len + count;
+    }
+  }
+
+  // The text s: what '<-' sends a writer that is a text. (Any other value is
+  // sent through its own 'toText'.)
+  pub fn writeStr overload `<-`(self: &uni, s: &str) inline {
+    let b: &Array[u8] = s;
+    self.writeBytes(b as *u8, b.len);
+  }
+
+  pub fn putByte(self: &uni, b: u8) inline {
+    if !self.room(1usize) {return;}
+    mem.writeRaw[u8](self.dest() + len, b);
+    len = len + 1usize;
+  }
+
+  // n in decimal
+  pub fn putU64(self: &uni, n: u64) inline {
+    var count = 1usize;
+    var t = n;
+    while t >= 10u64 {
+      t = t / 10u64;
+      count = count + 1usize;
+    }
+    if !self.room(count) {return;}
+    let at = self.dest() + len;
+    var i = count;
+    var rest = n;
+    while i > 0usize {
+      i = i - 1usize;
+      mem.writeRaw[u8](at + i, u8.from(rest % 10u64) + '0');
+      rest = rest / 10u64;
+    }
+    len = len + count;
+  }
+
+  // n in decimal, a '-' before a negative one
+  pub fn putI64(self: &uni, n: i64) inline {
+    if n < 0i64 {
+      self.putByte('-');
+      // The magnitude as a u64, which holds even the most negative i64's
+      self.putU64(0u64 - u64.from(n));
+    }
+    else {
+      self.putU64(u64.from(n));
+    }
+  }
+
+  // The shortest text that reads back as x (FloatText)
+  pub fn putF64(self: &uni, x: f64) inline {
+    self.writeStr(FloatText(x).text());
+  }
+
+  // The shortest text that reads back as that f32 (FloatText.ofF32): 0.1f32 is "0.1"
+  pub fn putF32(self: &uni, x: f32) inline {
+    self.writeStr(FloatText.ofF32(x).text());
+  }
+
+  pub fn putBool(self: &uni, b: bool) inline {
+    if b {self.writeStr("true");} else {self.writeStr("false");}
+  }
+
+  // One code point as its UTF-8 bytes, one to four by its size. NUL, and a
+  // value past U+10FFFF, write nothing
+  pub fn putChar(self: &uni, c: char) inline {
+    let code = u64.from(c);
+    if code == 0u64 {return;}
+    if code < 0x80u64 {
+      self.putByte(u8.from(code));
+    }
+    else if code < 0x800u64 {
+      self.putByte(0xC0u8 | u8.from(code >> 6u64));
+      self.putByte(0x80u8 | u8.from(code & 0x3Fu64));
+    }
+    else if code < 0x10000u64 {
+      self.putByte(0xE0u8 | u8.from(code >> 12u64));
+      self.putByte(0x80u8 | u8.from((code >> 6u64) & 0x3Fu64));
+      self.putByte(0x80u8 | u8.from(code & 0x3Fu64));
+    }
+    else if code < 0x110000u64 {
+      self.putByte(0xF0u8 | u8.from(code >> 18u64));
+      self.putByte(0x80u8 | u8.from((code >> 12u64) & 0x3Fu64));
+      self.putByte(0x80u8 | u8.from((code >> 6u64) & 0x3Fu64));
+      self.putByte(0x80u8 | u8.from(code & 0x3Fu64));
+    }
+  }
+
+  // The record is finished: its maker's function takes it away now, and the
+  // writer's death will have nothing more to do. A send statement to the console
+  // ends its writer so, with its last piece written, before the temporaries of
+  // the statement (a value a piece made, whose 'final' may print) are finalized:
+  // the order the pieces were written in is the order they appear in
+  pub fn finish(self: &uni) inline {
+    textFinish(self);
+    self.done = 0usize;
+  }
+
+  // The writer dies: its maker's function takes the record away, then any
+  // blocks go back (conestd)
+  fn final(self: &uni) inline {
+    textFinish(self);
+  }
+}
+
+extern {
+  // Make room in the writer for 'need' more bytes (a record chains a block on;
+  // a window asks its lender): whether there is now
+  fn @c("cone_textGrow") textGrow(out: &uni TextOut, need: usize) bool;
+  // The writer dies: call its maker's function, free its blocks
+  fn @c("cone_textFinish") textFinish(out: &uni TextOut);
 }

@@ -439,8 +439,15 @@ static INode **contentsEntries(FnCallNode *node, uint32_t *nentries) {
 //
 // This is lowering, so it belongs to type check: the borrow needs the
 // receiver's type. See compiler/c/doc/phases/type-check.md, "Order of resolution".
+static int contentsTextList = 0;
 static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
+    // The list sent to a text sink (a String) is written one piece at a time:
+    // each piece's writer, a temporary, dies at its own statement's end
+    // (textSendLower), not the block's. Taken before anything is checked, so
+    // that no send inside the receiver sees it
+    int eachTemps = contentsTextList;
+    contentsTextList = 0;
 
     // A receiver with no type was reported where it was made
     inodeTypeCheckAny(pstate, &node->objfn);
@@ -460,7 +467,8 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
 
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
-    blk->flags |= FlagKeepTemps;
+    if (!eachTemps)
+        blk->flags |= FlagKeepTemps;
     // An operator's temporary holds no borrow past the statement (flowpath.c), and
     // that is all the other entries need. A loop appends across its passes while
     // it reads its source, and the receiver's borrow must be held through them for
@@ -916,4 +924,315 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
     contentsLowerEntries(pstate, nodep);
+}
+
+// ---------------------------------------------------------------------------
+// Text sends
+//
+// A value writes its text into a writer, core's TextOut, with its own
+// 'toText(self: &, out: &uni TextOut)'. A '<-' whose receiver takes text goes
+// through that, for three kinds of receiver:
+//
+// - A writer (core's TextOut, held in a variable or lent as '&uni'): a text goes
+//   in by the writer's own '<-', and any other value by its own toText.
+// - A record maker (a type with 'record(self: &) TextOut', the console): the
+//   whole send is one record. A list of pieces is a block holding the writer in
+//   a variable, so it is finalized at the statement's end, and its finalizer
+//   hands the finished record to the function its maker supplied:
+//       { var -w = receiver.record(); -w <- piece; -w <- piece; ... }
+//   A single piece is the maker's own '<-' when it takes it (a text), and
+//   otherwise  piece.toText(&uni receiver.record())  with the writer a
+//   temporary, finalized at the end of the statement.
+// - A text sink (a type with 'textOut(self: &mut) TextOut', a String): a piece
+//   its own '<-' takes (a text) goes in as it always did, and any other is
+//   written through a writer the sink lends, a temporary finalized at the end
+//   of the statement:  piece.toText(&uni receiver.textOut())
+//   A list is sent a piece at a time, each statement ending its own writer.
+//
+// A receiver's own '<-' is always tried first, so a List's element append stays
+// one. The single piece no '<-' took is lowered where the choice failed
+// (textSendFallback); a list is lowered before its pieces are looked at
+// (textSendLower), on what the receiver is, which is looked at on a copy,
+// checked as a trial, so that what is not text's is checked once, as written.
+// ---------------------------------------------------------------------------
+
+enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink };
+
+static Name *textName(const char *name) {
+    return nametblFind((char*)name, strlen(name));
+}
+
+// A method of this name, taking self, that answers core's TextOut; its
+// signature is read as written, so the type need not be checked yet
+static int textAnswersWriter(INode *type, const char *name) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, textName(name));
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)found)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || ((FnSigNode*)sig)->rettype == NULL)
+        return 0;
+    return coreIsTextOut(itypeGetTypeDcl(((FnSigNode*)sig)->rettype));
+}
+
+// The type a text send's receiver is, through one borrow
+static INode *textReceiverBase(INode *type) {
+    if (type->tag == RefTag) {
+        RefNode *ref = (RefNode*)type;
+        if (itypeGetTypeDcl(ref->region) != borrowRef)
+            return NULL;
+        return itypeGetTypeDcl(ref->vtexp);
+    }
+    return type;
+}
+
+static enum TextKind textKindOf(INode *base) {
+    if (base == NULL || base->tag != StructTag || (base->flags & (TraitType | EnumType)) || !isMethodType(base))
+        return TextNone;
+    if (coreIsTextOut(base))
+        return TextWriter;
+    if (textAnswersWriter(base, "record"))
+        return TextRecord;
+    if (textAnswersWriter(base, "textOut"))
+        return TextSink;
+    return TextNone;
+}
+
+// The TextOut type a method of this name answers
+static INode *textOutOf(INode *base, const char *name) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName(name));
+    return itypeGetTypeDcl(((FnSigNode*)((FnDclNode*)found)->vtype)->rettype);
+}
+
+// A copy of an expression not yet checked, checked as a trial, so that its type
+// can be asked. Answers the checked copy, or NULL when it did not check (the
+// real one reports why, when it is checked)
+static INode *textTrial(TypeCheckState *pstate, INode *node) {
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+    uint32_t closures = closuresCloned;
+    INode *probe = cloneNode(&cstate, node);
+    clonePopState();
+    cloneDclPop(dclpos);
+    // A closure literal written inside is not checked twice: the trial would
+    // leave the function it makes declared and never defined
+    if (closuresCloned != closures)
+        return NULL;
+    ErrorTrial trial;
+    errorTrialBegin(&trial, closureSerialNow());
+    inodeTypeCheck(pstate, &probe, unknownType);
+    int ok = errorTrialEnd(&trial) && isExpNode(probe) && !inodeIsError(probe)
+        && iexpGetTypeDcl(probe) != errorType && iexpGetTypeDcl(probe) != unknownType;
+    genericTrialPurge();
+    return ok ? probe : NULL;
+}
+
+// A name only the lowering writes, for the writer a record's variable holds
+static Name *textWriterName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-w", 2);
+    return name;
+}
+
+// 'recv <- piece', one send of one piece
+static INode *textSend(INode *lex, INode *recv, INode *piece) {
+    FnCallNode *send = newFnCallOpnameLower(lex, recv, lessDashName, 2);
+    send->flags |= FlagOpAssgn | FlagLvalOp;
+    nodesAdd(&send->args, piece);
+    return (INode*)send;
+}
+
+// 'recv.method()'
+static FnCallNode *textAsk(INode *lex, INode *recv, const char *method) {
+    FnCallNode *call = newFnCallLower(lex, recv, 1);
+    call->methfld = (INode*)newMemberUseNode(textName(method));
+    inodeLexCopy(call->methfld, lex);
+    return call;
+}
+
+// A list of pieces sent to a writer or a record maker, one send after another:
+//   { [pieces made before an 'await'] [var -w = receiver.record()] -w <- piece; ... }
+// Answers 1 when it took the send, 0 to leave it to the general list lowering.
+// otype is the receiver's type, from its copy; lval whether the receiver is a place.
+static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKind kind, INode *base,
+        INode *otype, int lval) {
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (isEntryNode(piecep[i]))
+            return 0;
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+
+    // A piece holding an 'await' is made before the writer is, with every piece
+    // written before it, in the order written, so no borrow spans the seam
+    uint32_t lastawait = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (awaitWithin(piecep[i]))
+            lastawait = i + 1;
+    for (uint32_t i = 0; i < lastawait; ++i) {
+        if (litIsLiteral(piecep[i]))
+            continue;
+        VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, piecep[i], scope, piecep[i]);
+        nodesAdd(&blk->stmts, (INode*)part);
+        piecep[i] = contentsVarUse(part, (INode*)part);
+    }
+
+    // The writer the pieces are sent to, a variable holding it or a reference to it
+    VarDclNode *w;
+    if (kind == TextRecord) {
+        FnCallNode *make = textAsk(lex, node->objfn, "record");
+        w = contentsVar(textWriterName(), unknownType, mutPerm, (INode*)make, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)w);
+    }
+    else if (nameUseNames(node->objfn, VarDclTag)) {
+        w = (VarDclNode*)((NameUseNode*)node->objfn)->dclnode;
+    }
+    else {
+        // A writer reached some other way, a field or a call: lent once, to a variable
+        INode *held = node->objfn;
+        if (otype->tag != RefTag) {
+            if (!lval) {
+                errorMsgNode(held, ErrorNoText, "A send into a writer needs the writer in a variable or a place, or lent as '&uni'.");
+                *nodep = (FnCallNode*)newErrorNode(lex);
+                return 1;
+            }
+            borrowMutRef(&held, otype, newPermUseNode(uniPerm));
+        }
+        w = contentsVar(tempLocalName, unknownType, immPerm, held, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)w);
+    }
+    for (uint32_t i = 0; i < npieces; ++i)
+        nodesAdd(&blk->stmts, textSend(piecep[i], contentsVarUse(w, lex), piecep[i]));
+    // The record ends with its last piece, before the statement's temporaries
+    // are finalized (a finalizer that prints comes after the pieces before it)
+    if (kind == TextRecord)
+        nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// A '<-' sending a list to a text receiver is lowered here (see the comment
+// above), before its pieces are looked at. Answers 1 when it replaced the send,
+// 0 when the send is not a text list's
+int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != lessDashName || !(node->flags & FlagOpAssgn)
+        || node->args == NULL || node->args->used != 1 || node->objfn == NULL)
+        return 0;
+    INode *arg = nodesGet(node->args, 0);
+    // A single plain value is the ordinary send, whose failing to find a '<-' that
+    // takes it comes to textSendFallback
+    if (arg->tag != VTupleTag && !isEntryNode(arg))
+        return 0;
+    if (contentsIsConstruction(node->objfn))
+        return 0;
+    INode *recvcopy = textTrial(pstate, node->objfn);
+    if (recvcopy == NULL)
+        return 0;
+    INode *otype = iexpGetTypeDcl(recvcopy);
+    INode *base = textReceiverBase(otype);
+    enum TextKind kind = base ? textKindOf(base) : TextNone;
+    if (kind == TextNone)
+        return 0;
+    // A list sent to a sink is the general list's, one application each against
+    // one borrow of the sink, with each piece's writer finished before the next
+    // begins
+    if (kind == TextSink) {
+        contentsTextList = 1;
+        contentsLowerEntries(pstate, nodep);
+        return 1;
+    }
+    if (textListLower(pstate, nodep, kind, base, otype, iexpIsLval(recvcopy)))
+        return 1;
+    // A list with an entry that is not a plain value ('3 of "ab"') is sent a piece at a time too
+    contentsTextList = 1;
+    contentsLowerEntries(pstate, nodep);
+    return 1;
+}
+
+// A single piece that no '<-' of a text receiver took becomes the piece's own
+// toText, written into the writer the receiver is or lends:
+//   piece.toText(&uni receiver)   piece.toText(&uni receiver.textOut())   piece.toText(&uni receiver.record())
+// The call is rewritten in place, its receiver and piece already checked.
+// Answers 1 when it rewrote the call (or reported that the piece has no toText),
+// 0 when the receiver is not text's
+int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+    if (callnode->args == NULL || callnode->args->used != 1 || !isExpNode(recv))
+        return 0;
+    INode *rtype = iexpGetTypeDcl(recv);
+    INode *base = textReceiverBase(rtype);
+    enum TextKind kind = base ? textKindOf(base) : TextNone;
+    INode *piece = nodesGet(callnode->args, 0);
+    if (kind == TextNone || !isExpNode(piece))
+        return 0;
+    INode *ptype = iexpGetTypeDcl(piece);
+    if (ptype == errorType || ptype == unknownType)
+        return 0;
+    // Has the piece a toText: a number, bool or char always has; a type has if it declares one
+    INode *pbase = ptype;
+    while (pbase->tag == RefTag && itypeGetTypeDcl(((RefNode*)pbase)->region) == borrowRef)
+        pbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
+    if (!isNbr(pbase) && pbase != (INode*)boolType && pbase != (INode*)charType
+        && !(isMethodType(pbase) && iNsTypeFindFnField((INsTypeNode*)pbase, textName("toText")) != NULL)) {
+        errorMsgNode(piece, ErrorNoText,
+            "%s cannot be written as text: it has no `toText(self: &, out: &uni TextOut)`. Give it one that writes its text with `out <- ...`.",
+            pbase->tag == PtrTag ? "a raw pointer" : itypeName(ptype));
+        callnode->vtype = errorType;
+        return 1;
+    }
+    // The value itself, read through any borrows of it: its own toText, not a borrow's
+    for (INode *t = ptype; t->tag == RefTag && itypeGetTypeDcl(((RefNode*)t)->region) == borrowRef;
+            t = itypeGetTypeDcl(((RefNode*)t)->vtexp))
+        derefInject(&piece);
+    INode *writer;
+    if (kind == TextWriter) {
+        writer = recv;
+        if (rtype->tag != RefTag) {
+            if (iexpIsLval(recv))
+                borrowMutRef(&writer, rtype, newPermUseNode(uniPerm));
+            else
+                borrowTempRef(&writer, rtype, newPermUseNode(uniPerm), borrowTempScope(pstate));
+        }
+    }
+    else {
+        // The writer the receiver lends or makes, a temporary finalized at the end of
+        // the statement, borrowed '&uni' for the piece's write
+        const char *method = kind == TextRecord ? "record" : "textOut";
+        writer = (INode*)textAsk((INode*)callnode, recv, method);
+        inodeTypeCheckAny(pstate, &writer);
+        if (!isExpNode(writer) || iexpGetTypeDcl(writer) == errorType) {
+            callnode->vtype = errorType;
+            return 1;
+        }
+        borrowTempRef(&writer, textOutOf(base, method), newPermUseNode(uniPerm), borrowTempScope(pstate));
+    }
+    NameUseNode *meth = newMemberUseNode(textName("toText"));
+    inodeLexCopy((INode*)meth, (INode*)callnode);
+    callnode->objfn = piece;
+    callnode->methfld = (INode*)meth;
+    callnode->args = newNodes(1);
+    nodesAdd(&callnode->args, writer);
+    callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    return 1;
+}
+
+// Is this type, a method's declared 'self', a text receiver or a borrow of one
+// (a writer, a record maker or a text sink)? The type is read as declared, so
+// the method need not be checked yet.
+int textIsReceiver(INode *type) {
+    if (type == NULL)
+        return 0;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    INode *base = textReceiverBase(dcl);
+    return base != NULL && textKindOf(base) != TextNone;
 }

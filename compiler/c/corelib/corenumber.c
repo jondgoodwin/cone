@@ -441,6 +441,36 @@ void nbrAddHashMethods(StructNode *hasher) {
     }
 }
 
+// The 'toText' every number type, bool and char has: 'x.toText(out)' writes the
+// value's text into a TextOut, so that a generic function, or a type's own
+// toText, reaches a method on a field of any of them. Made once core's TextOut
+// is name resolved, since its signature names it. A call is rewritten to the
+// TextOut method that writes that kind of value at type check (fnCallTextNumber),
+// so the method has no body of its own.
+void nbrAddTextMethods(StructNode *textout) {
+    NbrNode *types[] = {boolType, charType, u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
+    Name *self = nametblFind("self", 4);
+    Name *outname = nametblFind("out", 3);
+    Name *textname = nametblFind("toText", 6);
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
+        NbrNode *nbrtype = types[i];
+        if (iNsTypeFindFnField((INsTypeNode*)nbrtype, textname))
+            return;     // already given: the compile met core's TextOut once
+        NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+        selftype->dclnode = (INode*)nbrtype;
+        NameUseNode *outtype = newNameUseNode(textout->namesym);
+        outtype->dclnode = (INode*)textout;
+        RefNode *uniref = newRefNodeFull(RefTag, NULL, borrowRef, newPermUseNode(uniPerm), (INode*)outtype);
+        FnSigNode *sig = newFnSigNode();
+        sig->rettype = (INode*)newVoidNode();
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(outname, VarDclTag, (INode*)uniref, newPermUseNode(immPerm), NULL));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(textname, FlagMethFld | FlagPub,
+            (INode*)sig, (INode*)newIntrinsicNode(TextNbrIntrinsic)));
+    }
+}
+
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     boolType = newNbrTypeNode("bool", UintNbrTag, 1);

@@ -565,14 +565,14 @@ excludes = ["fabsf"]
 # -------- what the runtime prints --------
 #
 # stdio's printing is conestd's, the runtime every run scenario links, written
-# in Cone (packages/conestd/stdio.cone, floatfmt.cone). Its expected .out and
-# .err are what the C library it replaced printed, but for a NaN, which is "nan"
-# whatever its sign, so a change to how any value is spelled shows here, the same
-# text on every OS.
+# in Cone (packages/conestd/stdio.cone, with core's TextOut writing the text). Its
+# expected .out and .err are the text core writes for each value, a float as the
+# shortest text that reads back as it, a NaN "nan" whatever its sign, so a change to
+# how any value is spelled shows here, the same text on every OS.
 
 [scenario.module_stdio_values]
 category = "run"
-description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as '%g' with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
+description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as the shortest text that reads back with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
 tags = ["runtime"]
 
 # The stream operator's bool and char entries (packages/stdio), to each stream.
@@ -591,6 +591,26 @@ tags = ["runtime"]
 category = "reject"
 description = "The stream's C-string entry refuses what does not promise the zero that ends a C string: a raw '*u8' given to 'print <-' or 'eprint <-', and a raw '*u8' or a borrow of a byte given to 'appendCStr', to each stream"
 tags = ["typecheck"]
+
+# What a send of a value as text does (core's TextOut, the compiler's lowering of
+# '<-' for a writer, a text sink and a record maker): a receiver's own '<-' first,
+# then the value's own toText written into the writer the receiver is or lends; a
+# value with none is refused naming the type and the method.
+[scenario.module_text_overloads]
+category = "run"
+description = "A receiver's own '<-' is tried before a value's toText: a List receiving a point appends the point, a String a text, a text sink with a '<-' for points takes the point itself; anything else a point writes goes into a String, the console and the sink's own String as the point's text"
+tags = ["runtime"]
+
+[scenario.module_text_nesting]
+category = "run"
+description = "How a send to the console brackets when sends nest: a parenthesized String send is a value of the outer record, a function a piece calls that prints writes its own record first, a held record takes only what is sent to it, and a toText writes into the record of the statement that called it"
+tags = ["runtime"]
+
+[scenario.module_text_refuse]
+category = "reject"
+description = "A value with no toText sent as text is refused, naming the type and the method: to a String (alone and among pieces), to the console, to a writer, and in a list to a record held in a variable; a type with one is accepted beside them"
+tags = ["typecheck"]
+diagnostics = 6
 
 # 'String.fromCStr' takes a 'cstr' (packages/collections).
 [scenario.module_string_fromcstr]

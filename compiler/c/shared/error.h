@@ -783,6 +783,7 @@ enum ErrorCode {
     ErrorDefaultInit = 1578,    // A struct declaring Default and writing an 'init' has none that can be called with no arguments, so 'T()' is not a construction. Pointed at the struct
     ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
     ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
+    ErrorNoText = 1579,         // A value sent as text to a text receiver (a String, a writer, the console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)` to write itself with. Names the type and the method. Pointed at the value
 
     // Warnings
     WarnCode = 3000,
