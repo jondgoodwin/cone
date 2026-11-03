@@ -139,8 +139,23 @@ actor Holder {
   }
 }
 
+// PIN. This test is about the LENT branch of an answer (actors.answerLentIn): the
+// read's reply is too big for a slot of Holder's mailbox, so it is boxed and its
+// record lent. A slot's payload is its largest message rounded to 16 bytes (at
+// least 32) and a reply's value follows 16 bytes of resume record; Holder's
+// largest message is one OneshotSender and a tag, so its slot's value room is at
+// most the bound below. If the reply type shrinks, or the slot grows, this fails
+// here, not as a count that is off. lentcancelinline.cone is the other branch.
+fn pinBoxed() {
+  var payload = (16usize + mem.sizeof[OneshotSender[u64]]() + 15usize) & ~15usize;
+  if payload < 32usize { payload = 32usize; }
+  expect(mem.sizeof[Result[IoBuf, IoError]]() > payload - 16usize,
+    "PIN: the read's reply is bigger than a slot's value room, so it is lent");
+}
+
 fn main() i32 {
   initAll();
+  pinBoxed();
   var tx: OneshotSender[u64];
   var rx: OneshotReceiver[u64];
   tx, rx = Oneshot[u64].make();
