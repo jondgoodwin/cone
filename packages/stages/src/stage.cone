@@ -56,8 +56,22 @@
 // A producer that fails sends 'end(Failed(err))' in order after what it already
 // sent; the sink handles those chunks, then fails. ABANDONMENT: a stage that quits
 // stops sending and gives back what it holds; an Inbox that is dropped frees what it
-// queued; a Link that is dropped returns its share of the pool. (Cancelling the
-// stages above a consumer that quit is the cancel group's, PR 6.)
+// queued; a Link that is dropped returns its share of the pool.
+//
+// CANCELLATION. A stage works in the cancel group of the message it handles: a
+// chunk and an 'end' come in the group the sender works in (the source's), a buffer
+// given back in the consumer's. So a pipeline is cancelled from the consumer back
+// by building it so: the consumer has a group Gc, the source runs in a child of Gc
+// (actors.withGroup(&gc.child(), ...) around its 'start'), and the consumer quits
+// by cancelling Gc, from a behaviour or from outside. The next stage up sees a
+// cancelled group on the next buffer given back (or chunk arriving) and stops: it
+// ends downstream with Failed (once; the hash stage also answers its digest sink
+// with an error), gives its input back, and drops its upstream handle, so the
+// actors do not keep each other alive even if the source never sends an 'end'. The
+// stage above that sees the chunks it gave back, in the same group, and does the
+// same, to the source. Buffers granted in flight still come back to their links;
+// a chunk that arrives after the stage has stopped is freed. A stage in no group
+// never sees a cancel.
 //
 //   // sink end first; each stage is made with its downstream
 //   let count = Counter();
@@ -180,6 +194,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
 
   // A chunk arrives (the sink's 'accept')
   pub async fn accept(self, c: IoBuf) {
+    self.cancelCheck();
     if ended {
       handBack(&up, c);
     } else if cur is Some || upEnded {
@@ -194,6 +209,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
 
   // The upstream's end arrives (the sink's 'end')
   pub async fn end(self, how: Ending) {
+    self.cancelCheck();
     upEnded = true;
     match how {
       case is Finished {
@@ -209,13 +225,47 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   // An output buffer comes back (the source's 'giveBack')
   pub async fn giveBack(self, b: IoBuf) {
     link.give(b);
+    self.cancelCheck();
     if waiting { self.drain(); }
     self.settle();
+  }
+
+  // CANCELLATION. The stage works in the cancel group of the message it handles
+  // (a chunk and an end come in the group the sender works in; a buffer given back,
+  // in the consumer's): when that group is cancelled, the stage stops. It sends
+  // 'end(Failed)' on (once), pulls no more, and gives the input it holds back to
+  // its upstream, which hears that its consumer has quit by the same cancelled
+  // group on the buffers it gets back. Output buffers still granted downstream
+  // return to the link as they come back. The upstream handle is dropped, as at any
+  // end, when the upstream's own 'end' has come (settle). A pipeline built so that
+  // each stage's group is a child of its consumer's therefore stops from the
+  // consumer back to the source.
+  fn cancelCheck(self: &mut) {
+    if ended || !actors.isCancelled() { return; }
+    self.finish(Ending.Failed(AnyError.msg("streams: cancelled")));
+    self.flush();
+    // The upstream is told by the chunks given back; its 'end' may never come (a
+    // producer that does not look at its group), so the handle goes now. A chunk
+    // that still arrives has nowhere to go back to and is freed.
+    up = None[ChunkSource];
+  }
+
+  // Every input chunk held goes back to the upstream
+  fn flush(self: &mut) {
+    self.returnCur();
+    var more = true;
+    while more {
+      match backlog.popFront() {
+        case let Some(c) { handBack(&up, c); }
+        case is None { more = false; }
+      }
+    }
   }
 
   // Pull while there is a buffer to pull into and something to pull
   fn drain(self: &mut) {
     waiting = false;
+    self.cancelCheck();
     var go = !ended;
     while go {
       match link.take(linkBytes) {
@@ -236,6 +286,9 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
           } else if st == Status.NeedInput {
             go = self.nextInput();
           }
+          // a long run of pulls stops at a cancel between chunks
+          self.cancelCheck();
+          if ended { go = false; }
         }
       }
     }
@@ -320,9 +373,10 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   out: usize;                 // chunks passed on and not yet back
   upEnded: bool;
   to: DigestSink[D.Out];      // gets exactly one answer, when the stream ends
+  stopped: bool;              // the stream's cancel group was cancelled: the answer and the end have gone
 
   pub fn init(self: &new, down: ChunkSink, d: D, to: DigestSink[D.Out]) {
-    *self = Self(d: d, down: down, up: None[ChunkSource], out: 0usize, upEnded: false, to: to);
+    *self = Self(d: d, down: down, up: None[ChunkSource], out: 0usize, upEnded: false, to: to, stopped: false);
     down.attach(selfactor);
   }
 
@@ -330,8 +384,20 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
     up = Some[ChunkSource](source);
   }
 
+  // The stage works in the cancel group of the message it handles; when that
+  // group is cancelled (Stage.cancelCheck) it answers the digest sink with an
+  // error and ends downstream with Failed, once, and gives later chunks back
+  fn cancelCheck(self: &mut) {
+    if stopped || upEnded || !actors.isCancelled() { return; }
+    stopped = true;
+    to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
+    down.end(Ending.Failed(AnyError.msg("streams: cancelled")));
+    up = None[ChunkSource];
+  }
+
   pub async fn accept(self, c: IoBuf) {
-    if upEnded {
+    self.cancelCheck();
+    if upEnded || stopped {
       // nothing is sent after an 'end' (P2): given back unhandled
       handBack(&up, c);
       return;
@@ -342,6 +408,7 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   }
 
   pub async fn giveBack(self, b: IoBuf) {
+    self.cancelCheck();
     out = out - 1usize;
     handBack(&up, b);
     self.settle();
@@ -352,7 +419,13 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   // (its report) and the stage after this one gets the original, typed.
   // Then passes the end on.
   pub async fn end(self, how: Ending) {
+    self.cancelCheck();
     upEnded = true;
+    if stopped {
+      // already answered and ended on a cancel
+      self.settle();
+      return;
+    }
     match &how {
       case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
       case let &Failed(e) { to.digest(Err[D.Out, AnyError](AnyError.msg(e.report().view()))); }

@@ -45,6 +45,7 @@
 //                                   behaviour, its message's sender's
 //                                   (THE GROUP TRAVELS, below)
 //   actors.isCancelled()            whether that group is cancelled
+//   actors.checkCancelled()         Ok, or Err(Cancelled) with the cause where it is cancelled: for '?'
 //   actors.withGroup(&g, body)      run body in group g: the messages it sends
 //                                   carry g
 //   actors.Awaitable[R]             an operation a behaviour may 'await', whose
@@ -881,7 +882,7 @@ mod actors use ActorGc;
 import libc;
 import sync use Arc;
 import thread;
-import cancelgroups use CancelGroup;
+import cancelgroups use CancelGroup, Cancelled, Cause;
 
 // ---------------------------------------------------------------------------
 // A yield, for the waits that spin (a stalled sender's, a loop's caller's),
@@ -2225,13 +2226,18 @@ fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
 // the call (it cannot 'await'), so a group named never outlives its call and
 // the current group is back to what it was when the call returns.
 //
-// A 'parallel each' runs in the group of the code that began it: a loop begun
-// from a thread (inside withGroup, or in a behaviour whose frame holds the group)
-// hands the pieces the address of that handle (EachLoop.group), and a loop a
-// behaviour's seam cut (ParPending) holds a copy of the handle, another owner,
-// which the pieces, the sends they gather and the rest of the behaviour use and
-// the end of the behaviour drops. Each piece sets the group as its thread's
-// current group around its body and restores the thread's own.
+// A 'parallel each' begun in a group runs in a CHILD of it, made for the loop
+// (parallelEach, startHeld): a piece that cancels its current group stops this loop
+// alone, a cancel of the group above reaches the pieces by the child relation, and
+// gatherPiece skips the pieces not yet begun once the child is cancelled. A loop
+// begun from a thread (inside withGroup, or in a behaviour whose frame holds the
+// group) hands the pieces the address of the child (EachLoop.group); a loop a
+// behaviour's seam cut (ParPending) holds a copy of the behaviour's group, another
+// owner, from which the loop's child is made when it begins. The sends the pieces
+// gather and the rest of the behaviour use the group itself, not the child, and the
+// end of the behaviour drops the copy. Each piece sets the child as its thread's
+// current group around its body and restores the thread's own. A loop begun in no
+// group runs in none.
 //
 // The rest of a behaviour after an 'await' runs in the group the await was made
 // in, kept in a side table until the reply comes (THE GROUP SURVIVES AN AWAIT,
@@ -2282,6 +2288,28 @@ pub fn isCancelled() bool {
     return false;
   }
   (p as &CancelGroup).isCancelled()
+}
+
+// The cancel as an error, for '?': Ok where the current group is live (or there is
+// none), Err(Cancelled) with the cause where it is cancelled. A cancelled await
+// ALWAYS resumes (the answer is delivered, whenever it comes, and the code after the
+// await runs); the cancel is seen at the callee's answer (a cancel-aware callee
+// answers its own Err, as an I/O operation does) or at the next check, and this is
+// the check that passes it on:
+//
+//   let r = await store.fetch(key);      // resumes even if the group was cancelled meanwhile
+//   actors.checkCancelled()?;            // ... then the clean-up code below does not run twice
+pub fn checkCancelled() Result[void, Cancelled] {
+  let p = curGroup;
+  if p != 0usize && (p as &CancelGroup).isCancelled() {
+    var why = Cause.Cancelled;
+    match (p as &CancelGroup).cause() {
+      case let Some(c) { why = c; }
+      case is None {}
+    }
+    return Err[void, Cancelled](Cancelled(why));
+  }
+  Ok[void, Cancelled](nil)
 }
 
 // Run body with g as the current group: the messages it sends carry g, and
