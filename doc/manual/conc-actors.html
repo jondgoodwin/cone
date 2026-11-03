@@ -468,8 +468,17 @@ fn main() {
 		skipped. The messages the pieces send and the rest of the behaviour after the loop are in the group of the code that
 		began the loop.
 		The code that resumes after an <span class="pre">await</span> runs in the group the await was made in, however
-		long the answer took and on whatever worker takes the actor, and sees that group's cancellation; an await made
-		in no group resumes in the process's own, as always.</p>
+		long the answer took and on whatever worker takes the actor; an await made in no group resumes in the process's
+		own, as always.</p>
+	<p><b>A cancelled await always resumes.</b> If the group is cancelled while the behaviour is parked, the answer is
+		still delivered when it comes and the code after the <span class="pre">await</span> runs, so its clean-up runs and
+		what it held is dropped as usual. The cancel is seen at the callee's answer, or at the next check: cooperative, as
+		in Swift and Go. A callee that watches its group answers its own <span class="pre">Err</span> (an I/O operation
+		answers <span class="pre">Cancelled</span>), and <span class="pre">actors.checkCancelled()</span> is the check as an
+		error: <span class="pre">Ok</span> while the group is live, <span class="pre">Err(Cancelled)</span> with the
+		<span class="pre">cause</span> once it is cancelled, which <span class="pre">?</span> passes on to the caller (as a
+		<span class="pre">Cancelled</span>, a variant of an error enum that holds one, or an <span class="pre">AnyError</span>).
+		A cancel that comes after the answer is pushed does not change the answer: the code sees it at its next check.</p>
 	<p>A message sent in a group takes two places in its actor's queue (one holds the group, one the message), so the
 		mailbox's depth, high-water mark and limit (<span class="pre">mailboxDepth</span>,
 		<span class="pre">mailboxHighWater</span>, <span class="pre">setMailboxLimit</span>) count it as two. A message

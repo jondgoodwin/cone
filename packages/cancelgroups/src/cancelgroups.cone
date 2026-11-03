@@ -27,7 +27,9 @@
 //   g.deadline()  g.isShield()  g.id()
 //   g.watch(loopId, &w)                        a loop to tell on a cancel (WAKING LOOPS)
 //   Cause: Cancelled, TimedOut, SiblingFinished, Shutdown
-//   Wakeup                                     what a loop gives 'watch'
+//   Cancelled(cause)                           the error of work that was cancelled (an Error, Sendable):
+//                                              what actors.checkCancelled() answers, for '?'
+//   Wakeup                                    what a loop gives 'watch'
 //   forever()                                  a deadline that never comes
 //
 // HOW IT IS BUILT. A group is an Arc to its state. The state holds one word,
@@ -70,7 +72,7 @@
 mod cancelgroups;
 
 import sync use Arc, Mutex, Condvar;
-import collections use List;
+import collections use List, String, Error;
 import time use Instant, Duration;
 import libc;
 import thread;
@@ -126,6 +128,25 @@ pub enum Cause {
   SiblingFinished,
   // The program, or the part of it that owns this work, is shutting down
   Shutdown
+}
+
+// The error of work that was cancelled, why: what 'actors.checkCancelled()' answers
+// when the group the code works in is cancelled, so that '?' passes it on and the
+// code after the check runs its clean-up (a function returning a Result takes it as an
+// 'Err(Cancelled)' of an error enum with a variant holding one, or as an AnyError)
+pub struct Cancelled is Error, Sendable {
+  pub cause: Cause;
+
+  pub fn message(self: &) String {
+    var s = String.empty();
+    match cause {
+      case Cause.Cancelled { s.append("cancelled"); }
+      case Cause.TimedOut { s.append("cancelled: its deadline came"); }
+      case Cause.SiblingFinished { s.append("cancelled: a sibling finished the job"); }
+      case Cause.Shutdown { s.append("cancelled: shutting down"); }
+    }
+    s
+  }
 }
 
 const codeLive = 0u32;

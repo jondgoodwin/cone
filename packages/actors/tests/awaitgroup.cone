@@ -20,10 +20,17 @@
 //    actors.testGroupedReply makes one owed to a made-up actor).
 // 8. An actor dying with a grouped await outstanding has its entries swept,
 //    and only its own (testActorWithGroupedAwait, testKillActor).
+// 9. A cancelled await always resumes (part 3 above: the second half runs, in the
+//    cancelled group, and sees it); the cancel is seen at the callee's answer or at the
+//    next check. actors.checkCancelled() is that check as an error: Ok, or
+//    Err(Cancelled) with the cause, which '?' passes on (as Cancelled, and converted to
+//    an AnyError); the clean-up after it runs once, the parked value is dropped exactly
+//    once, and the side table is empty.
 
 mod awaitgroup;
 
 import testing use *;
+import collections use AnyError;
 import thread;
 import actors;
 import cancelgroups use *;
@@ -43,15 +50,30 @@ struct Seen {
   pub chain1: Atomic[u64];
   pub chain2: Atomic[u64];
   pub want: Atomic[u64];       // the group id the stress wants
+  pub chkResumed: Atomic[u64]; // checkCancelled test: the continuation ran
+  pub chkOk: Atomic[u64];
+  pub chkErr: Atomic[u64];
+  pub chkCause: Atomic[u64];
+  pub chkAny: Atomic[u64];     // the AnyError form gave Err
+  pub cleanup: Atomic[u64];    // clean-up after the check ran
 }
 
 let seen: Seen;
+let markerDrops: Atomic[u64];    // Markers dropped
+
+struct Marker {
+  pub x: u64;
+
+  fn final(self: &uni) {markerDrops.add(1u64);}
+}
 
 fn @initpure init() {
+  markerDrops = Atomic[u64].of(0u64);
   seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
     Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64));
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
@@ -125,6 +147,39 @@ actor Asker {
     let b = await slow.quick(a);
     if actors.currentGroup().id() == seen.want.load() && b == base + 2u64 {seen.chain2.add(1u64);}
   }
+
+  // the cancel as an error: the await resumes, and the check passes the Cancelled on
+  // with '?' (as Cancelled, and converted to an AnyError); the clean-up runs once
+  pub async fn checked(self, slow: Slow) {
+    let m = Marker(1u64);
+    let s = await slow.answer(8u64);
+    seen.chkResumed.add(1u64);
+    match finishA(s + m.x) {
+      case let Ok(v) { seen.chkOk.add(1u64); }
+      case let Err(e) {
+        seen.chkErr.add(1u64);
+        match e.cause {
+          case Cause.Shutdown { seen.chkCause.store(4u64); }
+          else { seen.chkCause.store(9u64); }
+        }
+      }
+    }
+    match finishB(s) {
+      case is Ok {}
+      case let Err(e) { seen.chkAny.add(1u64); }
+    }
+    seen.cleanup.add(1u64);
+  }
+}
+
+fn finishA(v: u64) Result[u64, Cancelled] {
+  actors.checkCancelled()?;
+  Ok[u64, Cancelled](v + 1u64)
+}
+
+fn finishB(v: u64) Result[u64, AnyError] {
+  actors.checkCancelled()?;
+  Ok[u64, AnyError](v)
 }
 
 fn waitHeld(n: u64) {
@@ -133,6 +188,12 @@ fn waitHeld(n: u64) {
 }
 
 fn reset() {
+  seen.chkResumed.store(0u64);
+  seen.chkOk.store(0u64);
+  seen.chkErr.store(0u64);
+  seen.chkCause.store(0u64);
+  seen.chkAny.store(0u64);
+  seen.cleanup.store(0u64);
   seen.held.store(0u64);
   seen.gate.store(0u64);
   seen.idRec.store(0u64);
@@ -247,5 +308,36 @@ fn main() i32 {
     actors.testKillActor(two);
   });
   expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "8: the table is empty after both deaths");
+
+  // 9. checkCancelled: a cancelled await resumes, and '?' passes the cancel on. A control, no cancel
+  markerDrops.store(0u64);
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.checked(slow); });
+  waitHeld(1u64);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.chkResumed.load(), 1u64, "9: control: the continuation ran");
+  expectUInt(seen.chkOk.load(), 1u64, "9: ... checkCancelled said Ok");
+  expectUInt(seen.chkErr.load(), 0u64, "9: ... not Err");
+  expectUInt(seen.chkAny.load(), 0u64, "9: ... and the AnyError form passed it too");
+  expectUInt(seen.cleanup.load(), 1u64, "9: ... the clean-up ran once");
+
+  markerDrops.store(0u64);
+  reset();
+  let g9 = CancelGroup.make();
+  actors.withGroup(&g9, fn() [a, slow] { a.checked(slow); });
+  waitHeld(1u64);
+  g9.cancelWith(Cause.Shutdown);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.chkResumed.load(), 1u64, "9: a cancelled await resumes");
+  expectUInt(seen.chkErr.load(), 1u64, "9: checkCancelled gave Err(Cancelled), and '?' passed it on");
+  expectUInt(seen.chkOk.load(), 0u64, "9: ... not Ok");
+  expectUInt(seen.chkCause.load(), 4u64, "9: ... with the cause (Shutdown)");
+  expectUInt(seen.chkAny.load(), 1u64, "9: ... and '?' converted it to an AnyError in a function returning one");
+  expectUInt(seen.cleanup.load(), 1u64, "9: the clean-up after the check ran once");
+  expectUInt(markerDrops.load(), 1u64, "9: the parked value was dropped exactly once");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "9: the table is empty");
+  expect(actors.checkCancelled() is Ok, "9: outside any group checkCancelled says Ok");
   done()
 }
