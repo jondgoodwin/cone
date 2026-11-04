@@ -487,6 +487,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         // its place.
         VarDclNode *var = (VarDclNode*)lvalvar;
         uint16_t flowflags = var->flowtempflags;
+        modInitNoteSet(var);
         // A match's binding by value names the matched value's own storage
         // (flowMatchInPlace), so a store over it releases the value it
         // replaces, and the matched value's variable releases the new one. A

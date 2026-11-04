@@ -2052,8 +2052,15 @@ Where any global the module declares has anything to do as it dies
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
 the module's own `final`, if it has one, and then finalizing each such global
-**in the reverse of declaration order** (rule 6: the reverse of setup, which is
-declaration order; `init`'s own assignment order is not tracked). The globals are its
+**in the reverse of the order they are set** (rule 6). The setup order is
+built in `modGiveDrop`: first the globals `init` never assigns, in declaration
+order (the place PR 6's ordered setups will go), then those `init` assigns, in
+the order the flow pass first met an assignment to each (`modInitNoteSet`,
+called from `assignlvalrtype` while `init` is walked; kept in `mod->setorder`).
+Flow walks text order, so a branch whose arms set the same globals in different
+orders takes the first written, and a global's direct reads were assigned
+earlier in the text. A global with a value that `init` also assigns is one
+`init` sets. The globals are its
 return's release list, built as flow builds a scope's for its locals
 (`flowVarRelease`): a struct or an enum listed as a call to its drop function
 over `&uni` the global, anything else — an owning reference, plain or virtual,

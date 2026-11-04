@@ -32,6 +32,7 @@ ModuleNode *newModuleNode() {
     mod->traitname = NULL;
     mod->trait = NULL;
     mod->ntaken = 0;
+    mod->setorder = NULL;
     mod->initfn = NULL;
     mod->finalfn = NULL;
     mod->genericinfo = NULL;
@@ -1491,7 +1492,30 @@ ModuleNode *modInitOf(FnDclNode *fnnode) {
     return owner != NULL && owner->tag == ModuleTag ? (ModuleNode*)owner : NULL;
 }
 
+// The module whose 'init' the flow pass is walking, or NULL
+static ModuleNode *modInitCur = NULL;
+
+// The flow pass met an assignment to this name: where it is a global of the
+// module whose 'init' is being walked and is not yet in the module's setup
+// order, it is next in it. Text order, so the first order written wins where
+// branches set the same globals in different orders
+void modInitNoteSet(VarDclNode *var) {
+    if (modInitCur == NULL || var->dclinfo.owner != (INode*)modInitCur)
+        return;
+    if (modInitCur->setorder == NULL)
+        modInitCur->setorder = newNodes(4);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(modInitCur->setorder, cnt, nodesp)) {
+        if (*nodesp == (INode*)var)
+            return;
+    }
+    nodesAdd(&modInitCur->setorder, (INode*)var);
+}
+
 uint16_t *modInitFlowBegin(ModuleNode *mod) {
+    modInitCur = mod;
+    mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
     uint32_t cnt;
@@ -1508,6 +1532,7 @@ uint16_t *modInitFlowBegin(ModuleNode *mod) {
 }
 
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
+    modInitCur = NULL;
     INode **nodesp;
     uint32_t cnt;
     uint32_t pos = 0;
@@ -1595,7 +1620,7 @@ int modGlobalFinalized(VarDclNode *var) {
 // (itypeNeedsFinal, the question a local's death asks): a function owned by the
 // module, so its symbol is spelled after it ('q.drop'), that calls the module's
 // own 'final' and then finalizes each such global, in the reverse of the order
-// the globals were set (declared) -- a type's 'drop' is its 'final' and then its
+// the globals were set (the setup list) -- a type's 'drop' is its 'final' and then its
 // fields', and a module's globals are its fields, set in order, ended in reverse. It is the return's release list, as a
 // function's locals are released: a struct or an enum listed as its drop's
 // call, anything else -- an owning reference, a tuple or an array -- listed as
@@ -1609,9 +1634,30 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     Nodes *releases = NULL;
     INode **nodesp;
     uint32_t cnt;
+    // The order the globals are set (rule 6): first those 'init' never assigns,
+    // in declaration order (PR 6's ordered setups go here), then those 'init'
+    // assigns, in the order the flow pass first met an assignment to each
+    Nodes *setup = newNodes(8);
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         if ((*nodesp)->tag != VarDclTag)
             continue;
+        int assigned = 0;
+        if (mod->setorder) {
+            INode **setp;
+            uint32_t setcnt;
+            for (nodesFor(mod->setorder, setcnt, setp))
+                assigned |= *setp == *nodesp;
+        }
+        if (!assigned)
+            nodesAdd(&setup, *nodesp);
+    }
+    if (mod->setorder) {
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setorder, setcnt, setp))
+            nodesAdd(&setup, *setp);
+    }
+    for (nodesFor(setup, cnt, nodesp)) {
         VarDclNode *var = (VarDclNode*)*nodesp;
         // A thread-local is a copy per thread, and each copy would need
         // finalizing as its thread ends, which nothing does yet. So its type
@@ -1665,8 +1711,7 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     if (block == NULL)
         return final;
 
-    // The reverse of the order they were set: the globals were set in the order
-    // declared, so they are finalized last to first
+    // The reverse of the order they were set (the setup list above)
     for (uint32_t lo = 0, hi = releases->used; lo + 1 < hi; ++lo, --hi) {
         INode *tmp = nodesGet(releases, lo);
         nodesGet(releases, lo) = nodesGet(releases, hi - 1);
