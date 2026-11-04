@@ -1,4 +1,4 @@
-// floatfmt: a float as text, in Cone: the shortest text that reads back as the
+// floatfmt: a float as text (and, at the end, read from text), in Cone: the shortest text that reads back as the
 // same float (core's FloatText, below), which core's TextOut writes for every
 // f64 and f32 sent as text, to a String, the console, a trace message.
 //
@@ -339,4 +339,60 @@ pub fn cone_floatShortest32(buf: *u8, x: f32) usize {
   let bits = u64.from(*(&mut v as *u32));
   shortestOf(buf, (bits >> 31u64) != 0u64, (bits >> 23u64) & 0xFFu64,
     bits & 0x7FFFFFu64, 23u64, 0xFFu64, 150i64)
+}
+
+// ---------------------------------------------------------------------------
+// A float read from text
+// ---------------------------------------------------------------------------
+//
+// core's 'f64.parse' and 'f32.parse' check the text's grammar, then call these
+// to find the nearest float (the even one on a tie), which the C library's
+// 'strtod' and 'strtof' answer exactly for every input. The text has no NUL
+// after it, so it is copied to one that has. Each answers false when the value
+// is past the range of the type, which the C library says as an infinity from
+// text that is not 'inf'.
+
+extern {
+  fn strtod(s: *u8, end: *u8) f64;
+  fn strtof(s: *u8, end: *u8) f32;
+}
+
+// The text copied with a NUL after it; the caller frees the block
+fn nulTerminated(text: *u8, len: usize) *u8 {
+  let copy = libc.malloc(len + 1usize);
+  var i = 0usize;
+  while i < len {
+    *(copy + i) = *(text + i);
+    i = i + 1usize;
+  }
+  *(copy + len) = 0u8;
+  copy
+}
+
+// Whether the text has a letter in it ('inf', 'nan'), which a finite value's
+// text never does apart from its exponent mark
+fn hasWord(text: *u8, len: usize) bool {
+  var i = 0usize;
+  while i < len {
+    let c = *(text + i) | 32u8;
+    if c >= 'a' && c <= 'z' && c != 'e' { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+pub fn cone_parseF64(text: *u8, len: usize, out: *f64) bool {
+  let copy = nulTerminated(text, len);
+  let v = strtod(copy, null);
+  libc.free(copy);
+  *out = v;
+  hasWord(text, len) || (v - v == 0.0)
+}
+
+pub fn cone_parseF32(text: *u8, len: usize, out: *f32) bool {
+  let copy = nulTerminated(text, len);
+  let v = strtof(copy, null);
+  libc.free(copy);
+  *out = v;
+  hasWord(text, len) || (v - v == 0.0f32)
 }

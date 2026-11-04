@@ -84,6 +84,8 @@ Name *parensName;
 Name *indexName;
 Name *refIndexName;
 Name *optionName;
+Name *parseName;
+Name *tryFromName;
 Name *fromName;
 Name *selectName;
 Name *joinName;

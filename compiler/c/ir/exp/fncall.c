@@ -3474,6 +3474,79 @@ static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
     return 1;
 }
 
+// Core's struct of this name, or NULL. Core's module is reached through its
+// 'str', which the compiler adopts from it.
+static INode *fnCallCoreStruct(char *name) {
+    ModuleNode *mod = dclInfoGetModule((INode*)strTypeDcl);
+    if (mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    INode *found = namespaceFind(&mod->namespace, nametblFind(name, strlen(name)));
+    return found && found->tag == StructTag ? found : NULL;
+}
+
+// Is this a number type that reads text and converts checked: any of them but
+// bool and char, which are no quantities?
+static int fnCallIsQuantity(INode *type) {
+    return (type->tag == IntNbrTag || type->tag == FloatNbrTag
+        || (type->tag == UintNbrTag && type != (INode*)boolType && type != (INode*)charType));
+}
+
+// 'i32.parse(text)' and 'u8.tryFrom(x)': a number type's reading of text and its
+// checked conversion. A number type's methods are built in and hold no body
+// written in Cone, so the call is rewritten, once the receiver is known to be a
+// number type -- named directly, through an alias, or as the argument a type
+// parameter has in an instance -- to the same static function of core's
+// 'NumberConv[T]': 'NumberConv[i32].parse(text)', 'NumberConv[u8].tryFrom(x)'.
+// That is an ordinary path through an instance of a generic struct, and the
+// source type of a tryFrom is inferred by the call from its argument as any
+// generic function's type parameter is. The argument is not checked here, so it
+// is checked once. Returns 1 when the node was handled, lowered or refused, so
+// the caller stops.
+static int fnCallNumberConvert(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!isTypeNode(node->objfn) || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return 0;
+    Name *method = ((NameUseNode*)node->methfld)->namesym;
+    int isparse = method == parseName;
+    if (!isparse && method != tryFromName)
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (!fnCallIsQuantity(nbrtype))
+        return 0;
+    Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : ((NbrNode*)nbrtype)->namesym;
+    // Whatever goes wrong below, the expression has no type to give
+    node->vtype = errorType;
+
+    if (node->args == NULL || node->args->used != 1) {
+        errorMsgNode(node->args == NULL ? node->methfld : (INode*)node,
+            isparse ? ErrorNbrParse : ErrorNbrTryFrom,
+            isparse ? "%s.parse reads one text: %s.parse(text)" : "%s.tryFrom converts one number: %s.tryFrom(value)",
+            &written->namestr, &written->namestr);
+        return 1;
+    }
+    if (namedValRefuseArgs(node->args, "a call"))
+        return 1;
+    INode *target = fnCallCoreStruct("NumberConv");
+    if (target == NULL) {
+        errorMsgNode((INode*)node, ErrorNoMbr,
+            "core has no `NumberConv`, which a number's `%s` is made through.", &method->namestr);
+        return 1;
+    }
+
+    // 'NumberConv[i32]': the generic struct given the number type
+    NameUseNode *structuse = newNameUseNode(((StructNode*)target)->namesym);
+    inodeLexCopy((INode*)structuse, node->objfn);
+    structuse->dclnode = target;
+    FnCallNode *inst = newFnCallNode((INode*)structuse, 1);
+    inodeLexCopy((INode*)inst, node->objfn);
+    inst->flags |= FlagIndex;
+    nodesAdd(&inst->args, nbrtype);
+    node->objfn = (INode*)inst;
+    node->vtype = unknownType;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
 // 'f32.fromBits(b)': a static function the compiler declares on a number type
 // other than 'from'. The path is collapsed to the function as one through a
 // struct is (fnCallNameResPath), and the call goes on as any call of a function.
@@ -5096,6 +5169,9 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
             return;
         // 'u64.from(count)': a number type's conversion
         else if (fnCallNumberFrom(pstate, nodep))
+            return;
+        // 'i32.parse(text)', 'u8.tryFrom(x)': made through core's generic functions
+        else if (fnCallNumberConvert(pstate, nodep))
             return;
         // 'f32.fromBits(b)': a static function of a number type
         else if (fnCallNumberStatic(node)) {
