@@ -1,0 +1,82 @@
+// core's Error: a type that writes its text into a TextOut meets it. Its one line is sent
+// ('print <- e', 'String() <- e'); source() answers a '&<Error' that is called through, in
+// the chain 'report' walks; '?' converts a core-only error into an AnyError, which holds
+// it (holds, downcastRef) under any lines of context, and whose own text is the outermost
+// line. Each line below is worked out by hand from the types.
+
+mod enum_error_core;
+
+import stdio use *;
+import collections use *;
+
+struct Short is Error, Sendable {
+  pub code: i32;
+  pub fn toText(self: &, out: &uni TextOut) { out <- "short ", code; }
+}
+
+struct Wrapped is Error, Sendable {
+  pub inner: Short;
+  pub fn toText(self: &, out: &uni TextOut) { out <- "wrapped"; }
+  pub fn source(self: &) Option[&<Error] { Some[&<Error](&inner) }
+}
+
+fn fails() Result[i32, Wrapped] {
+  Err[i32, Wrapped](Wrapped(Short(4i32)))
+}
+
+fn lift() Result[i32, AnyError] {
+  let v = fails()?;
+  Ok(v)
+}
+
+fn main() i32 {
+  let w = Wrapped(Short(9i32));
+  // The error's own line
+  print <- w, "\n";
+  let s = String() <- w;
+  print <- s.len(), "\n";
+
+  // source() through &<Error: one cause, which has none
+  match w.source() {
+    case let Some(c) {
+      // (a '&<Error' is not itself sendable; its toText writes into a writer)
+      {
+        var line = print.record();
+        c.toText(&uni line);
+        line <- "\n";
+      }
+      match c.source() {
+        case is Some { print <- "more\n"; }
+        case is None { print <- "end\n"; }
+      }
+    }
+    case is None { print <- "none\n"; }
+  }
+
+  // report: the line, then each cause
+  {
+    var rec = print.record();
+    w.report(&uni rec);
+    rec <- "\n";
+  }
+
+  // Through '?' into an AnyError, under two lines of context
+  match lift() {
+    case let Ok(v) { print <- v, "\n"; }
+    case let Err(e) {
+      let f = e.addContext("first").addContext("second");
+      print <- f, "\n";
+      print <- f.holds[Wrapped](), " ", f.holds[Short](), "\n";
+      match f.downcastRef[Wrapped]() {
+        case let Some(x) { print <- x.inner.code, "\n"; }
+        case is None { print <- "no\n"; }
+      }
+      {
+        var rep = print.record();
+        f.report(&uni rep);
+        rep <- "\n";
+      }
+    }
+  }
+  0
+}
