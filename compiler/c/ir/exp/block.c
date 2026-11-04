@@ -19,6 +19,7 @@ BlockNode *newBlockNode() {
     blk->breaks = NULL;
     blk->flowmark = 0;
     blk->eachpass = NULL;
+    blk->fieldeach = NULL;
     return blk;
 }
 
@@ -32,6 +33,8 @@ BlockNode *newLoopBlockNode() {
 
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
+    if (node->fieldeach)
+        return cloneFieldEach(cstate, node);
     uint32_t dclpos = cloneDclPush();
     BlockNode *newnode;
     newnode = memAllocBlk(sizeof(BlockNode));
@@ -144,6 +147,8 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     EachPass *svpass = errorEachPass;
     if (blk->eachpass)
         errorEachPass = blk->eachpass;
+    if (blk->fieldeach)
+        fieldEachNameRes(pstate, blk);
     blockNameResIn(pstate, blk);
     errorEachPass = svpass;
 }

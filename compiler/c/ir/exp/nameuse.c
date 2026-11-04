@@ -67,6 +67,10 @@ NameUseNode *newMemberUseNode(Name *namesym) {
 
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
+    // The splice 'val.#f' of a '#each #f in #fields(T)' being expanded: the field's name
+    INode *spliced = fieldEachSplice(node);
+    if (spliced)
+        return spliced;
     NameUseNode *newnode;
     newnode = memAllocBlk(sizeof(NameUseNode));
     memcpy(newnode, node, sizeof(NameUseNode));

@@ -1068,6 +1068,16 @@ variable misused: a `let` or a `#each` variable given a new value, a list used a
 from something else, a division by zero, a declaration with no value. An error inside a pass is followed
 by an uncounted line naming the pass (`... in pass 2 of 3 of this '#each', where #x is 2.5`).
 
+`ErrorMetaFields` and `ErrorMetaFieldsType` are `#each #f in #fields(T)`. `ErrorMetaFields` is the loop or a
+description misused where it is read or name-resolved: a header without `(T)`, a `T` that is no type parameter of
+the generic it stands in, a bare `#f` (a description is asked `#f.name`/`.type`/`.region`/`.perm`/`.pub` or
+spliced `value.#f`), a property that is none, `#f.attrs` (field attributes are not built). `ErrorMetaFieldsType`
+is the clone for an instance: `T` is no struct (a number, a reference, an enum, a trait), or `#f.perm` /
+`#f.region` is asked of a field with none written. `ErrorMetaFieldsPrivate` is a type with a private field the
+reflecting code cannot see and no `@reflect`: refused, naming the type, the field and the opt-in, because a list
+without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
+loop, with the call that made the instance after it.
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
