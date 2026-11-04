@@ -822,6 +822,35 @@ fn cancelIdle(secure: bool) {
   finish(&mut w, &uni sev, &uni cev, &scene);
 }
 
+// The same cancel, and the client's close asked at once: the connection goes
+// on to close whichever way the ended receive and the close meet, both sides
+// close, and nothing stays lent
+fn cancelClose(secure: bool) {
+  let scene = sceneName(secure, "cancelClose");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event]();
+  var cev = List[Event]();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  let held = ask(&mut w, "/half/1000000/32768", 1000000u64, true);
+  let seen = Instant.now() + Duration.fromSeconds(5i64);
+  while w.cl.gots[held].bytes < 32768u64 && Instant.now() < seen {step(&mut w, &uni sev, &uni cev);}
+  var n = 0u32;
+  while n < 20u32 {
+    step(&mut w, &uni sev, &uni cev);
+    n = n + 1u32;
+  }
+  expect(w.cli.cancel(&mut w.lp, w.cl.gots[held].req), lab(&scene, "the client cancels its only stream").view());
+  expect(w.cli.close(&mut w.lp, w.cl.conn), lab(&scene, "...and asks to close").view());
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(w.cl.closed, 1u64, lab(&scene, "the client's connection closes").view());
+  expectUInt(w.sv.closed, 1u64, lab(&scene, "...and the server's").view());
+  let home = Instant.now() + Duration.fromSeconds(5i64);
+  while lentNow() > 0u64 && Instant.now() < home {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(lentNow(), 0u64, lab(&scene, "...with nothing lent").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
 fn goAway(secure: bool) {
   let scene = sceneName(secure, "goAway");
   var scfg = h2Config();
@@ -1005,6 +1034,7 @@ fn main() i32 {
     slowReader(secure);
     resetMidBody(secure);
     cancelIdle(secure);
+    cancelClose(secure);
     goAway(secure);
     streamLimit(secure);
     upload3(secure);
