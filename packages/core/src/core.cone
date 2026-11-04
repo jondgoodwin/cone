@@ -3736,17 +3736,22 @@ pub struct TextOut {
   pub first: *TextChunk;
   pub last: *TextChunk;
   pub store: Array[u8, 128];
-  // How many generated 'toDebug' bodies are open in this writer (enter, leave):
-  // at 128 the next writes '...', so a value that reaches itself through an Rc or
-  // a Gc ends. This one word is what every writer pays for that.
+  // How many generated 'toDebug' bodies are open in this writer (debugEnter,
+  // debugLeave): at 128 the next writes '...', so a value that reaches itself
+  // through an Rc or a Gc ends. 'work' is how many bodies were entered since
+  // depth was last 0: past 65,536 the next writes '...' too, since depth bounds
+  // depth and not work (two edges round a cycle cost about 2^64 bodies). The two
+  // words share the 8 bytes the struct's alignment would pad out, so a writer
+  // pays nothing in size for them.
   pub depth: u32;
+  pub work: u32;
 
   // A record: starts in its store. 'done' is the address of the function that
   // takes the record away when the writer dies (a TextDone), 0 for none; 'tag'
   // and 'owner' are the maker's, read back by that function.
   pub fn record(done: usize, owner: *u8, tag: u32) TextOut inline {
     TextOut(null, 0usize, textInlineBytes, 0u32, tag, 0usize, done, owner, 0usize, null, null,
-      Array[u8, 128]() <- fill 0u8, 0u32)
+      Array[u8, 128]() <- fill 0u8, 0u32, 0u32)
   }
 
   // A window onto 'cap' bytes at 'base', the first 'len' of them written. A
@@ -3755,7 +3760,7 @@ pub struct TextOut {
   // writer dies.
   pub fn over(base: *u8, len: usize, cap: usize, owner: *u8, spill: usize, done: usize) TextOut inline {
     TextOut(base, len, cap, if spill == 0usize {2u32} else {1u32}, 0u32, spill, done, owner, 0usize, null, null,
-      Array[u8, 128]() <- fill 0u8, 0u32)
+      Array[u8, 128]() <- fill 0u8, 0u32, 0u32)
   }
 
   // The maker's: the tag, and the thing the record was made for
@@ -3880,18 +3885,21 @@ pub struct TextOut {
   }
 
   // The debug form's pieces. A generated 'toDebug' (the compiler's, for a struct or
-  // enum that wrote none) opens with 'enter' and closes with 'leave'; at 128 open
-  // levels 'enter' writes '...' and answers false, so a value that reaches itself ends.
-  pub fn enter(self: &uni) bool inline {
-    if depth >= 128u32 {
+  // enum that wrote none) opens with 'debugEnter' and closes with 'debugLeave'; at 128
+  // open levels, or after 65,536 bodies entered since depth was last 0, 'debugEnter'
+  // writes '...' and answers false, so a value that reaches itself ends.
+  pub fn debugEnter(self: &uni) bool inline {
+    if depth >= 128u32 || work >= 65536u32 {
       self.writeStr("...");
       return false;
     }
     depth = depth + 1u32;
+    work = work + 1u32;
     true
   }
-  pub fn leave(self: &uni) inline {
+  pub fn debugLeave(self: &uni) inline {
     depth = depth - 1u32;
+    if depth == 0u32 {work = 0u32;}
   }
 
   fn hexDigit(self: &, n: u8) u8 inline {
@@ -3947,22 +3955,6 @@ pub struct TextOut {
       self.putChar(c);
     }
     self.putByte('\'');
-  }
-
-  // An address: '0x' and its hex digits (a raw pointer's toDebug)
-  pub fn putHex(self: &uni, n: u64) inline {
-    self.writeStr("0x");
-    var shift = 60u64;
-    var started = false;
-    while shift > 0u64 {
-      let d = u8.from((n >> shift) & 15u64);
-      if started || d != 0u8 {
-        started = true;
-        self.putByte(self.hexDigit(d));
-      }
-      shift = shift - 4u64;
-    }
-    self.putByte(self.hexDigit(u8.from(n & 15u64)));
   }
 
   // The record is finished: its maker's function takes it away now, and the
