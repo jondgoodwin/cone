@@ -136,7 +136,7 @@ def dll_note(code: int | None, exe: Path | str) -> str:
 
 # TEMPORARY, a provisional mechanism whose final design is open: each '-D NAME'
 # or '-D NAME=123' given to build, run or test, passed to every conec compile of
-# the build, the packages it imports included (conec's isDefined, definedInt)
+# the build, the packages it imports included (conec's #defined, #define)
 DEFINES: list[str] = []
 
 # '--strip' given to build, run or test: conec is passed --strip for every compile
@@ -3203,7 +3203,7 @@ def add_define_argument(parser: argparse.ArgumentParser) -> None:
     """TEMPORARY, a provisional mechanism whose final design is open: '-D',
     handed to conec as it is given, which checks it."""
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME[=INT]",
-                        help="define NAME (1) or NAME=INT for isDefined and definedInt in every"
+                        help="define NAME (1) or NAME=INT for #defined and #define in every"
                              " compile of the build (provisional)")
 
 

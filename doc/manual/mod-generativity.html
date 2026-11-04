@@ -1065,8 +1065,8 @@ struct Cells {
 		right of a bool's operator.</p>
 
 	<h2 id="meta">Metaprogramming</h2>
-	<p style="margin-left: 40px;"><i>Only <span class="pre">#if</span> on the facts of the build is built. Meta
-		variables, <span class="pre">#each</span> and <span class="pre">#if</span> on facts about a type are not: the
+	<p style="margin-left: 40px;"><i>Only <span class="pre">#if</span> is built: on the facts of the build, and, inside
+		a generic, on what a type parameter is. Meta variables and <span class="pre">#each</span> are not: the
 		compiler reports any other word beginning with <span class="pre">#</span> and ignores the rest of its
 		line.</i></p>
 	<p>Metaprogramming gives fine-grained control over what program logic gets compiled: including or leaving
@@ -1144,6 +1144,43 @@ fn level() i32 {
 		<span class="pre">#if</span> around it, so a program
 		that imports the package agrees with the package's object whatever its own <span class="pre">-D</span>
 		options and kind of build are. A <span class="pre">return</span> in a branch must be the last statement of the block it joins: write <span class="pre">#if c { x } #else { the rest }</span> in place of a guard that returns.</p>
+	<p id="metatypeif"><b><span class="pre">#if</span> on a type.</b> Inside a generic function, or a method or the braces of a
+		generic struct, the condition may instead ask what a type parameter is, as a <span class="pre">where</span>
+		clause does: <span class="pre">T is Float</span> (any trait or marker, <span class="pre">Move</span>,
+		<span class="pre">Integer</span> and the rest), <span class="pre">T == i32</span> for a type, and
+		<span class="pre">T != i32</span>, joined with <span class="pre">!</span>, <span class="pre">&amp;&amp;</span> and
+		<span class="pre">||</span> and with the facts of the build above. The question is decided when the generic is made
+		for its arguments, and the instance holds the branch taken alone. Every branch is name resolved where the generic
+		is written, so each name in it must exist, but only the branch taken is type checked, so one that would not
+		compile for the instance's type does no harm:</p>
+<pre>
+fn order[T](a: T, b: T) i32 {
+	#if T is Float {
+		a.totalCompare(b)     // not read for an integer
+	} #else {
+		a &lt;=&gt; b
+	}
+}
+
+struct Tagged[T] {
+	v: T;
+	#if T is Float {          // fields and methods only
+		scale: f64;
+	} #else {
+		bits: u32;
+	}
+}
+</pre>
+	<p>The branches of a question about a type are blocks: the locals one declares belong to that block and are gone
+		after it, and a name declared in two branches is two names. This is unlike a <span class="pre">#if</span> on the
+		facts of the build, whose braces open no scope and whose taken branch declares into the block, type or module
+		around it. (In a struct's braces the branches declare members of the struct, which must differ from one another.)
+		Outside a generic there is no type to ask about, and a question about a type at a module's level, in an
+		<span class="pre">extern</span> block, or in an enum's or trait's braces is refused. A package's include file keeps
+		such a chain whole, so the program that makes the instance decides it, and reads any fact of the build in it for
+		its own build. Because that could give a package's object and its importer different fields, a chain, in a
+		generic struct's braces or a function body, may ask about the build or about a type but not both: put the
+		build's <span class="pre">#if</span> around the chain, or inside a branch of it, and the package decides it.</p>
 	<p id="metaeach"><b><span class="pre">#each</span></b> would generate the same logic once for each entry of a
 		collection:</p>
 <pre>

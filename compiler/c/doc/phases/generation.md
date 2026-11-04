@@ -1345,19 +1345,6 @@ last is a compiler defect, reported (`ErrorUnreachable`) with the block and its
 function, and the object is not made. LLVM's verifier says the same, but only
 under `--verify`; this check runs on every compile.
 
-**An arm whose condition is a constant of the build is decided at
-generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
-`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
-(TEMPORARY; its final design is open), or `!`, `&&`, `||` of them. A false
-arm generates nothing, not even its test; a true one generates its body as the
-`else` would and ends the chain, the arms after it generating nothing. A call
-on an untaken side therefore never reaches the object, in either build, and an
-`extern` only that side names is declared and never referenced, and a function
-only that side calls is not emitted (section 2, "Only what live code reaches
-is emitted"). Everything
-before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
-"Constants of the build drop the untaken side at generation").
-
 Short-circuit `&&`/`||` are two blocks and a 2-way `i1` phi. `!` is
 `xor i1 %x, true`.
 

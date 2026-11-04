@@ -176,6 +176,17 @@ to cover the match; any other value alone is an `==` call that counts for nothin
 `elseCond` is a no-op arm. Nothing is bound or retagged at this level —
 retagging happens inside the arms.
 
+**A `FlagIfHash` `if` is a `#if` on what a type parameter is** (`parsemeta.c`), and is a template's
+node alone. Its conditions are `where`-clause nodes (`IsTag` joined by `!`, `&&`, `||`), resolved by
+`genericHashCondNameRes` (a subject that is no type parameter is `ErrorMetaTypeFact`), and every arm
+is resolved, so a name in any branch must exist. It is never type checked: cloning it for an
+instance (`ifHashClone`, from `cloneIfNode`) clones each condition in turn with the arguments in the
+parameters' place, asks `genericHashCondHolds`, and returns a copy of the first arm that holds (an
+empty block when none does; the arm's one expression when the `if` is `FlagIfHashExpr`), so the
+instance has only that arm. A condition that still names a parameter bound elsewhere (a copy of the
+template made inside another generic) leaves the `if` copied whole. See
+[generic](generic.md), "A `#if` on a type parameter".
+
 ## Type check
 
 **Pass 1**, per pair: check the condition; if it is an `is`, run

@@ -111,7 +111,7 @@ python3 test/run.py --conec build/x64-release/conec
   run there; a package's README says what it needs.
 - A test whose output differs by system has `name.linux.out` beside `name.out` (Congo reads
   `name.<host>.out` first). Write tests to print the same everywhere where possible, asking
-  `isWindows()` for the values that differ.
+  `#if #os == .windows` for the values that differ.
 
 ## Validating a change
 

@@ -154,20 +154,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
             continue;
         }
 
-        // A condition that is a constant of the build (intrinsicBuildConst):
-        // a false one's block is not generated at all, and a true one's is
-        // generated as the 'else' it is, the branches after it not at all.
-        // So nothing only the untaken side names -- an extern only another
-        // platform defines -- reaches the object, in a debug build too.
-        // TEMPORARY for the OS and '-D' constants: a provisional mechanism
-        // whose final design is open
-        int64_t buildconst;
-        int isconst = *nodesp != elseCond && intrinsicBuildConst(*nodesp, &buildconst);
-        if (isconst && !buildconst) {
-            cnt--; nodesp++; i++;
-            continue;
-        }
-        int lastgen = (isconst && buildconst) || i + 1 >= count;
+        int lastgen = i + 1 >= count;
 
         // Set up block for next condition (or endif if this is last condition)
         if (!lastgen)
@@ -177,7 +164,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
         // Set up this condition's statement block and then conditionally jump to it or next condition
         LLVMBasicBlockRef ablk;
-        if (*nodesp != elseCond && !isconst) {
+        if (*nodesp != elseCond) {
             ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
             // A temporary the condition made dies once it is decided
             uint32_t tempmark = gen->tempcnt;
@@ -195,8 +182,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         if (lastgen)
             break;
     }
-    // Every condition was a false constant of the build, the last of them too,
-    // so what generated last falls through to the end
+    // When the switch took every arm, what generated last falls through to the end
     if (LLVMGetInsertBlock(gen->builder) != endif) {
         LLVMBuildBr(gen->builder, endif);
         LLVMPositionBuilderAtEnd(gen->builder, endif);
@@ -482,8 +468,6 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
-    // A constant of the build (isDebugBuild and the TEMPORARY rest) is answered
-    // before its arguments are generated, by genlFnCall
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
@@ -1611,13 +1595,6 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     default:
         break;
     }
-
-    // A constant of the build: isDebugBuild, and the TEMPORARY OS and '-D'
-    // ones (a provisional mechanism; its final design is open). A '-D' name,
-    // a string literal, is never generated
-    int64_t buildconst;
-    if (intrinsicBuildConst((INode*)fncall, &buildconst))
-        return LLVMConstInt(genlType(gen, fncall->vtype), (uint64_t)buildconst, 1);
 
     // 'mem.writeRaw[T](p, T(...))' by a declared init fills p in place: the
     // init runs with p as its self, as an allocation's value is filled

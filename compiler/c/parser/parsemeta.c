@@ -51,6 +51,8 @@ typedef enum {
     MetaOs,         // a member of '#os'
     MetaArch,       // a member of '#arch'
     MetaMember,     // '.name' not yet known to belong to either: the other side of '==' says
+    MetaType,       // A bool not known yet: what a type parameter is ('T is Float'), decided
+                    // when a generic is cloned for its arguments. 'tree' is the condition
     MetaBad         // reported already
 } MetaKind;
 
@@ -58,7 +60,11 @@ typedef struct MetaVal {
     MetaKind kind;
     int64_t val;        // The bool, the number or the member's index
     Name *member;       // MetaMember: the name written after the '.'
+    INode *tree;        // MetaType: the clauses, as a 'where' condition holds them
 } MetaVal;
+
+// The parse in progress, for the type names a condition holds
+static ParseState *metaParse = NULL;
 
 static const char *metaOsNames[] = {"windows", "linux", "macos", "wasm", "gpu", NULL};
 static const char *metaArchNames[] = {"x64", "arm64", "wasm32", "spirv", NULL};
@@ -130,6 +136,7 @@ static const char *metaKindName(MetaKind kind) {
     case MetaInt: return "a number";
     case MetaOs: return "an '#os' member";
     case MetaArch: return "an '#arch' member";
+    case MetaType: return "a question of what a type is";
     default: return "a member";
     }
 }
@@ -156,7 +163,61 @@ static MetaVal metaVal(MetaKind kind, int64_t val) {
     v.kind = kind;
     v.val = val;
     v.member = NULL;
+    v.tree = NULL;
     return v;
+}
+
+static void metaSkipCond();
+
+static const char *metaCondForms =
+    "A '#if' condition is built from the build's facts -- #os, #arch, #debug, #defined(\"NAME\") and #define(\"NAME\") -- compared with '==' or '!=' and joined with '!', '&&' and '||'. Nothing else is known while the program is being read. (In a generic, it may also ask what a type parameter is: 'T is Float', 'T == i32'.)";
+
+// A condition about what a type is, 'tree', which a generic's clone decides
+static MetaVal metaTypeVal(INode *tree) {
+    MetaVal v = metaVal(MetaType, 0);
+    v.tree = tree;
+    return v;
+}
+
+// 'T is Name' or 'T == Name' (or '!=') with the lexer on the type parameter's
+// name: a clause as a 'where' clause writes one, 'T == Name' being 'T is Name'
+// where Name is a type, which a type is met by alone. Whether it holds is
+// known only when a generic is cloned for its arguments (ifHashClone)
+static INode *metaTypeAt = NULL;   // The first question about a type the condition being read has asked
+
+static MetaVal metaTypeFact() {
+    INode *subject = (INode*)newNameUseNode(lex->val.ident);
+    if (metaTypeAt == NULL)
+        metaTypeAt = subject;
+    lexNextToken();
+    int negate = 0;
+    if (lexIsToken(NeToken)) {
+        negate = 1;
+        lexNextToken();
+    }
+    else if (lexIsToken(EqToken) || lexIsToken(IsToken))
+        lexNextToken();
+    else {
+        errorMsgNode(subject, ErrorMetaFact, "%s", metaCondForms);
+        metaSkipCond();
+        return metaVal(MetaBad, 0);
+    }
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorMetaFact, "What a type parameter is, in a '#if' condition, is a trait or a type, named: 'T is Float', 'T == i32'.");
+        metaSkipCond();
+        return metaVal(MetaBad, 0);
+    }
+    INode *rhs = parseTypeName(metaParse);
+    CastNode *clause = newIsNode(subject, rhs);
+    inodeLexCopy((INode*)clause, subject);
+    INode *tree = (INode*)clause;
+    if (negate) {
+        LogicNode *not = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)not, subject);
+        not->lexp = tree;
+        tree = (INode*)not;
+    }
+    return metaTypeVal(tree);
 }
 
 // Skip the rest of a condition that could not be read, to its block, so that
@@ -214,6 +275,8 @@ static MetaVal metaDefine(int isdefined) {
 // An operand: a fact, a literal, a member '.name' or a parenthesised condition.
 // 'hint' is the kind of the left side of a comparison, which a member written on
 // the right is checked against where it stands
+static uint32_t metaBuildReads = 0;   // Facts of the build read so far; parseHashIf compares it before and after a condition
+
 static MetaVal metaPrimary(MetaKind hint) {
     switch (lex->toktype) {
     case LParenToken: {
@@ -229,17 +292,22 @@ static MetaVal metaPrimary(MetaKind hint) {
         return inner;
     }
     case HashDebugToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaBool, !(metaOpt && metaOpt->release));
     case HashOsToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaOs, metaOsIndex());
     case HashArchToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaArch, metaArchIndex());
     case HashDefinedToken:
+        ++metaBuildReads;
         return metaDefine(1);
     case HashDefineToken:
+        ++metaBuildReads;
         return metaDefine(0);
     case trueToken:
         lexNextToken();
@@ -278,14 +346,16 @@ static MetaVal metaPrimary(MetaKind hint) {
         lexNextToken();
         return member;
     }
+    // A type parameter and what it is, in a generic: decided when the generic is cloned
+    case IdentToken:
+        return metaTypeFact();
     default:
         // A '#' word the lexer refused took its place: that was reported
         if (lexHashDropped != metaDropMark) {
             metaSkipCond();
             return metaVal(MetaBad, 0);
         }
-        errorMsgLex(ErrorMetaFact,
-            "A '#if' condition is built from the build's facts -- #os, #arch, #debug, #defined(\"NAME\") and #define(\"NAME\") -- compared with '==' or '!=' and joined with '!', '&&' and '||'. Nothing else is known while the program is being read.");
+        errorMsgLex(ErrorMetaFact, "%s", metaCondForms);
         metaSkipCond();
         return metaVal(MetaBad, 0);
     }
@@ -297,6 +367,12 @@ static MetaVal metaUnary(MetaKind hint) {
         MetaVal v = metaUnary(MetaBad);
         if (v.kind == MetaBad)
             return v;
+        if (v.kind == MetaType) {
+            LogicNode *not = newLogicNode(NotLogicTag);
+            inodeLexCopy((INode*)not, v.tree);
+            not->lexp = v.tree;
+            return metaTypeVal((INode*)not);
+        }
         if (v.kind != MetaBool) {
             errorMsgLex(ErrorMetaFact, "'!' takes a bool, and this is %s. A comparison is negated in parentheses, '!(#os == .linux)', or written with '!='.", metaKindName(v.kind));
             return metaVal(MetaBad, 0);
@@ -338,22 +414,38 @@ static MetaVal metaCompare() {
     return metaVal(MetaBool, (lhs.val == rhs.val) != negate);
 }
 
+// '&&' or '||' of two operands, each a bool of the build or a question about a
+// type. A build fact is known now, so it folds: it decides the join (false for
+// '&&', true for '||') or it drops out and the question is what is left; two
+// questions are joined as a 'where' condition joins its clauses
+static MetaVal metaJoin(int isand, MetaVal lhs, MetaVal rhs) {
+    if (lhs.kind == MetaBad || rhs.kind == MetaBad)
+        return metaVal(MetaBad, 0);
+    if ((lhs.kind != MetaBool && lhs.kind != MetaType) || (rhs.kind != MetaBool && rhs.kind != MetaType)) {
+        errorMsgLex(ErrorMetaFact, "'%s' joins two bools, and this joins %s and %s.", isand ? "&&" : "||",
+            metaKindName(lhs.kind), metaKindName(rhs.kind));
+        return metaVal(MetaBad, 0);
+    }
+    if (lhs.kind == MetaBool && rhs.kind == MetaBool)
+        return metaVal(MetaBool, isand ? lhs.val && rhs.val : lhs.val || rhs.val);
+    if (lhs.kind == MetaBool)
+        return (lhs.val != 0) == !isand ? metaVal(MetaBool, lhs.val) : rhs;
+    if (rhs.kind == MetaBool)
+        return (rhs.val != 0) == !isand ? metaVal(MetaBool, rhs.val) : lhs;
+    LogicNode *join = newLogicNode(isand ? AndLogicTag : OrLogicTag);
+    inodeLexCopy((INode*)join, lhs.tree);
+    join->lexp = lhs.tree;
+    join->rexp = rhs.tree;
+    return metaTypeVal((INode*)join);
+}
+
 static MetaVal metaAnd() {
     MetaVal lhs = metaCompare();
     while (lexIsAmpAmp()) {
         lexNextToken();
         lexNextToken();
         MetaVal rhs = metaCompare();
-        if (lhs.kind == MetaBad || rhs.kind == MetaBad) {
-            lhs = metaVal(MetaBad, 0);
-            continue;
-        }
-        if (lhs.kind != MetaBool || rhs.kind != MetaBool) {
-            errorMsgLex(ErrorMetaFact, "'&&' joins two bools, and this joins %s and %s.", metaKindName(lhs.kind), metaKindName(rhs.kind));
-            lhs = metaVal(MetaBad, 0);
-            continue;
-        }
-        lhs = metaVal(MetaBool, lhs.val && rhs.val);
+        lhs = metaJoin(1, lhs, rhs);
     }
     return lhs;
 }
@@ -363,16 +455,7 @@ static MetaVal metaOr() {
     while (lexIsToken(OrOrToken)) {
         lexNextToken();
         MetaVal rhs = metaAnd();
-        if (lhs.kind == MetaBad || rhs.kind == MetaBad) {
-            lhs = metaVal(MetaBad, 0);
-            continue;
-        }
-        if (lhs.kind != MetaBool || rhs.kind != MetaBool) {
-            errorMsgLex(ErrorMetaFact, "'||' joins two bools, and this joins %s and %s.", metaKindName(lhs.kind), metaKindName(rhs.kind));
-            lhs = metaVal(MetaBad, 0);
-            continue;
-        }
-        lhs = metaVal(MetaBool, lhs.val || rhs.val);
+        lhs = metaJoin(0, lhs, rhs);
     }
     return lhs;
 }
@@ -380,10 +463,20 @@ static MetaVal metaOr() {
 // Read a condition, with the lexer on its first token: whether it holds. A
 // condition that is not a bool, or could not be read, is reported and does not
 // hold
+//
+// A condition that asks what a type parameter is holds for a build or does not
+// only once a generic is cloned: it answers MetaDeferred, and the clauses are in
+// 'metaCondTree'
+static INode *metaCondTree = NULL;
+
 static int metaCond() {
     MetaVal v = metaOr();
     if (v.kind == MetaBad)
         return 0;
+    if (v.kind == MetaType) {
+        metaCondTree = v.tree;
+        return MetaDeferred;
+    }
     if (v.kind != MetaBool) {
         errorMsgLex(ErrorMetaFact, "A '#if' condition is a bool, and this is %s. Compare it: '#os == .linux'.", metaKindName(v.kind));
         return 0;
@@ -392,8 +485,10 @@ static int metaCond() {
 }
 
 // Pass the '#if' or '#elif' the lexer is on and read its condition: whether it
-// holds. An unknown '#' word in it is dropped alone (lexInHashCond), and that
-// is already reported, so the rest of the condition is read past quietly
+// holds, or MetaDeferred, a question about a type parameter whose clauses are
+// then in metaCondTree. An unknown '#' word in it is dropped alone
+// (lexInHashCond), and that is already reported, so the rest of the condition is
+// read past quietly
 static int metaReadCond() {
     metaDropMark = lexHashDropped;
     lexInHashCond = 1;
@@ -480,6 +575,57 @@ static void metaScratchEnd(ParseState *parse, MetaScratch *s) {
 // ----------------------------------------------------------------------------
 // The chain
 
+// The conditions of the chain being read that ask what a type is, in the order
+// written, up to the branch being read; a NULL entry is its '#else'
+typedef struct MetaChain {
+    Nodes *conds;
+} MetaChain;
+
+static MetaChain *metaCurChain = NULL;
+
+// A copy of an unresolved condition, so that two members may each hold their own
+static INode *metaCopy(INode *node) {
+    CloneState cstate;
+    uint32_t dclpos = cloneDclPush();
+    clonePushState(&cstate, NULL, NULL, 0, NULL, NULL);
+    INode *copy = cloneNode(&cstate, node);
+    clonePopState();
+    cloneDclPop(dclpos);
+    return copy;
+}
+
+// The condition a member of a deferred branch exists under, a copy of its own: the
+// branch's condition, with each condition before it in the chain negated. A branch
+// is called with the chain being read, and asks this once its members are read
+INode *parseMetaMemberCond(void) {
+    Nodes *conds = metaCurChain->conds;
+    INode *result = NULL;
+    for (uint32_t j = 0; j < conds->used; ++j) {
+        INode *cond = nodesGet(conds, j);
+        INode *term = NULL;
+        if (j + 1 == conds->used)
+            term = cond ? metaCopy(cond) : NULL;
+        else {
+            LogicNode *not = newLogicNode(NotLogicTag);
+            inodeLexCopy((INode*)not, cond);
+            not->lexp = metaCopy(cond);
+            term = (INode*)not;
+        }
+        if (term == NULL)
+            continue;
+        if (result == NULL)
+            result = term;
+        else {
+            LogicNode *both = newLogicNode(AndLogicTag);
+            inodeLexCopy((INode*)both, result);
+            both->lexp = result;
+            both->rexp = term;
+            result = (INode*)both;
+        }
+    }
+    return result;
+}
+
 // A '#elif' or '#else' that no '#if' chain is waiting for: reported, and its
 // condition and block read past so that what is inside is not reported as well
 void parseMetaStray(ParseState *parse) {
@@ -487,6 +633,7 @@ void parseMetaStray(ParseState *parse) {
     errorMsgLex(ErrorMetaIf, iselif
         ? "'#elif' continues a '#if' or another '#elif' and has nothing to continue here. After an '#else' the chain is over."
         : "'#else' ends a '#if' chain and has nothing to end here. After an '#else' the chain is over.");
+    metaParse = parse;
     if (iselif)
         metaReadCond();
     else
@@ -513,42 +660,112 @@ void parseMetaStray(ParseState *parse) {
 // reads into scratch of its own for everything else it would add to. A condition
 // is read in every branch, so that a fact misspelled in one the build does not
 // take is still refused
-void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx) {
-    int done = 0;       // A branch has been taken
+//
+// A condition that asks what a type parameter is cannot be decided here: it is
+// decided when a generic is cloned for its arguments (ifHashClone). Where the
+// list can hold such a chain ('nodefer' is NULL), the branches it leads to are
+// read as real code (mode MetaDeferred), and the chain is given back as a '#if'
+// node of the 'if' kind whose blocks the branch function returned; a place that
+// keeps its branches in the enclosing list itself (a type's braces) returns NULL
+// and has the branch's own condition from parseMetaMemberCond. Where it cannot
+// ('nodefer' is why), the condition is refused and its branch read as one not
+// taken. A branch of the same chain that follows a deferred one and holds
+// whatever the type is (an '#else', or a condition of the build that holds) ends
+// that chain as its 'else'; the build's facts before it are folded in already.
+INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix) {
+    metaParse = parse;
+    int done = 0;       // A branch has been taken, or the deferred chain has its 'else'
     Lexer *lexer = lex;
     char *chainat = lex->tokp;
     char *openend = NULL;       // Just past the taken branch's '{'
     char *closeat = NULL;       // The taken branch's '}'
+    IfNode *ifnode = NULL;      // The deferred chain, once a branch is
+    int deferredany = 0;
+    int buildany = 0;           // A condition of the chain rests on a fact of the build
+    INode *firsttype = NULL;    // The first condition that asks about a type
+    MetaChain chain;
+    chain.conds = newNodes(4);
+    MetaChain *svchain = metaCurChain;
+    metaCurChain = &chain;
     while (1) {
         int iselse = lexIsToken(HashElseToken);
         int holds = 1;
+        INode *tree = NULL;
         if (iselse)
             lexNextToken();
-        else
+        else {
+            uint32_t reads = metaBuildReads;
+            metaTypeAt = NULL;
             holds = metaReadCond();
-        int taken = !done && holds;
-        done |= taken;
-        if (taken)
+            if (metaBuildReads != reads)
+                buildany = 1;
+            // Folded away or not, the condition asked about a type
+            if (metaTypeAt && firsttype == NULL)
+                firsttype = metaTypeAt;
+            tree = metaCondTree;
+            metaCondTree = NULL;
+        }
+        int mode = MetaUntaken;
+        if (done)
+            ;
+        else if (holds == MetaDeferred) {
+            if (nodefer) {
+                errorMsgNode(tree, ErrorMetaTypeFact, "%s", nodefer);
+                nodefer = NULL;
+            }
+            else {
+                mode = MetaDeferred;
+                deferredany = 1;
+            }
+        }
+        else if (holds) {
+            // Holds whatever the type is: the chain's 'else' if a branch asked about a type
+            mode = ifnode || deferredany ? MetaDeferred : MetaTaken;
+            done = 1;
+            tree = NULL;
+        }
+        if (mode == MetaTaken)
             openend = lex->tokp + 1;
+        if (mode == MetaDeferred)
+            nodesAdd(&chain.conds, tree);
         parseBlockStart();
         MetaScratch scratch;
-        if (!taken)
+        if (mode == MetaUntaken)
             metaScratchBegin(parse, &scratch);
-        branch(parse, ctx, taken);
-        if (!taken)
+        INode *made = branch(parse, ctx, mode);
+        if (mode == MetaUntaken)
             metaScratchEnd(parse, &scratch);
-        else
+        else if (mode == MetaTaken)
             closeat = lex->prevend - 1;
+        else if (made) {
+            if (ifnode == NULL) {
+                ifnode = newIfNode();
+                ifnode->flags |= FlagIfHash;
+                inodeLexCopy((INode*)ifnode, made);
+            }
+            nodesAdd(&ifnode->condblk, tree ? tree : elseCond);
+            nodesAdd(&ifnode->condblk, made);
+        }
         if (iselse || (!lexIsToken(HashElifToken) && !lexIsToken(HashElseToken)))
             break;
     }
-    // The include file keeps the branch taken and nothing of the chain around it
-    if (openend && closeat > openend - 1) {
+    metaCurChain = svchain;
+    // A chain the include file keeps whole is read again by each importer, with the facts of
+    // the importer's build; where that decides what a type is made of, a package's object and
+    // its importer could disagree about it
+    if (nomix && firsttype && buildany)
+        errorMsgNode(firsttype, ErrorMetaMixFact, "%s", nomix);
+    // The include file keeps the branch taken and nothing of the chain around it;
+    // a chain with a deferred branch stays whole, for an importer to clone
+    if (deferredany)
+        ;
+    else if (openend && closeat > openend - 1) {
         dclCutAdd(lexer, chainat, openend, NULL);
         dclCutAdd(lexer, closeat, lex->prevend, NULL);
     }
     else if (!done)
         dclCutAdd(lexer, chainat, lex->prevend, NULL);
+    return (INode*)ifnode;
 }
 
 // A '#if' that gives a value, where an expression is read, with the lexer on the
@@ -557,7 +774,13 @@ void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx) {
 // block's: a block of one expression is that expression, so a constant can be
 // made from one ('const sep = #if #os == .windows {'\\'} #else {'/'}'); a longer
 // block stays a block, and opens a scope of its own, as a block does
+const char parseMixBodyMsg[] =
+    "A '#if' chain in a function body asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so the two could choose different branches (and share one static between them). Put the build's '#if' around the chain, or inside a branch of it: the package decides it.";
+
 INode *parseHashIfExpr(ParseState *parse) {
+    metaParse = parse;
+    int buildany = 0;
+    INode *firsttype = NULL;
     INode *value = NULL;
     int done = 0;
     int sawelse = 0;
@@ -565,26 +788,54 @@ INode *parseHashIfExpr(ParseState *parse) {
     char *chainat = lex->tokp;
     char *openat = NULL;        // The taken branch's '{'
     char *closeat = NULL;       // Its '}'
+    IfNode *ifnode = NULL;      // The chain, if a branch asks what a type parameter is (see parseHashIf)
     while (1) {
         int iselse = lexIsToken(HashElseToken);
         int holds = 1;
+        INode *tree = NULL;
         if (iselse)
             lexNextToken();
-        else
+        else {
+            uint32_t reads = metaBuildReads;
+            metaTypeAt = NULL;
             holds = metaReadCond();
-        int taken = !done && holds;
-        done |= taken;
-        if (taken)
+            if (metaBuildReads != reads)
+                buildany = 1;
+            if (metaTypeAt && firsttype == NULL)
+                firsttype = metaTypeAt;
+            tree = metaCondTree;
+            metaCondTree = NULL;
+        }
+        int mode = MetaUntaken;
+        if (done)
+            ;
+        else if (holds == MetaDeferred)
+            mode = MetaDeferred;
+        else if (holds) {
+            mode = ifnode ? MetaDeferred : MetaTaken;
+            done = 1;
+            tree = NULL;
+        }
+        if (mode == MetaTaken)
             openat = lex->tokp;
         MetaScratch scratch;
-        if (!taken)
+        if (mode == MetaUntaken)
             metaScratchBegin(parse, &scratch);
         INode *block = parseExprBlock(parse, 0);
-        if (!taken)
+        if (mode == MetaUntaken)
             metaScratchEnd(parse, &scratch);
-        else {
+        else if (mode == MetaTaken) {
             value = block;
             closeat = lex->prevend - 1;
+        }
+        else {
+            if (ifnode == NULL) {
+                ifnode = newIfNode();
+                ifnode->flags |= FlagIfHash | FlagIfHashExpr;
+                inodeLexCopy((INode*)ifnode, block);
+            }
+            nodesAdd(&ifnode->condblk, tree ? tree : elseCond);
+            nodesAdd(&ifnode->condblk, block);
         }
         if (iselse) {
             sawelse = 1;
@@ -596,6 +847,12 @@ INode *parseHashIfExpr(ParseState *parse) {
     if (!sawelse)
         errorMsgLexAfter(ErrorMetaIf,
             "A '#if' that gives a value ends in an '#else': with no branch taken there would be no value.");
+    if (firsttype && buildany)
+        errorMsgNode(firsttype, ErrorMetaMixFact, "%s", parseMixBodyMsg);
+    // A chain with a branch that asks about a type is an 'if' for a generic's clone to decide,
+    // and stays whole in the include file
+    if (ifnode)
+        return (INode*)ifnode;
     if (value == NULL)
         return (INode*)newNilLitNode();
     BlockNode *blk = (BlockNode*)value;

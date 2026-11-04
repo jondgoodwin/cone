@@ -459,8 +459,7 @@ enum ErrorCode {
     ErrorBoolNotNbr = 1238,     // A bool where a number is wanted: a bool converts to a number only explicitly, 'T.from(b)'
     ErrorPtrSizedAs = 1257,     // 'as' between usize or isize and a fixed-width number: a pointer's width differs by target, so it converts, 'T.from(x)'
 
-    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
-    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+    // 1239 was ErrorDefineName (isDefined, definedInt), retired with them
 
     // Invariant lifetimes (ir/types/lifetime.h)
     ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained
@@ -784,6 +783,8 @@ enum ErrorCode {
     ErrorDefaultInit = 1578,    // A struct declaring Default and writing an 'init' has none that can be called with no arguments, so 'T()' is not a construction. Pointed at the struct
     ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
     ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
+    ErrorMetaMixFact = 1581,    // A '#if' chain in a generic type's braces or a generic function's body that asks about a fact of the build in one condition and about a type in another (or in the same): the include file keeps such a chain whole and each importer reads the build's facts again, so a field or method could exist in a package's object and not in its importer. Pointed at the first condition that asks about a type
+    ErrorMetaTypeFact = 1580,   // A '#if' that asks what a type is (T is Float, T == i32) where it cannot be decided: outside a generic function or type or about a name that is no type parameter, at a module's level or in an 'extern' block, or around anything in a generic type's body but fields and methods. Pointed at the condition or the member
 
     // Warnings
     WarnCode = 3000,

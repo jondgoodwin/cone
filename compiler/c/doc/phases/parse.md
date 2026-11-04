@@ -1244,6 +1244,33 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   holds whatever its own facts are. In expression position the taken value is kept in parentheses
   (a single expression) or as its block. Cuts are also made in bodies the file keeps (a generic
   function's). A cut with its lines to itself takes them.
+- **A condition that asks what a type parameter is** (`T is Float`, `T == i32`, `T != i32`, which
+  `metaTypeFact` reads as the `where` clause's `IsTag` node, `!=` and `!` as a `NotLogicTag` over it)
+  cannot be decided here; it is the second kind of `MetaVal` (`MetaType`) and carries its clauses. The
+  build's facts in the same condition fold (`metaJoin`: a fact decides a `&&` false or a `||` true, or
+  drops out), and what is left is the clauses, as a `where` condition holds them. `metaCond` answers
+  `MetaDeferred`, and `parseHashIf` reads that chain's branches as real code (`MetaDeferred` mode of the
+  branch function) rather than scratch, in the places that can hold one. A block's branches come back
+  as blocks, and `parseHashIf` returns the chain as an `IfNode` with `FlagIfHash` (and `FlagIfHashExpr`
+  for `parseHashIfExpr`), conditions and blocks alternating as in any `if`, that the block adds as one
+  statement. A generic struct's branches are read into the struct itself and each member added takes
+  the condition (`parseMetaMemberCond`: its branch's clauses and the negation of the chain's earlier
+  ones, a fresh copy for each member): a field in `FieldDclNode.hashcond`, a method in its `where`. The
+  deferral is refused (`ErrorMetaTypeFact`) at a module's level, in an `extern` block and in a struct with
+  no type parameters, an enum or a trait, whose branches are then read as ones not taken; a static,
+  macro or alias in a deferred branch of a struct is refused too. Name resolution and the clone are
+  `ifNameRes`/`ifHashClone` ([if](../nodes/if.md), [generic](../nodes/generic.md), "A `#if` on a type
+  parameter"). The include file keeps such a chain whole (no cuts), so an importer decides it, and reads
+  the build's facts in it for its own build. Because of that, a chain in a generic struct's braces that
+  reads a fact of the build and asks about a type (in one condition or across `#elif`/`#else`, folded
+  away or not) is refused (`ErrorMetaMixFact`): `parseHashIf` counts the build facts and notes the first
+  type question per condition (`metaBuildReads`, `metaTypeAt`) and the struct's caller passes the message
+  (`nomix`). A function body's chain is refused the same way, statement or value (`parseMixBodyMsg`):
+  the importer could choose a different branch from the package's, and a per-instance `static` that
+  differs between branches is one symbol (`linkonce_odr`) shared by both objects, so one side would
+  write through the other's smaller one. A build `#if` nested in a type question's branch, or around
+  the chain, is a chain of its own: the package decides it and the include file is cut to the branch
+  taken (test `meta_typefact_include_nested`).
 
 ## 7. Contract
 
