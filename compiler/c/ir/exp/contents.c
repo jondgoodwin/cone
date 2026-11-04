@@ -23,6 +23,8 @@
 #include "../ir.h"
 
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Create an entry node: 'n of x', 'fill x', 'k: v', an each or a yield, its value filled in after
@@ -958,7 +960,11 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
 // checked as a trial, so that what is not text's is checked once, as written.
 // ---------------------------------------------------------------------------
 
-enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink };
+enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink, TextSite };
+
+static int textOpensSite(INode *base);
+static Name *textSiteWriterName();
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base);
 
 static Name *textName(const char *name) {
     return nametblFind((char*)name, strlen(name));
@@ -996,6 +1002,8 @@ static enum TextKind textKindOf(INode *base) {
         return TextRecord;
     if (textAnswersWriter(base, "textOut"))
         return TextSink;
+    if (textOpensSite(base))
+        return TextSite;
     return TextNone;
 }
 
@@ -1326,6 +1334,180 @@ static int textGuardLower(TypeCheckState *pstate, FnCallNode **nodep, INode *rec
     return 1;
 }
 
+// A log receiver (a type whose 'open(self: &, site: &mut S, spec: &str, file: &str,
+// line: u32)' answers a record): one call site of a '<-' to it is one kind of event.
+//   { static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
+//     -lw.text("fixed"); -lw.v_i32(n); -lw <- other; ...; -lw.finish() }
+// The compiler makes the site's storage (zeroed, one per call site, filled on the
+// first event) and the 'spec' text: the fixed text with each value as '{name}', then
+// each name after a \x01. A name is the brace's own source text (the lexer of an
+// interpolated string's brace remembers it), or the value's number in a plain send
+// list. A value whose type is a number, bool, '&str', Nanos or Ticks goes to the
+// record's method 'v_<type>' and stays typed; any other goes by '<-', which a record
+// declaring DebugText takes as the value's debug text. Answers 1 when it replaced the send.
+static Name *textSiteWriterName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-lw", 3);
+    return name;
+}
+
+static int textOpensSite(INode *base) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("open"));
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)found)->vtype;
+    return sig != NULL && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used == 5;
+}
+
+// The record method that keeps a piece typed, or NULL when it is kept as debug text
+static const char *textFieldMethod(TypeCheckState *pstate, INode *piece, char *buf, size_t size) {
+    INode *probe = textTrial(pstate, piece);
+    if (probe == NULL)
+        return NULL;
+    INode *type = iexpGetTypeDcl(probe);
+    if (type == NULL)
+        return NULL;
+    if (type == (INode*)boolType)
+        return "v_bool";
+    if (isNbr(type)) {
+        const char *nm = &((NbrNode*)type)->namesym->namestr;
+        if (nm[0] != 'i' && nm[0] != 'u' && nm[0] != 'f')
+            return NULL;
+        snprintf(buf, size, "v_%s", nm);
+        return buf;
+    }
+    if (type->tag == RefTag) {
+        INode *target = itypeGetTypeDcl(((RefNode*)type)->vtexp);
+        return target && target->tag == StructTag && ((StructNode*)target)->namesym == strTypeName ? "v_str" : NULL;
+    }
+    if (type->tag == StructTag) {
+        if (((StructNode*)type)->namesym == textName("Nanos"))
+            return "v_Nanos";
+        if (((StructNode*)type)->namesym == textName("Ticks"))
+            return "v_Ticks";
+    }
+    return NULL;
+}
+
+// A brace's source text, trimmed, as a field name; NULL when the piece is not from a brace
+static int textBraceName(INode *piece, char *out, size_t size) {
+    if (piece->lexer == NULL || piece->lexer->interpend == NULL)
+        return 0;
+    char *from = piece->lexer->interpstart;
+    char *to = piece->lexer->interpend;
+    while (from < to && (*from == ' ' || *from == '\t' || *from == '\r' || *from == '\n'))
+        ++from;
+    while (to > from && (to[-1] == ' ' || to[-1] == '\t' || to[-1] == '\r' || to[-1] == '\n'))
+        --to;
+    size_t n = 0;
+    for (; from < to && n + 1 < size; ++from)
+        out[n++] = (unsigned char)*from < 0x20 ? ' ' : *from;
+    out[n] = '\0';
+    return n > 0;
+}
+
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base) {
+    static unsigned serial = 0;
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (isEntryNode(piecep[i]))
+            return 0;
+    FnSigNode *sig = (FnSigNode*)((FnDclNode*)iNsTypeFindFnField((INsTypeNode*)base, textName("open")))->vtype;
+    INode *sref = itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, 1))->vtype);
+    if (sref == NULL || sref->tag != RefTag)
+        return 0;
+    INode *sitetype = itypeGetTypeDcl(((RefNode*)sref)->vtexp);
+
+    // What each piece is: fixed text, a typed value, or a value kept as debug text
+    size_t cap = 64;
+    for (uint32_t i = 0; i < npieces; ++i)
+        cap += (piecep[i]->tag == StringLitTag ? ((SLitNode*)piecep[i])->strlen : 0) + 200;
+    char *spec = (char*)malloc(cap);
+    char *names = (char*)malloc(cap);
+    char (*meth)[24] = (char(*)[24])malloc(npieces * 24 + 1);
+    const char **method = (const char**)malloc(npieces * sizeof(char*) + 1);
+    size_t slen = 0, nlen = 0;
+    uint32_t fields = 0;
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        method[i] = NULL;
+        if (piece->tag == StringLitTag) {
+            memcpy(spec + slen, ((SLitNode*)piece)->strlit, ((SLitNode*)piece)->strlen);
+            slen += ((SLitNode*)piece)->strlen;
+            continue;
+        }
+        char name[80];
+        if (!textBraceName(piece, name, sizeof(name)))
+            snprintf(name, sizeof(name), "%u", fields);
+        method[i] = textFieldMethod(pstate, piece, meth[i], 24);
+        ++fields;
+        slen += (size_t)snprintf(spec + slen, 100, "{%s}", name);
+        nlen += (size_t)snprintf(names + nlen, 100, "\x01%s", name);
+    }
+    memcpy(spec + slen, names, nlen);
+    slen += nlen;
+
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+    uint32_t lastawait = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (awaitWithin(piecep[i]))
+            lastawait = i + 1;
+    for (uint32_t i = 0; i < lastawait; ++i) {
+        if (litIsLiteral(piecep[i]))
+            continue;
+        VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, piecep[i], scope, piecep[i]);
+        nodesAdd(&blk->stmts, (INode*)part);
+        piecep[i] = contentsVarUse(part, (INode*)part);
+    }
+
+    char sname[32];
+    snprintf(sname, sizeof(sname), "-site%u", ++serial);
+    VarDclNode *site = contentsVar(nametblFind(sname, strlen(sname)), sitetype, mutPerm, NULL, scope, lex);
+    site->flags |= FlagStatic;
+    site->flowtempflags |= VarInitialized;      // zeroed storage, a value to borrow
+    nodesAdd(&blk->stmts, (INode*)site);
+
+    FnCallNode *open = textAsk(lex, node->objfn, "open");
+    INode *siteref = contentsVarUse(site, lex);
+    borrowMutRef(&siteref, sitetype, newPermUseNode(mutPerm));
+    nodesAdd(&open->args, siteref);
+    SLitNode *speclit = newSLitNode(memAllocStr(spec, (uint32_t)slen), (uint32_t)slen);
+    inodeLexCopy((INode*)speclit, lex);
+    nodesAdd(&open->args, (INode*)speclit);
+    const char *url = node->lexer && node->lexer->url ? node->lexer->url : "";
+    SLitNode *filelit = newSLitNode(memAllocStr((char*)url, (uint32_t)strlen(url)), (uint32_t)strlen(url));
+    inodeLexCopy((INode*)filelit, lex);
+    nodesAdd(&open->args, (INode*)filelit);
+    ULitNode *linelit = newULitNodeTC(node->linenbr, (INode*)u32Type);
+    inodeLexCopy((INode*)linelit, lex);
+    nodesAdd(&open->args, (INode*)linelit);
+    VarDclNode *w = contentsVar(textSiteWriterName(), unknownType, mutPerm, (INode*)open, scope, lex);
+    nodesAdd(&blk->stmts, (INode*)w);
+
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        if (piece->tag == StringLitTag || method[i] != NULL) {
+            FnCallNode *call = textAsk(piece, contentsVarUse(w, lex), piece->tag == StringLitTag ? "text" : method[i]);
+            nodesAdd(&call->args, piece);
+            nodesAdd(&blk->stmts, (INode*)call);
+        }
+        else
+            nodesAdd(&blk->stmts, textSend(piece, contentsVarUse(w, lex), piece));
+    }
+    nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
+    free(spec); free(names); free(meth); free((void*)method);
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
 // A '<-' sending a list to a text receiver is lowered here (see the comment
 // above), before its pieces are looked at. Answers 1 when it replaced the send,
 // 0 when the send is not a text list's
@@ -1340,7 +1522,8 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
     int single = arg->tag != VTupleTag && !isEntryNode(arg);
     // A single plain value is the ordinary send, whose failing to find a '<-' that
     // takes it comes to textSendFallback (unless the receiver has 'wants')
-    if (single && guarded)
+    // (the pieces a log receiver's lowering sends to its record are its own: textSiteLower)
+    if (single && guarded && isNameUseNode(node->objfn) && ((NameUseNode*)node->objfn)->namesym == textSiteWriterName())
         return 0;
     if (contentsIsConstruction(node->objfn))
         return 0;
@@ -1357,6 +1540,11 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
         textWarnEffects(pstate, node);
         if (textGuardLower(pstate, nodep, recvcopy, otype))
             return 1;
+    }
+    if (kind == TextSite) {
+        if (textSiteLower(pstate, nodep, base))
+            return 1;
+        return 0;
     }
     if (single)
         return 0;
