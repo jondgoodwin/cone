@@ -1,0 +1,120 @@
+// A sink that keeps the 'up' it was attached with costs nothing: whoever sends a
+// sink its 'end' lets go of the sink in the same step, so the stage that sends
+// and the sink that keeps its source are not a reference cycle (the ChunkSink
+// contract, stage.cone). The sink here keeps 'up' after its 'end' and never
+// drops it. Four streams end around it, each into such a sink:
+//
+//   0. Stage[Deflater]  ended Finished
+//   1. Stage[Deflater]  its group cancelled before the end arrives
+//   2. HashStage[Sha256]  ended Finished
+//   3. HashStage[Sha256]  its group cancelled before the end arrives
+//
+// Each sink reports how its stream ended (Finished or Failed) and the digest sink
+// that its answer came. The leak itself is LSan's to find, on Linux: with the
+// cycle, the stage, its sink and their buffers are still alive at exit.
+
+mod keepup;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+// Keeps its 'up' for good; reports 1 for Finished and 2 for Failed
+actor KeepSink is ChunkSink {
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    match how {
+      case is Finished { done.send(1u64); }
+      case is Failed { done.send(2u64); }
+    }
+  }
+}
+
+actor Answer is DigestSink[Array[u8, 32]] {
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(done: done);
+  }
+
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {
+    match r {
+      case is Ok { done.send(1u64); }
+      case is Err { done.send(2u64); }
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  var t0: OneshotSender[u64];
+  var r0: OneshotReceiver[u64];
+  t0, r0 = Oneshot[u64].make();
+  var t1: OneshotSender[u64];
+  var r1: OneshotReceiver[u64];
+  t1, r1 = Oneshot[u64].make();
+  var t2: OneshotSender[u64];
+  var r2: OneshotReceiver[u64];
+  t2, r2 = Oneshot[u64].make();
+  var d2: OneshotSender[u64];
+  var q2: OneshotReceiver[u64];
+  d2, q2 = Oneshot[u64].make();
+  var t3: OneshotSender[u64];
+  var r3: OneshotReceiver[u64];
+  t3, r3 = Oneshot[u64].make();
+  var d3: OneshotSender[u64];
+  var q3: OneshotReceiver[u64];
+  d3, q3 = Oneshot[u64].make();
+
+  let g1 = CancelGroup.make();
+  let g3 = CancelGroup.make();
+  g1.cancel();
+  g3.cancel();
+  {
+    let s0 = Stage[deflate.Deflater](KeepSink(t0), deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    s0.end(Ending.Finished);
+
+    let s1 = Stage[deflate.Deflater](KeepSink(t1), deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    actors.withGroup(&g1, fn() [s1] { s1.end(Ending.Finished); });
+
+    let s2 = HashStage[cryptohash.Sha256](KeepSink(t2), cryptohash.Sha256.make(), Answer(d2));
+    s2.end(Ending.Finished);
+
+    let s3 = HashStage[cryptohash.Sha256](KeepSink(t3), cryptohash.Sha256.make(), Answer(d3));
+    actors.withGroup(&g3, fn() [s3] { s3.end(Ending.Finished); });
+  }
+  expectUInt((r0.recv() || 0u64), 1u64, "0: the sink behind a stage heard Finished");
+  expectUInt((r1.recv() || 0u64), 2u64, "1: and Failed when the stage's group was cancelled");
+  expectUInt((r2.recv() || 0u64), 1u64, "2: the sink behind a hash stage heard Finished");
+  expectUInt((q2.recv() || 0u64), 1u64, "2: with the digest");
+  expectUInt((r3.recv() || 0u64), 2u64, "3: and Failed when the hash stage's group was cancelled");
+  expectUInt((q3.recv() || 0u64), 2u64, "3: with an error for the digest");
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
