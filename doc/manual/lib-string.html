@@ -200,6 +200,29 @@ var s = String();
 s &lt;- "at ", Point(3, -4), " n=", 42;      // at (3, -4) n=42
 print &lt;- "moved to ", Point(0, 0), "\n";
 </pre>
+	<h3 id="todebug">The debug form: toDebug</h3>
+	<p>Any value can be written in a programmer's form with no code from its author: <span class="pre">toDebug(self: &amp;, out: &amp;uni TextOut)</span>,
+		the same shape as <span class="pre">toText</span>. A struct writes its name and its fields, private ones included (the form is part of the type, as its own methods are),
+		<span class="pre">Point{x: 3, y: -4}</span>; an enum writes the variant's name and its payload (<span class="pre">Some(5)</span>,
+		<span class="pre">None</span>); text is quoted and escaped (<span class="pre">"a\n"</span>), a char is single-quoted, and a number
+		or bool is written as its text. A tuple is <span class="pre">(1, "two")</span>, an array or a List
+		<span class="pre">[a, b]</span>, a Dict <span class="pre">{k: v}</span>. A raw pointer, a function, a closure and a trait object
+		are fixed marks (<span class="pre">&lt;pointer&gt;</span>, <span class="pre">&lt;fn&gt;</span>, <span class="pre">&lt;closure&gt;</span>,
+		<span class="pre">&lt;Trait&gt;</span>); an actor's handle is written as the actor's own name (<span class="pre">&lt;Counter&gt;</span>), as a trait object
+		is written as its trait's name, since an actor's state is not the caller's to read; a handle of an actor trait is
+		written as that trait's name. A type that declares its own <span class="pre">toDebug</span> keeps it, and a generated one
+		uses it for a field of that type. The compiler writes the rest only where a program asks (<span class="pre">x.toDebug(out)</span>,
+		or the wrapper below), so a program that never asks carries none. A value reached again through an
+		<span class="pre">Rc</span> or <span class="pre">Gc</span> round a cycle ends: a body past 128 open levels, or past 65,536 bodies entered in one value, writes
+		<span class="pre">...</span> (levels bound depth and not work, as a node with two edges to its neighbours shows).</p>
+	<p>Two wrappers pick the form for one value, whatever the receiver prefers: <span class="pre">toText(x)</span> and
+		<span class="pre">toDebug(x)</span> borrow <span class="pre">x</span>, allocate nothing, and write nothing until sent.
+		<span class="pre">print &lt;- toDebug(&amp;x)</span> shows <span class="pre">x</span> in the debug form on the console.
+		A sink whose type declares core's <span class="pre">DebugText</span> (a provisional spelling) takes every value sent to it
+		in the debug form, while the literal text of the send is written as it stands; <span class="pre">testing.expectEq</span>
+		shows both sides this way. The check is static: a type with no <span class="pre">toText</span> goes to such a sink and is
+		still refused by <span class="pre">print</span>.</p>
+
 	<p><b>A send to the console is one record.</b> <span class="pre">print &lt;- a, b, c</span> writes its pieces into
 		a writer that the statement owns and hands the finished record to the console as one piece when the statement
 		ends, so output from several threads never tears a record in the middle: another thread's record comes before

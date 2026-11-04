@@ -2225,6 +2225,24 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         }
     }
 
+    // A sink of the debug form takes each value piece as its toDebug, before any '<-'
+    int debugsend = (methsym == lessDashName && (callnode->flags & FlagOpAssgn))
+        ? textSendDebug(pstate, callnode, obj) : 0;
+    if (debugsend) {
+        if (callnode->vtype == errorType)
+            return -1;
+        // A toDebug the compiler writes is made now (debugfn.c), the call checked once with it
+        if (debugsend == 2) {
+            FnCallNode *dbg = callnode;
+            if (fnCallDebugLower(pstate, &dbg, 0)) {
+                if (dbg != callnode)
+                    *callnode = *dbg;
+                return callnode->vtype == errorType ? -1 : 1;
+            }
+        }
+        return fnCallLowerMethodOn(pstate, callnode, NULL);
+    }
+
     // Test every candidate the name declares, without altering the call
     fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
@@ -5469,6 +5487,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
 
     // 'x.clone()' of a Copy type with no 'clone' is the value
     if (fnCallCloneCopy(nodep))
+        return;
+
+    // 'x.toDebug(out)' of a type that declares none: generated when asked (debugfn.c)
+    if (fnCallDebugLower(pstate, nodep, 0))
         return;
 
     // Handle when method operator requires an lval

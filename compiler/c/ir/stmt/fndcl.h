@@ -22,6 +22,7 @@ typedef struct FnDclNode {
     // not written; all 0 for any other function (fnDclIsCompute)
     uint16_t compute[3];
     struct ClosureInfo *closure;  // The '()' of a closure literal's hidden struct: what its body captured (closure.h), else NULL
+    INode *generatedFor;          // The type a function the compiler generated is part of (structSeesPrivate), else NULL
 } FnDclNode;
 
 // Syntactic sugar: turn a body's last expression into an explicit return
