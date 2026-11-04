@@ -96,6 +96,16 @@ enum IntrinsicFn {
     SinIntrinsic,
     CosIntrinsic,
 
+    // A float's encoding, built in C beside the float type's other methods
+    // (corenumber.c): no Cone declaration, since the integer type of the bits
+    // follows the float's width. 'x.bits()', 'f32.fromBits(b)', 'x.exponent()',
+    // 'x.mantissa()' and 'x.signBit()'. Each is one bit operation
+    FloatBitsIntrinsic,
+    FloatFromBitsIntrinsic,
+    FloatExponentIntrinsic,
+    FloatMantissaIntrinsic,
+    FloatSignBitIntrinsic,
+
     // A vector's reductions and mask tests, over its lanes: built in C beside the
     // number types' (Vector[T, N] has no Cone declaration, being a type of the
     // compiler's own), and decided by the LLVM vector type of the argument.

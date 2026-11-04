@@ -3456,6 +3456,28 @@ static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
     return 1;
 }
 
+// 'f32.fromBits(b)': a static function the compiler declares on a number type
+// other than 'from'. The path is collapsed to the function as one through a
+// struct is (fnCallNameResPath), and the call goes on as any call of a function.
+// A name the type does not declare as a static function is left as it was, and
+// diagnosed as a path this does not collapse. Returns 1 when collapsed.
+static int fnCallNumberStatic(FnCallNode *node) {
+    if (!isTypeNode(node->objfn))
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)nbrtype, member->namesym);
+    if (found == NULL || found->tag != FnDclTag || (found->flags & FlagMethFld))
+        return 0;
+    member->dclnode = found;
+    member->flags |= FlagQualified;
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    return 1;
+}
+
 // Is this, name resolved but not yet type checked, a type or module, or an
 // instance of a generic one -- a path's base rather than a receiver?
 static int fnCallIsPathBase(INode *node) {
@@ -5057,6 +5079,11 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // 'u64.from(count)': a number type's conversion
         else if (fnCallNumberFrom(pstate, nodep))
             return;
+        // 'f32.fromBits(b)': a static function of a number type
+        else if (fnCallNumberStatic(node)) {
+            objfnChecked = 0;
+            calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+        }
         else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
