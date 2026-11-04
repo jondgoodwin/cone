@@ -23,6 +23,7 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->via = NULL;
     fldnode->via2 = NULL;
     fldnode->via3 = NULL;
+    fldnode->hashcond = NULL;
     fldnode->index = 0;
     fldnode->lifeslots = 0;
     fldnode->lifeknown = 0;
@@ -53,6 +54,7 @@ INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
+    newnode->hashcond = node->hashcond ? cloneNode(cstate, node->hashcond) : NULL;
     // The clone's clause is expanded afresh, into the clone's own namespace:
     // the copies and aliases the original's expansion made are the original's.
     // A listed item keeps its position; a star clause makes its items over.
@@ -182,6 +184,11 @@ void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
 
     if (name->value)
         inodeNameRes(pstate, &name->value);
+
+    // A field under a '#if' on a type parameter: its condition names the type's parameters,
+    // which are hooked while the type's members are resolved
+    if (name->hashcond)
+        genericHashCondNameRes(pstate, name->hashcond);
 }
 
 // Type check field declaration against its initial value

@@ -1,0 +1,218 @@
+// Bug 37, step 0: what finalAll() does with awaited operations in flight.
+// Nothing here is cancelled and nothing waits (no waitUntilIdle): main parks
+// five behaviours, then calls finalAll() and reports what is left.
+//
+//   Sleeper  awaits a 1 hour sleep, holding a Note
+//   Reader   awaits a read on a loopback socket nobody writes to, with a buffer
+//            lent to the read, holding a Note
+//   Quick    awaits a 1 second sleep, which outlasts the 300 ms Busy gives
+//            finalAll() to wait: the work a short operation would have finished
+//            is lost, not waited for
+//   Callee   awaits a 1 hour sleep; Caller awaits Callee's answer (the future
+//            case: the request is a message already handled, the reply is
+//            owed by an actor itself parked on I/O)
+//   Holder   asks Callee for a Future, keeps it, awaits it later (here: at once)
+//   TCaller  awaits a Callee it makes in the same statement and keeps no handle
+//            to (no cycle through the parked callee)
+//   Busy     does 300 ms of work (thread.sleep, no await) for BCaller, who awaits
+//            it: an actor RUNNING, not parked, so quiescence waits for it
+//
+// WHAT THE OUTPUT SHOWS (Bug 37). Before the fix (measured 3 Nov on Windows) the
+// Notes of Callee (x3), Caller, Holder and TCaller were never dropped, a future
+// and six pending-table blocks never given back: each of those actors was held
+// by a counted handle in a parked frame (Caller's field, Holder's field,
+// TCaller's temporary) and held the envelope that kept the other alive, so no
+// count reached 0. With the program's end dropping the tables itself every Note
+// is dropped (sum 1111311), no future is live and no block is left: the cycle
+// was the cause. Quick's lost work and the 832 (the second halves of Busy and
+// BCaller, and Holder's first half) are unchanged: nothing is waited for.
+//
+// After finalAll(): which second halves ran, which Notes were dropped, whether
+// the pending records, buffers and futures are home.
+
+mod finalinflight;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration, Instant;
+import thread;
+import iobuf use IoBuf;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+let ran: Atomic[u64];       // second halves that ran (bit per actor)
+let dropped: Atomic[u64];   // Notes dropped (sum of their n)
+
+fn @initpure init() {
+  ran = Atomic[u64].of(0u64);
+  dropped = Atomic[u64].of(0u64);
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {dropped.add(n);}
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket { r || Socket.none() }
+
+actor Sleeper {
+  pub async fn hold(self, ready: OneshotSender[u64]) {
+    let keep = Note(1u64);
+    var r = ready;
+    r.send(1u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+    ran.add(1u64);
+  }
+}
+
+actor Reader {
+  a: Socket;
+  b: Socket;
+  pub async fn hold(self, ready: OneshotSender[u64]) {
+    let keep = Note(10u64);
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var port = 0u16;
+    match await ls.localAddr() {
+      case let Ok(x) {port = x.port();}
+      else {}
+    }
+    a = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    b = socketOf(await ls.accept());
+    var r = ready;
+    r.send(1u64);
+    let got = await b.read(IoBuf(4096usize));
+    ran.add(2u64);
+  }
+}
+
+actor Quick {
+  pub async fn hold(self) {
+    let x = await aio.sleep(Duration.fromMillis(1000i64));
+    ran.add(4u64);
+  }
+}
+
+actor Callee {
+  pub async fn slow(self, ready: OneshotSender[u64]) u64 {
+    let keep = Note(100u64);
+    var r = ready;
+    r.send(1u64);
+    let x = await aio.sleep(Duration.fromSeconds(3600i64));
+    ran.add(8u64);
+    7u64
+  }
+}
+
+actor Caller {
+  c: Callee;
+  pub async fn ask(self, ready: OneshotSender[u64]) {
+    let keep = Note(1000u64);
+    let v = await c.slow(ready);
+    ran.add(16u64);
+  }
+}
+
+actor Holder {
+  c: Callee;
+  pub async fn ask(self, ready: OneshotSender[u64]) {
+    let keep = Note(10000u64);
+    let f = c.slow(ready);
+    ran.add(64u64);          // the future is kept; this runs at once
+    let v = await f;
+    ran.add(32u64);
+  }
+}
+
+actor TCaller {
+  pub async fn ask(self, ready: OneshotSender[u64]) {
+    let keep = Note(100000u64);
+    let v = await Callee().slow(ready);
+    ran.add(128u64);
+  }
+}
+
+actor Busy {
+  pub async fn work(self) u64 {
+    thread.sleep(Duration.fromMillis(300i64));
+    ran.add(256u64);
+    3u64
+  }
+}
+
+actor BCaller {
+  b: Busy;
+  pub async fn ask(self, ready: OneshotSender[u64]) {
+    let keep = Note(1000000u64);
+    var r = ready;
+    r.send(1u64);
+    let v = await b.work();
+    ran.add(512u64);
+  }
+}
+
+fn main() {
+  initAll();
+  var t1: OneshotSender[u64];
+  var r1: OneshotReceiver[u64];
+  t1, r1 = Oneshot[u64].make();
+  var t2: OneshotSender[u64];
+  var r2: OneshotReceiver[u64];
+  t2, r2 = Oneshot[u64].make();
+  var t3: OneshotSender[u64];
+  var r3: OneshotReceiver[u64];
+  t3, r3 = Oneshot[u64].make();
+  var t4: OneshotSender[u64];
+  var r4: OneshotReceiver[u64];
+  t4, r4 = Oneshot[u64].make();
+  var t5: OneshotSender[u64];
+  var r5: OneshotReceiver[u64];
+  t5, r5 = Oneshot[u64].make();
+  var t6: OneshotSender[u64];
+  var r6: OneshotReceiver[u64];
+  t6, r6 = Oneshot[u64].make();
+  let before = aio.opStats();
+  {
+    let s = Sleeper();
+    s.hold(t1);
+    let r = Reader(Socket.none(), Socket.none());
+    r.hold(t2);
+    let c1 = Callee();
+    let k = Caller(c1);
+    k.ask(t3);
+    let c2 = Callee();
+    let h = Holder(c2);
+    h.ask(t4);
+    r1.recv();
+    r2.recv();
+    r3.recv();
+    r4.recv();
+    let tc = TCaller();
+    tc.ask(t5);
+    let bc = BCaller(Busy());
+    bc.ask(t6);
+    r5.recv();
+    r6.recv();
+    let q = Quick();
+    q.hold();
+  }
+  let mid = aio.opStats();
+  let midBufs = iobuf.stats().lent;
+  printStr("parked: records in use at least 4: "); printStr(if mid.inUse - before.inUse >= 4u64 {"yes"} else {"no"});
+  printStr(", buffers lent "); printUInt(midBufs);
+  printStr(", futures live "); printUInt(u64.from(actors.liveFutures()));
+  printStr("\n");
+  let began = Instant.now();
+  finalAll();
+  let ms = began.elapsed().millis();
+  printStr("finalAll returned (fast: "); printStr(if ms < 2000i64 {"yes"} else {"no"}); printStr(")\n");
+  printStr("second halves that ran (bits): "); printUInt(ran.load()); printStr("\n");
+  printStr("Notes dropped (sum): "); printUInt(dropped.load()); printStr("\n");
+  printStr("records in use: "); printUInt(aio.opStats().inUse - before.inUse); printStr("\n");
+  printStr("buffers lent: "); printUInt(iobuf.stats().lent); printStr("\n");
+  printStr("futures live: "); printUInt(u64.from(actors.liveFutures())); printStr("\n");
+  let pb = actors.parkBlocks();
+  printStr("park blocks not given back: "); printUInt(pb.taken - pb.given); printStr("\n");
+  printStr("group awaits live: "); printUInt(u64.from(actors.groupAwaitsLive())); printStr("\n");
+  printStr("end\n");
+}

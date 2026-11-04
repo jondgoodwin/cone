@@ -878,13 +878,48 @@ static void parseStructItems(ParseState *parse, StructItems *it);
 
 // A branch of a '#if' in a type's braces. A taken one joins the type; one the
 // build does not take is read into a stand-in of the same kind, which is dropped
-static void parseStructBranch(ParseState *parse, void *ctx, int taken) {
+static INode *parseStructBranch(ParseState *parse, void *ctx, int mode) {
     StructItems *it = (StructItems*)ctx;
-    if (taken) {
+    if (mode == MetaTaken) {
         parseStructItems(parse, it);
-        return;
+        return NULL;
     }
     StructNode *real = it->strnode;
+    // A branch that asks what a type parameter is: its fields and methods join the type,
+    // each under the condition (a field's 'hashcond', a method's 'where', which an
+    // instance reads as the member existing or not). Nothing else in a type's braces has a
+    // condition to hold, so a static, a macro or an alias there is refused
+    if (mode == MetaDeferred) {
+        uint32_t f0 = real->fields.used, n0 = real->nodelist.used;
+        parseStructItems(parse, it);
+        for (uint32_t i = f0; i < real->fields.used; ++i) {
+            FieldDclNode *fld = (FieldDclNode*)real->fields.nodes[i];
+            if (fld->tag != FieldDclTag)
+                continue;
+            INode *cond = parseMetaMemberCond();
+            if (fld->hashcond) {
+                LogicNode *both = newLogicNode(AndLogicTag);
+                inodeLexCopy((INode*)both, fld->hashcond);
+                both->lexp = fld->hashcond;
+                both->rexp = cond;
+                cond = (INode*)both;
+            }
+            fld->hashcond = cond;
+        }
+        for (uint32_t i = n0; i < real->nodelist.used; ++i) {
+            INode *member = real->nodelist.nodes[i];
+            if (member->tag != FnDclTag) {
+                errorMsgNode(member, ErrorMetaTypeFact,
+                    "A '#if' that asks what a type parameter is holds fields and methods in a type's braces: a static, a macro or an alias has no condition to exist under.");
+                continue;
+            }
+            FnDclNode *fn = (FnDclNode*)member;
+            if (fn->where == NULL)
+                fn->where = newNodes(2);
+            nodesAdd(&fn->where, parseMetaMemberCond());
+        }
+        return NULL;
+    }
     StructNode *stand = newStructNode(real->namesym);
     stand->tag = real->tag;
     stand->flags = real->flags;
@@ -900,6 +935,7 @@ static void parseStructBranch(ParseState *parse, void *ctx, int taken) {
     parse->typenode = (INsTypeNode*)stand;
     parseStructItems(parse, &copy);
     parse->typenode = svtype;
+    return NULL;
 }
 
 // Read a type's items -- fields, methods, variants, statics, macros -- from just
@@ -913,7 +949,14 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
     while (!parseBlockEnd()) {
         // '#if' chooses which members exist, from the facts of the build
         if (lexIsToken(HashIfToken)) {
-            parseHashIf(parse, parseStructBranch, it);
+            // A question about a type parameter is held by a generic struct's fields and methods
+            const char *nodefer = NULL;
+            if (strnode->genericinfo == NULL)
+                nodefer = "A '#if' that asks what a type parameter is stands in the body of a generic type or function: this type has no type parameters.";
+            else if (isenum || (strnode->flags & TraitType))
+                nodefer = "A '#if' that asks what a type parameter is is not built in the body of an enum or a trait: a generic struct's fields and methods are conditioned by it.";
+            parseHashIf(parse, parseStructBranch, it, nodefer, nodefer ? NULL :
+                "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
             continue;
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {

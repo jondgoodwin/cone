@@ -185,7 +185,6 @@ int main(int argc, char **argv) {
     intrinsicForceFallback = coneopt.intrinsic_fallback;
     awaitDirect = coneopt.await_direct;
     derefWarnIndexStar = coneopt.warn_index_star;
-    intrinsicBuildSetup(&coneopt);
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;
 

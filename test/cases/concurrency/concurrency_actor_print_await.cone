@@ -1,0 +1,47 @@
+// A send statement to the console with an 'await' among its pieces: the awaited
+// pieces are made first, in the order written, before the record's writer is,
+// so no borrow of the writer spans the seam where the behaviour parks; the
+// statement is then one record, whole.
+//
+// - Counter answers a value; Reporter awaits it twice in one 'print <-', once
+//   in the middle of text and a number, and prints the record.
+// - The counter starts at 40 and is sent 2: 42. The statement is
+//   'total 42 and 42, twice 84' and a line end.
+
+mod concurrency_actor_print_await;
+
+import stdio use *;
+import actors;
+
+actor Counter {
+  total: u64;
+
+  fn init(self: &new, start: u64) {
+    *self = Self(total: start);
+  }
+
+  pub async fn add(self, x: u64) {
+    total = total + x;
+  }
+
+  pub async fn get(self) u64 {
+    total
+  }
+}
+
+actor Reporter {
+  pub async fn report(self, c: Counter) {
+    print <- "total ", await c.get(), " and ", await c.get(), ", twice ", 2u64 * await c.get(), "\n";
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let c = Counter(40u64);
+    c.add(2u64);
+    let reporter = Reporter();
+    reporter.report(c);
+  }
+  finalAll();
+}
