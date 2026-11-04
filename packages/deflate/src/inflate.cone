@@ -144,12 +144,12 @@ fn defaultLimit() u64 { 1073741824u64 }
 // 'finish' it when the input is over, 'pull' the output.
 //
 //   mut inf = deflate.Inflater.make(deflate.Format.Gzip);
-//   mut out = List[u8]();
+//   mut out = IoBuf(65536usize);
 //   inf.feed(chunk);                        // any size, split anywhere
 //   while true {
 //     out.clear();
-//     imm s = inf.pull(&mut out, 65536usize);   // at most 64 KiB at a time
-//     ... use out ...
+//     imm s = inf.pull(&mut out);           // at most the buffer's room at a time
+//     ... use out.view() ...
 //     if s != deflate.Status.MoreOutput { break; }
 //   }
 //   // NeedInput: feed the next chunk, or inf.finish() and pull once more
@@ -266,21 +266,11 @@ pub struct Inflater {
     rest
   }
 
-  // Decodes, appending at most 'max' bytes to 'out', and answers what it is
-  // waiting for: NeedInput (all input used), MoreOutput (the limit of this
-  // pull came first), Done, or Failed (and the Inflater stays failed).
+  // Decodes into a buffer's spare room (the Transform of package streams),
+  // appending at most 'out.room()' bytes and lengthening 'out' by them, and
+  // answers what it is waiting for: NeedInput (all input used), MoreOutput
+  // (the room came first), Done, or Failed (and the Inflater stays failed).
   // Anything pulled before a failure has been delivered and is good.
-  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
-    if failed { return Status.Failed; }
-    let s = self.advance(max);
-    if !failed { bi.unpad(); }
-    self.deliver(out);
-    self.dropUsedInput();
-    s
-  }
-
-  // The same into a buffer's spare room (the Transform of package streams):
-  // appends at most 'out.room()' bytes and lengthens 'out' by them.
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
     if failed { return Status.Failed; }
     let s = self.advance(out.room());

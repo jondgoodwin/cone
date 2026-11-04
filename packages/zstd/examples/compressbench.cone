@@ -18,6 +18,18 @@ import fs;
 import path use Path;
 import process;
 import stdio use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
 
 fn mbps(bytes: usize, ns: i64) i64 {
   if ns <= 0i64 { return 0i64; }
@@ -91,7 +103,7 @@ fn benchOne(name: &str, data: &Array[u8]) {
           if pos == data.len { c.finish(); }
         }
         piece.clear();
-        st = c.pull(&mut piece, 65536usize);
+        st = pullN(&mut c, &mut piece, 65536usize);
         total += piece.len();
       }
       times.push(t0.elapsed().nanos());

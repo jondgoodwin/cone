@@ -1,0 +1,70 @@
+// A million short lines from 8 senders, to a file or a pipe (run it with its
+// output redirected), timed to standard error. With the argument "threads" the
+// senders are plain threads and the runtime never starts, so the console's own
+// lock engine writes; with "actors" they are actors, and the console's owner
+// takes the records. The same line either way.
+//
+//   congo run examples/consolebench.cone -- actors  > out.txt
+//   congo run examples/consolebench.cone -- threads > out.txt
+
+mod consolebench;
+
+import stdio use *;
+import collections use *;
+import actors;
+import thread;
+import time use Instant;
+import process;
+
+const senders = 8u32;
+const perSender = 125000u32;
+
+actor Sender {
+  pub async fn go(self, id: u32) {
+    var i = 0u32;
+    while i < perSender {
+      print <- "line ", id, " ", i, "\n";
+      i = i + 1u32;
+    }
+  }
+}
+
+fn plain(id: u32) u32 {
+  var i = 0u32;
+  while i < perSender {
+    print <- "line ", id, " ", i, "\n";
+    i = i + 1u32;
+  }
+  id
+}
+
+fn main() i32 {
+  let a = process.args();
+  let useActors = a.len() >= 2usize && a[1usize].equals("actors");
+  let start = Instant.now();
+  if useActors {
+    var i = 0u32;
+    while i < senders {
+      let s = Sender();
+      s.go(i);
+      i = i + 1u32;
+    }
+    actors.waitQuiet();
+  }
+  else {
+    var ts = List[thread.Thread[u32]]();
+    var i = 0u32;
+    while i < senders {
+      ts.push(thread.start(i, &plain));
+      i = i + 1u32;
+    }
+    while ts.len() > 0usize {
+      let t = ts.pop();
+      match t { case let Some(x) { x.join(); } case is None { } }
+    }
+  }
+  print.flush();
+  let took = start.elapsed();
+  eprint <- (if useActors {"actors"} else {"threads"}), ": ", took.millis(), " ms for ", u64.from(senders) * u64.from(perSender), " lines\n";
+  0i32
+}
