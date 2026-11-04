@@ -1,0 +1,296 @@
+// How an arena grows: the first block has 4096 bytes of room, each block after
+// it twice the room of the one before, up to 1 MiB, and each after that 1 MiB.
+// A value needing more than the next block's room gets a block of its own size
+// and leaves the doubling where it was. 'withRoom(bytes)' makes the first block
+// of 'bytes' (4096 at least) and doubles from min(bytes, 1 MiB). Each test walks
+// one boundary, which is where an off-by-one in the fast path (round up, compare
+// with the limit, store the top) or in the block's size would show, under ASan.
+//
+// A block's room starts 8 bytes (its header) past its 16-aligned start, so the
+// first byte of room is 8-aligned and 'fill' below finds a block's room to the
+// byte: B1 values take one byte each, so a block of R bytes of room holds R of
+// them, and the (R + 1)th starts the next block.
+
+mod growth;
+
+import testing use *;
+import arena use *;
+
+struct B1 { pub v: u8; }
+struct B64 { pub w: Array[u64, 8]; }
+struct Unit { }
+
+var @threadlocal deaths = 0i64;
+var @threadlocal sum = 0i64;
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { deaths = deaths + 1i64; sum = sum + n; }
+}
+
+// Allocate B1 values until the arena's block count changes: how many did not
+// change it. The one that did lies in the new block, so right after a block begins
+// the answer is that block's room less one; for a block with nothing in it yet,
+// its room.
+fn fill(a: &mut Arena) usize {
+  var n = 0usize;
+  var more = true;
+  while more {
+    let before = a.blockCount();
+    a.alloc(B1(1u8));
+    if a.blockCount() != before { more = false; } else { n = n + 1usize; }
+  }
+  n
+}
+
+fn addr[T](p: &mut T) usize { (p as *T) as usize }
+fn put(p: *u8, i: usize, v: u8) { *((p as usize + i) as *u8) = v; }
+fn get(p: *u8, i: usize) u8 { *((p as usize + i) as *u8) }
+
+// A value of no size still has an address of its own, the first thing in an
+// empty arena or the last that fits a block
+fn zeroSized() {
+  var a = Arena();
+  let z = a.alloc(Unit());
+  expect(addr(z) != 0usize, "a zero-sized value first in an empty arena is not at null");
+  expectUInt(u64.from(a.blockCount()), 1, "and it made the first block");
+  let y = a.alloc(Unit());
+  expect(addr(y) != 0usize, "and a second");
+  var d = DynArena.empty();
+  let k = d.alloc(Unit());
+  expect(((k as *Unit) as usize) != 0usize, "also in a dynamic arena");
+  var w = Arena.withRoom(0usize);
+  let v = w.alloc(Unit());
+  expect(addr(v) != 0usize, "and in one given room up front");
+  expectUInt(u64.from(w.blockCount()), 1, "without a block more");
+}
+
+// Block by block the room is 4096, 8192, ... 1 MiB, then 1 MiB each: the room
+// of every block is found to the byte
+fn doubling() {
+  let rooms = [4096usize, 8192usize, 16384usize, 32768usize, 65536usize, 131072usize,
+               262144usize, 524288usize, 1048576usize, 1048576usize, 1048576usize, 1048576usize];
+  var a = Arena();
+  a.alloc(B1(1u8));
+  expectUInt(u64.from(a.blockCount()), 1, "the first value makes the first block");
+  var ok = true;
+  var i = 0usize;
+  while i < 12usize {
+    let n = fill(&mut a);
+    ok = ok && n + 1usize == rooms[i];
+    if n + 1usize != rooms[i] {
+      expectUInt(u64.from(n + 1usize), u64.from(rooms[i]), "block's room");
+    }
+    i = i + 1usize;
+  }
+  expect(ok, "the room of twelve blocks: doubling to 1 MiB, then 1 MiB each");
+  expectUInt(u64.from(a.blockCount()), 13, "and the twelfth was followed by a thirteenth");
+}
+
+// A value that exactly fills a block, one byte over, and the block after
+fn exactFill() {
+  var a = Arena.withRoom(4096usize);
+  a.alloc(Array[u8, 4096]() <- fill 9u8);
+  expectUInt(u64.from(a.blockCount()), 1, "4096 bytes exactly fill a block of 4096");
+  a.alloc(B1(1u8));
+  expectUInt(u64.from(a.blockCount()), 2, "and the next byte starts another");
+  expectUInt(u64.from(fill(&mut a)) + 1u64, 8192, "which has 8192 of room");
+
+  var b = Arena.withRoom(4096usize);
+  let big = b.alloc(Array[u8, 4097]() <- fill 9u8);
+  expectUInt(u64.from(b.blockCount()), 2, "4097 bytes do not fit a block of 4096: the next block, of 8192");
+  expectInt(i64.from(big[0usize]) + i64.from(big[4096usize]), 18, "both ends of the 4097 are as filled");
+  expectUInt(u64.from(fill(&mut b)), 8192 - 4097, "it has 8192 - 4097 of room left");
+}
+
+// A value too big for the next block's room, in the middle of the doubling:
+// the doubling resumes where it was. Blocks of 4096, 8192, 16384 and 32768;
+// the next would be 65536. The 100000 bytes get a block of 100000 + 1 (the byte
+// that may be lost to alignment), 1 byte of which is left over; then comes the
+// 65536 block, not another 4096 or the 131072 after
+fn bigInTheMiddle() {
+  var a = Arena();
+  a.alloc(B1(1u8));
+  fill(&mut a);
+  fill(&mut a);
+  expectUInt(u64.from(fill(&mut a)) + 1u64, 16384, "the third block has 16384");
+  expectUInt(u64.from(a.blockCount()), 4, "four blocks, the fourth begun");
+  let r = a.region as &MemRegion;
+  let p = r.allocate(100000usize, 1usize);
+  expectUInt(u64.from(a.blockCount()), 5, "the 100000 bytes have a block of their own");
+  *p = 5u8;
+  expectUInt(u64.from(fill(&mut a)), 1, "which has one byte left over");
+  expectUInt(u64.from(a.blockCount()), 6, "and then the doubling goes on");
+  expectUInt(u64.from(fill(&mut a)) + 1u64, 65536, "from 65536, where it was");
+  expectUInt(u64.from(fill(&mut a)) + 1u64, 131072, "and doubles again");
+  expectInt(i64.from(*p), 5, "the big value was not disturbed");
+}
+
+// Alignment 1, 8, 16 and 64 at the end of a block: for each start of the value
+// to within a few dozen bytes of the end of the block, it lies aligned and wholly
+// inside a block (the first, if it fits there when the address is rounded up, as
+// the first block's room, 4096 from the first byte, says, or the next)
+fn alignedAt(align: usize) bool {
+  var ok = true;
+  var n = 4000usize;
+  while n <= 4096usize {
+    var a = Arena();
+    let first = a.alloc(B1(1u8));
+    let p0 = addr(first);
+    var i = 1usize;
+    while i < n { a.alloc(B1(2u8)); i = i + 1usize; }
+    let r = a.region as &MemRegion;
+    let p = r.allocate(8usize, align) as usize;
+    let at = (p0 + n + align - 1usize) / align * align;
+    let fits = at + 8usize <= p0 + 4096usize;
+    let want = if fits { 1usize } else { 2usize };
+    if p % align != 0usize || a.blockCount() != want || (fits && p != at) {
+      ok = false;
+      expectUInt(u64.from(n), u64.from(align), "alignment case failed at this n");
+    }
+    n = n + 1usize;
+  }
+  ok
+}
+
+fn alignments() {
+  expect(alignedAt(1usize), "alignment 1 across the block's end");
+  expect(alignedAt(8usize), "alignment 8 across the block's end");
+  expect(alignedAt(16usize), "alignment 16 across the block's end");
+  expect(alignedAt(64usize), "alignment 64 across the block's end");
+}
+
+// A value with a header, 16 bytes of header and 8 of value, 24 together: for
+// each start within a few dozen bytes of the end of the first block, whether the
+// two fit is told from the first byte's address (the header rounded up to 8 and
+// the value after it), the header and the value are never split by a block's end,
+// and each dies once
+fn finalizedAtTheEnd() {
+  var ok = true;
+  var exact = false;
+  var count = 0i64;
+  var n = 4040usize;
+  while n <= 4096usize {
+    {
+      var a = Arena();
+      let first = a.alloc(B1(1u8));
+      let p0 = addr(first);
+      var i = 1usize;
+      while i < n { a.alloc(B1(2u8)); i = i + 1usize; }
+      let f = a.alloc(Fin(i64.from(n)));
+      let at = (p0 + n + 16usize + 7usize) / 8usize * 8usize;
+      let fits = at + 8usize <= p0 + 4096usize;
+      if at + 8usize == p0 + 4096usize { exact = true; }
+      let want = if fits { 1usize } else { 2usize };
+      if a.blockCount() != want || f.n != i64.from(n) || addr(f) % 8usize != 0usize
+         || (fits && addr(f) != at) || a.finalizers() != 1usize {
+        ok = false;
+        expectUInt(u64.from(n), 0, "finalized value case failed at this n");
+      }
+      count = count + 1i64;
+      sum = sum - i64.from(n);
+    }
+    n = n + 1usize;
+  }
+  expect(ok, "a header and its value fit together in a block or the next, whole");
+  expect(exact, "one of them filled the block to the byte");
+  expectInt(deaths, count, "each died once");
+  expectInt(sum, 0, "and each with its own value");
+}
+
+// 'withRoom' makes its first block of exactly the room asked (4096 at least),
+// and the next doubles from that, to 1 MiB
+fn withRoomGrowth() {
+  var a = Arena.withRoom(0usize);
+  expectUInt(u64.from(a.blockCount()), 1, "withRoom(0) has a block");
+  expectUInt(u64.from(fill(&mut a)), 4096, "withRoom(0): a block of 4096");
+  expectUInt(u64.from(fill(&mut a)) + 1u64, 8192, "then 8192");
+  var b = Arena.withRoom(1usize);
+  expectUInt(u64.from(fill(&mut b)), 4096, "withRoom(1): a block of 4096");
+  expectUInt(u64.from(fill(&mut b)) + 1u64, 8192, "then 8192");
+  var c = Arena.withRoom(5000usize);
+  expectUInt(u64.from(fill(&mut c)), 5000, "withRoom(5000): exactly 5000");
+  expectUInt(u64.from(fill(&mut c)) + 1u64, 10000, "then 10000");
+  expectUInt(u64.from(fill(&mut c)) + 1u64, 20000, "then 20000");
+  var d = Arena.withRoom(600000usize);
+  expectUInt(u64.from(fill(&mut d)), 600000, "withRoom(600000): exactly 600000");
+  expectUInt(u64.from(fill(&mut d)) + 1u64, 1048576, "then 1 MiB, not 1200000");
+  expectUInt(u64.from(fill(&mut d)) + 1u64, 1048576, "and 1 MiB each after");
+  var e = Arena.withRoom(3000000usize);
+  expectUInt(u64.from(fill(&mut e)), 3000000, "withRoom(3000000): exactly 3000000");
+  expectUInt(u64.from(fill(&mut e)) + 1u64, 1048576, "then 1 MiB, the most the doubling gives");
+  var f = Arena.withRoom(1048576usize);
+  expectUInt(u64.from(fill(&mut f)), 1048576, "withRoom(1 MiB): exactly 1 MiB");
+  expectUInt(u64.from(fill(&mut f)) + 1u64, 1048576, "then 1 MiB");
+}
+
+// A block resized across a block's end: the last value grows where it is up to
+// the limit exactly, the byte after moves it to a block of its own with what it
+// held, a value that is not the last is moved and the old copy stays, and
+// shrinking leaves it where it is
+fn resizing() {
+  var a = Arena();
+  let r = a.region as &MemRegion;
+  let p = r.allocate(4000usize, 8usize);
+  var i = 0usize;
+  while i < 4000usize { put(p, i, u8.from(i % 251usize)); i = i + 1usize; }
+  let q = r.resize(p, 4000usize, 4096usize, 8usize);
+  expect(q as usize == p as usize, "growing the last value to exactly the block's end is in place");
+  expectUInt(u64.from(a.blockCount()), 1, "in the one block");
+  let s = r.resize(q, 4096usize, 4097usize, 8usize);
+  expect(s as usize != q as usize, "one byte more crosses the block's end, and moves it");
+  expectUInt(u64.from(a.blockCount()), 2, "to a new block");
+  var same = true;
+  i = 0usize;
+  while i < 4000usize { if get(s, i) != u8.from(i % 251usize) { same = false; } i = i + 1usize; }
+  expect(same, "with what it held");
+  let t = r.resize(s, 4097usize, 10usize, 8usize);
+  expect(t as usize == s as usize, "shrinking leaves it where it is");
+  let u = r.allocate(16usize, 8usize);
+  expect(u as usize >= t as usize + 10usize, "and the next value is after the shrunk one");
+  let w = r.resize(t, 10usize, 20usize, 8usize);
+  expect(w as usize != t as usize, "a value that is not the last is moved when it grows");
+  expect(get(w, 3usize) == u8.from(3usize % 251usize), "with what it held");
+  expectUInt(u64.from(a.blockCount()), 2, "in the block it had");
+  // a first allocation by resize, in an arena with no block
+  var b = Arena();
+  let rb = b.region as &MemRegion;
+  let x = rb.resize(0usize as *u8, 0usize, 100usize, 8usize);
+  expect(x as usize != 0usize, "resizing nothing in an empty arena gives a value");
+  expectUInt(u64.from(b.blockCount()), 1, "in a first block");
+}
+
+// 64-byte values into an arena grow it by doubling to 1 MiB blocks, then
+// linearly. By hand the blocks' room adds up to 4096, 12288, 28672, 61440,
+// 126976, 258048, 520192 and 1044480 bytes in the first eight blocks, and 2093056
+// in nine, which is more than 1 MiB (16384 values) so a ninth block is needed; then
+// each block adds 1 MiB. 10 MiB needs 2093056 + 9 * 1 MiB = 11530... in 18 blocks,
+// 100 MiB 108 blocks, and 1000 MiB 1008
+fn blockCounts() {
+  var a = Arena();
+  var i = 0usize;
+  while i < 16384usize { a.alloc(B64(Array[u64, 8]() <- fill 1u64)); i = i + 1usize; }
+  expectUInt(u64.from(a.blockCount()), 9, "1 MiB of 64-byte values: 9 blocks");
+  var b = Arena();
+  i = 0usize;
+  while i < 163840usize { b.alloc(B64(Array[u64, 8]() <- fill 1u64)); i = i + 1usize; }
+  expectUInt(u64.from(b.blockCount()), 18, "10 MiB: 18 blocks");
+  var c = Arena();
+  i = 0usize;
+  while i < 1638400usize { c.alloc(B64(Array[u64, 8]() <- fill 1u64)); i = i + 1usize; }
+  expectUInt(u64.from(c.blockCount()), 108, "100 MiB: 108 blocks");
+}
+
+fn main() i32 {
+  zeroSized();
+  doubling();
+  exactFill();
+  bigInTheMiddle();
+  alignments();
+  deaths = 0;
+  sum = 0;
+  finalizedAtTheEnd();
+  withRoomGrowth();
+  resizing();
+  blockCounts();
+  done()
+}

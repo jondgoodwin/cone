@@ -23,13 +23,17 @@ fn empty() {
 
 // Each Counted takes 24 bytes, its header and its 8: the k-th of a block ends
 // 32 + 24k bytes past the block's start and the room ends at 4104, so a block
-// holds k = 0 to 169, 170 of them, and 10000 of them take 59 blocks
+// holds k = 0 to 169, 170 of them. The room doubles with each block, and a block
+// with R bytes of room holds R / 24 of them (its first value ends 32 bytes past
+// its start, the room ends 8 + R past it): 170, 341, 682, 1365, 2730 and 5461
+// for R = 4096 to 131072, which come to 10749 in six blocks, so 10000 of them
+// take 6 blocks (they took 59 of 4096 before the room doubled)
 fn many() {
   var a = Arena();
   var i = 1i64;
   while i <= 10000i64 { a.alloc(Counted(i)); i = i + 1i64; }
   expectUInt(u64.from(a.finalizers()), 10000, "every one has a header");
-  expectUInt(u64.from(a.blockCount()), 59, "170 to a block");
+  expectUInt(u64.from(a.blockCount()), 6, "170, then twice as many to each block after");
   expectInt(deaths, 0, "none dies before the arena");
 }
 
@@ -73,16 +77,18 @@ fn alignment() {
   expectUInt(u64.from(a.finalizers()), 50, "only the finalizing ones have headers");
 }
 
-// Larger than a block: a block of its own, and the next value a fresh one
+// Larger than the next block (8192 bytes of room after the first's 4096): a
+// block of its own, 16008 bytes (the 16000 and 8 to spare for its alignment),
+// and the next value a fresh one, since 8 are left there and a Counted needs 24
 fn large() {
   var a = Arena();
   a.alloc(Counted(1));
-  let big = a.alloc(Array[i64, 1000]() <- fill 7i64);
+  let big = a.alloc(Array[i64, 2000]() <- fill 7i64);
   a.alloc(Counted(2));
   var total = 0i64;
   var i = 0usize;
-  while i < 1000usize { total = total + big[i]; i = i + 1usize; }
-  expectInt(total, 7000, "the large value intact");
+  while i < 2000usize { total = total + big[i]; i = i + 1usize; }
+  expectInt(total, 14000, "the large value intact");
   expectUInt(u64.from(a.blockCount()), 3, "a block each side of the large one's own");
 }
 

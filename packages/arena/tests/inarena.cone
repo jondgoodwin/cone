@@ -20,7 +20,7 @@
 //   copies, and the abandoned blocks stay until the arena dies (1008 bytes of
 //   blocks left behind by each list: 16 + 32 + 64 + 128 + 256 + 512), so the
 //   two lists' blocks and words, 2 * 2032 + 2 * 48 = 4160 bytes, need a
-//   second 4096-byte block;
+//   second block (8192 bytes of room, the first block's doubled);
 // - a List[String] in an arena holds strings from another region (here a counting
 //   one standing for the heap); the arena's death runs the list's 'final', which
 //   gives every string back to where it came from, while the arena frees the list's
@@ -142,7 +142,9 @@ fn sized() {
 // takes a block of 32784 (move 2), and 32768 fits; 65536 takes 131088 (move 3),
 // 131072 fits; 262144 takes 524304 (move 4), 524288 fits; 1048576 takes 2097168
 // (move 5), which holds the list's last size, 131072 values, the capacity 100000
-// need. So the arena has 6 blocks and the list moved 5 times (it moved 9 times,
+// need. Each of those blocks is larger than the next doubling block (8208 > 8192,
+// and so on), so each has the size of its request and the doubling does not move.
+// So the arena has 6 blocks and the list moved 5 times (it moved 9 times,
 // through 10 blocks, when a block was sized to the request)
 fn grows() {
   var a = Arena();
@@ -192,7 +194,7 @@ fn interleaved() {
   expectInt(*x[199usize], 199, "the first list's values were carried over");
   expectInt(*y[0usize], 1000, "and the second's");
   expectInt(*y[199usize], 1199, "all of them");
-  expectUInt(u64.from(a.blockCount()), 2, "the abandoned blocks stay: the arena needed a second block of 4096");
+  expectUInt(u64.from(a.blockCount()), 2, "the abandoned blocks stay: the arena needed a second block");
 }
 
 // A list of strings from another region: the arena's death gives them back

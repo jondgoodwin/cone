@@ -87,7 +87,14 @@
 // (test/cases/lifetime/lifetime_inv_*.cone): another arena's key, a key used
 // without its arena, a key kept past the loop pass whose arena made it.
 //
-// Memory. A block comes from the raw blocks layer (core's 'RawBlocks'). If that fails,
+// Memory. An arena grows by blocks whose room doubles: the first has 4096 bytes
+// of room for values, each block after it twice the room of the one before, up
+// to 1 MiB, and every block after that 1 MiB (so a block count grows about
+// logarithmically to 1 MiB and linearly after, and the arena holds at most about
+// twice what it uses, plus a 1 MiB block's slack). A value needing more than the
+// next block's room gets a block of its own size, and the doubling goes on where
+// it was. 'withRoom(bytes)' makes the first block 'bytes' (4096 at least) and
+// doubles from that, to 1 MiB. A block comes from the raw blocks layer (core's 'RawBlocks'). If that fails,
 // or the room asked for cannot be counted in a usize, the arena panics. There
 // is no fallible form of 'alloc' yet ('trynew a[T](...)' is refused).
 //
@@ -194,8 +201,14 @@ pub struct ArenaGcTraceItems is Iterator[&mut Erased] {
   }
 }
 
-// Room a new block has for values, unless a value needs more
+// Room the first block has for values, unless a value needs more, and the least a
+// block made by 'withRoom' has
 const blockBytes = 4096usize;
+
+// The most room a block gets by doubling: each block after the first has twice the
+// room of the one before it, until it has this much, and every block after that
+// has this much too (unless a value needs more)
+const maxBlockBytes = 1048576usize;
 
 // An arena's state: its region and the blocks it bumps through. It is its own
 // heap object, which the Arena points to and every collection made in the arena
@@ -204,8 +217,9 @@ const blockBytes = 4096usize;
 struct ArenaCore is GcTraceElements {
   header: MemRegion;    // the region: allocate, resize and release, below
   blocks: *Block;       // the newest block, or null
-  top: usize;           // the address of its first unused byte
+  top: usize;           // the address of its first unused byte; 1 (with 'limit' 0) before the first block, so no value fits and nothing is placed at null
   limit: usize;         // the address just past its end
+  nextRoom: usize;      // the room the next block gets unless a value needs more; doubles with each block that gets it, to maxBlockBytes
   finals: *FinalNode;   // the newest header, or null
   nfinals: usize;       // how many headers the list has held
   nblocks: usize;       // how many blocks it holds
@@ -214,7 +228,7 @@ struct ArenaCore is GcTraceElements {
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
-  fn place(self: &mut, size: usize, align: usize) *u8 {
+  fn place(self: &mut, size: usize, align: usize) *u8 inline {
     self.bump(0usize, align, size) as *u8
   }
 
@@ -224,7 +238,7 @@ struct ArenaCore is GcTraceElements {
   // place first. Whatever that construction allocates in the arena lies after
   // the value in memory and goes onto the list before it, so it is finalized
   // after the value, as a value it was built from is.
-  fn reserveFinal(self: &mut, size: usize, align: usize) *u8 {
+  fn reserveFinal(self: &mut, size: usize, align: usize) *u8 inline {
     let hdr = mem.sizeof[FinalNode]();
     var al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
@@ -249,7 +263,7 @@ struct ArenaCore is GcTraceElements {
     let core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
     if core as usize == 0usize { panic("arena: out of memory for an arena"); }
     mem.writeRaw(core, ArenaCore(MemRegion(&regionAlloc, &regionResize, &regionRelease, &regionSize),
-      null, 0usize, 0usize, null, 0usize, 0usize, null, 0usize));
+      null, 1usize, 0usize, blockBytes, null, 0usize, 0usize, null, 0usize));
     core as *MemRegion
   }
 
@@ -267,20 +281,42 @@ struct ArenaCore is GcTraceElements {
   // header ends where the value starts, whatever the value's alignment, since
   // 'align' is then at least the header's and the header's size is a multiple
   // of its alignment, so the header is aligned too.
-  fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize {
-    var at = roundUp(top + hdr, align);
-    if top == 0usize || at + size > limit {
-      self.grow(hdr + size + align);
-      at = roundUp(top + hdr, align);
+  //
+  // This is the fast path, inline in each allocation: round up, compare with
+  // 'limit', store 'top'. With no block yet 'top' is 1 and 'limit' 0, so nothing
+  // fits, a zero-sized value included, and the first allocation goes to bumpSlow.
+  fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize inline {
+    let at = roundUp(top + hdr, align);
+    if at + size <= limit {
+      top = at + size;
+      at
     }
+    else {
+      self.bumpSlow(hdr, align, size)
+    }
+  }
+
+  // The same when the current block has no room (or there is none): a new
+  // block, and the value at its start
+  fn bumpSlow(self: &mut, hdr: usize, align: usize, size: usize) usize {
+    self.grow(hdr + size + align);
+    let at = roundUp(top + hdr, align);
     top = at + size;
     at
   }
 
   // A new block with room for at least 'need' bytes, made the one allocation
-  // bumps through. What was left of the one before is not used again.
+  // bumps through. What was left of the one before is not used again. Its room is
+  // 'nextRoom', which doubles for the one after (to maxBlockBytes) when it was
+  // enough; a value needing more gets a block of that size and leaves 'nextRoom'
+  // as it was, so the doubling resumes where it was.
   fn grow(self: &mut, need: usize) {
-    let room = blockRoom(need);
+    var room = nextRoom;
+    if need > room { room = need; }
+    else if room < maxBlockBytes {
+      nextRoom = room * 2usize;
+      if nextRoom > maxBlockBytes { nextRoom = maxBlockBytes; }
+    }
     let blk = newBlock(blocks, room);
     blocks = blk;
     nblocks = nblocks + 1usize;
@@ -367,6 +403,12 @@ pub struct Arena is Default, NoLoanMut, GcTraceElements {
   pub fn withRoom(bytes: usize) Arena {
     let region = ArenaCore.make();
     let core = coreOf(region);
+    // The first block has exactly 'bytes' of room (at least a 4096-byte block's),
+    // and the next doubles from that, to 1 MiB
+    var next = bytes;
+    if next > maxBlockBytes { next = maxBlockBytes; }
+    if next < blockBytes { next = blockBytes; }
+    core.nextRoom = next;
     core.grow(bytes);
     Arena(region)
   }
@@ -469,11 +511,6 @@ pub struct DynArena['=a] is NoLoanMut {
   pub fn blockCount(self: &) usize { ar.blockCount() }
 }
 
-// The room a new block gets: a block's worth, or 'need' if that is more
-fn blockRoom(need: usize) usize {
-  if need > blockBytes {need} else {blockBytes}
-}
-
 // Twice n, or the most a usize holds if that is more
 fn doubled(n: usize) usize {
   if n > (0usize - 1usize) / 2usize {0usize - 1usize} else {n * 2usize}
@@ -493,7 +530,7 @@ fn newBlock(prev: *Block, room: usize) *Block {
 }
 
 // n rounded up to a multiple of align, a power of two
-fn roundUp(n: usize, align: usize) usize {
+fn roundUp(n: usize, align: usize) usize inline {
   (n + align - 1usize) & (0usize - align)
 }
 
