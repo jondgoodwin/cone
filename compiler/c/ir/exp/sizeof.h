@@ -28,6 +28,11 @@ typedef struct SizeofNode {
 // it is refused (ErrorMetaLayout), naming the cycle where there is one. Returns 1 if refused.
 int sizeofLayoutRefused(INode *errnode, INode *type, const char *what);
 
+// A '#size', '#align' or '#f.offset' met where the front end needs the number now ('where' says where: "an
+// array length", "a 'const' initializer"). They are the code generator's constants, so the use is refused
+// (ErrorMetaLayoutConst) until the front end computes layouts. Returns 1 if 'node' is one and was refused.
+int sizeofConstRefused(INode *node, const char *where);
+
 SizeofNode *newSizeofNode();
 
 // Clone sizeof

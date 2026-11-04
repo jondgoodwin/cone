@@ -1078,7 +1078,12 @@ reflecting code cannot see and no `@reflect`: refused, naming the type, the fiel
 without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
 loop, with the call that made the instance after it. `ErrorMetaLayout` is a layout fact (`#size(T)`, `#align(T)`,
 `#f.offset`, `#f.type is Copy` or `is Move`) asked of a type whose layout is still in flight; it names the
-by-value cycle where there is one. A `#size` or `#align` without its `(T)` is `ErrorMetaFields`.
+by-value cycle where there is one, type by type from the asked type back to it. A `#size` or `#align` without its `(T)` is
+`ErrorMetaFields`. `ErrorMetaLayoutConst` is a `#size`, `#align` or `#f.offset` where the front end needs the number
+itself, which only the code generator has: the condition of a `#if` (`metaCond`), an array length
+(`arrayTypeCheck`) or a `const` initializer (`constDclTypeCheck`); each is refused at that place (`sizeofConstRefused`)
+rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
+(`#size(T) * 2`) still falls to `ErrorNotLit`.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

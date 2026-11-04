@@ -65,7 +65,17 @@ int sizeofLayoutRefused(INode *errnode, INode *type, const char *what) {
     name[0] = '\0';
     itypeSpellCat(name, sizeof(name), type, 0);
     errorMsgNode(errnode, ErrorMetaLayout,
-        "'%s' asks about the layout of '%s' while that layout is still being settled, which would answer by the order the declarations happen to be laid out in%s%s.",
-        what, name, cause ? ": " : "", cause ? cause : "");
+        "'%s' asks about the layout of '%s' while that layout is still being settled, which would answer by the order the declarations happen to be laid out in%s%s%s%s.",
+        what, name, cause ? ": " : "", cause ? name : "", cause ? " " : "", cause ? cause : "");
+    return 1;
+}
+
+int sizeofConstRefused(INode *node, const char *where) {
+    if (node == NULL || node->tag != SizeofTag)
+        return 0;
+    SizeofNode *size = (SizeofNode*)node;
+    errorMsgNode(node, ErrorMetaLayoutConst,
+        "%s is the code generator's constant, which the front end has not worked out, so it cannot be %s yet. Use it in an expression the program runs, or write the number.",
+        size->what == SizeofAlign ? "'#align'" : size->what == SizeofOffset ? "'#f.offset'" : "'#size'", where);
     return 1;
 }

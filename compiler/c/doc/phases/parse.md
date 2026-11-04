@@ -1336,7 +1336,9 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   (`fieldPropAnswer`) with the instance's type and field. None is folded by the front end: the code
   generator reads the answer from the layout it generated (`genlexpr.c`, `SizeofTag`). Asked of a type whose
   layout is in flight (`structLayoutUnsettled`), the question is `ErrorMetaLayout` (`sizeofLayoutRefused`),
-  naming the by-value cycle where `itypeNoSizeCause` finds one. A type-fact `#if` whose subject is a
+  naming the by-value cycle where `itypeNoSizeCause` finds one. Because the front end holds no number, a
+  `#size`/`#align` that needs it now is `ErrorMetaLayoutConst` (`sizeofConstRefused`): in a `#if` condition
+  (`metaCond`), as an array length (`arrayTypeCheck`) or as a `const` initializer (`constDclTypeCheck`). A type-fact `#if` whose subject is a
   `#f.type` (`metaFieldSubject`) is decided like any other, with `Copy` and `Move` guarded the same way
   (`genericHashAsking`).
 

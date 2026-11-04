@@ -376,6 +376,13 @@ static MetaVal metaPrimary(MetaKind hint) {
             &lex->val.ident->namestr);
         metaSkipCond();
         return metaVal(MetaBad, 0);
+    // A layout fact is the code generator's constant, so a '#if' cannot be decided by it yet
+    case HashSizeToken:
+    case HashAlignToken:
+        errorMsgLex(ErrorMetaLayoutConst, "'%s' is the code generator's constant, which the front end has not worked out, so it cannot decide a '#if' yet. Ask it in an expression the program runs ('if %s(T) > 16 {..}'), where the code generator folds it.",
+            lexIsToken(HashAlignToken) ? "#align" : "#size", lexIsToken(HashAlignToken) ? "#align" : "#size");
+        metaSkipCond();
+        return metaVal(MetaBad, 0);
     default:
         // A '#' word the lexer refused took its place: that was reported
         if (lexHashDropped != metaDropMark) {
