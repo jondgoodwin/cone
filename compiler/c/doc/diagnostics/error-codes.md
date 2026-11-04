@@ -1071,7 +1071,9 @@ is the clone for an instance: `T` is no struct (a number, a reference, an enum, 
 `#f.region` is asked of a field with none written. `ErrorMetaFieldsPrivate` is a type with a private field the
 reflecting code cannot see and no `@reflect`: refused, naming the type, the field and the opt-in, because a list
 without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
-loop, with the call that made the instance after it.
+loop, with the call that made the instance after it. `ErrorMetaLayout` is a layout fact (`#size(T)`, `#align(T)`,
+`#f.offset`, `#f.type is Copy` or `is Move`) asked of a type whose layout is still in flight; it names the
+by-value cycle where there is one. A `#size` or `#align` without its `(T)` is `ErrorMetaFields`.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

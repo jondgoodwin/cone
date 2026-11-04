@@ -205,6 +205,8 @@ void keywordInit() {
     keyAdd("#define", HashDefineToken);
     keyAdd("#each", HashEachToken);
     keyAdd("#fields", HashFieldsToken);
+    keyAdd("#size", HashSizeToken);
+    keyAdd("#align", HashAlignToken);
     keyAdd("@reflect", ReflectToken);
 
     // Words the language claims but has not implemented yet. Holding them now
@@ -1125,7 +1127,7 @@ int lexScanIdent(char *srcp) {
                         return 1;
                     }
                     errorMsgLex(ErrorReserved,
-                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #each, #fields, #os, #arch, #debug, #defined and #define are built",
+                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #each, #fields, #size, #align, #os, #arch, #debug, #defined and #define are built",
                         &lex->val.ident->namestr);
                     ++lexHashDropped;
                     if (!lexInHashCond)

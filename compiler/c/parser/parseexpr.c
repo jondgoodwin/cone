@@ -465,6 +465,9 @@ INode *parseTerm(ParseState *parse) {
     case AsyncToken:
         parseBehaviourWords("a function's body");
         return NULL;
+    case HashSizeToken:
+    case HashAlignToken:
+        return parseMetaLayout(parse);
     // A fact of the build is read in a '#if' condition; a '#elif' or '#else' continues a '#if'
     case HashOsToken:
     case HashArchToken:

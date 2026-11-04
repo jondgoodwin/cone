@@ -219,6 +219,8 @@ enum TokenTypes {
     HashDefineToken, // '#define("NAME")': the integer a '-D' gave it, 0 where none did, a fact
     HashEachToken, // '#each': repeats a block once per item of a constant list
     HashFieldsToken, // '#fields': the list of a type parameter's field descriptions, in '#each #f in #fields(T)'
+    HashSizeToken, // '#size(T)': the byte size of a type, once its layout settles
+    HashAlignToken, // '#align(T)': the byte alignment of a type, once its layout settles
     ReflectToken,  // '@reflect' (placeholder spelling): the type lets reflection see its private fields
     MetaVarToken,  // '#name' where the meta layer has declared it ('#each #x in ..', 'let #n', 'var #i'): the token's ident is the name with its '#'
 

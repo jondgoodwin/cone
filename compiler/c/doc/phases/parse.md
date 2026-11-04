@@ -1330,7 +1330,15 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   non-struct. A loop cloned while T is still
   a parameter of another generic is copied whole to be decided later. The `--meta-ir` dump does not
   show these loops. Not built: `#f.attrs` (there are no field attributes), `#fields` outside a `#each`,
-  layout facts (PR 2 of step 4), generated members (step 5).
+  generated members (step 5).
+- **Layout facts.** `#size(T)` and `#align(T)` (`parseMetaLayout`, `HashSizeToken`/`HashAlignToken`) are a
+  `SizeofNode` with `what` set; `#f.offset` is a `SizeofNode` of kind `SizeofOffset`, made by the clone
+  (`fieldPropAnswer`) with the instance's type and field. None is folded by the front end: the code
+  generator reads the answer from the layout it generated (`genlexpr.c`, `SizeofTag`). Asked of a type whose
+  layout is in flight (`structLayoutUnsettled`), the question is `ErrorMetaLayout` (`sizeofLayoutRefused`),
+  naming the by-value cycle where `itypeNoSizeCause` finds one. A type-fact `#if` whose subject is a
+  `#f.type` (`metaFieldSubject`) is decided like any other, with `Copy` and `Move` guarded the same way
+  (`genericHashAsking`).
 
 ## 7. Contract
 

@@ -2329,6 +2329,8 @@ static void genericAskerLeave(GenericAsker *asker) {
 // decided only where its subject is one of 'parms': a clause over a parameter
 // bound already was decided then. Inside a '||' or a '&&', a subject the
 // clone substituted is asked as it stands, since the whole is decided here.
+static int genericHashAsking = 0;    // Set while a type-fact '#if' is decided (genericHashCondHolds)
+
 static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, int nested) {
     // '!' (a type-fact '#if' has it, and the chain's '#else' is the negation of the
     // conditions before it): what is decided is reversed, what is not stays so
@@ -2391,6 +2393,10 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
         return WhereUnknown;
     if (trait && genericLayoutUnasked)
         return WhereLate;
+    // Whether a type moves is a layout fact: asked of one still being laid out, a '#if' is refused
+    if (trait && genericHashAsking && (trait == moveTrait || trait == copyTrait)
+        && sizeofLayoutRefused(cond, type, trait == moveTrait ? "is Move" : "is Copy"))
+        return WhereFalse;
     if (trait)
         return genericTypeIsHow(type, trait, genericStaticHow(trait, parm)) ? WhereTrue : WhereFalse;
     // A type is met by itself alone, but for an actor trait's handle, which an
@@ -2414,7 +2420,10 @@ static WhereValue genericEntryValue(INode *generic, INode *cond, Nodes *parms, N
 // asked as the generic's own code would ask it. Every clause is asked of its
 // subject as it stands, since the clone substituted it.
 int genericHashCondHolds(INode *cond) {
+    int svasking = genericHashAsking;
+    genericHashAsking = 1;
     WhereValue value = genericConditionValue(cond, NULL, NULL, 1);
+    genericHashAsking = svasking;
     return value == WhereTrue ? 1 : value == WhereFalse ? 0 : -1;
 }
 
