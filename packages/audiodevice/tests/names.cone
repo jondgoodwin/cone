@@ -1,0 +1,48 @@
+// Choosing a playback device by name: the matching over a made-up list of
+// names (no device is touched), then `playbackNames` and `startOn` on SDL's
+// "dummy" audio driver, which plays nothing: a name nothing matches falls back
+// to the default device.
+mod names;
+
+import testing use *;
+import collections use *;
+import env;
+import thread;
+import time use Duration;
+import audiodevice use *;
+
+fn main() i32 {
+  var names = List[String]();
+  names.push(String.from("Speakers (Realtek(R) Audio)"));
+  names.push(String.from("Headphones (Oculus Virtual Audio Device)"));
+  names.push(String.from("Headset Earphone (Meta Quest)"));
+  var wants = List[String]();
+  wants.push(String.from("oculus"));
+  wants.push(String.from("QUEST"));
+  expect(!nameMatches(&names[0usize], &wants), "speakers match neither");
+  expect(nameMatches(&names[1usize], &wants), "Oculus matches, whatever the case");
+  expect(nameMatches(&names[2usize], &wants), "Quest matches, whatever the case");
+  expectUInt(u64.from(firstMatch(&names, &wants)), 1u64, "the first match is chosen");
+  var none = List[String]();
+  none.push(String.from("rift"));
+  none.push(String());
+  expectUInt(u64.from(firstMatch(&names, &none)), 3u64, "no match answers the list's length");
+  var empty = List[String]();
+  expectUInt(u64.from(firstMatch(&names, &empty)), 3u64, "no wants, no match");
+
+  env.set("SDL_AUDIODRIVER", "dummy");
+  let seen = playbackNames();
+  expect(seen.len() < 100usize, "the dummy driver lists its devices without trouble");
+  match Device.startOn(&none, 48000u32, 8u32, 40u32) {
+    case var Ok(s) {
+      expectUInt(u64.from(s.deviceName.len()), 0u64, "no match opens the default, unnamed");
+      let device, var control = s.(device, control);
+      thread.sleep(Duration.fromMillis(50));
+      expectInt(i64.from(device.stop(&mut control)), 0i64, "the feeder ended cleanly");
+    }
+    case is Err {
+      require(false, "the dummy audio device opened by default");
+    }
+  }
+  done()
+}
