@@ -28,6 +28,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->compute[0] = node->compute[1] = node->compute[2] = 0;
     node->closure = NULL;
     node->generatedFor = NULL;
+    node->gen = NULL;
     return node;
 }
 
@@ -213,6 +214,10 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         nstate->expander = (INode*)fndclnode;
         exportCondStep(fndclnode);
     }
+
+    // A method made for each field of a type parameter: the type it describes (fields.h)
+    if (fndclnode->gen)
+        fieldEachSubjectNameRes(nstate, fndclnode->gen->fe);
 
     nametblHookPush();
     // Resolve generic parameters inside the hooked context. Resolving one hooks
