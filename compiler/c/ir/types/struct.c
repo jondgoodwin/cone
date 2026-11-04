@@ -153,11 +153,14 @@ static void structCloneGenFields(CloneState *cstate, StructNode *newnode, Struct
         return;
     if (run->undecided) {
         // T is still a parameter of an enclosing generic: kept as written, for its instances to decide
+        fieldEachKeepBegin(run);
         for (uint32_t j = from; j < to; ++j) {
             FieldDclNode *fld = (FieldDclNode*)cloneNode(cstate, node->fields.nodes[j]);
+            fld->gen = fieldEachKeptGen(run, ((FieldDclNode*)node->fields.nodes[j])->gen);
             namespaceAdd(&newnode->namespace, fld->namesym, (INode*)fld);
             nodelistAdd(&newnode->fields, (INode*)fld);
         }
+        fieldEachPassEnd(run);
         return;
     }
     for (uint32_t i = 0; i < run->fields->used; ++i) {
@@ -407,6 +410,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             genfill = newNodes(8);
         if (run->undecided) {
             FnDclNode *shell = cloneFnDclShell(tmpl);
+            shell->gen = fieldEachKeptGen(run, tmpl->gen);
             iNsTypeAddFn((INsTypeNode*)newnode, shell);
             nodesAdd(&genfill, (INode*)tmpl);
             nodesAdd(&genfill, (INode*)shell);
@@ -458,7 +462,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             FieldEachRun *run = (FieldEachRun*)nodesGet(genfill, gi + 2);
             uintptr_t place = (uintptr_t)nodesGet(genfill, gi + 3);
             if (place == 0) {
+                fieldEachKeepBegin(run);
                 cloneFnDclFill(cstate, shell, tmpl);
+                fieldEachPassEnd(run);
                 continue;
             }
             if (!fieldEachPassBegin(run, (uint32_t)(place - 1), (INode*)tmpl)) {

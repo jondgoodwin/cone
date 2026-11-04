@@ -122,6 +122,23 @@ static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, INod
     }
 }
 
+void fieldEachKeepBegin(FieldEachRun *run) {
+    for (int p = 0; p < FieldPropCount; ++p)
+        run->fe->propnames[p]->node = (INode*)run->fe->props[p];
+}
+
+GenName *fieldEachKeptGen(FieldEachRun *run, GenName *gen) {
+    if (run->kept == NULL) {
+        run->kept = (FieldEach*)memAllocBlk(sizeof(FieldEach));
+        memcpy(run->kept, run->fe, sizeof(FieldEach));
+        run->kept->subject = run->subj ? run->subj : run->fe->subject;
+    }
+    GenName *copy = (GenName*)memAllocBlk(sizeof(GenName));
+    memcpy(copy, gen, sizeof(GenName));
+    copy->fe = run->kept;
+    return copy;
+}
+
 FieldEachRun *fieldEachOpen(CloneState *cstate, FieldEach *fe, INode *errnode) {
     FieldEachRun *run = (FieldEachRun*)memAllocBlk(sizeof(FieldEachRun));
     memset(run, 0, sizeof(FieldEachRun));

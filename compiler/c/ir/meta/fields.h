@@ -65,7 +65,15 @@ typedef struct FieldEachRun {
     int failed;             // An error was reported: nothing is expanded
     INode *oldhook[FieldPropCount];
     INode *oldvar;
+    FieldEach *kept;        // Undecided: the loop's copy, over the instance's T, that the members kept as written hold
 } FieldEachRun;
+
+// An undecided loop's member kept as written: its name's GenName, joined to the run's own copy of the
+// loop (over the copy's T), so that each instance of the copy decides it for its own T
+// Hook a loop's properties to themselves while its members are copied as written, so a copy of '#f.type' is a use of the same placeholder
+void fieldEachKeepBegin(FieldEachRun *run);
+
+GenName *fieldEachKeptGen(FieldEachRun *run, GenName *gen);
 
 // Decide T for an instance (the caller holds a cloneDclPush); errors are reported at 'errnode'
 FieldEachRun *fieldEachOpen(CloneState *cstate, FieldEach *fe, INode *errnode);
