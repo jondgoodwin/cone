@@ -23,6 +23,7 @@ typedef struct FnDclNode {
     uint16_t compute[3];
     struct ClosureInfo *closure;  // The '()' of a closure literal's hidden struct: what its body captured (closure.h), else NULL
     INode *generatedFor;          // The type a function the compiler generated is part of (structSeesPrivate), else NULL
+    struct GenName *gen;          // Written in a '#each #f in #fields(T)' in a generic struct's braces, under a name made of the described field's (meta/fields.h): the instance has one of this per field of T. NULL on any other function
 } FnDclNode;
 
 // Syntactic sugar: turn a body's last expression into an explicit return
