@@ -1271,6 +1271,47 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   write through the other's smaller one. A build `#if` nested in a type question's branch, or around
   the chain, is a chain of its own: the package decides it and the include file is cut to the branch
   taken (test `meta_typefact_include_nested`).
+- **`#each #x in list { body }`** among a block's statements (`parseHashEach`, called from
+  `parseBlockStmts`) is expanded here, by reading the body again. `lexMarkSave` records everything the
+  lexer holds of where it stands at the body's `{`; for each item the lexer is put back there
+  (`lexMarkRestore`), `#x` is bound to the item and `parseExprBlock` reads the body as a block of its own,
+  which becomes a statement of the enclosing block. Name resolution and the checks see ordinary blocks and
+  never a loop. A list is `[a, b]` read as expressions, `(T, U)` read as types, or a meta variable that
+  holds one (`MetaItems`); the items are nodes copied wherever the variable is used (`metaCopy`), so
+  `#x` in a value position is a copy of the item's expression, and in a type position a copy of its
+  type (`parseTerm` hands a `MetaVarToken` to `parseMetaTerm`, which `parseIsTypeStart` admits too).
+  The empty list reads its body past (`metaEachSkip`) and makes none.
+  - **Meta variables** are held by the parser alone (`metaEnv`, a stack scoped by `parseMetaScope` in
+    `parseBlockStmts`, so a block's own are gone at its end). `let #n = 3;` / `var #i = 0;` declare a
+    number (`metaIntRead`: integer literals, meta variables that hold one, `+ - * / %`, parentheses,
+    unary `-`); `let #xs = [1, 2];` or `(i32, i64)` a list (a `(` is a list only if a comma stands in it at
+    its own depth, `metaParenHasComma`); `#i += 1;` (`parseMetaAssign`) changes a `var` as it is read, so
+    a count accumulates over the passes in order. A number used as a term is an untyped integer literal.
+    The lexer turns a `#` word into `MetaVarToken` only where it is bound or being declared
+    (`parseMetaIsBound`, `lexMetaDecl`); anywhere else it is `ErrorReserved` as before, so a
+    misspelling is still reported.
+  - **The step quota** (`--meta-steps`, default 10000) is counted over an outermost `#each` and the
+    ones inside it, a step being a pass; the pass over it is `ErrorMetaQuota`, naming the loop, and the
+    rest of the loops in that outermost one are read past. A pass that reports an error ends the loop,
+    since the rest would say the same again.
+  - **Which pass an error was in.** Each pass block carries an `EachPass` (`BlockNode.eachpass`),
+    which `errorEachPass` is set to while the pass is read (here) and while `blockNameRes`,
+    `blockTypeCheck` and `blockFlow` handle the block, so an error in any phase is followed by
+    `... in pass 2 of 3 of this '#each', where #x is 2.5`, the outer passes after the inner. A generic
+    body's instance copies the block with the pointer, so an instance's error names the pass too.
+  - **`--meta-ir`** writes `<name>.meta`: each outermost `#each`, with the IR of each pass as it stands
+    after the parse (`metaEachDump`).
+  - **The include file.** A generic's body is copied as written, `#each` and meta variables included, and
+    the importer reads and expands it again, so the expansion may depend on nothing outside the body: a
+    meta variable is block-scoped for that reason, and a list is literal or such a variable. A build
+    `#if` inside the body is cut once: a pass after the first reads the same text, so `metaRepeat` keeps
+    it from noting the same cut again. A chain mixing a build fact and a type fact is refused inside a
+    pass as anywhere. The quota is the one option that can differ between a package's build and its
+    importer's, and it can only refuse an expansion, not change one.
+  - **Where it is not built.** A `#each` at a module's level, in a type's braces, in an `extern` block
+    or in expression position is `ErrorMetaEachPlace` (`parseMetaStray`), its header and block read past.
+    It would generate declarations, which waits for generated names. A `#if` condition cannot ask
+    about a meta variable (`ErrorMetaFact`).
 
 ## 7. Contract
 

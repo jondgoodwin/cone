@@ -1395,7 +1395,7 @@ static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **ite
                 "A '#if' that asks what a type parameter is stands in the body of a generic function or type: an 'extern' block declares what exists whatever a type is.", NULL);
             continue;
         }
-        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
             parseMetaStray(parse);
             continue;
         }
@@ -1460,7 +1460,7 @@ static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstar
                 pastheader = 1;
             continue;
         }
-        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
             parseMetaStray(parse);
             continue;
         }

@@ -393,4 +393,23 @@ void parseMetaStray(ParseState *parse);
 // '#os', '#arch', '#debug', '#defined' or '#define' met outside a '#if' condition: reported and passed
 void parseMetaFactStray(void);
 
+// parsemeta.c: '#each' and the meta variables, in a function body. '#each #x in list { body }'
+// reads its body again for each item of the list with '#x' bound to it, each pass a block of its
+// own added to 'blk'; the lexer is on the '#each'. A list is '[a, b]' of values, '(T, U)' of types or
+// a meta constant. 'let #n = 3;' and 'var #i = 0;' declare numbers (or lists) that '#i += 1;' changes
+// as the passes are read, in order; a '#name' used as a value is what it holds then
+void parseHashEach(ParseState *parse, BlockNode *blk);
+// Is the lexer on the 'let' or 'var' of a meta variable, 'let #n'?
+int parseMetaIsDecl(void);
+void parseMetaDecl(ParseState *parse);
+// Is the lexer on a meta variable being given a value, '#i += 1'?
+int parseMetaIsAssign(void);
+void parseMetaAssign(ParseState *parse);
+// A meta variable met as a term
+INode *parseMetaTerm(ParseState *parse);
+// A block of statements keeps the meta variables it declares to itself: the mark taken as it
+// begins is given back as it ends
+uint32_t parseMetaScope(void);
+void parseMetaScopeEnd(uint32_t mark);
+
 #endif

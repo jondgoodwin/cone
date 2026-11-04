@@ -959,7 +959,7 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
                 "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
             continue;
         }
-        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
             parseMetaStray(parse);
             continue;
         }
@@ -1955,6 +1955,7 @@ INode* parseType(ParseState *parse) {
 int parseIsTypeStart() {
     switch (lex->toktype) {
     case IdentToken:    // type identifier (or generic)
+    case MetaVarToken:  // a meta variable standing for a type ('#each #T in (i32, f64)')
     case VoidToken:     // void
     case QuesToken:     // Optional type sugar
     case LBracketToken: // Array

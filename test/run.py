@@ -171,7 +171,7 @@ ANNOTATABLE = ("reject", "warn")
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
-    "stderr_mask", "timeout", "link_options",
+    "stderr_mask", "timeout", "link_options", "notes",
 }
 
 # Wall-clock seconds per process (R1.3) where neither the command line nor the
@@ -730,6 +730,9 @@ class Scenario:
     # '<masked>' before it is compared with the .err file: what differs from
     # run to run, such as a thread's identity
     stderr_mask: tuple[str, ...] = ()
+    # 'reject' only: text the compiler's output must contain, for the lines under a diagnostic that
+    # are no diagnostic of their own
+    notes: tuple[str, ...] = ()
     # Seconds each process of this scenario may run, where the default does not
     # suit it (a program that is slow under load); see effective_timeout
     timeout: float | None = None
@@ -862,6 +865,11 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         elif not isinstance(program_exit, int):
             raise SuiteError(f"{where}: 'program_exit' is an integer, or \"abort\" for a program"
                              f" that panics")
+        notes = table.get("notes", [])
+        if "notes" in table and category != "reject":
+            raise SuiteError(f"{where}: 'notes' pins lines of a rejection's output, and belongs to a 'reject' scenario")
+        if not isinstance(notes, list) or not all(isinstance(n, str) for n in notes):
+            raise SuiteError(f"{where}: 'notes' is a list of strings")
         stderr_mask = table.get("stderr_mask", [])
         if "stderr_mask" in table and category != "run":
             raise SuiteError(f"{where}: only a 'run' scenario's program writes stderr, so"
@@ -892,9 +900,9 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm' or 'stdout'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta' or 'stdout'")
             # 'object' reads what a package the scenario links generated
             if "object" in entry:
                 if entry["target"] == "stdout":
@@ -938,6 +946,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             includes=includes,
             program_exit=program_exit,
             stderr_mask=tuple(stderr_mask),
+            notes=tuple(notes),
             timeout=timeout,
             xfail=bool(table.get("xfail", False)),
         )
@@ -2584,6 +2593,8 @@ class Runner:
             options.append("--llvmir")
         if any(c.target == "asm" for c in scenario.checks):
             options.append("--asm")
+        if any(c.target == "meta" for c in scenario.checks):
+            options.append("--meta-ir")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
 
@@ -2673,6 +2684,12 @@ class Runner:
         self.check_exit(result, scenario, compiled)
         if scenario.category == "reject":
             self.check_rejection(result, scenario, diagnostics)
+            # The lines under a diagnostic that are no diagnostic of their own -- which pass of a
+            # '#each' it was in -- are pinned by the text they must contain
+            for note in scenario.notes:
+                if note not in compiled.stderr:
+                    result.status = FAIL
+                    result.problems.append(f"the compiler's output lacks the note {note!r}")
         elif scenario.category == "warn":
             self.check_warning(result, scenario, diagnostics)
         elif scenario.category == "recover":
@@ -2688,6 +2705,7 @@ class Runner:
             self.check_artifacts(result, scenario, out_dir, "preir")
             self.check_artifacts(result, scenario, out_dir, "symbols")
             self.check_artifacts(result, scenario, out_dir, "asm")
+            self.check_artifacts(result, scenario, out_dir, "meta")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -3013,6 +3031,15 @@ class Runner:
                     (out_dir / f"{stem}.symbols").write_text(
                         symbols[stem], encoding="utf-8")
                 text = symbols[stem]
+            elif check.target == "meta":
+                # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
+                artifact = out_dir / f"{stem}.meta"
+                if not artifact.exists():
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r}: no '#each' dump at {artifact.name}")
+                    continue
+                text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
             elif check.target == "asm":
                 # What --asm wrote: the target's own assembly, named as its
                 # tools name it (genlOut)

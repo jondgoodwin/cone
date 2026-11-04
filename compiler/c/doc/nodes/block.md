@@ -26,6 +26,7 @@ caused, were measured.*
 | `breaks` | the `BreakRetNode`s targeting this block. NULL for a regular block; allocated for a loop; created lazily for an **inline** function's body |
 | `vtype` | `unknownType` until the end of type check |
 | `flowmark` | where this block's scope starts on the flow stack. Set by `blockFlow` on entry and **valid only while flow is inside the block**; read by a `break` or `continue` naming it, to know how many scopes it is leaving |
+| `eachpass` | on a block that is one pass of a `#each` ([Parse](../phases/parse.md), "The meta layer"), which pass of which loop; NULL on any other block. `blockNameRes`, `blockTypeCheck` and `blockFlow` set `errorEachPass` to it while they handle the block, so an error says which pass it was in. Cloning copies the pointer |
 
 | Flag | Means |
 | --- | --- |

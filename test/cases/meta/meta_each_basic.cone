@@ -1,0 +1,94 @@
+// '#each' over a constant list (mod-generativity.html#meta): the body is read again for each
+// item, with '#x' standing for it, and each pass is a block of its own. The passes are made
+// while the program is parsed, so what is compiled is the unrolled code.
+//
+// The printed values were checked by hand against the source:
+//   unrolled      10, 20, 30 each doubled and added: 120
+//   scopes        each pass declares its own 'let t'; none sees another's: 1, 2, 3 joined
+//                 as digits, ((0 * 10 + 1) * 10 + 2) * 10 + 3 = 123
+//   sum           the items 8 + 16 + 32 of a meta constant: 56
+//   count         'var #i' counts the passes in the order they were read: before each item
+//                 0, 1, 2 and after the loop 3
+//   perType       the same body over i32, i64 and f64: a value of each type is made,
+//                 doubled, and its size printed: 4, 8, 8 bytes
+//   nested        outer items 1, 2 and inner 10, 20: 1*10 + 1*20 + 2*10 + 2*20 = 90
+//   floats        2.5 and 0.5 added: 3.0, printed as 3
+//   empty         a list of nothing makes no pass: the body is read and dropped
+//   typed         a literal takes the type it is wanted as: u8 200 + 50 = 250
+//   negative      -3 and 4: -3 * 2 + 4 * 2 = 2
+
+mod meta_each_basic;
+
+import stdio use *;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  var total = 0i64;
+  #each #x in [10, 20, 30] {
+    total = total + i64.from(#x) * 2;
+  }
+  show("unrolled", total);
+
+  var seen = 0i64;
+  #each #x in [1, 2, 3] {
+    let t = #x;
+    seen = seen * 10 + i64.from(t);
+  }
+  show("scopes", seen);
+
+  let #sizes = [8, 16, 32];
+  var sum = 0i64;
+  #each #s in #sizes {
+    sum = sum + #s;
+  }
+  show("sum", sum);
+
+  var #i = 0;
+  #each #x in [5, 6, 7] {
+    show("count before", #i);
+    #i += 1;
+  }
+  show("count after", #i);
+
+  #each #T in (i32, i64, f64) {
+    let v: #T = 1;
+    show("perType size", i64.from(mem.sizeof[#T]()));
+  }
+
+  var nested = 0i64;
+  #each #a in [1, 2] {
+    #each #b in [10, 20] {
+      nested = nested + i64.from(#a) * i64.from(#b);
+    }
+  }
+  show("nested", nested);
+
+  var f = 0.0;
+  #each #h in [2.5, 0.5] {
+    f = f + #h;
+  }
+  show("floats", i64.from(f));
+
+  #each #n in [] {
+    show("never", 1);
+  }
+
+  let big: u8 = 200;
+  var u = big;
+  #each #d in [50] {
+    u = u + #d;
+  }
+  show("typed", i64.from(u));
+
+  var neg = 0i64;
+  #each #m in [-3, 4] {
+    neg = neg + i64.from(#m) * 2;
+  }
+  show("negative", neg);
+}
