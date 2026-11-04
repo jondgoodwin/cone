@@ -606,6 +606,11 @@ category = "run"
 description = "How a send to the console brackets when sends nest: a parenthesized String send is a value of the outer record, a function a piece calls that prints writes its own record first, a held record takes only what is sent to it, and a toText writes into the record of the statement that called it"
 tags = ["runtime"]
 
+[scenario.module_text_interp]
+category = "run"
+description = "An interpolated string sent directly is exactly the send list it spells (print, a String, a held TextOut, a toText body), doubled braces and escapes, a multi-line literal, and elsewhere it is a String: stored, returned, passed"
+tags = ["runtime"]
+
 [scenario.module_text_refuse]
 category = "reject"
 description = "A value with no toText sent as text is refused, naming the type and the method: to a String (alone and among pieces), to the console, to a writer, and in a list to a record held in a variable; a type with one is accepted beside them"
@@ -4078,6 +4083,14 @@ category = "run"
 description = "The debug form a call to toDebug generates for a struct, an enum's variants, a tuple and a nested value: field names, quoted and escaped text, a type's own toDebug used inside"
 tags = ["runtime"]
 
+# A generated form is never pub, so its symbol is internal (genllvm.c, genlInstanceIsPrivate):
+# two library packages that each generate a 'toDebug#1' (the serial restarts in every compile)
+# define it in their own objects alone, and link into one program together.
+[[scenario.module_debug_basic.check]]
+name = "the-generated-form-is-internal"
+target = "preir"
+contains = ["define internal %void @_CINvC4coreu15_toDebug1_"]
+
 [scenario.module_debug_more]
 category = "run"
 description = "The debug form of Option and Result, a fixed array, a List and a Dict (generic free functions of core and collections), and escaped text: quotes, backslash, a tab, a control character, multibyte letters"
@@ -4132,4 +4145,91 @@ diagnostics = 1
 [scenario.module_debug_private]
 category = "run"
 description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_text_interp_threads]
+category = "run"
+description = "An interpolated string sent to the console is one record: eight threads print 60 identical interpolated lines each and none is torn"
+tags = ["runtime"]
+
+[scenario.module_text_interp_await]
+category = "run"
+description = "An 'await' in the braces of an interpolated string sent from a behaviour is an await among the pieces of the send list: the awaited pieces are made first and the statement is one whole record"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_interp_refuse]
+category = "reject"
+description = "An interpolated string refuses a lone close brace, empty braces, text after the expression, a value with no toText (sent and stored), and reports an error inside the braces at its real line and column, on a later line of a multi-line literal too"
+tags = ["parse", "typecheck"]
+
+[scenario.module_text_interp_unclosed]
+category = "reject"
+description = "An open brace of an interpolated string that no close brace closes is refused at the brace"
+tags = ["parse"]
+
+[scenario.module_text_interp_nocollections]
+category = "reject"
+description = "An interpolated string met anywhere but a send is a String: with no import of collections it is refused with a message saying what to import, and the string sent directly is accepted"
+tags = ["typecheck"]
+
+[scenario.module_text_interp_refuse_types]
+category = "reject"
+description = "An interpolated string sending a value with no toText is refused (sent, and stored as a String), and an error inside the braces is reported at its real line and column, on a later line of a multi-line literal too"
+tags = ["typecheck"]
+
+[scenario.module_text_interp_refuse_names]
+category = "reject"
+description = "An error inside the braces of an interpolated string is reported at its real line and column, on a later line of a multi-line literal too"
+tags = ["typecheck"]
+
+# -------- the 'wants' guard on text sends --------
+# A receiver with 'wants(self: &) bool' decides first: declined, the pieces are not evaluated.
+[scenario.module_text_wants]
+category = "run"
+description = "A text send to a receiver with 'wants' (a text sink, a record maker, a global, a send that builds its receiver) makes none of its pieces when it says no, for a single piece, a list and a '$\"...\"'; the receiver is evaluated once either way, and with it on the output is what it is with no 'wants'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_text_wants_move]
+category = "run"
+description = "A piece that moves, given to a sink's own '<-' behind 'wants': skipped, the variable is finalized once at the scope's end; sent, the callee finalizes it once"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_move_use]
+category = "reject"
+description = "A piece moved into a send behind 'wants' is maybe-moved, and reading it afterward is the ordinary moved-out refusal"
+tags = ["flow"]
+
+[scenario.module_text_wants_warn]
+category = "warn"
+description = "WarnTextEffect: an expression sent to a receiver with 'wants' that changes state (a block assigning or changing in place, a '&mut' call, a send, inside a '$\"...\"') is warned of; a read-only call, and a receiver with no 'wants', are not; the compile succeeds"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.module_text_wants_await]
+category = "run"
+description = "An 'await' among the pieces of a send behind 'wants': declined, none runs; accepted, the awaited pieces are made first and the record is whole"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_ir]
+category = "compile"
+description = "A guarded send with constant pieces, optimized, is a load of the flag, a compare and a branch around the record, which is built only on the branch taken"
+tags = ["genllvm"]
+
+[[scenario.module_text_wants_ir.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.module_text_wants_ir.check]]
+name = "the-flag-is-loaded-and-the-record-is-behind-the-branch"
+target = "llvmir"
+contains = ["load i1, ptr %0", "br i1 %1, label %ifblk, label %endif", "ifblk:"]
+
+[scenario.module_debug_work]
+category = "run"
+description = "A generated toDebug over two Rc edges round a cycle, and over a tree with parent pointers, ends: the writer counts the bodies it enters and writes '...' past 65,536, resetting when a value is done, so 70,000 separate values in a List are each written whole"
+tags = ["runtime"]
+
+[scenario.module_debug_actor]
+category = "run"
+description = "A struct holding a concrete actor's handle has a generated toDebug, and writes the handle as the actor's own name, and an actor-trait handle as the trait's name"
 tags = ["typecheck", "runtime"]

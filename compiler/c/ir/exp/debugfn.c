@@ -27,8 +27,8 @@
 //
 // What is not a struct or enum: a number or bool is written as its text (the
 // call becomes 'toText'); a char through the writer's putDebugChar; a tuple
-// element by element; a raw pointer, a function and a trait object as a
-// fixed mark; an array, a List and a Dict through a generic free function of core or
+// element by element; a raw pointer, a function, a trait object and an actor's
+// handle as a fixed mark (the actor's own name, <Counter>, for the handle); an array, a List and a Dict through a generic free function of core or
 // collections (debugCollectionFn: a method would be checked for every instance). A
 // str has 'toDebug' in core.
 
@@ -248,13 +248,13 @@ static FnDclNode *debugMake(TypeCheckState *pstate, INode *valtype, INode *lex) 
     DebugBuild b = { lex, self, out };
     BlockNode *body = debugBlock(&b);
     if (valtype->tag == StructTag) {
-        // if out.enter() { <fields>; out.leave(); }
+        // if out.debugEnter() { <fields>; out.debugLeave(); }
         IfNode *guard = newIfNode();
         inodeLexCopy((INode*)guard, lex);
-        nodesAdd(&guard->condblk, debugOutCall(&b, "enter", NULL));
+        nodesAdd(&guard->condblk, debugOutCall(&b, "debugEnter", NULL));
         BlockNode *inner = debugBlock(&b);
         debugStructBody(&b, inner, (StructNode*)valtype);
-        debugStmt(inner, debugOutCall(&b, "leave", NULL));
+        debugStmt(inner, debugOutCall(&b, "debugLeave", NULL));
         nodesAdd(&guard->condblk, (INode*)inner);
         debugStmt(body, (INode*)guard);
     }
@@ -417,6 +417,23 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked
             return 0;
         if (strncmp(&st->namesym->namestr, "closure#", 8) == 0) {
             debugReplaceWithMark(pstate, nodep, "<closure>");
+            return 1;
+        }
+        // An actor's state is not the caller's to read: its handle is written as the
+        // actor's name, as a trait object is written as its trait's name
+        ActorInfo *actor = actorOfHandle((INode*)st);
+        if (actor != NULL) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "<%s>", &actor->handle->namesym->namestr);
+            debugReplaceWithMark(pstate, nodep, buf);
+            return 1;
+        }
+        // A handle of an actor trait holds whichever actor: it is written as the trait's name
+        ActorTraitInfo *atrait = actorTraitOfHandle((INode*)st);
+        if (atrait != NULL) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "<%s>", &atrait->handle->namesym->namestr);
+            debugReplaceWithMark(pstate, nodep, buf);
             return 1;
         }
         if ((st->flags & TraitType) && !(st->flags & EnumType)) {

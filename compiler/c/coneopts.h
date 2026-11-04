@@ -70,7 +70,10 @@ typedef struct ConeOptions {
     int print_asm;        // Print out assembly file
     int print_llvmir;    // Print out LLVM IR
     int check_tree;        // Verify IR well-formedness
+    int report_trust;      // List the unconstrained operations after type checking, generating nothing
     int print_spans;       // Print the root module's declaration spans after parse
+    int print_meta;        // --meta-ir: write the passes of each '#each' as the parser expanded them
+    int meta_steps;        // --meta-steps: the passes one outermost '#each' may run, with those of the '#each's inside it
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one

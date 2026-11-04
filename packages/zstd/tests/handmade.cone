@@ -20,6 +20,26 @@ import collections use *;
 import zstd use *;
 import fs;
 import path use Path;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn le32(s: &String, at: usize) usize {
   usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
@@ -45,7 +65,7 @@ fn run(d: &mut Decompressor, s: &Array[u8], chunk: usize, maxPull: usize, out: &
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = d.pull(&mut piece, maxPull);
+      st = pullN(d, &mut piece, maxPull);
       var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
       if piece.len() > maxPull { return 8; }

@@ -29,6 +29,26 @@ mod roundtrip;
 import testing use *;
 import collections use *;
 import zstd use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn word(k: u64) &str {
   let words: Array[&str, 16] = ["the", "frame", "block", "of", "and", "literal", "match", "offset", "a",
@@ -111,7 +131,7 @@ fn streamed(d: &Array[u8], level: i32, chunk: usize, maxPull: usize, whole: bool
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = c.pull(&mut piece, maxPull);
+      st = pullN(&mut c, &mut piece, maxPull);
       if piece.len() > maxPull { return false; }
       var k = 0usize;
       while k < piece.len() {
@@ -139,7 +159,7 @@ fn unstream(s: &Array[u8], out: &mut List[u8]) bool {
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = dec.pull(&mut piece, 4096usize);
+      st = pullN(&mut dec, &mut piece, 4096usize);
       var k = 0usize;
       while k < piece.len() {
         out.push(*piece[k]);
@@ -245,7 +265,7 @@ fn main() i32 {
   c.finish();
   c.feed(text.view());
   var late = List[u8]();
-  while c.pull(&mut late, 1000usize) == Status.MoreOutput {}
+  while pullN(&mut c, &mut late, 1000usize) == Status.MoreOutput {}
   expect(same(late.view(), compress(text.view(), 2).view()), "bytes fed after finish are ignored");
   expect(c.isDone() && c.totalIn() == 20000u64, "a finished Compressor is done, with what was fed before finish");
 

@@ -1,5 +1,6 @@
-// List.sort passes the list's own region as the sort's scratch, as sortBy does (Bug 31:
-// List took Array's sort through the fold, whose scratch is the heap's).
+// List.sortBy passes the list's own region as the sort's scratch (Bug 31: List took Array's
+// sort through the fold, whose scratch is the heap's). sort() on integers no longer merges
+// (see sortnumbers), so this checks the stable path through sortBy.
 //
 // Printed lines worked out by hand:
 // - A list of 1,000 u32 in a counting region holds one block of 4,000 bytes (1 allocation).
@@ -60,6 +61,8 @@ fn tally(c: &Counting, allocs: u64, releases: u64, live: i64, label: &Array[u8])
   expect(ok, label);
 }
 
+fn natural(a: &u32, b: &u32) i32 { *a <=> *b }
+
 fn inOrder(l: &List[u32]) bool {
   var i = 1usize;
   while i < l.len() { if l[i - 1usize] > l[i] { return false; } i = i + 1usize; }
@@ -78,16 +81,16 @@ fn counted() {
   {
     var l = scrambled(&mut c, 1000usize);
     tally(&c, 1, 0, 4000, "a list of 1,000 u32: its one block of 4,000 bytes");
-    l.sort();
-    tally(&c, 2, 1, 4000, "sort() asked the list's region for 500 u32 (2,000 bytes) and gave it back");
+    l.sortBy(&natural);
+    tally(&c, 2, 1, 4000, "sortBy asked the list's region for 500 u32 (2,000 bytes) and gave it back");
     expect(inOrder(&l) && l.len() == 1000usize, "and the list is in order");
-    l.sort();
+    l.sortBy(&natural);
     tally(&c, 2, 1, 4000, "sorting what is in order asks for nothing");
   }
   tally(&c, 2, 2, 0, "the list's death gave its block back");
   {
     var l = scrambled(&mut c, 20usize);
-    l.sort();
+    l.sortBy(&natural);
     tally(&c, 3, 2, 80, "20 values: no buffer");
     expect(inOrder(&l), "20 values in order");
   }

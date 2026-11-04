@@ -1065,20 +1065,31 @@ struct Cells {
 		right of a bool's operator.</p>
 
 	<h2 id="meta">Metaprogramming</h2>
-	<p style="margin-left: 40px;"><i>Only <span class="pre">#if</span> is built: on the facts of the build, and, inside
-		a generic, on what a type parameter is. Meta variables and <span class="pre">#each</span> are not: the
-		compiler reports any other word beginning with <span class="pre">#</span> and ignores the rest of its
-		line.</i></p>
+	<p style="margin-left: 40px;"><i><span class="pre">#if</span> is built: on the facts of the build, and, inside
+		a generic, on what a type parameter is. <span class="pre">#each</span> is built over a constant list, and over
+		<span class="pre">#fields(T)</span> of a type parameter, in the
+		statements of a function's body, with meta variables that are numbers and lists. Not built: a meta variable
+		the compiler sets, one holding a value of another kind, <span class="pre">#each</span> over anything but a
+		constant list, and <span class="pre">#each</span> that generates declarations. The compiler reports any
+		other word beginning with <span class="pre">#</span> and ignores the rest of its line.</i></p>
 	<p>Metaprogramming gives fine-grained control over what program logic gets compiled: including or leaving
 		out certain code, and (not yet built) generating data or logic by algorithm. In effect it is a second,
 		similar-looking language, its constructs marked with <span class="pre">#</span>, that manipulates the program's
 		logic as data. Meta-conditionals are control-flow blocks that decide what logic gets compiled, as ordinary ones
 		decide what gets run, and inside generics or macros they would be evaluated when an instance is made.</p>
-	<p id="metavars"><b>Meta variables</b> would be immutable and exist only while the program is compiled, holding
-		typed constant values calculated from an expression: <span class="pre">let #arrsize = 10;</span>. Some would have
-		their values set by the compiler, giving information about the compile-time environment, such as the target
-		platform and architecture (<a href="safe-platforms.html">Platforms and targets</a>), and a compiler option could
-		pass data into a program in others.</p>
+	<p id="metavars"><b>Meta variables</b> exist only while the program is compiled. In a function's body, a
+		<span class="pre">let</span> declares one that holds a number or a list and is never given another value,
+		<span class="pre">let #arrsize = 10;</span>, and a <span class="pre">var</span> declares a number that may be:
+		<span class="pre">var #i = 0;</span>, <span class="pre">#i += 1;</span>. A number is calculated from integer
+		literals and other meta variables with <span class="pre">+ - * / %</span> and parentheses, and used wherever a
+		value is, as an integer literal that takes whatever type it is wanted as. A list is written
+		<span class="pre">[8, 16, 32]</span> of values, or <span class="pre">(i32, i64, f64)</span> of types (a
+		parenthesis with a comma in it, to tell it from a calculation), and is what a
+		<a href="#metaeach"><span class="pre">#each</span></a> goes through. A meta variable belongs to the block it is
+		declared in. Some would have their values set by the compiler, giving information about the compile-time
+		environment, such as the target platform and architecture
+		(<a href="safe-platforms.html">Platforms and targets</a>), and a compiler option could pass data into a program
+		in others; that is not built.</p>
 	<p id="metaif"><b><span class="pre">#if</span></b> decides which code exists, from facts about the build that the
 		compiler knows before it reads a line of source. It is the compile-time conditional that C's
 		<span class="pre">#if</span> is, without the preprocessor: the condition is Cone's own, and what a branch holds
@@ -1181,13 +1192,70 @@ struct Tagged[T] {
 		its own build. Because that could give a package's object and its importer different fields, a chain, in a
 		generic struct's braces or a function body, may ask about the build or about a type but not both: put the
 		build's <span class="pre">#if</span> around the chain, or inside a branch of it, and the package decides it.</p>
-	<p id="metaeach"><b><span class="pre">#each</span></b> would generate the same logic once for each entry of a
-		collection:</p>
+	<p id="metaeach"><b><span class="pre">#each</span></b> writes the same logic once for each entry of a constant list.
+		Among a function's statements, <span class="pre">#each #x in list { ... }</span> repeats its block once for each
+		item, with <span class="pre">#x</span> standing for the item: a value where a value is written and a type where
+		a type is. The list is <span class="pre">[a, b, c]</span> of values, <span class="pre">(T, U)</span> of types, or a
+		meta variable that holds one:</p>
 <pre>
-#each #x in #table {
-	... some logic ...
+fn main() {
+	let #sizes = [8, 16, 32];
+	var total = 0;
+	#each #s in #sizes {
+		total += #s;               // three statements: total += 8; total += 16; total += 32;
+	}
+	var #i = 0;                    // a count made as the passes are read, in order
+	#each #T in (i32, i64, f64) {
+		let v: #T = 1;             // a value of each type
+		total += #i;               // total += 0; then total += 1; then total += 2;
+		#i += 1;
+	}
 }
 </pre>
+	<p>Each pass is a block of its own, so a name declared in one is not seen by the next. The passes are made
+		while the program is read, so name resolution and type checking see the unrolled code and never a loop, and an
+		error in a pass names it: <span class="pre">in pass 2 of 3 of this '#each', where #x is 2.5</span>. An
+		<span class="pre">#each</span> inside another is part of its pass; a generic function's body may hold one, and
+		each instance is checked with the passes in it. A runaway list, or loops nested until their passes multiply
+		past the step quota (10000 passes for an outermost <span class="pre">#each</span> with those inside it;
+		<span class="pre">--meta-steps=N</span> sets it), is refused naming the loop and the pass it stopped at.
+		<span class="pre">--meta-ir</span> writes <span class="pre">&lt;name&gt;.meta</span>, each outermost
+		<span class="pre">#each</span> with the IR of each of its passes.</p>
+	<p id="metafields"><b><span class="pre">#fields(T)</span></b> describes the declared fields of a type parameter, one
+		pass of a <span class="pre">#each</span> for each, in order:</p>
+<pre class="cone">fn equals[T](a: &amp;T, b: &amp;T) bool {
+  #each #f in #fields(T) {
+    if !leaf(&amp;a.#f, &amp;b.#f) { return false; }
+  }
+  true
+}</pre>
+	<p><span class="pre">#f</span> is an idealized description, never the compiler's own nodes.
+		<span class="pre">#f.name</span> is the field's name as text, <span class="pre">#f.pub</span> says whether it is public,
+		<span class="pre">#f.perm</span> and <span class="pre">#f.region</span> are its permission and its reference's
+		region, and <span class="pre">#f.type</span> is its declared type, which stands wherever a type may
+		(<span class="pre">let part: #f.type = v.#f;</span>). The splice <span class="pre">value.#f</span> is that
+		field of the value. The loop is read once, with the generic, and made for each instance when the generic is
+		cloned for its type: <span class="pre">T</span> must be a type parameter and its instance a struct, and only the
+		copies are type checked, so an error in one names its pass. A trait's default may walk
+			<span class="pre">#fields(Self)</span>: it is cloned into each type that takes the default, and
+			<span class="pre">Self</span> is that type. <span class="pre">#f.perm</span> and
+			<span class="pre">#f.region</span> stand where a permission and a region do, as the arguments of a region
+			reference: <span class="pre">#f.region[#f.perm, i32](5)</span> is a value of the field's own region and
+			permission.
+		<span class="pre">#f.attrs</span> waits for the attributes it would describe.</p>
+	<p>Reflection sees what the code reflecting could name. A generic written in the module that declares the type (a
+		function, or a method of the type or of a generic type), and a trait default taken into the type, is listed
+		every field, private ones too. Written in any other module, a type with a private field is refused, naming the
+		type and the field, unless the type opted in with an attribute written after
+		<span class="pre">struct</span>: <span class="pre">struct @reflect Open { ... }</span> (a placeholder
+		spelling): a list without the field would give a serializer or an <span class="pre">equals</span> a wrong
+		answer with no warning. A type whose fields are all public is listed to anyone.</p>
+	<p>A package's include file holds a generic's body as written, so an importer reads the loop again and makes
+		the same passes: nothing a pass depends on is outside the body. A <span class="pre">#if</span> on the build
+		inside the body is cut to the branch the package took, once, however many passes read it. Not built: an
+		<span class="pre">#each</span> at a module's level, in a type's braces or in an <span class="pre">extern</span>
+		block, which would generate declarations and wait for generated names; and a
+		<span class="pre">#if</span> that asks about a meta variable (<span class="pre">#if #T is Float</span>).</p>
 
 	<p>You can now write logic once for many types, say up front what those types must be able to do, and generate
 		code in place with a macro. That completes the part: from dividing a program into modules, to folding names,

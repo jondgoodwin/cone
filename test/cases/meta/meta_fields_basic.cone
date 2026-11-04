@@ -1,0 +1,144 @@
+// '#each #f in #fields(T)' (mod-generativity.html#meta): a generic's body walks the fields of the
+// type it is cloned for. '#f.name', '#f.type', '#f.pub' describe a field; 'v.#f' is that field of v.
+//
+// The printed values were checked by hand against the source:
+//   same p1,p1    Point(2, 3) against itself: every field equal, 1
+//   same p1,p2    Point(2, 3) against Point(2, 4): y differs, 0
+//   same q1,q1    Pair(1, Point(2, 3)) against itself: 1
+//   same q1,q2    against Pair(1, Point(2, 4)): the nested Point differs, 0
+//   count         Point has two fields, Pair two: 2 and 2
+//   names         Point's field names x and y, 1 + 1 = 2 letters; the first field's first letter,
+//                 'x' (120) for Point and 'a' (97) for Pair
+//   sumInts       the fields of Point(2, 3) read through a local of '#f.type': 2 + 3 = 5
+//   pubs          both of Point's fields are pub: 2
+//   bumped        Point(2, 3) has 1 then 10 added to each field, by '#by' outside and '#f' inside:
+//                 x = 2 + 1 + 10 = 13, y = 3 + 1 + 10 = 14
+
+mod meta_fields_basic;
+
+import stdio use *;
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Pair {
+  pub a: i32;
+  pub p: Point;
+}
+
+// The proposal's equals: each field of T compared, a nested struct by its own fields (a number is
+// compared by '==', anything else by this function again)
+fn leaf[F](a: &F, b: &F) bool {
+  #if F is Integer {
+    *a == *b
+  } #else {
+    same(a, b)
+  }
+}
+
+fn same[T](a: &T, b: &T) bool {
+  #each #f in #fields(T) {
+    if !leaf(&a.#f, &b.#f) {
+      return false;
+    }
+  }
+  true
+}
+
+fn count[T]() i64 {
+  var n = 0i64;
+  #each #f in #fields(T) {
+    n = n + 1;
+  }
+  n
+}
+
+fn nameLens[T]() i64 {
+  var n = 0i64;
+  #each #f in #fields(T) {
+    n = n + i64.from(#f.name.len());
+  }
+  n
+}
+
+fn firstLetter[T]() i64 {
+  var c = 0i64;
+  #each #f in #fields(T) {
+    if c == 0 {
+      c = i64.from(#f.name[0]);
+    }
+  }
+  c
+}
+
+fn sumInts[T](v: &T) i64 {
+  var s = 0i64;
+  #each #f in #fields(T) {
+    let part: #f.type = v.#f;
+    s = s + i64.from(part);
+  }
+  s
+}
+
+fn pubs[T]() i64 {
+  var n = 0i64;
+  #each #f in #fields(T) {
+    if #f.pub {
+      n = n + 1;
+    }
+  }
+  n
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn flag(b: bool) i64 {
+  if b {
+    return 1;
+  }
+  0
+}
+
+fn main() {
+  let p1 = Point(2, 3);
+  let p2 = Point(2, 4);
+  show("same p1,p1", flag(same(&p1, &p1)));
+  show("same p1,p2", flag(same(&p1, &p2)));
+  let q1 = Pair(1, Point(2, 3));
+  let q2 = Pair(1, Point(2, 4));
+  show("same q1,q1", flag(same(&q1, &q1)));
+  show("same q1,q2", flag(same(&q1, &q2)));
+  show("count Point", count[Point]());
+  show("count Pair", count[Pair]());
+  show("names Point", nameLens[Point]());
+  show("first Point", firstLetter[Point]());
+  show("first Pair", firstLetter[Pair]());
+  show("sumInts", sumInts(&p1));
+  show("pubs", pubs[Point]());
+  bumped();
+}
+
+// Assignment through the splice, in a loop inside a loop over constants, and '#f.type' naming a
+// local's type beside the field
+fn bump[T](v: &mut T) {
+  #each #by in [1, 10] {
+    #each #f in #fields(T) {
+      let was: #f.type = v.#f;
+      v.#f = was + #by;
+    }
+  }
+}
+
+fn bumped() {
+  var p = Point(2, 3);
+  bump(&mut p);
+  show("bumped x", i64.from(p.x));
+  show("bumped y", i64.from(p.y));
+}

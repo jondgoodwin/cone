@@ -45,6 +45,7 @@ struct NameUseNode;
 // it reads the matched place before the arm is chosen, so it takes nothing from it --
 // a payload that moves is viewed through a borrow (castGuardBorrow)
 #define FlagMatchGuardBind 0x0020  // Cast: a bound pattern's conversion made for its guard
+#define FlagWrittenAs 0x0040  // Cast: written 'x as T' in the source, not a coercion's re-cast (--report-trust tells them apart)
 // A trait pattern on an enum, 'case let Measured(m)' [topic 7], binds a virtual reference to the
 // trait built from whichever variant the reference points at, chosen by the tag. Only the variants
 // that comply have a vtable, so generation tolerates the others: they cannot reach the arm.
