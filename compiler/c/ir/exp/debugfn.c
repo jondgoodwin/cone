@@ -428,6 +428,14 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked
             debugReplaceWithMark(pstate, nodep, buf);
             return 1;
         }
+        // A handle of an actor trait holds whichever actor: it is written as the trait's name
+        ActorTraitInfo *atrait = actorTraitOfHandle((INode*)st);
+        if (atrait != NULL) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "<%s>", &atrait->handle->namesym->namestr);
+            debugReplaceWithMark(pstate, nodep, buf);
+            return 1;
+        }
         if ((st->flags & TraitType) && !(st->flags & EnumType)) {
             char buf[200];
             snprintf(buf, sizeof(buf), "<%s>", &st->namesym->namestr);
