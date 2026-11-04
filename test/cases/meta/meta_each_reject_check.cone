@@ -1,0 +1,41 @@
+// A pass is checked as any code is, and an error in it says which pass of which '#each' it was:
+// the body is the same text in every pass, so without the pass an error in the second would
+// read like the first. Here only the second item, a float, cannot be added to an integer.
+// (The note beneath each error, '... in pass 2 of 3 of this #each', is no diagnostic of its own.)
+
+mod meta_each_reject_check;
+
+fn total() i32 {
+  var s = 0i32;
+  #each #v in [1, 2.5, 3] {
+    s = s + #v;                                  //~ ErrorNoCandidate:11 "No method declared by `+`"
+  }
+  s
+}
+
+// The same inside another loop: both are named, the inner first. Only the second item of each
+// is too big for a byte, and only in the pass where the outer item is 2: 2 * 200 is 400
+fn nested() u8 {
+  var s = 0u8;
+  #each #a in [1, 2] {
+    #each #b in [10, 200] {
+      let c: u8 = #a * #b;                       //~ ErrorLitRange:22 "400 of this expression of literals does not fit u8"
+      s = s + c;
+    }
+  }
+  s
+}
+
+// A generic is checked for each instance; the pass is named there too. The instance for i32
+// refuses the float of the second pass, the instance for f64 takes both
+fn generic[T](x: T) T {
+  #each #k in [1, 2.5] {                         //~ ErrorInvType:19 "Initialization value's type does not match"
+    let y: T = #k;
+  }
+  x
+}
+
+fn main() {
+  generic(1.5);
+  generic(1i32);
+}

@@ -6,7 +6,7 @@
 //   congo run --release packages/streams/examples/bench.cone -- list
 //   congo run --release packages/streams/examples/bench.cone -- buf
 //
-//   list   the Deflater's pull into a List[u8] (what a caller used before)
+//   list   pull into an exact-room IoBuf and copy into a List[u8] (what the removed List pull did)
 //   buf    the Transform: pull into an IoBuf's spare room, in a generic function
 //
 // One run per process, so a script can alternate the two (and a build of the
@@ -22,6 +22,17 @@ import process;
 import stdio use *;
 import time use *;
 
+// What the Deflater's List pull did, now that it is gone: pull into a buffer with exactly 'max'
+// bytes of room, then copy them into the list
+fn pullN(x: &mut deflate.Deflater, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
 fn corpus(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
   var d = List[u8].withCapacity(n + 16usize);
@@ -36,7 +47,7 @@ fn corpus(n: usize) List[u8] {
   d
 }
 
-// The old way: the Deflater's own pull into a List, emptied each time
+// The old way: a pull into a List, emptied each time
 fn viaList(data: &Array[u8]) usize {
   var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
   var out = List[u8]();
@@ -49,7 +60,7 @@ fn viaList(data: &Array[u8]) usize {
     var st = Status.MoreOutput;
     while st == Status.MoreOutput {
       out.clear();
-      st = def.pull(&mut out, 65536usize);
+      st = pullN(&mut def, &mut out, 65536usize);
       total += out.len();
     }
   }
@@ -57,7 +68,7 @@ fn viaList(data: &Array[u8]) usize {
   var st = Status.MoreOutput;
   while st == Status.MoreOutput {
     out.clear();
-    st = def.pull(&mut out, 65536usize);
+    st = pullN(&mut def, &mut out, 65536usize);
     total += out.len();
   }
   total

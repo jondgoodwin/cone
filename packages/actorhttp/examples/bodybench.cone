@@ -1,0 +1,319 @@
+// bodybench: a large body fetched two ways, alternated, to read what the
+// source costs (streams proving, PR A). The same loopback server of this
+// package answers both, a body of 'MiB' mebibytes sent in 64 KiB blocks, and
+// each round fetches it
+//
+//   read   through BodyStream.read(): every piece copied into a String and
+//          answered to the awaiting actor, the bytes released as taken
+//   sink   through Client.streamTo: every piece an IoBuf moved to a counting
+//          sink, which gives it back at once (that call releases the bytes)
+//
+// 'rounds' rounds, read first then sink in each, in one process, so the two
+// modes alternate on the same machine in the same minute. Each run prints its
+// time from asking for the fetch to the last byte counted (and the sink's
+// end), the rate, and the most bytes lent by the buffer pool that the counting
+// side saw (both ends' buffers: the server's writes too). A last line gives
+// the median of each mode.
+//
+//   congo run --release packages/actorhttp/examples/bodybench.cone -- 256 5
+//
+// The arguments are MiB (default 256) and rounds (default 5). Run it on a
+// QUIET machine (the server and the client share it, and so does everything
+// else that is running): the rates of a busy machine say nothing. The check on
+// the bytes is their count and the first byte of each piece; the full pattern
+// check is tests/body.cone's.
+
+mod bodybench;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver, Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending;
+
+const blockSize = 65536usize;
+
+fn digits(p: *u8) u32 {
+  var n = 0u32;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u32 + u32.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn block() String {
+  var piece = List[u8].withCapacity(blockSize);
+  var i = 0usize;
+  while i < blockSize {
+    piece.push(u8.from(i % 251usize));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+// ---- the server: GET /big/N answers N bytes (N a multiple of 64 KiB) of the block, repeated ----
+
+fn number(s: &str) u64 { collections.parseUInt(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    let one = block();
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let w = await ex.write(one.clone());
+      match w {
+        case is Ok { at = at + u64.from(blockSize); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---- the two ways to take the body ----
+
+let peak: Atomic[u64];
+
+fn @initpure init() {
+  peak = Atomic[u64].of(0u64);
+}
+
+fn sample() {
+  let l = u64.from(iobuf.stats().lentBytes);
+  if l > peak.load() {peak.store(l);}
+}
+
+// Reports bytes taken (0 if it went wrong)
+actor Reader {
+  client: Client;
+
+  pub async fn run(self, url: String, done: OneshotSender[u64]) {
+    var total = 0u64;
+    let r = await client.stream(Request.get(url.view()));
+    match r {
+      case let Ok(bs) {
+        var going = true;
+        var k = 0u32;
+        while going {
+          let n = await bs.read();
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  total = total + u64.from(piece.len());
+                  k = k + 1u32;
+                  if k % 16u32 == 0u32 {sample();}
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case is Err {total = 0u64; going = false;}
+          }
+        }
+      }
+      case is Err {}
+    }
+    var d = done;
+    d.send(total);
+  }
+}
+
+actor Counter is ChunkSink {
+  up: Option[ChunkSource];
+  at: u64;
+  badFirst: u64;
+  k: u32;
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, done: OneshotSender[u64]) {
+    *self = Self(up: None[ChunkSource], at: 0u64, badFirst: 0u64, k: 0u32, done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    if c.len() > 0usize && c.view()[0usize] != u8.from((at % u64.from(blockSize)) % 251u64) {badFirst = badFirst + 1u64;}
+    at = at + u64.from(c.len());
+    k = k + 1u32;
+    if k % 16u32 == 0u32 {sample();}
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    var good = true;
+    match how {
+      case is Finished {}
+      case is Failed {good = false;}
+    }
+    if badFirst > 0u64 {good = false;}
+    done.send(if good {at} else {0u64});
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn run(self, url: String, sink: ChunkSink) {
+    let r = await client.streamTo(Request.get(url.view()), sink);
+    match r {
+      case is Ok {}
+      case is Err {}
+    }
+  }
+}
+
+fn url(port: u16, size: u64) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/big/");
+  u.appendUInt(size);
+  u
+}
+
+// One run: its milliseconds-times-ten, or 0 if wrong
+fn run(sinkMode: bool, port: u16, size: u64) u64 {
+  peak.store(0u64);
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  let t0 = Instant.now();
+  if sinkMode {
+    let f = Fetcher(Client.standard());
+    f.run(url(port, size), Counter(tx));
+  } else {
+    let r = Reader(Client.standard());
+    r.run(url(port, size), tx);
+  }
+  let got = rx.recv() || 0u64;
+  let ns = u64.from(t0.elapsed().nanos());
+  printStr(if sinkMode {"sink "} else {"read "});
+  if got != size {
+    printStr("WRONG: ");
+    printUInt(got);
+    printStr(" bytes of ");
+    printUInt(size);
+    printStr("\n");
+    return 0u64;
+  }
+  printUInt(ns / 1000000u64);
+  printStr(" ms, ");
+  printUInt(size * 1000u64 / ns);
+  printStr(" MB/s, most lent ");
+  printUInt(peak.load() / 1024u64);
+  printStr(" KiB\n");
+  ns / 100000u64
+}
+
+fn median(v: &List[u64]) u64 {
+  var s = List[u64]();
+  var q = 0usize;
+  while q < v.len() {
+    s.push(*v[q]);
+    q = q + 1usize;
+  }
+  var i = 1usize;
+  while i < s.len() {
+    var j = i;
+    while j > 0usize && *s[j - 1usize] > *s[j] {
+      s.swap(j - 1usize, j);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+  if s.len() == 0usize {0u64} else {*s[s.len() / 2usize]}
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  initAll();
+  var mib = 256u32;
+  var rounds = 5u32;
+  if argc > 1i32 { mib = digits(*(argv + 1usize)); }
+  if argc > 2i32 { rounds = digits(*(argv + 2usize)); }
+  let size = u64.from(mib) * 1048576u64;
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var reads = List[u64]();
+  var sinks = List[u64]();
+  var wrong = false;
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx);
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    var k = 0u32;
+    while k < rounds {
+      let a = run(false, port, size);
+      let b = run(true, port, size);
+      if a == 0u64 || b == 0u64 {wrong = true;}
+      reads.push(a);
+      sinks.push(b);
+      k = k + 1u32;
+    }
+    acceptor.stop();
+  }
+  finalAll();
+  let mr = median(&reads);
+  let ms = median(&sinks);
+  printStr("median of ");
+  printUInt(u64.from(rounds));
+  printStr(", ");
+  printUInt(u64.from(mib));
+  printStr(" MiB: read ");
+  printUInt(mr / 10u64);
+  printStr(" ms, sink ");
+  printUInt(ms / 10u64);
+  printStr(" ms\n");
+  if wrong {1i32} else {0i32}
+}
