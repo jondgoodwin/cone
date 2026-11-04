@@ -257,6 +257,14 @@ actor Counter is ChunkSink {
       }
       return;
     }
+    if role == 3u32 {
+      // a sink that trims a buffer to one byte before giving it back
+      self.take(&c);
+      var t = c;
+      t.setLen(1usize);
+      self.giveNow(t);
+      return;
+    }
     if role == 2u32 {
       self.take(&c);
       tally.stalledBytes.store(at);
@@ -497,6 +505,27 @@ fn main() i32 {
     printStr(yes(allHome()));
     printStr("\n");
 
+    // A sink that trims each buffer before giving it back: the credit is what was lent
+    reset();
+    {
+      let sink = Counter(3u32, 0i64, 0u64, none, false);
+      let f = Fetcher(Client.standard());
+      f.run(url("http", port, "/big/4194304"), sink, IoLimits.none(), false);
+      waitFor(&tally.finished, 1u64);
+      printStr("4 MiB to a sink that trims every buffer to a byte: bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
     // A refused connection: before any head
     reset();
     {
@@ -536,8 +565,8 @@ fn main() i32 {
       printStr(" over HTTP/2 ");
       printStr(yes(tally.heads.load() == 30u64 && tally.headBad.load() == 0u64));
       printStr("\n");
-      printStr("...the stalled one took no more than 512 KiB and has not ended: ");
-      printStr(yes(tally.stalledBytes.load() <= 524288u64 && tally.stalledBytes.load() > 0u64 && tally.stalledEnds.load() == 0u64));
+      printStr("...the stalled one took no more than its 256 KiB window and has not ended: ");
+      printStr(yes(tally.stalledBytes.load() <= 262144u64 && tally.stalledBytes.load() > 0u64 && tally.stalledEnds.load() == 0u64));
       printStr("\n");
       stalled.release();
       waitFor(&tally.stalledEnds, 1u64);
