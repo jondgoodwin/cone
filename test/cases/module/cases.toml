@@ -1508,6 +1508,46 @@ contains = [
 ]
 excludes = ["holder.inner", "inner[i64]"]
 
+# A generic instance only a package uses: q uses g[i64] and the program never
+# names it. q's include file records the instance, so the program's compile
+# builds it and the stitched init and final place it, once, before q's init and
+# after q's final. g[i64].inits reads 1: the program's object and q's both hold
+# the instance's 'init', shared, and the stitched init calls it once.
+[scenario.module_generic_pkguse]
+category = "run"
+description = "A generic instance only a package uses, named nowhere in the program: its init runs once before the package's and its final once after it"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+# The program's object defines the instance q's include file records, from g's
+# include file, though no line of the program names it
+[[scenario.module_generic_pkguse.check]]
+name = "the-program-defines-the-instance-only-q-uses"
+target = "symbols"
+contains = ["define linkonce_odr g[i64].init comdat any"]
+
+# Once only: q and q2 both use g[i64], and the program names it too. The
+# instance is one, built in four objects and merged at link, and its init and
+# final run once each (g init, q init, q2 init; the finals reversed).
+[scenario.module_generic_pkguseonce]
+category = "run"
+description = "A generic instance used by two packages and named by the program too: its init and final each run once"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild", "q2/q2.conebuild"]
+include = ["include/g.cone", "include/q.cone", "include/q2.cone"]
+
+# A generic struct's statics, in an instance only a package uses. A static takes
+# a literal (ErrorNotLit otherwise), so it has no run-time init and nothing to
+# finalize: the instance only q uses has nothing for the stitched init to miss.
+# Pinned: the program's read of the static and q's calls meet in one copy.
+[scenario.module_generic_struct_static]
+category = "run"
+description = "A generic struct's static, in an instance only a package uses: one shared copy, and nothing to init or finalize"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
 # Every kind across packages, as module_generic_link carries the flat case: g
 # declares an enum, a generic type, a generic function, a trait and a type
 # taking it, a macro and a global's 'use' clause; its include file is its whole
