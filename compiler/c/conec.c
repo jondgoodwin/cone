@@ -215,7 +215,9 @@ int main(int argc, char **argv) {
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);
-        if (errors == 0) {
+        if (errors == 0 && coneopt.report_trust)
+            trustReport((INode*)pgmnode);
+        else if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);

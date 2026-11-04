@@ -13,8 +13,28 @@ mod gziptest;
 import testing use *;
 import collections use *;
 import deflate use *;
+import iobuf use IoBuf;
 import fs;
 import path use Path;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn le32(s: &String, at: usize) usize {
   usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
@@ -52,7 +72,7 @@ fn readAll(s: &Array[u8], out: &mut List[u8]) Inflater {
   inf.feed(s);
   inf.finish();
   var st: Status = Status.MoreOutput;
-  while st == Status.MoreOutput { st = inf.pull(out, 65536usize); }
+  while st == Status.MoreOutput { st = pullN(&mut inf, out, 65536usize); }
   expect(st == Status.Done, "the gzip stream ends Done");
   inf
 }
@@ -150,12 +170,12 @@ fn main() i32 {
       if at > 0usize {
         sp.feed(&multi.view()[0usize..<at]);
         st = Status.MoreOutput;
-        while st == Status.MoreOutput { piece.clear(); st = sp.pull(&mut piece, 700usize); let_append(&mut got, &piece); }
+        while st == Status.MoreOutput { piece.clear(); st = pullN(&mut sp, &mut piece, 700usize); let_append(&mut got, &piece); }
       }
       if at < multi.len() { sp.feed(&multi.view()[at..<multi.len()]); }
       sp.finish();
       st = Status.MoreOutput;
-      while st == Status.MoreOutput { piece.clear(); st = sp.pull(&mut piece, 700usize); let_append(&mut got, &piece); }
+      while st == Status.MoreOutput { piece.clear(); st = pullN(&mut sp, &mut piece, 700usize); let_append(&mut got, &piece); }
       if st != Status.Done || !same(got.view(), out.view()) || sp.memberCount() != 4u32 { badSplit += 1usize; }
       at += 1usize;
     }
@@ -169,7 +189,7 @@ fn main() i32 {
     one.feed(multi.view());
     var got = List[u8]();
     var st: Status = Status.MoreOutput;
-    while st == Status.MoreOutput { st = one.pull(&mut got, 100usize); }
+    while st == Status.MoreOutput { st = pullN(&mut one, &mut got, 100usize); }
     expect(st == Status.Done, "single-member: Done after the first member, no 'finish' needed");
     expectStr(text(got.view()).view(), "hello hello hello", "single-member: the first member's data");
     let rest = one.takeRest();
@@ -179,7 +199,7 @@ fn main() i32 {
     again.feed(rest.view());
     var got2 = List[u8]();
     st = Status.MoreOutput;
-    while st == Status.MoreOutput { st = again.pull(&mut got2, 100usize); }
+    while st == Status.MoreOutput { st = pullN(&mut again, &mut got2, 100usize); }
     expect(st == Status.Done && got2.len() == 3000usize, "single-member: the second member is next in the rest");
     expect(rest.len() > 0usize && rest.len() < multi.len(), "single-member: what is left is the later members");
   }
@@ -235,7 +255,7 @@ fn main() i32 {
     def.feed(hello);
     def.finish();
     var o = List[u8]();
-    def.pull(&mut o, 1000000usize);
+    pullN(&mut def, &mut o, 1000000usize);
     expect(same(o.view(), written.view()), "the streaming Deflater writes the same member as the helper");
   }
 

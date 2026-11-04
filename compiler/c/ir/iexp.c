@@ -532,6 +532,16 @@ int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *totype) {
     return ok;
 }
 
+// iexpCoerce for a literal's field value: the check state is lent only to the
+// conversion of an actor's handle to an actor trait's (actorTraitCoerce), which
+// lends a temporary for an actor made in place. Everything else is iexpCoerce
+// as before, so a string literal is not lent as a temporary to a field.
+int iexpCoerceActorIn(TypeCheckState *pstate, INode **from, INode *totype) {
+    if (isExpNode(*from) && actorTraitWanted(iexpGetTypeDcl(*from), itypeGetTypeDcl(totype)))
+        return iexpCoerceIn(pstate, from, totype);
+    return iexpCoerce(from, totype);
+}
+
 // iexpTypeCheckCoerce for a node already type checked: ensure it is an
 // expression, then coerce it to the expected type, if needed
 int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *totype, INode **from) {

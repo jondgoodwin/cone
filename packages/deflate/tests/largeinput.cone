@@ -10,6 +10,26 @@ mod largeinput;
 import testing use *;
 import collections use *;
 import deflate use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn text(n: usize) List[u8] {
   let w: Array[&str, 7] = ["alpha ", "beta, ", "gamma\n", "delta ", "epsilon ", "the quick brown fox ", "zeta."];
@@ -39,11 +59,11 @@ fn pieces(data: &Array[u8], level: i32, step: usize) List[u8] {
     def.feed(&data[pos..<e]);
     pos = e;
     var st: Status = Status.MoreOutput;
-    while st == Status.MoreOutput { st = def.pull(&mut out, 18446744073709551615usize); }
+    while st == Status.MoreOutput { st = pullN(&mut def, &mut out, 18446744073709551615usize); }
   }
   def.finish();
   var st: Status = Status.MoreOutput;
-  while st == Status.MoreOutput { st = def.pull(&mut out, 18446744073709551615usize); }
+  while st == Status.MoreOutput { st = pullN(&mut def, &mut out, 18446744073709551615usize); }
   out
 }
 

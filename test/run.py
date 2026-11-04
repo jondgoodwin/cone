@@ -900,13 +900,15 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout", "meta", "trust"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta' or 'stdout'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm', 'meta', 'stdout' or 'trust'")
             # 'object' reads what a package the scenario links generated
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
+                if entry["target"] == "trust":
+                    raise SuiteError(f"{where}.check: 'trust' reads the scenario's own report, not a linked object's")
                 if entry["target"] == "asm":
                     raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
                 if entry["object"] not in {path.stem for path in link}:
@@ -916,7 +918,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols", "asm") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm", "trust") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             checks.append(Check(
@@ -2706,6 +2708,21 @@ class Runner:
             self.check_artifacts(result, scenario, out_dir, "symbols")
             self.check_artifacts(result, scenario, out_dir, "asm")
             self.check_artifacts(result, scenario, out_dir, "meta")
+            # 'trust': what --report-trust prints for the same source, from a
+            # run of its own because the option generates no code
+            if any(c.target == "trust" for c in scenario.checks):
+                trust_cmd = [str(self.conec), *spec.options, "--report-trust", "-o", out_rel, scenario.source_rel]
+                result.commands.append(quote(trust_cmd))
+                trust = execute(trust_cmd, REPO, out_dir, "conec-trust",
+                                self.timeout_for(scenario), self.args.max_output)
+                if trust.killed or trust.code != 0:
+                    result.status = FAIL
+                    result.problems.append("--report-trust "
+                                           + (f"was {trust.killed}" if trust.killed else f"exited {trust.code}")
+                                           + "\n" + indent(trust.stdout + trust.stderr))
+                else:
+                    (out_dir / f"{scenario.source.stem}.trust").write_text(trust.stdout, encoding="utf-8")
+                    self.check_artifacts(result, scenario, out_dir, "trust")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -3031,6 +3048,8 @@ class Runner:
                     (out_dir / f"{stem}.symbols").write_text(
                         symbols[stem], encoding="utf-8")
                 text = symbols[stem]
+            elif check.target == "trust":
+                text = normalize((out_dir / f"{stem}.trust").read_text(encoding="utf-8", errors="replace"))
             elif check.target == "meta":
                 # What --meta-ir wrote: each '#each' with the IR of the passes the parser made of it
                 artifact = out_dir / f"{stem}.meta"

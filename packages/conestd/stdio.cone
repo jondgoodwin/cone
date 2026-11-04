@@ -24,9 +24,14 @@
 // the two. A panic writes its message directly and synchronously, after the
 // console's buffer is written.
 //
-// One slot, 'consoleEngine', takes the place of the code below: a function
-// that is handed each record instead (the actors runtime's owner, later). It
-// is the engine's to write out what waits first.
+// Three slots take the place of the code below once an engine is installed
+// (cone_consoleInstall, called by the actors runtime when it starts, which
+// installs its owner): a function handed each finished record, one handed a
+// text sent alone, and one that controls the engine (flush, and a panic's
+// best-effort drain). Installing writes out what waits under the console's lock
+// and then switches, so nothing is lost or reordered. From then on the code
+// below writes nothing but a panic's message (panic.cone) and what a thread
+// that read the empty slot just before the switch was sending.
 //
 // The operating system's side (the lock, the terminal test, the write) is
 // console.c.
@@ -38,12 +43,19 @@ extern fn cone_consoleWrite(fd: i32, p: *u8, n: usize);
 extern fn cone_consoleWriteParts(fd: i32, parts: *usize, count: usize);
 extern fn cone_consoleAtExit(finish: &fn @c());
 
-// The function that takes a record when an engine is installed
+// The functions an engine installs: one takes a finished record; one takes a
+// text sent alone, as its stream and bytes; one controls it, with op 0, to wait
+// until everything sent has been written, and op 1, to give a panic a moment to
+// that without waiting on anything it might hold
 alias ConsoleEngine = &fn(record: &uni core.TextOut);
+alias ConsoleBytes = &fn(fd: i32, p: *u8, n: usize);
+alias ConsoleControl = &fn(op: u32);
 
-// The installed engine's address, 0 for the code below. conestd's 'init' gives
-// it its value
+// The installed engine's addresses, 0 for the code below. conestd's 'init'
+// gives them their value
 let consoleEngine: core.Atomic[usize];
+let consoleEngineBytes: core.Atomic[usize];
+let consoleEngineControl: core.Atomic[usize];
 
 const consoleCap = 16384usize;
 // What waits to be written to standard output, and how much of it
@@ -55,8 +67,16 @@ var consoleOutTty = -1i32;
 // must not wait for it
 var @threadlocal inConsole = false;
 
-pub fn cone_setConsoleEngine(engine: usize) {
-  consoleEngine.store(engine);
+// Install an engine: what waits is written, under the lock, then the slots switch
+pub fn cone_consoleInstall(take: usize, bytes: usize, control: usize) {
+  cone_consoleLock();
+  inConsole = true;
+  consolePending();
+  consoleEngineBytes.store(bytes);
+  consoleEngineControl.store(control);
+  consoleEngine.store(take);
+  inConsole = false;
+  cone_consoleUnlock();
 }
 
 // What waits is written (the lock is held)
@@ -78,6 +98,11 @@ fn consoleTty() bool {
 // n bytes at p as one record of stream fd, 1 or 2
 fn consoleOne(fd: i32, p: *u8, n: usize) {
   if n == 0usize {return;}
+  if consoleEngine.load() != 0usize {
+    let take = consoleEngineBytes.load() as ConsoleBytes;
+    take(fd, p, n);
+    return;
+  }
   cone_consoleLock();
   inConsole = true;
   if fd == 2i32 {
@@ -259,8 +284,15 @@ pub fn consoleDeliver(w: &uni core.TextOut) {
   consoleMany(i32.from(w.tagOf()), w);
 }
 
-// Write what waits
-fn consoleFlush() {
+// Write what waits: the engine's first, if one is installed (op 0 waits until
+// all that was sent has been written; op 1 is a panic's, which waits on nothing
+// it might hold and gives up), then the console's own
+fn consoleFlush(op: u32) {
+  let control = consoleEngineControl.load();
+  if control != 0usize {
+    let ctl = control as ConsoleControl;
+    ctl(op);
+  }
   cone_consoleLock();
   inConsole = true;
   consolePending();
@@ -271,12 +303,12 @@ fn consoleFlush() {
 // A panic or a failed main writes what the program printed before, if the
 // thread does not hold the console's lock itself
 fn consoleFlushForPanic() {
-  if !inConsole {consoleFlush();}
+  if !inConsole {consoleFlush(1u32);}
 }
 
 // At the program's end
 fn consoleExit() {
-  consoleFlush();
+  consoleFlush(0u32);
 }
 
 // conestd's 'init' (conestd.cone) arranges the console's end
@@ -298,19 +330,19 @@ fn consoleCStr(fd: i32, p: *u8) {
 fn consoleInt(fd: i32, nbr: i64) {
   var w = core.TextOut.record(0usize, null, u32.from(fd));
   w.putI64(nbr);
-  consoleMany(fd, &w);
+  consoleDeliver(&uni w);
 }
 
 fn consoleUInt(fd: i32, nbr: u64) {
   var w = core.TextOut.record(0usize, null, u32.from(fd));
   w.putU64(nbr);
-  consoleMany(fd, &w);
+  consoleDeliver(&uni w);
 }
 
 fn consoleFloat(fd: i32, nbr: f64) {
   var w = core.TextOut.record(0usize, null, u32.from(fd));
   w.putF64(nbr);
-  consoleMany(fd, &w);
+  consoleDeliver(&uni w);
 }
 
 // One code point as its UTF-8 bytes: one to four, by its size. NUL, and a
@@ -319,7 +351,7 @@ fn consoleChar(fd: i32, code: u64) {
   if code == 0u64 || code >= 0x110000u64 {return;}
   var w = core.TextOut.record(0usize, null, u32.from(fd));
   w.putChar(char.from(u32.from(code)));
-  consoleMany(fd, &w);
+  consoleDeliver(&uni w);
 }
 
 // Standard output
@@ -351,7 +383,7 @@ pub fn printChar(code: u64) {
 
 // What waits is written, and so is what C's own stdout holds
 pub fn printFlush() {
-  consoleFlush();
+  consoleFlush(0u32);
   libc.fflush(libc.stdout());
 }
 
@@ -383,6 +415,6 @@ pub fn eprintChar(code: u64) {
 }
 
 pub fn eprintFlush() {
-  consoleFlush();
+  consoleFlush(0u32);
   libc.fflush(libc.stderr());
 }
