@@ -89,10 +89,10 @@ INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk);
 //
 //   fn -mainresult(params) i32 {
 //     let -held = main(params);
-//     if -held is Err { let -err = [Err]-held; reportError(-err); return 1 }
+//     if -held is Err { let -err = [Err]-held; Error.reportFailure(-err); return 1 }
 //     return 0 }
 //
-// where 'reportError' is core's free function (E meets Error): it writes
+// where 'reportFailure' is a static on core's Error trait (E meets Error): it writes
 // 'Error: ', E's 'report(out)' (the text and each cause under it: INTERIM until
 // the display design) and a newline to stderr, through conestd's
 // 'cone_mainErrorRecord'. An E that does not meet Error is printed by
