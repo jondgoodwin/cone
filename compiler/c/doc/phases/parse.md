@@ -1261,7 +1261,13 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   macro or alias in a deferred branch of a struct is refused too. Name resolution and the clone are
   `ifNameRes`/`ifHashClone` ([if](../nodes/if.md), [generic](../nodes/generic.md), "A `#if` on a type
   parameter"). The include file keeps such a chain whole (no cuts), so an importer decides it, and reads
-  the build's facts in it for its own build.
+  the build's facts in it for its own build. Because of that, a chain in a generic struct's braces that
+  reads a fact of the build and asks about a type (in one condition or across `#elif`/`#else`, folded
+  away or not) is refused (`ErrorMetaMixFact`): `parseHashIf` counts the build facts and notes the first
+  type question per condition (`metaBuildReads`, `metaTypeAt`) and the struct's caller passes the message
+  (`nomix`). A function body's chain is not refused: there the importer can choose a different
+  branch from the package's, and a per-instance `static` that differs between branches is one symbol
+  (`linkonce_odr`) shared by both objects.
 
 ## 7. Contract
 

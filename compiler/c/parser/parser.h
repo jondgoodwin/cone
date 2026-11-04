@@ -381,7 +381,7 @@ typedef INode *(*MetaBranchFn)(ParseState *parse, void *ctx, int mode);
 void parseMetaInit(ConeOptions *opt);
 // A chain, with the lexer on its '#if'. A place that cannot hold a question about a
 // type gives 'nodefer', what is said of one; the deferred chain, if any, is returned
-INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer);
+INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix);
 // The condition a member added by a deferred branch exists under (a fresh copy for each call)
 INode *parseMetaMemberCond(void);
 // A chain that gives a value, with the lexer on its '#if'

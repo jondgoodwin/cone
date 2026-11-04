@@ -955,7 +955,8 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
                 nodefer = "A '#if' that asks what a type parameter is stands in the body of a generic type or function: this type has no type parameters.";
             else if (isenum || (strnode->flags & TraitType))
                 nodefer = "A '#if' that asks what a type parameter is is not built in the body of an enum or a trait: a generic struct's fields and methods are conditioned by it.";
-            parseHashIf(parse, parseStructBranch, it, nodefer);
+            parseHashIf(parse, parseStructBranch, it, nodefer, nodefer ? NULL :
+                "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
             continue;
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {

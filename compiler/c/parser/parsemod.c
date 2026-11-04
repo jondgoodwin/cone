@@ -1392,7 +1392,7 @@ static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **ite
             xif.extflag = extflag;
             xif.items = items;
             parseHashIf(parse, parseExternBranch, &xif,
-                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: an 'extern' block declares what exists whatever a type is.");
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: an 'extern' block declares what exists whatever a type is.", NULL);
             continue;
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
@@ -1455,7 +1455,7 @@ static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstar
             gif.state = nomodline ? AtInHashIfNoMod : pastheader ? AtInHashIf : AtInHashIfHeader;
             gif.past = 0;
             parseHashIf(parse, parseGlobalBranch, &gif,
-                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: at a module's level there is no type parameter to ask about (a generic module's declarations are not built to hold one yet).");
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: at a module's level there is no type parameter to ask about (a generic module's declarations are not built to hold one yet).", NULL);
             if (gif.past)
                 pastheader = 1;
             continue;

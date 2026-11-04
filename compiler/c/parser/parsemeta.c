@@ -183,8 +183,12 @@ static MetaVal metaTypeVal(INode *tree) {
 // name: a clause as a 'where' clause writes one, 'T == Name' being 'T is Name'
 // where Name is a type, which a type is met by alone. Whether it holds is
 // known only when a generic is cloned for its arguments (ifHashClone)
+static INode *metaTypeAt = NULL;   // The first question about a type the condition being read has asked
+
 static MetaVal metaTypeFact() {
     INode *subject = (INode*)newNameUseNode(lex->val.ident);
+    if (metaTypeAt == NULL)
+        metaTypeAt = subject;
     lexNextToken();
     int negate = 0;
     if (lexIsToken(NeToken)) {
@@ -271,6 +275,8 @@ static MetaVal metaDefine(int isdefined) {
 // An operand: a fact, a literal, a member '.name' or a parenthesised condition.
 // 'hint' is the kind of the left side of a comparison, which a member written on
 // the right is checked against where it stands
+static uint32_t metaBuildReads = 0;   // Facts of the build read so far; parseHashIf compares it before and after a condition
+
 static MetaVal metaPrimary(MetaKind hint) {
     switch (lex->toktype) {
     case LParenToken: {
@@ -286,17 +292,22 @@ static MetaVal metaPrimary(MetaKind hint) {
         return inner;
     }
     case HashDebugToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaBool, !(metaOpt && metaOpt->release));
     case HashOsToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaOs, metaOsIndex());
     case HashArchToken:
+        ++metaBuildReads;
         lexNextToken();
         return metaVal(MetaArch, metaArchIndex());
     case HashDefinedToken:
+        ++metaBuildReads;
         return metaDefine(1);
     case HashDefineToken:
+        ++metaBuildReads;
         return metaDefine(0);
     case trueToken:
         lexNextToken();
@@ -661,7 +672,7 @@ void parseMetaStray(ParseState *parse) {
 // taken. A branch of the same chain that follows a deferred one and holds
 // whatever the type is (an '#else', or a condition of the build that holds) ends
 // that chain as its 'else'; the build's facts before it are folded in already.
-INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer) {
+INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix) {
     metaParse = parse;
     int done = 0;       // A branch has been taken, or the deferred chain has its 'else'
     Lexer *lexer = lex;
@@ -670,6 +681,8 @@ INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char
     char *closeat = NULL;       // The taken branch's '}'
     IfNode *ifnode = NULL;      // The deferred chain, once a branch is
     int deferredany = 0;
+    int buildany = 0;           // A condition of the chain rests on a fact of the build
+    INode *firsttype = NULL;    // The first condition that asks about a type
     MetaChain chain;
     chain.conds = newNodes(4);
     MetaChain *svchain = metaCurChain;
@@ -681,7 +694,14 @@ INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char
         if (iselse)
             lexNextToken();
         else {
+            uint32_t reads = metaBuildReads;
+            metaTypeAt = NULL;
             holds = metaReadCond();
+            if (metaBuildReads != reads)
+                buildany = 1;
+            // Folded away or not, the condition asked about a type
+            if (metaTypeAt && firsttype == NULL)
+                firsttype = metaTypeAt;
             tree = metaCondTree;
             metaCondTree = NULL;
         }
@@ -730,6 +750,11 @@ INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char
             break;
     }
     metaCurChain = svchain;
+    // A chain the include file keeps whole is read again by each importer, with the facts of
+    // the importer's build; where that decides what a type is made of, a package's object and
+    // its importer could disagree about it
+    if (nomix && firsttype && buildany)
+        errorMsgNode(firsttype, ErrorMetaMixFact, "%s", nomix);
     // The include file keeps the branch taken and nothing of the chain around it;
     // a chain with a deferred branch stays whole, for an importer to clone
     if (deferredany)

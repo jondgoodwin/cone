@@ -1046,3 +1046,11 @@ is no type parameter of the generic it stands in (name resolution, so `#if i32 i
 Integer` in an ordinary function). A condition of that kind that names a trait or
 a name that does not exist is the ordinary lookup error, and one that is no clause
 (`#if T {`) is `ErrorMetaFact`.
+
+`ErrorMetaMixFact` is a `#if` chain in a generic struct's braces that rests on a fact
+of the build in one place and on a type in another (`#if #debug && T is Float`, or
+`#if T is Float {..} #elif #os == .windows {..}`), however the build folds it. The
+include file keeps such a chain whole and each importer reads the build's facts again
+for its own build, so a field or method could exist in a package's object and not in
+its importer. A type question alone, and a build question in a `#if` of its own around
+or inside the chain, are allowed. Pointed at the first type question.

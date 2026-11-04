@@ -1837,7 +1837,7 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
             bif.tail = tail;
             bif.open = 0;
             uint32_t before = blk->stmts->used;
-            INode *deferred = parseHashIf(parse, parseBlockBranch, &bif, NULL);
+            INode *deferred = parseHashIf(parse, parseBlockBranch, &bif, NULL, NULL);
             // A chain asking what a type parameter is stands in the block as one statement
             if (deferred)
                 nodesAdd(&blk->stmts, deferred);
