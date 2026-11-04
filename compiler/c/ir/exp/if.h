@@ -27,6 +27,14 @@ typedef struct IfNode {
 // A match with a case that uses a function's pattern, which is required to end in 'else'
 // whether or not its other cases cover every value, so an 'else' that cannot run is no error
 #define FlagIfMatchUsing 0x0008     // If
+// A '#if' chain whose conditions ask what a type parameter is (parsemeta.c): in a generic's
+// template it is name resolved only, and cloning the template for its arguments decides it
+// (ifHashClone) and copies the one branch taken. Its conditions are 'is' clauses joined by
+// '!', '&&' and '||', as a 'where' clause's are; the blocks are the branches.
+#define FlagIfHash    0x0010        // If
+// ... and it stands where a value is read (a '#if' giving a value), so the branch taken, if it
+// is one expression, is that expression: a constant can be made from it
+#define FlagIfHashExpr 0x0020       // If
 #define MatchMaxColumns 8           // the values a 'match a, b, ...' may take
 // The logic nodes of a match's conditions: the '&&' that joins the patterns of one
 // row of 'match a, b' (one per column), and the '&&' that adds an 'if' guard to the
