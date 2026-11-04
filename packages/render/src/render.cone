@@ -494,6 +494,13 @@ pub struct Renderer {
   // has built one since (else it builds its own). Set by the caller before each 'render'.
   pub rtShare: EyeShare = EyeShare.Own;
   rtKept: bool = false;
+  // Sharing the sun's shadow maps between renders (a headset's two eyes): 0 each render draws its own; 1 this render draws
+  // them, its cascades grown by 'shadowGrow' metres (the eyes' distance apart), and keeps them; 2 this render draws none
+  // and reads the ones a render with 1 kept, if no other render has drawn shadows since (else it draws its own). Set by
+  // the caller before each 'render'.
+  pub shadowShare: u32 = 0u32;
+  pub shadowGrow: f32 = 0.;
+  shadowKept: bool = false;
   pub frameItemsLive: bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
@@ -1620,7 +1627,12 @@ pub struct Renderer {
     // The sun's cascades fitted to this camera (a function of the camera
     // alone, so the casters of each can be gathered before the batches)
     let shadowsOn = shadow.settings.enabled;
-    if shadowsOn { shadow.cascades = computeCascades(camera, aspect, light.direction, &shadow.settings); }
+    let shadowReuse = shadowsOn && shadowShare == 2u32 && shadowKept;
+    if shadowsOn && !shadowReuse {
+      shadow.cascades = computeCascadesGrown(camera, aspect, light.direction, &shadow.settings,
+        if shadowShare == 1u32 { shadowGrow } else { 0. });
+    }
+    shadowKept = shadowsOn && (shadowShare == 1u32 || shadowReuse);
 
     // The scene (visibility.cone): what this camera sees of it, added to the
     // draw list's items in a list of this render's, and, for each shadow
@@ -1649,6 +1661,11 @@ pub struct Renderer {
         var c = 0u32;
         while c < cascadeCount {
           let first = sceneList.items.len();
+          if shadowReuse {
+            itemSets.push(SetRange(first, first));
+            c = c + 1u32;
+            continue;
+          }
           self.appendCasters(&mut sceneList, list);
           let matrix = shadow.cascades.matrices[usize.from(c)];
           let volume = casterVolume(&matrix);
@@ -1714,7 +1731,7 @@ pub struct Renderer {
       let shadowFloats = shadowParamsFloats(&shadow.cascades, &shadow.settings, forward, shadowsOn);
       device.queue.writeBuffer(&shadow.params, 0u64, &shadowFloats as *u8, SHADOW_SUN_BYTES);
     }
-    if shadowsOn { recordShadowPasses(self, device, encoder, drawList); }
+    if shadowsOn && !shadowReuse { recordShadowPasses(self, device, encoder, drawList); }
     // And those of the point and spot lights that were given views
     recordLocalShadowPasses(self, device, encoder, drawList);
 
