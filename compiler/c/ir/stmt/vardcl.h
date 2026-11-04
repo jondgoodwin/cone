@@ -14,15 +14,12 @@
 // names of its type as names of the module -- reached through the global, whose
 // address is fixed at compile time (compiler/c/doc/nodes/module.md, "Name folding").
 typedef struct VarDclNode {
-    IExpNodeHdr;             // 'vtype': type of this name's value
-    Name *namesym;
+    DclScopeHdr;             // 'vtype': type of this name's value; namesym; scope (0=global); index within this scope (e.g., parameter number)
     INode *value;              // Starting value/declaration (NULL if not initialized)
     LLVMValueRef llvmvar;      // LLVM's handle for a declared variable (for generation)
     DclInfo dclinfo;           // Owner and the facts that decide the linker symbol (globals; name.c spells it)
     INode *perm;               // Permission type (often mut or imm)
     struct FoldClause *fold;   // A global's fold clause, or NULL
-    uint16_t scope;            // 0=global
-    uint16_t index;            // index within this scope (e.g., parameter number)
     uint16_t flowtempflags;    // Data flow pass temporary flags
     uint16_t flowdepth;        // Data flow: the conditional depth it was declared at (flowDepth)
     uint8_t flowtracked;       // Data flow: 0 not yet asked, 1 its state is not followed for drops, 2 it is (flowDropTracked)
