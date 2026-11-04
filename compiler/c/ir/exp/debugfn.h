@@ -14,7 +14,12 @@
 // type, once per module, when the call asks (debugfn.c). Answers 1 when it
 // replaced the call, type checked; 0 to go on with the call as it is (possibly
 // retargeted to the method that writes it).
-int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep);
+// argschecked: the writer argument is already type checked (a text send's lowering).
+int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked);
+
+// Will 'piece.toDebug(out)' be one the compiler writes (a struct, enum, tuple or array
+// that declares none)?
+int debugWillGenerate(INode *piece);
 
 // Is this function one the compiler wrote for a type's debug form? It reads the
 // type's private fields, as the type's own methods do.

@@ -56,6 +56,13 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep);
 // toText), 0 when the receiver is not a text receiver
 int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv);
 
+// The same for a receiver whose type declares core's DebugText and a piece that is
+// not a literal: 'piece.toDebug(&uni writer)', before any '<-' is tried (a literal
+// text is never quoted; a value takes the sink's form). 0 when the receiver is not
+// such a sink or the piece is a literal; 2 when the piece's toDebug is one the
+// compiler writes (debugfn.c), whose writer is then left unchecked for that call
+int textSendDebug(TypeCheckState *pstate, FnCallNode *callnode, INode *recv);
+
 // Is this type (a method's declared 'self') a text receiver, or a borrow of one?
 int textIsReceiver(INode *type);
 

@@ -28,7 +28,9 @@
 // What is not a struct or enum: a number or bool is written as its text (the
 // call becomes 'toText'); a char through the writer's putDebugChar; a tuple
 // element by element; a raw pointer, a function and a trait object as a
-// fixed mark. An array, a slice and a str have 'toDebug' in core.
+// fixed mark; an array, a List and a Dict through a generic free function of core or
+// collections (debugCollectionFn: a method would be checked for every instance). A
+// str has 'toDebug' in core.
 
 static struct DebugEntry {
     INode *type;
@@ -351,7 +353,17 @@ static FnDclNode *debugCollectionFn(INode *valtype) {
     return found && found->tag == FnDclTag ? (FnDclNode*)found : NULL;
 }
 
-int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep) {
+int debugWillGenerate(INode *piece) {
+    INode *valtype = iexpGetDerefTypeDcl(piece);
+    if (valtype == NULL || valtype == errorType || valtype == unknownType)
+        return 0;
+    if (valtype->tag == ArrayTag || valtype->tag == TTupleTag)
+        return 1;
+    return valtype->tag == StructTag
+        && iNsTypeFindFnField((INsTypeNode*)valtype, debugMethodName("toDebug")) == NULL;
+}
+
+int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked) {
     FnCallNode *node = *nodep;
     if (node->methfld == NULL || !isNameUseNode(node->methfld)
         || ((NameUseNode*)node->methfld)->namesym != debugMethodName("toDebug")
@@ -365,7 +377,9 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep) {
     if (valtype == NULL || valtype == errorType || valtype == unknownType)
         return 0;
     // The writer is checked before the call is rewritten around it
-    inodeTypeCheckAny(pstate, &nodesGet(node->args, 0));
+    // (A lent writer made by a text send is checked once, with the call made here)
+    if (!argschecked && nodesGet(node->args, 0)->tag != BorrowTag)
+        inodeTypeCheckAny(pstate, &nodesGet(node->args, 0));
     if (!isExpNode(nodesGet(node->args, 0)) || iexpGetTypeDcl(nodesGet(node->args, 0)) == errorType)
         return 0;
 
