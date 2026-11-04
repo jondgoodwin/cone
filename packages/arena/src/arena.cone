@@ -204,7 +204,7 @@ const blockBytes = 4096usize;
 struct ArenaCore is GcTraceElements {
   header: MemRegion;    // the region: allocate, resize and release, below
   blocks: *Block;       // the newest block, or null
-  top: usize;           // the address of its first unused byte
+  top: usize;           // the address of its first unused byte; 1 (with 'limit' 0) before the first block, so no value fits and nothing is placed at null
   limit: usize;         // the address just past its end
   finals: *FinalNode;   // the newest header, or null
   nfinals: usize;       // how many headers the list has held
@@ -214,7 +214,7 @@ struct ArenaCore is GcTraceElements {
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
   // finalizing: its address. The caller writes the value there.
-  fn place(self: &mut, size: usize, align: usize) *u8 {
+  fn place(self: &mut, size: usize, align: usize) *u8 inline {
     self.bump(0usize, align, size) as *u8
   }
 
@@ -224,7 +224,7 @@ struct ArenaCore is GcTraceElements {
   // place first. Whatever that construction allocates in the arena lies after
   // the value in memory and goes onto the list before it, so it is finalized
   // after the value, as a value it was built from is.
-  fn reserveFinal(self: &mut, size: usize, align: usize) *u8 {
+  fn reserveFinal(self: &mut, size: usize, align: usize) *u8 inline {
     let hdr = mem.sizeof[FinalNode]();
     var al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
@@ -249,7 +249,7 @@ struct ArenaCore is GcTraceElements {
     let core = libc.malloc(mem.sizeof[ArenaCore]()) as *ArenaCore;
     if core as usize == 0usize { panic("arena: out of memory for an arena"); }
     mem.writeRaw(core, ArenaCore(MemRegion(&regionAlloc, &regionResize, &regionRelease, &regionSize),
-      null, 0usize, 0usize, null, 0usize, 0usize, null, 0usize));
+      null, 1usize, 0usize, null, 0usize, 0usize, null, 0usize));
     core as *MemRegion
   }
 
@@ -267,12 +267,26 @@ struct ArenaCore is GcTraceElements {
   // header ends where the value starts, whatever the value's alignment, since
   // 'align' is then at least the header's and the header's size is a multiple
   // of its alignment, so the header is aligned too.
-  fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize {
-    var at = roundUp(top + hdr, align);
-    if top == 0usize || at + size > limit {
-      self.grow(hdr + size + align);
-      at = roundUp(top + hdr, align);
+  //
+  // This is the fast path, inline in each allocation: round up, compare with
+  // 'limit', store 'top'. With no block yet 'top' is 1 and 'limit' 0, so nothing
+  // fits, a zero-sized value included, and the first allocation goes to bumpSlow.
+  fn bump(self: &mut, hdr: usize, align: usize, size: usize) usize inline {
+    let at = roundUp(top + hdr, align);
+    if at + size <= limit {
+      top = at + size;
+      at
     }
+    else {
+      self.bumpSlow(hdr, align, size)
+    }
+  }
+
+  // The same when the current block has no room (or there is none): a new
+  // block, and the value at its start
+  fn bumpSlow(self: &mut, hdr: usize, align: usize, size: usize) usize {
+    self.grow(hdr + size + align);
+    let at = roundUp(top + hdr, align);
     top = at + size;
     at
   }
@@ -493,7 +507,7 @@ fn newBlock(prev: *Block, room: usize) *Block {
 }
 
 // n rounded up to a multiple of align, a power of two
-fn roundUp(n: usize, align: usize) usize {
+fn roundUp(n: usize, align: usize) usize inline {
   (n + align - 1usize) & (0usize - align)
 }
 
