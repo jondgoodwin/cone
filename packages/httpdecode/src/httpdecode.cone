@@ -92,19 +92,25 @@ fn handBack(up: &Option[ChunkSource], b: IoBuf) {
 // stage ends Failed (corrupt or oversized) cancels the fetch's group first, so the
 // body the server is still sending is not read
 actor Tap is ChunkSink {
-  down: ChunkSink;
+  down: Option[ChunkSink];       // let go when the end is sent
   group: CancelGroup;
 
   pub fn init(self: &new, down: ChunkSink, group: CancelGroup) {
-    *self = Self(down: down, group: group);
+    *self = Self(down: Some[ChunkSink](down), group: group);
   }
 
   pub async fn attach(self, source: ChunkSource) {
-    down.attach(source);
+    match &down {
+      case let &Some(k) {k.attach(source);}
+      else {}
+    }
   }
 
   pub async fn accept(self, c: IoBuf) {
-    down.accept(c);
+    match &down {
+      case let &Some(k) {k.accept(c);}
+      else {}
+    }
   }
 
   pub async fn end(self, how: Ending) {
@@ -112,12 +118,17 @@ actor Tap is ChunkSink {
       case is Failed {group.cancel();}
       else {}
     }
-    down.end(how);
+    var k = None[ChunkSink];
+    k <-> down;
+    match k {
+      case let Some(s) {s.end(how);}
+      case is None {}
+    }
   }
 }
 
 pub actor Decoder is ChunkSink, ChunkSource {
-  sink: ChunkSink;
+  sink: Option[ChunkSink];       // the caller's sink until the head has said; then it is in 'target' (or ended)
   group: Option[CancelGroup];    // the child group the fetch runs in; cancelled when the stream is refused or fails
   limit: u64;
   up: Option[ChunkSource];       // the body's source, whom every buffer goes back to
@@ -129,7 +140,7 @@ pub actor Decoder is ChunkSink, ChunkSource {
 
   // A decoder in front of 'sink', the output of a decompression held to 'limit' bytes
   pub fn init(self: &new, sink: ChunkSink, limit: usize) {
-    *self = Self(sink: sink, limit: u64.from(limit), group: None[CancelGroup], up: None[ChunkSource], target: None[ChunkSink],
+    *self = Self(sink: Some[ChunkSink](sink), limit: u64.from(limit), group: None[CancelGroup], up: None[ChunkSource], target: None[ChunkSink],
       chosen: false, refused: false, backlog: Deque[IoBuf](), early: None[Ending]);
   }
 
@@ -159,6 +170,16 @@ pub actor Decoder is ChunkSink, ChunkSource {
   fn choose(self: &mut, c: Coding) {
     if chosen {return;}
     chosen = true;
+    // the sink moves into the target (or is ended here): the decoder keeps no handle of its own
+    var held = None[ChunkSink];
+    held <-> sink;
+    match held {
+      case let Some(k) {self.build(c, k);}
+      case is None {}
+    }
+  }
+
+  fn build(self: &mut, c: Coding, sink: ChunkSink) {
     var down = sink;
     match &group {
       case let &Some(g) {down = Tap(sink, *g);}
@@ -206,8 +227,11 @@ pub actor Decoder is ChunkSink, ChunkSource {
 
   fn finish(self: &mut, how: Ending) {
     if refused {return;}
-    match &target {
-      case let &Some(t) {t.end(how);}
+    // the end is the last thing sent on, so the target goes with it (the ChunkSink contract)
+    var t = None[ChunkSink];
+    t <-> target;
+    match t {
+      case let Some(k) {k.end(how);}
       case is None {}
     }
   }

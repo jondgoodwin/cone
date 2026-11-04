@@ -1093,7 +1093,8 @@ declares no `toDebug` is rewritten by `fnCallDebugLower`, run in
 `fnCallTypeCheckNode` right after `fnCallCloneCopy`, before the receiver's
 members are looked at. A number or bool becomes its `toText`; a char
 `out.putDebugChar(x)`; a raw pointer, a function, a closure, a trait object and an actor's handle
-(`actorOfHandle`: its state is not the caller's to read, so `<Secret>`)
+(`actorOfHandle`: its state is not the caller's to read, so it is written as the actor's own name, `<Counter>`;
+an actor trait's handle, as a trait, is written as the trait's name)
 `out.writeStr("<mark>")`; an array, a List or a Dict a call of the generic free
 function `debugArray`, `debugList` or `debugDict` (core and collections; free
 functions, not methods, because a method of `Array[T]` is checked for every

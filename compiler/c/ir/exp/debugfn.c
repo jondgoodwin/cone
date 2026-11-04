@@ -28,7 +28,7 @@
 // What is not a struct or enum: a number or bool is written as its text (the
 // call becomes 'toText'); a char through the writer's putDebugChar; a tuple
 // element by element; a raw pointer, a function, a trait object and an actor's
-// handle as a fixed mark (<Secret> for the handle); an array, a List and a Dict through a generic free function of core or
+// handle as a fixed mark (the actor's own name, <Counter>, for the handle); an array, a List and a Dict through a generic free function of core or
 // collections (debugCollectionFn: a method would be checked for every instance). A
 // str has 'toDebug' in core.
 
@@ -419,9 +419,21 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked
             debugReplaceWithMark(pstate, nodep, "<closure>");
             return 1;
         }
-        // An actor's state is not the caller's to read: its handle is a fixed mark
-        if (actorOfHandle((INode*)st) != NULL) {
-            debugReplaceWithMark(pstate, nodep, "<Secret>");
+        // An actor's state is not the caller's to read: its handle is written as the
+        // actor's name, as a trait object is written as its trait's name
+        ActorInfo *actor = actorOfHandle((INode*)st);
+        if (actor != NULL) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "<%s>", &actor->handle->namesym->namestr);
+            debugReplaceWithMark(pstate, nodep, buf);
+            return 1;
+        }
+        // A handle of an actor trait holds whichever actor: it is written as the trait's name
+        ActorTraitInfo *atrait = actorTraitOfHandle((INode*)st);
+        if (atrait != NULL) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "<%s>", &atrait->handle->namesym->namestr);
+            debugReplaceWithMark(pstate, nodep, buf);
             return 1;
         }
         if ((st->flags & TraitType) && !(st->flags & EnumType)) {
