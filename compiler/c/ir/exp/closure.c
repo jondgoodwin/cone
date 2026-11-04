@@ -100,7 +100,10 @@ ClosureNode *newClosureNode() {
 // The copy of a closure literal, name resolved and not yet checked. Its state
 // entries, parameters and body are copied, and each variable it borrows is
 // pointed at the copy of its declaration where that was copied too.
+uint32_t closuresCloned = 0;
+
 INode *cloneClosureNode(CloneState *cstate, ClosureNode *node) {
+    ++closuresCloned;
     ClosureNode *newnode = memAllocBlk(sizeof(ClosureNode));
     memcpy(newnode, node, sizeof(ClosureNode));
     uint32_t dclpos = cloneDclPush();

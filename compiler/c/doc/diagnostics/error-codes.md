@@ -464,6 +464,13 @@ whose inits can be called with no arguments (the region of a CarriesRegion type,
 parameters with defaults, may be left out), reported at the struct. The remedy is an
 init that needs none, or not declaring `Default`.
 
+`ErrorNoText` is a value sent as text to a text receiver (a String, a writer, the
+console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)`,
+reported at the value, naming its type and the method. A type's own `toText` is
+the remedy; `print <- x` of a raw pointer, a list, a tuple or an enum without
+one is this. (A receiver's own `<-` is tried first, so a `List` receiving a
+point still appends it and is never this.)
+
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
 the type itself, or the clause admits a member of `T` that is not a method (a

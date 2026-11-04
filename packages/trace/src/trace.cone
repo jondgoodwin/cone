@@ -1143,8 +1143,11 @@ pub fn clockFrequency() u64 {
 pub const messageBytes = 240usize;
 
 // A log message built in place, with no allocation: '(trace.Message() <-
-// "took ", ms, " ms")', parenthesized as a macro's argument. Texts, integers, floats (core's FloatText) and bools; what does not fit in 240 bytes is
-// cut. Built only when its kind is on, since it is a macro's argument
+// "took ", ms, " ms")', parenthesized as a macro's argument. Texts, integers,
+// floats (core's FloatText) and bools go in as they are; anything else (a char,
+// a type with a 'toText') is written through the message's writer (textOut).
+// What does not fit in 240 bytes is cut. Built only when its kind is on, since
+// it is a macro's argument
 pub struct Message {
   len: usize;
   buf: Array[u8, 240];
@@ -1167,6 +1170,11 @@ pub struct Message {
     }
   }
 
+  // The numbers and the bool a log line most often holds keep their own '<-',
+  // which writes straight into the bytes: through a writer each of them cost a
+  // message 30% more (measured 3 Nov 2026, a million messages of a text, an
+  // integer, a text and a bool: 27 ms against 35), and a message is on the path
+  // of every log line that is on.
   pub fn appendUInt overload `<-`(self: &mut, n: u64) {
     var digits = Array[u8, 20]() <- fill 0u8;
     var k = 0usize;
@@ -1206,10 +1214,24 @@ pub struct Message {
     self <- FloatText(x).text();
   }
 
+  // A writer onto the message's own bytes, which a send of anything else writes
+  // through ('x.toText(&uni m.textOut())': an f32 or a char, any other number
+  // type, and any type with a 'toText'). A fixed window: what does not fit in
+  // 240 bytes is cut. The length is the message's when the writer dies.
+  pub fn textOut(self: &mut) TextOut {
+    TextOut.over(&mut buf as *u8, len, messageBytes, self as *u8, 0usize, &messageTextDone as usize)
+  }
+
   // An f32 as the shortest text that reads back as that f32
   pub fn appendF32(self: &mut, x: f32) {
     self <- FloatText.ofF32(x).text();
   }
+}
+
+// A message's writer dies: what it wrote is the message's now
+fn messageTextDone(w: &uni TextOut) {
+  let me = w.ownerOf() as &mut Message;
+  me.len = w.used();
 }
 
 
