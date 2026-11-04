@@ -535,6 +535,7 @@ enum ErrorCode {
     // Futures: a behaviour's value stored and awaited later (actors.Future[T])
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
     ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
+    ErrorAwaitMethod = 1283,    // A type's 'await' method, which makes it awaitable, that takes more than 'self' or returns neither an actors.Awaitable[R] nor an actors.Future[T]
 
     // 'Sized' and 'DynSized', granted by the compiler from a type's size (ir/types/struct.c)
     ErrorSizeMarkerUse = 1296,  // 'Sized' or 'DynSized' declared by a type: both are granted, by whether the type's size is known at compile time or carried by a reference to it, and a declaration could only contradict that
