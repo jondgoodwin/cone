@@ -205,12 +205,6 @@ static void errorEachNote(int code) {
 // Send an error message to stderr
 void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_list argptr;
-    // A whole-enum method refused inside a generic's instance (AnyError.from, '?') is the
-    // caller's to fix, not the library body's: report at the user's own line, where the
-    // outermost instantiation began
-    if (code == ErrorWholeEnumMeth)
-        while (node->instnode)
-            node = node->instnode;
     va_start(argptr, msg);
     errorOutNode(node, code, msg, argptr);
     va_end(argptr);

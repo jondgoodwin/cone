@@ -1101,8 +1101,11 @@ the instance: two members of one name, one generated at least, pointed at the te
 `ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
 method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
 (`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
-(reached from `fnSigConvRefusal`, as `ErrorVtableSelf` is) names the method and says `self: &` makes the variants
-comply. The rule of what complies is unchanged; only the message is. A private requirement has no slot, so it never fails.
+(reached from `fnSigCallRefusal`, as `ErrorVtableSelf` is) names the method and says `self: &` makes the variants
+comply. The rule of what complies is unchanged; only the message is. A requirement with no slot (a private one, or a
+default `structMakeVtable` passes by) is met by a whole-enum method, so it is skipped, and a conversion refused for
+another reason keeps that reason's message. `fnSigRefusalMsg` reports it at the user's own line, where the outermost
+instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not the library body's.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

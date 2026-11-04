@@ -142,6 +142,10 @@ char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl);
 // the error code to report it under.
 char *fnSigCallRefusal(INode *from, INode *to, int *code);
 
+// Report at 'node' the refusal fnSigCallRefusal gave, under its code. One that is
+// the caller's to fix (ErrorWholeEnumMeth) goes to where the outermost instantiation began.
+void fnSigRefusalMsg(INode *node, int code, char *why);
+
 // Can a call passing 'self' (NULL if none) and 'args' call this signature?
 // This only decides viability, and never alters the call: no cast, borrow or
 // default argument is inserted. Argument finalization does that after selection.

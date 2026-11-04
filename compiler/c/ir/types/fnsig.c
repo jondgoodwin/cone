@@ -1040,6 +1040,10 @@ char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl) {
         if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode*)*nodesp;
+        // A requirement with no slot (structMakeVtable) is met by a whole-enum method,
+        // so it is not why this conversion failed
+        if (inodeIsPrivate((INode*)meth) || (meth->value && (meth->genericinfo || meth->where || (meth->flags & FlagInline))))
+            continue;
         INode *binding = namespaceFind(&en->namespace, meth->namesym);
         if (binding == NULL || binding->tag != FnDclTag || !structIsWholeEnumMethod(binding))
             continue;
@@ -1050,6 +1054,16 @@ char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl) {
         return msg;
     }
     return NULL;
+}
+
+// Report at 'node' the refusal fnSigCallRefusal gave. A whole-enum method refused inside
+// a generic's instance (AnyError.from, '?') is the caller's to fix, not the library
+// body's: it is reported at the user's own line, where the outermost instantiation began
+void fnSigRefusalMsg(INode *node, int code, char *why) {
+    if (code == ErrorWholeEnumMeth)
+        while (node->instnode)
+            node = node->instnode;
+    errorMsgNode(node, code, "%s", why);
 }
 
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
