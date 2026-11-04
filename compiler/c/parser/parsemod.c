@@ -1356,11 +1356,12 @@ typedef struct GlobalIf {
     int past;
 } GlobalIf;
 
-static void parseGlobalBranch(ParseState *parse, void *ctx, int taken) {
+static INode *parseGlobalBranch(ParseState *parse, void *ctx, int mode) {
     GlobalIf *gif = (GlobalIf*)ctx;
     int past = 0;
-    parseGlobalStmtsIn(parse, taken ? gif->mod : parse->mod, gif->state, &past);
+    parseGlobalStmtsIn(parse, mode == MetaTaken ? gif->mod : parse->mod, gif->state, &past);
     gif->past |= past;
+    return NULL;
 }
 
 // The items of an 'extern' block's braces, to the '}' that closes them or
@@ -1372,10 +1373,11 @@ typedef struct ExternIf {
     DclSpans **items;
 } ExternIf;
 
-static void parseExternBranch(ParseState *parse, void *ctx, int taken) {
+static INode *parseExternBranch(ParseState *parse, void *ctx, int mode) {
     ExternIf *xif = (ExternIf*)ctx;
     DclSpans *dropped = NULL;
-    parseExternItems(parse, xif->extflag, taken ? xif->items : &dropped);
+    parseExternItems(parse, xif->extflag, mode == MetaTaken ? xif->items : &dropped);
+    return NULL;
 }
 
 static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items) {
@@ -1389,7 +1391,8 @@ static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **ite
             ExternIf xif;
             xif.extflag = extflag;
             xif.items = items;
-            parseHashIf(parse, parseExternBranch, &xif);
+            parseHashIf(parse, parseExternBranch, &xif,
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: an 'extern' block declares what exists whatever a type is.");
             continue;
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
@@ -1451,7 +1454,8 @@ static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstar
             gif.mod = mod;
             gif.state = nomodline ? AtInHashIfNoMod : pastheader ? AtInHashIf : AtInHashIfHeader;
             gif.past = 0;
-            parseHashIf(parse, parseGlobalBranch, &gif);
+            parseHashIf(parse, parseGlobalBranch, &gif,
+                "A '#if' that asks what a type parameter is stands in the body of a generic function or type: at a module's level there is no type parameter to ask about (a generic module's declarations are not built to hold one yet).");
             if (gif.past)
                 pastheader = 1;
             continue;

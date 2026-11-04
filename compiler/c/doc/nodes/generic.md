@@ -1292,6 +1292,32 @@ name are refused, `ErrorMacroMixedSet`, at the second declaration and again at
 the first; a set holds all macros or all functions (whether a mix should ever be
 allowed is open).
 
+### A `#if` on a type parameter
+
+**The conditions of a constraint, asked of the body.** `#if T is Float { .. } #else { .. }` (in a
+generic function, a method, or the braces of a generic struct) reuses the `where` machinery:
+a condition is the same `IsTag` clauses joined by `&&` and `||`, plus `NotLogicTag` for `!` and `!=`
+(`genericConditionValue`, `genericConditionNameRes` and `genericConditionCat` handle it; `T == U` is
+`T is U` for a type `U`, met by that type alone). The template is name resolved once, every branch
+included, so a name in any branch must exist; it is never type checked.
+
+- **In a body**, the chain is an `IfNode` with `FlagIfHash`. `cloneIfNode` → `ifHashClone` clones each
+  condition with the instance's types in place of the parameters and asks
+  `genericHashCondHolds` (true, false, or unknown while a parameter remains that this clone does not
+  bind), and the instance holds a copy of the first branch that holds. An integer-only call in the
+  branch for floats is never type checked for an integer.
+- **In a struct's braces**, a branch's members are in the template under the branch's condition and
+  the negation of the chain's earlier ones: a field's `hashcond`, a method's `where`. A method's
+  condition is the existing one (the member is absent from an instance whose arguments make it
+  false, `genericAbsentMembersIn`); a field's is added to the same pass, `cloneStructNode` leaves
+  an absent field out and sets the instance's field count to match. A field's condition is decided
+  at once: the wait for a layout in flight (`WhereLate`) is not made for it, and a struct holding one
+  counts at the type level in `genericMembersConditioned`. Only fields and methods carry a condition.
+- **Limits.** The members of two branches share the template's namespace, so their names differ
+  (an `#else` cannot redeclare the field of its `#if`). The locals of a branch are the branch's own
+  block's. Not built: a module's level (a generic module's declarations), an `extern` block, an enum
+  or a trait, and a condition over a region parameter (a region is no generic parameter yet).
+
 ## Flow
 
 **Templates are never flowed** — the only `blockFlow` entry point is the tail of

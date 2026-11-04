@@ -1766,13 +1766,42 @@ typedef struct BlockIf {
 
 // A branch of a '#if' among a block's statements. A taken one joins the block; one
 // the build does not take is read into a block of its own, which is dropped
-static void parseBlockBranch(ParseState *parse, void *ctx, int taken) {
+static INode *parseBlockBranch(ParseState *parse, void *ctx, int mode) {
     BlockIf *bif = (BlockIf*)ctx;
-    if (taken) {
+    if (mode == MetaTaken) {
         parseBlockStmts(parse, bif->blk, bif->tail);
         if (bif->tail->expopen && bif->blk->stmts->used > 0 && bif->tail->expstmt == nodesLast(bif->blk->stmts))
             bif->open = 1;
-        return;
+        return NULL;
+    }
+    // A branch that asks what a type parameter is: a block of its own, which a generic's
+    // clone copies if it is the one an instance takes. Its locals are the block's, since
+    // nothing after the chain can name what only one branch declares
+    if (mode == MetaDeferred) {
+        BlockNode *branch = newBlockNode();
+        if (branch->stmts == NULL)
+            branch->stmts = newNodes(8);
+        BlockTail btail;
+        memset(&btail, 0, sizeof(btail));
+        int svinlist = parse->inlist;
+        parse->inlist = 0;
+        parseBlockStmts(parse, branch, &btail);
+        parse->inlist = svinlist;
+        // Whether the last line is an expression and ends in ';', as parseExprBlock notes it
+        if (btail.blockstmt && btail.blocksemi && nodesLast(branch->stmts) == btail.blockstmt) {
+            branch->tailmark = btail.blocksemi;
+            branch->flags |= FlagTailSemi;
+        }
+        else if (btail.expstmt && branch->stmts->used > 0 && nodesLast(branch->stmts) == btail.expstmt) {
+            branch->tailmark = btail.expsemi;
+            if (btail.expopen)
+                branch->flags |= FlagTailOpen;
+            else if (btail.expsemi)
+                branch->flags |= FlagTailSemi;
+        }
+        if (btail.expopen && branch->stmts->used > 0 && btail.expstmt == nodesLast(branch->stmts))
+            bif->open = 1;
+        return (INode*)branch;
     }
     BlockNode *stand = newBlockNode();
     if (stand->stmts == NULL)
@@ -1782,6 +1811,7 @@ static void parseBlockBranch(ParseState *parse, void *ctx, int taken) {
     parseBlockStmts(parse, stand, &standtail);
     if (standtail.expopen && stand->stmts->used > 0 && standtail.expstmt == nodesLast(stand->stmts))
         bif->open = 1;
+    return NULL;
 }
 
 // Read statements from just after a '{' through the '}' that closes them, into
@@ -1807,7 +1837,10 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
             bif.tail = tail;
             bif.open = 0;
             uint32_t before = blk->stmts->used;
-            parseHashIf(parse, parseBlockBranch, &bif);
+            INode *deferred = parseHashIf(parse, parseBlockBranch, &bif, NULL);
+            // A chain asking what a type parameter is stands in the block as one statement
+            if (deferred)
+                nodesAdd(&blk->stmts, deferred);
             expstmt = tail->expstmt;
             expsemi = tail->expsemi;
             expopen = tail->expopen;
