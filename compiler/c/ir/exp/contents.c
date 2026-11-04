@@ -24,7 +24,6 @@
 
 #include <limits.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 // Create an entry node: 'n of x', 'fill x', 'k: v', an each or a yield, its value filled in after
@@ -1376,14 +1375,16 @@ static int textHasMethod(INode *type, const char *name) {
 // answers a type with 'text', 'value' and 'finish', all as declared
 static int textOpensSite(INode *base) {
     INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("open"));
-    if (found == NULL || found->tag != FnDclTag)
+    // A method (it takes self), not a function that happens to be named 'open'
+    if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld))
         return 0;
     INode *vtype = ((FnDclNode*)found)->vtype;
     if (vtype == NULL || vtype->tag != FnSigTag)
         return 0;
     FnSigNode *sig = (FnSigNode*)vtype;
     if (sig->parms->used != 5 || sig->rettype == NULL)
-        return 0;    INode *site = textParmType(sig, 1);
+        return 0;
+    INode *site = textParmType(sig, 1);
     if (site == NULL || site->tag != RefTag || ((RefNode*)site)->perm == NULL
         || itypeGetTypeDcl(((RefNode*)site)->perm) != (INode*)mutPerm)
         return 0;
@@ -1437,8 +1438,8 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
     size_t cap = 64;
     for (uint32_t i = 0; i < npieces; ++i)
         cap += (piecep[i]->tag == StringLitTag ? ((SLitNode*)piecep[i])->strlen : 0) + 200;
-    char *spec = (char*)malloc(cap);
-    char *names = (char*)malloc(cap);
+    char *spec = (char*)memAllocBlk(cap);
+    char *names = (char*)memAllocBlk(cap);
     size_t slen = 0, nlen = 0;
     uint32_t fields = 0;
     for (uint32_t i = 0; i < npieces; ++i) {
@@ -1515,7 +1516,6 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
         }
     }
     nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
-    free(spec); free(names);
     *((INode**)nodep) = (INode*)blk;
     inodeTypeCheckAny(pstate, (INode**)nodep);
     return 1;
