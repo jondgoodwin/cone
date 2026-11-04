@@ -112,8 +112,7 @@ struct Dec {
   // x is positive and finite
   fn of(x: f64) Dec {
     var d = Dec(800usize, 0usize, 0i64, Array[u8, 800]() <- fill 0u8);
-    var v = x;
-    let bits = *(&mut v as *u64);
+    let bits = x as u64;
     let biased = (bits >> 52u64) & 0x7FFu64;
     var m = bits & 0xFFFFFFFFFFFFFu64;
     var e = 0i64 - 1074i64;
@@ -267,15 +266,15 @@ fn putSci(out: &uni TextOut, d: &Dec, n: usize) {
   out.putU64(u64.from(x));
 }
 
-// What a float wrapper does: 0 fixed, 1 digits, 2 sci
+enum FloatKind {Fixed, Digits, Sci}
+
 pub struct FloatFormat {
   x: f64;
-  kind: u32;
+  kind: FloatKind;
   n: usize;
 
   pub fn toText(self: &, out: &uni TextOut) {
-    var v = x;
-    let bits = *(&mut v as *u64);
+    let bits = x as u64;
     if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 {
       if (bits & 0xFFFFFFFFFFFFFu64) != 0u64 {
         out.writeStr("nan");
@@ -292,14 +291,13 @@ pub struct FloatFormat {
     // |x|, whose digits are exact; a zero has none
     var a = Dec(800usize, 0usize, 0i64, Array[u8, 800]() <- fill 0u8);
     if (bits & 0x7FFFFFFFFFFFFFFFu64) != 0u64 {
-      var ax = bits & 0x7FFFFFFFFFFFFFFFu64;
-      a = Dec.of(*(&mut ax as *f64));
+      a = Dec.of((bits & 0x7FFFFFFFFFFFFFFFu64) as f64);
     }
-    if kind == 0u32 {
+    if kind == FloatKind.Fixed {
       a.roundAt(a.point + i64.from(n));
       putFixed(out, &a, n);
     }
-    else if kind == 2u32 {
+    else if kind == FloatKind.Sci {
       a.roundAt(i64.from(n) + 1i64);
       putSci(out, &a, n);
     }
@@ -320,17 +318,17 @@ pub struct FloatFormat {
 
 // x with n places after the mark (an n below 0 is 0)
 pub fn fixed[N: Integer](x: f64, n: N) FloatFormat {
-  FloatFormat(x, 0u32, placesOf(n))
+  FloatFormat(x, FloatKind.Fixed, placesOf(n))
 }
 
 // x with n significant digits
 pub fn digits[N: Integer](x: f64, n: N) FloatFormat {
-  FloatFormat(x, 1u32, placesOf(n))
+  FloatFormat(x, FloatKind.Digits, placesOf(n))
 }
 
 // x in the exponent form with n places after the mark
 pub fn sci[N: Integer](x: f64, n: N) FloatFormat {
-  FloatFormat(x, 2u32, placesOf(n))
+  FloatFormat(x, FloatKind.Sci, placesOf(n))
 }
 
 fn placesOf[N: Integer](n: N) usize {
