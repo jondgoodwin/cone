@@ -1092,7 +1092,8 @@ stays one and a text goes in as it did. Then, by the shape of the right side:
 declares no `toDebug` is rewritten by `fnCallDebugLower`, run in
 `fnCallTypeCheckNode` right after `fnCallCloneCopy`, before the receiver's
 members are looked at. A number or bool becomes its `toText`; a char
-`out.putDebugChar(x)`; a raw pointer, a function, a closure and a trait object
+`out.putDebugChar(x)`; a raw pointer, a function, a closure, a trait object and an actor's handle
+(`actorOfHandle`: its state is not the caller's to read, so `<Secret>`)
 `out.writeStr("<mark>")`; an array, a List or a Dict a call of the generic free
 function `debugArray`, `debugList` or `debugDict` (core and collections; free
 functions, not methods, because a method of `Array[T]` is checked for every
@@ -1100,8 +1101,9 @@ instance, asked for or not); any other struct, enum, variant or tuple a call of
 `toDebug#N(self: &T, out: &uni TextOut)`, built once per (type, module) and
 appended to a generating module's `nodes` (the module of the call, or the first
 generating module of the program, `debugSetProgram`), checked at once. A struct
-or variant body opens with `if out.enter() {...; out.leave()}`
-(`TextOut.depth`; at 128 `enter` writes `...`). The generated function reads
+or variant body opens with `if out.debugEnter() {...; out.debugLeave()}`
+(`TextOut.depth` and `TextOut.work`; at 128 open bodies, or 65,536 entered since
+depth was last 0, `debugEnter` writes `...` and answers false). The generated function reads
 private fields (`FnDclNode.generatedFor`: code the compiler generates for a type is part of that type, so `structSeesPrivate` lets it see what the type's own code sees, a variant counting as its enum, and no other type's). A sink whose type
 declares core's `DebugText` (`coreIsDebugText`, matched by name and package) takes
 each non-literal piece of a `<-` as `piece.toDebug(&uni W)`: `textSendDebug`, run in

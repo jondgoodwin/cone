@@ -4083,6 +4083,14 @@ category = "run"
 description = "The debug form a call to toDebug generates for a struct, an enum's variants, a tuple and a nested value: field names, quoted and escaped text, a type's own toDebug used inside"
 tags = ["runtime"]
 
+# A generated form is never pub, so its symbol is internal (genllvm.c, genlInstanceIsPrivate):
+# two library packages that each generate a 'toDebug#1' (the serial restarts in every compile)
+# define it in their own objects alone, and link into one program together.
+[[scenario.module_debug_basic.check]]
+name = "the-generated-form-is-internal"
+target = "preir"
+contains = ["define internal %void @_CINvC4coreu15_toDebug1_"]
+
 [scenario.module_debug_more]
 category = "run"
 description = "The debug form of Option and Result, a fixed array, a List and a Dict (generic free functions of core and collections), and escaped text: quotes, backslash, a tab, a control character, multibyte letters"
@@ -4118,6 +4126,11 @@ diagnostics = 1
   target = "llvmir"
   contains = ["define"]
   excludes = ["toDebug", "debugArray"]
+
+[scenario.module_debug_private]
+category = "run"
+description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
+tags = ["typecheck", "runtime"]
 
 [scenario.module_text_interp_threads]
 category = "run"
@@ -4211,11 +4224,6 @@ target = "llvmir"
 contains = ["load atomic i8, ptr %state monotonic", "switch i8 %atomicload", "i8 0, label %endif"]
 excludes = ["@_CNvNtC5trace3Log5wants"]
 
-[scenario.module_debug_private]
-category = "run"
-description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
-tags = ["typecheck", "runtime"]
-
 [scenario.module_text_site]
 category = "run"
 description = "A '<-' to a receiver whose 'open' takes a call site's storage is one event: the fixed text to 'text', each value to the overloaded 'value', then 'finish'; the spec names each value from its brace's source text, or by number in a plain list; one Site per call site, shared by its calls"
@@ -4225,3 +4233,13 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "A log send in an inline function is refused (ErrorBadStatic): its call-site kind is a static, which an inline body would copy into each caller"
 tags = ["typecheck"]
+
+[scenario.module_debug_work]
+category = "run"
+description = "A generated toDebug over two Rc edges round a cycle, and over a tree with parent pointers, ends: the writer counts the bodies it enters and writes '...' past 65,536, resetting when a value is done, so 70,000 separate values in a List are each written whole"
+tags = ["runtime"]
+
+[scenario.module_debug_actor]
+category = "run"
+description = "A struct holding a concrete actor's handle has a generated toDebug, and writes the handle as the fixed mark <Secret>"
+tags = ["typecheck", "runtime"]
