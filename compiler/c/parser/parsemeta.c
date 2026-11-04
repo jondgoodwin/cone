@@ -23,6 +23,7 @@
 #include "../ir/ir.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
+#include "../shared/fileio.h"
 #include "../ir/nametbl.h"
 #include "../coneopts.h"
 #include "lexer.h"
@@ -34,6 +35,10 @@
 // triple is filled in by generation's setup, which runs before any source is
 // parsed, so facts are read from the options when they are asked for
 static ConeOptions *metaOpt = NULL;
+
+// Inside the second or later pass of a '#each' (below): what the first pass noted for the include
+// file is noted, and the same text read again adds nothing to it
+static int metaRepeat = 0;
 
 void parseMetaInit(ConeOptions *opt) {
     metaOpt = opt;
@@ -349,6 +354,13 @@ static MetaVal metaPrimary(MetaKind hint) {
     // A type parameter and what it is, in a generic: decided when the generic is cloned
     case IdentToken:
         return metaTypeFact();
+    // A '#each' variable is not a type parameter: what it stands for is known as the passes are
+    // read, but asking about it ('#T is Float') belongs to the layer's reflection
+    case MetaVarToken:
+        errorMsgLex(ErrorMetaFact, "A '#if' condition asks about the build's facts and, in a generic, about what a type parameter is; it cannot ask about a meta variable ('%s').",
+            &lex->val.ident->namestr);
+        metaSkipCond();
+        return metaVal(MetaBad, 0);
     default:
         // A '#' word the lexer refused took its place: that was reported
         if (lexHashDropped != metaDropMark) {
@@ -628,7 +640,16 @@ INode *parseMetaMemberCond(void) {
 
 // A '#elif' or '#else' that no '#if' chain is waiting for: reported, and its
 // condition and block read past so that what is inside is not reported as well
+static void metaEachSkip(void);
+
 void parseMetaStray(ParseState *parse) {
+    // A '#each' where a function's statements are not: at a module's level, in a type's braces, in an
+    // 'extern' block, or inside an expression
+    if (lexIsToken(HashEachToken)) {
+        errorMsgLex(ErrorMetaEachPlace, "A '#each' repeats the statements of a function's body. It is not built at a module's level, in a type's braces, in an 'extern' block or inside an expression: generating declarations waits for generated names.");
+        metaEachSkip();
+        return;
+    }
     int iselif = lexIsToken(HashElifToken);
     errorMsgLex(ErrorMetaIf, iselif
         ? "'#elif' continues a '#if' or another '#elif' and has nothing to continue here. After an '#else' the chain is over."
@@ -757,7 +778,8 @@ INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char
         errorMsgNode(firsttype, ErrorMetaMixFact, "%s", nomix);
     // The include file keeps the branch taken and nothing of the chain around it;
     // a chain with a deferred branch stays whole, for an importer to clone
-    if (deferredany)
+    // (A later pass of a '#each' reads the same text and has cut it already)
+    if (deferredany || metaRepeat)
         ;
     else if (openend && closeat > openend - 1) {
         dclCutAdd(lexer, chainat, openend, NULL);
@@ -859,7 +881,7 @@ INode *parseHashIfExpr(ParseState *parse) {
     int single = blk->tag == BlockTag && blk->stmts->used == 1 && (blk->flags & FlagTailOpen);
     // The include file keeps the taken value alone: a single expression in
     // parentheses, since it is no block, and a longer block as the block it is
-    if (openat && closeat > openat) {
+    if (openat && closeat > openat && !metaRepeat) {
         dclCutAdd(lexer, chainat, single ? openat + 1 : openat, single ? "(" : NULL);
         dclCutAdd(lexer, single ? closeat : closeat + 1, lex->prevend, single ? ")" : NULL);
     }
@@ -867,3 +889,589 @@ INode *parseHashIfExpr(ParseState *parse) {
         return nodesGet(blk->stmts, 0);
     return value;
 }
+
+// ----------------------------------------------------------------------------
+// '#each' and the meta variables
+//
+// '#each #x in list { body }' is expanded here, while the body is parsed: the lexer is put back at
+// the body's '{' for each item of the list, '#x' is bound to the item, and the body is parsed again
+// as a block of its own. The passes are blocks that follow one another in the enclosing block, each
+// with a scope to itself (ruled 1 Nov). A '#x' met in a pass is a copy of the item: a value where a
+// value is read, a type where a type is. The IR that name resolution and type checking see is the
+// expanded one; they never meet a '#each'.
+//
+// A meta variable is a number or a list the parser holds while it reads a function's body. 'let #n'
+// is fixed; 'var #i' may be given a new value ('#i += 1;'), and the passes see it in the order they
+// were read, which is how a count accumulates across them. A variable belongs to the block it is
+// declared in, so everything a pass depends on is written inside the one function body the include
+// file copies whole: an importer reads the same text and makes the same passes.
+
+typedef enum {
+    MetaBindItem,       // A loop's variable: one item of a list
+    MetaBindInt,        // A number: 'let #n = 3', 'var #i = 0'
+    MetaBindList        // A list: 'let #xs = [8, 16, 32]', 'let #ts = (i32, i64)'
+} MetaBindKind;
+
+// A list read from the source: its items, as nodes to copy, and as the text they were written in
+typedef struct MetaItems {
+    Nodes *nodes;
+    char **texts;
+    uint32_t count, avail;
+    int istype;         // The items are types
+} MetaItems;
+
+typedef struct MetaBind {
+    Name *name;         // With its '#'
+    MetaBindKind kind;
+    int isvar;          // 'var': may be given a new value
+    int64_t ival;       // A number, or an item that is an integer literal (hasint)
+    int hasint;
+    INode *item;        // MetaBindItem
+    char *text;         // MetaBindItem: the item as written
+    int istype;         // MetaBindItem: the item is a type
+    MetaItems *list;    // MetaBindList
+} MetaBind;
+
+static MetaBind *metaEnv = NULL;
+static uint32_t metaEnvUsed = 0, metaEnvAvail = 0;
+static int metaSkipping = 0;        // A stretch is being read past: any '#' word in it is quietly a variable
+static int metaDepth = 0;           // '#each's being expanded, one inside the other
+static int64_t metaStepsLeft = 0;   // Passes the outermost '#each' still has, with the ones inside it
+static int metaQuotaHit = 0;        // The quota was passed: the rest of the outermost '#each' is read past
+static FILE *metaFile = NULL;       // --meta-ir
+
+int parseMetaIsBound(Name *name) {
+    if (metaSkipping)
+        return 1;
+    for (uint32_t i = metaEnvUsed; i > 0; --i)
+        if (metaEnv[i - 1].name == name)
+            return 1;
+    return 0;
+}
+
+static MetaBind *metaFind(Name *name) {
+    for (uint32_t i = metaEnvUsed; i > 0; --i)
+        if (metaEnv[i - 1].name == name)
+            return &metaEnv[i - 1];
+    return NULL;
+}
+
+static void metaBindPush(MetaBind *bind) {
+    if (metaEnvUsed == metaEnvAvail) {
+        uint32_t avail = metaEnvAvail ? metaEnvAvail * 2 : 32;
+        MetaBind *grown = (MetaBind*)memAllocBlk(avail * sizeof(MetaBind));
+        if (metaEnvUsed)
+            memcpy(grown, metaEnv, metaEnvUsed * sizeof(MetaBind));
+        metaEnv = grown;
+        metaEnvAvail = avail;
+    }
+    metaEnv[metaEnvUsed++] = *bind;
+}
+
+uint32_t parseMetaScope(void) {
+    return metaEnvUsed;
+}
+
+void parseMetaScopeEnd(uint32_t mark) {
+    if (mark < metaEnvUsed)
+        metaEnvUsed = mark;
+}
+
+// The source from 'from' to 'to' as one line, shortened, for an error to quote
+static char *metaTextOf(char *from, char *to) {
+    while (from < to && (*from == ' ' || *from == '\t' || *from == '\r' || *from == '\n'))
+        ++from;
+    while (to > from && (to[-1] == ' ' || to[-1] == '\t' || to[-1] == '\r' || to[-1] == '\n'))
+        --to;
+    size_t len = (size_t)(to - from);
+    int cut = len > 40;
+    if (cut)
+        len = 40;
+    char *text = (char*)memAllocBlk(len + 4);
+    for (size_t i = 0; i < len; ++i)
+        text[i] = from[i] == '\n' || from[i] == '\r' || from[i] == '\t' ? ' ' : from[i];
+    text[len] = 0;
+    if (cut)
+        strcat(text, "...");
+    return text;
+}
+
+// Read past a '#each' that is not to be expanded: its header, then the block. The lexer is on
+// the '#each' or anywhere in the header; a '#' word met is read quietly
+static void metaEachSkip(void) {
+    ++metaSkipping;
+    while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(RCurlyToken)
+        && !lexIsToken(EofToken))
+        lexNextToken();
+    if (lexIsToken(LCurlyToken)) {
+        int depth = 0;
+        do {
+            if (lexIsToken(LCurlyToken))
+                ++depth;
+            else if (lexIsToken(RCurlyToken))
+                --depth;
+            else if (lexIsToken(EofToken))
+                break;
+            lexNextToken();
+        } while (depth > 0);
+    }
+    --metaSkipping;
+}
+
+// Read a statement's remaining tokens, to its ';' or its block's end
+static void metaStmtSkip(void) {
+    ++metaSkipping;
+    while (!lexIsToken(SemiToken) && !lexIsToken(RCurlyToken) && !lexIsToken(EofToken))
+        lexNextToken();
+    if (lexIsToken(SemiToken))
+        lexNextToken();
+    --metaSkipping;
+}
+
+// ---- Numbers
+
+static int metaIntBad = 0;
+
+static void metaIntError(const char *msg) {
+    if (!metaIntBad)
+        errorMsgLex(ErrorMetaVar, "%s", msg);
+    metaIntBad = 1;
+}
+
+static int64_t metaIntSum(void);
+
+// A number: an integer literal, a meta variable that holds one, or a parenthesised sum
+static int64_t metaIntPrimary(void) {
+    switch (lex->toktype) {
+    case IntLitToken: {
+        int64_t v = (int64_t)lex->val.uintlit;
+        if (lex->langtype == (INode*)charType)
+            metaIntError("A meta number is built from integers; this is a character.");
+        lexNextToken();
+        return v;
+    }
+    case MetaVarToken: {
+        MetaBind *bind = metaFind(lex->val.ident);
+        int64_t v = 0;
+        if (bind && bind->kind == MetaBindInt)
+            v = bind->ival;
+        else if (bind && bind->kind == MetaBindItem && bind->hasint)
+            v = bind->ival;
+        else
+            metaIntError(bind ? "A meta number is built from integers, and this meta variable holds something else (a list, or an item that is no integer literal)."
+                : "This meta variable is not declared here.");
+        lexNextToken();
+        return v;
+    }
+    case LParenToken: {
+        lexNextToken();
+        int64_t v = metaIntSum();
+        if (lexIsToken(RParenToken))
+            lexNextToken();
+        else
+            metaIntError("A '(' in a meta number is closed by a ')'.");
+        return v;
+    }
+    case DashToken:
+        lexNextToken();
+        return -metaIntPrimary();
+    default:
+        metaIntError("A meta number is built from integer literals and meta variables that hold one, joined with '+', '-', '*', '/' and '%'.");
+        return 0;
+    }
+}
+
+static int64_t metaIntProduct(void) {
+    int64_t v = metaIntPrimary();
+    while (!metaIntBad && (lexIsToken(StarToken) || lexIsToken(SlashToken) || lexIsToken(PercentToken))) {
+        uint16_t op = lex->toktype;
+        lexNextToken();
+        int64_t rhs = metaIntPrimary();
+        if (op == StarToken)
+            v = v * rhs;
+        else if (rhs == 0)
+            metaIntError("A meta number cannot be divided by zero.");
+        else
+            v = op == SlashToken ? v / rhs : v % rhs;
+    }
+    return v;
+}
+
+static int64_t metaIntSum(void) {
+    int64_t v = metaIntProduct();
+    while (!metaIntBad && (lexIsToken(PlusToken) || lexIsToken(DashToken))) {
+        uint16_t op = lex->toktype;
+        lexNextToken();
+        int64_t rhs = metaIntProduct();
+        v = op == PlusToken ? v + rhs : v - rhs;
+    }
+    return v;
+}
+
+// Read a number, with the lexer on its first token. Bad ones are reported and the statement read past
+static int metaIntRead(int64_t *out) {
+    metaIntBad = 0;
+    *out = metaIntSum();
+    if (metaIntBad) {
+        metaStmtSkip();
+        return 0;
+    }
+    return 1;
+}
+
+// A number as a literal that takes whatever integer type it is wanted as
+static INode *metaIntLit(int64_t v) {
+    ULitNode *lit = newULitNode(v < 0 ? (uint64_t)(-v) : (uint64_t)v, unknownType);
+    if (v < 0) {
+        lit->uintlit = 0 - lit->uintlit;
+        lit->flags ^= FlagLitNeg;
+    }
+    return (INode*)lit;
+}
+
+// ---- Lists
+
+static void metaItemsAdd(MetaItems *list, INode *node, char *text) {
+    if (list->count == list->avail) {
+        uint32_t avail = list->avail ? list->avail * 2 : 8;
+        char **grown = (char**)memAllocBlk(avail * sizeof(char*));
+        if (list->count)
+            memcpy(grown, list->texts, list->count * sizeof(char*));
+        list->texts = grown;
+        list->avail = avail;
+    }
+    nodesAdd(&list->nodes, node);
+    list->texts[list->count++] = text;
+}
+
+// Does the parenthesis the lexer is on hold a comma of its own, as '(i32, i64)' does and '(1 + 2)' does not?
+// Read off the text, as lexNextIsWord is
+static int metaParenHasComma(void) {
+    char *p = lex->srcp;
+    int depth = 1;
+    while (*p && depth > 0) {
+        switch (*p) {
+        case '(': case '[': case '{': ++depth; break;
+        case ')': case ']': case '}': --depth; break;
+        case ',': if (depth == 1) return 1; break;
+        case '"':
+            for (++p; *p && *p != '"' && *p != '\n'; ++p)
+                if (*p == '\\' && p[1])
+                    ++p;
+            break;
+        case '/':
+            if (p[1] == '/')
+                while (*p && *p != '\n')
+                    ++p;
+            continue;
+        }
+        if (*p)
+            ++p;
+    }
+    return 0;
+}
+
+// Is a node an integer literal, as written, that takes whatever integer type it is wanted as?
+static int metaItemInt(INode *node, int64_t *v) {
+    if (node && node->tag == ULitTag && (node->flags & FlagUnkType) && !(node->flags & FlagCharLit)) {
+        *v = (int64_t)((ULitNode*)node)->uintlit;
+        return 1;
+    }
+    return 0;
+}
+
+// Read a list: '[a, b, c]' of values, '(T, U)' of types, or a meta variable that holds one. The
+// lexer is on the opener. Returns NULL where it could not be read (reported)
+static MetaItems *metaListRead(ParseState *parse) {
+    MetaItems *list = (MetaItems*)memAllocBlk(sizeof(MetaItems));
+    memset(list, 0, sizeof(MetaItems));
+    list->nodes = newNodes(8);
+    if (lexIsToken(MetaVarToken)) {
+        MetaBind *bind = metaFind(lex->val.ident);
+        if (bind == NULL || bind->kind != MetaBindList) {
+            errorMsgLex(ErrorMetaEach, "A '#each' goes through a list: '[a, b]' of values, '(T, U)' of types, or a meta variable declared as one ('let #xs = [1, 2];'). '%s' is %s.",
+                &lex->val.ident->namestr, bind ? "not a list" : "not declared here");
+            return NULL;
+        }
+        list = bind->list;
+        lexNextToken();
+        return list;
+    }
+    int istype = lexIsToken(LParenToken);
+    uint16_t closer = istype ? RParenToken : RBracketToken;
+    list->istype = istype;
+    lexNextToken();
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
+    int errs = errors;
+    while (!lexIsToken(closer) && !lexIsToken(EofToken)) {
+        char *from = lex->tokp;
+        INode *item = istype ? parseTypeReq(parse, "'('") : parseSimpleExpr(parse);
+        if (errors != errs || item == NULL) {
+            parse->inlist = svinlist;
+            return NULL;
+        }
+        metaItemsAdd(list, item, metaTextOf(from, lex->prevend));
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+    }
+    parse->inlist = svinlist;
+    if (!lexIsToken(closer)) {
+        errorMsgLex(ErrorMetaEach, "A list of a '#each' is closed by a '%s' after its last item, with its items separated by ','.", istype ? ")" : "]");
+        return NULL;
+    }
+    lexNextToken();
+    return list;
+}
+
+// ---- Declarations and assignments
+
+int parseMetaIsDecl(void) {
+    return (lexIsToken(LetToken) || lexIsToken(VarToken)) && lexNextIsHash();
+}
+
+// 'let #n = 3;', 'var #i = 0;', 'let #xs = [8, 16, 32];' or 'let #ts = (i32, i64);', the lexer on the
+// 'let' or 'var'
+void parseMetaDecl(ParseState *parse) {
+    int isvar = lexIsToken(VarToken);
+    lexMetaDecl = 1;
+    lexNextToken();
+    if (!lexIsToken(MetaVarToken)) {
+        errorMsgLex(ErrorMetaVar, "A meta variable's name is a '#' word that is not one of the layer's own: 'let #n = 3;'.");
+        metaStmtSkip();
+        return;
+    }
+    MetaBind bind;
+    memset(&bind, 0, sizeof(bind));
+    bind.name = lex->val.ident;
+    bind.isvar = isvar;
+    lexNextToken();
+    if (!lexIsToken(AssgnToken)) {
+        errorMsgLex(ErrorMetaVar, "A meta variable is given its value where it is declared: 'let #n = 3;'.");
+        metaStmtSkip();
+        return;
+    }
+    lexNextToken();
+    // A list is read first, as the value is read: '#n' in 'let #n = #n + 1;' is the outer one
+    if (lexIsToken(LBracketToken) || (lexIsToken(LParenToken) && metaParenHasComma())
+        || (lexIsToken(MetaVarToken) && metaFind(lex->val.ident) && metaFind(lex->val.ident)->kind == MetaBindList)) {
+        bind.kind = MetaBindList;
+        bind.list = metaListRead(parse);
+        if (bind.list == NULL) {
+            metaStmtSkip();
+            return;
+        }
+        bind.isvar = 0;
+    }
+    else {
+        bind.kind = MetaBindInt;
+        if (!metaIntRead(&bind.ival))
+            return;
+    }
+    metaBindPush(&bind);
+    parseEndOfStatement();
+}
+
+int parseMetaIsAssign(void) {
+    if (!lexIsToken(MetaVarToken))
+        return 0;
+    LexMark mark;
+    lexMarkSave(&mark);
+    lexNextToken();
+    int yes = lexIsToken(AssgnToken) || lexIsToken(PlusEqToken) || lexIsToken(MinusEqToken)
+        || lexIsToken(MultEqToken) || lexIsToken(DivEqToken) || lexIsToken(RemEqToken);
+    lexMarkRestore(&mark);
+    return yes;
+}
+
+// '#i = 3;', '#i += 1;' (and '-=', '*=', '/=', '%='), the lexer on the variable. Done now, as it is read
+void parseMetaAssign(ParseState *parse) {
+    Name *name = lex->val.ident;
+    MetaBind *bind = metaFind(name);
+    if (bind == NULL || bind->kind != MetaBindInt || !bind->isvar) {
+        errorMsgLex(ErrorMetaVar, "'%s' cannot be given a new value: only a number declared with 'var' can ('var #i = 0; ... #i += 1;'). A 'let' is fixed, and a '#each' variable is the item of its pass.",
+            &name->namestr);
+        metaStmtSkip();
+        return;
+    }
+    lexNextToken();
+    uint16_t op = lex->toktype;
+    lexNextToken();
+    int64_t rhs;
+    if (!metaIntRead(&rhs))
+        return;
+    // (The binding is looked for again: reading the number pushed nothing, but it is cheap to be sure)
+    bind = metaFind(name);
+    switch (op) {
+    case AssgnToken: bind->ival = rhs; break;
+    case PlusEqToken: bind->ival += rhs; break;
+    case MinusEqToken: bind->ival -= rhs; break;
+    case MultEqToken: bind->ival *= rhs; break;
+    case DivEqToken:
+    case RemEqToken:
+        if (rhs == 0) {
+            errorMsgLex(ErrorMetaVar, "A meta number cannot be divided by zero.");
+            metaStmtSkip();
+            return;
+        }
+        bind->ival = op == DivEqToken ? bind->ival / rhs : bind->ival % rhs;
+        break;
+    }
+    parseEndOfStatement();
+}
+
+// A meta variable met as a term: a copy of the loop's item, or the number it holds
+INode *parseMetaTerm(ParseState *parse) {
+    MetaBind *bind = metaFind(lex->val.ident);
+    INode *node = NULL;
+    if (bind == NULL)
+        errorMsgLex(ErrorMetaVar, "'%s' is not a meta variable declared here ('#each %s in ...', 'let %s = ...').",
+            &lex->val.ident->namestr, &lex->val.ident->namestr, &lex->val.ident->namestr);
+    else if (bind->kind == MetaBindInt)
+        node = metaIntLit(bind->ival);
+    else if (bind->kind == MetaBindItem)
+        node = metaCopy(bind->item);
+    else
+        errorMsgLex(ErrorMetaVar, "'%s' holds a list, which a '#each' goes through ('#each #x in %s { ... }'); it is not a value.",
+            &lex->val.ident->namestr, &lex->val.ident->namestr);
+    lexNextToken();
+    return node;
+}
+
+// ---- '#each'
+
+// The IR printer's state (inode.c)
+extern FILE *irfile;
+extern int irIndent, irIsNL;
+
+// What --meta-ir writes of a loop: it, and each pass the parser made of it
+static void metaEachDump(INode *loop, Name *var, MetaItems *list, Nodes *passes, EachPass **eps) {
+    if (metaFile == NULL) {
+        char *path = fileMakePath(metaOpt->output, metaOpt->srcname, "meta");
+        metaFile = fopen(path, "wb");
+        if (metaFile == NULL)
+            return;
+    }
+    FILE *svfile = irfile;
+    int svindent = irIndent, svnl = irIsNL;
+    irfile = metaFile;
+    irIndent = 0;
+    irIsNL = 1;
+    uint32_t line = loop->linenbr;
+    fprintf(metaFile, "#each %s: %u item%s, at line %u of %s\n", &var->namestr, list->count,
+        list->count == 1 ? "" : "s", line, loop->lexer ? loop->lexer->url : "?");
+    for (uint32_t i = 0; i < passes->used; ++i) {
+        fprintf(metaFile, "pass %u of %u, %s = %s\n", i + 1, list->count, &var->namestr, eps[i]->item);
+        inodePrintNode(nodesGet(passes, i));
+        inodePrintNL();
+    }
+    fprintf(metaFile, "\n");
+    fflush(metaFile);
+    irfile = svfile;
+    irIndent = svindent;
+    irIsNL = svnl;
+}
+
+// '#each #x in list { body }' among a block's statements, the lexer on the '#each'. The passes are
+// added to 'blk' as blocks of their own
+void parseHashEach(ParseState *parse, BlockNode *blk) {
+    INode *loop = (INode*)newNilLitNode();      // Stands where the '#each' is
+    lexMetaDecl = 1;
+    lexNextToken();
+    if (!lexIsToken(MetaVarToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' binds the item of each pass to a '#' name of its own: '#each #x in [1, 2, 3] { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    Name *var = lex->val.ident;
+    lexNextToken();
+    if (!lexIsToken(InToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' names its list after 'in': '#each #x in [1, 2, 3] { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    lexNextToken();
+    if (!lexIsToken(LBracketToken) && !lexIsToken(LParenToken) && !lexIsToken(MetaVarToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' goes through a list: '[a, b]' of values, '(T, U)' of types, or a meta variable declared as one ('let #xs = [1, 2];').");
+        metaEachSkip();
+        return;
+    }
+    MetaItems *list = metaListRead(parse);
+    if (list == NULL) {
+        metaEachSkip();
+        return;
+    }
+    if (!lexIsToken(LCurlyToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' repeats a block, which follows its list: '#each #x in [1, 2, 3] { ... }'.");
+        metaEachSkip();
+        return;
+    }
+
+    int outermost = metaDepth == 0;
+    if (outermost) {
+        metaStepsLeft = metaOpt ? metaOpt->meta_steps : 10000;
+        metaQuotaHit = 0;
+    }
+    ++metaDepth;
+    Nodes *passes = newNodes(list->count < 16 ? list->count + 1 : 16);
+    EachPass **eps = (EachPass**)memAllocBlk((list->count + 1) * sizeof(EachPass*));
+    LexMark body;
+    lexMarkSave(&body);
+    int consumed = 0;       // A pass has read the body
+    for (uint32_t k = 0; k < list->count; ++k) {
+        if (metaQuotaHit)
+            break;
+        if (metaStepsLeft-- <= 0) {
+            metaQuotaHit = 1;
+            errorMsgNode(loop, ErrorMetaQuota,
+                "The '#each' over %s is at pass %u of %u, and the outermost '#each' (with the ones inside it) has used up its %d steps. A runaway list or nested loops stop here; --meta-steps raises the quota.",
+                &var->namestr, k + 1, list->count, metaOpt ? metaOpt->meta_steps : 10000);
+            break;
+        }
+        lexMarkRestore(&body);
+        uint32_t scope = metaEnvUsed;
+        MetaBind bind;
+        memset(&bind, 0, sizeof(bind));
+        bind.name = var;
+        bind.kind = MetaBindItem;
+        bind.item = nodesGet(list->nodes, k);
+        bind.text = list->texts[k];
+        bind.istype = list->istype;
+        bind.hasint = metaItemInt(bind.item, &bind.ival);
+        metaBindPush(&bind);
+        EachPass *ep = (EachPass*)memAllocBlk(sizeof(EachPass));
+        ep->outer = errorEachPass;
+        ep->loop = loop;
+        ep->pass = k + 1;
+        ep->npasses = list->count;
+        ep->var = &var->namestr;
+        ep->item = bind.text;
+        errorEachPass = ep;
+        if (k > 0)
+            ++metaRepeat;
+        int errs = errors;
+        INode *pass = parseExprBlock(parse, 0);
+        if (k > 0)
+            --metaRepeat;
+        errorEachPass = ep->outer;
+        metaEnvUsed = scope;
+        if (pass && pass->tag == BlockTag) {
+            ((BlockNode*)pass)->eachpass = ep;
+            nodesAdd(&blk->stmts, pass);
+            eps[passes->used] = ep;
+            nodesAdd(&passes, pass);
+        }
+        consumed = 1;
+        // What was wrong would be wrong in the passes that follow, and be said again in each
+        if (errors != errs)
+            break;
+    }
+    --metaDepth;
+    // Where no pass was read (no items, or the quota gone at the first), the body is read past
+    if (!consumed)
+        metaEachSkip();
+    if (metaOpt && metaOpt->print_meta && outermost && parse->mod != metaScratchMod && passes->used)
+        metaEachDump(loop, var, list, passes, eps);
+}
+
