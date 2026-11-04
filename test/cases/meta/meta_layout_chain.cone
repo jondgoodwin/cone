@@ -1,0 +1,63 @@
+// Layout facts through a chain of by-value fields: A holds B by value, B holds C by value. The size, the
+// alignment and every offset are asked of each link and checked against mem.sizeof, mem.alignof and the
+// addresses of a real value, and against the layout worked out by hand:
+//   C: p: u8 at 0, q: i16 at 2; size 4 align 2
+//   B: x: u8 at 0, c: C at 2 (aligned to 2); y: u32 at 8 (aligned to 4); size 12 align 4
+//   A: t: u8 at 0, b: B at 4 (aligned to 4), z: u64 at 16 (aligned to 8); size 24 align 8
+// Printed as the name, size, align and then each field's offset.
+
+mod meta_layout_chain;
+
+import stdio use *;
+
+struct C {
+  pub p: u8;
+  pub q: i16;
+}
+
+struct B {
+  pub x: u8;
+  pub c: C;
+  pub y: u32;
+}
+
+struct A {
+  pub t: u8;
+  pub b: B;
+  pub z: u64;
+}
+
+fn layout[T](name: &str) {
+  printStr(name);
+  printStr(" size ");
+  printInt(i64.from(#size(T)));
+  printStr(" align ");
+  printInt(i64.from(#align(T)));
+  printStr(if #size(T) == mem.sizeof[T]() && #align(T) == mem.alignof[T]() { " agrees" } else { " DISAGREES" });
+  printStr("\n");
+  #each #f in #fields(T) {
+    printStr("  ");
+    printStr(#f.name);
+    printStr(" at ");
+    printInt(i64.from(#f.offset));
+    printStr("\n");
+  }
+}
+
+fn addresses[T](v: &T) {
+  let base = (v as *u8) as usize;
+  var ok = true;
+  #each #f in #fields(T) {
+    if ((&v.#f) as *u8) as usize - base != #f.offset {
+      ok = false;
+    }
+  }
+  printStr(if ok { "addresses agree\n" } else { "addresses DISAGREE\n" });
+}
+
+fn main() {
+  layout[C]("C");
+  layout[B]("B");
+  layout[A]("A");
+  addresses(&A(1, B(2, C(3, 4), 5), 6));
+}
