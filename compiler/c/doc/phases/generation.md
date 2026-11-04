@@ -108,7 +108,7 @@ them. `genlIsVoidMain` treats `cone.main` as it does `main`: a `main` returning
 nothing is generated returning `i32 0`. A `main` returning a Result is called
 through the private function type check gave its module, `-mainresult`
 (`propagateMainEntry`, `ir/exp/propagate.h`), which calls it, prints a failure's
-`report()` (the error type's, where it has one) or else its `message()` through conestd's `cone_mainError` and answers 1, or 0; the entry calls
+error: for a type meeting core's `Error`, its `reportMain()` (the trait's default: `Error: `, `report(out)` and a newline into one record handed to conestd's `cone_mainErrorRecord`); for a type with only a `message()`, that through conestd's `cone_mainError`. It answers 1, or 0; the entry calls
 that in its place and returns what it answers. A panic ends the process through
 `abort`, and a call to C's `exit` leaves it, so neither reaches the final.
 [module](../nodes/module.md), "Init and final".

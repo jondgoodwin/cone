@@ -3888,3 +3888,61 @@ extern {
   // The writer dies: call its maker's function, free its blocks
   fn @c("cone_textFinish") textFinish(out: &uni TextOut);
 }
+
+// -------- errors --------
+
+// What an error value is [WI error-handling, issue 5]. A library returns its own
+// typed errors (an enum or struct that declares 'is Error'); an application takes
+// them all as an 'AnyError' (collections). The trait is in core so any type here
+// can meet it; the text is written into a 'TextOut', as any value's is, so core
+// needs no String.
+//
+//   toText()   the error's one line for a person, this error alone: the outermost
+//              line of a chain ('readFile notes.txt: No such file or directory').
+//              A String of it is 'String() <- e', a print of it 'print <- e'.
+//   source()   the error that caused this one, or None (the default).
+//   report()   the line and each cause under it, one to a line, which 'main'
+//              prints for an error that has it. INTERIM: its text format stands
+//              until the display design lands.
+//
+// 'source' answers a virtual reference, '&<Error' (a plain '&' to a trait cannot
+// be called through): a type with a cause builds it with the type argument,
+// 'Some[&<Error](&cause)'.
+pub trait Error {
+  pub fn toText(self: &, out: &uni TextOut);
+
+  pub fn source(self: &) Option[&<Error] { None }
+
+  // 'toText', then 'caused by:' and each cause's text, down the chain
+  pub fn report(self: &, out: &uni TextOut) {
+    self.toText(out);
+    var cur = self.source();
+    var more = true;
+    while more {
+      match cur {
+        case let Some(cause) {
+          out <- "\n  caused by: ";
+          cause.toText(out);
+          cur = cause.source();
+        }
+        case is None { more = false; }
+      }
+    }
+  }
+
+  // What a 'main' returning this error prints when it fails, which the compiler's
+  // entry calls: 'Error: ', the report and a newline, as one line on standard
+  // error. Not for a program to call.
+  pub fn reportMain(self: &) {
+    var out = TextOut.record(0usize, null, 2u32);
+    out <- "Error: ";
+    self.report(&uni out);
+    out <- "\n";
+    mainErrorRecord(&uni out);
+  }
+}
+
+extern {
+  // conestd's: standard output flushed, then the record written to standard error
+  fn @c("cone_mainErrorRecord") mainErrorRecord(out: &uni TextOut);
+}

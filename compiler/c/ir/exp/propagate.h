@@ -89,16 +89,18 @@ INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk);
 //
 //   fn -mainresult(params) i32 {
 //     let -held = main(params);
-//     if -held is Err { let -err = [Err]-held; let -msg = -err.report();
-//                         -mainError(-msg.view()); return 1 }
+//     if -held is Err { let -err = [Err]-held; -err.reportMain(); return 1 }
 //     return 0 }
 //
+// where 'reportMain' is core's Error trait's default (E meets Error): it writes
+// 'Error: ', E's 'report(out)' (the text and each cause under it: INTERIM until
+// the display design) and a newline to stderr, through conestd's
+// 'cone_mainErrorRecord'. An E that does not meet Error is printed by
+//     let -msg = -err.report() (or message()); -mainError(-msg.view())
 // where '-mainError' is conestd's 'cone_mainError(msg: &str)', declared here,
-// which writes 'Error: <text>' to stderr. The text is E's 'report()' where E has
-// one (the collections Error trait's default, the message and each cause under
-// it: INTERIM until the display design), else its 'message()'. Either gives a
-// String (its view is lent) or a '&str' (passed as it is). E is asked by name;
-// one with neither is ErrorMainResult.
+// which writes 'Error: <text>' to stderr; the method gives a String (its view is
+// lent) or a '&str' (passed as it is). E is asked by name; one with neither is
+// ErrorMainResult.
 // The value an 'Ok' holds is dropped, and the exit status is 0.
 void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod);
 
