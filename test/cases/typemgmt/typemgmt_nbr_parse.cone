@@ -122,6 +122,33 @@ fn floats() {
   var k = 0;
   while k < 400 { long <- "0"; k = k + 1; }
   chk("f64 400 digits", (f64.parse(long.view()) || 9.0) == 0.1);
+  // Hard cases: a tie broken by a 1 far out (the C library's strtod gets the
+  // 700 and 900 digit ones wrong), and the true tie, to the even one
+  var tie = String.from("9007199254740993.");
+  k = 0;
+  while k < 700 { tie <- "0"; k = k + 1; }
+  tie <- "1";
+  chk("f64 tie broken 700 digits out", (f64.parse(tie.view()) || 9.0).bits() == 0x4340000000000001u64);
+  var tie9 = String.from("9007199254740993.");
+  k = 0;
+  while k < 900 { tie9 <- "0"; k = k + 1; }
+  tie9 <- "1";
+  chk("f64 tie broken 900 digits out", (f64.parse(tie9.view()) || 9.0).bits() == 0x4340000000000001u64);
+  var tieEven = String.from("9007199254740993.");
+  k = 0;
+  while k < 900 { tieEven <- "0"; k = k + 1; }
+  chk("f64 true tie with 900 zeros goes to even", (f64.parse(tieEven.view()) || 9.0).bits() == 0x4340000000000000u64);
+  var tie32 = String.from("16777217.");
+  k = 0;
+  while k < 700 { tie32 <- "0"; k = k + 1; }
+  chk("f32 true tie with 700 zeros goes to even", (f32.parse(tie32.view()) || 9.0f32).bits() == 0x4B800000u32);
+  tie32 <- "1";
+  chk("f32 tie broken 700 digits out", (f32.parse(tie32.view()) || 9.0f32).bits() == 0x4B800001u32);
+  chk("f64 least denormal", (f64.parse("4.9406564584124654e-324") || 9.0).bits() == 1u64);
+  chk("f64 just under half the least denormal", (f64.parse("2.4703282292062327208e-324") || 9.0).bits() == 0u64);
+  chk("f64 just over half the least denormal", (f64.parse("2.4703282292062328e-324") || 9.0).bits() == 1u64);
+  chk("f64 max", (f64.parse("1.7976931348623157e308") || 9.0).bits() == 0x7FEFFFFFFFFFFFFFu64);
+  chk("f64 past max", match f64.parse("1.7976931348623159e308") { case is Ok { false } case is Err { true } });
   // f32 reads the nearest f32 directly, not an f64 rounded again
   chk("f32 max", (f32.parse("3.4028235e38") || 9.0f32).bits() == 0x7F7FFFFFu32);
   // halfway between the greatest f32 and 2 to the 128th is 3.40282356779...e38

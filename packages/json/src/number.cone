@@ -186,64 +186,17 @@ pub fn numberU64(text: &Array[u8]) Result[u64, NumberError] {
 
 // -------- floats --------
 
-// 10^k as an f64, k from 0 to 22, which is exact
-fn pow10(k: i32) f64 {
-  var x = 1.0;
-  var i = k;
-  while i > 0i32 {
-    x = x * 10.0;
-    i = i - 1i32;
-  }
-  x
-}
-
 // The nearest f64 to the number text, the even one on a tie, with the sign of
 // a '-0'. OutOfRange past the f64 range (about 1.8e308); a value too small
 // for the smallest denormal is a zero.
 pub fn numberF64(text: &Array[u8]) Result[f64, NumberError] {
   let s = scanNumber(text, 0usize);
   if s.problem != numOk || s.end != text.len { return Err[f64, NumberError](NumberError.NotANumber); }
-  var d = decNew();
-  var neg = false;
-  decOfNumber(text, &mut d, &mut neg);
-  var v = 0.0;
-  if d.digits.len() > 0usize {
-    let nd = d.digits.len();
-    var done = false;
-    // Up to 15 digits are exact in an f64, and so is 10^k up to 22: one
-    // multiply or divide, each correctly rounded, is the right answer
-    if !d.trunc && nd <= 15usize {
-      var m = 0u64;
-      var i = 0usize;
-      while i < nd {
-        m = m * 10u64 + u64.from(*d.digits[i]);
-        i = i + 1usize;
-      }
-      let e = d.dp - i32.from(nd);
-      if e == 0i32 {
-        v = f64.from(m);
-        done = true;
-      }
-      else if e < 0i32 && e >= -22i32 {
-        v = f64.from(m) / pow10(-e);
-        done = true;
-      }
-      else if e > 0i32 && e <= 22i32 {
-        v = f64.from(m) * pow10(e);
-        done = true;
-      }
-      else if e > 22i32 && e - 22i32 <= 15i32 - i32.from(nd) {
-        // The digits scaled up to 15 are still exact
-        v = f64.from(m * u64.from(pow10(e - 22i32))) * pow10(22i32);
-        done = true;
-      }
-    }
-    if !done {
-      if !decToF64(&mut d, &mut v) { return Err[f64, NumberError](NumberError.OutOfRange); }
-    }
+  // The exact reader in conestd: the quick cases, then the exact decimal
+  match f64.parse(text as &str) {
+    case let Ok(v) { Ok[f64, NumberError](v) }
+    case is Err { Err[f64, NumberError](NumberError.OutOfRange) }
   }
-  if neg { v = -v; }
-  Ok[f64, NumberError](v)
 }
 
 // Digits of d from lo up to hi (not past its end), then zeros if hi is past

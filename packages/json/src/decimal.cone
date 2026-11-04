@@ -1,12 +1,12 @@
 // ======== Exact decimals: the slow path of number conversion ========
 //
-// A number's text is turned into an f64, and an f64 into the shortest text
-// that reads back as the same f64, through an exact decimal: the digits of the
-// value, a decimal point, and shifts by powers of two that move the point
-// without losing a digit. This is the method of Go's 'strconv' (its 'decimal'
-// type), written afresh here: slow, simple, and right for every input. The
-// quick cases never come here (number.cone: up to 15 digits and a power of ten
-// within 22 are one multiply or one divide, both exact).
+// An f64 is written as the shortest text that reads back as the same f64,
+// through an exact decimal: the digits of the value, a decimal point, and
+// shifts by powers of two that move the point without losing a digit. This is
+// the method of Go's 'strconv' (its 'decimal' type), written afresh here: slow,
+// simple, and right for every input. Reading text into an f64 no longer lives
+// here: 'f64.parse' (core, with conestd's exact reader, the same method) does
+// it, and numberF64 calls that.
 //
 // A Dec holds at most 800 digits. That is more than the 767 significant digits
 // any f64 can need, and a digit dropped past it sets 'trunc', which only
@@ -194,97 +194,6 @@ fn decRoundUp(a: &mut Dec, nd: i32) {
 fn decRound(a: &mut Dec, nd: i32) {
   if nd < 0i32 || usize.from(nd) >= a.digits.len() { return; }
   if decShouldRoundUp(a, nd) { decRoundUp(a, nd); } else { decRoundDown(a, nd); }
-}
-
-// The integer part, rounded to nearest-even; beyond a u64, all ones
-fn decRoundedInteger(a: &Dec) u64 {
-  if a.dp > 20i32 { return 0xFFFFFFFFFFFFFFFFu64; }
-  let point = if a.dp > 0i32 {usize.from(a.dp)} else {0usize};
-  var i = 0usize;
-  var n = 0u64;
-  while i < point && i < a.digits.len() {
-    n = n * 10u64 + u64.from(*a.digits[i]);
-    i = i + 1usize;
-  }
-  while i < point {
-    n = n * 10u64;
-    i = i + 1usize;
-  }
-  if decShouldRoundUp(a, a.dp) { n = n + 1u64; }
-  n
-}
-
-// -------- Dec to f64 --------
-
-// How far the point is moved to get below 1, by how many places it is out
-fn decPowTab(i: i32) i32 {
-  if i == 0i32 { return 1i32; }
-  if i == 1i32 { return 3i32; }
-  if i == 2i32 { return 6i32; }
-  if i == 3i32 { return 9i32; }
-  if i == 4i32 { return 13i32; }
-  if i == 5i32 { return 16i32; }
-  if i == 6i32 { return 19i32; }
-  if i == 7i32 { return 23i32; }
-  26i32
-}
-
-// 2^k as an f64, k from -1074 to 1023: every step is exact
-fn pow2(k: i32) f64 {
-  var x = 1.0;
-  var i = k;
-  while i > 0i32 {
-    x = x * 2.0;
-    i = i - 1i32;
-  }
-  while i < 0i32 {
-    x = x * 0.5;
-    i = i + 1i32;
-  }
-  x
-}
-
-// The f64 nearest the Dec, the even one on a tie; false when it is too large
-// for an f64. The Dec is used up.
-fn decToF64(a: &mut Dec, out: &mut f64) bool {
-  *out = 0.0;
-  if a.digits.len() == 0usize { return true; }
-  if a.dp > 310i32 { return false; }
-  if a.dp < -330i32 { return true; }
-  // Scale by powers of two to [0.5, 1)
-  var exp = 0i32;
-  while a.dp > 0i32 {
-    let n = if a.dp >= 9i32 {27i32} else {decPowTab(a.dp)};
-    decShift(a, -n);
-    exp = exp + n;
-  }
-  while a.dp < 0i32 || (a.dp == 0i32 && a.digits.len() > 0usize && *a.digits[0usize] < 5u8) {
-    let n = if -a.dp >= 9i32 {27i32} else {decPowTab(-a.dp)};
-    decShift(a, n);
-    exp = exp - n;
-  }
-  // The range of an f64 is [1, 2), not [0.5, 1)
-  exp = exp - 1i32;
-  // The smallest exponent is -1022: a smaller value is denormal
-  if exp < -1022i32 {
-    let n = -1022i32 - exp;
-    decShift(a, -n);
-    exp = exp + n;
-  }
-  if exp + 1023i32 >= 2047i32 { return false; }
-  // 53 bits
-  decShift(a, 53i32);
-  var mant = decRoundedInteger(a);
-  // Rounding may have carried into a 54th bit
-  if mant == (2u64 << 52u64) {
-    mant = mant >> 1u64;
-    exp = exp + 1i32;
-    if exp + 1023i32 >= 2047i32 { return false; }
-  }
-  // Below 2^52 the value is denormal, and its exponent the smallest
-  let scale = if (mant & (1u64 << 52u64)) == 0u64 {-1022i32} else {exp};
-  *out = f64.from(mant) * pow2(scale - 52i32);
-  true
 }
 
 // -------- f64 to the shortest Dec --------
