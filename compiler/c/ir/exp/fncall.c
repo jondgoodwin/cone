@@ -85,8 +85,12 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
         && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
         newnode->flags |= FlagSelfRecv;
     newnode->objfn = cloneNode(cstate, node->objfn);
-    if (node->args)
-        newnode->args = cloneNodes(cstate, node->args);
+    if (node->args) {
+        int errs = errors;
+        newnode->args = cloneFieldEachArgs(cstate, node->args);
+        if (errors != errs)
+            newnode->flags |= FlagEachFailed;
+    }
     newnode->methfld = cloneNode(cstate, node->methfld);
 
     // Inside a generic type's braces its bare name is the instance being cloned,
@@ -4881,6 +4885,13 @@ static int fnCallCloneCopy(FnCallNode **nodep) {
 
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
+
+    // A '#each' among the arguments failed in the clone and said why; the arguments it would have
+    // made are missing, which is not another error to report
+    if (node->flags & FlagEachFailed) {
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
 
     // 'C.Cursor' in an instance: the type C's argument says its bound's
     // associated type is, which stands in its place (genericAssocPathNameRes)
