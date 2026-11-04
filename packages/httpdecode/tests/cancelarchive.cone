@@ -1,0 +1,247 @@
+// A cancelled streamed archive (Bug 41, found by stages/examples/arrival.cone's 'cancel' part): a zip archive
+// of 16 incompressible 256 KiB files (zstd entries, built here) is fetched over plain loopback HTTP with
+// Client.streamToIn into a sink that unpacks it with zipfile.ArchiveStream and counts the entries. When 8
+// entries are in, the group is cancelled. Checked: all 8 arrive, and after the cancel every buffer is back in
+// the pool (the sink's end lets go of its source and its buffer). Meant for LSan on the Linux server too:
+// it takes no arguments, reads no files and uses no TLS.
+
+mod cancelarchive;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import aio use IoLimits;
+import http use *;
+import httpclient use Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending;
+import zipfile;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+const files = 16usize;
+const quitAt = 8usize;
+
+let entries: Atomic[u64];
+
+fn @initpure init() {
+  entries = Atomic[u64].of(0u64);
+}
+
+fn lent() u64 { u64.from(iobuf.stats().lentBytes) }
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// ---------------------------------------------------------------------------
+// The server: every GET answers the archive
+// ---------------------------------------------------------------------------
+
+fn makeArchive() List[u8] {
+  var w = zipfile.ZipWriter.make();
+  var x = 12345u64;
+  var f = 0usize;
+  while f < files {
+    var raw = List[u8].withCapacity(262144usize);
+    var i = 0usize;
+    while i < 262144usize {
+      // incompressible, so the archive on the wire is about 4 MiB, well past the window
+      x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
+      raw.push(u8.from((x / 65536u64) % 256u64));
+      i = i + 1usize;
+    }
+    var nm = String.from("f");
+    nm.appendUInt(u64.from(f));
+    _ = w.add(nm.view(), raw.view(), &zipfile.EntryOptions.zstd(3i32));
+    f = f + 1usize;
+  }
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { List[u8]() }
+  }
+}
+
+actor Handler {
+  ex: Exchange;
+  body: List[u8];
+
+  pub async fn run(self) {
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(u64.from(body.len())));
+    var at = 0usize;
+    var going = true;
+    while going && at < body.len() {
+      let left = body.len() - at;
+      let m = if left < 65536usize {left} else {65536usize};
+      let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
+      match w {
+        case is Ok { at = at + m; }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  body: List[u8];
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok, body.clone());
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sink: unpacks the archive, counts the entries, cancels the group at 'quitAt'
+// ---------------------------------------------------------------------------
+
+actor Counter {
+  g: CancelGroup;
+  seen: usize;
+
+  pub fn init(self: &new, g: CancelGroup) {
+    *self = Self(g: g, seen: 0usize);
+  }
+
+  pub async fn endEntry(self) {
+    seen = seen + 1usize;
+    entries.add(1u64);
+    if seen == quitAt {g.cancel();}
+  }
+}
+
+actor ArchiveSink is ChunkSink {
+  arch: zipfile.ArchiveStream;
+  up: Option[ChunkSource];
+  down: Counter;
+  out: IoBuf;
+  over: bool;
+
+  pub fn init(self: &new, down: Counter) {
+    *self = Self(arch: zipfile.ArchiveStream.make(), up: None[ChunkSource], down: down, out: IoBuf(65536usize), over: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  fn pump(self: &mut) {
+    while !over {
+      out.clear();
+      let s = arch.pull(&mut out);
+      if s == zipfile.Step.End {
+        down.endEntry();
+      } else if s == zipfile.Step.NeedInput {
+        return;
+      } else if s == zipfile.Step.Done {
+        over = true;
+      } else if s != zipfile.Step.Begin && s != zipfile.Step.Data {
+        over = true;
+      }
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if !over {
+      arch.feed(c.view());
+      self.pump();
+    }
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    if !over {
+      match how {
+        case is Finished {
+          arch.finish();
+          self.pump();
+        }
+        case let Failed(e) { over = true; }
+      }
+    }
+    // the stream is over: let go of the source and of the buffer, so no actor keeps another alive
+    up = None[ChunkSource];
+    out = IoBuf();
+  }
+}
+
+actor Streamer {
+  client: Client;
+
+  pub async fn run(self, url: String, sink: ChunkSink, g: CancelGroup) {
+    let r = await client.streamToIn(Request.get(url.view()), sink, IoLimits.within(g));
+  }
+}
+
+fn url(port: u16) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append("/archive");
+  u
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var home = false;
+  {
+    let plain = Acceptor(Server.none(), makeArchive());
+    plain.open(ServerConfig.make(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    plain.serve();
+    let g = CancelGroup.make();
+    let f = Streamer(Client.standard());
+    f.run(url(port), ArchiveSink(Counter(g)), g);
+    let limit = Instant.now() + Duration.fromMillis(60000i64);
+    while entries.load() < u64.from(quitAt) && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+    home = allHome();
+    printStr("entries before the cancel: ");
+    printStr(yes(entries.load() >= u64.from(quitAt)));
+    printStr("\nevery buffer home: ");
+    printStr(yes(home));
+    printStr("\n");
+    plain.stop();
+  }
+  actors.waitUntilIdle();
+  finalAll();
+  printStr("end\n");
+  0i32
+}

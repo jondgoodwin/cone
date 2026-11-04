@@ -1,117 +1,40 @@
-// Cancelled decoded fetches (Bug 41): 22 zstd fetches in one group, the group cancelled mid-body, the
-// program ended after waitUntilIdle. Meant for LSan on the Linux server (nothing may leak); on any machine it
-// checks that the fetches start and the program ends. Copy of decode.cone's server and sink below.
+// Cancelled decoded fetches (Bug 41): 22 fetches of one 8 MiB incompressible zstd body, each through its own
+// httpdecode.Decoder into a sink that keeps its source, all in one CancelGroup. Once every fetch has its head
+// and a moment has passed, the group is cancelled, and the program ends after actors.waitUntilIdle. Meant for
+// LSan on the Linux server (nothing may leak). On any machine the output checks only that all 22 fetches got
+// their heads and that the program ends; it does not count the sinks' ends or check the bytes.
 //
-// A body decoded as it arrives (httpdecode.Decoder over actorhttp's streamTo),
-// against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
-// (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
-// /zeros/<coding>/<N> answers N zero bytes compressed (a bomb); /bad/gzip/<N> is
-// a gzip stream with a byte of its deflate data changed; /br/<N> claims a coding
-// that cannot be decoded. Checked: gzip, deflate, zstd and an unencoded body each
-// arrive whole and exact, the sink's one end Finished, every buffer home;
-// a bomb of each codec is refused (Failed, the codec's own message, far short of
-// the zeros); a corrupt gzip body ends Failed; an unsupported coding ends Failed.
+// The server is a loopback actorhttp server of the test's own: GET /rand/zstd/<N> answers N pseudo-random bytes
+// zstd-compressed, with Content-Encoding: zstd.
 
-mod decode;
+mod cancel;
 
 import stdio use *;
 import thread;
 import time use Instant, Duration;
 import sync use Channel, Sender, Receiver;
-import collections use List, String, AnyError;
+import collections use List, String;
 import iobuf use IoBuf;
 import iocore use SocketAddr, CancelGroup;
 import http use *;
 import httpclient use Request;
 import actors;
-import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHead;
+import actorhttp use Client, Server, ServerConfig, Exchange;
 import stages use ChunkSink, ChunkSource, Ending;
-import deflate;
 import zstd;
 import httpdecode use Decoder;
 
-const waitIdle = true;
-
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
-const mib = 1048576u64;
-
-struct Tally {
-  pub bytes: Atomic[u64];
-  pub bad: Atomic[u64];
-  pub finished: Atomic[u64];
-  pub failed: Atomic[u64];
-  pub heads: Atomic[u64];
-  pub hash: Atomic[u64];   // of every byte the sink saw, in order
-  pub sent: Atomic[u64];   // body bytes the server handed to the connection
-}
-
-let tally: Tally;
+let heads: Atomic[u64];
 
 fn @initpure init() {
-  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
-    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
-}
-
-// A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
-fn mix(h: u64, b: u8) u64 { (h * 1000003u64 + u64.from(b)) % 4294967291u64 }
-
-fn hashOf(v: &Array[u8]) u64 {
-  var h = 0u64;
-  var i = 0usize;
-  while i < v.len {h = mix(h, v[i]); i = i + 1usize;}
-  h
-}
-
-// The one-shot result for what the server sends as /<coding>/<n>: the pattern compressed, then
-// decompressed in one call by the codec's own one-shot function, hashed (0 if that did not give n bytes)
-fn oneShotHash(coding: &str, n: usize) u64 {
-  var raw = List[u8].withCapacity(n);
-  var i = 0usize;
-  while i < n {raw.push(u8.from(u64.from(i) % 251u64)); i = i + 1usize;}
-  if coding == "plain" {return hashOf(raw.view());}
-  let packed = compress(coding, raw.view());
-  var h = 0u64;
-  if coding == "gzip" {
-    match deflate.gzipDecompress(packed.view(), n) {
-      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
-      else {}
-    }
-  } else if coding == "deflate" {
-    match deflate.zlibDecompress(packed.view(), n) {
-      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
-      else {}
-    }
-  } else {
-    match zstd.decompress(packed.view(), n) {
-      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
-      else {}
-    }
-  }
-  h
-}
-
-fn reset() {
-  tally.hash.store(0u64);
-  tally.sent.store(0u64);
-  tally.bytes.store(0u64);
-  tally.bad.store(0u64);
-  tally.finished.store(0u64);
-  tally.failed.store(0u64);
-  tally.heads.store(0u64);
+  heads = Atomic[u64].of(0u64);
 }
 
 fn waitFor(c: &Atomic[u64], n: u64) {
   let limit = Instant.now() + Duration.fromMillis(60000i64);
   while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
-}
-
-fn lent() u64 { u64.from(iobuf.stats().lentBytes) }
-
-fn allHome() bool {
-  let limit = Instant.now() + Duration.fromMillis(10000i64);
-  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
-  lent() == 0u64
 }
 
 // ---------------------------------------------------------------------------
@@ -134,56 +57,25 @@ fn segments(p: &str) List[String] {
   out
 }
 
-fn compress(coding: &str, raw: &Array[u8]) List[u8] {
-  if coding == "gzip" {deflate.gzipCompress(raw, 6i32)}
-  else if coding == "deflate" {deflate.zlibCompress(raw, 6i32)}
-  else if coding == "zstd" {zstd.compress(raw, 3i32)}
-  else {
-    var o = List[u8].withCapacity(raw.len);
-    var i = 0usize;
-    while i < raw.len {o.push(raw[i]); i = i + 1usize;}
-    o
-  }
-}
-
 actor Handler {
   ex: Exchange;
 
   pub async fn run(self) {
     let path = String.from(ex.request.path());
-    let segs = segments(path.view());
-    var zeros = false;
-    var bad = false;
-    var rand = false;
-    var k = 0usize;
-    if segs[k].view() == "zeros" {zeros = true; k = k + 1usize;}
-    if segs[k].view() == "bad" {bad = true; k = k + 1usize;}
-    if segs[k].view() == "rand" {rand = true; k = k + 1usize;}
-    let coding = String.from(segs[k].view());
-    let n = number(segs[k + 1usize].view());
+    let segs = segments(path.view());   // "rand", "zstd", "<N>"
+    let n = number(segs[2usize].view());
     var raw = List[u8].withCapacity(usize.from(n));
     var i = 0u64;
     var x = 12345u64;
     while i < n {
-      if rand {
-        // incompressible, so the body on the wire is about n bytes
-        x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
-        raw.push(u8.from((x / 65536u64) % 256u64));
-      } else {
-        raw.push(if zeros {0u8} else {u8.from(i % 251u64)});
-      }
+      // incompressible, so the body on the wire is about n bytes
+      x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
+      raw.push(u8.from((x / 65536u64) % 256u64));
       i = i + 1u64;
     }
-    var body = compress(coding.view(), raw.view());
-    if bad && rand {
-      // the gzip magic: refused by the first chunk
-      body.set(0usize, body[0usize] ^ 255u8);
-    } else if bad && body.len() > 40usize {
-      let at = body.len() / 2usize;
-      body.set(at, body[at] ^ 255u8);
-    }
+    let body = zstd.compress(raw.view(), 3i32);
     var head = ResponseHead.make(200u16);
-    if coding.view() != "plain" {head.headers.add("Content-Encoding", coding.view());}
+    head.headers.add("Content-Encoding", "zstd");
     ex.start(head, BodyLength.sized(u64.from(body.len())));
     var at = 0usize;
     var going = true;
@@ -192,7 +84,7 @@ actor Handler {
       let m = if left < 65536usize {left} else {65536usize};
       let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
       match w {
-        case is Ok { at = at + m; tally.sent.add(u64.from(m)); }
+        case is Ok { at = at + m; }
         case is Err { going = false; }
       }
     }
@@ -234,64 +126,40 @@ actor Acceptor {
 }
 
 // ---------------------------------------------------------------------------
-// The sink: counts, checks the pattern (unless it is zeros), gives back at once
+// The sink: gives each chunk back at once, and keeps its source after the end
 // ---------------------------------------------------------------------------
 
 actor Count is ChunkSink {
   up: Option[ChunkSource];
-  check: bool;
-  at: u64;
-  msgs: Sender[String];
 
-  pub fn init(self: &new, check: bool, msgs: Sender[String]) {
-    *self = Self(up: None[ChunkSource], check: check, at: 0u64, msgs: msgs);
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource]);
   }
 
   pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
 
   pub async fn accept(self, c: IoBuf) {
-    let v = c.view();
-    if check {
-      var bad = 0u64;
-      var i = 0usize;
-      while i < v.len {
-        if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
-        i = i + 1usize;
-      }
-      if bad > 0u64 {tally.bad.add(bad);}
-    }
-    var h = tally.hash.load();
-    var j = 0usize;
-    while j < v.len {h = mix(h, v[j]); j = j + 1usize;}
-    tally.hash.store(h);
-    at = at + u64.from(v.len);
     match &up {
       case let &Some(u) {u.giveBack(c);}
       case is None {}
     }
   }
 
-  pub async fn end(self, how: Ending) {
-    tally.bytes.add(at);
-    // 'up' is kept on purpose: whoever sends the end lets go of this sink (the ChunkSink contract), so a sink
-    // that keeps its source costs nothing (Bug 41: 72 MB under LSan when the sender kept it)
-    match how {
-      case is Finished { tally.finished.add(1u64); }
-      case let Failed(e) {
-        msgs.send(String.from(e.message().view()));
-        tally.failed.add(1u64);
-      }
-    }
-  }
+  // 'up' is kept on purpose (the repro): whoever sends the end lets go of this sink (the ChunkSink contract),
+  // so a sink that keeps its source costs nothing (Bug 41: 72 MB under LSan when the sender kept it).
+  pub async fn end(self, how: Ending) {}
 }
 
-actor Fetcher {
+// A fetch in group 'g': counts the head when it arrives
+actor Fetch2 {
   client: Client;
 
-  pub async fn run(self, u: String, d: Decoder) {
-    let r = await d.open(client.clone(), Request.get(u.view()));
+  pub async fn run(self, u: String, d: Decoder, g: CancelGroup) {
+    var req = Request.get(u.view());
+    req.group = Some[CancelGroup](g);
+    let r = await d.open(client.clone(), req);
     match r {
-      case is Ok { tally.heads.add(1u64); }
+      case is Ok { heads.add(1u64); }
       case is Err {}
     }
   }
@@ -306,71 +174,39 @@ fn url(port: u16, path: &str) String {
 
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
-// One fetch of 'path' through a Decoder with 'limit': the sink's message, if it failed
-fn fetch(port: u16, path: &str, check: bool, limit: usize, msgs: &mut Receiver[String], mtx: Sender[String]) String {
-  reset();
-  let sink = Count(check, mtx.clone());
-  let d = Decoder(sink, limit);
-  let f = Fetcher(Client.standard());
-  f.run(url(port, path), d);
-  let limit = Instant.now() + Duration.fromMillis(60000i64);
-  while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
-  thread.sleep(Duration.fromMillis(30i64));
-  var m = String();
-  if tally.failed.load() > 0u64 {m = take[String](msgs, String());}
-  m
-}
-
-// A fetch cancelled from outside: many fetches of one big zstd body, all in one group, the group cancelled
-// once a few chunks have reached the sinks. Nothing ends them, so what they hold must be freed by the
-// cancel (and by the abandon of whatever is left), not by an 'end' that never comes
-actor Fetch2 {
-  client: Client;
-
-  pub async fn run(self, u: String, d: Decoder, g: CancelGroup) {
-    var req = Request.get(u.view());
-    req.group = Some[CancelGroup](g);
-    let r = await d.open(client.clone(), req);
-    match r {
-      case is Ok { tally.heads.add(1u64); }
-      case is Err {}
-    }
-  }
-}
-
 fn main() i32 {
   initAll();
   var ptx: Sender[u16];
   var prx: Receiver[u16];
   ptx, prx = Channel[u16].make();
-  var mtx: Sender[String];
-  var mrx: Receiver[String];
-  mtx, mrx = Channel[String].make();
   {
     let plain = Acceptor(Server.none());
     plain.open(ServerConfig.make(), ptx.clone());
     let port = take[u16](&mut prx, 0u16);
     plain.serve();
-    reset();
+    heads.store(0u64);
     let g = CancelGroup.make();
     var k = 0;
     while k < 22 {
-      let sink = Count(false, mtx.clone());
+      let sink = Count();
       let d = Decoder(sink, 268435456usize);
       let f = Fetch2(Client.standard());
       f.run(url(port, "/rand/zstd/8388608"), d, g);
       k = k + 1;
     }
-    waitFor(&tally.heads, 22u64);
+    waitFor(&heads, 22u64);
     thread.sleep(Duration.fromMillis(200i64));
+    // The group is cancelled mid-body. A fetch that sees it gets a Cancelled event from the client, and
+    // streamservice's onSinkEvent then sends the sink its one end (Failed) and lets the sink go; a buffer given
+    // back in the cancelled group also ends the fetch. What is left is dropped when the program ends.
     g.cancel();
     thread.sleep(Duration.fromMillis(1500i64));
     printStr("heads: ");
-    printStr(yes(tally.heads.load() == 22u64));
+    printStr(yes(heads.load() == 22u64));
     printStr("\n");
     plain.stop();
   }
-  if waitIdle {actors.waitUntilIdle();}
+  actors.waitUntilIdle();
   finalAll();
   printStr("end\n");
   0i32
