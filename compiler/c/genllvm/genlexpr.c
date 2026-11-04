@@ -408,6 +408,41 @@ static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, L
     }
 }
 
+// A float's encoding (corenumber.c, nbrFloatBitMethods): the value's bits as an
+// integer of its width, or an integer's as the float, are a bitcast, and the
+// rest one shift or mask of those bits. 'exponent' is the stored field less the
+// bias and 'mantissa' the stored fraction, as they lie, with no adjustment for
+// zero, a subnormal, an infinity or a NaN; 'signBit' is the sign bit alone, so
+// true for -0.0 and for a NaN that has it set
+static LLVMValueRef genlFloatBits(GenState *gen, int16_t kind, LLVMValueRef arg, LLVMTypeRef rettype) {
+    if (kind == FloatFromBitsIntrinsic)
+        return LLVMBuildBitCast(gen->builder, arg, rettype, "frombits");
+    int is32 = LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMFloatTypeKind;
+    unsigned mantbits = is32 ? 23 : 52;
+    LLVMTypeRef inttype = LLVMIntTypeInContext(gen->context, is32 ? 32 : 64);
+    LLVMValueRef bits = LLVMBuildBitCast(gen->builder, arg, inttype, "bits");
+    switch (kind) {
+    case FloatBitsIntrinsic:
+        return bits;
+    case FloatSignBitIntrinsic:
+        return LLVMBuildICmp(gen->builder, LLVMIntSLT, bits, LLVMConstNull(inttype), "signbit");
+    case FloatMantissaIntrinsic:
+        return LLVMBuildAnd(gen->builder, bits, LLVMConstInt(inttype, (1ULL << mantbits) - 1, 0), "mantissa");
+    case FloatExponentIntrinsic: {
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+        LLVMValueRef field = LLVMBuildAnd(gen->builder,
+            LLVMBuildLShr(gen->builder, bits, LLVMConstInt(inttype, mantbits, 0), ""),
+            LLVMConstInt(inttype, is32 ? 0xFF : 0x7FF, 0), "");
+        if (!is32)
+            field = LLVMBuildTrunc(gen->builder, field, i32, "");
+        return LLVMBuildSub(gen->builder, field, LLVMConstInt(i32, is32 ? 127 : 1023, 0), "exponent");
+    }
+    default:
+        errorExit(ExitGen, "Internal error: no generation for float encoding intrinsic %d", (int)kind);
+        return NULL;
+    }
+}
+
 // Expand a call to one of a number's methods, abs, min, max, floor, ceil, round
 // and fma, whose type is a number or a vector of them (the vector's methods
 // carry the vector as their typearg), so one lowering serves both: LLVM's
@@ -852,6 +887,14 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         // intrinsic's type argument, since no argument is one
         if (stitched == VecLoadIntrinsic) {
             fncallret = genlVectorLoad(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
+            break;
+        }
+
+        // A float's encoding: the bit operation on the one argument, whose
+        // result type is the signature's
+        if (stitched >= FloatBitsIntrinsic && stitched <= FloatSignBitIntrinsic) {
+            fncallret = genlFloatBits(gen, stitched, fnargs[0],
+                genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype));
             break;
         }
 
@@ -1900,6 +1943,10 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         // the real size. Without it the store/load below allocated the source's
         // bytes and loaded the target's, reading past the allocation whenever
         // the target was larger.
+        // A guard now: castTypeCheck refuses (ErrorAsTarget) every 'as' onto a
+        // struct or enum but a coercion, a variant as its enum, which is always
+        // the same size, so no user path reaches the error below until 'trust'
+        // allows other struct recasts, when this same-size check matters again.
         LLVMTypeRef fromllvm = genlType(gen, ((IExpNode*)exp)->vtype);
         LLVMTypeRef tollvm = genlType(gen, totype);
         unsigned long long fromsize = LLVMABISizeOfType(gen->datalayout, fromllvm);

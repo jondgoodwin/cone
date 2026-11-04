@@ -268,6 +268,37 @@ t.abs()                    // 7
 		the rest, are <a href="safe-intrinsics.html#numbers">core's intrinsics</a>, and a
 		<a href="guide-vectors.html#math">vector</a> has them lane by lane.</p>
 
+	<h3 id="floatbits">A float's encoding: bits, fromBits, exponent, mantissa and signBit</h3>
+	<p>A float is stored as a sign bit, an exponent field and a fraction. Reading them needs no
+		<span class="pre">as</span>: an <span class="pre">f32</span> has them in a <span class="pre">u32</span>
+		(1 sign bit, 8 exponent bits, 23 fraction bits) and an <span class="pre">f64</span> in a
+		<span class="pre">u64</span> (1, 11 and 52):</p>
+<pre>
+let x = -2.5f32;
+x.bits()                      // 0xC0200000u32: the whole encoding
+f32.fromBits(0xC0200000u32)   // -2.5: the float with that encoding
+x.signBit()                   // true: the sign bit is set
+x.exponent()                  // 1: the stored exponent field (128) less the bias (127)
+x.mantissa()                  // 0x200000u32: the stored fraction, a quarter of its range
+</pre>
+	<p><span class="pre">bits</span> and <span class="pre">mantissa</span> answer a <span class="pre">u32</span>
+		for an <span class="pre">f32</span> and a <span class="pre">u64</span> for an <span class="pre">f64</span>;
+		<span class="pre">exponent</span> is an <span class="pre">i32</span> for both, and
+		<span class="pre">signBit</span> a <span class="pre">bool</span>. <span class="pre">f32.fromBits(b)</span>
+		and <span class="pre">f64.fromBits(b)</span> take that integer, every value of which is some float. Each is the
+		one bit operation and nothing more.</p>
+	<p>The fields are answered as stored. <span class="pre">exponent</span> is the stored field less the bias, 127 for an
+		<span class="pre">f32</span> and 1023 for an <span class="pre">f64</span>, and <span class="pre">mantissa</span>
+		is the stored fraction bits without the leading 1 a normal number implies. Nothing is adjusted for the special
+		values: zero and a subnormal have the field 0, so their <span class="pre">exponent</span> is -127 (-1023); an
+		infinity and a NaN have the field all ones, so theirs is 128 (1024). Zero and an infinity have the
+		<span class="pre">mantissa</span> 0, a subnormal its fraction, and a NaN a nonzero one, whose top bit says
+		whether it is a quiet NaN. <span class="pre">signBit</span> is the sign bit alone, so it is true for
+		<span class="pre">-0.0</span> and for a NaN whose sign bit is set, and false for <span class="pre">0.0</span>;
+		it is not <span class="pre">x &lt; 0.0</span>. A normal number is rebuilt from its parts as
+		<span class="pre">(sign &lt;&lt; 31) | (u32.from(exponent + 127) &lt;&lt; 23) | mantissa</span>, and
+		<span class="pre">f32.fromBits(x.bits())</span> gives back the same bits, a NaN's included.</p>
+
 	<h2 id="vectors">Many numbers at once: vectors</h2>
 	<p>A <span class="pre">Vector[f32, 4]</span> holds four numbers in one value, and an operator on two of them works
 		on all four lanes at once, the way a processor can: <span class="pre">a + b</span> adds four pairs. It converts
