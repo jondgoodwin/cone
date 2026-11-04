@@ -1892,10 +1892,9 @@ sibling is, and the lending method to be a method the type declares
 (`ErrorLend`, as are an enum, a trait, or the type itself as the body).
 
 **A clause may name up to three lenders.** `use Array[T] via view, viewMut, viewUni`
-holds the names in `FieldDclNode.via`, `via2` and `via3` (the last two kept at the
-end of the node: a name-table slot can hold a field where a variable is expected, and
-`varDclHook` reads `scope` at the variable's offset, so nothing may be inserted before
-`index`). Which permission each lender lends is read from the borrow its signature
+holds the names in `FieldDclNode.via`, `via2` and `via3` (a name-table slot can hold a
+field where a variable is expected, and `varDclHook` reads `scope`; both nodes begin with
+the shared `DclScopeHdr`, so fields may be added anywhere after it). Which permission each lender lends is read from the borrow its signature
 returns (`structLendLenderClass`: `&mut` is 1, `&uni` is 2, anything else 0), never from
 its name, and a lend names at most one lender of each class (`ErrorLend`). A method is
 reached through the lender of the class its receiver asks for
