@@ -174,6 +174,65 @@ description = "'as' applied where no reinterpretation exists, usize and isize wi
 tags = ["typecheck"]
 diagnostics = 9
 
+[scenario.typemgmt_typecheck_as_enum_number]
+category = "reject"
+description = "'as' onto an enum from a number of its size"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.typemgmt_typecheck_as_char_u32]
+category = "reject"
+description = "'as' onto a char from a u32"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.typemgmt_typecheck_as_char_float]
+category = "reject"
+description = "'as' onto a char from an f32"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.typemgmt_typecheck_as_struct_private]
+category = "reject"
+description = "'as' onto a struct with a private field from a number of its size"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.typemgmt_typecheck_as_struct_ref]
+category = "reject"
+description = "'as' onto a struct holding a reference from a number: a forged reference"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.typemgmt_typecheck_as_struct_struct]
+category = "reject"
+description = "'as' from one struct to another, of the same size and of another"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.typemgmt_typecheck_as_ref_struct]
+category = "reject"
+description = "'as' onto a struct from a reference"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.typemgmt_typecheck_as_enum_variant]
+category = "reject"
+description = "'as' from an enum to one of its variants, and from a variant to another"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.typemgmt_typecheck_as_generic]
+category = "reject"
+description = "'x as T' refused at the instance where T is a char or a struct, accepted where it is a number of the same size"
+tags = ["typecheck", "generic"]
+diagnostics = 2
+
+[scenario.typemgmt_as_variant_enum]
+category = "run"
+description = "'as' still makes an enum from a variant, a type from itself, and a number from a number of its size through a generic"
+tags = ["typecheck", "genllvm", "runtime"]
+
 [scenario.typemgmt_typecheck_coerce]
 category = "reject"
 description = "Number coercions that do not happen implicitly"
@@ -270,19 +329,13 @@ diagnostics = 32
 
 # -------- LLVM generation stage --------
 
-# The size of a struct is not a thing the type checker knows, so the one
-# reinterpretation rule it cannot enforce is enforced where the data layout
-# exists. Separate from typemgmt_typecheck_cast because a type-check error
-# means generation never runs, and these diagnostics come from generation.
-[scenario.typemgmt_genllvm_recast]
-category = "reject"
-description = "'as' onto a struct whose size differs from the source's"
-tags = ["genllvm"]
-diagnostics = 2
-
+# The size of a struct is not a thing the type checker knows. genlRecast checks
+# it where the data layout exists (ErrorRecastSize, 1066), but only a variant as
+# its enum reaches it now, always the same size, so no scenario provokes it until
+# 'trust' allows other struct recasts.
 [scenario.typemgmt_genllvm_recast_align]
 category = "compile"
-description = "The stack slot a reinterpretation goes through is aligned for the target as well as the source: an array of eight u8 read as a struct holding a u64 sits in a slot of alignment 8"
+description = "The stack slot a variant read as its enum goes through is aligned for the target as well as the source"
 tags = ["genllvm"]
 
 [[scenario.typemgmt_genllvm_recast_align.run]]
@@ -292,7 +345,7 @@ options = ["--library"]
 [[scenario.typemgmt_genllvm_recast_align.check]]
 name = "the-slot-is-aligned-for-the-load"
 target = "preir"
-contains = ["alloca [8 x i8], align 8"]
+contains = ["alloca %Small, align 8"]
 
 # An unsuffixed integer literal that nothing gave a type keeps its i32 default
 # to generation, which is where it is refused when its value does not fit:

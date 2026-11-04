@@ -383,6 +383,50 @@ static void nbrMathMethods(NbrNode *nbrtype) {
     }
 }
 
+// A float's encoding: 'x.bits()' (a u32 for f32, a u64 for f64), the static
+// 'f32.fromBits(b)', 'x.exponent()' (an i32), 'x.mantissa()' (the bits type)
+// and 'x.signBit()' (a bool). Each is generated as one bit operation on the
+// value (genlFloatBits), with no Cone body, since the integer type follows the
+// float's width. Made once every number type exists.
+static void nbrFloatBitMethods(NbrNode *nbrtype) {
+    NbrNode *bitstype = nbrtype->bits == 32 ? u32Type : u64Type;
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    NameUseNode *bitsuse = newNameUseNode(bitstype->namesym);
+    bitsuse->dclnode = (INode*)bitstype;
+    Name *self = nametblFind("self", 4);
+
+    static struct { char *name; int16_t kind; int rettype; } meths[] = {
+        {"bits", FloatBitsIntrinsic, 0},
+        {"exponent", FloatExponentIntrinsic, 1},
+        {"mantissa", FloatMantissaIntrinsic, 0},
+        {"signBit", FloatSignBitIntrinsic, 2},
+    };
+    for (size_t i = 0; i < sizeof(meths) / sizeof(meths[0]); ++i) {
+        FnSigNode *sig = newFnSigNode();
+        sig->rettype = meths[i].rettype == 0 ? (INode*)bitsuse
+            : meths[i].rettype == 1 ? (INode*)i32Type : (INode*)boolType;
+        nodesAdd(&sig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        IntrinsicNode *node = newIntrinsicNode(meths[i].kind);
+        node->typearg = (INode*)selftype;
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(nametblFind(meths[i].name, strlen(meths[i].name)),
+            FlagMethFld | FlagPub, (INode *)sig, (INode *)node));
+    }
+
+    // The static one: the float with the given encoding
+    FnSigNode *fromsig = newFnSigNode();
+    fromsig->rettype = (INode*)selftype;
+    nodesAdd(&fromsig->parms, (INode *)newVarDclFull(nametblFind("b", 1), VarDclTag, (INode*)bitsuse, newPermUseNode(immPerm), NULL));
+    IntrinsicNode *fromnode = newIntrinsicNode(FloatFromBitsIntrinsic);
+    fromnode->typearg = (INode*)selftype;
+    // Marked checked: type check never walks a number type's members, and a
+    // call by name demands the declaration's check, which has no struct or
+    // module to check it under. The signature is already what it says
+    FnDclNode *fromdcl = newFnDclNode(nametblFind("fromBits", 8), FlagPub | TypeChecked,
+        (INode *)fromsig, (INode *)fromnode);
+    iNsTypeAddFn((INsTypeNode*)nbrtype, fromdcl);
+}
+
 // A number type's three-way comparison, 'a <=> b': an i32 -1, 0 or 1. Made once
 // every number type exists, since the answer is an i32. A bool has none, being
 // no quantity; a char has one, as it has the orderings.
@@ -496,6 +540,8 @@ void stdNbrInit(int ptrsize) {
         nbrMathMethods(integers[i]);
     nbrMathMethods(f32Type);
     nbrMathMethods(f64Type);
+    nbrFloatBitMethods(f32Type);
+    nbrFloatBitMethods(f64Type);
 
     NbrNode *ordered[] = {charType, u8Type, u16Type, u32Type, u64Type, usizeType,
         i8Type, i16Type, i32Type, i64Type, isizeType, f32Type, f64Type};
