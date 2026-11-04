@@ -26,6 +26,7 @@
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
 int lexInHashCond = 0;    // A '#if' condition is being read (parsemeta.c)
+int lexMetaDecl = 0;      // A meta variable is being declared (parsemeta.c)
 uint32_t lexHashDropped = 0; // How many '#' words the lexer has reported and dropped
 
 // A lexer block for a source, positioned at its start and not yet current.
@@ -202,6 +203,7 @@ void keywordInit() {
     keyAdd("#debug", HashDebugToken);
     keyAdd("#defined", HashDefinedToken);
     keyAdd("#define", HashDefineToken);
+    keyAdd("#each", HashEachToken);
 
     // Words the language claims but has not implemented yet. Holding them now
     // costs one rename in a program written today; letting a program bind one
@@ -1304,8 +1306,15 @@ int lexScanIdent(char *srcp) {
                 // not take it along (parseHashIf reads the condition on and
                 // refuses it quietly, for the word was refused here).
                 else if (*srcbeg == '#') {
+                    // A meta variable: one being declared, or one a declaration the parser is
+                    // inside has made (parsemeta.c). The same word is reserved anywhere else
+                    if (lexMetaDecl || parseMetaIsBound(lex->val.ident)) {
+                        lex->toktype = MetaVarToken;
+                        lex->srcp = srcp;
+                        return 1;
+                    }
                     errorMsgLex(ErrorReserved,
-                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #os, #arch, #debug, #defined and #define are built",
+                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #each, #os, #arch, #debug, #defined and #define are built",
                         &lex->val.ident->namestr);
                     ++lexHashDropped;
                     if (!lexInHashCond)
@@ -1790,7 +1799,43 @@ void lexNextTokenx() {
 void lexNextToken() {
     timerBegin(LexTimer);
     lexNextTokenx();
+    lexMetaDecl = 0;
     timerBegin(ParseTimer);
+}
+
+int lexNextIsHash() {
+    char *srcp = lex->srcp;
+    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
+        srcp++;
+    return *srcp == '#';
+}
+
+void lexMarkSave(LexMark *mark) {
+    memcpy(mark->val, &lex->val, sizeof(mark->val));
+    mark->strlen = lex->strlen;
+    mark->langtype = lex->langtype;
+    mark->srcp = lex->srcp;
+    mark->tokp = lex->tokp;
+    mark->linep = lex->linep;
+    mark->prevend = lex->prevend;
+    mark->prevlinep = lex->prevlinep;
+    mark->linenbr = lex->linenbr;
+    mark->prevlinenbr = lex->prevlinenbr;
+    mark->toktype = lex->toktype;
+}
+
+void lexMarkRestore(LexMark *mark) {
+    memcpy(&lex->val, mark->val, sizeof(mark->val));
+    lex->strlen = mark->strlen;
+    lex->langtype = mark->langtype;
+    lex->srcp = mark->srcp;
+    lex->tokp = mark->tokp;
+    lex->linep = mark->linep;
+    lex->prevend = mark->prevend;
+    lex->prevlinep = mark->prevlinep;
+    lex->linenbr = mark->linenbr;
+    lex->prevlinenbr = mark->prevlinenbr;
+    lex->toktype = mark->toktype;
 }
 
 // Is the token after the current one the keyword 'word'? A look at the source

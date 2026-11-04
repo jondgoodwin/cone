@@ -34,6 +34,8 @@ typedef struct BlockNode {
                        // stack, so a break/continue targeting it knows how many
                        // scopes it is leaving. Set by blockFlow; valid only
                        // while flow analysis is inside this block.
+    EachPass *eachpass; // A pass of a '#each' (the parser makes it a block of its own): what an
+                       // error inside it says; NULL for any other block
 } BlockNode;
 
 BlockNode *newBlockNode();

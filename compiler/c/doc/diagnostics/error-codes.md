@@ -1054,6 +1054,15 @@ Integer` in an ordinary function). A condition of that kind that names a trait o
 a name that does not exist is the ordinary lookup error, and one that is no clause
 (`#if T {`) is `ErrorMetaFact`.
 
+`ErrorMetaEach`, `ErrorMetaEachPlace`, `ErrorMetaQuota` and `ErrorMetaVar` are `#each` and the meta
+variables. `ErrorMetaEach` is the header: no `#name` to bind, no `in`, no list after it (`[..]` of values,
+`(..)` of types, or a meta variable that holds one), a list not closed, no block. `ErrorMetaEachPlace` is
+a `#each` where this is not built: a module's level, a type's braces, an `extern` block, an expression.
+`ErrorMetaQuota` is the pass that went over the step quota, naming its loop. `ErrorMetaVar` is a meta
+variable misused: a `let` or a `#each` variable given a new value, a list used as a value, a number built
+from something else, a division by zero, a declaration with no value. An error inside a pass is followed
+by an uncounted line naming the pass (`... in pass 2 of 3 of this '#each', where #x is 2.5`).
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
