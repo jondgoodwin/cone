@@ -1781,6 +1781,28 @@ static int incWrittenByRoot(ModuleNode *root, INode *node) {
     return 0;
 }
 
+// Whether a generic module declares an 'init' or a 'final': an instance of it
+// has setup the program must run, which an unrecorded instance would lose
+static int incGenericHasSetup(ModuleNode *inst) {
+    if (inst->initfn || inst->finalfn)
+        return 1;
+    INode *init = namespaceFind(&inst->generic->namespace, initName);
+    INode *final = namespaceFind(&inst->generic->namespace, finalName);
+    return (init && init->tag == FnDclTag) || (final && final->tag == FnDclTag);
+}
+
+// Whether a package's submodule's own text wrote 'node'
+static int incWrittenBySubmodule(IncGen *g, INode *node) {
+    for (uint32_t k = 1; k < g->nmods; ++k) {
+        DclSpans *spans = g->mods[k]->mod->spans;
+        for (uint32_t i = 0; spans && i < spans->count; ++i) {
+            if (spans->items[i]->lexer == node->lexer)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static void incInstanceUses(IncGen *g, IncBuf *out) {
     Nodes *instances = modInstanceList();
     if (instances == NULL)
@@ -1797,8 +1819,20 @@ static void incInstanceUses(IncGen *g, IncBuf *out) {
             || inst->instnode == NULL || inst->instnode->tag != FnCallTag)
             continue;
         FnCallNode *call = (FnCallNode*)inst->instnode;
-        if (!incWrittenByRoot(g->root, (INode*)call) || incWithin(inst->generic, g->root))
+        if (incWithin(inst->generic, g->root))
             continue;
+        if (!incWrittenByRoot(g->root, (INode*)call)) {
+            // Made in a submodule's file: the root cannot spell it, so its setup
+            // would never run. Made inside another instance's body, or by text
+            // included from elsewhere, it is in no submodule's file
+            if (incWrittenBySubmodule(g, (INode*)call) && incGenericHasSetup(inst)) {
+                errorMsgNode((INode*)call, ErrorInstanceUnrecorded,
+                    "The include file cannot record this instance of generic module '%s', made in a submodule's file, so its 'init' and 'final' would never run in a program that does not name it itself. Make the instance in the package's root file.",
+                    &inst->generic->namesym->namestr);
+                g->failed = 1;
+            }
+            continue;
+        }
         IncBuf line;
         memset(&line, 0, sizeof(line));
         size_t spelled = line.len;
@@ -1818,6 +1852,12 @@ static void incInstanceUses(IncGen *g, IncBuf *out) {
             incBufPuts(&body, "  ");
             incBufPutBuf(&body, &line, 0, line.len);
             ++nbr;
+        }
+        else if (incGenericHasSetup(inst)) {
+            errorMsgNode((INode*)call, ErrorInstanceUnrecorded,
+                "The include file cannot spell this instance of generic module '%s' (its arguments are not number types, or its name is qualified), so its 'init' and 'final' would never run in a program that does not name it itself. Use a bare generic name with number-type arguments.",
+                &inst->generic->namesym->namestr);
+            g->failed = 1;
         }
         else {
             incBufPuts(&notes, "// Not recorded, since it has no spelling here: ");

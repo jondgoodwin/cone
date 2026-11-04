@@ -1357,8 +1357,17 @@ each instance of a generic module the package does not hold, whose call the
 package's own root text wrote (not one made inside another instance's body, nor
 by a file the package imports), when the generic is named by a bare name and each
 type argument is a number type. **An instance with any other spelling is not
-recorded**: the file says so in a comment (`// Not recorded, ...`), and the
-instance is inited only if the program names it too. No run-time guard: the
+recorded**, and where its generic module declares an `init` or `final` that is a
+compile error when the include file is generated (`ErrorInstanceUnrecorded`,
+pointed at the instance), since its setup would never run in a program that does
+not name it (`module_generic_pkguse_unspelled`). Where the generic declares
+neither, nothing is lost and the file says so in a comment
+(`// Not recorded, ...`). **The same for an instance made in a submodule's
+file** (its call sits in a submodule's spans, not the root's): the root cannot
+spell it, so it is refused where its generic has setup
+(`module_generic_pkguse_submodule`), and passed over where not. An instance made inside another instance's body, or by included text, is
+in no submodule's file and stays unrecorded and unrefused: the program makes it
+with the instance. No run-time guard: the
 instance's `init` is still `linkonce` in the package's object, merged at link,
 and the stitched init calls it once, from the program's `initorder`.
 
@@ -2168,8 +2177,8 @@ not, its count of inits read back as 0, and neither did its `final`. Now it
 reads 1, and where the program, or a second package, names the instance too, it
 still runs once (`module_generic_pkguse`, `module_generic_pkguseonce`). Only an
 instance spelled by a bare generic name and number-type arguments is recorded;
-any other is left a comment in the file and is inited only if the program names
-it. A generic struct's statics need none of this: a static takes a literal, so
+any other, or one made in a submodule's file, is refused (`ErrorInstanceUnrecorded`)
+where its generic declares an `init` or `final`, else left a comment in the file. A generic struct's statics need none of this: a static takes a literal, so
 nothing runs for it (`module_generic_struct_static`).
 
 ## Principles — the model, as decided
