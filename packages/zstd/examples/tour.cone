@@ -10,6 +10,18 @@ mod tour;
 import stdio use *;
 import collections use *;
 import zstd;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) zstd.Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
 
 fn main() i32 {
   let frame: Array[u8, 66] = [0x28u8, 0xB5u8, 0x2Fu8, 0xFDu8, 0x24u8, 0x58u8, 0xADu8, 0x01u8, 0x00u8, 0xD4u8,
@@ -47,7 +59,7 @@ fn main() i32 {
     var st: zstd.Status = zstd.Status.MoreOutput;
     while st == zstd.Status.MoreOutput {
       piece.clear();
-      st = d.pull(&mut piece, 8usize);
+      st = pullN(&mut d, &mut piece, 8usize);
       pulls += 1;
       var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
@@ -73,7 +85,7 @@ fn main() i32 {
     if pos == text.len { c.finish(); }
     var st: zstd.Status = zstd.Status.MoreOutput;
     while st == zstd.Status.MoreOutput {
-      st = c.pull(&mut packed, 16usize);
+      st = pullN(&mut c, &mut packed, 16usize);
     }
   }
   printInt(i64.from(text.len));

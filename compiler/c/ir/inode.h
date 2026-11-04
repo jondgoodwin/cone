@@ -367,6 +367,7 @@ enum NodeTags {
 // 0x1000 on a FnCall: FlagPartNoPrior is flow's, long after type check clears it.
 #define FlagValueTermCall 0x1000    // FnCall: the last suffix of a value term, which may be an empty variant's construction
 #define FlagValueTermName 0x0002    // NameUse: a value term that is this name alone, which may be an empty variant's construction
+#define FlagInterpString 0x0008     // NameUse: the 'String' the parser wrote for an interpolated string `$"..."` met as a value; if no String is in scope, the diagnostic says what to import
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop
@@ -616,6 +617,9 @@ int inodeIsError(INode *node);
 
 // Verify IR well-formedness across the whole program (--checktree)
 void inodeCheckTree(INode *pgm);
+
+// List the program's unconstrained operations (--report-trust, ir/trustreport.c)
+void trustReport(INode *pgm);
 
 // Dispatch a node walk for the name resolution pass
 // - pstate is helpful state info for node traversal

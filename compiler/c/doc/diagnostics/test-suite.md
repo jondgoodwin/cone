@@ -704,6 +704,11 @@ runner then compiles that entry with `--llvmir`. It is how a scenario that
 links two objects asserts on both: that a symbol both define has the same
 linkage in each, say.
 
+The `trust` target (a `compile` or `run` scenario) is the output of a second run
+of the same source with `--report-trust`, which generates no code; its lines are
+`<kind> <file>:<line> <function> [<what>]`, so a check names a site by kind, line
+and function (`doc/design/safety.md` says what the kinds are).
+
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a
 second run buys is the assertion that those expectations do not depend on the
