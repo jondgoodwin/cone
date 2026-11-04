@@ -733,8 +733,8 @@ static INode *propagateTextMethod(INode *edcl, Name *name, int *form, INode **gi
 
 // How the error's text is had as '&str', and by which method: 0 refused
 // (reported), else 1 the method gives it, 2 it gives a String, whose 'view()' is
-// lent, 3 the error prints itself: it meets core's Error trait, whose default
-// 'reportMain()' writes 'Error: ', its 'report()' and a newline to standard
+// lent, 3 the error prints itself: it meets core's Error trait, and
+// core's 'reportError' writes 'Error: ', its 'report()' and a newline to standard
 // error. Otherwise the method is the error's 'report()' where it has one that
 // answers text, else its 'message()'. All are found by name. (What the Error
 // trait's report() prints is INTERIM until the display design lands.)
@@ -743,15 +743,12 @@ static int propagateMainMessage(INode *errtype, INode *errnode, Name **method) {
     INode *edcl = itypeGetTypeDcl(errtype);
     int form;
     INode *gives;
-    // An error that meets core's Error trait writes itself: its 'reportMain()'
-    // (the trait's default) prints the whole line to standard error
-    static Name *reportMainName = NULL;
-    if (reportMainName == NULL)
-        reportMainName = nametblFind("reportMain", 10);
-    INode *rm = isMethodType(edcl) ? iNsTypeFindFnField((INsTypeNode*)edcl, reportMainName) : NULL;
+    // An error that meets core's Error trait writes itself: it has the trait's
+    // 'report(self, out)', and core's 'reportError' prints the whole line
+    INode *rm = isMethodType(edcl) ? iNsTypeFindFnField((INsTypeNode*)edcl, reportName) : NULL;
     if (rm != NULL && rm->tag == FnDclTag && (rm->flags & FlagMethFld)
-        && ((FnDclNode*)rm)->vtype->tag == FnSigTag && ((FnSigNode*)((FnDclNode*)rm)->vtype)->parms->used == 1) {
-        *method = reportMainName;
+        && ((FnDclNode*)rm)->vtype->tag == FnSigTag && ((FnSigNode*)((FnDclNode*)rm)->vtype)->parms->used == 2) {
+        *method = reportName;
         return 3;
     }
     if (propagateTextMethod(edcl, reportName, &form, &gives) != NULL && form != 0) {
@@ -869,7 +866,19 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     VarDclNode *err = propagateVar("-err", (INode*)failbind, 3, lexnode);
     nodesAdd(&arm->stmts, (INode*)err);
     if (msgform == 3) {
-        nodesAdd(&arm->stmts, (INode*)propagateMethodCall(propagateUse(err, lexnode), textmethod, lexnode));
+        // core's free function 'reportError(e: &<Error)'
+        ModuleNode *coremod = dclInfoGetModule(retdcl);
+        INode *reportfn = coremod ? namespaceFind(&coremod->namespace, nametblFind("reportError", 11)) : NULL;
+        if (reportfn == NULL || reportfn->tag != FnDclTag) {
+            errorMsgNode(lexnode, ErrorMainResult, "core declares no 'reportError', which a 'main' returning an Error prints its failure through.");
+            return;
+        }
+        FnCallNode *rep = newFnCallNode(newNameUseFromDclNode(reportfn, lexnode), 1);
+        inodeLexCopy((INode*)rep, lexnode);
+        // ('&-err', which coerces to the '&<Error' the function takes)
+        INode *errval = propagateUse(err, lexnode);
+        nodesAdd(&rep->args, (INode*)newRefNodeFull(BorrowTag, lexnode, (INode*)borrowRef, newPermUseNode(roPerm), errval));
+        nodesAdd(&arm->stmts, (INode*)rep);
     } else {
         VarDclNode *msg = propagateVar("-msg", (INode*)propagateMethodCall(propagateUse(err, lexnode), textmethod, lexnode), 3, lexnode);
         nodesAdd(&arm->stmts, (INode*)msg);
