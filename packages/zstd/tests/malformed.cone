@@ -27,6 +27,26 @@ import collections use *;
 import zstd use *;
 import fs;
 import path use Path;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn le32(s: &String, at: usize) usize {
   usize.from(s[at]) + usize.from(s[at + 1usize]) * 256usize + usize.from(s[at + 2usize]) * 65536usize + usize.from(s[at + 3usize]) * 16777216usize
@@ -65,17 +85,17 @@ fn outcome(s: &Array[u8], split: usize, limit: u64, maxWindow: u64) i32 {
   if split > 0usize {
     d.feed(&s[0usize..<split]);
     st = Status.MoreOutput;
-    while st == Status.MoreOutput { piece.clear(); st = d.pull(&mut piece, 4096usize); }
+    while st == Status.MoreOutput { piece.clear(); st = pullN(&mut d, &mut piece, 4096usize); }
     if st == Status.Failed { return kindOf(&d); }
   }
   if split < s.len { d.feed(&s[split..<s.len]); }
   d.finish();
   st = Status.MoreOutput;
-  while st == Status.MoreOutput { piece.clear(); st = d.pull(&mut piece, 4096usize); }
+  while st == Status.MoreOutput { piece.clear(); st = pullN(&mut d, &mut piece, 4096usize); }
   if st == Status.Failed {
     let k = kindOf(&d);
     // a failed decompressor stays failed, with the same reason
-    let again = d.pull(&mut piece, 10usize);
+    let again = pullN(&mut d, &mut piece, 10usize);
     if again != Status.Failed || kindOf(&d) != k { return 101; }
     return k;
   }
@@ -227,7 +247,7 @@ fn checkLimits() {
   d.setLimit(4999u64);
   d.feed(&declared.view()[0usize..<10usize]);
   var piece = List[u8]();
-  expect(d.pull(&mut piece, 100usize) == Status.Failed && piece.len() == 0usize, "refused at the header, before any output");
+  expect(pullN(&mut d, &mut piece, 100usize) == Status.Failed && piece.len() == 0usize, "refused at the header, before any output");
   // The one-call 'expected' is the limit too
   match decompress(undeclared.view(), 4000usize) {
     case let Ok(got) { expect(false, "expected 4000 refuses 5000"); }
@@ -241,7 +261,7 @@ fn checkLimits() {
   w.setMaxWindow(1000u64);
   w.feed(undeclared.view());
   w.finish();
-  expect(w.pull(&mut piece, 100usize) == Status.Failed, "window refused");
+  expect(pullN(&mut w, &mut piece, 100usize) == Status.Failed, "window refused");
   match w.error() {
     case let Some(e) {
       expectStr(e.reason.view(), "zstd: the frame's window is 1024 bytes, more than the largest allowed (1000 bytes; setMaxWindow raises it)", "the window refusal's reason");

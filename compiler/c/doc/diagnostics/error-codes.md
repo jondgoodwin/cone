@@ -1059,6 +1059,14 @@ whose type does not convert to its field's (type check, `typeLitStructCheck`). A
 in place converts to an actor trait there as a variable's would (a temporary holds it), but a
 string literal is not lent as a temporary to a field, so it is refused; a count of values that does not match the fields is
 `ErrorBadArray`.
+`ErrorMetaEach`, `ErrorMetaEachPlace`, `ErrorMetaQuota` and `ErrorMetaVar` are `#each` and the meta
+variables. `ErrorMetaEach` is the header: no `#name` to bind, no `in`, no list after it (`[..]` of values,
+`(..)` of types, or a meta variable that holds one), a list not closed, no block. `ErrorMetaEachPlace` is
+a `#each` where this is not built: a module's level, a type's braces, an `extern` block, an expression.
+`ErrorMetaQuota` is the pass that went over the step quota, naming its loop. `ErrorMetaVar` is a meta
+variable misused: a `let` or a `#each` variable given a new value, a list used as a value, a number built
+from something else, a division by zero, a declaration with no value. An error inside a pass is followed
+by an uncounted line naming the pass (`... in pass 2 of 3 of this '#each', where #x is 2.5`).
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
@@ -1068,3 +1076,10 @@ reads the build's facts again for its own build, so a field or method could exis
 package's object and not in its importer, or a body choose another branch and share a
 `static` of another type with it. A type question alone, and a build question in a `#if` of its own around
 or inside the chain, are allowed. Pointed at the first type question.
+
+`ErrorInterpBrace` is a brace that breaks the rule of an interpolated string `$"..."`: an open brace
+that no close brace closes, a close brace with no open one before it, or braces with nothing between them. A
+brace in the text is written `{{` or `}}`. Pointed at the brace.
+
+`ErrorInterpExpr` is the text between an interpolation's braces that is not one expression: something
+is left over after the expression (`{a; b}`). Pointed at the first token the expression does not take.

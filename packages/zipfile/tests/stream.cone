@@ -1,0 +1,413 @@
+// An archive read as its bytes arrive (ArchiveStream): the entries come out as Archive.open and read would give
+// them, whole or in pieces of any size, an archive split at every byte offset gives the same entries, a
+// truncated archive ends Failed (at every length), and a local header that disagrees with the central
+// directory is caught (at the entry when it is the entry's own, at the end when it is the directory that
+// differs, after the entries have been handed on). Data descriptors, zip64 local headers and the entries a
+// stream cannot frame are checked against the fixtures other tools made (tests/data).
+
+mod streamtest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import zipfile use *;
+import fs;
+import path use Path;
+
+fn load(name: &str) String {
+  var p = String.from("../../../../tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) { s }
+    case let Err(e) {
+      expect(false, "a fixture is missing");
+      String()
+    }
+  }
+}
+
+fn bytesOf(s: &str) List[u8] {
+  var out = List[u8].withCapacity(s.len());
+  var k = 0usize;
+  while k < s.len() { out.push(s[k]); k += 1usize; }
+  out
+}
+
+fn lines(n: i64) List[u8] {
+  var s = String();
+  var i = 0i64;
+  while i < n {
+    s.append("line ");
+    s.appendInt(i);
+    s.append(": the quick brown fox jumps over the lazy dog\n");
+    i += 1i64;
+  }
+  bytesOf(s.view())
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn why(a: &str, e: &ZipError) String {
+  var s = String.from(a);
+  s.append(": ");
+  s.append(e.reason.view());
+  s
+}
+
+fn addStr(d: &mut List[u8], s: &str) {
+  var k = 0usize;
+  while k < s.len { d.push(s[k]); k += 1usize; }
+}
+
+// What a stream gave: each entry as name, 0, its data, 1; the count of Begin and End; why it failed
+struct Gave {
+  digest: List[u8];
+  begins: usize;
+  ends: usize;
+  failed: Option[ZipError];
+  done: bool;
+  dirCount: usize;
+}
+
+fn emptyGave() Gave { Gave(List[u8](), 0usize, 0usize, None[ZipError], false, 0usize) }
+
+// Pulls until the stream wants input or stops
+fn drain(s: &mut ArchiveStream, g: &mut Gave, out: &mut IoBuf) bool {
+  while true {
+    out.clear();
+    let st = s.pull(out);
+    if st == Step.Begin {
+      g.begins += 1usize;
+      addStr(&mut g.digest, s.current().name.view());
+      g.digest.push(0u8);
+    } else if st == Step.Data {
+      if out.len() == 0usize { expect(false, "Data with no bytes"); return false; }
+      g.digest.appendSlice(out.view());
+    } else if st == Step.End {
+      g.ends += 1usize;
+      g.digest.push(1u8);
+    } else if st == Step.NeedInput {
+      return true;
+    } else if st == Step.Done {
+      g.done = true;
+      match s.directory() {
+        case let Some(a) { g.dirCount = a.count(); }
+        case is None[Archive] {}
+      }
+      return false;
+    } else {
+      g.failed = s.error();
+      return false;
+    }
+  }
+  false
+}
+
+// The archive fed in two parts, split at 'cut' (the second part in pieces of 'piece'), 'room' bytes of room a pull
+fn run(data: &Array[u8], cut: usize, piece: usize, room: usize, finishAt: usize) Gave {
+  var s = ArchiveStream.make();
+  var g = emptyGave();
+  var out = IoBuf(room);
+  let first = if cut < finishAt { cut } else { finishAt };
+  s.feed(&data[0usize ..< first]);
+  var more = drain(&mut s, &mut g, &mut out);
+  var at = first;
+  while more && at < finishAt {
+    let n = if finishAt - at < piece { finishAt - at } else { piece };
+    s.feed(&data[at ..< at + n]);
+    at += n;
+    more = drain(&mut s, &mut g, &mut out);
+  }
+  if more {
+    s.finish();
+    drain(&mut s, &mut g, &mut out);
+  }
+  g
+}
+
+// What Archive.open and read say the archive holds, in the same shape
+fn expected(data: &Array[u8]) Option[List[u8]] {
+  match Archive.open(data) {
+    case let Err(e) { None[List[u8]] }
+    case let Ok(ar) {
+      var d = List[u8]();
+      var i = 0usize;
+      while i < ar.count() {
+        match ar.read(data, i) {
+          case let Ok(got) {
+            addStr(&mut d, ar.entry(i).name.view());
+            d.push(0u8);
+            d.appendSlice(got.view());
+            d.push(1u8);
+          }
+          case let Err(e) { return None[List[u8]]; }
+        }
+        i += 1usize;
+      }
+      Some[List[u8]](d)
+    }
+  }
+}
+
+fn sameBytes(a: &List[u8], b: &List[u8]) bool { a.view() == b.view() }
+
+// An archive whose streamed entries must equal the read ones, in whole, in pieces and at the room of a pull
+fn checkArchive(label: &str, data: &Array[u8]) {
+  match expected(data) {
+    case is None[List[u8]] { expect(false, why(label, &ZipError.make(ErrorKind.Corrupt, 0u64, "Archive.open or read failed")).view()); }
+    case let Some(want) {
+      let pieces: Array[usize, 5] = [data.len, 1000usize, 64usize, 7usize, 1usize];
+      var k = 0usize;
+      while k < 5usize {
+        let g = run(data, data.len, pieces[k], 65536usize, data.len);
+        var l = String.from(label);
+        l.append(" streamed in pieces of ");
+        l.appendUInt(u64.from(pieces[k]));
+        match &g.failed {
+          case let &Some(e) { expect(false, why(l.view(), e).view()); }
+          case is None[ZipError] {
+            expect(g.done, l.view());
+            expect(sameBytes(&g.digest, &want), l.view());
+            expectUInt(u64.from(g.begins), u64.from(g.ends), "every entry that began ended");
+          }
+        }
+        k += 1usize;
+      }
+      // small room: each pull gives few bytes
+      let g = run(data, data.len, 4096usize, 5usize, data.len);
+      var l = String.from(label);
+      l.append(" with 5 bytes of room");
+      expect(g.done && sameBytes(&g.digest, &want), l.view());
+    }
+  }
+}
+
+// A small one for the tests that cut and split an archive at every offset
+fn small() List[u8] {
+  var w = ZipWriter.make();
+  _ = w.add("a.txt", bytesOf("Hello, hello, hello, hello!\n").view(), &EntryOptions.deflated(1i32));
+  _ = w.add("b.bin", bytesOf("stored, as it is").view(), &EntryOptions.stored());
+  _ = w.add("c/d.txt", lines(4i64).view(), &EntryOptions.zstd(3i32));
+  _ = w.add("empty.txt", bytesOf("").view(), &EntryOptions.plain());
+  _ = w.addDir("e", &EntryOptions.plain());
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, why("making the small archive", &e).view()); List[u8]() }
+  }
+}
+
+// An archive of stored, deflate and zstd entries, an empty one and a folder
+fn made() List[u8] {
+  var w = ZipWriter.make();
+  let text = lines(400i64);
+  let big = noise(3000usize, 5u64);
+  _ = w.add("a/hello.txt", bytesOf("Hello, hello, hello, hello, hello!\n").view(), &EntryOptions.deflated(1i32));
+  _ = w.add("a/raw.bin", big.view(), &EntryOptions.stored());
+  _ = w.add("b/lines.txt", text.view(), &EntryOptions.zstd(3i32));
+  _ = w.add("b/lines2.txt", text.view(), &EntryOptions.deflated(2i32));
+  _ = w.add("empty.txt", bytesOf("").view(), &EntryOptions.plain());
+  _ = w.addDir("c", &EntryOptions.plain());
+  _ = w.add("z.txt", bytesOf("the last").view(), &EntryOptions.stored());
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, why("making the archive", &e).view()); List[u8]() }
+  }
+}
+
+// Where in 'data' the 4 bytes of a signature first lie, from 'from'; the length if none
+fn find4(data: &Array[u8], a: u8, b: u8, c: u8, d: u8, from: usize) usize {
+  var i = from;
+  while i + 4usize <= data.len {
+    if data[i] == a && data[i + 1usize] == b && data[i + 2usize] == c && data[i + 3usize] == d { return i; }
+    i += 1usize;
+  }
+  data.len
+}
+
+fn patched(data: &Array[u8], at: usize, v: u8) List[u8] {
+  var i = 0usize;
+  var r = List[u8].withCapacity(data.len);
+  while i < data.len {
+    r.push(if i == at { v } else { data[i] });
+    i += 1usize;
+  }
+  r
+}
+
+fn failedWith(g: &Gave, kind: ErrorKind) bool {
+  match &g.failed {
+    case let &Some(e) { e.kind == kind }
+    case is None[ZipError] { false }
+  }
+}
+
+fn main() i32 {
+  let mine = made();
+  checkArchive("a made archive", mine.view());
+
+  // ---- the fixtures other tools made ----
+  let names: Array[&str, 10] = ["py-basic.zip", "stream-desc.zip", "stream-desc64.zip", "py-zip64-local.zip", "win-ps51.zip",
+    "win-ps7.zip", "win-tar.zip", "zstd-basic.zip", "zstd-mixed.zip", "hand-zip64.zip"];
+  var n = 0usize;
+  while n < 10usize {
+    let f = load(names[n]);
+    checkArchive(names[n], f.view());
+    n += 1usize;
+  }
+
+  // ---- split at every byte offset ----
+  let tiny = small();
+  let want = expected(tiny.view());
+  match want {
+    case is None[List[u8]] { expect(false, "the small archive reads"); }
+    case let Some(w) {
+      var cut = 0usize;
+      var bad = 0usize;
+      while cut <= tiny.len() {
+        let g = run(tiny.view(), cut, 100000usize, 4096usize, tiny.len());
+        if !g.done || !sameBytes(&g.digest, &w) { bad += 1usize; }
+        cut += 1usize;
+      }
+      expectUInt(u64.from(bad), 0u64, "split at every offset of the archive gives the same entries");
+    }
+  }
+  // the descriptor fixture too, at every offset
+  let ps = load("stream-desc-small.zip");
+  match expected(ps.view()) {
+    case is None[List[u8]] { expect(false, "stream-desc-small reads"); }
+    case let Some(w) {
+      var cut = 0usize;
+      var bad = 0usize;
+      while cut <= ps.len() {
+        let g = run(ps.view(), cut, 100000usize, 4096usize, ps.len());
+        if !g.done || !sameBytes(&g.digest, &w) { bad += 1usize; }
+        cut += 1usize;
+      }
+      expectUInt(u64.from(bad), 0u64, "py-stream (descriptors) split at every offset gives the same entries");
+    }
+  }
+
+  // ---- a truncated archive ends Failed, whatever its length ----
+  {
+    var cut = 0usize;
+    var notFailed = 0usize;
+    while cut < tiny.len() {
+      let g = run(tiny.view(), cut, 100000usize, 4096usize, cut);
+      if g.failed is None || g.done { notFailed += 1usize; }
+      cut += 1usize;
+    }
+    expectUInt(u64.from(notFailed), 0u64, "every truncation of the made archive ends Failed");
+    cut = 0usize;
+    notFailed = 0usize;
+    while cut < ps.len() {
+      let g = run(ps.view(), cut, 100000usize, 4096usize, cut);
+      if g.failed is None || g.done { notFailed += 1usize; }
+      cut += 1usize;
+    }
+    expectUInt(u64.from(notFailed), 0u64, "every truncation of py-stream ends Failed");
+    let g = run(mine.view(), 100usize, 100000usize, 4096usize, mine.len() - 30usize);
+    expect(failedWith(&g, ErrorKind.Truncated) || failedWith(&g, ErrorKind.Corrupt), "a cut inside the directory is Truncated or Corrupt");
+    expect(g.ends > 0usize, "entries were handed on before the end failed");
+  }
+
+  // ---- a local header that disagrees with the central directory ----
+  {
+    // the first local header's name: one byte changed. The entry streams (its own header and data agree), the
+    // directory then names another file at that place: Failed at the end, after every entry was handed on
+    let a = patched(mine.view(), 30usize, 88u8);
+    let g = run(a.view(), a.len(), 100000usize, 4096usize, a.len());
+    expect(failedWith(&g, ErrorKind.Corrupt), "a local name that differs from the directory's: Corrupt");
+    expectUInt(u64.from(g.ends), 7u64, "...after all seven entries were handed on");
+    expect(!g.done, "...and not Done");
+
+    // the directory's CRC-32 for the first entry: the entries stream, the end fails
+    let cd = find4(mine.view(), 0x50u8, 0x4Bu8, 0x01u8, 0x02u8, 0usize);
+    let b = patched(mine.view(), cd + 16usize, 0x5Au8);
+    let gb = run(b.view(), b.len(), 100000usize, 4096usize, b.len());
+    expect(failedWith(&gb, ErrorKind.BadChecksum), "a directory CRC-32 that differs from the entry's: BadChecksum");
+    expectUInt(u64.from(gb.ends), 7u64, "...after the entries were handed on");
+
+    // the first entry's own local CRC-32: caught at the entry, before it ends
+    let c = patched(mine.view(), 14usize, 0x77u8);
+    let gc = run(c.view(), c.len(), 100000usize, 4096usize, c.len());
+    expect(failedWith(&gc, ErrorKind.BadChecksum), "a local CRC-32 that differs from the data's: BadChecksum");
+    expectUInt(u64.from(gc.ends), 0u64, "...at the entry itself");
+
+    // the directory's offset for the second entry
+    let cd2 = find4(mine.view(), 0x50u8, 0x4Bu8, 0x01u8, 0x02u8, cd + 4usize);
+    let d = patched(mine.view(), cd2 + 42usize, 0x00u8);
+    let gd = run(d.view(), d.len(), 100000usize, 4096usize, d.len());
+    expect(failedWith(&gd, ErrorKind.Corrupt), "a directory offset that is not where the entry was: Corrupt");
+
+    // a data descriptor that disagrees
+    let dd = find4(ps.view(), 0x50u8, 0x4Bu8, 0x07u8, 0x08u8, 0usize);
+    if dd < ps.len() {
+      let e = patched(ps.view(), dd + 4usize, 0xA5u8);
+      let ge = run(e.view(), e.len(), 100000usize, 4096usize, e.len());
+      expect(failedWith(&ge, ErrorKind.BadChecksum), "a descriptor CRC-32 that differs from the data's: BadChecksum");
+    } else {
+      expect(false, "py-stream has a descriptor with a signature");
+    }
+  }
+
+  // ---- what a stream cannot read ----
+  {
+    // Python's streamed archive has a stored entry with data and a descriptor: its end cannot be found
+    let pys = load("py-stream.zip");
+    let gs = run(pys.view(), pys.len(), 100000usize, 4096usize, pys.len());
+    expect(failedWith(&gs, ErrorKind.Unsupported), "a stored entry with data and a descriptor is Unsupported");
+    match &gs.failed {
+      case let &Some(e) { expect(e.reason.contains("gives no sizes"), "the refusal says the sizes are missing"); }
+      case is None[ZipError] { expect(false, "the refusal has a reason"); }
+    }
+    let junk = bytesOf("this is not a zip file at all, it is text");
+    let g = run(junk.view(), junk.len(), 100000usize, 4096usize, junk.len());
+    expect(failedWith(&g, ErrorKind.NotZip), "text is NotZip");
+    let enc = load("hand-encrypted.zip");
+    let ge = run(enc.view(), enc.len(), 100000usize, 4096usize, enc.len());
+    expect(failedWith(&ge, ErrorKind.Encrypted), "an encrypted entry is refused as Encrypted");
+    let lz = load("hand-lzma.zip");
+    let gl = run(lz.view(), lz.len(), 100000usize, 4096usize, lz.len());
+    expect(failedWith(&gl, ErrorKind.Unsupported), "lzma is refused as Unsupported");
+    let pre = load("hand-prefix.zip");
+    let gp = run(pre.view(), pre.len(), 100000usize, 4096usize, pre.len());
+    expect(gp.failed is Some && !gp.done, "bytes before the archive: Failed");
+  }
+
+  // ---- a bomb: a deflate entry that goes past its declared size ----
+  {
+    var w = ZipWriter.make();
+    let zeros = List[u8]();
+    var z = 0usize;
+    var big = List[u8].withCapacity(200000usize);
+    while z < 200000usize { big.push(0u8); z += 1usize; }
+    _ = w.add("zeros", big.view(), &EntryOptions.deflated(2i32));
+    match w.bytes() {
+      case let Ok(b) {
+        // the local header's size field (offset 22) cut to 100: the data inflates past it
+        let t = patched(b.view(), 22usize, 100u8);
+        let patched2 = patched(t.view(), 23usize, 0u8);
+        let patched3 = patched(patched2.view(), 24usize, 0u8);
+        let patched4 = patched(patched3.view(), 25usize, 0u8);
+        let g = run(patched4.view(), patched4.len(), 100000usize, 4096usize, patched4.len());
+        expect(failedWith(&g, ErrorKind.TooLarge), "an entry that inflates past its declared size: TooLarge");
+        expect(g.digest.len() < 1000usize, "...far short of the zeros");
+      }
+      case let Err(e) { expect(false, why("making the bomb", &e).view()); }
+    }
+  }
+
+  done()
+}

@@ -187,3 +187,67 @@ tags = ["parse", "genllvm", "runtime"]
 link_options = ["-D", "WIDE"]
 link = ["q/q.conebuild"]
 include = ["include/q.cone"]
+
+# A generic body holding an interpolated string is read again by the importer from the include file
+[scenario.meta_text_interp_include]
+category = "run"
+description = "A package whose generic functions hold '$\"...\"', sent directly to a String and stored as one, compiled into its include file; a program with only that file expands each instance (a number and a struct with a toText) and prints the text"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild", "coll/collections.conebuild"]
+include = ["include/q.cone"]
+
+# '#each' over a constant list: the parser reads the body again for each item, with '#x' standing
+# for it, and each pass is a block of its own
+[scenario.meta_each_basic]
+category = "run"
+description = "'#each' over a list of values, of types, and of a meta constant: a loop unrolled over constants, a block of its own for each pass, 'var #i' counting across the passes, a body over a list of types, nested loops, floats, negative and typed literals, and an empty list"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# --meta-ir: the loops as the parser expanded them
+[scenario.meta_each_dump]
+category = "compile"
+description = "--meta-ir writes each outermost '#each' with the IR of every pass: the item each pass was given, and the statements with it substituted; an inner loop is part of its outer pass"
+tags = ["parse", "genllvm"]
+
+[[scenario.meta_each_dump.check]]
+name = "each-pass-is-written-with-its-item"
+target = "meta"
+contains = ["#each #x: 2 items", "pass 1 of 2, #x = 3", "pass 2 of 2, #x = 5", "3i32", "5i32", "#each #T: 2 items", "pass 2 of 2, #T = u16", "imm v u16 = 1i32"]
+excludes = ["#each #k"]
+
+[scenario.meta_each_reject_parse]
+category = "reject"
+description = "A '#each' with no name, no 'in', no list, no block or an unclosed list; a '#each' at a module's level, in a type's braces, in an 'extern' block or inside an expression; a meta 'let' or a '#each' variable given a new value, a list used as a value, a meta number built from something that is no number, a division by zero, and a meta declaration with no value"
+tags = ["parse"]
+
+[scenario.meta_each_reject_check]
+category = "reject"
+description = "An error inside a pass is reported as any is and says which pass of which '#each' it was in, the inner loop's pass first: the second of three items, the second pass of the inner loop in the second of the outer, and the instance of a generic that cannot take the second item"
+tags = ["typecheck"]
+notes = [
+  "in pass 2 of 3 of this '#each', where #v is 2.5",
+  "in pass 2 of 2 of this '#each', where #b is 200",
+  "in pass 2 of 2 of this '#each', where #a is 2",
+  "in pass 2 of 2 of this '#each', where #k is 2.5",
+  "as instantiated by this part of the source code",
+]
+
+# The step quota: --meta-steps lowers it so a short program passes it
+[scenario.meta_each_reject_quota]
+category = "reject"
+description = "A '#each' over more items than the step quota, and nested loops whose passes together pass it: the error names the loop and the pass it stopped at, once, and the passes after it are not read; a loop under the quota after them is expanded"
+tags = ["parse"]
+
+[[scenario.meta_each_reject_quota.run]]
+name = "ten-steps"
+options = ["--meta-steps=10"]
+
+# A package's generic holding a '#each': the include file keeps the loop whole, and the program that
+# clones the generic reads it again; a build fact inside the loop is the package's, cut once
+[scenario.meta_each_include]
+category = "run"
+description = "An include file keeps a generic's '#each' whole (a 'var #i' count, a loop over types, a loop holding a '#if' on a fact of the build) and cuts the build's '#if' to the branch the package took, once however many passes read it; a program built without the package's -D imports it, clones the generics, makes the passes itself, links and runs"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+link_options = ["-D", "WIDE"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]

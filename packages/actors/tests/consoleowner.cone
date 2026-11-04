@@ -1,0 +1,459 @@
+// The console's owner (actors' console.cone): in a program that runs actors, a
+// print is a hand-over to one owner, which alone writes the console. Each case
+// is a child process of this test with its output captured through pipes
+// (not a terminal, so the owner batches), and the parent checks what the child
+// wrote:
+//
+// 1. 16 actors each print 10,000 checkable lines to print and to eprint (every
+//    2,500th line 20,000 bytes, which chains buffers and takes the gathered
+//    write): every line whole, each actor's lines in order.
+// 2. The switch: lines printed before the first actor starts the runtime, by
+//    an actor, and after: complete and in order.
+// 3. Exit with records queued: the program calls exit() as soon as its actors
+//    have finished, and every line appears.
+// 4. A panic with records queued: every line appears, then the panic's message.
+// 5. Flush inside a behaviour and in a plain thread: nothing is queued or being
+//    written when it returns.
+// 6. A stall: the destination is held, the queue stops at its limit (8 KiB
+//    here), the sender waits, and nothing is lost once the destination is
+//    released.
+// 7. The end abandons a parked behaviour, and the finalizer of a value its record
+//    held prints: that line appears (the drain after abandonParked).
+
+mod consoleowner;
+
+import testing use *;
+import collections use *;
+import stdio use *;
+import actors;
+import thread;
+import time use Duration;
+import process;
+import libc;
+
+const writers = 16u32;
+const lines = 10000u32;
+const pad = "0123456789abcdefghij0123456789";
+
+actor Writer {
+  // Line: tag, id, sequence, a pad (20,000 bytes every 2,500th line), id, sequence
+  pub async fn go(self, id: u32, n: u32) {
+    var i = 0u32;
+    while i < n {
+      if i % 2500u32 == 0u32 {
+        print <- "L:", id, ":", i, ":", 2000 of "0123456789", ":", id, ":", i, "\n";
+        eprint <- "E:", id, ":", i, ":", 2000 of "0123456789", ":", id, ":", i, "\n";
+      }
+      else {
+        print <- "L:", id, ":", i, ":", pad, ":", id, ":", i, "\n";
+        eprint <- "E:", id, ":", i, ":", pad, ":", id, ":", i, "\n";
+      }
+      i = i + 1u32;
+    }
+  }
+}
+
+actor Speaker {
+  pub async fn go(self, n: u32) {
+    var i = 0u32;
+    while i < n {
+      print <- "act ", i, "\n";
+      i = i + 1u32;
+    }
+  }
+}
+
+actor Flusher {
+  pub async fn go(self) {
+    var i = 0u32;
+    while i < 1000u32 {
+      print <- "F:", i, "\n";
+      i = i + 1u32;
+    }
+    print.flush();
+    if actors.consoleQueued() == 0usize {
+      print <- "flushed in a behaviour\n";
+    }
+    else {
+      print <- "NOT flushed in a behaviour\n";
+    }
+  }
+}
+
+actor Idle {
+  pub async fn nothing(self) {}
+}
+
+struct Stall {
+  pub sent: Atomic[u32];
+  pub finished: Atomic[u32];
+}
+
+let stall: Stall;
+
+fn @initpure init() {
+  stall = Stall(Atomic[u32].of(0u32), Atomic[u32].of(0u32));
+}
+
+// ---- the child's cases ----
+
+fn startWriters(n: u32) {
+  var i = 0u32;
+  while i < writers {
+    let w = Writer();
+    w.go(i, n);
+    i = i + 1u32;
+  }
+}
+
+fn childWriters() i32 {
+  initAll();
+  startWriters(lines);
+  finalAll();
+  0i32
+}
+
+fn childSwitch() i32 {
+  initAll();
+  var i = 0u32;
+  while i < 100u32 {
+    print <- "pre ", i, "\n";
+    i = i + 1u32;
+  }
+  let s = Speaker();
+  s.go(100u32);
+  actors.waitQuiet();
+  i = 0u32;
+  while i < 100u32 {
+    print <- "post ", i, "\n";
+    i = i + 1u32;
+  }
+  finalAll();
+  0i32
+}
+
+fn childExit() i32 {
+  initAll();
+  startWriters(2000u32);
+  actors.waitQuiet();
+  libc.exit(7i32)
+}
+
+fn childPanic() i32 {
+  initAll();
+  startWriters(2000u32);
+  actors.waitQuiet();
+  panic("boom")
+}
+
+fn flushInThread(n: u32) u32 {
+  var i = 0u32;
+  while i < 1000u32 {
+    print <- "T:", i, "\n";
+    i = i + 1u32;
+  }
+  print.flush();
+  if actors.consoleQueued() == 0usize {
+    print <- "flushed in a thread\n";
+  }
+  else {
+    print <- "NOT flushed in a thread\n";
+  }
+  n
+}
+
+fn childFlush() i32 {
+  initAll();
+  let f = Flusher();
+  f.go();
+  actors.waitQuiet();
+  let t = thread.start(0u32, &flushInThread);
+  t.join();
+  finalAll();
+  0i32
+}
+
+fn stallSender(n: u32) u32 {
+  var i = 0u32;
+  while i < n {
+    print <- "S:", i, ":", pad, "\n";
+    stall.sent.store(i + 1u32);
+    i = i + 1u32;
+  }
+  stall.finished.store(1u32);
+  n
+}
+
+fn childStall() i32 {
+  initAll();
+  // Start the runtime, and with it the owner
+  let d = Idle();
+  d.nothing();
+  actors.waitQuiet();
+  actors.setConsoleLimit(8192usize);
+  actors.holdConsole();
+  let t = thread.start(2000u32, &stallSender);
+  // Wait for the queue to reach its limit, then let it show it stays
+  var spins = 0u32;
+  while actors.consoleQueued() < 8192usize && spins < 3000u32 {
+    thread.sleep(Duration.fromMillis(1i64));
+    spins = spins + 1u32;
+  }
+  thread.sleep(Duration.fromMillis(200i64));
+  let queued = actors.consoleQueued();
+  let sent = stall.sent.load();
+  let waiting = stall.finished.load() == 0u32;
+  actors.releaseConsole();
+  t.join();
+  let bounded = queued <= 8192usize + 100usize && queued >= 8192usize;
+  print <- "stall bounded=", bounded, " waiting=", waiting, " held=", sent < 2000u32, "\n";
+  finalAll();
+  0i32
+}
+
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {print <- "finalized in abandon ", n, "\n";}
+}
+
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.Reply) { })
+}
+
+actor Stuck {
+  pub async fn count(self) u64 {
+    let note = Note(7u64);
+    let n = await never();
+    n
+  }
+}
+
+// Stuck stays parked and alive to the end of the program, so the end drops its
+// record (abandonParked), and the finalizer of 'note' prints during that drop
+// The destination is held, so the line cannot be written until a detached thread
+// releases it, 300 ms later: only a drain that waits for the owner, after the drop,
+// lets it out before the process ends (the thread is never joined)
+fn releaseLater(n: u32) u32 {
+  thread.sleep(Duration.fromMillis(300i64));
+  actors.releaseConsole();
+  n
+}
+
+fn childAbandon() i32 {
+  initAll();
+  let s = Stuck();
+  s.count();
+  actors.waitQuiet();
+  actors.holdConsole();
+  let t = thread.start(0u32, &releaseLater);
+  t.detach();
+  finalAll();
+  // The program's exit would drain too, so what shows the second drain is that
+  // the stop itself has waited: nothing is left queued when finalAll returns
+  if actors.consoleQueued() == 0usize {
+    print <- "abandon: nothing queued after the stop\n";
+  }
+  else {
+    print <- "abandon: NOT drained after the stop\n";
+  }
+  0i32
+}
+
+fn child(mode: &str) i32 {
+  if mode == "abandon" { return childAbandon(); }
+  if mode == "writers" { return childWriters(); }
+  if mode == "switch" { return childSwitch(); }
+  if mode == "exit" { return childExit(); }
+  if mode == "panic" { return childPanic(); }
+  if mode == "flush" { return childFlush(); }
+  if mode == "stall" { return childStall(); }
+  2i32
+}
+
+// ---- the parent ----
+
+fn command(exe: &str, mode: &str) List[String] {
+  var c = List[String]();
+  c.push(String.from(exe));
+  c.push(String.from("--child"));
+  c.push(String.from(mode));
+  c
+}
+
+fn emptyOutput() process.Output {
+  process.Output(0u32, 0u32, false, String(), String())
+}
+
+fn ran(exe: &str, mode: &str) process.Output {
+  var o = emptyOutput();
+  let c = command(exe, mode);
+  match process.run(c.view(), process.Options(timeout: Duration.fromMillis(180000i64))) {
+    case var Ok(ok) { o <-> ok; }
+    case let Err(e) {
+      let m = e.message();
+      expectStr(m.view(), "<started>", mode);
+    }
+  }
+  o
+}
+
+// The 20,000-byte pad
+fn bigPad() String {
+  var s = String();
+  var i = 0u32;
+  while i < 2000u32 {
+    s <- "0123456789";
+    i = i + 1u32;
+  }
+  s
+}
+
+// Every line of 'text' that begins with 'tag' is whole, and each actor's lines
+// are in order: how many lines were whole, how many bad
+fn verify(text: &String, tag: &str, perActor: u32, label: &Array[u8]) {
+  let big = bigPad();
+  var next = List[u32]();
+  var seen = List[u32]();
+  var k = 0u32;
+  while k < writers {
+    next.push(0u32);
+    seen.push(0u32);
+    k = k + 1u32;
+  }
+  var good = 0u64;
+  var bad = 0u64;
+  var misordered = 0u64;
+  let all = text.lines();
+  var li = 0usize;
+  while li < all.len() {
+    let parts = all[li].split(':');
+    li = li + 1usize;
+    if !(parts.len() == 6usize && parts[0usize].equals(tag)) {
+      bad = bad + 1u64;
+      continue;
+    }
+    var id = 0u64;
+    var seq = 0u64;
+    var id2 = 0u64;
+    var seq2 = 1u64;
+    match parseUInt(parts[1usize].view()) { case let Some(v) { id = v; } case is None { bad = bad + 1u64; } }
+    match parseUInt(parts[2usize].view()) { case let Some(v) { seq = v; } case is None { bad = bad + 1u64; } }
+    match parseUInt(parts[4usize].view()) { case let Some(v) { id2 = v; } case is None { bad = bad + 1u64; } }
+    match parseUInt(parts[5usize].view()) { case let Some(v) { seq2 = v; } case is None { bad = bad + 1u64; } }
+    let padOk = if seq % 2500u64 == 0u64 { parts[3usize].equals(big.view()) } else { parts[3usize].equals(pad) };
+    if id != id2 || seq != seq2 || id >= u64.from(writers) || !padOk {
+      bad = bad + 1u64;
+      continue;
+    }
+    let slot = usize.from(id);
+    if u64.from(next[slot]) != seq {
+      misordered = misordered + 1u64;
+    }
+    next[slot] = u32.from(seq) + 1u32;
+    seen[slot] = seen[slot] + 1u32;
+    good = good + 1u64;
+  }
+  expectUInt(bad, 0u64, label);
+  expectUInt(misordered, 0u64, label);
+  expectUInt(good, u64.from(writers) * u64.from(perActor), label);
+}
+
+fn writersCase(exe: &str) {
+  let o = ran(exe, "writers");
+  expectUInt(u64.from(o.exitCode), 0u64, "16 actors: exits 0");
+  verify(&o.stdout, "L", lines, "16 actors: every print line whole and in order");
+  verify(&o.stderr, "E", lines, "16 actors: every eprint line whole and in order");
+}
+
+fn switchCase(exe: &str) {
+  let o = ran(exe, "switch");
+  var want = String();
+  var i = 0u32;
+  while i < 100u32 { want <- "pre ", i, "\n"; i = i + 1u32; }
+  i = 0u32;
+  while i < 100u32 { want <- "act ", i, "\n"; i = i + 1u32; }
+  i = 0u32;
+  while i < 100u32 { want <- "post ", i, "\n"; i = i + 1u32; }
+  let got = o.stdout.lines();
+  let exp = want.lines();
+  expectUInt(u64.from(got.len()), u64.from(exp.len()), "the switch: all lines");
+  var same = got.len() == exp.len();
+  var j = 0usize;
+  while same && j < got.len() {
+    same = got[j].equals(exp[j].view());
+    j = j + 1usize;
+  }
+  expectBool(same, true, "the switch: before, during and after the runtime started, in order");
+}
+
+fn exitCase(exe: &str) {
+  let o = ran(exe, "exit");
+  expectUInt(u64.from(o.exitCode), 7u64, "exit: the exit code");
+  verify(&o.stdout, "L", 2000u32, "exit: every queued print line appears");
+  verify(&o.stderr, "E", 2000u32, "exit: every queued eprint line appears");
+}
+
+fn panicCase(exe: &str) {
+  let o = ran(exe, "panic");
+  expectBool(o.exitCode != 0u32, true, "panic: the program fails");
+  verify(&o.stdout, "L", 2000u32, "panic: every queued print line appears");
+  expectBool(o.stderr.contains("boom"), true, "panic: the message is written");
+}
+
+fn flushCase(exe: &str) {
+  let o = ran(exe, "flush");
+  expectUInt(u64.from(o.exitCode), 0u64, "flush: exits 0");
+  expectBool(o.stdout.contains("flushed in a behaviour"), true, "flush inside a behaviour waits for the owner");
+  expectBool(o.stdout.contains("flushed in a thread"), true, "flush in a plain thread waits for the owner");
+  expectBool(o.stdout.contains("NOT"), false, "flush: nothing was left queued");
+}
+
+fn stallCase(exe: &str) {
+  let o = ran(exe, "stall");
+  expectUInt(u64.from(o.exitCode), 0u64, "stall: exits 0");
+  expectBool(o.stdout.contains("stall bounded=true waiting=true held=true"), true, "stall: the queue stopped at its limit and the sender waited");
+  var count = 0u64;
+  var inOrder = true;
+  let all = o.stdout.lines();
+  var li = 0usize;
+  while li < all.len() {
+    let parts = all[li].split(':');
+    li = li + 1usize;
+    if parts.len() == 3usize && parts[0usize].equals("S") {
+      match parseUInt(parts[1usize].view()) {
+        case let Some(v) { if v != count { inOrder = false; } }
+        case is None { inOrder = false; }
+      }
+      count = count + 1u64;
+    }
+  }
+  expectUInt(count, 2000u64, "stall: nothing is lost once the destination is released");
+  expectBool(inOrder, true, "stall: in order");
+}
+
+fn abandonCase(exe: &str) {
+  let o = ran(exe, "abandon");
+  expectUInt(u64.from(o.exitCode), 0u64, "abandon: exits 0");
+  expectBool(o.stdout.contains("finalized in abandon 7"), true, "abandon: a finalizer's print during the end's drop appears");
+  expectBool(o.stdout.contains("abandon: nothing queued after the stop"), true, "abandon: the stop waited for the owner after the drop");
+}
+
+fn main() i32 {
+  let a = process.args();
+  if a.len() >= 3usize && a[1usize].equals("--child") {
+    return child(a[2usize].view());
+  }
+  var exe = String();
+  match process.currentExe() {
+    case let Ok(e) { exe = String.from(e.view()); }
+    case is Err { require(false, "currentExe"); }
+  }
+  writersCase(exe.view());
+  switchCase(exe.view());
+  exitCase(exe.view());
+  panicCase(exe.view());
+  flushCase(exe.view());
+  stallCase(exe.view());
+  abandonCase(exe.view());
+  done()
+}

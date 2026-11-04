@@ -786,7 +786,13 @@ enum ErrorCode {
     ErrorNoText = 1579,        // A value sent as text to a text receiver (a String, a writer, the console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)` to write itself with. Names the type and the method. Pointed at the value
     ErrorLitFieldType = 1588,  // A struct or variant literal's value (by position or by name) whose type does not convert to its field's (an actor made in place converts to an actor trait there; a string literal is not lent as a temporary)
     ErrorMetaMixFact = 1581,   // A '#if' chain in a generic type's braces or a generic function's body that asks about a fact of the build in one condition and about a type in another (or in the same): the include file keeps such a chain whole and each importer reads the build's facts again, so a field or method could exist in a package's object and not in its importer. Pointed at the first condition that asks about a type
+    ErrorInterpBrace = 1586,   // A brace of an interpolated string `$"..."` that breaks its rule: an open brace no close brace closes, a close brace with no open one before it, or braces with nothing between them. A brace in the text is `{{` or `}}`. Pointed at the brace
+    ErrorInterpExpr = 1587,    // The text between an interpolation's braces is not one expression: something is left over after it (`{a; b}`). Pointed at the first token the expression does not take
     ErrorMetaTypeFact = 1580,   // A '#if' that asks what a type is (T is Float, T == i32) where it cannot be decided: outside a generic function or type or about a name that is no type parameter, at a module's level or in an 'extern' block, or around anything in a generic type's body but fields and methods. Pointed at the condition or the member
+    ErrorMetaEach = 1582,       // A '#each' header malformed: no '#name' to bind, no 'in', or no list after it (a '[' list of values, a '(' list of types, or a meta constant); a list item that cannot be read; a body that is no block. Pointed at the word
+    ErrorMetaEachPlace = 1583,  // A '#each' where this step does not build it: at a module's level, in a type's braces, in an 'extern' block or in expression position. It repeats statements in a function body; generating declarations waits for generated names. Pointed at the word
+    ErrorMetaQuota = 1584,      // A '#each' (with the '#each's it holds) that would run more passes than the step quota allows (--meta-steps, 10000 by default). Names the loop whose pass went over, and the pass. Pointed at the loop
+    ErrorMetaVar = 1585,        // A meta variable misused: '#name' not declared where it stands, a 'let' given a new value, a '#each' variable assigned, an integer expected of something else, a list used as a value or a value as a list, a meta declaration outside a function body. Pointed at the word
 
     // Warnings
     WarnCode = 3000,
@@ -839,6 +845,19 @@ void errorLoudEnd(int saved);
 // The errors counted, less those a loud window reported inside a trial: a count
 // for a question about the code being checked alone
 int errorsOwn(void);
+
+// One pass of a '#each' (compiler/c/doc/phases/parse.md, "The meta layer"): the code of a pass is
+// the loop's body read again with the loop's variable bound to one item, so an error in it reads like
+// an error in the others. While a pass is being read, or its block is name-resolved, type checked or
+// flow analysed, 'errorEachPass' is set, and each error says which pass of which loop it was in
+typedef struct EachPass {
+    struct EachPass *outer;     // The pass this loop is itself inside, or NULL
+    struct INode *loop;         // A node positioned at the '#each' word
+    uint32_t pass, npasses;     // This pass, counted from 1, of this many
+    char *var;                  // The loop variable, '#x'
+    char *item;                 // The item it stands for, as written
+} EachPass;
+extern EachPass *errorEachPass;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);
