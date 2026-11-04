@@ -34,6 +34,7 @@ typedef struct BlockNode {
                        // stack, so a break/continue targeting it knows how many
                        // scopes it is leaving. Set by blockFlow; valid only
                        // while flow analysis is inside this block.
+    struct FieldEach *fieldeach;   // A '#each #f in #fields(T)' in a generic's body (meta/fields.h): this block is the loop, its one statement the body; cloned for an instance it becomes a pass per field. NULL for any other block
     EachPass *eachpass; // A pass of a '#each' (the parser makes it a block of its own): what an
                        // error inside it says; NULL for any other block
 } BlockNode;

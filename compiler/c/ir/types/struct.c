@@ -46,6 +46,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->threadbound = CarriesBorrowUnknown;
     snode->callmut = 0;
     snode->mustuse = 0;
+    snode->reflect = 0;
     snode->callsig = NULL;
     snode->latewhere = NULL;
     return snode;

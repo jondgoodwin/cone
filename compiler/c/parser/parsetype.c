@@ -1316,7 +1316,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle attributes
     int mustuse = 0;
+    int reflect = 0;
     while (1) {
+        if (lex->toktype == ReflectToken) {
+            // Reflection ('#fields') lists this type's private fields to code outside its module (fields.h)
+            reflect = 1;
+            lexNextToken();
+            continue;
+        }
         if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
             lexNextToken();
@@ -1373,6 +1380,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     strnode->tag = tag;
     strnode->flags |= strflags;
     strnode->mustuse = (uint8_t)mustuse;
+    strnode->reflect = (uint8_t)reflect;
     parse->typenode = (INsTypeNode *)strnode;
     if (named)
         lexNextToken();

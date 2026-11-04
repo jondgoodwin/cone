@@ -205,13 +205,29 @@ print &lt;- "moved to ", Point(0, 0), "\n";
 		ends, so output from several threads never tears a record in the middle: another thread's record comes before
 		or after, whole. One thread's records appear in the order it sent them. <span class="pre">print</span> and
 		<span class="pre">eprint</span> are two outputs of one console, so what is printed and what is eprinted stay in
-		order. A record can be held across statements, <span class="pre">var rec = print.record()</span>, sent to with
+		order. Within a list, order is the order written: <span class="pre">print &lt;- a, b, c</span> delivers its record after
+		<span class="pre">c</span> is written, so a piece whose <span class="pre">final</span> prints (a temporary it made) prints
+		after the pieces before it, in a record of its own, never in the middle of this one. A single piece that is not a text,
+		<span class="pre">print &lt;- x</span>, has its record delivered as its writer dies, at the end of the statement.
+		A record can be held across statements, <span class="pre">var rec = print.record()</span>, sent to with
 		<span class="pre">&lt;-</span> like any writer, and is written when its scope ends. Standard output
 		is written at once if it is a terminal, and held in the console's own buffer if it is a file or a pipe, until the
 		buffer fills, standard error writes, <span class="pre">print.flush()</span> is called or the program ends;
 		standard error is written at once. The buffer is the console's, not the C library's, so text that C code in the
 		same program prints with <span class="pre">printf</span> is written by C's library at its own times.
 		<span class="pre">print.flush()</span> also flushes C's own <span class="pre">stdout</span>.</p>
+	<p><b>In a program that runs actors, one owner writes the console.</b> When the first actor starts the runtime,
+		the console's writing passes to an owner, a thread of its own: a finished record moves to it (no copy of a big
+		one), and the sender goes on at once, so no behaviour makes a console system call and none waits for a slow
+		terminal or a pipe nobody reads. The owner combines queued records into few writes. What was printed before the
+		runtime started is written first, and nothing is reordered. The one place a print waits is a destination that has
+		stalled so long that 64 MB are queued: the sender then waits, a behaviour holding its worker, until the owner
+		catches up; nothing is dropped. A worker can therefore block at that limit even where a <span class="pre">final</span>
+		prints, since a finalizer cannot <span class="pre">await</span>; this is accepted, and only a pathological stall
+		reaches it. <span class="pre">print.flush()</span> returns when everything this program had
+		sent before the call has reached the operating system; in a behaviour it holds the worker until then (it is not an
+		<span class="pre">await</span>, since a plain method cannot be both). The program's end waits for the owner, and
+		so does <span class="pre">exit()</span>; a panic gives it a moment to catch up and then writes its own message.</p>
 	<p><b>Floats print as the shortest text that reads back.</b> <span class="pre">print &lt;- 0.1</span> prints
 		<span class="pre">0.1</span>, <span class="pre">print &lt;- 3.0</span> prints <span class="pre">3.0</span> and
 		one third prints <span class="pre">0.3333333333333333</span>; an f32 prints the shortest text that reads back as
