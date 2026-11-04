@@ -137,6 +137,7 @@ add_executable(conec
 
 	compiler/c/ir/meta/macro.c
 	compiler/c/ir/meta/genvardcl.c
+	compiler/c/ir/meta/fields.c
 	compiler/c/ir/meta/generic.c
 
 	compiler/c/corelib/corelib.c

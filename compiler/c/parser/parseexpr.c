@@ -907,6 +907,9 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     // '.', so it may name the convention method a type is awaited by (ir/exp/await.c)
     if (lexIsToken(IdentToken) || lexIsToken(AwaitToken))
         fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
+    // Or the splice of a '#each #f in #fields(T)': 'x.#f' is x's field that pass describes
+    else if (lexIsToken(MetaVarToken) && parseMetaIsFieldVar(lex->val.ident))
+        fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
     // Or integer constant (for tuple element)
     else if (lexIsToken(IntLitToken)) {
         fncall->methfld = (INode*)newULitNode(lex->val.uintlit, lex->langtype);

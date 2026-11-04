@@ -407,6 +407,8 @@ int parseMetaIsAssign(void);
 void parseMetaAssign(ParseState *parse);
 // A meta variable met as a term
 INode *parseMetaTerm(ParseState *parse);
+// Is a meta variable the '#f' of a '#each #f in #fields(T)' being read? 'x.#f' splices its field
+int parseMetaIsFieldVar(Name *name);
 // A block of statements keeps the meta variables it declares to itself: the mark taken as it
 // begins is given back as it ends
 uint32_t parseMetaScope(void);
