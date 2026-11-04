@@ -1,3 +1,7 @@
+// Cancelled decoded fetches (Bug 41): 22 zstd fetches in one group, the group cancelled mid-body, the
+// program ended after waitUntilIdle. Meant for LSan on the Linux server (nothing may leak); on any machine it
+// checks that the fetches start and the program ends. Copy of decode.cone's server and sink below.
+//
 // A body decoded as it arrives (httpdecode.Decoder over actorhttp's streamTo),
 // against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
 // (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
@@ -269,6 +273,8 @@ actor Count is ChunkSink {
 
   pub async fn end(self, how: Ending) {
     tally.bytes.add(at);
+    // the stages' convention: a handle that points upstream is dropped at the end of the stream. A sink that
+    // keeps its source makes a cycle with the stage that holds it as 'down' (Bug 41: 72 MB under LSan)
     up = None[ChunkSource];
     match how {
       case is Finished { tally.finished.add(1u64); }
@@ -362,10 +368,6 @@ fn main() i32 {
     thread.sleep(Duration.fromMillis(1500i64));
     printStr("heads: ");
     printStr(yes(tally.heads.load() == 22u64));
-    printStr(" failed ");
-    printUInt(tally.failed.load());
-    printStr(" finished ");
-    printUInt(tally.finished.load());
     printStr("\n");
     plain.stop();
   }
