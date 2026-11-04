@@ -66,10 +66,6 @@ static int discardAlreadySaid(INode *stmt) {
 void discardCheck(INode *stmt) {
     if (stmt == NULL || !isExpNode(stmt) || !discardIsValueStmt(stmt))
         return;
-    // A statement the compiler wrote (an actor's dispatch of a behaviour that
-    // returns a Result, which nobody awaits there) is not the reader's to heed
-    if (stmt->lexer != NULL && stmt->lexer->genat != NULL)
-        return;
     INode *vtype = ((IExpNode*)stmt)->vtype;
     if (vtype == NULL || vtype == errorType || vtype == unknownType || vtype == noCareType)
         return;
