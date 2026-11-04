@@ -1,0 +1,110 @@
+// An interpolated string, $"moved {n} files to {dir}", sent directly is exactly the
+// send list it spells, 'print <- "moved ", n, " files to ", dir': the same pieces in
+// the same single record. Anywhere else it is a String. Every case below prints the
+// interpolated form and the send list it stands for, and the two lines match.
+//
+// - through print, a String, a held TextOut and a toText body;
+// - a struct with a toText, a number, a string and a float among the pieces;
+// - '{{' and '}}' are braces, an escape may touch a brace, a multi-line literal
+//   keeps its margin rule, an empty literal and one with no braces are fine;
+// - stored, returned and passed as a String; a nested one; a parenthesized send inside.
+
+mod module_text_interp;
+
+import stdio use *;
+import collections use *;
+
+struct Pair {
+  a: i32;
+  b: i32;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- $"<{self.a},{self.b}>";
+  }
+}
+
+struct Tagged {
+  id: i32;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "T";
+    out <- $"#{self.id}";
+  }
+}
+
+fn twice(n: i32) i32 { n * 2 }
+
+fn describe(p: &Pair, f: f64) String {
+  $"pair {p} at {f}"
+}
+
+fn takes(s: String) usize { s.len() }
+
+// A generic body is read again for each instance: the pieces are rebuilt, sent and stored
+fn showAll[T](x: &T) String {
+  print <- $"generic {x} sent\n";
+  $"generic {x} stored"
+}
+
+fn main() i32 {
+  let n = 3;
+  let dir = "/tmp";
+  let f = 2.5;
+  let p = Pair(1, 2);
+
+  // The send, through print
+  print <- $"moved {n} files to {dir}\n";
+  print <- "moved ", n, " files to ", dir, "\n";
+  print <- "mixed ", $"{n}-{dir}", " ", f, "\n";
+  print <- "mixed ", n, "-", dir, " ", f, "\n";
+  print <- $"struct {p} float {f} string {dir} number {n}\n";
+  print <- "struct ", p, " float ", f, " string ", dir, " number ", n, "\n";
+
+  // Through a String
+  var s1 = String();
+  s1 <- $"a{n}b{p}c{f}";
+  var s2 = String();
+  s2 <- "a", n, "b", p, "c", f;
+  print <- s1, "|", s2, "\n";
+
+  // Into a held TextOut
+  {
+    var rec = print.record();
+    rec <- $"held {n} {p}\n";
+    rec <- "held ", n, " ", p, "\n";
+  }
+
+  // A toText body
+  print <- "tagged ", Tagged(7), " ", Tagged(8), "\n";
+
+  // Braces and escapes
+  print <- $"{{}} {{{n}}} }}{{ \t|{n}\ \"q\" {n}\n";
+  print <- "{} {", n, "} }{ \t|", n, "\ \"q\" ", n, "\n";
+  print <- $"\n{n}\n";
+  print <- $"";
+  print <- $"no braces\n";
+  print <- $"empty:", $"", "|\n";
+
+  // A multi-line literal keeps its margin rule
+  print <- $"
+      first {n}
+        second {dir}
+      end
+      ";
+  print <- "first ", n, "\n  second ", dir, "\nend\n";
+
+  // Expressions: a call, an operator, a string literal, a nested interpolated string
+  print <- $"calc {twice(n) + 1} {"lit"} {$"in{n}ner"} {(String() <- "p", n)}\n";
+  print <- "calc ", twice(n) + 1, " ", "lit", " ", "in", n, "ner", " ", (String() <- "p", n), "\n";
+
+  // Stored, returned, passed
+  let stored = $"stored {n}";
+  print <- stored, "\n";
+  print <- describe(&p, f), "\n";
+  print <- takes($"len{n}"), "\n";
+  print <- $"x{n}".len(), "\n";
+  print <- showAll(&n), "|", showAll(&p), "\n";
+
+  // Each expression is evaluated once, left to right
+  var count = 0;
+  print <- $"{count + 1}{count + 2}\n";
+  0
+}
