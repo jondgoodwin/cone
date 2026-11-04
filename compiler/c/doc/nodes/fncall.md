@@ -1151,7 +1151,12 @@ for each value, then each name after a `\x01`; a name is the brace's source text
 `lexer`, so it survives generics) or the value's number in a plain list. `value` is
 chosen by ordinary overload resolution; when no overload takes the piece
 (`OverloadNone`), `textValueFallback` (called from `fnCallLowerMethodOn` ahead of the
-no-candidate error) turns the call into `-lw <- x`, the debug-text send. Each piece's
+no-candidate error) turns the call into `-lw <- x`, the debug-text send. That send
+reaches `fnCallDebugLower` for a built-in scalar (a number, `bool` or `char`: all
+are `Nbr` types, so `isNbr` is the one test in `fnCallLowerMethodOn`, not a case per
+type), so a borrow `&T` of one is written as the value's debug text, as the value
+itself is: a number's or bool's `toText`, a char quoted (`logbool`, `logchar`,
+`lognumbers`). Each piece's
 `value` call is a block of its own: a debug writer a piece makes is a statement
 temporary, and had it lived to the end of the whole send, its length would have
 overwritten the pieces written after it. An ambiguous `value` (a bare integer literal

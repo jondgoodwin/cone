@@ -2232,8 +2232,8 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (callnode->vtype == errorType)
             return -1;
         // A toDebug the compiler writes is made now (debugfn.c), the call checked once with it
-        // A number's is its toText (the hook renames the call); a piece no overload of
-        // 'value' takes, such as a borrow of a number, comes here as debugsend 1
+        // A built-in scalar's (number, bool, char: all Nbr types) is made by the hook; a
+        // piece no overload of 'value' takes, such as a borrow of one, comes here as debugsend 1
         INode *dbgval = debugsend == 1 && callnode->objfn && isExpNode(callnode->objfn)
             ? iexpGetDerefTypeDcl(callnode->objfn) : NULL;
         if (debugsend == 2 || (dbgval && isNbr(dbgval))) {
