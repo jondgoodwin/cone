@@ -2052,7 +2052,8 @@ Where any global the module declares has anything to do as it dies
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
 the module's own `final`, if it has one, and then finalizing each such global
-**in declaration order**, as a type drops its fields. The globals are its
+**in the reverse of declaration order** (rule 6: the reverse of setup, which is
+declaration order; `init`'s own assignment order is not tracked). The globals are its
 return's release list, built as flow builds a scope's for its locals
 (`flowVarRelease`): a struct or an enum listed as a call to its drop function
 over `&uni` the global, anything else — an owning reference, plain or virtual,

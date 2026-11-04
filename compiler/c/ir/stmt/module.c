@@ -1594,9 +1594,9 @@ int modGlobalFinalized(VarDclNode *var) {
 // Give the module a 'drop' where any global it declares needs finalizing
 // (itypeNeedsFinal, the question a local's death asks): a function owned by the
 // module, so its symbol is spelled after it ('q.drop'), that calls the module's
-// own 'final' and then finalizes each such global, in the order the globals are
-// declared -- a type's 'drop' is its 'final' and then its fields', and a
-// module's globals are its fields. It is the return's release list, as a
+// own 'final' and then finalizes each such global, in the reverse of the order
+// the globals were set (declared) -- a type's 'drop' is its 'final' and then its
+// fields', and a module's globals are its fields, set in order, ended in reverse. It is the return's release list, as a
 // function's locals are released: a struct or an enum listed as its drop's
 // call, anything else -- an owning reference, a tuple or an array -- listed as
 // the global itself, which generation finalizes in place (genlDealiasNode).
@@ -1665,6 +1665,13 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     if (block == NULL)
         return final;
 
+    // The reverse of the order they were set: the globals were set in the order
+    // declared, so they are finalized last to first
+    for (uint32_t lo = 0, hi = releases->used; lo + 1 < hi; ++lo, --hi) {
+        INode *tmp = nodesGet(releases, lo);
+        nodesGet(releases, lo) = nodesGet(releases, hi - 1);
+        nodesGet(releases, hi - 1) = tmp;
+    }
     BreakRetNode *retnode = newReturnNode();
     retnode->exp = (INode*)newNilLitNode();
     retnode->block = block;
