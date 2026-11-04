@@ -143,6 +143,7 @@ struct Waiter {
   pub run: *u8;              // its resume function
   pub id: u64;               // and the record's id, where it has one
   pub hasId: bool;
+  pub keep: bool;            // a FutureSet's member (futureset.cone): resumed even if the future is abandoned, for the set to say so
 }
 
 // The consumer's reference to a future whose value is a T: what a call of a
@@ -209,7 +210,7 @@ fn futureEnd(c: *u8, s: u32) {
   while w as usize != 0usize {
     let next = (*w).next;
     let to = (*w).to;
-    if s == futArrived {
+    if s == futArrived || (*w).keep {
       pushFuture(w);
     } else {
       release(c);
@@ -287,6 +288,7 @@ pub fn futureRegister(fut: *u8, rp: Reply) bool {
   (*w).run = rp.at;
   (*w).id = rp.id;
   (*w).hasId = (rp.meta & replyHasId) != 0u64;
+  (*w).keep = false;
   while head as usize != waitersClosed {
     (*w).next = head;
     var seen = head;
