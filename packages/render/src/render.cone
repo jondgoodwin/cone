@@ -263,6 +263,8 @@
 //                  OpenXR (the openxr package), an off-axis camera for each eye (Camera.setFovAngles) and the
 //                  runtime's frame loop; the gpu package makes the Vulkan device the way XR_KHR_vulkan_enable2
 //                  requires. A program that never opens a Headset draws as it always did.
+//   foveation.cone Foveation: each eye's fragment shading rate image (the periphery shaded in coarser blocks, by
+//                  angle off the lens's axis), for HeadsetOptions.foveation and Renderer.setShadingRate
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
 // brdf, sky, renderframe, skinning, flutter, shadowparams, shadowing,
@@ -475,6 +477,9 @@ pub struct Renderer {
   pub rt: List[RtScene];
   // The caustic volume 'setCaustics' last gave, for the extended pipelines made after it
   pub causticVolume: CausticVolume;
+  // The fragment shading rate image the view's main lit pass is shaded by ('setShadingRate': foveation.cone), none
+  // (empty) unless a program sets one for the one 'render' it is about to call. Empty, the pass is the plain one.
+  rateViews: List[TextureView];
   // Whether the extended material is ray-traced where it can be: set by 'setRayTracing'; and which of 'ext'
   // the render in progress draws with (0 raster, 1 ray-traced)
   pub rayTracing: bool = false;
@@ -497,6 +502,8 @@ pub struct Renderer {
   pub captureReady: bool = false;
   // The frames rendered so far, which the reflection march's noise turns with
   pub frameNumber: u32 = 0u32;
+  rateTexelWidth: u32 = 0u32;
+  rateTexelHeight: u32 = 0u32;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -683,7 +690,7 @@ pub struct Renderer {
       List[u32](), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
       pbrSwayPipeline, shadow, lights, List[ProbeSlot](), Visibility.create(0.25), List[HiZ](),
       List[DrawItem](), List[SceneCapture](), ReflectionSettings.medium(), List[RtScene](),
-      CausticVolume.none());
+      CausticVolume.none(), List[TextureView]());
     var w = Image(1, 1, 3, List[u8]());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -1515,6 +1522,21 @@ pub struct Renderer {
   // 'queue.writeBuffer' ahead of the frame's next submission, so the passes
   // of one submission share one camera and light (a buffer a view is the
   // step when there are views).
+  // The next 'render' or 'renderTo' shades its main lit pass at the rates of 'rate' (a texture made with
+  // TEXTURE_USAGE_SHADING_RATE, one texel for each 'texelWidth' by 'texelHeight' pixels of the target: foveation.cone),
+  // until 'clearShadingRate'. Only that pass: not the shadows', the captures', the sky's or any other pass of a
+  // program's. On a device without the feature it does nothing.
+  pub fn setShadingRate(self: &mut, device: &Device, rate: &Texture, texelWidth: u32, texelHeight: u32) {
+    rateViews.clear();
+    if !device.fragmentShadingRate || !rate.isValid() { return; }
+    rateViews.push(rate.createView());
+    rateTexelWidth = texelWidth;
+    rateTexelHeight = texelHeight;
+  }
+
+  // Back to the plain pass
+  pub fn clearShadingRate(self: &mut) { rateViews.clear(); }
+
   pub fn render(self: &mut, device: &mut Device, encoder: &mut CommandEncoder, target: &Texture, depth: &Texture,
       camera: &Camera, light: &Light, list: &DrawList) {
     let targetView = target.createView();
@@ -1719,7 +1741,11 @@ pub struct Renderer {
     let depthStore = if keepsDepth || splitMask != 0u32 { STORE_OP_STORE } else { STORE_OP_DISCARD };
     let depthAttachment = RenderPassDepthStencilAttachment(view: depth, depthStoreOp: depthStore,
       depthLoadOp: if phase == 0u32 { LOAD_OP_CLEAR } else { LOAD_OP_LOAD });
-    var pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
+    var pass = if rateViews.len() > 0usize {
+      encoder.beginRenderPassWithDepthAndRate(&color, &depthAttachment, &rateViews[0usize], rateTexelWidth, rateTexelHeight)
+    } else {
+      encoder.beginRenderPassWithDepth(&color, &depthAttachment)
+    };
     var bound = BOUND_NONE;
     var boundMaterial = Ref[MaterialSlot].none();
     var boundPipeline = Ref[PipelineSlot].none();
@@ -1747,7 +1773,11 @@ pub struct Renderer {
         let colorLoad = RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
         let depthLoad = RenderPassDepthStencilAttachment(view: depth,
           depthStoreOp: if keepsDepth || !glassDone { STORE_OP_STORE } else { STORE_OP_DISCARD }, depthLoadOp: LOAD_OP_LOAD);
-        pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
+        pass = if rateViews.len() > 0usize {
+          encoder.beginRenderPassWithDepthAndRate(&colorLoad, &depthLoad, &rateViews[0usize], rateTexelWidth, rateTexelHeight)
+        } else {
+          encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad)
+        };
         bound = BOUND_NONE;
         boundMaterial = Ref[MaterialSlot].none();
         boundPipeline = Ref[PipelineSlot].none();
@@ -1769,7 +1799,11 @@ pub struct Renderer {
         let colorLoad = RenderPassColorAttachment(view: target, clearValue: clear, loadOp: LOAD_OP_LOAD);
         let depthLoad = RenderPassDepthStencilAttachment(view: depth,
           depthStoreOp: if keepsDepth { STORE_OP_STORE } else { STORE_OP_DISCARD }, depthLoadOp: LOAD_OP_LOAD);
-        pass = encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad);
+        pass = if rateViews.len() > 0usize {
+          encoder.beginRenderPassWithDepthAndRate(&colorLoad, &depthLoad, &rateViews[0usize], rateTexelWidth, rateTexelHeight)
+        } else {
+          encoder.beginRenderPassWithDepth(&colorLoad, &depthLoad)
+        };
         bound = BOUND_NONE;
         boundMaterial = Ref[MaterialSlot].none();
         boundPipeline = Ref[PipelineSlot].none();

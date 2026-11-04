@@ -1,0 +1,192 @@
+// ---- Fixed foveated rendering for a headset's eyes ----
+//
+// A headset's lens sharpens the middle of what the eye sees and blurs the edges, and the eye itself resolves
+// the middle only. So each eye's main lit pass can shade its periphery in coarser blocks (a 2 x 2 block of pixels
+// shares one run of the fragment shader) at no loss the wearer can find, and the pass, which is bound by shading,
+// takes less time. The depth is still tested and written at every pixel, so edges and occlusion stay exact; only
+// the shading inside a triangle is shared.
+//
+// It is fixed, not eye-tracked: bands of angle off the axis of the eye's own lens, which is NOT the middle of its
+// image (the four angles of an eye's field of view are not symmetric: the lens is nearer the nose than the image's
+// edge). Each eye has an image of one byte a tile (the GPU's 'shadingRateTexelWidth' by 'Height' pixels, 8 x 8 to 16 x 16),
+// made once from that eye's four field-of-view tangents, so the bands mean degrees, not pixels. The byte is the size
+// of the fragment there, (log2 width) * 4 + (log2 height): 0 full rate, 5 is 2 x 2, 10 is 4 x 4. A tile is
+// judged by its point nearest the axis, so a tile that is partly inside a band is shaded as the inner band.
+//
+// What a program does, with a headset opened with 'HeadsetOptions.foveation' (device.fragmentShadingRate):
+//   let fovea = Foveation.make(FOVEATION_MEDIUM);             // once
+//   fovea.prepare(&mut device, &frame, headset.eyeWidth, headset.eyeHeight);   // each located frame (cheap: made once)
+//   renderer.setShadingRate(&device, fovea.rate(eye), fovea.texelWidth, fovea.texelHeight);
+//   renderer.render(...);                                      // its main lit pass only
+//   renderer.clearShadingRate();
+// The shadows, the captures, the mirrors' pictures, the post-processing, a program's passes after 'render' and the
+// window's mirror are not shaded by it.
+
+pub const FOVEATION_OFF = 0u32;
+pub const FOVEATION_LOW = 1u32;
+pub const FOVEATION_MEDIUM = 2u32;
+pub const FOVEATION_HIGH = 3u32;
+
+// The name of a level ("off", "low", "medium", "high"), or 99 for anything else
+pub fn foveationLevelNamed(name: &str) u32 {
+  if name == "off" { return FOVEATION_OFF; }
+  if name == "low" { return FOVEATION_LOW; }
+  if name == "medium" { return FOVEATION_MEDIUM; }
+  if name == "high" { return FOVEATION_HIGH; }
+  99u32
+}
+
+pub fn foveationLevelName(level: u32) &str {
+  if level == FOVEATION_LOW { return "low"; }
+  if level == FOVEATION_MEDIUM { return "medium"; }
+  if level == FOVEATION_HIGH { return "high"; }
+  "off"
+}
+
+// Degrees off the lens's axis out to which an eye is shaded at full rate, and then out to which at 2 x 2 (beyond it,
+// as coarse as the GPU does up to 4 x 4; 'low' has none of that: 2 x 2 to the corners)
+fn fullDegrees(level: u32) f32 {
+  if level == FOVEATION_LOW { return 35.; }
+  if level == FOVEATION_HIGH { return 20.; }
+  28.
+}
+
+fn halfDegrees(level: u32) f32 {
+  if level == FOVEATION_LOW { return 89.; }
+  if level == FOVEATION_HIGH { return 40.; }
+  52.
+}
+
+// The byte for a fragment 'w' by 'h' pixels (each 1, 2 or 4)
+fn rateCode(w: u32, h: u32) u32 {
+  let lw = if w >= 4u32 { 2u32 } else if w >= 2u32 { 1u32 } else { 0u32 };
+  let lh = if h >= 4u32 { 2u32 } else if h >= 2u32 { 1u32 } else { 0u32 };
+  lw * 4u32 + lh
+}
+
+fn clampf(v: f32, lo: f32, hi: f32) f32 { if v < lo { lo } else if v > hi { hi } else { v } }
+
+// The shading rate images of the two eyes, and what they cover
+pub struct Foveation {
+  rates: List[Texture];            // eye 0's, then eye 1's, once made
+  fovs: List[f32];                 // the four angles each was made from (left, right, up, down), eye 0's then eye 1's
+  pub level: u32;                  // FOVEATION_...
+  pub texelWidth: u32 = 0u32;      // the tile of one texel, in pixels
+  pub texelHeight: u32 = 0u32;
+  pub fullPercent: f32 = 0.;       // of the first eye's pixels, shaded at full rate, at 2 x 2, and coarser
+  pub halfPercent: f32 = 0.;
+  pub coarsePercent: f32 = 0.;
+  pub coarseWidth: u32 = 4u32;     // the coarsest fragment used, in pixels
+  pub coarseHeight: u32 = 4u32;
+  pub coarseLimit: u32 = 4u32;     // 2: the outer band is 2 x 2 too (set before 'prepare': a way to see what 4 x 4 costs or looks like)
+
+  pub fn make(level: u32) Foveation {
+    Foveation(List[Texture](), List[f32](), level)
+  }
+
+  // Whether there is a shading rate image for 'eye'
+  pub fn ready(self: &, eye: usize) bool { rates.len() > eye }
+
+  // The image of 'eye' (after 'prepare')
+  pub fn rate(self: &, eye: usize) &Texture { &rates[eye] }
+
+  // Make the images of both eyes for the angles of 'frame's two views, if they are not made yet or the angles have
+  // changed; 'eyeWidth' by 'eyeHeight' is each eye's size in pixels. Answers whether both are ready (they are not
+  // on a device without the feature, or for level off).
+  pub fn prepare(self: &mut, device: &mut Device, frame: &HeadsetFrame, eyeWidth: u32, eyeHeight: u32) bool {
+    if level == FOVEATION_OFF || !device.fragmentShadingRate { return false; }
+    var e = 0usize;
+    while e < 2usize {
+      let f = frame.views[e].fov;
+      let same = fovs.len() >= (e + 1usize) * 4usize && fovs[e * 4usize] == f.angleLeft && fovs[e * 4usize + 1usize] == f.angleRight
+        && fovs[e * 4usize + 2usize] == f.angleUp && fovs[e * 4usize + 3usize] == f.angleDown;
+      if !same {
+        var made = self.makeImage(device, e, f.angleLeft, f.angleRight, f.angleUp, f.angleDown, eyeWidth, eyeHeight);
+        if !made.isValid() { return false; }
+        if rates.len() > e {
+          rates[e] <-> made;
+          fovs[e * 4usize] = f.angleLeft;
+          fovs[e * 4usize + 1usize] = f.angleRight;
+          fovs[e * 4usize + 2usize] = f.angleUp;
+          fovs[e * 4usize + 3usize] = f.angleDown;
+        } else {
+          rates.push(made);
+          fovs.push(f.angleLeft);
+          fovs.push(f.angleRight);
+          fovs.push(f.angleUp);
+          fovs.push(f.angleDown);
+        }
+      }
+      e = e + 1usize;
+    }
+    true
+  }
+
+  // One eye's image: one byte a tile, by the bands above
+  fn makeImage(self: &mut, device: &mut Device, eye: usize, angleLeft: f32, angleRight: f32, angleUp: f32, angleDown: f32,
+      eyeWidth: u32, eyeHeight: u32) Texture {
+    texelWidth = device.shadingRateTexelWidth;
+    texelHeight = device.shadingRateTexelHeight;
+    let tw = (eyeWidth + texelWidth - 1u32) / texelWidth;
+    let th = (eyeHeight + texelHeight - 1u32) / texelHeight;
+    let desc = TextureDescriptor(tw, th, TEXTURE_FORMAT_R8_UINT, TEXTURE_USAGE_COPY_DST | TEXTURE_USAGE_SHADING_RATE);
+    var texture = device.createTexture(&desc);
+    if !texture.isValid() { return texture; }
+    // What the coarsest band is: 4 x 4 where the GPU shades blocks that big, else 2 x 2
+    let big = coarseLimit >= 4u32 && device.maxFragmentWidth >= 4u32 && device.maxFragmentHeight >= 4u32;
+    coarseWidth = if big { 4u32 } else { 2u32 };
+    coarseHeight = coarseWidth;
+    let fullCode = 0u32;
+    let halfCode = rateCode(2u32, 2u32);
+    let coarseCode = rateCode(coarseWidth, coarseHeight);
+    let fullT = tan(radians(fullDegrees(level)));
+    let halfT = tan(radians(halfDegrees(level)));
+    let full2 = fullT * fullT;
+    let half2 = halfT * halfT;
+    let tanL = tan(angleLeft);
+    let tanR = tan(angleRight);
+    let tanU = tan(angleUp);
+    let tanD = tan(angleDown);
+    let pitch = (tw + 3u32) & 0xFFFFFFFCu32;
+    var bytes = List[u8]();
+    bytes.resize(usize.from(pitch) * usize.from(th), 0u8);
+    var nFull = 0u64;
+    var nHalf = 0u64;
+    var nCoarse = 0u64;
+    var ty = 0u32;
+    while ty < th {
+      // The tile's rows of pixels, as tangents (the picture's top is angleUp, its bottom angleDown)
+      let y0 = f32.from(ty * texelHeight) / f32.from(eyeHeight);
+      let y1 = f32.from((ty + 1u32) * texelHeight) / f32.from(eyeHeight);
+      let tUp = tanU - y0 * (tanU - tanD);
+      let tDown = tanU - clampf(y1, 0., 1.) * (tanU - tanD);
+      let nearY = clampf(0., tDown, tUp);
+      var tx = 0u32;
+      while tx < tw {
+        let x0 = f32.from(tx * texelWidth) / f32.from(eyeWidth);
+        let x1 = f32.from((tx + 1u32) * texelWidth) / f32.from(eyeWidth);
+        let tLeft = tanL + x0 * (tanR - tanL);
+        let tRight = tanL + clampf(x1, 0., 1.) * (tanR - tanL);
+        let nearX = clampf(0., tLeft, tRight);
+        let r2 = nearX * nearX + nearY * nearY;
+        var code = coarseCode;
+        if r2 <= full2 { code = fullCode; } else if r2 <= half2 { code = halfCode; }
+        bytes[usize.from(ty * pitch + tx)] = u8.from(code);
+        // The share of the picture each takes, by pixels (the first eye's is reported)
+        let wpx = u64.from(texelWidth.min(eyeWidth - tx * texelWidth));
+        let hpx = u64.from(texelHeight.min(eyeHeight - ty * texelHeight));
+        if code == fullCode { nFull = nFull + wpx * hpx; } else if code == halfCode { nHalf = nHalf + wpx * hpx; } else { nCoarse = nCoarse + wpx * hpx; }
+        tx = tx + 1u32;
+      }
+      ty = ty + 1u32;
+    }
+    if eye == 0usize {
+      let total = f32.from(nFull + nHalf + nCoarse);
+      fullPercent = f32.from(nFull) * 100. / total;
+      halfPercent = f32.from(nHalf) * 100. / total;
+      coarsePercent = f32.from(nCoarse) * 100. / total;
+    }
+    device.queue.writeTexture(&texture, bytes.viewMut() as *u8, pitch);
+    texture
+  }
+}

@@ -302,3 +302,42 @@ fn capabilitiesEnabled(spirv: &Array[u32], has: &ComputeCapabilities) bool {
   }
   true
 }
+
+// ---- Fragment shading rate from an attachment (VK_KHR_fragment_shading_rate) ----
+//
+// A GPU that has it can shade a pass's pixels in coarser blocks (2 x 2, 4 x 4, ...) where an image says so, one
+// texel of that image for a tile of the pass (the foveated rendering of a headset: the middle of each eye at
+// full rate, the edges coarser). 'Adapter.fragmentShadingRateSupport' says what the GPU has; a device asks for it
+// with 'Adapter.requestDeviceViaWith' and then carries it in 'device.fragmentShadingRate'. Only the attachment
+// form is used (attachmentFragmentShadingRate), not the pipeline's or the primitive's.
+
+// What a GPU offers of it
+pub struct FragmentShadingRateSupport {
+  pub supported: bool = false;          // the extension, with attachmentFragmentShadingRate, a tile size and at least 2 x 2 fragments
+  pub texelWidth: u32 = 0u32;           // the pixels one texel of the image covers, across and down: the GPU's least
+  pub texelHeight: u32 = 0u32;
+  pub maxTexelWidth: u32 = 0u32;        // and its greatest
+  pub maxTexelHeight: u32 = 0u32;
+  pub maxFragmentWidth: u32 = 1u32;     // the largest fragment it shades at once, across and down
+  pub maxFragmentHeight: u32 = 1u32;
+}
+
+fn queryFragmentShadingRate(ifns: &InstFns, physical: vulkan.PhysicalDevice) FragmentShadingRateSupport {
+  var r = FragmentShadingRateSupport();
+  if !hasDeviceExtension(ifns, physical, "VK_KHR_fragment_shading_rate") { return r; }
+  var features = vulkan.PhysicalDeviceFragmentShadingRateFeaturesKHR();
+  var f2 = vulkan.PhysicalDeviceFeatures2(pNext: &mut features as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+  ifns.getPhysicalDeviceFeatures2(physical, &mut f2);
+  var rateProps = vulkan.PhysicalDeviceFragmentShadingRatePropertiesKHR();
+  var props = vulkan.PhysicalDeviceProperties2(pNext: &mut rateProps as *u8, properties: zeroed[vulkan.PhysicalDeviceProperties]());
+  ifns.getPhysicalDeviceProperties2(physical, &mut props);
+  r.texelWidth = rateProps.minFragmentShadingRateAttachmentTexelSize.width;
+  r.texelHeight = rateProps.minFragmentShadingRateAttachmentTexelSize.height;
+  r.maxTexelWidth = rateProps.maxFragmentShadingRateAttachmentTexelSize.width;
+  r.maxTexelHeight = rateProps.maxFragmentShadingRateAttachmentTexelSize.height;
+  r.maxFragmentWidth = rateProps.maxFragmentSize.width;
+  r.maxFragmentHeight = rateProps.maxFragmentSize.height;
+  r.supported = features.attachmentFragmentShadingRate == vulkan.TRUE && r.texelWidth > 0u32 && r.texelHeight > 0u32
+    && r.maxFragmentWidth >= 2u32 && r.maxFragmentHeight >= 2u32;
+  r
+}
