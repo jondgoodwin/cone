@@ -1370,6 +1370,30 @@ static int litFoldConvert(INode *at, LitNbr *a, NbrNode *to, LitNbr *r) {
         r->bits = from->tag == FloatNbrTag ? a->f != 0.0 : a->bits != 0;
         return 1;
     }
+    // To a char: the number must be a code point (genlNumberToChar gives U+FFFD
+    // for one that is not, which a constant is refused rather than folded to). A
+    // float is cut toward zero first, as for an integer.
+    if (to == charType) {
+        int ok;
+        uint64_t v = 0;
+        if (from->tag == FloatNbrTag) {
+            double t = trunc(a->f);
+            ok = t >= 0.0 && t <= 1114111.0;
+            if (ok)
+                v = (uint64_t)t;
+        }
+        else {
+            ok = !(from->tag == IntNbrTag && (int64_t)a->bits < 0);
+            v = a->bits;
+        }
+        if (!ok || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) {
+            errorMsgNode(at, ErrorConstChar,
+                "This constant converted to a char is no code point (0 to 0x10FFFF, but not 0xD800 to 0xDFFF), so it has no value; at run time it would be U+FFFD.");
+            return 0;
+        }
+        r->bits = v;
+        return 1;
+    }
     if (to->tag == FloatNbrTag) {
         if (from->tag == FloatNbrTag)
             r->f = to->bits == 32 ? (double)(float)a->f : a->f;

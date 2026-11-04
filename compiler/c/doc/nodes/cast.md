@@ -470,12 +470,17 @@ which is lowered to a type literal, [literals](literals.md)):
   truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
   poison), a pointer truncated.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
-  `fptrunc`/`fpext`. A float whose truncated value the integer type cannot hold
-  (a negative float to an unsigned type, 300.0 to a `u8`) is LLVM's poison: the
-  value differs between an optimized and an unoptimized build (`u32` from
-  -3.7 printed 4294967293 unoptimized and a value past `u32`'s range
-  optimized). The checked and saturating conversions that would define it are
-  not built.
+  `fptrunc`/`fpext`, except that a float into an integer is
+  `llvm.fptosi.sat`/`llvm.fptoui.sat` (`genlFloatToInt`): a value the integer
+  type cannot hold gives its top or bottom (0 for an unsigned type), NaN 0, and
+  nothing is poison (Bug 43; the plain `fptoui`/`fptosi` were, and the
+  optimizer deleted a bounds check on such an index when the float was a
+  constant). A number into a `char` is `genlNumberToChar`: the number if it is
+  a code point, else U+FFFD (a float through the saturating conversion to
+  `i64`, a NaN none; a `u8` and `bool` need no check). A constant with no such
+  value, a float the integer cannot hold or a number that is no code point, is
+  refused when `fnCallNumberFrom` type checks it, in any expression
+  (`litFoldConst`, `ErrorConstOverflow`, `ErrorConstChar`).
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
   alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
   a loop is a fresh frame slot per iteration, which mem2reg does not promote, and
