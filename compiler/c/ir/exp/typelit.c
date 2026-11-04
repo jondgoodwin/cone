@@ -260,7 +260,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
         // Coerce the value to the field's type rather than demanding an exact
         // match: a field takes a value on the same terms a variable initializer
         // does, including a union variant standing in for the union.
-        if (!iexpCoerceIn(pstate, litval, field->vtype)) {
+        if (!iexpCoerceActorIn(pstate, litval, field->vtype)) {
             iexpMismatchMsg((INode*)*litval, field->vtype, ErrorLitFieldType, "Literal value's type does not match expected field's type");
         }
         if (named)

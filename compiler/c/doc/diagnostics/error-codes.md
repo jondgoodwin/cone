@@ -1055,9 +1055,9 @@ a name that does not exist is the ordinary lookup error, and one that is no clau
 (`#if T {`) is `ErrorMetaFact`.
 
 `ErrorLitFieldType` is a struct or variant literal's value, given by position or by name,
-whose type does not convert to its field's (type check, `typeLitStructCheck`). A field takes
-a value on the terms a variable initializer does, so an actor made in place converts to an
-actor trait there as a variable's would; a count of values that does not match the fields is
+whose type does not convert to its field's (type check, `typeLitStructCheck`). An actor made
+in place converts to an actor trait there as a variable's would (a temporary holds it), but a
+string literal is not lent as a temporary to a field, so it is refused; a count of values that does not match the fields is
 `ErrorBadArray`.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
