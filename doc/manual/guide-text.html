@@ -181,6 +181,23 @@ print &lt;- $"moved {n} files to {dir}\n";   // moved 3 files to /tmp
 let note = $"{{{n}}} files";               // a String holding {3} files
 </pre>
 
+	<h3 id="wants">A receiver that declines</h3>
+	<p>A receiver of text may declare <span class="pre">wants(self: &amp;) bool</span> (the console, a String and
+		<span class="pre">TextOut</span> declare none; a log level or a switchable sink does). Then the compiler asks it
+		first: <span class="pre">log &lt;- "state ", expensive(world);</span> is
+		<span class="pre">if log.wants() { log &lt;- "state "; log &lt;- expensive(world); }</span>. <b>Arguments after
+		<span class="pre">&lt;-</span> to a receiver that declines are not evaluated</b>, so a disabled message costs one
+		load and a compare, and <span class="pre">$"..."</span> sent there is skipped whole, its braces too. The receiver
+		itself is evaluated once, before <span class="pre">wants</span>, and <span class="pre">wants</span> takes
+		<span class="pre">&amp;</span>, so it works on an immutable global. Do not put work that must happen in a piece:
+		do it in a statement before the send. The compiler warns (warning 3008, never an error) when a piece sent to such
+		a receiver assigns, changes a variable in place, calls something that takes <span class="pre">&amp;mut</span> or
+		<span class="pre">&amp;uni</span>, or sends. It cannot see a call whose body changes state behind a
+		<span class="pre">&amp;</span> or through a global (<span class="pre">expensive</span> above may count its
+		calls and is not warned of), so the rule is yours to keep. A piece that moves (a unique value given to the
+		receiver's own <span class="pre">&lt;-</span>) moves only if the receiver accepts, so it is not usable after the
+		send, as after any conditional move.</p>
+
 	<p>Other methods change a String where it is: <span class="pre">replace</span>, <span class="pre">insert</span>,
 		<span class="pre">truncate</span>, <span class="pre">clear</span>, and <span class="pre">upperAscii</span> and
 		<span class="pre">lowerAscii</span> as above. Each needs a <span class="pre">var</span> variable, since it changes

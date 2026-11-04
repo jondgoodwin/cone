@@ -1,0 +1,64 @@
+// A receiver with 'wants(self: &) bool' decides before the pieces of a '<-' are made:
+// 'sink <- a, b' is 'if sink.wants() { sink <- a; sink <- b }'. When it says no, none of
+// the pieces is evaluated (a counter proves it), for a single piece, a list, a text sink
+// (a type with 'textOut'), a record maker (one with 'record'), a '$"..."' and a send that
+// builds its receiver. The receiver is evaluated once, on and off ('pick(&m)' counts
+// itself). With the sink on, the output is what it is with no 'wants'. 'gate' is a global
+// that declines, 'open' one that accepts; both are 'let' and the guard takes '&'.
+//
+// Run twice, off then on; 'calls' counts the pieces that ran and is not reset between the two.
+
+mod module_text_wants;
+
+import stdio use *;
+import collections use *;
+
+var calls = 0;
+var made = 0;
+
+fn expensive(n: i32) i32 { calls += 1; n }
+
+struct Sink {
+  pub var on: bool;
+  pub var buf: String;
+  pub fn wants(self: &) bool { self.on }
+  pub fn textOut(self: &mut) TextOut { self.buf.textOut() }
+  pub fn append overload `<-`(self: &mut, s: &str) { self.buf <- s; }
+}
+
+struct Maker {
+  pub var on: bool;
+  pub fn wants(self: &) bool { self.on }
+  pub fn record(self: &) TextOut { print.record() }
+  pub fn append overload `<-`(self: &, s: &str) { print <- s; }
+}
+
+let gate = Maker(false);
+let open = Maker(true);
+
+fn pick(m: &Maker) &Maker { made += 1; m }
+
+fn run(on: bool) {
+  var sink = Sink(on, String());
+  sink <- "one ", expensive(1);
+  sink <- expensive(2);
+  sink <- $"two {expensive(3)}!";
+  print <- sink.buf, "|calls=", calls, "\n";
+  var m = Maker(on);
+  m <- "maker ", expensive(4), "\n";
+  m <- expensive(5);
+  m <- "\n";
+  pick(&m) <- "picked ", expensive(6), "\n";
+  print <- "calls=", calls, " made=", made, "\n";
+  gate <- "gate ", expensive(7), "\n";
+  open <- "open ", expensive(8), "\n";
+  let s = (Sink(on, String()) <- "x", expensive(9));
+  print <- s.buf, " calls=", calls, "\n";
+}
+
+fn main() i32 {
+  run(false);
+  print <- "---\n";
+  run(true);
+  0
+}
