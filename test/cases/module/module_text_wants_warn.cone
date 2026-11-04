@@ -1,0 +1,45 @@
+// An expression sent to a receiver that has 'wants' may never run, so one that changes
+// state is warned of (WarnTextEffect): a block assigning or changing in place, a call that
+// takes '&mut', a send, in a list and in a '$"..."'. A call that only reads is silent, and
+// a receiver with no 'wants' is never warned of. A warning never fails the compile.
+
+mod module_text_wants_warn;
+
+import stdio use *;
+import collections use *;
+
+struct Sink {
+  pub var on: bool;
+  pub var buf: String;
+  pub fn wants(self: &) bool { self.on }
+  pub fn textOut(self: &mut) TextOut { self.buf.textOut() }
+  pub fn append overload `<-`(self: &mut, s: &str) { self.buf <- s; }
+}
+
+struct Plain {
+  pub var buf: String;
+  pub fn textOut(self: &mut) TextOut { self.buf.textOut() }
+  pub fn append overload `<-`(self: &mut, s: &str) { self.buf <- s; }
+}
+
+struct Ctr {
+  pub var n: i32;
+  pub fn bump(self: &mut) i32 { self.n += 1; self.n }
+  pub fn peek(self: &) i32 { self.n }
+}
+
+fn main() i32 {
+  var sink = Sink(true, String());
+  var plain = Plain(String());
+  var x = 0;
+  var c = Ctr(0);
+  sink <- "a", { x = 5; x };                //~ WarnTextEffect:16 "does not run"
+  sink <- "b", { x += 1; x };               //~ WarnTextEffect:16 "does not run"
+  sink <- "c", c.bump();                    //~ WarnTextEffect:17 "does not run"
+  sink <- "d", (String() <- "z");           //~ WarnTextEffect:26 "does not run"
+  sink <- $"f {c.bump()}";                  //~ WarnTextEffect:17 "does not run"
+  sink <- "e", c.peek(), x;
+  plain <- "g", c.bump();
+  print <- sink.buf, "\n";
+  0
+}

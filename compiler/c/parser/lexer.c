@@ -604,12 +604,90 @@ static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
 // and C# rule, Jon's ruling of 24 September 2026). Each content line's end of
 // line becomes one new-line character, whether written LF or CRLF, unless a
 // backslash precedes it, which joins the line to the next.
-void lexScanString(char *srcp) {
+//
+// An interpolated string, $"moved {n} files", is read the same way, with '{{' and
+// '}}' for the braces and a brace's expression left as source for the parser (an
+// InterpToken). The text between expressions is read exactly as a plain
+// literal's is.
+
+// The close brace of the expression whose open brace p follows, or NULL where
+// none closes it. Strings and characters inside are stepped over, so a brace or
+// a quote in them closes nothing.
+static char *lexInterpSkipStr(char *p, int interp);
+static char *lexInterpSkipBraces(char *p) {
+    int depth = 1;
+    while (*p) {
+        if (*p == '"')
+            p = lexInterpSkipStr(p + 1, p > lex->source && p[-1] == '$');
+        else if (*p == '\'' && p[1] == '\\') {
+            // '\n', '\'', '\u{..}'
+            p += 2;
+            while (*p && *p != '\'' && *p != '\n')
+                ++p;
+            if (*p == '\'')
+                ++p;
+            continue;
+        }
+        else if (*p == '\'' && p[1] && p[1] != '\'' && p[1] != '\n') {
+            // 'x', 'é': a character literal; 'a (a lifetime) has no closing quote
+            char *q = p + 2;
+            while (((unsigned char)*q & 0xC0) == 0x80)
+                ++q;
+            p = *q == '\'' ? q + 1 : p + 1;
+            continue;
+        }
+        else if (*p == '{') {
+            ++depth;
+            ++p;
+        }
+        else if (*p == '}') {
+            if (--depth == 0)
+                return p;
+            ++p;
+        }
+        else
+            ++p;
+        if (p == NULL)
+            return NULL;
+    }
+    return NULL;
+}
+
+// The place after the closing quote of the string whose opening quote p follows,
+// or NULL where it has none. Inside an interpolated string a brace's expression
+// is stepped over whole.
+static char *lexInterpSkipStr(char *p, int interp) {
+    while (*p) {
+        if (*p == '\\' && p[1])
+            p += 2;
+        else if (*p == '"')
+            return p + 1;
+        else if (interp && *p == '{') {
+            if (p[1] == '{')
+                p += 2;
+            else {
+                p = lexInterpSkipBraces(p + 1);
+                if (p == NULL)
+                    return NULL;
+                ++p;
+            }
+        }
+        else
+            ++p;
+    }
+    return NULL;
+}
+
+static void lexScanStr(char *srcp, int interp) {
     uint64_t uchar;
     lex->tokp = srcp++;
+    if (interp)
+        ++srcp;  // past the '"' after the '$'
     int multiline = lexEolLen(srcp) != 0;
     char *margin = srcp;
     uint32_t marginlen = 0;
+    char *badbrace = NULL;    // An open brace that never closes
+    uint32_t nbraces = 0;
 
     // Conservatively count the size of the string: the bytes of source up to
     // the closing quote, found as the build below finds it, by stepping over
@@ -621,13 +699,34 @@ void lexScanString(char *srcp) {
     while (*endp && *endp != '"') {
         if (*endp == '\\' && *(endp + 1))
             ++endp;
+        else if (interp && *endp == '{') {
+            if (endp[1] == '{')
+                ++endp;
+            else {
+                char *close = lexInterpSkipBraces(endp + 1);
+                if (close == NULL) {
+                    // Reported at the brace by the build below; the literal ends at the
+                    // first quote after the brace on its line, or with the line, so
+                    // the rest of the file is read as it would have been
+                    badbrace = endp;
+                    while (*endp && *endp != '"' && *endp != '\n') {
+                        if (*endp == '\\' && endp[1] && endp[1] != '\n')
+                            ++endp;
+                        ++endp;
+                    }
+                    break;
+                }
+                ++nbraces;
+                endp = close;
+            }
+        }
         ++endp;
     }
     uint32_t srclen = (uint32_t)(endp - srcp);
 
     // No closing quote before the source's end. Reported here, at the opening
     // quote, before the build below counts the lines the literal runs over
-    if (*endp != '"')
+    if (*endp != '"' && !badbrace)
         errorMsgLex(ErrorBadTok, "String literal is never closed: no closing quote before the end of the file");
     // Text follows the opening quote and the literal runs on to another line.
     // The manual's multi-line literal ends its line right after the opening
@@ -643,6 +742,16 @@ void lexScanString(char *srcp) {
                 if (lexEolLen(p + 1))
                     break;
                 ++p;
+            }
+            else if (interp && *p == '{') {
+                // A brace's expression may run over lines
+                if (p[1] == '{')
+                    ++p;
+                else {
+                    char *close = lexInterpSkipBraces(p + 1);
+                    if (close)
+                        p = close;
+                }
             }
             else if (*p == '\n') {
                 errorMsgLex(ErrorBadTok, "Text after the opening quote of a multi-line string literal must start on the next line: end the line right after the opening quote, or write a one-line string and spell a line's end as '\\n'");
@@ -667,13 +776,80 @@ void lexScanString(char *srcp) {
     }
 
     // Build string literal
-    char *newp = memAllocStr(NULL, srclen);
+    char *newp = memAllocStr(NULL, srclen + (interp ? nbraces + 2 : 0));
     srclen = 0;
     lex->val.strlit = newp;
-    srcp = lex->tokp+1;
+    InterpLit *ilit = NULL;
+    uint32_t iparts = 0;
+    char *segstart = newp;
+    if (interp) {
+        ilit = (InterpLit*)memAllocBlk(sizeof(InterpLit) + sizeof(InterpPart) * (2 * nbraces + 1));
+        lex->val.interp = ilit;
+    }
+    srcp = lex->tokp + (interp ? 2 : 1);
     if (multiline)
         srcp = lexStringNewLine(srcp, margin, marginlen);  // the opening quote's end of line is not content
     while (*srcp != '"' && *srcp) {
+        if (interp && *srcp == '{' && srcp[1] != '{') {
+            // A brace's expression: the text before it ends as a part of its own
+            char *close = badbrace == srcp ? NULL : lexInterpSkipBraces(srcp + 1);
+            if (close == NULL) {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp;
+                errorMsgLex(ErrorInterpBrace, "This '{' opens an expression in an interpolated string, but no '}' closes it. For a brace in the text, write '{{'.");
+                lex->tokp = tokp;
+                srcp = endp;
+                break;
+            }
+            if (newp > segstart) {
+                *newp++ = '\0';
+                ilit->parts[iparts].text = segstart;
+                ilit->parts[iparts].len = (uint32_t)(newp - 1 - segstart);
+                ilit->parts[iparts].exprp = NULL;
+                ++iparts;
+                segstart = newp;
+            }
+            char *ep = srcp + 1;
+            while (ep < close && (*ep == ' ' || *ep == '\t' || *ep == '\r' || *ep == '\n'))
+                ++ep;
+            if (ep == close) {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp;
+                errorMsgLex(ErrorInterpBrace, "Nothing between the braces of this interpolation: put an expression between '{' and '}'. For a brace in the text, write '{{'.");
+                lex->tokp = tokp;
+            }
+            else {
+                InterpPart *part = &ilit->parts[iparts++];
+                part->text = NULL;
+                part->len = 0;
+                part->exprp = srcp + 1;
+                part->exprend = close;
+                part->linep = lex->linep;
+                part->linenbr = lex->linenbr;
+            }
+            // The expression's lines are counted as they pass
+            for (char *p = srcp; p < close; ++p)
+                if (*p == '\n') {
+                    ++lex->linenbr;
+                    lex->linep = p + 1;
+                }
+            srcp = close + 1;
+            continue;
+        }
+        if (interp && (*srcp == '{' || *srcp == '}')) {
+            if (srcp[1] == *srcp) {  // '{{' and '}}' are the brace itself
+                *newp++ = *srcp;
+                srclen++;
+                srcp += 2;
+            }
+            else {
+                char *tokp = lex->tokp;
+                lex->tokp = srcp++;
+                errorMsgLex(ErrorInterpBrace, "A '}' with no '{' before it in an interpolated string. For a brace in the text, write '}}'.");
+                lex->tokp = tokp;
+            }
+            continue;
+        }
         if (multiline) {
             // A line's end is a new-line in the content; a backslash before it joins the lines
             if (lexEolLen(srcp)) {
@@ -750,8 +926,23 @@ void lexScanString(char *srcp) {
         srcp++;        // Move past terminating " character
 
     lex->strlen = srclen;  // Count of all characters of string, except final null char.
-    lex->toktype = StringLitToken;
     lex->srcp = srcp;
+    if (!interp) {
+        lex->toktype = StringLitToken;
+        return;
+    }
+    if (newp > segstart) {
+        ilit->parts[iparts].text = segstart;
+        ilit->parts[iparts].len = (uint32_t)(newp - segstart);
+        ilit->parts[iparts].exprp = NULL;
+        ++iparts;
+    }
+    ilit->nparts = iparts;
+    lex->toktype = InterpToken;
+}
+
+void lexScanString(char *srcp) {
+    lexScanStr(srcp, 0);
 }
 
 // Convert ascii float number to double float
@@ -1281,6 +1472,17 @@ void lexNextTokenx() {
             lexScanString(srcp);
             return;
 
+        // $" " - an interpolated string; a '$' not before a quote is no token
+        case '$':
+            if (srcp[1] == '"') {
+                lexScanStr(srcp, 1);
+                return;
+            }
+            lex->tokp = srcp;
+            errorMsgLex(ErrorBadTok, "Bad character '$' starting unknown token: an interpolated string is $\"...\", the quote directly after the '$'");
+            srcp++;
+            break;
+
         // Identifier
         case 'a': case 'b': case 'c': case 'd': case 'e':
         case 'f': case 'g': case 'h': case 'i': case 'j':
@@ -1661,6 +1863,11 @@ static char *lexSkipTrivia(char *srcp) {
         else
             return srcp;
     }
+}
+
+int lexInterpEndsEntry() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    return *srcp == ',' || *srcp == ';' || *srcp == ')' || *srcp == '}' || *srcp == '\0';
 }
 
 // With the lexer on a name, does what follows it begin a value rather than

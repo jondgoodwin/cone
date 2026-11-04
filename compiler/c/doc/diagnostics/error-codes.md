@@ -1062,3 +1062,10 @@ reads the build's facts again for its own build, so a field or method could exis
 package's object and not in its importer, or a body choose another branch and share a
 `static` of another type with it. A type question alone, and a build question in a `#if` of its own around
 or inside the chain, are allowed. Pointed at the first type question.
+
+`ErrorInterpBrace` is a brace that breaks the rule of an interpolated string `$"..."`: an open brace
+that no close brace closes, a close brace with no open one before it, or braces with nothing between them. A
+brace in the text is written `{{` or `}}`. Pointed at the brace.
+
+`ErrorInterpExpr` is the text between an interpolation's braces that is not one expression: something
+is left over after the expression (`{a; b}`). Pointed at the first token the expression does not take.

@@ -785,6 +785,8 @@ enum ErrorCode {
     ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
     ErrorNoText = 1579,        // A value sent as text to a text receiver (a String, a writer, the console, a trace message) whose type has no `toText(self: &, out: &uni TextOut)` to write itself with. Names the type and the method. Pointed at the value
     ErrorMetaMixFact = 1581,   // A '#if' chain in a generic type's braces or a generic function's body that asks about a fact of the build in one condition and about a type in another (or in the same): the include file keeps such a chain whole and each importer reads the build's facts again, so a field or method could exist in a package's object and not in its importer. Pointed at the first condition that asks about a type
+    ErrorInterpBrace = 1586,   // A brace of an interpolated string `$"..."` that breaks its rule: an open brace no close brace closes, a close brace with no open one before it, or braces with nothing between them. A brace in the text is `{{` or `}}`. Pointed at the brace
+    ErrorInterpExpr = 1587,    // The text between an interpolation's braces is not one expression: something is left over after it (`{a; b}`). Pointed at the first token the expression does not take
     ErrorMetaTypeFact = 1580,   // A '#if' that asks what a type is (T is Float, T == i32) where it cannot be decided: outside a generic function or type or about a name that is no type parameter, at a module's level or in an 'extern' block, or around anything in a generic type's body but fields and methods. Pointed at the condition or the member
 
     // Warnings
@@ -796,6 +798,7 @@ enum ErrorCode {
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
     WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
+    WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     // Uncounted
     Uncounted = 9000,
