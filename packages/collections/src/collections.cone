@@ -31,7 +31,7 @@
 // ('region'), and every block comes from it and goes back to it. A construction
 // that names none is handed the heap's ('heapRegion()': the raw blocks layer's
 // 'alloc', 'resize' and 'release', a static object that is never null), so 'List[i64]()' and
-// 'List[i64].empty()' behave as they always have. Another is passed as the
+// 'List[i64]()' behave as they always have. Another is passed as the
 // construction's last argument, 'List[i64](100, r)', where 'r' is a '*MemRegion'.
 // A collection holding others hands them its own region where they are made
 // inside it (a String its List, a Set its Dict), and a block no region can own
@@ -85,7 +85,7 @@
 // OrderedDict[String, i64](100)' and 'Set[String](100)', room for 100
 // entries without growing (rounded up to the table's size), as is 'new
 // Pool[Npc](100)' for its slots. A function a type offers without a receiver
-// makes one too: 'List[i64].empty()', 'List[i64].withCapacity(n)' (never less
+// makes one too: 'List[i64]()', 'List[i64].withCapacity(n)' (never less
 // than 4), 'String.from("text")', and a 'withCapacity(n)' on each of the others.
 //
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
@@ -154,7 +154,7 @@ fn isHeap(r: *MemRegion) bool inline { r as usize == heapRegion() as usize }
 // hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
 // gives its block back only when it dies. The block comes from the list's
 // region, the last field.
-pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   ptr: *T;
   used: usize;
   cap: usize;
@@ -164,7 +164,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'str''s are a String's: its 'len', written once on the body. Each is reached
   // through the lender that gives the permission its receiver asks for: a '&' method
   // through 'view', a '&mut' one ('reverse') through 'viewMut', a '&uni' one through 'viewUni'
-  use Array[T] via view, viewMut, viewUni but iter, mutItems, mutChunks, mutArrays;
+  use Array[T] via view, viewMut, viewUni but iter, mutItems, mutChunks, mutArrays, gcTraceElements, sort, sortBy, sortByKey;
 
   // An empty list, 'List[i32]()': no block until the first value arrives. The
   // last argument of every init is the region the list's block will come from,
@@ -185,13 +185,24 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     }
   }
 
-  // An empty list: no block until the first value arrives
-  pub fn empty() List { List(null, 0usize, 0usize, heapRegion()) }
-
   // An empty list whose block already has room for n values
   pub fn withCapacity(n: usize) List {
     var l = List(null, 0usize, 0usize, heapRegion());
     l.reserve(n);
+    l
+  }
+
+  // A second list, in the same region, holding a clone of each value in order.
+  // Exists only where T is Clone
+  pub fn clone(self: &) List[T] where T is Clone {
+    var l = List(null, 0usize, 0usize, region);
+    l.reserve(used);
+    var i = 0usize;
+    while i < used {
+      mem.writeRaw(l.ptr + i, ((ptr + i) as &T).clone());
+      i = i + 1usize;
+    }
+    l.used = used;
     l
   }
 
@@ -234,11 +245,24 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // 'reserve', so a borrow into this list is stale afterwards. src may not be a
   // slice of this very list: the compiler refuses 'list.appendSlice(list.view())'
   // (1168), since the block may move under the slice being copied.
-  pub fn appendSlice(self: &mut, src: &Array[T]) where T is Copy {
+  // A type that is Clone but moves (a String, a list of them) is added by cloning
+  // each value, in order; a Copy type by the one block copy.
+  pub fn appendSliceCopy overload appendSlice(self: &mut, src: &Array[T]) where T is Copy {
     let n = src.len;
     if n == 0usize { return; }
     self.reserve(n);
-    mem.moveRaw(ptr + used, src as *T, n);
+    mem.moveRawInto(ptr + used, src as *T, n);
+    used = used + n;
+  }
+  pub fn appendSliceClone overload appendSlice(self: &mut, src: &Array[T]) where T is Move && T is Clone {
+    let n = src.len;
+    if n == 0usize { return; }
+    self.reserve(n);
+    var i = 0usize;
+    while i < n {
+      mem.writeRaw(ptr + used + i, (&src[i]).clone());
+      i = i + 1usize;
+    }
     used = used + n;
   }
 
@@ -252,7 +276,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     let n = from.used;
     if n == 0usize { return; }
     self.reserve(n);
-    mem.moveRaw(ptr + used, from.ptr, n);
+    mem.moveRawInto(ptr + used, from.ptr, n);
     used = used + n;
     from.used = 0usize;
   }
@@ -327,6 +351,61 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     used = n;
   }
 
+  // Equal when both hold the same number of values and each is '==' to the one in the
+  // same place. Exists only where T is Eq. Compared as borrows, '&a == &b'
+  pub fn `==`(self: &, other: &List[T]) bool where T is Eq {
+    self.view() == other.view()
+  }
+
+  // Whether some value is '==' to x. Only where T is Eq
+  pub fn contains(self: &, x: &T) bool where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + i) as &T) == x { return true; }
+      i = i + 1usize;
+    }
+    false
+  }
+
+  // The place of the first value '==' to x, or None. Only where T is Eq
+  pub fn indexOf(self: &, x: &T) Option[usize] where T is Eq {
+    var i = 0usize;
+    while i < used {
+      if ((ptr + i) as &T) == x { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None
+  }
+
+  // Drop each value that equals the one before it, keeping the first of each run of
+  // equals (so a sorted list loses its repeats): [1, 1, 2, 2, 2, 1] becomes [1, 2, 1].
+  // For any Eq type; a float is equal by '==', so a NaN is never equal to anything and
+  // none of them is dropped. Another meaning of "the same" is 'dedupBy'.
+  pub fn dedup(self: &mut) where T is Eq {
+    self.dedupBy(&sameValue[T]);
+  }
+
+  // Drop each value that 'same(kept, v)' calls the same as the last one kept, keeping the
+  // first of each run: 'same' is given the value kept before (a borrow) and the next one,
+  // in list order, and answers true to drop the next. Each value dropped is finalized,
+  // first to last; the order of the rest is unchanged and the block is kept.
+  pub fn dedupBy[F: fn(a: &T, b: &T) bool](self: &mut, same: &F) {
+    if used < 2usize { return; }
+    var w = 1usize;
+    var r = 1usize;
+    while r < used {
+      if same((ptr + (w - 1usize)) as &T, (ptr + r) as &T) {
+        if mem.needsFinal[T]() { mem.finalize(ptr + r); }
+      }
+      else {
+        if w != r { mem.moveRaw(ptr + w, ptr + r, 1usize); }
+        w = w + 1usize;
+      }
+      r = r + 1usize;
+    }
+    used = w;
+  }
+
   // Make it exactly n values long. A longer list is truncated: the values
   // beyond n are finalized, first to last. A shorter one grows, each new value
   // a copy of 'value', and the block may move, as for 'reserve'. Only a type
@@ -336,11 +415,11 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // This, 'viewMut' and 'truncate' are how a C function fills a list: resize
   // it to the count the function was told it may write, hand it 'viewMut()',
   // and truncate to the count the function says it wrote.
-  pub fn resize(self: &mut, n: usize, value: T) where T is Copy {
+  pub fn resize(self: &mut, n: usize, value: T) where T is Clone {
     if n <= used { self.truncate(n); return; }
     self.reserve(n - used);
     while used < n {
-      mem.writeRaw(ptr + used, value);
+      mem.writeRaw(ptr + used, (&value).clone());
       used = used + 1usize;
     }
   }
@@ -422,6 +501,8 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     }
     else {
       p = RawBlocks.alloc(keep, mem.alignof[T]()) as *T;
+      // Into a fresh block this same container owns, so the elements were reachable from its state when it
+      // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.ptr, n); }
       blockFree[T](me.region, me.ptr, me.cap);
     }
@@ -492,7 +573,7 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
       let n = (*rec).list.used;
       if n > 0usize {
         self.reserve(n);
-        mem.moveRaw(ptr + used, (*rec).list.ptr, n);
+        mem.moveRawInto(ptr + used, (*rec).list.ptr, n);
         used = used + n;
         (*rec).list.used = 0usize;
       }
@@ -504,53 +585,31 @@ pub struct List[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and
   // 'bytesCompare' answer. The sort is stable: values that order calls equal
-  // keep the order they had. A merge sort, n log n comparisons, through a
-  // second block as big as the list's, given back before it returns.
-  // 'order' is any callable of that signature that only reads what it holds,
-  // met statically and so inlined into the merge: a function referenced,
-  // 'names.sortBy(&byName)' with 'fn byName(a: &String, b: &String) i32', a struct
-  // with that '()', or a closure written there, which may capture what it
-  // compares by, an eye point say (one that changes what it borrows is refused
-  // at the call).
+  // keep the order they had. It is Array's 'sortBy' (a merge sort over the runs
+  // it finds, Powersort's merge order, n log n comparisons, n - 1 on input
+  // already in order), and the buffer of its merges, half as many values as the
+  // list holds, comes from the list's own region, so a list in an arena sorts
+  // in its arena. 'order' is any callable of that signature that only reads
+  // what it holds, met statically and so inlined into the merge: a function
+  // referenced, 'names.sortBy(&byName)' with 'fn byName(a: &String, b: &String) i32',
+  // a struct with that '()', or a closure written there, which may capture what
+  // it compares by, an eye point say (one that changes what it borrows is
+  // refused at the call).
   pub fn sortBy[F: fn(a: &T, b: &T) i32](self: &mut, order: &F) {
-    if used < 2usize { return; }
-    let spare = RawBlocks.alloc(used * mem.sizeof[T](), mem.alignof[T]()) as *T;
-    // Each pass merges runs of 'width' values from one block into the other
-    var from = ptr;
-    var to = spare;
-    var width = 1usize;
-    while width < used {
-      var lo = 0usize;
-      while lo < used {
-        let mid = if lo + width < used {lo + width} else {used};
-        let hi = if mid + width < used {mid + width} else {used};
-        var a = lo;
-        var b = mid;
-        var k = lo;
-        // The right run's value goes first only when it is strictly before
-        while a < mid && b < hi {
-          if order((from + b) as &T, (from + a) as &T) < 0i32 {
-            mem.moveRaw(to + k, from + b, 1usize);
-            b = b + 1usize;
-          }
-          else {
-            mem.moveRaw(to + k, from + a, 1usize);
-            a = a + 1usize;
-          }
-          k = k + 1usize;
-        }
-        mem.moveRaw(to + k, from + a, mid - a);
-        mem.moveRaw(to + k + (mid - a), from + b, hi - b);
-        lo = hi;
-      }
-      let was = from;
-      from = to;
-      to = was;
-      width = width * 2usize;
-    }
-    if from != ptr { mem.moveRaw(ptr, from, used); }
-    RawBlocks.release(spare as *u8);
+    self.viewMut().sortBy(order, region);
   }
+
+  // Put its values in their natural order (that of '<=>'), keeping the order of equal ones:
+  // Array's 'sort', with the list's own region as the merge buffer's, as 'sortBy' has
+  pub fn sort(self: &mut) where T is Ordered {
+    self.viewMut().sort(region);
+  }
+
+  // Put its values in order by the key 'key(x)' gives each, keeping the order of equal ones
+  pub fn sortByKey[K, F: fn(x: &T) K](self: &mut, key: &F) where K is Ordered {
+    self.viewMut().sortByKey(key, region);
+  }
+
 
   fn finalizeAll(self: &mut) {
     if mem.needsFinal[T]() {
@@ -647,11 +706,8 @@ pub struct ListDrain['a, T] is Iterator[T] {
 
 // Whether the priority a goes out before b. The order is '<=>' on the
 // priority: a number's, a text's, or the one a struct defines, and nothing
-// else is asked of P. INTERIM: '<=>' answers 0 for a float NaN against anything,
-// so a NaN priority's place is unspecified (the queue stays memory-safe and every
-// item comes out, but where the NaN pops is not promised). The agreed order for
-// floats is total, NaN last; it comes when a float-specific path can be written
-// ('#if P is Float', metaprogramming step 2) or with floats' total order.
+// else is asked of P. A float's '<=>' is IEEE total order, so a NaN priority has
+// a place (after every number, or before every number when its sign bit is set).
 fn beforePriority[P](a: &P, b: &P) bool inline { (*a <=> *b) < 0i32 }
 
 // A priority queue: a binary min-heap that hands out the item of the least
@@ -664,15 +720,15 @@ fn beforePriority[P](a: &P, b: &P) bool inline { (*a <=> *b) < 0i32 }
 // (the heap's: the children of position i are at 2i+1 and 2i+2), so a
 // comparison reads only priorities, packed together, and the items are moved
 // along with them. Priorities are ordered by '<=>' on P: any number, text, or
-// a struct that defines '<=>'. A NaN float priority's place is unspecified (the
-// queue stays memory-safe and every item comes out). Priorities that compare equal
+// a struct that defines '<=>'. A float priority is ordered by total order (see
+// beforePriority). Priorities that compare equal
 // go out in no particular order; a queue that needs a fixed order among equals
 // puts the tie-breaker in the priority, a struct's '<=>' that compares it
 // second. Values move in and out, never copied, so T may be a move type (a
 // String, a struct with a 'final'); the queue's death finalizes each priority
 // and item it still holds. Like a List, it takes its blocks from its region,
 // the last argument of every init.
-pub struct PriorityQueue[P, T] is ShapeChanging, Sendable, CarriesRegion {
+pub struct PriorityQueue[P, T] is Default, ShapeChanging, Sendable, CarriesRegion {
   prios: List[P];
   items: List[T];
 
@@ -785,7 +841,7 @@ pub struct PriorityQueue[P, T] is ShapeChanging, Sendable, CarriesRegion {
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
 // A borrow from a lookup or a cursor is good only until the deque next changes.
-pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Deque[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   ptr: *T;
   head: usize;    // the slot of the first value
   used: usize;
@@ -807,9 +863,6 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
       self.cap = room;
     }
   }
-
-  // An empty deque: no block until the first value arrives
-  pub fn empty() Deque { Deque(null, 0usize, 0usize, 0usize, heapRegion()) }
 
   // An empty deque whose block already has room for n values
   pub fn withCapacity(n: usize) Deque {
@@ -948,6 +1001,8 @@ pub struct Deque[T] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
     let fresh = blockNew[T](region, want);
     if used > 0usize {
       let firstRun = if head + used <= cap {used} else {cap - head};
+      // Into a fresh block owned by this same container: the elements were reachable from its state when it
+      // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       mem.moveRaw(fresh, ptr + head, firstRun);
       mem.moveRaw(fresh + firstRun, ptr, used - firstRun);
     }
@@ -1063,7 +1118,7 @@ pub struct DequeGcTraceItems['a, T] is Iterator[&mut T] {
 // the 'Bytes' forms ('fromBytes', 'appendBytes'), which look at no more than the
 // bytes. The methods of 'str' that a String has no reason to differ from, 'find'
 // and 'startsWith' among them, are the fold's.
-pub struct String is ShapeChanging, Hash, CarriesRegion {
+pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   buf: List[u8];
 
   use str via view but len, isEmpty, cstr, `[]`, trim, eq, `==`, cmp, `<=>`, hash;
@@ -1081,11 +1136,9 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     else { *self = String(List[u8](n + 1usize, region)); }
   }
 
-  pub fn empty() String { String(List[u8].empty()) }
-
   // An empty String with room for n bytes (and the NUL after them)
   pub fn withCapacity(n: usize) String {
-    if n == 0usize { return String.empty(); }
+    if n == 0usize { return String(); }
     String(List[u8].withCapacity(n + 1usize))
   }
 
@@ -1132,7 +1185,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
   pub fn join(parts: &Array[String], sep: &str) String {
-    var out = String.empty();
+    var out = String();
     var i = 0usize;
     while i < parts.len {
       if i > 0usize { out.append(sep); }
@@ -1142,9 +1195,8 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     out
   }
 
-  // A copy of this one. (Not 'clone': a method of that name is the lifecycle
-  // method that makes a type's values copyable, which a String's are not.)
-  pub fn copy(self: &) String { String.from(self.view()) }
+  // A second String holding the same bytes: this is Clone
+  pub fn clone(self: &) String { String.from(self.view()) }
 
   pub fn len(self: &) usize { buf.used }
   pub fn isEmpty(self: &) bool { buf.used == 0usize }
@@ -1177,6 +1229,8 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
     }
     else {
       p = RawBlocks.alloc(n + 1usize, 1usize);
+      // Into a fresh block owned by the same container (bytes here, holding no reference); the stores that
+      // matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
       if n > 0usize { mem.moveRaw(p, me.buf.ptr, n); }
       blockFree[u8](me.buf.region, me.buf.ptr, me.buf.cap);
     }
@@ -1446,7 +1500,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // is none.
   pub fn lines(self: &) List[String] {
     let v = self.raw();
-    var out = List[String].empty();
+    var out = List[String]();
     var start = 0usize;
     var i = 0usize;
     while i < v.len {
@@ -1470,7 +1524,7 @@ pub struct String is ShapeChanging, Hash, CarriesRegion {
   // third empty; "" is one empty piece
   pub fn split(self: &, sep: u8) List[String] {
     let v = self.raw();
-    var out = List[String].empty();
+    var out = List[String]();
     var start = 0usize;
     var i = 0usize;
     while i < v.len {
@@ -1620,7 +1674,7 @@ fn capacityBuckets(n: usize) usize {
   b
 }
 
-pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct Dict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   ctrl: *u8;
   slots: *DictEntry[K, V];
   mask: usize;       // the buckets, less one
@@ -1645,8 +1699,6 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
-
-  pub fn empty() Dict { Dict(null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose block already has room for n entries without growing
   pub fn withCapacity(n: usize) Dict {
@@ -1749,15 +1801,15 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
   // A copy of key's value, or None. This is the lookup that answers without a
   // borrow into the table, so it works through a shared owner, and it exists
   // only where V copies: a number, an id, a reference-counted owner
-  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Clone {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
-    Some[V](slots[i].value)
+    Some[V]((&slots[i].value).clone())
   }
-  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Clone {
     let i = self.find(self.hashOf(key), key);
     if i == noBucket { return None; }
-    Some[V](slots[i].value)
+    Some[V]((&slots[i].value).clone())
   }
 
   // 'dict[&key]': a borrow of key's value. A key it does not hold is a program
@@ -1955,6 +2007,8 @@ pub struct Dict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceEl
           let hash = self.hashOf(&slots[i].key);
           let j = freeBucket(fresh, freshMask, hash);
           ctrlSet(fresh, freshMask, j, hashTag(hash));
+          // Into a fresh table owned by this same container: the entries were reachable from its state when it
+          // was scanned; the stores that matter for the new owner are covered by Bug 29's fix (#860, the frozen-array owner walk).
           mem.moveRaw(freshSlots + j, slots + i, 1usize);
         }
         i = i + 1usize;
@@ -2134,7 +2188,7 @@ pub struct OrderedEntry[K, V] {
   pub value: V;
 }
 
-pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
+pub struct OrderedDict[K: Hash, V] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceElements {
   ctrl: *u8;                        // the control bytes, past the index in its block
   index: *u32;                      // per bucket, its entry's position; live only where ctrl is full
   dense: *OrderedEntry[K, V];       // the entries in order, 'count' live, room for 7/8 of the buckets
@@ -2158,8 +2212,6 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
     if n > 0usize { d.resize(capacityBuckets(n)); }
     *self = d;
   }
-
-  pub fn empty() OrderedDict { OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded(), heapRegion()) }
 
   // An empty dictionary whose blocks already have room for n entries without growing
   pub fn withCapacity(n: usize) OrderedDict {
@@ -2249,15 +2301,15 @@ pub struct OrderedDict[K: Hash, V] is ShapeChanging, Sendable, CarriesRegion, Gc
 
   // A copy of key's value, or None: the lookup that holds no borrow into the
   // table, so it works through a shared owner, where V copies
-  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Copy {
+  pub fn getCopyKey overload getCopy(self: &, key: &K) Option[V] where V is Clone {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
-    Some[V](dense[self.posOf(b)].value)
+    Some[V]((&dense[self.posOf(b)].value).clone())
   }
-  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Copy {
+  pub fn getCopyText overload getCopy(self: &, key: &str) Option[V] where (K is String || K is Uni[str] || K is Rc[str]) && V is Clone {
     let b = self.find(self.hashOf(key), key);
     if b == noBucket { return None; }
-    Some[V](dense[self.posOf(b)].value)
+    Some[V]((&dense[self.posOf(b)].value).clone())
   }
 
   // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic
@@ -2688,7 +2740,7 @@ pub struct OrderedMutPairs['a, K: Hash, V] is Iterator[(&K, &mut V)] {
 // What a Set's dictionary holds beside each element: nothing, in no bytes
 struct Member {}
 
-pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
+pub struct Set[T: Hash] is Default, ShapeChanging, Sendable, CarriesRegion {
   dict: Dict[T, Member];
 
   // An empty set, 'Set[String]()'. Its seed is the process's. The last
@@ -2701,8 +2753,6 @@ pub struct Set[T: Hash] is ShapeChanging, Sendable, CarriesRegion {
   pub fn initCapacity overload init(self: &new, n: usize, region: *MemRegion) {
     *self = Set(Dict[T, Member](n, region));
   }
-
-  pub fn empty() Set { Set(Dict[T, Member].empty()) }
 
   // An empty set whose block already has room for n elements without growing
   pub fn withCapacity(n: usize) Set { Set(Dict[T, Member].withCapacity(n)) }
@@ -2899,7 +2949,7 @@ pub trait Error {
 struct TextError is Error, Sendable {
   line: String;
 
-  pub fn message(self: &) String { line.copy() }
+  pub fn message(self: &) String { line.clone() }
 }
 
 // Any error, owned: what an application's functions return where a library's
@@ -2983,7 +3033,7 @@ struct ContextError is Error, Sendable {
   line: String;
   cause: AnyError;
 
-  pub fn message(self: &) String { line.copy() }
+  pub fn message(self: &) String { line.clone() }
   pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
 }
 
@@ -3027,6 +3077,77 @@ pub fn asciiLower(b: u8) u8 { if b >= 'A' && b <= 'Z' {b + 32u8} else {b} }
 
 // The byte, made a capital if it is an ASCII small letter, a to z
 pub fn asciiUpper(b: u8) u8 { if b >= 'a' && b <= 'z' {b - 32u8} else {b} }
+
+fn sameValue[T](a: &T, b: &T) bool { a == b }
+
+// -------- statistics over numbers: quantile, median, mean --------
+//
+// A quantile is a fraction q from 0 to 1 (the median is 0.5, the 95th percentile 0.95),
+// found by linear interpolation between the two values around the rank q * (n - 1): with
+// the values in order, 0 is the first, 1 the last, and a q between two ranks lies that
+// share of the way from the value below to the value above (NumPy's default). A q outside
+// 0 to 1 is taken as the nearest end. There is no value in an empty array, so each
+// answers NaN for one; a NaN q answers NaN. NaN values among the data are ordered as
+// '<=>' orders floats (a positive NaN after every number), so they are best removed first.
+
+// The quantile q of values already in ascending order, for as many q as are asked
+// from one sort: 'xs.sort(); quantileSorted(xs.view(), 0.95)'
+pub fn quantileSorted(xs: &Array[f64], q: f64) f64 {
+  let n = xs.len;
+  if n == 0usize || q != q { return nan(); }
+  if q <= 0.0 { return xs[0usize]; }
+  if q >= 1.0 { return xs[n - 1usize]; }
+  let pos = q * f64.from(n - 1usize);
+  let lo = usize.from(pos);
+  let frac = pos - f64.from(lo);
+  if frac == 0.0 || lo + 1usize >= n { return xs[lo]; }
+  let a = xs[lo];
+  let b = xs[lo + 1usize];
+  if a == b { return a; }
+  a + (b - a) * frac
+}
+
+// The quantile q of values in any order, in O(n) expected time without sorting them all.
+// It reorders the array
+pub fn quantile(xs: &mut Array[f64], q: f64) f64 {
+  let n = xs.len;
+  if n == 0usize || q != q { return nan(); }
+  if q <= 0.0 { return *xs.selectNth(0usize); }
+  if q >= 1.0 { return *xs.selectNth(n - 1usize); }
+  let pos = q * f64.from(n - 1usize);
+  let lo = usize.from(pos);
+  let frac = pos - f64.from(lo);
+  let a = *xs.selectNth(lo);
+  if frac == 0.0 || lo + 1usize >= n { return a; }
+  // Everything after place lo is not before it, so the next value in order is the least of those
+  var b = xs[lo + 1usize];
+  var i = lo + 2usize;
+  while i < n {
+    if xs[i] < b { b = xs[i]; }
+    i = i + 1usize;
+  }
+  if a == b { return a; }
+  a + (b - a) * frac
+}
+
+// The middle value, the mean of the two middle ones when there is an even number of
+// values; reorders the array
+pub fn median(xs: &mut Array[f64]) f64 { quantile(xs, 0.5) }
+
+// The sum divided by the count
+pub fn mean(xs: &Array[f64]) f64 {
+  let n = xs.len;
+  if n == 0usize { return nan(); }
+  var s = 0.0;
+  var i = 0usize;
+  while i < n { s = s + xs[i]; i = i + 1usize; }
+  s / f64.from(n)
+}
+
+fn nan() f64 {
+  let zero = 0.0;
+  zero / zero
+}
 
 // The integer the text spells in decimal: a '-' or a '+' or neither, then one
 // or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).

@@ -119,9 +119,9 @@
 #
 # Not covered, with reasons:
 #
-# - The 'atomic' permission, and plain writes of an atomic value only through a
-#   unique path: not built (the next steps of the atomics design). Today a
-#   plain whole-value write through '&mut' compiles.
+# - The 'atomic' permission: not built (the next step of the atomics design).
+#   Plain writes of an atomic value only through a unique path are built and
+#   pinned by concurrency_typecheck_atomic_write.
 # - A 'let' global of a tuple or an enum holding an atomic value: a global
 #   may be initialized only with a literal, and neither is one yet, so the
 #   mark's reach through them is pinned by the const refusal instead.
@@ -712,6 +712,11 @@ contains = ["atomicrmw add ptr %c.i.i, i32 3 seq_cst, align 4"]
 [scenario.concurrency_typecheck_atomic]
 category = "reject"
 description = "AtomicValue on anything but a struct of one integer, bool or raw pointer field; with Copy; in a const, however deep; Atomic[T] of a type its 'where' clause refuses, just those the marker does; an Atomic[bool]'s add and sub, and an atomic raw pointer's add and bit operations, which exist only where their clauses hold"
+tags = ["typecheck"]
+
+[scenario.concurrency_typecheck_atomic_write]
+category = "reject"
+description = "A plain write of an atomic value, or of a struct holding one, through a '&mut' (the whole value, the atomic field, a holder one level up) is refused; the atomic's own store, a write of a non-atomic field of the same struct, and writes through '&uni', a local and a variable are accepted"
 tags = ["typecheck"]
 
 [scenario.concurrency_typecheck_owner_spelling]
@@ -1467,3 +1472,28 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 category = "run"
 description = "Forms a generic actor takes: two type parameters, an init overload with another argument, a final, and selfactor sending to the instance itself, at Swap[u64, bool] and Swap[i32, f64]; values worked out by hand"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_await_method]
+category = "run"
+description = "A value is awaitable by the method its type declares, 'fn await(self)', which gives the Awaitable[R] or Future[T] to wait on: 'await x' is 'await x.await()'. A library type built on Awaitable.make, one returning the future a behaviour's call gave, and the method found on a field and on a call's result, each awaited with a value kept across the seam and one in flight"
+tags = ["parser", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_method.run]]
+name = "release"
+
+[[scenario.concurrency_await_method.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_await_method_nested]
+category = "run"
+description = "'await' on a value with the 'await' method, nested in the argument of another: each operand is checked once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_method_nested.run]]
+name = "release"
+
+[scenario.concurrency_await_method_refused]
+category = "reject"
+description = "The convention method is checked: an 'await' method taking more than 'self', or giving neither an Awaitable[R] nor a Future[T], is ErrorAwaitMethod; a type without one is still ErrorAwaitNotFuture, the message naming the method"
+tags = ["typecheck", "flow"]

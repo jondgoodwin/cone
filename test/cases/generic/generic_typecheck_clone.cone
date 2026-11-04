@@ -1,0 +1,36 @@
+// Clone is "can be duplicated on request", and the compiler duplicates only what
+// copies or says how: a struct declaring Clone whose field is neither Copy nor
+// Clone, a field that is a reference, a struct that moves handed to a Clone bound
+// or asked for its clone, and the conditional clones of List and Option absent
+// where their element is not Clone.
+
+mod generic_typecheck_clone;
+
+import collections use *;
+
+// Moves (it has a final) and declares no clone
+struct Guard {
+  n: i32;
+  fn final(self: &uni) { }
+}
+
+// Declares Clone and writes none, but a field moves and has no clone
+struct Holder is Clone { n: i32; g: Guard }    //~ ErrorCloneField:34 "Holder declares Clone and writes no `clone`, and its field g is Guard, which is neither Copy nor Clone"
+
+// A read-only borrow copies and so clones (generic_clone_refs); a '&mut' field is refused
+// (the compiler lets a '&mut' alias, so it copies, but design chat's ruling is that it is not Clone)
+struct Viewer is Clone { n: &mut i32 }         //~ ErrorCloneField:26 "Viewer declares Clone and writes no `clone`, and its field n is"
+
+fn dup[T: Clone](a: &T) T { a.clone() }
+
+fn main() {
+  let g = Guard(1);
+  g.clone();                                   //~ ErrorNoMbr:4 "Method or field `clone` not found"
+  dup(&g);                                     //~ ErrorWhereUnmet:6 "dup requires T is Clone, and Guard is not Clone"
+  var gs = List[Guard]();
+  gs.push(Guard(2));
+  gs.clone();                                  //~ ErrorWhereAbsent:5 "No method clone for List[Guard]: it exists only where T is Clone, and Guard is not Clone"
+  gs.resize(3, Guard(3));                      //~ ErrorWhereAbsent:5 "No method resize for List[Guard]: it exists only where T is Clone, and Guard is not Clone"
+  let og: Option[Guard] = None;
+  og.clone();                                  //~ ErrorWhereAbsent:5 "No method clone for Option[Guard]: it exists only where T is Clone, and Guard is not Clone"
+}

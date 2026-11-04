@@ -453,6 +453,27 @@ struct LoggedFile extends File {
 	<p>Two consequences of rules already stated: the enrichment may not write a <span class="pre">final</span> of
 		its own over the base's, because that is overriding a name the base has; and it may not add a field, even
 		one that owns a resource, so what its values have to release is exactly what the base's do.</p>
+	<p>Where the base declares no <span class="pre">final</span>, an enrichment may declare one, and it is the
+		finalizer of values typed as the enrichment. A value handed on <i>by value</i> as its base would be
+		dropped as the base, which runs none, and the resource would leak without a word. So that conversion is
+		refused (error 1572), naming the enrichment:</p>
+<pre>
+struct Plain { pub n: i32; }
+struct PlainFin extends Plain {
+  fn final(self: &amp;uni) { release(n); }
+}
+
+let p: Plain = PlainFin(1);    // error: PlainFin declares its own 'final', which would be skipped
+take(PlainFin(2));             // the same, for a parameter typed Plain
+</pre>
+	<p>The refusal covers a copy, a move, a returned value, a field and an assignment, and an owning reference
+		(<span class="pre">Uni</span>, <span class="pre">Rc</span>) of the enrichment converted to one of the base,
+		and an array of enrichments converted to an array of the base. It covers the sibling that declares a
+		<i>different</i> <span class="pre">final</span> as well, since the first's would never run; two enrichments
+		of one enrichment carry copies of one <span class="pre">final</span> and convert freely.
+		A borrowed reference is not affected: a <span class="pre">&amp;PlainFin</span> is a
+		<span class="pre">&amp;Plain</span>, because the owner keeps its own type and its own finalizer. Nor are an
+		enrichment with no <span class="pre">final</span> of its own, or the base converted into the enrichment.</p>
 	<p>What the base declares about its values comes across the same way. An enrichment of a type declaring
 		<a href="rec-moves.html#movecopy"><span class="pre">is Move</span></a> moves, and an enrichment of an
 		<a href="safe-c.html"><span class="pre">@opaque</span></a> type is opaque: the declaration is

@@ -40,7 +40,7 @@ struct Templates {
   pub values: List[String];
 }
 
-fn noTemplates() Templates { Templates(List[String].empty(), List[String].empty()) }
+fn noTemplates() Templates { Templates(List[String](), List[String]()) }
 
 fn msvcFilePath() Path {
   let home = congoHome();
@@ -51,8 +51,8 @@ fn msvcFilePath() Path {
 // the files that decide what it sets
 fn msvcKey(vcvars: &Path) String {
   let build = vcvars.parent();
-  var files = List[Path].empty();
-  files.push(vcvars.copy());
+  var files = List[Path]();
+  files.push(vcvars.clone());
   files.push(build.join("vcvarsall.bat"));
   if fs.isDir(&build) {
     match fs.readDir(&build) {
@@ -61,7 +61,7 @@ fn msvcKey(vcvars: &Path) String {
         while i < entries.len() {
           let name = entries[i].name.view();
           if name.startsWith("Microsoft.VCToolsVersion") && name.endsWith(".txt") && fs.isFile(&entries[i].path) {
-            files.push(entries[i].path.copy());
+            files.push(entries[i].path.clone());
           }
           i = i + 1usize;
         }
@@ -154,7 +154,7 @@ fn loadTemplates(key: &str, found: &mut Templates) bool {
       if !vars.isObject() { return false; }
       var i = 0usize;
       while i < vars.len() {
-        var name = String.empty();
+        var name = String();
         match vars.keyAt(i) {
           case let Some(n) { name = String.from(n); }
           case is None { return false; }
@@ -178,7 +178,7 @@ fn loadTemplates(key: &str, found: &mut Templates) bool {
   }
   var i = 0usize;
   while i < found.names.len() {
-    var upper = found.names[i].copy();
+    var upper = found.names[i].clone();
     upper.upperAscii();
     if upper.equals("LIB") {
       let entries = splitText(found.values[i].view(), ';');
@@ -247,15 +247,15 @@ fn captureTemplates(vcvars: &Path, found: &mut Templates) Result[Vcvars, String]
     case let Ok(run) {
       var i = 0usize;
       while i < run.setNames.len() {
-        var upper = run.setNames[i].copy();
+        var upper = run.setNames[i].clone();
         upper.upperAscii();
         let before = run.setBefores[i].view();
-        var value = run.setValues[i].copy();
+        var value = run.setValues[i].clone();
         // What a run keeps of the environment it started in, to undo it
         if !upper.startsWith("__VSCMD_PREINIT") && value.view() != before {
           if isListVariable(upper.view()) { value.replace(probeMark, baseMark); }
           else if before.len() > 0usize { value.replace(before, baseMark); }
-          found.names.push(run.setNames[i].copy());
+          found.names.push(run.setNames[i].clone());
           found.values.push(value);
         }
         i = i + 1usize;
@@ -263,13 +263,13 @@ fn captureTemplates(vcvars: &Path, found: &mut Templates) Result[Vcvars, String]
       changes.restore();
       var result = noVcvars();
       result.ran = true;
-      result.file = run.file.copy();
-      result.printed = run.printed.copy();
+      result.file = run.file.clone();
+      result.printed = run.printed.clone();
       Ok[Vcvars, String](result)
     }
     case let Err(e) {
       changes.restore();
-      Err[Vcvars, String](e.copy())
+      Err[Vcvars, String](e.clone())
     }
   }
 }
@@ -282,7 +282,7 @@ fn setTemplates(linker: &mut Linker, templates: &Templates) {
   var i = 0usize;
   while i < templates.names.len() {
     let now = envOr(templates.names[i].view(), "");
-    var value = templates.values[i].copy();
+    var value = templates.values[i].clone();
     if !now.isEmpty() { value.replace(baseMark, now.view()); }
     else {
       let before = cat(";", baseMark);
@@ -291,7 +291,7 @@ fn setTemplates(linker: &mut Linker, templates: &Templates) {
       value.replace(after.view(), "");
       value.replace(baseMark, "");
     }
-    linker.names.push(templates.names[i].copy());
+    linker.names.push(templates.names[i].clone());
     linker.values.push(value);
     i = i + 1usize;
   }
@@ -318,7 +318,7 @@ fn msvcEnvironment(linker: &mut Linker, fresh: bool) Result[void, String] {
   var templates = noTemplates();
   match captureTemplates(&vcvars, &mut templates) {
     case var Ok(run) { linker.ran <-> run; }
-    case let Err(e) { return Err[void, String](e.copy()); }
+    case let Err(e) { return Err[void, String](e.clone()); }
   }
   let key = msvcKey(&vcvars);
   saveTemplates(key.view(), &vcvars, &templates);

@@ -63,9 +63,9 @@ struct Srv {
 
 fn server(cfg: httpconn.Config) Srv {
   Srv(drv: httpconn.Driver.make(cfg), accepted: 0u64, requests: 0u64, inFlight: 0u64, maxInFlight: 0u64,
-    h2: 0u64, resetOnce: false, order: List[String].empty(), reqs: List[httpconn.ReqId].empty(),
-    conns: List[httpconn.ConnId].empty(), targets: List[String].empty(), streams: List[httpconn.ReqId].empty(),
-    sent: List[u64].empty(), totals: List[u64].empty())
+    h2: 0u64, resetOnce: false, order: List[String](), reqs: List[httpconn.ReqId](),
+    conns: List[httpconn.ConnId](), targets: List[String](), streams: List[httpconn.ReqId](),
+    sent: List[u64](), totals: List[u64]())
 }
 
 fn portOf(sv: &mut Srv, lp: &mut Loop, r: Result[httpconn.ListenerId, IoError]) u16 {
@@ -140,7 +140,7 @@ fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
 // The answer to request k, read whole
 fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
   let req = *sv.reqs[k];
-  let full = sv.targets[k].copy();
+  let full = sv.targets[k].clone();
   let path = full.view();
   if path.len > 7usize && &path[0usize ..< 7usize] == "/order/" {
     reply(sv, req, 200u16, &path[7usize ..]);
@@ -201,10 +201,10 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
     sv.inFlight = sv.inFlight + 1u64;
     if sv.inFlight > sv.maxInFlight {sv.maxInFlight = sv.inFlight;}
     if e.request.version == Version.Http2 {sv.h2 = sv.h2 + 1u64;}
-    sv.order.push(e.request.target.copy());
+    sv.order.push(e.request.target.clone());
     sv.reqs.push(e.req);
     sv.conns.push(e.conn);
-    sv.targets.push(e.request.target.copy());
+    sv.targets.push(e.request.target.clone());
   } else if kind == httpconn.EventKind.Data {
     sv.drv.release(e.req, e.buf.len());
   } else if kind == httpconn.EventKind.End {
@@ -224,7 +224,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 
 // The server's events for now, answered
 fn serveAll(sv: &mut Srv, lp: &mut Loop) {
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   sv.drv.pump(lp, &uni sevs);
   var k = 0usize;
   while k < sevs.len() {
@@ -253,7 +253,7 @@ fn step(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, out: &uni List[Event]
   let wb = svs.b.drv.wakeAt();
   if wb < limit {limit = wb;}
   if out.len() > 0usize {limit = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -287,7 +287,7 @@ struct Seen {
 }
 
 fn seen(id: FetchId, release: bool) Seen {
-  Seen(id: id, status: 0u16, version: Version.Http10, body: String.empty(), finals: 0u64, last: EventKind.Done,
+  Seen(id: id, status: 0u16, version: Version.Http10, body: String(), finals: 0u64, last: EventKind.Done,
     kind: ErrorKind.Closed, stage: Stage.Url, timing: Timing.zero(), release: release)
 }
 
@@ -311,7 +311,7 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
 
 // Drive until every fetch in ss has its final answer (or ten seconds)
 fn drive(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, ss: &uni List[Seen]) bool {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while Instant.now() < giveUp {
     var all = true;
@@ -349,7 +349,7 @@ fn isFollowed(ss: &List[Seen], id: FetchId) bool {
 
 // One request sent and driven to its final answer
 fn fetchOne(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, r: Request) Seen {
-  var ss = List[Seen].empty();
+  var ss = List[Seen]();
   ss.push(seen(cl.send(lp, r, Sink.Here(1u64)), true));
   drive(cl, svs, lp, &uni ss);
   ss.pop() || seen(FetchId.none(), true)
@@ -357,7 +357,7 @@ fn fetchOne(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, r: Request) Seen 
 
 // Drive for a while
 fn idleFor(cl: &mut Client, svs: &mut Servers, lp: &mut Loop, d: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, svs, lp, &uni out, until);
@@ -392,7 +392,7 @@ fn certs(name: &str) Path {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}
@@ -413,7 +413,7 @@ fn tlsServer(h2: bool) tls.Server {
   let keyFile = certs("server.key");
   var cfg = tls.ServerConfig.make(&certFile, &keyFile);
   if h2 {
-    var names = List[String].empty();
+    var names = List[String]();
     names.push(String.from("h2"));
     names.push(String.from("http/1.1"));
     cfg.alpn = names;
@@ -486,7 +486,7 @@ fn main() i32 {
   // 64 at once: one connection carries them all, many in flight together
   let acc0 = svs.a.accepted;
   let st0 = cl.stats();
-  var many = List[Seen].empty();
+  var many = List[Seen]();
   var k = 0u32;
   while k < 64u32 {
     many.push(seen(cl.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(2u64)), true));
@@ -514,11 +514,11 @@ fn main() i32 {
   // A slow reader holds back only its own stream: a big body never
   // released, and another fetch on the same connection Done meanwhile
   let acc2 = svs.a.accepted;
-  var both = List[Seen].empty();
+  var both = List[Seen]();
   both.push(seen(cl.get(&mut lp, secure(h2port, "/big/4000000").view(), Sink.Here(3u64)), false));
   both.push(seen(cl.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(3u64)), true));
   {
-    var out = List[Event].empty();
+    var out = List[Event]();
     let giveUp = Instant.now() + Duration.fromSeconds(10i64);
     while both[1usize].finals == 0u64 && Instant.now() < giveUp {
       step(&mut cl, &mut svs, &mut lp, &uni out, giveUp);
@@ -544,7 +544,7 @@ fn main() i32 {
   var pcfg = Config.make();
   pcfg.conn.h2PriorKnowledge = true;
   var pk = Client.make(pcfg);
-  var burst = List[Seen].empty();
+  var burst = List[Seen]();
   k = 0u32;
   while k < 5u32 {
     burst.push(seen(pk.get(&mut lp, plain(pkport, "/hello").view(), Sink.Here(4u64)), true));
@@ -559,7 +559,7 @@ fn main() i32 {
   // The scheduler's order onto streams: the server's one stream known, the
   // waiting fetches become streams as it frees, by intent, then the order asked
   let o0 = svs.b.order.len();
-  var ordered = List[Seen].empty();
+  var ordered = List[Seen]();
   ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/b1").view()), Intent.Background), Sink.Here(5u64)), true));
   ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/b2").view()), Intent.Background), Sink.Here(5u64)), true));
   ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/v1").view()), Intent.Visible), Sink.Here(5u64)), true));
@@ -568,7 +568,7 @@ fn main() i32 {
   ordered.push(seen(pk.send(&mut lp, withIntent(Request.get(plain(pkport, "/order/v2").view()), Intent.Visible), Sink.Here(5u64)), true));
   expect(drive(&mut pk, &mut svs, &mut lp, &uni ordered), "six of mixed intents: every one answered");
   expectUInt(countDone(&ordered), 6u64, "...each Done");
-  var got = String.empty();
+  var got = String();
   var q = o0;
   while q < svs.b.order.len() {
     if got.len() > 0usize {got.append(" ");}
@@ -589,7 +589,7 @@ fn main() i32 {
   // A connection going away (GOAWAY) with a stream still in flight on it:
   // the next fetch does not wait for it, but takes a new connection
   let acc1 = svs.a.accepted;
-  var stall = List[Seen].empty();
+  var stall = List[Seen]();
   stall.push(seen(cl.get(&mut lp, secure(h2port, "/stall").view(), Sink.Here(6u64)), true));
   idleFor(&mut cl, &mut svs, &mut lp, Duration.fromMillis(30i64));
   let bye = fetchOne(&mut cl, &mut svs, &mut lp, Request.get(secure(h2port, "/goaway").view()));
@@ -606,7 +606,7 @@ fn main() i32 {
   // several connections before it learns the origin speaks h2; once the
   // burst is over, one stays pooled
   var fresh = Client.make(trusting());
-  var fb = List[Seen].empty();
+  var fb = List[Seen]();
   k = 0u32;
   while k < 8u32 {
     fb.push(seen(fresh.get(&mut lp, secure(h2port, "/hello").view(), Sink.Here(7u64)), true));

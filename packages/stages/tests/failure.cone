@@ -190,7 +190,7 @@ actor Source is ChunkSource {
   over: bool;
 
   pub fn init(self: &new, down: ChunkSink, data: List[u8], failWith: String, failAfter: u64) {
-    *self = Self(down: down, link: Link.make(4usize, 4096usize), data: data, failWith: failWith,
+    *self = Self(down: down, link: Link.own(16384usize), data: data, failWith: failWith,
       failAfter: failAfter, at: 0usize, sent: 0u64, over: false);
     down.attach(selfactor);
   }
@@ -214,7 +214,7 @@ actor Source is ChunkSource {
         down.end(Ending.Finished);
         more = false;
       } else {
-        match link.take() {
+        match link.take(4096usize) {
           case is None { more = false; }
           case let Some(b) {
             var buf = b;
@@ -290,18 +290,18 @@ fn main() i32 {
   var rx3: OneshotReceiver[u64];
   tx3, rx3 = Oneshot[u64].make();
   {
-    let probe0 = Probe(0usize, msg0.copy(), deflateTyped, 1u32, tx0);
-    let hash0 = HashStage[cryptohash.Sha256](probe0, cryptohash.Sha256.make(), Checker(0usize, msg0.copy()));
+    let probe0 = Probe(0usize, msg0.clone(), deflateTyped, 1u32, tx0);
+    let hash0 = HashStage[cryptohash.Sha256](probe0, cryptohash.Sha256.make(), Checker(0usize, msg0.clone()));
     let inf = Stage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Gzip));
     let src0 = Source(inf, badCrc, String.from(""), 0u64);
 
-    let probe1 = Probe(1usize, msg1.copy(), deflateTyped, 2u32, tx1);
-    let hash1 = HashStage[cryptohash.Sha256](probe1, cryptohash.Sha256.make(), Checker(1usize, msg1.copy()));
+    let probe1 = Probe(1usize, msg1.clone(), deflateTyped, 2u32, tx1);
+    let hash1 = HashStage[cryptohash.Sha256](probe1, cryptohash.Sha256.make(), Checker(1usize, msg1.clone()));
     let inf1 = Stage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Gzip));
     let src1 = Source(inf1, cut, String.from(""), 0u64);
 
-    let probe2 = Probe(2usize, msg2.copy(), zstdTyped, 0u32, tx2);
-    let hash2 = HashStage[cryptohash.Sha256](probe2, cryptohash.Sha256.make(), Checker(2usize, msg2.copy()));
+    let probe2 = Probe(2usize, msg2.clone(), zstdTyped, 0u32, tx2);
+    let hash2 = HashStage[cryptohash.Sha256](probe2, cryptohash.Sha256.make(), Checker(2usize, msg2.clone()));
     let dec = Stage[zstd.Decompressor](hash2, zstd.Decompressor.make());
     let src2 = Source(dec, frame, String.from(""), 0u64);
 

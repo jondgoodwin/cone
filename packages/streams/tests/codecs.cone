@@ -29,7 +29,7 @@ import cryptohash;
 
 // 100 MiB in a release build. A debug build runs 12 MiB: congo stops a test at
 // 180 seconds, and unoptimised code is more than ten times as slow
-fn total() usize { if isDebugBuild() {12582912usize} else {104857600usize} }
+fn total() usize { #if #debug {12582912usize} #else {104857600usize} }
 fn piece() usize { 65536usize }
 
 // How much of the data the one-shot deflater is asked about: it is quadratic
@@ -95,7 +95,7 @@ fn digestOf[D: Digester](d: &mut D, input: &Array[u8], chunk: usize) D.Out {
 
 fn deflateRoundTrips(data: &Array[u8]) {
   var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
-  var packed = List[u8].empty();
+  var packed = List[u8]();
   let st = drive(&mut def, data, piece(), &mut packed);
   expect(st == Status.Done, "deflate: the Deflater is Done");
   expectUInt(def.totalIn(), u64.from(data.len), "deflate: totalIn");
@@ -105,13 +105,13 @@ fn deflateRoundTrips(data: &Array[u8]) {
   // against the one-shot helper, on the prefix (see 'prefix')
   let head = shot(data);
   var def2 = deflate.Deflater.make(deflate.Format.Gzip, 2);
-  var packed2 = List[u8].empty();
+  var packed2 = List[u8]();
   expect(drive(&mut def2, head, piece(), &mut packed2) == Status.Done, "deflate: the prefix's Deflater is Done");
   let once = deflate.gzipCompress(head, 2);
   expect(packed2.view() == once.view(), "deflate: the streamed gzip is the one-shot's, byte for byte");
 
   var inf = deflate.Inflater.make(deflate.Format.Gzip);
-  var back = List[u8].empty();
+  var back = List[u8]();
   let st2 = drive(&mut inf, packed.view(), piece(), &mut back);
   expect(st2 == Status.Done, "inflate: the Inflater is Done");
   expect(back.view() == data, "inflate: gzip round-trips 100 MiB");
@@ -123,27 +123,27 @@ fn deflateOtherFormats(data: &Array[u8]) {
   // Level 1 as zlib, and level 0 raw, of the prefix
   let head = shot(data);
   var z = deflate.Deflater.make(deflate.Format.Zlib, 1);
-  var zs = List[u8].empty();
+  var zs = List[u8]();
   expect(drive(&mut z, head, piece(), &mut zs) == Status.Done, "deflate: zlib level 1 is Done");
   expect(zs.view() == deflate.zlibCompress(head, 1).view(), "deflate: zlib level 1 is the one-shot's");
   var zi = deflate.Inflater.make(deflate.Format.Zlib);
-  var zb = List[u8].empty();
+  var zb = List[u8]();
   expect(drive(&mut zi, zs.view(), piece(), &mut zb) == Status.Done, "inflate: zlib is Done");
   expect(zb.view() == head, "inflate: zlib level 1 round-trips");
 
   var r = deflate.Deflater.make(deflate.Format.Raw, 0);
-  var rs = List[u8].empty();
+  var rs = List[u8]();
   expect(drive(&mut r, head, piece(), &mut rs) == Status.Done, "deflate: raw stored is Done");
   expect(rs.view() == deflate.rawDeflate(head, 0).view(), "deflate: raw stored is the one-shot's");
   var ri = deflate.Inflater.make(deflate.Format.Raw);
-  var rb = List[u8].empty();
+  var rb = List[u8]();
   expect(drive(&mut ri, rs.view(), piece(), &mut rb) == Status.Done, "inflate: raw is Done");
   expect(rb.view() == head, "inflate: raw stored round-trips");
 }
 
 fn zstdRoundTrips(data: &Array[u8]) {
   var c = zstd.Compressor.make(3);
-  var packed = List[u8].empty();
+  var packed = List[u8]();
   let st = drive(&mut c, data, piece(), &mut packed);
   expect(st == Status.Done, "zstd: the Compressor is Done");
   expectUInt(c.totalIn(), u64.from(data.len), "zstd: totalIn");
@@ -151,7 +151,7 @@ fn zstdRoundTrips(data: &Array[u8]) {
   expect(packed.len() < data.len / 2usize, "zstd: it compressed");
 
   var d = zstd.Decompressor.make();
-  var back = List[u8].empty();
+  var back = List[u8]();
   let st2 = drive(&mut d, packed.view(), piece(), &mut back);
   expect(st2 == Status.Done, "zstd: the Decompressor is Done");
   expect(back.view() == data, "zstd: 100 MiB round-trips through the trait");
@@ -165,7 +165,7 @@ fn zstdRoundTrips(data: &Array[u8]) {
   }
   let oneFrame = zstd.compress(data, 3);
   var d2 = zstd.Decompressor.make();
-  var back2 = List[u8].empty();
+  var back2 = List[u8]();
   expect(drive(&mut d2, oneFrame.view(), piece(), &mut back2) == Status.Done, "zstd: the one-shot frame is Done");
   expect(back2.view() == data, "zstd: the streaming decoder reads the one-shot frame");
   // Same data, same level: the same blocks (the one-shot header names the size)
@@ -201,7 +201,7 @@ fn failures() {
   let junk = "this is not a gzip stream, nor a zstd frame, at all";
   var inf = deflate.Inflater.make(deflate.Format.Gzip);
   expect(inf.failure() is None, "inflate: no failure before any input");
-  let st = drive(&mut inf, junk as &Array[u8], 16usize, &mut List[u8].empty());
+  let st = drive(&mut inf, junk as &Array[u8], 16usize, &mut List[u8]());
   expect(st == Status.Failed, "inflate: garbage is Failed");
   match inf.failure() {
     case let Some(e) {
@@ -213,7 +213,7 @@ fn failures() {
 
   var dec = zstd.Decompressor.make();
   expect(dec.failure() is None, "zstd: no failure before any input");
-  let st2 = drive(&mut dec, junk as &Array[u8], 16usize, &mut List[u8].empty());
+  let st2 = drive(&mut dec, junk as &Array[u8], 16usize, &mut List[u8]());
   expect(st2 == Status.Failed, "zstd: garbage is Failed");
   match dec.failure() {
     case let Some(e) {
@@ -227,7 +227,7 @@ fn failures() {
   }
 
   var def = deflate.Deflater.make(deflate.Format.Gzip, 1);
-  var out = List[u8].empty();
+  var out = List[u8]();
   expect(drive(&mut def, junk as &Array[u8], 16usize, &mut out) == Status.Done, "deflate: finished");
   expect(def.failure() is None, "deflate: a compressor never fails");
   var comp = zstd.Compressor.make(1);

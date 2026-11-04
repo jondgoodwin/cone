@@ -65,7 +65,7 @@ fn endJob(p: &mut Parakeet, done: &mut List[Completion], extra: u32) Buffer {
   slots.push(extra);
   var back = match done.pop() {
     case var Some(c) { c.buffersIn(slots.view()) }
-    case is None { List[Buffer].empty() }
+    case is None { List[Buffer]() }
   };
   let last = back.pop() || Buffer.none();
   {
@@ -76,7 +76,7 @@ fn endJob(p: &mut Parakeet, done: &mut List[Completion], extra: u32) Buffer {
 
 fn finishJob(p: &mut Parakeet, device: &mut Device, job: Job) List[Completion] {
   let ticket = p.works.submit(device, job, Target.Here(1u64));
-  var done = List[Completion].empty();
+  var done = List[Completion]();
   p.works.waitFor(device, ticket, &mut done);
   done
 }
@@ -103,7 +103,7 @@ struct Encoded {
 }
 
 fn emptyTrace() EncoderTrace {
-  EncoderTrace(List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0usize)
+  EncoderTrace(List[f32](), List[f32](), List[f32](), List[f32](), List[f32](), 0usize)
 }
 
 // Run the encoder over L feature frames ([L][128], frame-major) and keep the projected output on the GPU in 'p.ep'.
@@ -166,7 +166,7 @@ fn encode(p: &mut Parakeet, device: &mut Device, feats: &List[f32], l: usize, tr
   let scale = f32.from(1.0 / libc.sqrt(f64.from(D_HEAD)));
   var li = 0usize;
   while li < p.layers.len() {
-    let w = p.layers[li].copy();
+    let w = p.layers[li].clone();
     // FF 1
     ok = ffBlock(p, &mut job, device, small, x, x2, xn, h4a, h4b, a, &w.ff1a, &w.ff1b, w.nFf1W, w.nFf1B, t) && ok;
     let s1 = x; x = x2; x2 = s1;
@@ -284,7 +284,7 @@ fn stepJob(p: &mut Parakeet, device: &mut Device, update: bool, label: u32, cur:
   var done = finishJob(p, device, job);
   if done.len() != 1usize { return Err[List[f32], SpeechToTextError](SpeechToTextError(String.from("speechtotext: a decoder job gave no completion"))); }
   let ran = ok && done[0usize].ok;
-  let logits = if ran { wordFloats(done[0usize].words(back).view()) } else { List[f32].empty() };
+  let logits = if ran { wordFloats(done[0usize].words(back).view()) } else { List[f32]() };
   let epBack = endJob(p, &mut done, epSlot);
   p.ep.push(epBack);
   if !ran {
@@ -312,10 +312,10 @@ fn decodeGreedy(p: &mut Parakeet, device: &mut Device, frames: usize, steps: &mu
   var nsame = 0usize;
   var lastTs = 0usize;
   var haveLast = false;
-  var logits = List[f32].empty();
+  var logits = List[f32]();
   match stepJob(p, device, true, BLANK, cur, t) {
     case var Ok(l) { logits = l; }
-    case let Err(e) { return Some[String](e.reason.copy()); }
+    case let Err(e) { return Some[String](e.reason.clone()); }
   }
   p.timings.updates = p.timings.updates + 1u64;
   cur = 1u32 - cur;
@@ -337,7 +337,7 @@ fn decodeGreedy(p: &mut Parakeet, device: &mut Device, frames: usize, steps: &mu
       if t >= frames { break; }
       match stepJob(p, device, false, 0u32, cur, t) {
         case var Ok(l) { logits = l; }
-        case let Err(e) { return Some[String](e.reason.copy()); }
+        case let Err(e) { return Some[String](e.reason.clone()); }
       }
     } else {
       tokens.push(u32.from(label));
@@ -348,7 +348,7 @@ fn decodeGreedy(p: &mut Parakeet, device: &mut Device, frames: usize, steps: &mu
       if t >= frames { break; }
       match stepJob(p, device, true, u32.from(label), cur, t) {
         case var Ok(l) { logits = l; }
-        case let Err(e) { return Some[String](e.reason.copy()); }
+        case let Err(e) { return Some[String](e.reason.clone()); }
       }
       p.timings.updates = p.timings.updates + 1u64;
       cur = 1u32 - cur;
@@ -359,7 +359,7 @@ fn decodeGreedy(p: &mut Parakeet, device: &mut Device, frames: usize, steps: &mu
 
 // The text of token ids: the pieces joined, the word-start mark U+2581 a space, the leading space dropped
 pub fn detokenize(vocab: &List[String], tokens: &Array[u32]) String {
-  var out = String.empty();
+  var out = String();
   var i = 0usize;
   while i < tokens.len {
     let id = usize.from(tokens[i]);
@@ -380,7 +380,7 @@ pub fn detokenize(vocab: &List[String], tokens: &Array[u32]) String {
   // drop one leading space
   let v: &Array[u8] = out.view();
   if v.len > 0usize && v[0usize] == ' ' {
-    var trimmed = String.empty();
+    var trimmed = String();
     var k = 1usize;
     while k < v.len { trimmed.appendByte(v[k]); k = k + 1usize; }
     return trimmed;

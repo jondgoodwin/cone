@@ -405,9 +405,13 @@ linkage that no code asks about; a fact other code may ask about or constrain
 on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays.
 `@mustUse` [Jon 26 Oct] is the one that asks nothing of layout: after a struct's or
 an enum's keyword (`parseStruct`, `StructNode.mustuse`), it asks the compiler to
-warn at a statement that drops a value of the type (`discard.h`). A `#` word is held for metaprogramming:
-`ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
-was followed by is not reported again. `?.` is held [Jon 26 Oct]: a member of
+warn at a statement that drops a value of the type (`discard.h`). A `#` word is a keyword
+where the meta layer means it (`#if`, `#elif`, `#else`, `#os`, `#arch`, `#debug`, `#defined`,
+`#define`, section 6) and is held for metaprogramming anywhere else:
+`ErrorReserved`, and it is dropped with the rest of its line, so what `#each`
+was followed by is not reported again. In a `#if` condition only the word is dropped
+(`lexInHashCond`), since the block the condition ends in is on its line, and the
+condition's reader goes on quietly past it (`lexHashDropped`). `?.` is held [Jon 26 Oct]: a member of
 what `?` gives is written `(a?).b`, which the message says. It is
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
@@ -737,7 +741,10 @@ init's `self`, `&new`; in a value, `&Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
-`x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
+`x` in an actor's behaviour; the behaviour is cut there, a seam. The keyword is
+also a method's name, right after `fn` (`parseFn`) and right after `.`
+(`parseDotCall`): no expression can begin in either place, so nothing is
+ambiguous (a type is awaitable by such a method, `ir/exp/await.c`). Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
 the wait gives and `await` binds no looser than `-` does. **The one exception
 is the suffix `?`** [Jon 26 Oct]: `await x?` is `(await x)?`. `parsePrefix`
@@ -1186,6 +1193,58 @@ a name a submodule put in the namespace is there before any statement can collid
 with it. [module](../nodes/module.md), "The folder tree", owns the rules and the
 diagnostics.
 
+**And it decides which code exists: `#if` on the facts of the build** (`parser/parsemeta.c`).
+The facts are known before a line is parsed (`genSetup` has set the triple, `gpu`
+and `vulkan`; the options hold `release` and each `-D`), so a chain
+`#if c {..} #elif c {..} #else {..}` is resolved here, not later: the taken
+branch is parsed into the enclosing list as though it were written there, and
+every other branch is parsed only to be sure it is well formed, then dropped.
+Nothing in it is looked up, since nothing of it reaches name resolution.
+
+- **The vocabulary is closed**, so a misspelling is an error and never deleted
+  code: `#os` (`.windows`, `.linux`, `.macos`, `.wasm`, `.gpu`), `#arch` (`.x64`,
+  `.arm64`, `.wasm32`, `.spirv`), `#debug`, `#defined("NAME")` and `#define("NAME")`,
+  compared with `==` and `!=`, joined with `!`, `&&`, `||` and parentheses. A
+  `.name` is checked against the fact it is compared with (`ErrorMetaFact`); the
+  OS and architecture are read off the target triple, a SPIR-V one being `.gpu` and a
+  `wasm` one `.wasm` whatever else it says. Every condition of a chain is read, the
+  ones after the branch taken included.
+- **Four places read a list of items**, and each hands `parseHashIf` the function that reads its own
+  items to the matching `}`: `parseGlobalStmts` (the module), `parseStructItems` (a struct's,
+  trait's, enum's or actor's braces), `parseExternItems` (an `extern` block) and
+  `parseBlockStmts` (a block of statements). A taken branch calls that function again on the same
+  list, so the braces open no scope: what it declares is the module's, the type's or the block's,
+  and a block's last expression without its `;` is the block's value. In expression position
+  (`parseTerm`) `parseHashIfExpr` reads the chain, which must end in an `#else`, as blocks, and
+  gives the taken one: a block of one expression is that expression, so `const sep = #if .. {47}
+  #else {92}` is a constant.
+- **An untaken branch is read into scratch.** Its module-level names must not reach the global
+  name table, so `parse->mod` is swapped for a scratch module (`ModuleNode.scratch`) that
+  `modAddNode`, `modAddNamedNode` and `modAddFn` ignore, a type's items go to a stand-in struct of
+  the same kind, a block's statements to a block of their own, and an `extern` block's spans to
+  none. The notes the parser takes of a body that outlive it -- an actor's field text, `await`s and
+  `selfactor`s, a generator's `yield` count -- are put back as they were (`MetaScratch`).
+  Its syntax errors are real. A last expression with no `;` in any branch, taken or not, is
+  `ErrorNoSemi` unless the block ends there, so a mistake shows on every build.
+- **Imports are branch material in the header alone.** A branch is read as `parseGlobalStmts` with
+  `AtInHashIfHeader` where the `#if` stands in the header (after the `mod` line, before any other
+  statement), and an `import` in it is the module's, as it would be written there; a branch that
+  holds any other statement ends the header, taken or not, and a later `import` is `ErrorImportLate`
+  (`AtInHashIf`, or `AtInHashIfNoMod` in a file with no `mod` line). The `mod` line is not branch
+  material. An import in a branch not taken is read for syntax and never found or loaded
+  (`parseImport` returns at once when `parse->mod->scratch`).
+- **A `return` in a taken branch** is spliced into the enclosing block, so it must be the block's
+  last statement (`return` may only end a block): a guard `#if c { return x; }` followed by more
+  statements is written `#if c { x } #else { the rest }`.
+- **Spans and the include file.** Each declaration of a taken branch records its span as any
+  statement does. The chain itself is recorded as cuts (`dclCutAdd`, `DclCut`): the `#if cond {`
+  before the taken branch, the `}` and everything after it to the chain's end, or the whole chain
+  where no branch is taken. `incEditCuts` makes them edits, so the include file holds the branch
+  taken and no `#if`, and an importer reads the layout and the definitions the package's object
+  holds whatever its own facts are. In expression position the taken value is kept in parentheses
+  (a single expression) or as its block. Cuts are also made in bodies the file keeps (a generic
+  function's). A cut with its lines to itself takes them.
+
 ## 7. Contract
 
 **True when `parsePgm` returns:**
@@ -1339,6 +1398,7 @@ numbers.
 | | `parseEachLoop`'s range helpers (`parseRangeStepSign`, `parseRangeGuard`, `parseRangeMoved`, `parseRangeStepCall`) | an `each` over a number range: which way the step runs, the guard that lets a pass run, the test that a step wrapped past the type's extreme, and the step itself, finished by type check (`eachRangeStepLower`, `ir/exp/each.c`) |
 | | `parseRangeEllipsis`, `parseRangeBare` | `...` is refused, `ErrorRangeEllipsis`, and a bare `..` before an end, `ErrorRangeBare`, wherever a range operator is read (an index, a pattern, an `each`) |
 | | `parseEachEntry`, `parseEachLoop`, `parseEachYield` | an `each` as an entry of `<-`: the same loop parse as `parseEach`, its body the `yield` (or the pass variable, for a drain) as a `YieldEntryTag` entry |
+| `parser/parsemeta.c` | `parseHashIf`, `parseHashIfExpr`, `parseMetaStray`, `parseMetaFactStray`, `parseMetaInit` | `#if` on the facts of the build (section 6): the condition (`metaCond`, the closed vocabulary, `ErrorMetaFact`), the chain (`ErrorMetaIf`) with each branch read by the function of the list it stands in, the scratch an untaken branch is read into (`MetaScratch`), the chain that gives a value, and a `#elif` or `#else` or a fact met where none is read. `parseGlobalStmts`, `parseExternItems`, `parseStructItems` and `parseBlockStmts` call it |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |

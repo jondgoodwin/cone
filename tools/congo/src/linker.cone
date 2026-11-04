@@ -38,7 +38,7 @@ fn warnIfStale(repo: &Path, conec: &Path) {
     case is Err { return; }
   }
   let sources = repo.join("compiler/c");
-  var entries = List[fs.DirEntry].empty();
+  var entries = List[fs.DirEntry]();
   match fs.walk(&sources) {
     case var Ok(ok) { entries <-> ok; }
     case is Err { return; }
@@ -90,7 +90,7 @@ fn findConestd(conec: &Path) Result[Path, String] {
 // Arguments for process.run, from slices
 fn argList(a: &str, b: &str = "", c: &str = "", d: &str = "", e: &str = "", f: &str = "",
     g: &str = "", h: &str = "", i: &str = "") List[String] {
-  var out = List[String].empty();
+  var out = List[String]();
   out.push(String.from(a));
   if b.len() > 0usize { out.push(String.from(b)); }
   if c.len() > 0usize { out.push(String.from(c)); }
@@ -195,7 +195,7 @@ fn normFolder(p: &str) String {
 // keeps its x86 folders: vcvars64.bat's link.exe is found first.)
 fn withoutVsLibs(changes: &mut EnvChanges) {
   if !envHas("LIB") { return; }
-  var roots = List[String].empty();
+  var roots = List[String]();
   let names = splitText("VSINSTALLDIR WindowsSdkDir UniversalCRTSdkDir", ' ');
   var i = 0usize;
   while i < names.len() {
@@ -205,7 +205,7 @@ fn withoutVsLibs(changes: &mut EnvChanges) {
   }
   let lib = envOr("LIB", "");
   let entries = lib.split(';');
-  var kept = List[String].empty();
+  var kept = List[String]();
   i = 0usize;
   while i < entries.len() {
     let entry = entries[i].view();
@@ -239,7 +239,7 @@ struct Vcvars {
 }
 
 fn noVcvars() Vcvars {
-  Vcvars(false, Path.from(""), String.empty(), List[String].empty(), List[String].empty(), List[String].empty())
+  Vcvars(false, Path.from(""), String(), List[String](), List[String](), List[String]())
 }
 
 // vcvars64.bat's environment, taken on by Congo itself (for the link, and
@@ -260,12 +260,12 @@ fn runVcvarsAt(vcvars: &Path, changes: &mut EnvChanges) Result[Vcvars, String] {
   // UTF-16 so that every value arrives whole.
   let marker: &str = "--congo: vcvars64.bat's environment--";
   let line = cat("cmd /c \"\"", vcvarsText.view(), "\" && echo ", marker, "&& cmd /u /c set\"");
-  var out = String.empty();
-  var err = String.empty();
+  var out = String();
+  var err = String();
   var code = 0u32;
   match process.runLine(line.view()) {
     case let Ok(ok) {
-      out = ok.stdout.copy();
+      out = ok.stdout.clone();
       err = consoleText(ok.stderr.view());
       code = ok.exitCode;
     }
@@ -273,8 +273,8 @@ fn runVcvarsAt(vcvars: &Path, changes: &mut EnvChanges) Result[Vcvars, String] {
       fail(e.message());
     }
   }
-  var printed = String.empty();
-  var variables = String.empty();
+  var printed = String();
+  var variables = String();
   // What the batch file printed, then UTF-16: bytes, not text
   let raw: &Array[u8] = out.view();
   match out.find(marker) {
@@ -295,7 +295,7 @@ fn runVcvarsAt(vcvars: &Path, changes: &mut EnvChanges) Result[Vcvars, String] {
   // Each variable set printed, in any spelling of its name, where its value
   // is not what it already is
   let lines = splitLines(variables.view());
-  var run = Vcvars(true, vcvars.copy(), String.empty(), List[String].empty(), List[String].empty(), List[String].empty());
+  var run = Vcvars(true, vcvars.clone(), String(), List[String](), List[String](), List[String]());
   var i = 0usize;
   while i < lines.len() {
     let l = lines[i].view();
@@ -307,7 +307,7 @@ fn runVcvarsAt(vcvars: &Path, changes: &mut EnvChanges) Result[Vcvars, String] {
       if !envHas(name) || now.view() != value {
         run.setNames.push(String.from(name));
         run.setValues.push(String.from(value));
-        run.setBefores.push(now.copy());
+        run.setBefores.push(now.clone());
         changes.set(name, value);
       }
     }
@@ -369,8 +369,8 @@ struct Linker {
     var i = 0usize;
     while i < names.len() {
       // Copied: 'changes' holds Lists of Strings, and nothing shows they are not these
-      let name = names[i].copy();
-      let value = values[i].copy();
+      let name = names[i].clone();
+      let value = values[i].clone();
       changes.set(name.view(), value.view());
       i = i + 1usize;
     }
@@ -486,7 +486,7 @@ fn lastSeparator(text: &str) usize {
 }
 
 fn noLinkerYet() Linker {
-  Linker(Path.from(""), Path.from(""), List[String].empty(), List[String].empty(), false, false, noVcvars())
+  Linker(Path.from(""), Path.from(""), List[String](), List[String](), false, false, noVcvars())
 }
 
 // The system linker, with the environment it needs: Microsoft's link.exe in
@@ -502,14 +502,14 @@ fn noLinkerYet() Linker {
 // captures it again. An inherited x86 environment is converted by a run, as
 // before, and not kept.
 fn findLinker(conestd: &Path, useCache: bool) Result[Linker, String] {
-  var linker = Linker(Path.from(""), conestd.copy(), List[String].empty(), List[String].empty(), false, false,
+  var linker = Linker(Path.from(""), conestd.clone(), List[String](), List[String](), false, false,
     noVcvars());
   let startPath = envOr("PATH", "");
   let inherited = which("link.exe", startPath.view());
   if !(!inherited.isEmpty() && isMsvcLinker(&inherited)) {
     match msvcEnvironment(&mut linker, !useCache) {
       case is Ok {}
-      case let Err(e) { return Err[Linker, String](e.copy()); }
+      case let Err(e) { return Err[Linker, String](e.clone()); }
     }
   }
   else {
@@ -522,7 +522,7 @@ fn findLinker(conestd: &Path, useCache: bool) Result[Linker, String] {
         case var Ok(ok) { linker.ran <-> ok; }
         case let Err(e) {
           changes.restore();
-          return Err[Linker, String](e.copy());
+          return Err[Linker, String](e.clone());
         }
       }
       linker.setFromChanges(&changes);

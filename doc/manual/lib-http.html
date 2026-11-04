@@ -89,7 +89,7 @@
 	<li><span class="pre">target()</span>: the request target, the path (at least <span class="pre">/</span>) and the
 		query, never the fragment.</li>
 	<li><span class="pre">effectivePort()</span>, <span class="pre">isHttp()</span>, <span class="pre">isSecure()</span>,
-		<span class="pre">sameOrigin(&amp;other)</span> and <span class="pre">copy()</span>;
+		<span class="pre">sameOrigin(&amp;other)</span> and <span class="pre">clone()</span>;
 		<span class="pre">defaultPort(scheme)</span> is the free function behind the first.</li>
 	</ul>
 
@@ -255,7 +255,7 @@ decoded   a b&amp;c=d/é
 		joined by a comma and a space) and <span class="pre">hasToken(name, token)</span>, which asks whether a
 		comma-separated list field such as <span class="pre">Connection</span> has a member, ignoring case.</li>
 	<li><span class="pre">len()</span>, <span class="pre">nameAt(i)</span> and <span class="pre">valueAt(i)</span> walk
-		the fields; <span class="pre">copy()</span>, <span class="pre">clear()</span> and
+		the fields; <span class="pre">clone()</span>,<span class="pre">clear()</span> and
 		<span class="pre">isEmpty()</span>.</li>
 	</ul>
 	<p>A name is text, a <span class="pre">&amp;str</span>; a value is bytes, a
@@ -282,7 +282,7 @@ decoded   a b&amp;c=d/é
 		and a 1xx, 204 or 304, has no body, whatever its fields say.</p>
 
 	<h3 id="http-bodies">Bodies and errors</h3>
-	<p>A <span class="pre">BodyLength</span> is what is known of a body: <span class="pre">BodyLength.empty()</span>
+	<p>A <span class="pre">BodyLength</span> is what is known of a body: <span class="pre">BodyLength()</span>
 		(none), <span class="pre">BodyLength.sized(n)</span> (exactly <span class="pre">n</span> bytes) or
 		<span class="pre">BodyLength.unsized()</span> (until the stream ends: HTTP/1.1's chunked coding or the
 		connection's close). Its <span class="pre">kind</span> and <span class="pre">length</span> are public, and
@@ -335,7 +335,7 @@ fn main() {
   printStr(if req.headers.add("X-Note", "two\nlines") {"added\n"} else {"refused a value with a newline\n"});
 
   // A repeated field is kept as often as it came; joined only when asked
-  var h = Headers.empty();
+  var h = Headers();
   h.add("Set-Cookie", "a=1");
   h.add("Set-Cookie", "b=2");
   h.add("Connection", "keep-alive, Upgrade");
@@ -659,7 +659,7 @@ fn route(drv: &amp;mut Driver, p: Pending) {
 // What the server does with one event of its own
 fn serve(drv: &amp;mut Driver, pending: &amp;mut List[Pending], e: &amp;mut Event) {
   if e.kind == EventKind.Request {
-    pending.push(Pending(e.req, e.request.method, e.request.target.copy(), String.empty()));
+    pending.push(Pending(e.req, e.request.method, e.request.target.clone(), String()));
   } else if e.kind == EventKind.Data {
     let k = find(pending, e.req);
     if k &lt; pending.len() {(&amp;mut pending[k]).body.appendBytes(e.buf.view());}
@@ -686,9 +686,9 @@ fn serve(drv: &amp;mut Driver, pending: &amp;mut List[Pending], e: &amp;mut Even
 // The client's requests, one after another on one kept-alive connection
 fn ask(drv: &amp;mut Driver, lp: &amp;mut Loop, conn: ConnId, step: u32) {
   if step == 0u32 {
-    drv.request(lp, conn, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+    drv.request(lp, conn, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq));
   } else if step == 1u32 {
-    drv.request(lp, conn, RequestHead.get("/nothing", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+    drv.request(lp, conn, RequestHead.get("/nothing", "localhost"), BodyLength(), Sink.Here(tokReq));
   } else {
     drv.request(lp, conn, RequestHead.make("POST", "/echo", "localhost"), BodyLength.sized(12u64),
       Sink.Here(tokReq));
@@ -715,8 +715,8 @@ fn main() {
   let conn = drv.connect(&amp;mut lp, "127.0.0.1", port, Sink.Here(tokConn));
   var step = 0u32;
   ask(&amp;mut drv, &amp;mut lp, conn, step);
-  var pending = List[Pending].empty();
-  var events = List[Event].empty();
+  var pending = List[Pending]();
+  var events = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while step &lt; 3u32 &amp;&amp; Instant.now() &lt; giveUp {
     drv.poll(&amp;mut lp, giveUp, &amp;mut events);
@@ -1174,7 +1174,7 @@ fn main() {
   client.cancel(&amp;mut lp, dropped);
 
   // Each fetch's events, as they come
-  var events = List[Event].empty();
+  var events = List[Event]();
   var finals = 0u32;
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while finals &lt; 5u32 &amp;&amp; Instant.now() &lt; giveUp {
@@ -1474,7 +1474,7 @@ fn main() {
   let server = tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile));
 
   // The client's side: trusts the test root alone
-  var rootPem = String.empty();
+  var rootPem = String();
   let caFile = certs("ca.pem");
   match fs.readFile(&amp;caFile) {
     case var Ok(r) {rootPem &lt;=> r;}
@@ -1490,8 +1490,8 @@ fn main() {
           // One session each; no socket anywhere
           var c = cl.session("localhost");
           var s = srv.session();
-          var cin = String.empty();
-          var sin = String.empty();
+          var cin = String();
+          var sin = String();
           pump(&amp;mut c, &amp;mut s, &amp;mut cin, &amp;mut sin);
           printStr(if c.isOpen() &amp;&amp; s.isOpen() {"handshake done\n"} else {"no handshake\n"});
           let info = c.info();

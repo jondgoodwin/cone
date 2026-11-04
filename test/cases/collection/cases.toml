@@ -66,9 +66,6 @@
 #   struct owns operator methods and covers both outcomes.
 # - An index past the end of a slice. It compiles, and the bounds check that
 #   would catch it aborts the process rather than failing an assertion.
-# - WarnCopy sounds as though a slice might provoke it. It is declared in
-#   error.h and raised nowhere. ErrorNotLval, ErrorAddr and ErrorNoFlds sounded
-#   the same way and have been deleted; ErrorBadAlloc is now region's.
 
 support = []
 
@@ -715,3 +712,68 @@ include = ["include/q.cone"]
 category = "run"
 description = "A temporary key lent to a Dict or OrderedDict method taking &mut self (remove, swapRemove, getMut) is finalized at its statement's end, as one lent to contains is"
 tags = ["flow", "genllvm", "runtime"]
+
+# The unstable sort and a comparison that is not an order: always memory-safe and every value kept
+# (release), and a panic in a debug build.
+[scenario.collection_sort_bad_order]
+category = "run"
+description = "sortUnstableBy with a comparison that always answers before, always after, or drifts: it returns, and each of the 300 values is still present once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.collection_sort_bad_order.run]]
+name = "release"
+options = []
+
+[scenario.collection_sort_bad_order_debug]
+category = "run"
+description = "sortUnstableBy with a comparison that always answers before panics in a debug build, after the line before the sort printed"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core\.cone:)\d+']
+
+[[scenario.collection_sort_bad_order_debug.run]]
+name = "debug"
+options = ["--debug"]
+
+# The stable sort and a comparison that is not an order: always memory-safe and every value kept
+# (release), and a panic in a debug build.
+[scenario.collection_sort_stable_bad_order]
+category = "run"
+description = "sortBy with a comparison that always answers before, always after, or drifts: it returns, and each of the 300 values is still present once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.collection_sort_stable_bad_order.run]]
+name = "release"
+options = []
+
+[scenario.collection_sort_stable_bad_order_debug]
+category = "run"
+description = "sortBy with a comparison that always answers before panics in a debug build, after the line before the sort printed"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core\.cone:)\d+']
+
+[[scenario.collection_sort_stable_bad_order_debug.run]]
+name = "debug"
+options = ["--debug"]
+
+# Bug 30: a virtual reference reached as a field of a struct was "anything" to the reshape check,
+# so every holder of a trait-object field was refused a call to code the compiler cannot read
+# while a borrow through a shared owner was live. One marked '+ ShapeKeeping' is held to keep
+# shape where it is made (refuse), and reaches nothing more (marked); unmarked it still does
+[scenario.collection_flow_traitfield_marked]
+category = "compile"
+description = "A struct holding a 'Uni[Waker + ShapeKeeping]' in a list, reached through a pointer, handed read-only to an extern while a borrow through an 'Arc' owner is live: accepted"
+tags = ["flow"]
+
+[scenario.collection_flow_traitfield_unmarked]
+category = "reject"
+description = "The same with an unmarked 'Uni[Waker]' field is refused (1339: the call may store over the Arc); the same shape with no trait-object field passes"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_flow_traitfield_refuse]
+category = "reject"
+description = "A type whose method pushes to a list it reaches through a '&mut' parameter, made a 'Uni[Waker + ShapeKeeping]', is refused naming the push; one that writes only its own field is accepted"
+tags = ["flow"]
+diagnostics = 1

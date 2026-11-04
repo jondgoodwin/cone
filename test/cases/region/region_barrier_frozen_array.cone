@@ -1,0 +1,60 @@
+// A frozen array (what a list's freeze gives, a Uni carrying the count) of references into
+// a traced region declaring 'writeBarrier'. A collector that marks while the program runs
+// must hear of every reference put where it could not see it: a store of one element, and
+// the store of the whole owner into memory that is not a local, which hands it every
+// element it carries. 'wb' prints the number of each Leaf it is handed.
+//
+// What each section does, and the numbers it must print:
+//   born    two leaves 1 and 2 pushed into a list: the list's pushes store into its block
+//           and hand over 1, 2
+//   direct  frozen[0] = leaf 3: 3
+//   borrow  through a '&mut' slice of the frozen array, cell 1 = leaf 4: 4
+//   owner   the whole owner stored in a field through a borrow: 3 and 4, in element order
+//           (before the fix this printed nothing: the barrier's walk did not pass through
+//           an owner)
+//   reads   3 + 4 = 7, what the stores left
+
+mod region_barrier_frozen_array;
+
+import stdio use *;
+import libc;
+import collections;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(0));
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize) { }
+  fn writeBarrier(self: &uni Tr) {
+    let v = (self as *Tr as usize + 8usize) as &Leaf;
+    printStr(" wb "); printInt(v.n);
+  }
+}
+struct Leaf { pub n: i64; }
+alias Ref = Tr[mut, Leaf];
+fn leaf(n: i64) Ref { Tr[mut, Leaf](n) }
+
+struct Holder { pub a: Uni[Array[Ref]]; }
+
+fn setCell(s: &mut Array[Ref], i: usize, l: Ref) { s[i] = l; }
+fn put(h: &mut Holder, a: Uni[Array[Ref]]) { h.a = a; }
+
+fn main() {
+  var held = collections.List[Ref]();
+  printStr("born:");
+  held.push(leaf(1)); held.push(leaf(2));
+  var frozen = held.freeze();
+  printStr("\ndirect:");
+  frozen[0usize] = leaf(3);
+  printStr("\nborrow:");
+  setCell(&mut *frozen, 1usize, leaf(4));
+  printStr("\nowner:");
+  var h = Holder(collections.List[Ref]().freeze());
+  put(&mut h, frozen);
+  printStr("\nreads ");
+  printInt(h.a[0usize].n + h.a[1usize].n);
+  printStr("\n");
+}

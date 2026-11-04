@@ -536,6 +536,7 @@ enum ErrorCode {
     // Futures: a behaviour's value stored and awaited later (actors.Future[T])
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
     ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
+    ErrorAwaitMethod = 1283,    // A type's 'await' method, which makes it awaitable, that takes more than 'self' or returns neither an actors.Awaitable[R] nor an actors.Future[T]
 
     // 'Sized' and 'DynSized', granted by the compiler from a type's size (ir/types/struct.c)
     ErrorSizeMarkerUse = 1296,  // 'Sized' or 'DynSized' declared by a type: both are granted, by whether the type's size is known at compile time or carried by a reference to it, and a declaration could only contradict that
@@ -775,12 +776,20 @@ enum ErrorCode {
     ErrorEachNoDrain = 1568,    // An 'each' over an owned array whose items move: no cursor consumes a fixed array yet. Pointed at the source
     ErrorActorTraitMember = 1569, // What an 'actor trait' may not hold, or a form of it not built: a field, a 'fn', a behaviour with a body, a behaviour that is not 'pub' or has no 'self', a static, a macro, an 'is' or 'extends', a type parameter. Pointed at the member
     ErrorActorTraitConform = 1570, // An actor handle converted to an actor trait's handle where the actor does not conform: a behaviour of the trait it lacks, declares without 'pub' or with other parameter or return types. Names each. Pointed at the value converted
+    ErrorAtomicPlainWrite = 1571, // A plain write (assignment or swap) of an atomic value, or of a value holding one inline, through a reference that is not 'uni' ('&mut', 'Rc[mut, T]', a borrow of any other permission): another thread may be changing it atomically. Pointed at the place written
+    ErrorEnrichFinalSkipped = 1572, // A value of an enrichment (a type that 'extends' a base) declaring its own 'final', handed on by value as its base or as a sibling without that 'final': a copy, a move or an owning reference (Uni, Rc) converted would be dropped as the target, so the 'final' would never run. Names the enrichment and the target. A borrowed reference is not refused. Pointed at the value converted
+    ErrorMetaIf = 1573,         // A '#if' chain malformed or misplaced: an '#elif' or '#else' with no '#if' before it, an '#elif' after the '#else', a second '#else', a '#if' giving a value with no '#else', or a condition's own punctuation missing ('#defined("NAME"' with no ')', a '(' never closed). Pointed at the word
+    ErrorMetaFact = 1574,       // A '#if' condition that names a fact outside the closed vocabulary (#os, #arch, #debug, #defined, #define), or uses one wrongly: a member the fact has not ('#os == .window'), a member of another fact, a comparison of unlike kinds, '#defined' of something that is not a string literal, a fact read outside a '#if' condition, a condition that is not a bool. Pointed at the word
+    ErrorDefaultField = 1575,   // A struct declaring Default and writing no 'init' has a field with no declared default ('= value') whose type is not Default, so the compiler has nothing to construct it with in 'T()'. Pointed at the field
+    ErrorDefaultInit = 1578,    // A struct declaring Default and writing an 'init' has none that can be called with no arguments, so 'T()' is not a construction. Pointed at the struct
+    ErrorEqField = 1576,        // A struct declaring Eq with no '==' of its own has a field whose type has no '==' against itself, so the compiler has nothing to compare for it. Pointed at the field
+    ErrorCloneField = 1577,     // A struct declaring Clone with no 'clone' of its own has a field whose type is neither Copy nor Clone, so the compiler has nothing to duplicate it with. Pointed at the field
 
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
     // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
-    WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
+    // 3003 was WarnCopy, never raised; a value that owns something moves, and a duplicate of it is its .clone()
     WarnLoop = 3004,       // Infinite loop with no break
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant

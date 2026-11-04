@@ -23,7 +23,7 @@
 //     lets a skeleton and a skinned mesh of any kind carry the garment: a garment needs nothing else of the body.
 
 // A garment as draped on one body
-pub struct Garment {
+pub struct Garment is Default {
   pub name: String;
   pub layer: u32;
   pub thickness: f32;
@@ -48,10 +48,10 @@ pub struct Garment {
   pub damping: f32 = 0.6;
   pub follow: f32 = 0.3;         // how much of its distance to the skinned place a half-loose particle closes a substep, at looseness 0.5
 
-  pub fn empty() Garment {
-    Garment(String.empty(), 0u32, 0.006, SoftBody.empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(),
-      List[u32].empty(), List[f32].empty(), 1., 1., List[Vec2].empty(), List[Vec4].empty(), 0., List[bool].empty(),
-      List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(), List[Vec3].empty(), false, 4u32, 0.6, 0.3)
+  pub fn init(self: &new) {
+    *self = Garment(String(), 0u32, 0.006, SoftBody(), List[Vec3](), List[f32](), List[f32](),
+      List[u32](), List[f32](), 1., 1., List[Vec2](), List[Vec4](), 0., List[bool](),
+      List[u32](), List[Vec3](), List[Vec3](), List[Vec3](), false, 4u32, 0.6, 0.3);
   }
 
   pub fn particleCount(self: &) usize { soft.pos.len() }
@@ -79,7 +79,7 @@ pub struct Draped {
 }
 
 fn failed(why: &str) Draped {
-  Draped(Garment.empty(), false, String.from(why), 0u32, 0., 0., 0u32)
+  Draped(Garment(), false, String.from(why), 0u32, 0., 0., 0u32)
 }
 
 fn edgeIndex(base: usize, nu: u32, nv: u32, edge: u32, k: u32) usize {
@@ -307,14 +307,14 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   if np == 0usize { return failed("the pattern has no panels"); }
   let seen = rig.seenBones(&pattern.only, &pattern.ignore);
   // 1. the flat grids, concatenated
-  var flat = List[Vec2].empty();
-  var base = List[usize].empty();
+  var flat = List[Vec2]();
+  var base = List[usize]();
   var ok = true;
-  var why = String.empty();
+  var why = String();
   var p = 0usize;
   while p < np {
     let g = flatGrid(&pattern.panels[p]);
-    if !g.ok { ok = false; why = g.why.copy(); break; }
+    if !g.ok { ok = false; why = g.why.clone(); break; }
     base.push(flat.len());
     var i = 0usize;
     while i < g.pts.len() { flat.push(*g.pts[i]); i = i + 1usize; }
@@ -324,8 +324,8 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   let nVert = flat.len();
 
   // the atlas: the panels' flat boxes packed left to right in shelves
-  var offsets = List[Vec2].empty();
-  var boxMin = List[Vec2].empty();
+  var offsets = List[Vec2]();
+  var boxMin = List[Vec2]();
   var atlasW = 0.4f;
   var shelfX = 0.02f;
   var shelfY = 0.02f;
@@ -354,7 +354,7 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   let atlasH = shelfY + shelfH + 0.02;
 
   // 2. union the stitched vertices
-  var parent = List[u32].empty();
+  var parent = List[u32]();
   var i0 = 0usize;
   while i0 < nVert { parent.push(u32.from(i0)); i0 = i0 + 1usize; }
   var s = 0usize;
@@ -378,10 +378,10 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   }
 
   // 3. each vertex's place on the body, and its looseness
-  var start = List[Vec3].empty();
-  var loosev = List[f32].empty();
-  var reachv = List[f32].empty();
-  var panelOfV = List[u32].empty();
+  var start = List[Vec3]();
+  var loosev = List[f32]();
+  var reachv = List[f32]();
+  var panelOfV = List[u32]();
   i0 = 0usize;
   while i0 < nVert { start.push(Vec3(0., 0., 0.)); loosev.push(0.); reachv.push(0.); panelOfV.push(0u32); i0 = i0 + 1usize; }
   p = 0usize;
@@ -398,7 +398,7 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
     let r = up.cross(f);
     // the panel's length down the axis: the mean of its left and right edges
     let lMean = (edgeLength(&pattern.panels[p].left) + edgeLength(&pattern.panels[p].right)) * 0.5;
-    var prev = List[f32].empty();
+    var prev = List[f32]();
     var jj = 0usize;
     while jj <= nv {
       let v = f32.from(jj) / f32.from(nv);
@@ -412,17 +412,17 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
         width = width + (*flat[*base[p] + jj * cols + ii]).distance(*flat[*base[p] + jj * cols + ii - 1usize]);
         ii = ii + 1usize;
       }
-      var now = List[f32].empty();
+      var now = List[f32]();
       // the columns' angles round the axis. Where the axis is in the body the ring is measured (96 samples of its
       // radius) and the columns are placed so that the ring's length between two of them is the same share of the ring as
       // the flat row's: the cloth is wrapped by arc length, not by angle, so an elliptical chest does not strain the
       // cells at its ends. Otherwise (below the crotch) the ring is a flared circle and the angles are even.
-      var thetas = List[f32].empty();
+      var thetas = List[f32]();
       let axisIn = !clearOf(rig, &seen, below, inflate, c, pl.gap);
       if axisIn {
         let m = 96usize;
-        var ringTheta = List[f32].empty();
-        var ringCum = List[f32].empty();
+        var ringTheta = List[f32]();
+        var ringCum = List[f32]();
         var lastP = Vec3(0., 0., 0.);
         var cum = 0.f;
         var k = 0usize;
@@ -494,10 +494,10 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   }
 
   // average the stitched vertices' places; the tightest looseness wins
-  var sum = List[Vec3].empty();
-  var cnt = List[u32].empty();
-  var rootLoose = List[f32].empty();
-  var rootReach = List[f32].empty();
+  var sum = List[Vec3]();
+  var cnt = List[u32]();
+  var rootLoose = List[f32]();
+  var rootReach = List[f32]();
   i0 = 0usize;
   while i0 < nVert { sum.push(Vec3(0., 0., 0.)); cnt.push(0u32); rootLoose.push(10.); rootReach.push(0.); i0 = i0 + 1usize; }
   i0 = 0usize;
@@ -510,9 +510,9 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   }
 
   // 4. the mesh: places, uvs, triangles wound outward
-  var mesh = Mesh.empty();
+  var mesh = Mesh();
   // which edges of which panels are sewn to something; the others are free (a hem, a cuff, an opening)
-  var seamed = List[bool].empty();
+  var seamed = List[bool]();
   i0 = 0usize;
   while i0 < np * 4usize { seamed.push(false); i0 = i0 + 1usize; }
   i0 = 0usize;
@@ -521,7 +521,7 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
     seamed.set(pattern.seams[i0].panelB * 4usize + usize.from(pattern.seams[i0].edgeB), true);
     i0 = i0 + 1usize;
   }
-  var attrs = List[Vec4].empty();
+  var attrs = List[Vec4]();
   i0 = 0usize;
   while i0 < nVert {
     let rt = findRoot(&mut parent, i0);
@@ -633,8 +633,8 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   soft.useCurvatureBending();
 
   // per particle: looseness and reach from its vertices (any of them: all of a particle's are the same root)
-  var looseP = List[f32].empty();
-  var reachP = List[f32].empty();
+  var looseP = List[f32]();
+  var reachP = List[f32]();
   var ip = 0usize;
   while ip < soft.pos.len() { looseP.push(1.); reachP.push(0.); ip = ip + 1usize; }
   i0 = 0usize;
@@ -683,9 +683,9 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   }
 
   // 7. settle to rest and bind: velocities zeroed, skin weights from the body
-  var bind = List[Vec3].empty();
-  var joints = List[u32].empty();
-  var weights = List[f32].empty();
+  var bind = List[Vec3]();
+  var joints = List[u32]();
+  var weights = List[f32]();
   ip = 0usize;
   while ip < soft.pos.len() {
     soft.vel.set(ip, Vec3(0., 0., 0.));
@@ -695,8 +695,8 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
     transferSkin(rig, &seen, *soft.pos[ip], &mut joints, &mut weights);
     ip = ip + 1usize;
   }
-  var g = Garment.empty();
-  g.name = pattern.name.copy();
+  var g = Garment();
+  g.name = pattern.name.clone();
   g.layer = pattern.layer;
   g.thickness = pattern.thickness;
   g.soft = soft;
@@ -719,5 +719,5 @@ pub fn drape(pattern: &Pattern, rig: &BodyRig, inflate: f32, below: &LayerSurfac
   g.soft.limitPasses = 1u32;
   g.damping = pattern.damping;
   g.soft.airDensity = pattern.airDensity;
-  Draped(g, true, String.empty(), frames, fastest, worst, inside)
+  Draped(g, true, String(), frames, fastest, worst, inside)
 }

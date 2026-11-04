@@ -30,6 +30,17 @@ struct Quads {
   fn faceCount(self: &) usize { fcount.len() }
 }
 
+// Half-edges by their angle (a struct, since a function literal cannot be given to an Array's sortBy);
+// equal angles compare equal, so a stable sort keeps their order
+struct AngleOrder['a] {
+  ang: &'a List[f32];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let ka = *ang[usize.from(*a)];
+    let kb = *ang[usize.from(*b)];
+    if ka < kb { -1i32 } else if ka > kb { 1i32 } else { 0i32 }
+  }
+}
+
 fn rootOf(parent: &mut List[u32], v: u32) u32 {
   var r = v;
   while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
@@ -87,8 +98,8 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
   var parent = List[u32].withCapacity(n);
   i = 0usize;
   while i < n { parent.push(u32.from(i)); i = i + 1usize; }
-  var sa = List[u32].empty();
-  var sb = List[u32].empty();
+  var sa = List[u32]();
+  var sb = List[u32]();
   var merges = 0usize;
   var ignored = 0usize;
   i = 0usize;
@@ -183,9 +194,9 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
     i = i + 1usize;
   }
   sortKeys(&mut keys);
-  var ea = List[u32].empty();
-  var eb = List[u32].empty();
-  var esup = List[u32].empty();
+  var ea = List[u32]();
+  var eb = List[u32]();
+  var esup = List[u32]();
   i = 0usize;
   while i < keys.len() {
     var j = i;
@@ -205,8 +216,8 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
   i = 0usize;
   while i < ne0 { alive.push(1u32); i = i + 1usize; }
   prune(&ea, &eb, &esup, &cpos, &cnrm, ncl, &mut alive, 0.55);
-  var fa = List[u32].empty();
-  var fb = List[u32].empty();
+  var fa = List[u32]();
+  var fb = List[u32]();
   i = 0usize;
   while i < ne0 {
     if *alive[i] == 1u32 { fa.push(*ea[i]); fb.push(*eb[i]); }
@@ -227,9 +238,9 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
   i = 0usize;
   while i < ncl { deg.set(i + 1usize, *deg[i + 1usize] + *deg[i]); i = i + 1usize; }
   var fillAt = copyOf[u32](&deg);
-  var out = List[u32].empty();
+  var out = List[u32]();
   out.resize(ne * 2usize, 0u32);
-  var ang = List[f32].empty();
+  var ang = List[f32]();
   ang.resize(ne * 2usize, 0.);
   i = 0usize;
   while i < ne {
@@ -244,40 +255,29 @@ fn extract(l: &Level, o: &List[Vec3], q: &List[Vec3], vfeat: &List[u32], tol: f3
     fillAt.set(b, *fillAt[b] + 1u32);
     i = i + 1usize;
   }
-  var slot = List[u32].empty();
+  var slot = List[u32]();
   slot.resize(ne * 2usize, 0u32);
   var c = 0usize;
   while c < ncl {
     let lo = usize.from(*deg[c]);
     let hi = usize.from(*deg[c + 1usize]);
-    var a = lo + 1usize;
-    while a < hi {
-      let kh = *out[a];
-      let kang = *ang[usize.from(kh)];
-      var b = a;
-      while b > lo && *ang[usize.from(*out[b - 1usize])] > kang {
-        out.set(b, *out[b - 1usize]);
-        b = b - 1usize;
-      }
-      out.set(b, kh);
-      a = a + 1usize;
-    }
-    a = lo;
+    out.sliceMut(lo, hi).sortBy(&AngleOrder(&ang));
+    var a = lo;
     while a < hi { slot.set(usize.from(*out[a]), u32.from(a)); a = a + 1usize; }
     c = c + 1usize;
   }
   // The faces: walk each half-edge to the face on its left
-  var res = Quads(List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[f32].empty(),
-    List[u32].empty(), List[u32].empty(), ne, ncl, merges, sa.len(), ignored);
+  var res = Quads(List[Vec3](), List[Vec3](), List[u32](), List[f32](),
+    List[u32](), List[u32](), ne, ncl, merges, sa.len(), ignored);
   i = 0usize;
   while i < ncl {
     res.pos.push(*cpos[i]); res.nrm.push(*cnrm[i]); res.flag.push(*cflag[i]); res.rho.push(*crho[i]);
     i = i + 1usize;
   }
-  var seen = List[u32].empty();
+  var seen = List[u32]();
   seen.resize(ne * 2usize, 0u32);
-  var walk = List[u32].empty();
-  var pts = List[Vec3].empty();
+  var walk = List[u32]();
+  var pts = List[Vec3]();
   var h = 0usize;
   while h < ne * 2usize {
     if *seen[h] == 0u32 {
@@ -373,7 +373,7 @@ fn prune(ea: &List[u32], eb: &List[u32], esup: &List[u32], cpos: &List[Vec3], cn
   i = 0usize;
   while i < ncl { deg.set(i + 1usize, *deg[i + 1usize] + *deg[i]); i = i + 1usize; }
   var fillAt = copyOf[u32](&deg);
-  var lst = List[u32].empty();
+  var lst = List[u32]();
   lst.resize(ne * 2usize, 0u32);
   i = 0usize;
   while i < ne {

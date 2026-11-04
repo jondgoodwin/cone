@@ -1,0 +1,160 @@
+// Bug 33: the stable sorts (Array.sortBy, Array.sortByKey, List.sortBy) merge two runs by
+// copying the shorter one into a scratch buffer no collector traces. While the comparison
+// runs, an element can live only there. Here a collection (mem.traceRoots) runs inside
+// EVERY comparison (or key) call, and the worst trace of each sort is reported: "found
+// 40 of 40" means no element was ever out of sight.
+//
+// Each case is its own function, so the leaves of an earlier case are no longer roots (they
+// carry the same ids 1 to 41, so a live one would hide a loss in a later case).
+
+mod region_sort_scratch_gc;
+
+import stdio use *;
+import collections;
+import libc;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal seen = 0u64;
+var @threadlocal epoch = 1u32;
+var @threadlocal worst = 99i64;
+var @threadlocal traces = 0i64;
+var @threadlocal lossy = 0i64;
+var @threadlocal lo = 1i64;
+var @threadlocal total = 40i64;
+var @threadlocal minTraces = 200i64;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(nextId));
+    nextId = nextId + 1;
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
+    seen = seen | (1u64 << u64.from(id - 1));
+  }
+}
+struct Leaf { pub n: i32; }
+alias Ref = Tr[mut, Leaf];
+fn leaf(n: i32) Ref { Tr[mut, Leaf](n) }
+
+// Collect, and count how many of the 40 leaves (ids lo to lo + 39) were marked
+fn trace() {
+  seen = 0u64;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  var found = 0i64;
+  var id = lo;
+  while id < lo + total {
+    if (seen & (1u64 << u64.from(id - 1))) != 0u64 { found = found + 1; }
+    id = id + 1;
+  }
+  traces = traces + 1;
+  if found < worst { worst = found; }
+  if found < total { lossy = lossy + 1; }
+}
+
+// 'first' is the id of the first of the 40 leaves (an array made with 'fill' makes one more first)
+fn begin(first: i64) { lo = first; nextId = 1; worst = 99; traces = 0; lossy = 0; total = 40; minTraces = 200; }
+fn report(label: &str) {
+  printStr(label);
+  // (how many collections ran differs between a debug build, whose sort checks its result
+  // by 'order', and a release one)
+  printStr(": ");
+  printStr(if traces > minTraces { "collected inside the comparison" } else { "TOO FEW COLLECTIONS" });
+  printStr(", worst found ");
+  printInt(worst);
+  printStr(" of ");
+  printInt(total);
+  printStr(", collections that lost one: ");
+  printInt(lossy);
+  printStr("\n");
+}
+
+fn byN(a: &Ref, b: &Ref) i32 { trace(); a.n <=> b.n }
+fn keyOf(a: &Ref) i32 { trace(); a.n }
+
+fn sortedList(l: &collections.List[Ref]) bool {
+  var i = 1usize;
+  while i < l.len() { if l[i - 1usize].n > l[i].n { return false; } i = i + 1usize; }
+  true
+}
+
+fn filled() collections.List[Ref] {
+  var list = collections.List[Ref]();
+  var i = 0;
+  while i < 40 { list.push(leaf((i * 17) % 40)); i = i + 1; }
+  list
+}
+
+// List.sortBy, whose scratch is the list's own region
+fn listSortBy() {
+  begin(1);
+  var list = filled();
+  list.sortBy(&byN);
+  report("List.sortBy");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+// Array.sortBy, here on the list's view: the scratch is the heap's
+fn arraySortBy() {
+  begin(1);
+  var list = filled();
+  list.viewMut().sortBy(&byN);
+  report("Array.sortBy");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+// Array.sortByKey (the list's view, scratch from the heap)
+fn arraySortByKey() {
+  begin(1);
+  var list = filled();
+  list.viewMut().sortByKey(&keyOf);
+  report("Array.sortByKey");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+fn listSortByKey() {
+  begin(1);
+  var list = filled();
+  list.sortByKey(&keyOf);
+  report("List.sortByKey");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+// sortUnstableBy, for comparison (its temporaries are locals, which the shadow stack roots)
+fn listSortUnstable() {
+  begin(1);
+  var list = filled();
+  list.sortUnstableBy(&byN);
+  report("List.sortUnstableBy");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+// A merge that gallops: a run of 'na' values from 'base' up, then one of 'nb' values from 0 up,
+// of which the second wins every comparison, so the merge moves the streak in a block. The
+// merge copies the shorter run: from the front (32, 32) or the back (32, 28)
+fn gallopSortBy(label: &str, na: i32, base: i32, nb: i32) {
+  begin(1);
+  total = i64.from(na + nb);
+  minTraces = 60;
+  var list = collections.List[Ref]();
+  var i = 0;
+  while i < na { list.push(leaf(base + i)); i = i + 1; }
+  i = 0;
+  while i < nb { list.push(leaf(i)); i = i + 1; }
+  list.sortBy(&byN);
+  report(label);
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+fn main() {
+  gallopSortBy("gallop from the front", 32, 32, 32);
+  gallopSortBy("gallop from the back", 32, 20, 28);
+  listSortBy();
+  arraySortBy();
+  arraySortByKey();
+  listSortByKey();
+  listSortUnstable();
+}

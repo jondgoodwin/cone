@@ -1,0 +1,84 @@
+// A '&<uni' virtual reference, wanted from a sole owner or held in a place, is
+// borrowed from and not used up, as a '&uni' is: dispatching through it reborrows
+// it, so a second call is no use after a move; passing it on to a function lends it,
+// so it is there to use again; and a '&<uni' taken from an owner lends the owner,
+// which is still there, and still ends its value, afterward. trait_flow_vref_reborrow
+// holds what stays refused: two live '&<uni' to one owner, and using the owner while
+// one lives.
+
+mod trait_vref_reborrow;
+
+import stdio use *;
+
+trait App {
+  pub fn frame(self: &mut) bool;
+  pub fn look(self: &) i64;
+  pub fn take(self: &uni) i64;
+}
+
+struct Spinner {
+  pub n: i64;
+  pub fn frame(self: &mut) bool {n = n + 1; n < 4}
+  pub fn look(self: &) i64 {n}
+  pub fn take(self: &uni) i64 {n = n + 10; n}
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Each call through the parameter uses it, and it is used again
+fn three(b: &<uni App) i64 { b.frame(); b.frame(); b.look() }
+fn takeTwice(b: &<uni App) i64 { b.take(); b.take(); b.take() }
+// Passed on, and used again after the callee has finished with it
+fn passOn(b: &<uni App) i64 { let x = three(b); x + b.look() }
+fn passTwice(b: &<uni App) i64 { three(b); three(b); b.look() }
+// Held by a local, which is a borrow of the parameter: the parameter returns
+// to use when the local's last use is past
+fn hold(b: &<uni App) i64 {
+  let c: &<uni App = b;
+  c.frame();
+  let seen = c.look();
+  b.frame();
+  seen * 1000 + b.look()
+}
+
+fn main() i32 {
+  // From a '&uni' of a sole owner
+  var u = Uni[Spinner](20);
+  show("three", three(&uni *u));
+  show("pass-on", passOn(&uni *u));
+  show("pass-twice", passTwice(&uni *u));
+  show("take-twice", takeTwice(&uni *u));
+  show("hold", hold(&uni *u));
+
+  // From an owning virtual reference, which stays
+  var o: Uni[App] = Uni[Spinner](30);
+  show("owner-three", three(o));
+  show("owner-again", three(o));
+  show("owner-pass-on", passOn(o));
+  show("owner-take-twice", takeTwice(o));
+  show("owner-hold", hold(o));
+  o.frame();
+  show("owner-after", o.look());
+  show("owner-take", o.take() + o.take());
+  show("owner-end", o.look());
+
+  // A shared owner that is 'uni' lends the same way
+  var c: Rc[App] = Rc[Spinner](40);
+  show("rc-three", three(c));
+  show("rc-again", three(c));
+  show("rc-after", c.look());
+
+  // A plain owner of a struct, converted to a '&<uni', is lent the same way: it is
+  // there to use after, and a second conversion lends it again (not a move)
+  var p = Uni[Spinner](50);
+  show("plain-three", three(p));
+  show("plain-again", three(p));
+  show("plain-after", p.look());
+
+  0i32
+}

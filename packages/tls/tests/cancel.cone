@@ -99,7 +99,7 @@ fn report(label: &str, seen: &Seen, want: EventKind, asked: Instant) {
 fn main() i32 {
   var lp = Loop.mustMake();
   var drv = Driver.make(Config.make());
-  var events = List[Event].empty();
+  var events = List[Event]();
   var seen = Seen(EventKind.Done, 0u64, 0u64, 0u64, 0u64);
   var roots = tls.ClientConfig.make();
   roots.verify = tls.Verifier.roots(readText("ca.pem").view());
@@ -126,7 +126,7 @@ fn main() i32 {
   var c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](rootsClient.stream("localhost")),
     Sink.Here(tokConn));
   var asked = Instant.now();
-  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
+  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq),
     asked + Duration.fromMillis(150i64));
   settle(&mut drv, &mut lp, &mut seen, &uni events, 1u64, 1u64);
   report("deadline during the handshake", &seen, EventKind.TimedOut, asked);
@@ -135,7 +135,7 @@ fn main() i32 {
   // A cancel during the handshake
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](rootsClient.stream("localhost")),
     Sink.Here(tokConn));
-  let r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  let r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq));
   idle(&mut drv, &mut lp, &mut seen, &uni events, 50i64);
   asked = Instant.now();
   expect(drv.cancel(&mut lp, r2), "the cancel is taken");
@@ -146,7 +146,7 @@ fn main() i32 {
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](rootsClient.stream("localhost")),
     Sink.Here(tokConn));
   let group = CancelGroup.make();
-  drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq), group, forever());
+  drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq), group, forever());
   idle(&mut drv, &mut lp, &mut seen, &uni events, 50i64);
   asked = Instant.now();
   group.cancel();
@@ -180,12 +180,12 @@ fn main() i32 {
   let platformClient = mustClient(platform);
 
   // A deadline while the verification waits for the lane
-  lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
+  lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf()), Target.Here(tokBlock));
   let v0 = tls.stats().verifications;
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](platformClient.stream("localhost")),
     Sink.Here(tokConn));
   asked = Instant.now();
-  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq),
+  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq),
     asked + Duration.fromMillis(150i64));
   settle(&mut drv, &mut lp, &mut seen, &uni events, 4u64, 4u64);
   report("deadline during the OS's verification", &seen, EventKind.TimedOut, asked);
@@ -194,10 +194,10 @@ fn main() i32 {
   expectUInt(lane.stats().cancelled, 1u64, "the queued verification was taken out of the lane");
 
   // A cancel while the verification waits for the lane
-  lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf.empty()), Target.Here(tokBlock));
+  lp.submit(Op.Call(lane, &holdWork, 400u64, IoBuf()), Target.Here(tokBlock));
   c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, Uni[tls.Stream](platformClient.stream("localhost")),
     Sink.Here(tokConn));
-  let r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  let r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength(), Sink.Here(tokReq));
   let giveUp = Instant.now() + Duration.fromSeconds(5i64);
   while tls.stats().verifications - v0 < 2u64 && Instant.now() < giveUp {step(&mut drv, &mut lp, &mut seen, &uni events);}
   requireUInt(tls.stats().verifications - v0, 2u64, "the verification is handed to the pool");
@@ -219,7 +219,7 @@ fn main() i32 {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}

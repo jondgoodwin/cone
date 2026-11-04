@@ -36,7 +36,7 @@ fn waitFor(lp: &mut Loop, out: &mut List[Completion], n: usize) {
 // Poll until n records are back from the done list
 fn waitDone(lp: &mut Loop, got: &mut List[*OpCore], n: usize) {
   let limit = Instant.now() + Duration.fromSeconds(5i64);
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   while got.len() < n && Instant.now() < limit {
     lp.poll(limit, &mut out);
     lp.takeDone(got);
@@ -52,7 +52,7 @@ fn pair(lp: &mut Loop) Handle, Handle {
   }
   lp.submit(Op.Accept(listener), Target.Here(9001u64));
   lp.submit(Op.Connect(SocketAddr.localhost(port)), Target.Here(9002u64));
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   waitFor(lp, &mut out, 2usize);
   var a = Handle.none();
   var b = Handle.none();
@@ -113,8 +113,8 @@ fn main() i32 {
   var b = Handle.none();
   a, b = pair(&mut lp);
   let pool = OpPool[Ask].make();
-  var got = List[*OpCore].empty();
-  var out = List[Completion].empty();
+  var got = List[*OpCore]();
+  var out = List[Completion]();
 
   // 1. A send: done at once, the loop's counters untouched
   let before = lp.counters().submitted;
@@ -137,7 +137,7 @@ fn main() i32 {
   // 3. A receive on a silent socket
   let r3 = recvOn(&pool, a);
   let how = issueOn(&sh, a, r3);
-  if isWindows() {
+  #if #os == .windows {
     expectUInt(u64.from(how), u64.from(issuePending), "in flight");
     expect((r3 as &OpCore).isIssued(), "issued, to be linked");
     let s3 = sendOn(&pool, b, "world");
@@ -159,7 +159,7 @@ fn main() i32 {
     lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
     lp.takeDone(&mut got);
     expectUInt(u64.from(got.len()), 0u64, "and only once");
-  } else {
+  } #else {
     expectUInt(u64.from(how), u64.from(issueNot), "it would block: not issued");
     lp.start(r3);
     let s3 = sendOn(&pool, b, "world");

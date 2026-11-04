@@ -21,7 +21,7 @@ import http2 use *;
 const never = " (never indexed)";
 
 fn hex(b: &Array[u8]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < b.len {
     s.appendHex(u64.from(b[i]), 2usize);
@@ -33,7 +33,7 @@ fn hex(b: &Array[u8]) String {
 fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
 
 fn unhex(s: &Array[u8]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   var i = 0usize;
   while i + 1usize < s.len {
     out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
@@ -44,7 +44,7 @@ fn unhex(s: &Array[u8]) List[u8] {
 
 // 'name: value', a line each
 fn listing(fields: &Array[HeaderField]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < fields.len {
     s.append(fields[i].name.view());
@@ -59,7 +59,7 @@ fn listing(fields: &Array[HeaderField]) String {
 
 // The table as the RFC prints it, newest first
 fn dump(t: &DynamicTable) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < t.len() {
     s.append("[");
@@ -81,7 +81,7 @@ fn dump(t: &DynamicTable) String {
 
 // A listing back into fields
 fn parseList(text: &Array[u8]) List[HeaderField] {
-  var fields = List[HeaderField].empty();
+  var fields = List[HeaderField]();
   var start = 0usize;
   while start < text.len {
     var end = start;
@@ -111,7 +111,7 @@ fn label(l: &str, what: &str) String {
 
 fn example(enc: &mut HpackEncoder, dec: &mut HpackDecoder, l: &str, blockHex: &str, list: &str, table: &str, without: bool) {
   let block = unhex(blockHex);
-  var got = List[HeaderField].empty();
+  var got = List[HeaderField]();
   match dec.decode(block.view(), &mut got) {
     case let Ok(size) {expectUInt(u64.from(size), u64.from(listSize(got.view())), label(l, "size").view());}
     case let Err(e) {expectStr(e.message().view(), "", label(l, "decode").view());}
@@ -120,7 +120,7 @@ fn example(enc: &mut HpackEncoder, dec: &mut HpackDecoder, l: &str, blockHex: &s
   expectStr(dump(dec.dynamicTable()).view(), table, label(l, "decoder's table").view());
 
   let fields = parseList(list);
-  var out = List[u8].empty();
+  var out = List[u8]();
   if without {
     let f = &fields[0usize];
     encodeLiteral(&mut out, Indexing.Without, staticFind(f.name.view(), f.value.view()).index,
@@ -144,12 +144,12 @@ fn config(huffman: bool, tableSize: usize) HpackConfig {
 // encoder owes the update, and the decoder, once its SETTINGS is
 // acknowledged, requires it
 fn prime(enc: &mut HpackEncoder, dec: &mut HpackDecoder, l: &str) {
-  var out = List[u8].empty();
+  var out = List[u8]();
   enc.startBlock(&mut out);
   expectStr(hex(out.view()).view(), "3fe101", label(l, "size update to 256").view());
   dec.settingSent();
   dec.settingAcknowledged();
-  var got = List[HeaderField].empty();
+  var got = List[HeaderField]();
   match dec.decode(out.view(), &mut got) {
     case let Ok(size) {expectUInt(u64.from(size), 0u64, label(l, "an empty list").view());}
     case let Err(e) {expectStr(e.message().view(), "", label(l, "the update").view());}

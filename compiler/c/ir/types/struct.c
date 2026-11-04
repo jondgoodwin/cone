@@ -821,7 +821,7 @@ static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
     // the types. Not a static, a macro without self, Self, or the value's own
     // finalizer or clone.
     if (fold->star)
-        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers, NULL, src);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2136,7 +2136,7 @@ static void structLendExpand(StructNode *node, FieldDclNode *use, StructNode *bo
         lent[cls] = 1;
     }
     if (fold->star)
-        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL);
+        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers, NULL, body);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2168,7 +2168,7 @@ static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook
     // An alias for every public member the sibling declares itself, less what
     // 'but' leaves out
     if (fold->star)
-        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib));
+        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn, structExtendsRoot(sib), sib);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -2209,6 +2209,47 @@ int structExtendsEquiv(INode *type1, INode *type2) {
     if (dcl1 == dcl2 || dcl1->tag != StructTag || dcl2->tag != StructTag)
         return 0;
     return structExtendsRoot((StructNode*)dcl1) == structExtendsRoot((StructNode*)dcl2);
+}
+
+// The type whose own 'final' this type's is: an enrichment may not override its base's
+// 'final', so a type that has one declares it or holds a copy of its base's, and the
+// declaring type is the top of the 'extends' chain that has one. Two types with one
+// origin run the same 'final'.
+static StructNode *structFinalOrigin(StructNode *node) {
+    while (node->extendsdcl && namespaceFind(&((StructNode*)node->extendsdcl)->namespace, finalName) != NULL)
+        node = (StructNode*)node->extendsdcl;
+    return node;
+}
+
+StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep) {
+    INode *fromdcl = itypeGetTypeDcl(fromtype);
+    INode *todcl = itypeGetTypeDcl(totype);
+    // An owning reference moves its owner: the pointee is then dropped as the type
+    // the new reference names. A borrow leaves the owner where it was.
+    // An array by value carries its elements: each is dropped as the element type of
+    // the array it is now.
+    while (todcl->tag == fromdcl->tag
+        && (((fromdcl->tag == RefTag || fromdcl->tag == ArrayRefTag)
+            && ((RefNode*)fromdcl)->region != borrowRef && ((RefNode*)todcl)->region != borrowRef)
+          || fromdcl->tag == ArrayTag)) {
+        if (fromdcl->tag == ArrayTag) {
+            fromdcl = itypeGetTypeDcl(arrayElemType(fromdcl));
+            todcl = itypeGetTypeDcl(arrayElemType(todcl));
+            continue;
+        }
+        fromdcl = itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp);
+        todcl = itypeGetTypeDcl(((RefNode*)todcl)->vtexp);
+    }
+    if (!structExtendsEquiv(fromdcl, todcl))
+        return NULL;
+    if (namespaceFind(&((StructNode*)fromdcl)->namespace, finalName) == NULL)
+        return NULL;
+    if (namespaceFind(&((StructNode*)todcl)->namespace, finalName) == NULL
+        || structFinalOrigin((StructNode*)fromdcl) != structFinalOrigin((StructNode*)todcl)) {
+        *basep = (StructNode*)todcl;
+        return (StructNode*)fromdcl;
+    }
+    return NULL;
 }
 
 // Hook the entries a trait's expansion added to the namespace, so that a method
@@ -2919,9 +2960,16 @@ static GcTraceState structGcTraceElements(StructNode *node, INode **elem, char *
     if (sig->parms->used != 1)
         TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     RefNode *selftype = (RefNode*)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(sig->parms, 0)));
-    if (selftype->tag != RefTag || itypeGetTypeDcl(selftype->region) != borrowRef
+    // core's Array[T], the body of a run-time count, is borrowed as a slice: its
+    // '&mut' self is a slice reference, whose referent is the element type
+    int sliceself = 0;
+    if (selftype->tag == ArrayRefTag && node->namesym == arrayTypeDcl->namesym) {
+        Nodes *targs = itypeInstanceTypeArgs((INode*)node);
+        sliceself = targs != NULL && targs->used == 1 && itypeIsSame(nodesGet(targs, 0), selftype->vtexp);
+    }
+    if ((selftype->tag != RefTag && !sliceself) || itypeGetTypeDcl(selftype->region) != borrowRef
         || !(permGetFlags(itypeGetTypeDcl(selftype->perm)) & MayWrite)
-        || itypeGetTypeDcl(selftype->vtexp) != (INode*)node)
+        || (!sliceself && itypeGetTypeDcl(selftype->vtexp) != (INode*)node))
         TRACE_FAIL("its 'gcTraceElements' takes nothing but 'self: &mut'");
     INode *cursor = itypeGetTypeDcl(sig->rettype);
     if (cursor->tag != StructTag || (cursor->flags & (TraitType | EnumType)))
@@ -4290,6 +4338,306 @@ static void structHashCheck(StructNode *node) {
     }
 }
 
+// Does a field of this type have a '==' against its own kind, for a derived '=='
+// to compare it with? A number (a float's is IEEE's), a raw pointer, a type that
+// meets core's Eq or declares a '==' (an instance's is there only where its
+// parameters allow it), and a reference or slice to such a type, which '=='
+// reads through. Not an array, a tuple, a function or a virtual reference.
+static int structEqFieldHasEq(INode *type, StructNode *eqtrait, int depth) {
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case PtrTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+        return depth < 4 && structEqFieldHasEq(((RefNode*)dcl)->vtexp, eqtrait, depth + 1);
+    case StructTag:
+        if (genericTypeIs(dcl, eqtrait))
+            return 1;
+        {
+            INode *eq = iNsTypeFindFnField((INsTypeNode*)dcl, eqName);
+            if (eq && eq->tag == AliasDclTag)
+                eq = aliasDclResolve(eq);
+            return eq != NULL && (eq->tag == FnDclTag || eq->tag == FnOverloadDclTag) && (eq->flags & FlagMethFld);
+        }
+    default:
+        return 0;
+    }
+}
+
+// A type declaring core's Eq (known by its name and package, as Hash is) has a
+// '==': one it wrote, or, when it wrote none, one the compiler supplies as the
+// inherited requirement's body: the fields compared in order with the '==' each
+// has, joined by '&&', so that '!=' follows as it does from any '=='. A float
+// field is allowed, its '==' being IEEE's (NaN unequal to itself); a type that is
+// Hash needs no float-free key from this, only from its hash. Refused where a
+// field has no '==' against itself. The body is built resolved against the
+// requirement's parameters, as structHashCheck builds the hash's, so type check
+// reaches it as it would a written one; a field that is itself supplied reaches
+// that struct's own.
+static void structEqCheck(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *eqtrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsEqTrait(*traitp))
+            eqtrait = (StructNode*)*traitp;
+    if (eqtrait == NULL)
+        return;
+    // Only the requirement's own bodiless clone is filled: a '==' the author wrote,
+    // or an extern one, stands
+    INode *binding = namespaceFind(&node->namespace, eqName);
+    if (binding == NULL || binding->tag != FnDclTag)
+        return;
+    FnDclNode *eqfn = (FnDclNode*)binding;
+    if (eqfn->value != NULL || (eqfn->flags & FlagExtern))
+        return;
+    char *name = &node->namesym->namestr;
+
+    int refused = 0;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        if (!structEqFieldHasEq(field->vtype, eqtrait, 0)) {
+            INode *fldtype = itypeGetTypeDcl(field->vtype);
+            errorMsgNode((INode*)field, ErrorEqField,
+                "%s declares Eq and writes no `==`, and its field %s is %s, which has no `==`. Write a `==` of your own that compares what identifies %s, or give the field's type one.",
+                name, &field->namesym->namestr, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype), name);
+            refused = 1;
+        }
+    }
+
+    // A refused struct gets a body that says false, so type check says nothing more of it
+    FnSigNode *sig = (FnSigNode*)eqfn->vtype;
+    INode *selfparm = nodesGet(sig->parms, 0);
+    INode *otherparm = nodesGet(sig->parms, 1);
+    INode *result = NULL;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        if (refused)
+            break;
+        // self.field == other.field
+        FnCallNode *mine = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
+        mine->methfld = (INode*)newMemberUseNode(field->namesym);
+        inodeLexCopy(mine->methfld, (INode*)node);
+        FnCallNode *theirs = newFnCallLower((INode*)node, newNameUseFromDclNode(otherparm, (INode*)node), 0);
+        theirs->methfld = (INode*)newMemberUseNode(field->namesym);
+        inodeLexCopy(theirs->methfld, (INode*)node);
+        // Lent, '&self.field == &other.field': a '==' written against '&' (as every
+        // derived one is) takes references, and one written by value is read through
+        RefNode *lent = newRefNodeFull(BorrowTag, (INode*)node, borrowRef, newPermUseNode(roPerm), (INode*)mine);
+        RefNode *otherlent = newRefNodeFull(BorrowTag, (INode*)node, borrowRef, newPermUseNode(roPerm), (INode*)theirs);
+        FnCallNode *cmp = newFnCallOpnameLower((INode*)node, (INode*)lent, eqName, 1);
+        nodesAdd(&cmp->args, (INode*)otherlent);
+        if (result == NULL)
+            result = (INode*)cmp;
+        else {
+            LogicNode *both = newLogicNode(AndLogicTag);
+            inodeLexCopy((INode*)both, (INode*)node);
+            both->lexp = result;
+            both->rexp = (INode*)cmp;
+            result = (INode*)both;
+        }
+    }
+    if (result == NULL) {
+        // No field to differ by (or a refused struct): every pair is equal, or, refused, none is
+        result = (INode*)newULitNodeTC(refused ? 0 : 1, (INode*)boolType);
+        inodeLexCopy(result, (INode*)node);
+    }
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)node);
+    BreakRetNode *ret = newReturnNodeExp(result);
+    inodeLexCopy((INode*)ret, (INode*)node);
+    nodesAdd(&block->stmts, (INode*)ret);
+    eqfn->value = (INode*)block;
+}
+
+// A type declaring core's Clone has a 'clone': one it wrote, or, when it wrote
+// none, one the compiler supplies as the inherited requirement's body: a new value
+// of the struct built of the fields' own clones, in order, 'Self[self.a.clone(),
+// self.b.clone()]'. A field that is Copy clones as the value (fnCallCloneCopy);
+// one that is Clone, as it says. Refused where a field is neither: a unique
+// owner, an array, a function, a struct that declares no 'clone'. The body is built
+// resolved against the requirement's parameters, as structEqCheck builds the
+// '==', so type check reaches it as it would a written one.
+static void structCloneCheck(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *clonetrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsCloneTrait(*traitp))
+            clonetrait = (StructNode*)*traitp;
+    if (clonetrait == NULL)
+        return;
+    // Only the requirement's own bodiless clone is filled: a 'clone' the author
+    // wrote, or an extern one, stands
+    INode *binding = namespaceFind(&node->namespace, cloneName);
+    if (binding == NULL || binding->tag != FnDclTag)
+        return;
+    FnDclNode *clonefn = (FnDclNode*)binding;
+    if (clonefn->value != NULL || (clonefn->flags & FlagExtern))
+        return;
+    char *name = &node->namesym->namestr;
+
+    int refused = 0;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        // An array, tuple, vector or pointer that copies is cloned as the value
+        // (fnCallCloneCopy); a struct or a number by the trait; a reference not at all
+        int copies = (fldtype->tag == ArrayTag || fldtype->tag == TTupleTag
+            || fldtype->tag == VectorTag || fldtype->tag == PtrTag) && !itypeIsMove(fldtype);
+        if (!copies && !genericTypeIs(field->vtype, clonetrait)) {
+            errorMsgNode((INode*)field, ErrorCloneField,
+                "%s declares Clone and writes no `clone`, and its field %s is %s, which is neither Copy nor Clone. Write a `clone` of your own, or declare the field's type Clone.",
+                name, &field->namesym->namestr, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype));
+            refused = 1;
+        }
+    }
+
+    // A refused struct gets a body whose value is already an error, so type check
+    // says nothing more of it
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)node);
+    clonefn->value = (INode*)block;
+    if (refused) {
+        INode *bad = (INode*)newULitNodeTC(0, (INode*)errorType);
+        inodeLexCopy(bad, (INode*)node);
+        BreakRetNode *badret = newReturnNodeExp(bad);
+        inodeLexCopy((INode*)badret, (INode*)node);
+        nodesAdd(&block->stmts, (INode*)badret);
+        return;
+    }
+    FnSigNode *sig = (FnSigNode*)clonefn->vtype;
+    INode *selfparm = nodesGet(sig->parms, 0);
+    FnCallNode *lit = newFnCallLower((INode*)node, newNameUseFromDclNode((INode*)node, (INode*)node), 0);
+    lit->args = newNodes(node->fields.used + 1);
+    fnCallMarkConstruction(lit);
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        // (A mixin placeholder is the trait a type names in 'is': it stands for
+        // the trait's requirements and holds no storage. The fields the trait
+        // requires are declared by the type itself and cloned here as any other;
+        // an enum variant's base is no 'is' target, a variant cannot declare Clone.)
+        if (field->flags & IsMixin)
+            continue;
+        // self.field.clone()
+        FnCallNode *access = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
+        access->methfld = (INode*)newMemberUseNode(field->namesym);
+        inodeLexCopy(access->methfld, (INode*)node);
+        // a read-only borrow field is copied as it lies: its clone is the same borrow
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        if (refIsCopyBorrow(fldtype)) {
+            nodesAdd(&lit->args, (INode*)access);
+            continue;
+        }
+        FnCallNode *call = newFnCallLower((INode*)node, (INode*)access, 1);
+        call->methfld = (INode*)newMemberUseNode(cloneName);
+        inodeLexCopy(call->methfld, (INode*)node);
+        nodesAdd(&lit->args, (INode*)call);
+    }
+    BreakRetNode *ret = newReturnNodeExp((INode*)lit);
+    inodeLexCopy((INode*)ret, (INode*)node);
+    nodesAdd(&block->stmts, (INode*)ret);
+}
+
+// The core Default trait this struct declares, or NULL
+static StructNode *structDeclaredDefault(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return NULL;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsDefaultTrait(*traitp))
+            return (StructNode*)*traitp;
+    return NULL;
+}
+
+// Does this field of a struct that declares Default have a value `T()` can give it
+// when the field names none: a type that is Default itself?
+static int structDefaultFieldFills(StructNode *defaulttrait, FieldDclNode *field) {
+    if (field->flags & (IsMixin | IsTagField))
+        return 0;
+    return genericTypeIs(field->vtype, defaulttrait);
+}
+
+// A type declaring core's Default is made by `T()`, with no arguments: a type
+// that declares an `init` says how itself (List and Dict make an empty value), and
+// any other is made from its fields, each the `= value` its declaration gave or,
+// where it gave none, its type's own `T()` (structFieldDefault). Refused where a
+// field has neither. Only the field's check is made here; the value is made by
+// each construction, so each gets a node of its own.
+static void structDefaultCheck(StructNode *node) {
+    StructNode *defaulttrait = structDeclaredDefault(node);
+    if (defaulttrait == NULL)
+        return;
+    // A struct with an init of its own is made by it, so one must be callable
+    // with no arguments
+    if (iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL) {
+        if (!typeLitZeroArgConstructible(node))
+            errorMsgNode((INode*)node, ErrorDefaultInit,
+                "%s declares Default, and writes an `init`, but none of its inits can be called with no arguments, so `%s()` is not a construction. Give an init no required parameter (the region of a CarriesRegion type may be left out), or do not declare Default.",
+                &node->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    uint32_t cnt;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if ((field->flags & (IsMixin | IsTagField)) || field->value != NULL)
+            continue;
+        if (!structDefaultFieldFills(defaulttrait, field))
+            errorMsgNode((INode*)field, ErrorDefaultField,
+                "%s declares Default, and its field %s has no `= value` and is %s, which is not Default. Give the field a default value, or declare its type Default, or write an `init` for %s.",
+                &node->namesym->namestr, &field->namesym->namestr, itypeName(itypeGetTypeDcl(field->vtype)),
+                &node->namesym->namestr);
+    }
+}
+
+// The value a construction `T()` of a struct declaring Default (and writing no
+// `init`) gives a field it was told nothing of and whose declaration gave no
+// `= value`: the field type's own `T()`, a node for this construction alone.
+// NULL where the struct does not declare Default or the field's type is not.
+INode *structFieldDefault(StructNode *node, FieldDclNode *field) {
+    StructNode *defaulttrait = structDeclaredDefault(node);
+    if (defaulttrait == NULL || field->value != NULL
+        || iNsTypeFindFnField((INsTypeNode*)node, initMethodName) != NULL
+        || !structDefaultFieldFills(defaulttrait, field))
+        return NULL;
+    INode *fldtype = itypeGetTypeDcl(field->vtype);
+    INode *value;
+    if (fldtype->tag == FloatNbrTag)
+        {
+        FLitNode *zero = newFLitNode(0.0, fldtype);
+        zero->vtype = fldtype;
+        value = (INode*)zero;
+    }
+    else if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
+        value = (INode*)newULitNodeTC(0, fldtype);
+    else {
+        FnCallNode *lit = newFnCallLower((INode*)node, newNameUseFromDclNode(fldtype, (INode*)node), 0);
+        lit->args = newNodes(1);
+        fnCallMarkConstruction(lit);
+        value = (INode*)lit;
+    }
+    inodeLexCopy(value, (INode*)node);
+    return value;
+}
+
 // Is this method of a type the copy of an 'inline' default of a trait it declares
 // (structInheritTrait)? A copy is the same source as the default it came from; a
 // method the type declares itself under that name replaces the default instead.
@@ -4836,6 +5184,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // And a type declaring core's Hash has an '==', and the 'hash' of a struct
     // that writes none is supplied from its fields
     structHashCheck(node);
+    // and one declaring core's Eq has an '==' it is given from its fields
+    structEqCheck(node);
+    // and one declaring core's Clone has a 'clone' it is given from its fields
+    structCloneCheck(node);
+    // and one declaring core's Default has a field with a value for `T()`
+    structDefaultCheck(node);
 
     // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.
@@ -4969,6 +5323,11 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             if (meth->genericinfo)
                 return NULL;
             INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
+            // The type's method is a use too (Rule 1): this type may be reached
+            // from a body checked before its own members are (a method of a type
+            // declared in an earlier file), and an unchecked signature meets no slot
+            if (strbinding)
+                fnCallDemandCandidates(strbinding);
             FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth, NULL);
             if (strmeth == NULL)
                 return 0;

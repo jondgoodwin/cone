@@ -206,6 +206,18 @@ enum TokenTypes {
     LetToken,      // 'let': a declaration whose name is never given a new value (parseDclWord)
     VarToken,      // 'var': a declaration whose name may be given a new value (parseDclWord)
 
+    // The meta layer's words (parsemeta.c). The lexer reads a '#' word whole, as
+    // it reads an '@' attribute; these are the ones the language means, and every
+    // other '#' word is reported as held (ErrorReserved)
+    HashIfToken,   // '#if': chooses which code exists, on facts of the build
+    HashElifToken, // '#elif'
+    HashElseToken, // '#else'
+    HashOsToken,   // '#os': the build's operating system, a fact
+    HashArchToken, // '#arch': the build's processor architecture, a fact
+    HashDebugToken, // '#debug': whether this is a debug build, a fact
+    HashDefinedToken, // '#defined("NAME")': whether a '-D' named it, a fact
+    HashDefineToken, // '#define("NAME")': the integer a '-D' gave it, 0 where none did, a fact
+
     // Words held for language features that are documented but not implemented.
     // The lexer never returns this token: it diagnoses the use and hands back an
     // identifier, so the rest of the parse proceeds as it would have.
@@ -216,6 +228,12 @@ enum TokenTypes {
 
 // Current lexer
 extern Lexer *lex;
+
+// Set by the parser while it reads a '#if' condition, where an unknown '#' word is
+// dropped alone and not with the rest of its line; and the count of those the lexer
+// has reported and dropped, which tells the parser that a condition lost a word
+extern int lexInHashCond;
+extern uint32_t lexHashDropped;
 
 #define lexIsToken(tok) (lex->toktype == (tok))
 

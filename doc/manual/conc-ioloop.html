@@ -43,7 +43,7 @@ fn main() {
   lp.after(now + Duration.fromMillis(400i64), Target.Here(3u64));   // the egg
 
   // One thread, waiting for all three answers
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   while out.len() &lt; 3usize {
     lp.poll(forever(), &amp;mut out);            // the only place the loop waits
   }
@@ -116,7 +116,7 @@ fn main() {
   var hello = IoBuf(64usize);
   hello.append("hello");
   lp.submit(Op.SendTo(client, SocketAddr.localhost(port), hello), Target.Here(2u64));
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   while out.len() &lt; 2usize {
     lp.poll(forever(), &amp;mut out);            // the only place the loop waits
   }
@@ -183,7 +183,7 @@ fn main() {
   lp.after(Instant.now() + hour, Target.Here(3u64));            // and one outside it
   printStr(if group.cancel() {"first cancel\n"} else {"cancel again\n"});
   printStr(if group.cancel() {"first cancel\n"} else {"cancel again\n"});
-  var out = List[Completion].empty();
+  var out = List[Completion]();
   while out.len() &lt; 2usize {
     lp.poll(forever(), &amp;mut out);            // the only place the loop waits
   }
@@ -219,6 +219,18 @@ cancel again
 	<li><span class="pre">group.shield(d)</span> is for cleanup after a cancel: the group's cancel and deadline do not
 		reach the shield, its own deadline <span class="pre">d</span> bounds it, and its own cancel still ends it.</li>
 	</ul>
+	<p>A group is not only the loop's. It lives in the <span class="pre">cancelgroups</span> package, below
+		<span class="pre">iocore</span> and <span class="pre">actors</span>, which <span class="pre">iocore</span> re-exports
+		(<span class="pre">import iocore use CancelGroup</span> and <span class="pre">import cancelgroups use CancelGroup</span>
+		name the same type), so any loop can check one. <span class="pre">group.isCancelled()</span> is a load of one flag
+		word per level of ancestry, inlined into the caller, and no count is touched, so it is cheap to call on every
+		iteration of a loop and safe to call from every worker of a <span class="pre">parallel each</span> at once.
+		<span class="pre">group.cause()</span> says why a cancelled group ended: <span class="pre">Cancelled</span> (someone
+		asked), <span class="pre">TimedOut</span> (its deadline came), <span class="pre">SiblingFinished</span> or
+		<span class="pre">Shutdown</span> (given with <span class="pre">group.cancelWith(cause)</span>); the first cause stays.
+		A group with a deadline of its own arms one timer, which sets the flag with the cause <span class="pre">TimedOut</span>
+		when the deadline comes, so a loop never reads the clock to learn of it. The loop still answers its own operations
+		<span class="pre">TimedOut</span> from their deadlines, and does not treat a group's timeout as a cancel.</p>
 	<p>The same groups limit the operations an actor awaits, through
 		<a href="conc-io.html#await-io-limits"><span class="pre">IoLimits</span></a>. What an actor cannot do is cancel a
 		paused behaviour itself, short of the operation it awaits (<a href="conc-await.html#await-unbuilt">Not built

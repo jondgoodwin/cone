@@ -30,8 +30,8 @@ struct StreamRec {
 // A stream opening for reply, its fetch not yet sent
 fn openingStream(id: u64, asEvents: bool, rp: actors.Reply) StreamRec {
   StreamRec(used: true, id: id, asEvents: asEvents, fetch: httpclient.FetchId.none(),
-    openReply: Some[actors.Reply](rp), status: 0u16, reader: sse.Reader.make(), events: Deque[sse.Event].empty(),
-    chunks: Deque[String].empty(), owed: 0usize, ended: false, outcome: httpclient.EventKind.Done, failure: None,
+    openReply: Some[actors.Reply](rp), status: 0u16, reader: sse.Reader.make(), events: Deque[sse.Event](),
+    chunks: Deque[String](), owed: 0usize, ended: false, outcome: httpclient.EventKind.Done, failure: None,
     limited: false, readReply: None, gone: false)
 }
 
@@ -77,7 +77,7 @@ fn endOf[T](s: &StreamRec) Result[Option[T], FetchError] {
     Ok[Option[T], FetchError](None)
   } else if k == httpclient.EventKind.Failed {
     match &s.failure {
-      case let &Some(f) {Err[Option[T], FetchError](FetchError.failed(f.copy()))}
+      case let &Some(f) {Err[Option[T], FetchError](FetchError.failed(f.clone()))}
       else {Err[Option[T], FetchError](FetchError.cancelled())}
     }
   } else if k == httpclient.EventKind.TimedOut {
@@ -151,7 +151,7 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     } else {
       if s.asEvents {
         // The reader hands its events on in a list of its own; they join the queue
-        var got = List[sse.Event].empty();
+        var got = List[sse.Event]();
         s.reader.feed(e.buf.view(), &mut got);
         each ev in got.drain() {s.events.push(ev);}
         if s.reader.overflowed() {
@@ -169,9 +169,9 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     s.ended = true;
     s.outcome = k;
     s.owed = 0usize;
-    if k == httpclient.EventKind.Failed {s.failure = Some[httpclient.Failure](e.failure.copy());}
+    if k == httpclient.EventKind.Failed {s.failure = Some[httpclient.Failure](e.failure.clone());}
     if s.openReply is Some {
-      let err = if k == httpclient.EventKind.Failed {FetchError.failed(e.failure.copy())}
+      let err = if k == httpclient.EventKind.Failed {FetchError.failed(e.failure.clone())}
         else if k == httpclient.EventKind.TimedOut {FetchError.timedOut()}
         else {FetchError.cancelled()};
       if s.asEvents {

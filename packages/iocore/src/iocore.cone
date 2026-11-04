@@ -18,7 +18,7 @@
 //     mut lp = Loop.mustMake();
 //     imm listener = lp.mustListen(SocketAddr.localhost(0u16));
 //     lp.submit(Op.Accept(listener), Target.Here(1u64));
-//     mut out = List[Completion].empty();
+//     mut out = List[Completion]();
 //     while true {
 //       lp.poll(forever(), &mut out);             // waits here, and only here
 //       each c in out.drain() {                   // each answer, owned
@@ -80,7 +80,8 @@
 //   Target.Hook(token, sink)  Sink.make(deliver)       deliver: a Uni[fn(c Completion) + Sendable]
 //   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
 //   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
-//     g.cancel() g.isCancelled() g.deadline() g.id()
+//     g.cancel() g.cancelWith(cause) g.isCancelled() g.cause() g.deadline() g.id()
+//     (the cancelgroups package's, re-exported here, with Cause)
 //   Request: r.cancel() r.detach() r.id()
 //   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
 //     c.isCancelRequested() c.isLive() c.id()
@@ -233,7 +234,7 @@
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
 // Done with a count, Failed with the system's own error number (Windows'
 // on Windows, the errno on Linux; 'c.error()' is it as an IoError, ERRORS),
-// Cancelled, or TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it
+// Cancelled, or TimedOut -- the buffer back ('c.buf', IoBuf() when it
 // had none; a SendChain's chain in 'c.bufs', None for every other operation), the
 // handle Connect or Accept made, and three instants: submitted, dequeued
 // (when the loop took it from the kernel's queue: IOCP does not say when the
@@ -323,7 +324,13 @@
 // cancel still ends it. A group cancelled from another thread posts a
 // packet to each loop with operations in it, so a loop asleep in poll wakes
 // at once; the loop then asks the cancel of each of its operations in a
-// cancelled group.
+// cancelled group. The group itself is the cancelgroups package's (iocore
+// re-exports it), which actors and 'parallel each' reach as well: its header
+// says how it is built, and why 'isCancelled()' is a flag load per level of
+// ancestry with no count touched. A group with a deadline of its own also
+// arms a timer that cancels it with the cause TimedOut ('g.cause()' says
+// why a group ended); the loop does not treat that as a cancel, and answers
+// its operations TimedOut from their deadlines, as it always did.
 //
 // REQUESTS. 'lp.request(id)' is a Request: a handle on operation id that
 // asks its cancel when it dies -- dropping it sends a cancel and abandons
@@ -631,8 +638,37 @@ import timewheel use Wheel, TimerId, Expiry;
 import diag;
 import ioerror use IoErrorKind, osKind, gaiNumber, gaiOf, gaiFloor;
 
+// The cancel group is the cancelgroups package's, which actors and 'parallel
+// each' reach as well; iocore's own names for it stay
+pub import cancelgroups use CancelGroup, Cause;
+
+// What a cancel group tells a loop with: a packet carrying keyGroup, posted to
+// its port (see the package's header, CANCEL GROUPS)
+struct GroupWaker is Sendable {
+  w: Waker;
+
+  pub fn signal(self: &) bool {w.signal(keyGroup)}
+  pub fn isGone(self: &) bool {w.isGone()}
+}
+
+// Whether a group ended by its deadline. The loop answers its operations
+// TimedOut itself, at the deadline, from its own timers: a group's timeout is
+// not a cancel to it
+fn timedOut(g: &CancelGroup) bool {
+  match g.cause() {
+    case let Some(c) {
+      match c {
+        case Cause.TimedOut {true}
+        case Cause.Cancelled {false}
+        case Cause.SiblingFinished {false}
+        case Cause.Shutdown {false}
+      }
+    }
+    else {false}
+  }
+}
+
 fn @initpure init() {
-  groupSeq = Atomic[u64].of(0u64);
   poolsLive = Atomic[u32].of(0u32);
   sharedLive = Atomic[u32].of(0u32);
   // Winsock started, and the blocking pool's default lanes made, before any
@@ -653,10 +689,11 @@ pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64)}
 // The calling thread's time so far, in nanoseconds: in user mode, then in the
 // kernel (DIAGNOSTICS)
 pub fn threadTimes() u64, u64 {
-  if isWindows() {
-    return winThreadTimes();
+  #if #os == .windows {
+    winThreadTimes()
+  } #else {
+    lxThreadTimes()
   }
-  lxThreadTimes()
 }
 
 // ---------------------------------------------------------------------------
@@ -767,12 +804,12 @@ pub struct IoError is Error, Sendable {
   // 'describe'
   pub fn message(self: &) String {
     if origin == ErrorSource.Cancel {
-      var s = String.empty();
+      var s = String();
       s.append("cancelled");
       return s;
     }
     if origin == ErrorSource.Deadline {
-      var s = String.empty();
+      var s = String();
       s.append("deadline passed");
       return s;
     }
@@ -793,7 +830,7 @@ pub struct IoError is Error, Sendable {
     var out = String.from(self.kind().name());
     if code == 0u32 {return out;}
     out.append(", OS error ");
-    if !isWindows() && code >= gaiFloor {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
+    if (#if #os != .windows {code >= gaiFloor} #else {false}) {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
     let text = systemText(code);
     if !text.isEmpty() {
       out.append(": ");
@@ -817,13 +854,13 @@ pub fn answerError(kind: u32, status: u32, code: u32) IoError {
 
 // The system's own number for each failure iocore finds itself, on the
 // system the program runs on (Windows' error number; Linux's errno)
-fn noSuchHandle() u32 {if isWindows() {errorInvalidHandle} else {9u32}}          // EBADF
-fn noRoom() u32 {if isWindows() {errorInsufficientBuffer} else {22u32}}          // EINVAL
-fn badParameter() u32 {if isWindows() {errorInvalidParameter} else {22u32}}      // EINVAL
-fn queueFull() u32 {if isWindows() {errorBusy} else {16u32}}                     // EBUSY
-fn noMemory() u32 {if isWindows() {errorNotEnoughMemory} else {12u32}}           // ENOMEM
-fn abandoned() u32 {if isWindows() {errorOperationAborted} else {125u32}}        // ECANCELED
-fn datagramCut() u32 {if isWindows() {errorMsgSize} else {90u32}}                // EMSGSIZE
+fn noSuchHandle() u32 {#if #os == .windows {errorInvalidHandle} #else {9u32}}          // EBADF
+fn noRoom() u32 {#if #os == .windows {errorInsufficientBuffer} #else {22u32}}          // EINVAL
+fn badParameter() u32 {#if #os == .windows {errorInvalidParameter} #else {22u32}}      // EINVAL
+fn queueFull() u32 {#if #os == .windows {errorBusy} #else {16u32}}                     // EBUSY
+fn noMemory() u32 {#if #os == .windows {errorNotEnoughMemory} #else {12u32}}           // ENOMEM
+fn abandoned() u32 {#if #os == .windows {errorOperationAborted} #else {125u32}}        // ECANCELED
+fn datagramCut() u32 {#if #os == .windows {errorMsgSize} #else {90u32}}                // EMSGSIZE
 
 // How a file is opened
 pub enum Access {
@@ -838,7 +875,7 @@ pub enum Access {
 
 // AF_INET6, the family of an IPv6 address: Windows' number is 23, Linux's 10
 // (AF_INET is 2 on both)
-fn afInet6Tag() u8 {if isWindows() {23u8} else {10u8}}
+fn afInet6Tag() u8 {#if #os == .windows {23u8} #else {10u8}}
 
 // An IPv4 or IPv6 address and a port, as the OS's sockaddr holds them
 pub struct SocketAddr {
@@ -916,7 +953,7 @@ pub struct SocketAddr {
   // As text: '127.0.0.1:8080', '[2001:db8:0:0:0:0:0:1]:8080' (each group
   // in hexadecimal without leading zeros; no '::' shortening)
   pub fn text(self: &) String {
-    var out = String.empty();
+    var out = String();
     if self.isV6() {
       out.append("[");
       var g = 0usize;
@@ -1045,7 +1082,7 @@ pub struct Completion {
   pub status: u32;         // diag.outcomeDone, ...
   pub n: usize;            // Done's count of bytes
   pub code: u32;           // Failed's error number, the system's own (see IoError)
-  pub buf: IoBuf;          // the loan back, or IoBuf.empty()
+  pub buf: IoBuf;          // the loan back, or IoBuf()
   pub bufs: Option[Uni[Chain]];  // a SendChain's chain back, every segment; None for any other operation
   pub handle: Handle;      // the socket Connect or Accept made, or Handle.none()
   pub peer: SocketAddr;    // RecvFrom's sender, SendTo's destination, Connect's address; else size 0
@@ -1135,7 +1172,7 @@ struct Port is Sendable {
   // Post a packet for the loop to take: its key, and a pointer that means
   // what the key says. False if it could not be queued
   fn send(self: &, key: usize, ov: *u8) bool {
-    if isWindows() {
+    #if #os == .windows {
       if key == keyWake {
         // A wake packet carries nothing, so one in the port serves every wake
         // asked until the loop takes it. The word is raised before the post;
@@ -1154,7 +1191,7 @@ struct Port is Sendable {
       }
       posts.addOrdered(1u64, MemOrder.Relaxed);
       PostQueuedCompletionStatus(handle, 0u32, key, ov) != 0i32
-    } else {
+    } #else {
       if key == keyWake {
         // Before the write below, which the loop's drain reads before it
         // takes this word
@@ -1201,9 +1238,9 @@ struct Port is Sendable {
       return false;
     }
     var ok = true;
-    if isWindows() {
+    #if #os == .windows {
       ok = self.send(keyJob, p as *u8);
-    } else {
+    } #else {
       (*p).jnext = null;
       if st.jobsTail as usize == 0usize {st.jobsHead = p;} else {(*st.jobsTail).jnext = p;}
       st.jobsTail = p;
@@ -1232,7 +1269,7 @@ struct Port is Sendable {
   // ended, or the port's own): answers posted to it are dropped (their buffers
   // go home), and a job's record come home is dissolved (record.cone, homeDead)
   fn drainDead(self: &) {
-    if isWindows() {
+    #if #os == .windows {
       let entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
       while true {
         var got = 0u32;
@@ -1252,7 +1289,7 @@ struct Port is Sendable {
         }
       }
       libc.free(entries as *u8);
-    } else {
+    } #else {
       let st = self.lists();
       st.lock.lock();
       var node = st.head;
@@ -1283,7 +1320,7 @@ struct Port is Sendable {
   // records is dropped (drainDead), and the port closed
   fn final(self: &uni) {
     self.drainDead();
-    if isWindows() {CloseHandle(handle);} else {sysClose(fdOf(handle));}
+    #if #os == .windows {CloseHandle(handle);} #else {sysClose(fdOf(handle));}
   }
 }
 

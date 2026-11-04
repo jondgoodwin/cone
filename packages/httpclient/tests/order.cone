@@ -66,11 +66,11 @@ struct Srv {
 
 fn server() Srv {
   Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
-    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
-    reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
-    targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
-    cookies: List[String].empty(), streams: List[httpconn.ReqId].empty(), sent: List[u64].empty(),
-    totals: List[u64].empty())
+    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String](),
+    reqs: List[httpconn.ReqId](), conns: List[httpconn.ConnId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), auths: List[String](),
+    cookies: List[String](), streams: List[httpconn.ReqId](), sent: List[u64](),
+    totals: List[u64]())
 }
 
 fn listen(sv: &mut Srv, lp: &mut Loop) u16 {
@@ -147,7 +147,7 @@ fn findStream(sv: &Srv, req: httpconn.ReqId) usize {
 // The answer to request k, read whole
 fn answer(sv: &mut Srv, lp: &mut Loop, k: usize) {
   let req = *sv.reqs[k];
-  let full = sv.targets[k].copy();
+  let full = sv.targets[k].clone();
   let t = full.view();
   var q = 0usize;
   while q < t.len && t[q] != '?' {q = q + 1usize;}
@@ -255,12 +255,12 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
     sv.open = sv.open - 1u64;
   } else if kind == httpconn.EventKind.Request {
     sv.requests = sv.requests + 1u64;
-    sv.order.push(e.request.target.copy());
+    sv.order.push(e.request.target.clone());
     sv.reqs.push(e.req);
     sv.conns.push(e.conn);
     sv.methods.push(e.request.method);
-    sv.targets.push(e.request.target.copy());
-    sv.bodies.push(String.empty());
+    sv.targets.push(e.request.target.clone());
+    sv.bodies.push(String());
     sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } else if kind == httpconn.EventKind.Data {
@@ -284,7 +284,7 @@ fn serve(sv: &mut Srv, lp: &mut Loop, e: &mut httpconn.Event) {
 // One turn of the loop: the client's completions to it, the server's to
 // its driver; the server's events answered; the client's appended to out
 fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], until: Instant) {
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   cl.pump(lp, out);
   sv.drv.pump(lp, &uni sevs);
   var limit = until;
@@ -293,7 +293,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], unt
   let b = sv.drv.wakeAt();
   if b < limit {limit = b;}
   if out.len() > 0usize || sevs.len() > 0usize {limit = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(limit, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -314,7 +314,7 @@ fn step(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, out: &uni List[Event], unt
 // The server's every connection reset, and its buffers home
 fn stopServer(sv: &mut Srv, lp: &mut Loop) {
   sv.drv.abortAll(lp);
-  var sevs = List[httpconn.Event].empty();
+  var sevs = List[httpconn.Event]();
   sv.drv.pump(lp, &uni sevs);
 }
 
@@ -342,8 +342,8 @@ struct Seen {
 }
 
 fn seen() Seen {
-  Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
-    last: EventKind.Done, failure: String.empty(), stage: Stage.Url, timing: Timing.zero())
+  Seen(status: 0u16, body: String(), url: String(), kinds: String(), finals: 0u64,
+    last: EventKind.Done, failure: String(), stage: Stage.Url, timing: Timing.zero())
 }
 
 fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
@@ -351,7 +351,7 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
   s.kinds.appendByte(n[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
-    s.url = e.url.copy();
+    s.url = e.url.clone();
   } else if e.kind == EventKind.Data {
     s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
@@ -368,7 +368,7 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
 
 // Drive until fetch id has its final answer, its events noted in s
 fn finishOf(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, id: FetchId, s: &mut Seen) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   let before = s.finals;
   while s.finals == before && Instant.now() < giveUp {
@@ -394,7 +394,7 @@ fn fetchSeen(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, r: Request) Seen {
 
 // Drive for a while
 fn idleFor(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, d: Duration) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + d;
   while Instant.now() < until {
     step(cl, sv, lp, &uni out, until);
@@ -422,7 +422,7 @@ struct Finals {
 }
 
 fn finals() Finals {
-  Finals(List[FetchId].empty(), List[u32].empty(), List[EventKind].empty(), List[Instant].empty(), 0u64,
+  Finals(List[FetchId](), List[u32](), List[EventKind](), List[Instant](), 0u64,
     0u64, 0u64, 0u64, 0u64)
 }
 
@@ -437,7 +437,7 @@ fn slot(f: &Finals, id: FetchId) usize {
 
 // Drive until n final answers have come, counting each
 fn collect(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, fs: &mut Finals, n: u64) {
-  var out = List[Event].empty();
+  var out = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   while fs.done + fs.cancelled + fs.timedOut + fs.failed < n && Instant.now() < giveUp {
     step(cl, sv, lp, &uni out, giveUp);
@@ -482,7 +482,7 @@ fn endedAt(fs: &Finals, id: FetchId) Instant {
 // The server's order, from index 'from', each target's last segment
 // joined by spaces
 fn orderSince(sv: &Srv, from: usize) String {
-  var out = String.empty();
+  var out = String();
   var k = from;
   while k < sv.order.len() {
     let t = sv.order[k].view();
@@ -505,7 +505,7 @@ fn ordered(port: u16, label: &str, intent: Intent, score: i64) Request {
 }
 
 fn numbered(n: u64) String {
-  var s = String.empty();
+  var s = String();
   s.appendUInt(n);
   s
 }
@@ -533,7 +533,7 @@ fn main() i32 {
   // ---- The order under a full pool ----
   // Twenty, at intents in turn and scores rising; then the first moved to
   // the front, the last cancelled, and three equal ones after
-  var ids = List[FetchId].empty();
+  var ids = List[FetchId]();
   var i = 0u64;
   while i < 20u64 {
     let m = i % 4u64;
@@ -569,7 +569,7 @@ fn main() i32 {
   let b1 = cl.send(&mut lp, ordered(port, "b1", Intent.Background, 0i64), Sink.Here(2u64));
   cl.send(&mut lp, ordered(port, "b2", Intent.Background, 0i64), Sink.Here(2u64));
   // Driven until the hanging one is under way, the others waiting
-  var out = List[Event].empty();
+  var out = List[Event]();
   let until = Instant.now() + Duration.fromSeconds(5i64);
   while sv.order.len() == from && Instant.now() < until {
     step(&mut cl, &mut sv, &mut lp, &uni out, until);
@@ -610,7 +610,7 @@ fn main() i32 {
   h3.group = Some[CancelGroup](g);
   h3.intent = Intent.Urgent;
   let h3id = cl.send(&mut lp, h3, Sink.Here(4u64));
-  var inGroup = List[FetchId].empty();
+  var inGroup = List[FetchId]();
   var k = 0u32;
   while k < 3u32 {
     var r = ordered(port, "g", Intent.Prefetch, 0i64);

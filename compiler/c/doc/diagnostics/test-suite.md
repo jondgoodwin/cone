@@ -93,9 +93,9 @@ Two of the rows above have no group directory, and the reasons differ.
 feature, nothing to test yet; its row stays and the group appears when the
 feature does. `concurrency` has a group for what the compiler knows of it,
 atomic values (the `AtomicValue` marker's rules, and core's `Atomic[T]`, which
-declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `mod-generativity.html#meta` is
-unimplemented down to the token, and the only metaprogramming that *is*
-implemented — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
+declares it); the thread and sync packages are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `mod-generativity.html#meta` is built
+only as far as `#if` on the facts of the build, and the metaprogramming that is
+older — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
 above, which the manual agrees with by describing macros (`mod-generativity.html#macros`)
 on its generics page. **The `meta` row is reserved for `mod-generativity.html#meta`'s `#`
 language.** Do not resolve the apparent overlap by moving macros out of
@@ -366,6 +366,10 @@ the package. So the program, and any later package, compiles against exactly
 what the package generated, and a change to the generator shows as a diff of
 the golden file. `--bless` records a generated file that differs as its golden
 file, and nothing else in that pass (`module_include_roundtrip`).
+
+`link_options` gives the options the `link` packages are built with where they
+are not the run's own, so a package built with one set of facts and a program
+importing it with another can be tested (`meta_if_include_facts`).
 
 ## 4. Assert
 

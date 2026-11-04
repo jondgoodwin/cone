@@ -38,7 +38,7 @@ fn certs(name: &str) Path {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}
@@ -167,7 +167,7 @@ fn step(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &un
         sv.requests = sv.requests + 1u64;
         sv.req = e.req;
         sv.target = String.from(e.request.target.view());
-        sv.body = String.empty();
+        sv.body = String();
       } else if e.kind == EventKind.Data {
         sv.body.appendBytes(e.buf.view());
         drv.release(e.req, e.buf.len());
@@ -215,11 +215,11 @@ fn step(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &un
 fn exchange(drv: &mut Driver, lp: &mut Loop, sv: &mut Srv, cl: &mut Cli, events: &uni List[Event], conn: ConnId,
     head: RequestHead, body: &Array[u8]) {
   cl.status = 0u16;
-  cl.body = String.empty();
-  cl.failure = String.empty();
+  cl.body = String();
+  cl.failure = String();
   let before = cl.finals;
   if body.len == 0usize {
-    drv.request(lp, conn, head, BodyLength.empty(), Sink.Here(tokReq));
+    drv.request(lp, conn, head, BodyLength(), Sink.Here(tokReq));
   } else {
     let req = drv.request(lp, conn, head, BodyLength.sized(u64.from(body.len)), Sink.Here(tokReq));
     var sent = false;
@@ -297,12 +297,12 @@ fn main() i32 {
   let expiredPort = listenOn(&mut drv, &mut lp, server("expired.pem", "expired.key"), tokExpired);
   let untrustedPort = listenOn(&mut drv, &mut lp, server("untrusted.pem", "untrusted.key"), tokUntrusted);
   require(good != 0u16 && expiredPort != 0u16 && untrustedPort != 0u16, "three servers listen");
-  var sv = Srv(req: ReqId.none(), target: String.empty(), body: String.empty(),
+  var sv = Srv(req: ReqId.none(), target: String(), body: String(),
     pieces: 99u32, accepted: 0u64, requests: 0u64, dones: 0u64, closed: 0u64, clean: 0u64);
-  var cl = Cli(status: 0u16, body: String.empty(), finals: 0u64, last: EventKind.Done,
-    failure: String.empty(), stage: Stage.Closed, code: 0u32, connected: 0u64, closed: 0u64, clean: 0u64,
-    closeFailure: String.empty());
-  var events = List[Event].empty();
+  var cl = Cli(status: 0u16, body: String(), finals: 0u64, last: EventKind.Done,
+    failure: String(), stage: Stage.Closed, code: 0u32, connected: 0u64, closed: 0u64, clean: 0u64,
+    closeFailure: String());
+  var events = List[Event]();
   let roots = client(tls.Verifier.roots(readText("ca.pem").view()));
   let before = tls.stats();
 
@@ -409,12 +409,12 @@ fn main() i32 {
   let platform = client(tls.Verifier.platform());
   let pre = tls.stats();
   refusedShowing("the OS's verifier", &mut drv, &mut lp, &mut sv, &mut cl, &uni events, platform.stream("localhost"),
-    good, if isWindows() {"not trusted"} else {"unable to get local issuer certificate"}, false);
+    good, #if #os == .windows {"not trusted"} #else {"unable to get local issuer certificate"}, false);
   // The failure carries the platform's own number: Windows' CERT_E_UNTRUSTEDROOT, or on Linux OpenSSL's
   // X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY (the test root is not the system's); the kind is the same
-  expectUInt(u64.from(cl.code), if isWindows() {0x800B0109u64} else {20u64}, "the failure carries the platform's own number");
+  expectUInt(u64.from(cl.code), #if #os == .windows {0x800B0109u64} #else {20u64}, "the failure carries the platform's own number");
   expect(tls.certErrorKind(cl.code) == tls.TlsErrorKind.CertUntrusted, "...which reads as CertUntrusted on either");
-  expect(cl.failure.contains(if isWindows() {"(Windows 0x800b0109)"} else {"(OpenSSL's verify result 20)"})
+  expect(cl.failure.contains(#if #os == .windows {"(Windows 0x800b0109)"} #else {"(OpenSSL's verify result 20)"})
     && !cl.failure.contains("Windows error"), "...in the words once, with the number");
   expectUInt(tls.stats().verifications - pre.verifications, 1u64, "one verification, on the pool");
 

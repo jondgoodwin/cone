@@ -41,9 +41,9 @@ const fsctlSetSparse = 0x000900C4u32;
 // that it is that and nothing shorter
 fn makeRoot(name: &str) Path {
   var variable: cstr = "TMPDIR";
-  if isWindows() { variable = "TEMP"; }
+  #if #os == .windows { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null || !isWindows(), "TEMP is set");
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
@@ -58,7 +58,7 @@ fn makeRoot(name: &str) Path {
 
 // Seek a stream to a position of 64 bits: whether it worked
 fn seekTo(f: *libc.FILE, at: i64) bool {
-  if isWindows() {_fseeki64(f, at, 0i32) == 0i32} else {fseeko(f, at, 0i32) == 0i32}
+  #if #os == .windows {_fseeki64(f, at, 0i32) == 0i32} #else {fseeko(f, at, 0i32) == 0i32}
 }
 
 // Write bytes at a position of the stream
@@ -95,7 +95,7 @@ fn bigFile(root: &Path) {
   let f = libc.fopen(c.cstr(), "wb");
   require(f != null, "open the big file for writing");
   var sparse = true;
-  if isWindows() {
+  #if #os == .windows {
     var returned = 0u32;
     let h = _get_osfhandle(_fileno(f)) as usize;
     sparse = DeviceIoControl(h, fsctlSetSparse, null, 0u32, null, 0u32, &mut returned, null) != 0i32;

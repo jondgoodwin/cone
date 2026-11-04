@@ -34,7 +34,7 @@ pub struct Surface {
     var nrm = List[DVec3].withCapacity(vn.len());
     i = 0usize;
     while i < vn.len() { nrm.push(unitd(DVec3.from(*vn[i]))); i += 1usize; }
-    var s = Surface(pos, tris, nrm, List[DVec3].empty(), List[DVec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty());
+    var s = Surface(pos, tris, nrm, List[DVec3](), List[DVec3](), List[u32](), List[u32](), List[u32]());
     s.build();
     s
   }
@@ -55,7 +55,6 @@ pub struct Surface {
     var tlo = List[DVec3].withCapacity(n);
     var thi = List[DVec3].withCapacity(n);
     var keys = List[f64].withCapacity(n);
-    var scratch = List[u32].withCapacity(n);
     while i < n {
       items.push(u32.from(i));
       let a = *pos[usize.from(*tri[3usize * i])];
@@ -64,11 +63,10 @@ pub struct Surface {
       tlo.push(DVec3(mind(a.x, mind(b.x, c.x)), mind(a.y, mind(b.y, c.y)), mind(a.z, mind(b.z, c.z))));
       thi.push(DVec3(maxd(a.x, maxd(b.x, c.x)), maxd(a.y, maxd(b.y, c.y)), maxd(a.z, maxd(b.z, c.z))));
       keys.push(0.0);
-      scratch.push(0u32);
       i += 1usize;
     }
     if n == 0usize { return; }
-    var todo = List[u32].empty();
+    var todo = List[u32]();
     addNode();
     todo.push(0u32); todo.push(0u32); todo.push(u32.from(n));
     while todo.len() > 0usize {
@@ -107,7 +105,7 @@ pub struct Surface {
           keys.set(it, if axis == 0u32 { s.x } else if axis == 1u32 { s.y } else { s.z });
           k += 1usize;
         }
-        sortItems(&mut items, start, start + cnt, &keys, &mut scratch);
+        sortItems(&mut items, start, start + cnt, &keys);
         let half = cnt / 2usize;
         let left = addNode();
         addNode();
@@ -126,7 +124,7 @@ pub struct Surface {
     *bestTri = NoIndex;
     if lo.len() == 0usize { return 0.0; }
     var best = 1.0e300;
-    var stack = List[u32].empty();
+    var stack = List[u32]();
     stack.push(0u32);
     var wts = DVec3(0.0, 0.0, 0.0);
     while stack.len() > 0usize {
@@ -266,36 +264,18 @@ pub fn nearestOnTriangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3, wts: &mut DVec3
   *wts = best;
 }
 
-// Items from 'start' to 'end' sorted by key, ties by item number: a merge sort, bottom up, through 'scratch'
-fn sortItems(items: &mut List[u32], start: usize, end: usize, keys: &List[f64], scratch: &mut List[u32]) {
-  let n = end - start;
-  var width = 1usize;
-  while width < n {
-    var lo = start;
-    while lo < end {
-      let mid = if lo + width < end { lo + width } else { end };
-      let hi = if lo + 2usize * width < end { lo + 2usize * width } else { end };
-      var i = lo;
-      var j = mid;
-      var k = lo;
-      while k < hi {
-        var takeLeft = false;
-        if i < mid && j < hi {
-          let a = *items[i];
-          let b = *items[j];
-          let ka = *keys[usize.from(a)];
-          let kb = *keys[usize.from(b)];
-          takeLeft = ka < kb || (ka == kb && a <= b);
-        } else {
-          takeLeft = i < mid;
-        }
-        if takeLeft { scratch.set(k, *items[i]); i += 1usize; } else { scratch.set(k, *items[j]); j += 1usize; }
-        k += 1usize;
-      }
-      lo = hi;
-    }
-    var k = start;
-    while k < end { items.set(k, *scratch[k]); k += 1usize; }
-    width = width * 2usize;
+// Items from 'start' to 'end' sorted by key, ties by item number (a total order, so the
+// result is the same whichever sort does it)
+fn sortItems(items: &mut List[u32], start: usize, end: usize, keys: &List[f64]) {
+  items.sliceMut(start, end).sortBy(&ItemOrder(keys));
+}
+
+// The comparison of sortItems (a struct, since a function literal cannot be given to an Array's sortBy)
+struct ItemOrder['a] {
+  keys: &'a List[f64];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let ka = *keys[usize.from(*a)];
+    let kb = *keys[usize.from(*b)];
+    if ka < kb { -1i32 } else if ka > kb { 1i32 } else { *a <=> *b }
   }
 }

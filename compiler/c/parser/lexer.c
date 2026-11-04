@@ -25,6 +25,8 @@
 
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
+int lexInHashCond = 0;    // A '#if' condition is being read (parsemeta.c)
+uint32_t lexHashDropped = 0; // How many '#' words the lexer has reported and dropped
 
 // A lexer block for a source, positioned at its start and not yet current.
 //
@@ -187,6 +189,19 @@ void keywordInit() {
     // value, 'var' may. 'imm' and 'mut' are permissions, written on references
     keyAdd("let", LetToken);
     keyAdd("var", VarToken);
+
+    // The meta layer (parsemeta.c): '#' words, held in the name table with the
+    // '#', as an attribute is held with its '@'. The vocabulary is closed, so any
+    // other '#' word is reported where it is written (lexScanIdent), never read
+    // as the start of code that is then deleted
+    keyAdd("#if", HashIfToken);
+    keyAdd("#elif", HashElifToken);
+    keyAdd("#else", HashElseToken);
+    keyAdd("#os", HashOsToken);
+    keyAdd("#arch", HashArchToken);
+    keyAdd("#debug", HashDebugToken);
+    keyAdd("#defined", HashDefinedToken);
+    keyAdd("#define", HashDefineToken);
 
     // Words the language claims but has not implemented yet. Holding them now
     // costs one rename in a program written today; letting a program bind one
@@ -1089,15 +1104,22 @@ int lexScanIdent(char *srcp) {
                     lex->srcp = srcp;
                     return 0;
                 }
-                // '#' is held for metaprogramming. A '#' word is reported and
-                // dropped with the rest of its line, so that what is written
-                // after it ('#if x') is not reported as well.
+                // The '#' words the language means are keywords (keywordInit).
+                // Any other is held for metaprogramming: reported and dropped
+                // with the rest of its line, so that what is written after it
+                // ('#each x in xs') is not reported as well. In a '#if'
+                // condition only the word is dropped: the block that follows
+                // the condition is on the same line, and a misspelt fact must
+                // not take it along (parseHashIf reads the condition on and
+                // refuses it quietly, for the word was refused here).
                 else if (*srcbeg == '#') {
                     errorMsgLex(ErrorReserved,
-                        "'%s': '#' is reserved for metaprogramming, which is not implemented yet",
+                        "'%s': '#' is reserved for metaprogramming, and only #if, #elif, #else, #os, #arch, #debug, #defined and #define are built",
                         &lex->val.ident->namestr);
-                    while (*srcp && *srcp != '\n')
-                        srcp++;
+                    ++lexHashDropped;
+                    if (!lexInHashCond)
+                        while (*srcp && *srcp != '\n')
+                            srcp++;
                     lex->srcp = srcp;
                     return 0;
                 }
@@ -1766,7 +1788,7 @@ int lexStatementHasElse() {
         else if (c == ';' && depth == 0)
             return 0;
         else if (c == 'e' && depth == 0 && strncmp(srcp, "else", 4) == 0
-            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_'))
+            && (srcp == lex->tokp || !(isalnum((unsigned char)srcp[-1]) || srcp[-1] == '_' || srcp[-1] == '#'))
             && !(isalnum((unsigned char)srcp[4]) || srcp[4] == '_'))
             return 1;
     }

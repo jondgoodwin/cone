@@ -21,7 +21,7 @@ pub struct Channel[T] {
 // conventions are at the top of mesh.cone). Every list is public, for
 // reading; change it through the methods, or 'validate' after changing it
 // directly.
-pub struct PolyMesh {
+pub struct PolyMesh is Default {
   pub positions: List[Vec3];     // per vertex
   pub vHalfedge: List[u32];      // per vertex: a half-edge leaving it
   pub hNext: List[u32];          // per half-edge: the next around its face or hole
@@ -33,15 +33,8 @@ pub struct PolyMesh {
   pub vec2s: List[Channel[Vec2]];
   pub vec3s: List[Channel[Vec3]];
 
-  // A mesh with nothing in it
-  pub fn empty() PolyMesh {
-    PolyMesh(List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
-      List[u32].empty(), List[u32].empty(), List[u32].empty(),
-      List[Channel[f32]].empty(), List[Channel[Vec2]].empty(), List[Channel[Vec3]].empty())
-  }
-
   // A copy: the same positions, links and channels, sharing nothing with this one
-  pub fn copy(self: &) PolyMesh {
+  pub fn clone(self: &) PolyMesh {
     PolyMesh(listCopy[Vec3](&positions), listCopy[u32](&vHalfedge), listCopy[u32](&hNext), listCopy[u32](&hPrev),
       listCopy[u32](&hVertex), listCopy[u32](&hFace), listCopy[u32](&fHalfedge),
       channelsCopy[f32](&floats), channelsCopy[Vec2](&vec2s), channelsCopy[Vec3](&vec3s))
@@ -58,10 +51,10 @@ pub struct PolyMesh {
   // ways). Faces meeting at only a vertex are added; 'validate' reports that
   // vertex as not manifold.
   pub fn fromPolygons(positions: &Array[Vec3], counts: &Array[u32], indices: &Array[u32], problems: &mut List[String]) PolyMesh {
-    var m = PolyMesh.empty();
+    var m = PolyMesh();
     let nv = positions.len;
     var outHead = List[u32].withCapacity(nv);    // per vertex: the last half-edge made leaving it
-    var outNext = List[u32].empty();             // per half-edge: the one made before it leaving its vertex
+    var outNext = List[u32]();             // per half-edge: the one made before it leaving its vertex
     var v = 0usize;
     while v < nv {
       m.positions.push(positions[v]);
@@ -85,7 +78,7 @@ pub struct PolyMesh {
       return m;
     }
 
-    var hs = List[u32].empty();
+    var hs = List[u32]();
     var start = 0usize;
     f = 0usize;
     while f < counts.len {
@@ -260,7 +253,7 @@ pub struct PolyMesh {
   // A face's half-edges in order, starting with the one ending at its first
   // vertex: its corners
   pub fn faceHalfedges(self: &, f: u32) List[u32] {
-    var out = List[u32].empty();
+    var out = List[u32]();
     let h0 = *fHalfedge[usize.from(f)];
     var h = h0;
     var going = true;
@@ -294,7 +287,7 @@ pub struct PolyMesh {
   // starting with its own (a boundary one when it is on the boundary): its
   // one-ring. An isolated vertex has none.
   pub fn vertexOutgoing(self: &, v: u32) List[u32] {
-    var out = List[u32].empty();
+    var out = List[u32]();
     let h0 = *vHalfedge[usize.from(v)];
     if h0 == NoIndex { return out; }
     var h = h0;
@@ -517,7 +510,7 @@ pub struct PolyMesh {
   // from its half-edge meets every edge on it); every channel has a value per
   // element.
   pub fn validate(self: &) List[String] {
-    var out = List[String].empty();
+    var out = List[String]();
     let nh = hVertex.len();
     let nv = positions.len();
     let nf = fHalfedge.len();
@@ -676,21 +669,21 @@ pub struct PolyMesh {
   // seam splits the vertex, one copy per distinct uv. The uvs are the corner
   // channel of Vec2 named "uv", when there is one; without one, no uvs.
   pub fn triangulate(self: &, smooth: bool) Mesh {
-    var out = Mesh.empty();
+    var out = Mesh();
     let uvCh = self.findVec2Channel(CornerDomain, "uv");
     let hasUv = uvCh != NoIndex;
     let nv = positions.len();
     // Smooth: the vertices made for each mesh vertex, chained
     var vFirst = List[u32].withCapacity(nv);
-    var oNext = List[u32].empty();
-    var vnormals = List[Vec3].empty();
+    var oNext = List[u32]();
+    var vnormals = List[Vec3]();
     if smooth {
       vnormals = self.vertexNormals();
       var v = 0usize;
       while v < nv { vFirst.push(NoIndex); v = v + 1usize; }
     }
-    var made = List[u32].empty();      // each corner of the face: its vertex in 'out'
-    var tris = List[u32].empty();
+    var made = List[u32]();      // each corner of the face: its vertex in 'out'
+    var tris = List[u32]();
     var f = 0usize;
     while f < fHalfedge.len() {
       let hs = self.faceHalfedges(u32.from(f));
@@ -803,7 +796,7 @@ pub struct PolyMesh {
       v = v + 1u32;
     }
     let counts: Array[u32, 6] = [4u32, 4u32, 4u32, 4u32, 4u32, 4u32];
-    var problems = List[String].empty();
+    var problems = List[String]();
     PolyMesh.fromPolygons(pts.view(), &counts, &cageFaces, &mut problems)
   }
 }

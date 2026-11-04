@@ -206,6 +206,16 @@ Per target:
    accesses, taking the reference's permission where one is crossed. Without
    `MayWrite`, `ErrorNoMut`. The exception is a variable that holds nothing yet,
    which is how a `let` local gets initialized once.
+   **A place holding an atomic value** (`itypeHoldsAtomic` of the lval's type:
+   an `AtomicValue` struct, or a tuple, array, struct or enum holding one
+   inline) is replaced plainly only through a unique path
+   (`assignAtomicStoreCheck`, also asked of both sides of a swap): the place
+   must be reached through no reference but `uni` and `new` ones
+   (`iexpPathNonUniLink` finds the first that is not), else
+   `ErrorAtomicPlainWrite`. A variable, a field of a value held by value and a
+   raw pointer's target pass. The atomic's own operations are no store and are
+   never asked. Reads need no rule: an atomic value moves, so it is never read
+   out through a borrow.
 3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved` and
    `VarHollow` (`flowVarSetFlags`), and note a tracked variable stored over
    deeper than it was declared, which sends the function's drops to the path

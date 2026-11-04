@@ -423,6 +423,26 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }
 
+// An atomic value, or a value holding one inline, is replaced plainly only
+// through a unique path [Jon 26 Sep]: every reference on the way to the place
+// is 'uni' (iexpPathNonUniLink), or there is none (a variable, a field of a
+// value held by value). Any other reference ('&mut', 'Rc[mut, T]') may be one
+// of several names for the value, and another thread may be changing it with
+// an atomic operation as it is overwritten. Answers 0 where refused.
+int assignAtomicStoreCheck(INode *lval) {
+    if (!isExpNode(lval) || !itypeHoldsAtomic(((IExpNode*)lval)->vtype))
+        return 1;
+    INode *link = iexpPathNonUniLink(lval);
+    if (link == NULL)
+        return 1;
+    INode *perm = itypeGetTypeDcl(((RefNode*)link)->perm);
+    char *permname = perm->tag == PermTag ? &((PermNode*)perm)->namesym->namestr : "shared";
+    errorMsgNode(lval, ErrorAtomicPlainWrite,
+        "This place holds an atomic value and is written plainly through a '%s' reference, which may be one of several names for it, while another thread changes it atomically. Change it with the atomic's own operation (store, swap, compareSwap), or write it through a unique path: a variable or field held by value, or a '&uni' / 'uni' owner.",
+        permname);
+    return 0;
+}
+
 // Handle data flow analysis related to single assignment rval
 // Pass type of rval so we can determine what semantics apply
 // Return true if lval is anonName
@@ -453,6 +473,8 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
             errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;
     }
+    if (!assignAtomicStoreCheck(lval))
+        return 0;
 
     // Mark that lval variable has valid initialized value.
     if (lvalIsName) {

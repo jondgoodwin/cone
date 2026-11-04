@@ -161,7 +161,7 @@ fn xflOf(level: i32) u8 {
 // 'finish' it when the input is over, 'pull' the output.
 //
 //   mut def = deflate.Deflater.make(deflate.Format.Gzip, 2);
-//   mut out = List[u8].empty();
+//   mut out = List[u8]();
 //   def.feed(chunk);                         // any size, split anywhere
 //   while true {
 //     out.clear();
@@ -206,27 +206,27 @@ pub struct Deflater {
   // before the first 'feed'.
   pub fn make(format: Format, level: i32) Deflater {
     let lv = if level == 0 {0} else if level == 1 {1} else {2};
-    var head = List[i64].empty();
-    var prev = List[i64].empty();
+    var head = List[i64]();
+    var prev = List[i64]();
     if lv > 0 {
       head.reserve(32768usize);
       prev.reserve(32768usize);
       var i = 0usize;
       while i < 32768usize { head.push(-1i64); prev.push(-1i64); i += 1usize; }
     }
-    let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32].empty())};
+    let table = if format == Format.Gzip {Crc32.make()} else {Crc32(List[u32]())};
     var gz = GzipHeader.plain();
     gz.xfl = xflOf(lv);
-    Deflater(format, lv, List[u8].empty(), 0i64, 0i64, head, prev, List[u32].empty(),
-      BitWriter(List[u8].empty(), 0u64, 0u32), 0usize, false, false, false, false,
-      Code(List[u8].empty(), List[u32].empty()), Code(List[u8].empty(), List[u32].empty()), false,
+    Deflater(format, lv, List[u8](), 0i64, 0i64, head, prev, List[u32](),
+      BitWriter(List[u8](), 0u64, 0u32), 0usize, false, false, false, false,
+      Code(List[u8](), List[u32]()), Code(List[u8](), List[u32]()), false,
       Adler32.start(), table, 0u32, 0u64, gz, 0u64)
   }
 
   // The gzip header to write (ignored for the other formats); call it
   // before the first 'feed' or 'pull'
   pub fn setGzipHeader(self: &mut, h: &GzipHeader) {
-    if !started { gz = h.copy(); }
+    if !started { gz = h.clone(); }
   }
 
   // Appends input. It is copied, so the caller's bytes are its own again at
@@ -237,9 +237,7 @@ pub struct Deflater {
     if format == Format.Zlib { adler.update(chunk, 0usize, chunk.len); }
     else if format == Format.Gzip { crcv = crc.update(crcv, chunk, 0usize, chunk.len); }
     inTotal = inTotal + u64.from(chunk.len);
-    buf.reserve(chunk.len);
-    var i = 0usize;
-    while i < chunk.len { buf.push(chunk[i]); i += 1usize; }
+    buf.appendSlice(chunk);
   }
 
   // Says that no more input will come; the stream is then completed by
@@ -350,11 +348,15 @@ pub struct Deflater {
   fn slide(self: &mut) {
     let used = usize.from(cur - base);
     if used < 98304usize { return; }
+    // Slide only when the used part is at least half of buf, so each slide's
+    // copy of the unread input is paid for by the input it drops: the total
+    // copied stays linear in the input, even when all of it was fed at once
+    if used * 2usize < buf.len() { return; }
     let drop = if level == 0 {used} else {used - 32768usize};
     let keep = buf.len() - drop;
-    var i = 0usize;
-    while i < keep { buf.set(i, *buf[drop + i]); i += 1usize; }
-    buf.truncate(keep);
+    var kept = List[u8].withCapacity(keep + 65536usize);
+    kept.appendSlice(&buf.view()[drop ..< drop + keep]);
+    buf = kept;
     base = base + i64.from(drop);
   }
 

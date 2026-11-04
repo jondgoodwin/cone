@@ -38,7 +38,7 @@ struct Tally {
     skipped = skipped + other.skipped;
     var u = 0usize;
     while u < other.unrun.len() {
-      unrun.push(other.unrun[u].copy());
+      unrun.push(other.unrun[u].clone());
       u = u + 1usize;
     }
     built = built + other.built;
@@ -46,7 +46,7 @@ struct Tally {
     broken = broken + other.broken;
     var i = 0usize;
     while i < other.failures.len() {
-      failures.push(other.failures[i].copy());
+      failures.push(other.failures[i].clone());
       i = i + 1usize;
     }
   }
@@ -69,10 +69,10 @@ struct Tally {
     }
     if unrun.len() > 0usize {
       // Each reason once, in the order first met
-      var reasons = List[String].empty();
+      var reasons = List[String]();
       var r = 0usize;
       while r < unrun.len() {
-        if !holdsName(&reasons, unrun[r].view()) { reasons.push(unrun[r].copy()); }
+        if !holdsName(&reasons, unrun[r].view()) { reasons.push(unrun[r].clone()); }
         r = r + 1usize;
       }
       let why = String.join(reasons.view(), "; ");
@@ -95,11 +95,11 @@ struct Tally {
   }
 }
 
-fn emptyTally() Tally { Tally(0u64, 0u64, 0u64, List[String].empty(), 0u64, 0u64, 0u64, List[String].empty()) }
+fn emptyTally() Tally { Tally(0u64, 0u64, 0u64, List[String](), 0u64, 0u64, 0u64, List[String]()) }
 
 // '1 test', '2 tests'
 fn counted(n: u64, word: &str) String {
-  var text = String.empty();
+  var text = String();
   text <- n;
   text <- " "; text.append(word);
   if n != 1u64 { text <- "s"; }
@@ -112,7 +112,7 @@ fn indent(text: &str, pad: &str) String {
   var end = text.len();
   while end > 0usize && text[end - 1usize] == '\n' { end = end - 1usize; }
   let lines = splitText(&text[..<end], '\n');
-  var out = String.empty();
+  var out = String();
   var i = 0usize;
   while i < lines.len() {
     if i > 0usize { out <- "\n"; }
@@ -145,7 +145,7 @@ fn withSuffix(file: &Path, suffix: &str) Path {
 // makes differ where the program cannot print the same on all. congo.py's
 // 'expectation_file' and the compiler suite's, the same rule
 fn expectationFile(file: &Path, suffix: &str) Path {
-  let host = if isWindows() {".windows"} else if isLinux() {".linux"} else {".macos"};
+  let host = #if #os == .windows {".windows"} #elif #os == .linux {".linux"} #else {".macos"};
   let hostSuffix = cat(host, suffix);
   let own = withSuffix(file, hostSuffix.view());
   if fs.isFile(&own) { return own; }
@@ -157,7 +157,7 @@ fn expectationFile(file: &Path, suffix: &str) Path {
 fn readAll(file: &Path) String {
   match fs.readFile(file) {
     case var Ok(ok) {
-      var text = String.empty();
+      var text = String();
       text <-> ok;
       text
     }
@@ -199,18 +199,18 @@ fn pyInt(text: &str) String {
     negative = text[0usize] == '-';
     start = 1usize;
   }
-  if start == text.len() { return String.empty(); }
-  var digits = String.empty();
+  if start == text.len() { return String(); }
+  var digits = String();
   var i = start;
   while i < text.len() {
     let b = text[i];
     if b == '_' {
-      if i == start || i + 1usize == text.len() || text[i - 1usize] == '_' { return String.empty(); }
+      if i == start || i + 1usize == text.len() || text[i - 1usize] == '_' { return String(); }
     }
     else if b >= '0' && b <= '9' {
       if !(b == '0' && digits.isEmpty()) { digits.appendByte(b); }
     }
-    else { return String.empty(); }
+    else { return String(); }
     i = i + 1usize;
   }
   if digits.isEmpty() { return String.from("0"); }
@@ -224,7 +224,7 @@ fn pyInt(text: &str) String {
 fn pyRepr(text: &str) String {
   var quote: u8 = '\'';
   if findByte(text, '\'', 0usize) < text.len() && findByte(text, '"', 0usize) == text.len() { quote = '"'; }
-  var out = String.empty();
+  var out = String();
   out.appendByte(quote);
   var i = 0usize;
   while i < text.len() {
@@ -282,9 +282,9 @@ fn byFoldedPath(a: &Path, b: &Path) i32 {
 // The .cone programs directly in a tests/ or examples/ folder, by name,
 // those whose name contains the filter where one is given
 fn programs(folder: &Path, filter: &str, hasFilter: bool) List[Path] {
-  var found = List[Path].empty();
+  var found = List[Path]();
   if !fs.isDir(folder) { return found; }
-  var entries = List[fs.DirEntry].empty();
+  var entries = List[fs.DirEntry]();
   match fs.readDir(folder) {
     case var Ok(ok) { entries <-> ok; }
     case let Err(e) { fail(fsMessage(&e)); }
@@ -293,7 +293,7 @@ fn programs(folder: &Path, filter: &str, hasFilter: bool) List[Path] {
   while i < entries.len() {
     let entry = &entries[i];
     if fs.isFile(&entry.path) && entry.path.extension() == ".cone" {
-      if !hasFilter || entry.path.stem().contains(filter) { found.push(entry.path.copy()); }
+      if !hasFilter || entry.path.stem().contains(filter) { found.push(entry.path.clone()); }
     }
     i = i + 1usize;
   }
@@ -318,15 +318,15 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
   var exe: Path = "";
   match buildProgram(s, file, &dest) {
     case var Ok(ok) { exe <-> ok; }
-    case let Err(e) { return verdictOf(false, e.copy()); }
+    case let Err(e) { return verdictOf(false, e.clone()); }
   }
   // Run in its own build folder, so a file it writes by a relative name
   // lands there and not in the package's source
-  var args = List[String].empty();
+  var args = List[String]();
   args.push(native(&exe));
   var code = 0u32;
-  var stdout = String.empty();
-  var stderr = String.empty();
+  var stdout = String();
+  var stderr = String();
   // A crash, a panic's above all, ends at once, not held while Windows
   // reports it (the process package's "A crash")
   match process.run(args.view(), process.Options(
@@ -365,7 +365,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     }
     if skipsItself {
       let said = normalizedLines(stdout.view());
-      var reason = String.empty();
+      var reason = String();
       if said.len() > 0usize { reason = stripped(said[said.len() - 1usize].view()); }
       if reason.startsWith("skipped:") { reason = stripped(&reason.view()[8usize..]); }
       if reason.isEmpty() { reason = String.from("no reason given"); }
@@ -391,7 +391,7 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     var note = cat("blessed ", expectedShown.view());
     let exitPath = withSuffix(file, ".exit");
     if code != 0u32 {
-      var status = String.empty();
+      var status = String();
       status <- u64.from(code);
       let statusLine = cat(status.view(), "\n");
       writeAll(&exitPath, statusLine.view());
@@ -407,15 +407,15 @@ fn runTest(s: &mut Session, file: &Path, bless: bool) Verdict {
     note <- ": check it by hand against the source";
     return verdictOf(true, note);
   }
-  var problems = List[String].empty();
-  var want = String.empty();
+  var problems = List[String]();
+  var want = String();
   match expectedExit(file) {
     case var Ok(ok) { want <-> ok; }
-    case let Err(e) { return verdictOf(false, e.copy()); }
+    case let Err(e) { return verdictOf(false, e.clone()); }
   }
   // Compared in decimal, so a status beyond any exit code's range is
   // simply not the one the test ended with
-  var got = String.empty();
+  var got = String();
   got <- u64.from(code);
   if !got.equals(want.view()) {
     problems.push(cat("exited ", got.view(), ", expected ", want.view()));
@@ -500,12 +500,12 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   let out = buildFolder(&pkg, mode);
   let indexes = registryIndexes();
   var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
-  let name = pkg.name.copy();
+  let name = pkg.name.clone();
   let isLibrary = pkg.output.equals("library");
   let testsFolder = pkg.root.join("tests");
   let examplesFolder = pkg.root.join("examples");
   let top = s.reg.add(pkg);
-  s.reg.byName.insert(name.copy(), top);
+  s.reg.byName.insert(name.clone(), top);
   var tests = programs(&testsFolder, filter, hasFilter);
   let examples = programs(&examplesFolder, filter, hasFilter);
   match build(&mut s, top) {
@@ -523,7 +523,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   // Vulkan 1.3, counted as a test; where the SDK is not installed they are
   // only built, and that is said
   if s.spvs.contains(name.view()) && !hasFilter {
-    let spv = s.spvs[name.view()].copy();
+    let spv = s.spvs[name.view()].clone();
     let spvName = spv.name();
     let v = validateKernels(&spv);
     if !v.ran {
@@ -579,7 +579,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
     if verdict.skipped {
       let skippedLine = cat("        test ", stem, " ... skipped (", verdict.detail.view(), ")");
       report(skippedLine.view(), "");
-      tally.unrun.push(verdict.detail.copy());
+      tally.unrun.push(verdict.detail.clone());
       i = i + 1usize;
       continue;
     }
@@ -601,12 +601,12 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
     let examplesOut = s.out.join("examples");
     let dest = examplesOut.join(stem);
     var passed = true;
-    var detail = String.empty();
+    var detail = String();
     match buildProgram(&mut s, file, &dest) {
       case is Ok {}
       case let Err(e) {
         passed = false;
-        detail = e.copy();
+        detail = e.clone();
       }
     }
     var outcome: &str = "built";
@@ -629,8 +629,8 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
 // The manifests of a folder of packages, a registry folder such as
 // packages/: each subfolder's, by name
 fn packageManifests(folder: &Path) List[Path] {
-  var found = List[Path].empty();
-  var entries = List[fs.DirEntry].empty();
+  var found = List[Path]();
+  var entries = List[fs.DirEntry]();
   match fs.readDir(folder) {
     case var Ok(ok) { entries <-> ok; }
     case let Err(e) { fail(fsMessage(&e)); }
@@ -656,7 +656,7 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
     case let Err(e) { fail(fsMessage(&e)); }
   }
   let own = here.join("congo.toml");
-  var manifests = List[Path].empty();
+  var manifests = List[Path]();
   if !fs.isFile(&own) { manifests = packageManifests(&here); }
   if manifests.len() == 0usize { manifests.push(currentManifest()); }
   var total = emptyTally();
@@ -665,7 +665,7 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
     var pkg = emptyPackage();
     match readManifest(&manifests[i]) {
       case var Ok(ok) { pkg <-> ok; }
-      case let Err(e) { fail(e.copy()); }
+      case let Err(e) { fail(e.clone()); }
     }
     let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip);
     total.add(&tally);
@@ -676,7 +676,7 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
   }
   if manifests.len() > 1usize {
     let summary = total.summary();
-    var result = String.empty();
+    var result = String();
     result <- u64.from(manifests.len());
     result <- " packages: ", summary.view();
     say("Result", result.view());

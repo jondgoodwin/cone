@@ -129,7 +129,7 @@ pub struct Table {
 
   // An empty table, the root's
   pub fn initEmpty overload init(self: &new) {
-    *self = Table(String.empty(), 0u32, List[Entry].empty());
+    *self = Table(String(), 0u32, List[Entry]());
   }
 
   // Where key is among the entries, or their count when it is not there
@@ -150,7 +150,7 @@ pub struct Table {
     var out = List[String].withCapacity(entries.len());
     var i = 0usize;
     while i < entries.len() {
-      out.push(entries[i].key.copy());
+      out.push(entries[i].key.clone());
       i = i + 1usize;
     }
     out
@@ -174,7 +174,7 @@ pub struct Table {
   pub fn getString(self: &, key: &str) Option[String] {
     let i = self.find(key);
     if i == entries.len() || entries[i].value.kind != Kind.Text { return None; }
-    Some[String](entries[i].value.text.copy())
+    Some[String](entries[i].value.text.clone())
   }
 
   // key's integer, or None when it is not there or is not an integer
@@ -200,7 +200,7 @@ pub struct Table {
     var out = List[String].withCapacity(items.len);
     var j = 0usize;
     while j < items.len {
-      out.push(items[j].copy());
+      out.push(items[j].clone());
       j = j + 1usize;
     }
     Some[List[String]](out)
@@ -215,7 +215,7 @@ pub struct Document {
 
   // An empty document, what an empty text reads as
   pub fn initEmpty overload init(self: &new) {
-    *self = Document(Table(), List[Table].empty());
+    *self = Document(Table(), List[Table]());
   }
 
   // Where the table named name is, or the count of tables when none is
@@ -236,7 +236,7 @@ pub struct Document {
     var out = List[String].withCapacity(tables.len());
     var i = 0usize;
     while i < tables.len() {
-      out.push(tables[i].name.copy());
+      out.push(tables[i].name.clone());
       i = i + 1usize;
     }
     out
@@ -276,7 +276,7 @@ const rootTable = 0xFFFFFFFFFFFFFFFFusize;
 // text is taken as bytes, since 'parse' checks for itself that they are
 // UTF-8 (a '&str' is also accepted: it is bytes where bytes are wanted).
 pub fn parse(text: &Array[u8]) Result[Document, TomlError] {
-  var r = Reader(0usize, 1u32, false, 0u32, String.empty());
+  var r = Reader(0usize, 1u32, false, 0u32, String());
   var doc = Document();
   let bad = badUtf8Line(text);
   if bad != 0u32 {
@@ -407,17 +407,17 @@ fn header(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: &mut us
     return;
   }
   skipSpace(text, r);
-  var leaf = String.empty();
+  var leaf = String();
   if !readKey(text, r, &mut leaf, "table name") { return; }
   let first = String.from(leaf.view());
   var name = String.from(leaf.view());
-  var parent = String.empty();
+  var parent = String();
   // A dotted name, '[a.b]': the table named 'a.b', the sub-table of 'a'. Each
   // part is a bare key; spaces around a dot are passed over and not kept.
   skipSpace(text, r);
   while r.pos < text.len && text[r.pos] == '.' {
     parent = String.from(name.view());
-    leaf = String.empty();
+    leaf = String();
     r.pos = r.pos + 1usize;
     skipSpace(text, r);
     if !readKey(text, r, &mut leaf, "table name") { return; }
@@ -455,7 +455,7 @@ fn header(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: &mut us
     fail(r, m.view());
     return;
   }
-  doc.tables.push(Table(name, at, List[Entry].empty()));
+  doc.tables.push(Table(name, at, List[Entry]()));
   *current = doc.tables.len() - 1usize;
   endLine(text, r, "expected the end of the line after the table's name");
 }
@@ -463,7 +463,7 @@ fn header(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: &mut us
 // A key, '=' and its value, into the current table
 fn keyValue(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: usize) {
   let at = r.line;
-  var key = String.empty();
+  var key = String();
   if !readKey(text, r, &mut key, "key") { return; }
   skipSpace(text, r);
   if r.pos < text.len && text[r.pos] == '.' {
@@ -476,7 +476,7 @@ fn keyValue(text: &Array[u8], r: &mut Reader, doc: &mut Document, current: usize
   }
   r.pos = r.pos + 1usize;
   skipSpace(text, r);
-  var value = Value(Kind.Text, at, String.empty(), 0i64, false, List[String].empty());
+  var value = Value(Kind.Text, at, String(), 0i64, false, List[String]());
   if !readValue(text, r, &mut value) { return; }
   if current == rootTable {
     addEntry(&mut doc.root, key, value, r);
@@ -599,7 +599,7 @@ fn readInteger(word: &Array[u8], r: &mut Reader, dest: &mut i64) bool {
     return false;
   }
   // Digits, a '_' only between two
-  var digits = String.empty();
+  var digits = String();
   if signed { digits.appendByte(word[0usize]); }
   var i = 0usize;
   while i < body.len {
@@ -785,7 +785,7 @@ fn readList(text: &Array[u8], r: &mut Reader, dest: &mut List[String]) bool {
       fail(r, "a list may hold only strings");
       return false;
     }
-    var s = String.empty();
+    var s = String();
     if !readString(text, r, &mut s) { return false; }
     dest.push(s);
     skipListSpace(text, r);

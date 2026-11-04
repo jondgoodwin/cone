@@ -153,7 +153,7 @@ pub struct Doc {
   }
 
   pub fn fromText(text: &str) Doc {
-    var d = Doc(Core(TextBuffer.fromText(text), List[Caret].empty()), History[Edit].make(), 4u32, String.from("  "));
+    var d = Doc(Core(TextBuffer.fromText(text), List[Caret]()), History[Edit].make(), 4u32, String.from("  "));
     d.core.carets.push(caretAt(0usize));
     d.crlf = d.core.buf.usesCrlf();
     d
@@ -283,18 +283,10 @@ pub struct Doc {
   // Sorts the carets and merges those that overlap
   fn normalize(self: &mut) {
     let n = core.carets.len();
-    // insertion sort by low end (carets are few)
-    var i = 1usize;
-    while i < n {
-      var j = i;
-      while j > 0usize && core.carets[j].lo() < core.carets[j - 1usize].lo() {
-        core.carets.swap(j, j - 1usize);
-        j = j - 1usize;
-      }
-      i = i + 1usize;
-    }
+    // by low end, equal ones keeping their order
+    core.carets.sortByKey(fn(c: &Caret) usize { c.lo() });
     var out = List[Caret].withCapacity(n);
-    i = 0usize;
+    var i = 0usize;
     while i < n {
       let c = *core.carets[i];
       if out.len() > 0usize {
@@ -438,7 +430,7 @@ pub struct Doc {
       i = i - 1usize;
       let first = i == 0usize;
       let e = Edit(*los[i], core.buf.text(*los[i], *his[i]), String.from(texts[i].view()),
-        if first {copyCarets(&before)} else {List[Caret].empty()}, if first {copyCarets(&after)} else {List[Caret].empty()});
+        if first {copyCarets(&before)} else {List[Caret]()}, if first {copyCarets(&after)} else {List[Caret]()});
       applyEdit(&mut core, &e, false);
       hist.push(e, tag);
     }
@@ -525,7 +517,7 @@ pub struct Doc {
   // by all of 'whole'
   pub fn paste(self: &mut, whole: &str) {
     let n = core.carets.len();
-    var lines = List[String].empty();
+    var lines = List[String]();
     var start = 0usize;
     var k = 0usize;
     while k <= whole.len() {
@@ -573,13 +565,13 @@ pub struct Doc {
       }
       los.push(lo);
       his.push(hi);
-      texts.push(String.empty());
+      texts.push(String());
       i = i + 1usize;
     }
     // (two carets may now cover the same text: merge ranges that overlap)
-    var ml = List[usize].empty();
-    var mh = List[usize].empty();
-    var mt = List[String].empty();
+    var ml = List[usize]();
+    var mh = List[usize]();
+    var mt = List[String]();
     i = 0usize;
     while i < n {
       if ml.len() > 0usize && *los[i] <= *mh[ml.len() - 1usize] {
@@ -588,7 +580,7 @@ pub struct Doc {
       else {
         ml.push(*los[i]);
         mh.push(*his[i]);
-        mt.push(String.empty());
+        mt.push(String());
       }
       i = i + 1usize;
     }
@@ -601,9 +593,9 @@ pub struct Doc {
   // Deletes the whole line of each caret
   pub fn deleteLines(self: &mut) {
     let n = core.carets.len();
-    var los = List[usize].empty();
-    var his = List[usize].empty();
-    var texts = List[String].empty();
+    var los = List[usize]();
+    var his = List[usize]();
+    var texts = List[String]();
     var lastLine = NOT_FOUND;
     var i = 0usize;
     while i < n {
@@ -619,7 +611,7 @@ pub struct Doc {
           los.set(los.len() - 1usize, prevChar(core.buf.lineStart(l0)));
         }
         his.push(e);
-        texts.push(String.empty());
+        texts.push(String());
         lastLine = l1;
       }
       i = i + 1usize;
@@ -687,9 +679,9 @@ pub struct Doc {
   // plain Tab inserts the indent unit up to the next stop
   pub fn indentLines(self: &mut, outdent: bool) {
     let n = core.carets.len();
-    var los = List[usize].empty();
-    var his = List[usize].empty();
-    var texts = List[String].empty();
+    var los = List[usize]();
+    var his = List[usize]();
+    var texts = List[String]();
     var lastLine = NOT_FOUND;
     var i = 0usize;
     while i < n {
@@ -708,7 +700,7 @@ pub struct Doc {
           if e > ls {
             los.push(ls);
             his.push(e);
-            texts.push(String.empty());
+            texts.push(String());
           }
         }
         else if core.buf.lineLen(l0) > 0usize {
@@ -747,7 +739,7 @@ pub struct Doc {
 
   // The selected text of every caret, joined by line breaks
   pub fn selectedText(self: &) String {
-    var out = String.empty();
+    var out = String();
     var i = 0usize;
     while i < core.carets.len() {
       let c = *core.carets[i];

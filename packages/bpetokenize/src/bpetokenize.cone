@@ -15,10 +15,10 @@
 //
 //   fn main() i32 {
 //     // 256 byte tokens, then the tokens that merges make, then a special token
-//     mut tokens = List[String].empty();
+//     mut tokens = List[String]();
 //     mut b = 0u32;
 //     while b < 256u32 {
-//       mut one = List[u8].empty(); one.push(u8.from(b));
+//       mut one = List[u8](); one.push(u8.from(b));
 //       tokens.push(bpetokenize.toByteLevel(one.view()));
 //       b = b + 1u32;
 //     }
@@ -26,9 +26,9 @@
 //     tokens.push("ll");                    // 257
 //     tokens.push("hell");                  // 258
 //     tokens.push("<|end|>");               // 259: special
-//     mut merges = List[String].empty();    // best merge first
+//     mut merges = List[String]();    // best merge first
 //     merges.push("h e"); merges.push("l l"); merges.push("he ll");
-//     mut special = List[String].empty();
+//     mut special = List[String]();
 //     special.push("<|end|>");
 //     match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), special.view(),
 //                                       bpetokenize.PreTokenizer.Gpt2) {
@@ -170,7 +170,7 @@ pub enum BuildErrorKind {
   // More tokens than ids of 32 bits can number
   TooManyTokens;
 
-  pub fn copy(self: &BuildErrorKind) BuildErrorKind {
+  pub fn clone(self: &BuildErrorKind) BuildErrorKind {
     match self {
       case is MissingByteToken { BuildErrorKind.MissingByteToken }
       case is BadMerge { BuildErrorKind.BadMerge }
@@ -197,8 +197,8 @@ pub struct BuildError is Error {
     out
   }
 
-  pub fn copy(self: &) BuildError {
-    BuildError(kind.copy(), index, reason.copy())
+  pub fn clone(self: &) BuildError {
+    BuildError(kind.clone(), index, reason.clone())
   }
 }
 
@@ -221,7 +221,7 @@ pub struct DecodeError is Error {
     out
   }
 
-  pub fn copy(self: &) DecodeError {
+  pub fn clone(self: &) DecodeError {
     DecodeError(position, id, vocabSize)
   }
 }
@@ -239,18 +239,13 @@ const deadSymbol = 0xFFFFFFFFu32;
 const noLink = 0xFFFFFFFFFFFFFFFFusize;
 
 // Working memory for encoding, kept from word to word within one call
-struct Work {
+struct Work is Default {
   scan: Scan;
   ends: List[usize];
   sym: List[u32];
   prev: List[usize];
   next: List[usize];
   heap: PriorityQueue[Candidate, Nothing];
-
-  fn empty() Work {
-    Work(Scan.empty(), List[usize].empty(), List[u32].empty(), List[usize].empty(), List[usize].empty(),
-      PriorityQueue[Candidate, Nothing]())
-  }
 }
 
 // A vocabulary and its merges, ready to encode and decode
@@ -272,8 +267,8 @@ pub struct Tokenizer {
   pre: PreTokenizer;
 
   fn blank(pre: PreTokenizer) Tokenizer {
-    Tokenizer(Dict[String, u32].deterministic(), List[u8].empty(), List[usize].empty(), List[bool].empty(),
-      List[u32].empty(), List[bool].empty(), Dict[u64, u64].deterministic(), List[u32].empty(), pre)
+    Tokenizer(Dict[String, u32].deterministic(), List[u8](), List[usize](), List[bool](),
+      List[u32](), List[bool](), Dict[u64, u64].deterministic(), List[u32](), pre)
   }
 
   // -------- building --------
@@ -287,7 +282,7 @@ pub struct Tokenizer {
     var i = 0usize;
     while i < tokens.len {
       if !vocab.contains(tokens[i].view()) {
-        vocab.insert(tokens[i].copy(), u32.from(i));
+        vocab.insert(tokens[i].clone(), u32.from(i));
       }
       isSpecial.push(false);
       i = i + 1usize;
@@ -336,7 +331,7 @@ pub struct Tokenizer {
     // the 256 single-byte tokens
     var b = 0u32;
     while b < 256u32 {
-      var one = List[u8].empty();
+      var one = List[u8]();
       one.push(u8.from(b));
       let spelt = toByteLevel(one.view());
       match vocab.getCopy(spelt.view()) {
@@ -432,7 +427,7 @@ pub struct Tokenizer {
       Result[Tokenizer, BuildError] {
     var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
-      case let Some(e) { return Err[Tokenizer, BuildError](e.copy()); }
+      case let Some(e) { return Err[Tokenizer, BuildError](e.clone()); }
       case is None { }
     }
     var i = 0usize;
@@ -451,7 +446,7 @@ pub struct Tokenizer {
       }
       let line = merges[i].view();
       match t.addMerge(i, line.slice(0usize, sp), line.sliceFrom(sp + 1usize)) {
-        case let Some(e) { return Err[Tokenizer, BuildError](e.copy()); }
+        case let Some(e) { return Err[Tokenizer, BuildError](e.clone()); }
         case is None { }
       }
       i = i + 1usize;
@@ -464,13 +459,13 @@ pub struct Tokenizer {
       Result[Tokenizer, BuildError] {
     var t = Tokenizer.blank(pre);
     match t.loadVocabulary(tokens, special) {
-      case let Some(e) { return Err[Tokenizer, BuildError](e.copy()); }
+      case let Some(e) { return Err[Tokenizer, BuildError](e.clone()); }
       case is None { }
     }
     var i = 0usize;
     while i < merges.len {
       match t.addMerge(i, merges[i].left.view(), merges[i].right.view()) {
-        case let Some(e) { return Err[Tokenizer, BuildError](e.copy()); }
+        case let Some(e) { return Err[Tokenizer, BuildError](e.clone()); }
         case is None { }
       }
       i = i + 1usize;
@@ -512,14 +507,14 @@ pub struct Tokenizer {
 
   // The ids of a text, special tokens recognised
   pub fn encode(self: &, text: &Array[u8]) List[u32] {
-    var out = List[u32].empty();
+    var out = List[u32]();
     self.encodeWith(text, true, &mut out);
     out
   }
 
   // The ids of a text, with a special token's text encoded like any other text
   pub fn encodePlain(self: &, text: &Array[u8]) List[u32] {
-    var out = List[u32].empty();
+    var out = List[u32]();
     self.encodeWith(text, false, &mut out);
     out
   }
@@ -527,7 +522,7 @@ pub struct Tokenizer {
   // Append the ids of a text to out; 'parseSpecial' says whether a special
   // token's text in the input is its token
   pub fn encodeWith(self: &, text: &Array[u8], parseSpecial: bool, out: &mut List[u32]) {
-    var work = Work.empty();
+    var work = Work();
     var segment = 0usize;
     var pos = 0usize;
     if parseSpecial && specialIds.len() > 0usize {
@@ -675,7 +670,7 @@ pub struct Tokenizer {
 
   // The bytes of the ids
   pub fn decode(self: &, ids: &Array[u32]) Result[List[u8], DecodeError] {
-    var out = List[u8].empty();
+    var out = List[u8]();
     self.decodeInto(ids, false, &mut out)?;
     Ok[List[u8], DecodeError](out)
   }

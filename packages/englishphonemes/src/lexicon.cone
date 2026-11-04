@@ -24,10 +24,10 @@ pub struct Ps {
   pub text: String;
   pub some: bool;
 
-  pub fn none() Ps { Ps(String.empty(), false) }
+  pub fn none() Ps { Ps(String(), false) }
   pub fn of(s: String) Ps { Ps(s, true) }
   pub fn ofStr(s: &str) Ps { Ps(String.from(s), true) }
-  pub fn copy(self: &) Ps { Ps(text.copy(), some) }
+  pub fn clone(self: &) Ps { Ps(text.clone(), some) }
 }
 
 // A part-of-speech entry: tag, its phonemes (or None)
@@ -36,7 +36,7 @@ pub struct TagPs {
   pub ps: String;
   pub none: bool;
 
-  pub fn copy(self: &) TagPs { TagPs(tag.copy(), ps.copy(), none) }
+  pub fn clone(self: &) TagPs { TagPs(tag.clone(), ps.clone(), none) }
 }
 
 // A lexicon entry: a phoneme string, or a list of them by part of speech (with DEFAULT among them)
@@ -45,11 +45,11 @@ pub struct Entry {
   pub multi: List[TagPs];
   pub isMulti: bool;
 
-  pub fn copy(self: &) Entry {
+  pub fn clone(self: &) Entry {
     var m = List[TagPs].withCapacity(multi.len());
     var i = 0usize;
-    while i < multi.len() { m.push(multi[i].copy()); i = i + 1usize; }
-    Entry(plain.copy(), m, isMulti)
+    while i < multi.len() { m.push(multi[i].clone()); i = i + 1usize; }
+    Entry(plain.clone(), m, isMulti)
   }
 
   // The string for 'tag', if the entry has one for it
@@ -71,11 +71,11 @@ pub struct Entry {
 
   // The entry's DEFAULT as a Ps
   pub fn defaultPs(self: &) Ps {
-    if !isMulti { return Ps.of(plain.copy()); }
+    if !isMulti { return Ps.of(plain.clone()); }
     match self.find("DEFAULT") {
       case let Some(i) {
         if multi[i].none { return Ps.none(); }
-        Ps.of(multi[i].ps.copy())
+        Ps.of(multi[i].ps.clone())
       }
       case is None { Ps.none() }
     }
@@ -88,7 +88,7 @@ fn parseLine(line: &str) Option[(String, Entry)] {
       let key = String.from(&line[0usize ..< t]);
       let rest = &line[t + 1usize ..];
       if rest.startsWith("@") {
-        var multi = List[TagPs].empty();
+        var multi = List[TagPs]();
         let body = &rest[1usize ..];
         var start = 0usize;
         while start <= body.len() {
@@ -103,7 +103,7 @@ fn parseLine(line: &str) Option[(String, Entry)] {
               let tag = String.from(&part[0usize ..< e]);
               let val = &part[e + 1usize ..];
               if val == "!" {
-                multi.push(TagPs(tag, String.empty(), true));
+                multi.push(TagPs(tag, String(), true));
               } else {
                 multi.push(TagPs(tag, String.from(val), false));
               }
@@ -112,9 +112,9 @@ fn parseLine(line: &str) Option[(String, Entry)] {
           }
           start = end + 1usize;
         }
-        return Some[(String, Entry)]((key, Entry(String.empty(), multi, true)));
+        return Some[(String, Entry)]((key, Entry(String(), multi, true)));
       }
-      Some[(String, Entry)]((key, Entry(String.from(rest), List[TagPs].empty(), false)))
+      Some[(String, Entry)]((key, Entry(String.from(rest), List[TagPs](), false)))
     }
     case is None { None }
   }
@@ -124,7 +124,7 @@ fn parseLine(line: &str) Option[(String, Entry)] {
 pub struct PhonemesError is Error, Sendable {
   pub reason: String;
 
-  pub fn message(self: &) String { reason.copy() }
+  pub fn message(self: &) String { reason.clone() }
 }
 
 fn loadDict(path: &Path) Result[Dict[String, Entry], PhonemesError] {
@@ -227,15 +227,8 @@ fn restress(ps: &Array[u32]) List[u32] {
   // a stable sort of the characters by key
   var order = List[usize].withCapacity(n);
   i = 0usize;
-  while i < n {
-    var k = order.len();
-    order.push(i);
-    while k > 0usize && *keys[*order[k - 1usize]] > *keys[*order[k]] {
-      order.swap(k, k - 1usize);
-      k = k - 1usize;
-    }
-    i = i + 1usize;
-  }
+  while i < n { order.push(i); i = i + 1usize; }
+  order.sortByKey(fn(c: &usize) i64 { *keys[*c] });
   var out = List[u32].withCapacity(n);
   i = 0usize;
   while i < n { out.push(ps[*order[i]]); i = i + 1usize; }
@@ -282,14 +275,14 @@ pub fn stressWeight(ps: &str) i32 {
 
 // ---- the context a word is looked up in ----
 
-pub struct Ctx {
+pub struct Ctx is Default {
   // 2: None (no following word with a phoneme), 1: the next sound is a vowel, 0: a consonant
   pub futureVowel: i32;
   pub futureTo: bool;
   // misaki passes no context at all when it looks up the words of a number
   pub absent: bool;
 
-  pub fn empty() Ctx { Ctx(2i32, false, false) }
+  pub fn init(self: &new) { *self = Ctx(2i32, false, false); }
   pub fn noContext() Ctx { Ctx(2i32, false, true) }
 }
 
@@ -357,11 +350,11 @@ pub struct Lexicon {
 
   // misaki's get_NNP: a name spelled out letter by letter
   pub fn getNNP(self: &, word: &str) Ps {
-    var ps = String.empty();
+    var ps = String();
     each c in word.chars() {
       let u = u32.from(c);
       if isLetterCp(u) {
-        var key = String.empty();
+        var key = String();
         appendCp(&mut key, upperCp(u));
         match golds.get(key.view()) {
           case let Some(e) {
@@ -453,7 +446,7 @@ pub struct Lexicon {
       return Ps.ofStr(if ctx.futureVowel == 0i32 { "tə" } else { "tʊ" });
     }
     if word == "in" || word == "In" || (word == "IN" && tag != "NNP") {
-      var s = String.empty();
+      var s = String();
       if ctx.futureVowel == 2i32 || tag != "IN" { s <- "ˈ"; }
       s <- "ɪn";
       return Ps.of(s);
@@ -472,11 +465,11 @@ pub struct Lexicon {
         case let Some(e) {
           if e.isMulti {
             match e.find(which) {
-              case let Some(i) { return Ps.of(e.multi[i].ps.copy()); }
+              case let Some(i) { return Ps.of(e.multi[i].ps.clone()); }
               case is None { return e.defaultPs(); }
             }
           }
-          return Ps.of(e.plain.copy());
+          return Ps.of(e.plain.clone());
         }
         case is None {}
       }
@@ -524,16 +517,16 @@ pub struct Lexicon {
           } else if !e.has(tag.view()) {
             key = parentTag(tag.view());
           } else {
-            key = tag.copy();
+            key = tag.clone();
           }
           match e.find(key.view()) {
             case let Some(i) {
-              if !e.multi[i].none { ps = Ps.of(e.multi[i].ps.copy()); }
+              if !e.multi[i].none { ps = Ps.of(e.multi[i].ps.clone()); }
             }
             case is None { ps = e.defaultPs(); }
           }
         } else {
-          ps = Ps.of(e.plain.copy());
+          ps = Ps.of(e.plain.clone());
         }
       }
       case is None {}
@@ -558,7 +551,7 @@ pub struct Lexicon {
 
   fn stemS(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
     if word.len() < 3usize || !word.endsWith("s") { return Ps.none(); }
-    var stem = String.empty();
+    var stem = String();
     if !word.endsWith("ss") && self.isKnown(&word[0usize ..< word.len() - 1usize]) {
       stem = String.from(&word[0usize ..< word.len() - 1usize]);
     } else if (word.endsWith("'s") || (word.len() > 4usize && word.endsWith("es") && !word.endsWith("ies")))
@@ -599,7 +592,7 @@ pub struct Lexicon {
 
   fn stemEd(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
     if word.len() < 4usize || !word.endsWith("d") { return Ps.none(); }
-    var stem = String.empty();
+    var stem = String();
     if !word.endsWith("dd") && self.isKnown(&word[0usize ..< word.len() - 1usize]) {
       stem = String.from(&word[0usize ..< word.len() - 1usize]);
     } else if word.len() > 4usize && word.endsWith("ed") && !word.endsWith("eed")
@@ -642,7 +635,7 @@ pub struct Lexicon {
 
   fn stemIng(self: &, word: &str, tag: &str, stress: f32, ctx: &Ctx) Ps {
     if word.len() < 5usize || !word.endsWith("ing") { return Ps.none(); }
-    var stem = String.empty();
+    var stem = String();
     let base = &word[0usize ..< word.len() - 3usize];
     var withE = String.from(base);
     withE <- "e";
@@ -732,7 +725,7 @@ pub struct Lexicon {
         }
       } else if w == "and" && flags.contains("n") && result.len() > 0usize {
         let last = result.len() - 1usize;
-        var t = result[last].text.copy();
+        var t = result[last].text.clone();
         t <- "ən";
         result.set(last, Ps.of(t));
       }
@@ -761,7 +754,7 @@ pub struct Lexicon {
     }
     let suffix = String.from(&wordIn[sufStart ..]);
     var word = String.from(&wordIn[0usize ..< sufStart]);
-    var result = List[Ps].empty();
+    var result = List[Ps]();
     if word.startsWith("-") {
       result.push(self.lookup("minus", "", NO_STRESS, &Ctx.noContext(), false));
       word = String.from(&word.view()[1usize ..]);
@@ -816,9 +809,9 @@ pub struct Lexicon {
       }
     } else if hasUnits && Lexicon.isCurrency(word.view()) {
       let parts = replaceAll(word.view(), ",", "").split(u8.from('.'));
-      var amounts = List[u64].empty();
+      var amounts = List[u64]();
       // which unit (0: the main one, 1: the sub-unit) each amount is of
-      var unitsList = List[usize].empty();
+      var unitsList = List[usize]();
       var pi = 0usize;
       while pi < parts.len() && pi < 2usize {
         let t = parts[pi].view();
@@ -854,7 +847,7 @@ pub struct Lexicon {
         idx = idx + 1usize;
       }
     } else {
-      var words = List[String].empty();
+      var words = List[String]();
       if isDigitsText(word.view()) {
         words = cardinal(Lexicon.digitsValue(word.view()));
       } else if !word.contains(".") {
@@ -879,7 +872,7 @@ pub struct Lexicon {
       self.extendWords(&mut result, &words, true, flags);
     }
     if result.len() == 0usize { return Ps.none(); }
-    var joined = String.empty();
+    var joined = String();
     var i = 0usize;
     while i < result.len() {
       if !result[i].some { return Ps.none(); }

@@ -168,7 +168,7 @@ pub struct Loop {
     var packet = 0usize;
     var entries = null as *OverlappedEntry;
     var events = null as *EpollEvent;
-    if isWindows() {
+    #if #os == .windows {
       // The high-resolution timer (Windows 10 1803 on); an ordinary one, as
       // fine as the system's tick, before it
       timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
@@ -179,19 +179,19 @@ pub struct Loop {
         packet = 0usize;
       }
       entries = libc.malloc(usize.from(batch) * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
-    } else {
+    } #else {
       events = libc.malloc(usize.from(batch) * mem.sizeof[EpollEvent]()) as *EpollEvent;
     }
-    let shared = Arc[imm, Port](Port(if isWindows() {port} else {wake}, Atomic[bool].of(false),
+    let shared = Arc[imm, Port](Port(#if #os == .windows {port} #else {wake}, Atomic[bool].of(false),
       Atomic[u32].of(0u32), Mutex.make(), null, null, null, null, Atomic[u32].of(0u32), Atomic[u64].of(0u64)));
     Loop(
       loopId: diag.nextLoopId(), driverGen: 0u32, port: shared, portHandle: port,
       pool: OpPool[OldAsk].make(), kernelHeld: 0u32,
       grouped: 0u32, groupHead: null, groupsDirty: false, unbound: null, unboundTail: null,
-      decided: List[*OpCore].empty(), done: List[*OpCore].empty(), cancels: List[Asked].empty(),
-      held: List[Held].empty(),
+      decided: List[*OpCore](), done: List[*OpCore](), cancels: List[Asked](),
+      held: List[Held](),
       handles: SlotTable[HEntry].make(64u32),
-      wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
+      wheel: Wheel.make(Instant.now()), expiries: List[Expiry](),
       entries: entries, events: events, timer: timer, packet: packet, associated: false,
       armedFor: Instant(), woken: false, dying: false, grace: Duration.fromMillis(1i64),
       stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false, shared: Shared.none())
@@ -257,7 +257,7 @@ pub struct Loop {
     var a = addr;
     // Winsock's listen, named through the module: Loop's own 'listen' is
     // the bare name here
-    if !isWindows() {
+    #if #os != .windows {
       // A restarted server may bind its port again while old connections linger
       var one = 1i32;
       setsockopt(s, solSocketLx, soReuseAddr, &mut one as *u8, 4i32);
@@ -267,20 +267,21 @@ pub struct Loop {
       closeRaw(hSocket, s);
       return Err[Handle, IoError](IoError(code));
     }
-    if isWindows() {
+    #if #os == .windows {
       if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
         let code = GetLastError();
         closesocket(s);
         return Err[Handle, IoError](IoError(code));
       }
-      return Ok[Handle, IoError](self.register(s, hListener, addr.family()));
+      Ok[Handle, IoError](self.register(s, hListener, addr.family()))
+    } #else {
+      // Linux: epoll is told of it once it is a handle
+      var code = 0u32;
+      var h = Handle.none();
+      code, h = lxAdopt(self, s, hListener, addr.family());
+      if code != 0u32 {return Err[Handle, IoError](IoError(code));}
+      Ok[Handle, IoError](h)
     }
-    // Linux: epoll is told of it once it is a handle
-    var code = 0u32;
-    var h = Handle.none();
-    code, h = lxAdopt(self, s, hListener, addr.family());
-    if code != 0u32 {return Err[Handle, IoError](IoError(code));}
-    Ok[Handle, IoError](h)
   }
 
   // A UDP socket bound to addr, for RecvFrom and SendTo; addr's port 0 has
@@ -296,7 +297,7 @@ pub struct Loop {
       closeRaw(hDatagram, s);
       return Err[Handle, IoError](IoError(code));
     }
-    if isWindows() {
+    #if #os == .windows {
       // An ICMP "port unreachable" for a datagram sent earlier must not make
       // a later receive on this socket fail (Winsock's default)
       var off = 0i32;
@@ -307,13 +308,14 @@ pub struct Loop {
         closesocket(s);
         return Err[Handle, IoError](IoError(code));
       }
-      return Ok[Handle, IoError](self.register(s, hDatagram, addr.family()));
+      Ok[Handle, IoError](self.register(s, hDatagram, addr.family()))
+    } #else {
+      var code = 0u32;
+      var h = Handle.none();
+      code, h = lxAdopt(self, s, hDatagram, addr.family());
+      if code != 0u32 {return Err[Handle, IoError](IoError(code));}
+      Ok[Handle, IoError](h)
     }
-    var code = 0u32;
-    var h = Handle.none();
-    code, h = lxAdopt(self, s, hDatagram, addr.family());
-    if code != 0u32 {return Err[Handle, IoError](IoError(code));}
-    Ok[Handle, IoError](h)
   }
 
   // A bound UDP socket; a panic, at the caller's line, if there can be none
@@ -363,20 +365,20 @@ pub struct Loop {
     if raw == invalidHandle {return noSuchHandle();}
     let on = ka.probes > 0u32;
     var flag = if on {1i32} else {0i32};
-    let sol = if isWindows() {solSocket} else {solSocketLx};
-    let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
+    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
     if setsockopt(raw, sol, opt, &mut flag as *u8, 4i32) != 0i32 {return wsaError();}
     if !on {return 0u32;}
     var idle = keepSeconds(ka.idle);
     var every = keepSeconds(ka.interval);
     var count = i32.from(ka.probes);
-    let idleOpt = if isWindows() {tcpKeepIdle} else {tcpKeepIdleLx};
-    let everyOpt = if isWindows() {tcpKeepIntvl} else {tcpKeepIntvlLx};
-    let countOpt = if isWindows() {tcpKeepCnt} else {tcpKeepCntLx};
+    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
     if setsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, 4i32) != 0i32 {return wsaError();}
     if setsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, 4i32) != 0i32 {return wsaError();}
     if setsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, 4i32) != 0i32 {return wsaError();}
-    if !isWindows() && ka.userTimeout > Duration.zero() {
+    if (#if #os != .windows {ka.userTimeout > Duration.zero()} #else {false}) {
       var ms = i32.from(ka.userTimeout.millis());
       if setsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, 4i32) != 0i32 {return wsaError();}
     }
@@ -388,8 +390,8 @@ pub struct Loop {
   pub fn keepAlive(self: &, h: Handle) Result[KeepAlive, IoError] {
     let raw = self.rawOf(h, hSocket);
     if raw == invalidHandle {return Err[KeepAlive, IoError](IoError(noSuchHandle()));}
-    let sol = if isWindows() {solSocket} else {solSocketLx};
-    let opt = if isWindows() {soKeepAlive} else {soKeepAliveLx};
+    let sol = #if #os == .windows {solSocket} #else {solSocketLx};
+    let opt = #if #os == .windows {soKeepAlive} #else {soKeepAliveLx};
     var flag = 0i32;
     var len = 4i32;
     if getsockopt(raw, sol, opt, &mut flag as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
@@ -398,16 +400,16 @@ pub struct Loop {
     var every = 0i32;
     var count = 0i32;
     var ms = 0i32;
-    let idleOpt = if isWindows() {tcpKeepIdle} else {tcpKeepIdleLx};
-    let everyOpt = if isWindows() {tcpKeepIntvl} else {tcpKeepIntvlLx};
-    let countOpt = if isWindows() {tcpKeepCnt} else {tcpKeepCntLx};
+    let idleOpt = #if #os == .windows {tcpKeepIdle} #else {tcpKeepIdleLx};
+    let everyOpt = #if #os == .windows {tcpKeepIntvl} #else {tcpKeepIntvlLx};
+    let countOpt = #if #os == .windows {tcpKeepCnt} #else {tcpKeepCntLx};
     len = 4i32;
     if getsockopt(raw, ipprotoTcp, idleOpt, &mut idle as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     len = 4i32;
     if getsockopt(raw, ipprotoTcp, everyOpt, &mut every as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     len = 4i32;
     if getsockopt(raw, ipprotoTcp, countOpt, &mut count as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
-    if !isWindows() {
+    #if #os != .windows {
       len = 4i32;
       if getsockopt(raw, ipprotoTcp, tcpUserTimeoutLx, &mut ms as *u8, &mut len) != 0i32 {return Err[KeepAlive, IoError](IoError(wsaError()));}
     }
@@ -418,7 +420,7 @@ pub struct Loop {
   // A file, for ReadAt and WriteAt
   pub fn openFile(self: &mut, path: &Path, access: Access) Result[Handle, IoError] {
     let text: &Array[u8] = path.view();
-    if isWindows() {
+    #if #os == .windows {
       let w = widen(text);
       if w as usize == 0usize {return Err[Handle, IoError](IoError(errorNoUnicodeTranslation));}
       var want = genericRead;
@@ -437,7 +439,7 @@ pub struct Loop {
         return Err[Handle, IoError](IoError(code));
       }
       Ok[Handle, IoError](self.register(h, hFile, 0u16))
-    } else {
+    } #else {
       // Not epoll's: a file is read and written by the pool's threads
       let p = cstrCopy(text);
       if p as usize == 0usize {return Err[Handle, IoError](IoError(noMemory()));}
@@ -485,7 +487,7 @@ pub struct Loop {
     lxCancelFiles(self, h);
     let e = handles.at(i) as &HEntry;
     self.unpublish(i);
-    if isWindows() {CancelIoEx(e.raw, null);}
+    #if #os == .windows {CancelIoEx(e.raw, null);}
     self.detachLists(i);
     closeRaw(e.kind, e.raw);
     handles.removeAt(i);
@@ -515,7 +517,7 @@ pub struct Loop {
     lxCancelAll(self, i);
     let e = handles.at(i) as &HEntry;
     self.unpublish(i);
-    if isWindows() {CancelIoEx(e.raw, null);}
+    #if #os == .windows {CancelIoEx(e.raw, null);}
     self.detachLists(i);
     resetSocket(e.raw);
     handles.removeAt(i);
@@ -526,7 +528,7 @@ pub struct Loop {
     // Windows: a socket's completions skip the port when it finishes at once
     // (its start answers it then: 'finishNow'), where the system allows it
     var skip = 0u32;
-    if isWindows() && kind != hFile && skipOnSuccess(raw) {skip = 1u32;}
+    #if #os == .windows { if kind != hFile && skipOnSuccess(raw) {skip = 1u32;} }
     let s = handles.add(HEntry(raw, kind, family, 0u32, null, null, null, null, skip));
     self.publish(s.index);
     Handle(s.index, s.gen)
@@ -586,7 +588,7 @@ pub struct Loop {
   fn linkIssued(self: &mut, p: *OpCore) {
     let r = p as &mut OpCore;
     stats.submit();
-    if isWindows() {
+    #if #os == .windows {
       let stashed = r.link == linkStashed;
       r.link = linkNone;
       kernelHeld = kernelHeld + 1u32;
@@ -595,7 +597,7 @@ pub struct Loop {
         return;
       }
       if self.handleIndex(r.handle) != noEntry {self.place(p);}
-    } else {
+    } #else {
       r.link = linkNone;
       lxLinkIssued(self, p);
       if r.state != stFlight {return;}
@@ -715,11 +717,11 @@ pub struct Loop {
     let r = p as &mut OpCore;
     if r.side != onNone {return;}
     let k = r.kind;
-    if (jobKind(k) && k != diag.kindReadAt && k != diag.kindWriteAt) || (isWindows() && k == diag.kindConnect) {
+    if (jobKind(k) && k != diag.kindReadAt && k != diag.kindWriteAt) || (#if #os == .windows {k == diag.kindConnect} #else {false}) {
       self.linkSide(p, onLoop);
       return;
     }
-    if !isWindows() && k != diag.kindReadAt && k != diag.kindWriteAt {return;}
+    #if #os != .windows { if k != diag.kindReadAt && k != diag.kindWriteAt {return;} }
     self.linkSide(p, if writes(k) {onWrites} else {onReads});
   }
 
@@ -781,7 +783,7 @@ pub struct Loop {
   fn abandonRec(self: &mut, p: *OpCore) {
     // Linux: nothing of a socket operation is the kernel's to give back, so
     // it is answered TimedOut with its buffer, never promptly without it
-    if !isWindows() && socketKind((p as &OpCore).kind) {
+    if (#if #os != .windows {socketKind((p as &OpCore).kind)} #else {false}) {
       lxCancel(self, p, diag.outcomeTimedOut);
       return;
     }
@@ -815,7 +817,7 @@ pub struct Loop {
       // The target is used where it lies, in the record (no other reference
       // reaches it while the answer is sent)
       let a = &mut (*(p as *OpRec[OldAsk])).ask;
-      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf.empty(), None, made, peer,
+      let c = Completion(loopId, id, a.token, kind, status, n, code, IoBuf(), None, made, peer,
         submitted, dequeued, at);
       return self.send(c, &mut a.target as *Target as &uni Target, out);
     }
@@ -824,7 +826,7 @@ pub struct Loop {
     let core, ask = rec.(core, ask);
     let buf, bufs = core.(buf, bufs);
     let target, token = ask.(target, token);
-    let b = buf || IoBuf.empty();
+    let b = buf || IoBuf();
     var t = target;
     let c = Completion(loopId, id, token, kind, status, n, code, b, bufs, made, peer, submitted, dequeued, at);
     self.send(c, &uni t, out)
@@ -941,7 +943,7 @@ pub struct Loop {
   // are done with)
   fn retryHeld(self: &mut) {
     if held.len() == 0usize {return;}
-    var keep = List[Held].empty();
+    var keep = List[Held]();
     each h in held.drain() {
       let c, tx = h.(c, tx);
       match tx.trySend(c) {
@@ -1018,7 +1020,7 @@ pub struct Loop {
   // answers -- another thread, a GPU fence's watcher -- from any thread,
   // its answer delivered where 'to' says as any operation's is (see the
   // package's header, EXTERNAL OPERATIONS). buf is lent to the completer
-  // (IoBuf.empty() for none) and comes back in the answer
+  // (IoBuf() for none) and comes back in the answer
   pub fn external(self: &mut, to: Target, buf: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Completer {
     self.startExternal(to, buf, forever(), None, file, line)
   }
@@ -1098,11 +1100,12 @@ pub struct Loop {
     match r.group {
       case let Some(s) {
         self.linkGroup(p);
-        let w = Waker(port);
-        s.register(loopId, &w);
+        let w = GroupWaker(Waker(port));
+        s.watch(loopId, &w);
         // After the registration: a cancel since is either seen here or
-        // posted to this loop
-        cancelled = s.isCancelled();
+        // posted to this loop. A group past its deadline is not cancelled
+        // here: the operation is answered TimedOut, as its deadline says
+        cancelled = s.isCancelled() && !timedOut(&s);
       }
       else {}
     }
@@ -1314,7 +1317,7 @@ pub struct Loop {
     } else if r.state == stFlight {
       // (Linux: an operation the socket took at once is decided already, and
       // needs neither a deadline nor the kernel's holding)
-      if isWindows() && r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
+      #if #os == .windows { if r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;} }
       self.place(p);
       if dl < forever() {
         r.timer = wheel.insert(dl, self.tokenOf(p));
@@ -1389,7 +1392,7 @@ pub struct Loop {
   fn startConnect(self: &mut, p: *OpCore) u32 {
     let r = p as &mut OpCore;
     let addr = *r.sockAddr();
-    if isWindows() {
+    #if #os == .windows {
       if connectExAddr == 0usize {return errorInvalidParameter;}
       let s = tcpSocket(addr.family());
       if s == invalidHandle {return wsaError();}
@@ -1420,14 +1423,14 @@ pub struct Loop {
         self.finishNow(p, 0u32);
       }
       0u32
-    } else {
+    } #else {
       lxStartConnect(self, p, addr)
     }
   }
 
   fn startAccept(self: &mut, p: *OpCore, listener: Handle) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       if acceptExAddr == 0usize {return errorInvalidParameter;}
       let li = self.handleIndex(listener);
       if li == noEntry {return errorInvalidHandle;}
@@ -1451,14 +1454,14 @@ pub struct Loop {
         self.finishNow(p, 0u32);
       }
       0u32
-    } else {
+    } #else {
       lxStartAccept(self, p)
     }
   }
 
   fn startRecv(self: &mut, p: *OpCore, sock: Handle, ready: bool) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       let raw = self.rawOf(sock, hSocket);
       if raw == invalidHandle {return errorInvalidHandle;}
       r.raw = raw;
@@ -1480,14 +1483,14 @@ pub struct Loop {
         self.finishNow(p, got);
       }
       0u32
-    } else {
+    } #else {
       lxStartRecv(self, p, ready)
     }
   }
 
   fn startSend(self: &mut, p: *OpCore, sock: Handle, data: *u8, len: usize) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       let raw = self.rawOf(sock, hSocket);
       if raw == invalidHandle {return errorInvalidHandle;}
       if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
@@ -1502,7 +1505,7 @@ pub struct Loop {
         self.finishNow(p, sent);
       }
       0u32
-    } else {
+    } #else {
       lxStartSend(self, p)
     }
   }
@@ -1515,7 +1518,7 @@ pub struct Loop {
   // after it. The segments' bytes stay in the record's chain until the answer
   fn startGather(self: &mut, p: *OpCore, sock: Handle) u32 {
     let r = p as &mut OpCore;
-    if !isWindows() {return lxStartSend(self, p);}
+    #if #os != .windows {lxStartSend(self, p)} #else {
     let raw = self.rawOf(sock, hSocket);
     if raw == invalidHandle {return errorInvalidHandle;}
     // Done's count comes back in 32 bits
@@ -1570,13 +1573,14 @@ pub struct Loop {
     }
     if now {self.finishNow(p, sent);}
     code
+    }
   }
 
   // One datagram into the buffer's room, the sender into the record's
   // address area
   fn startRecvFrom(self: &mut, p: *OpCore, sock: Handle) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       let raw = self.rawOf(sock, hDatagram);
       if raw == invalidHandle {return errorInvalidHandle;}
       let room = r.bufRoom();
@@ -1596,7 +1600,7 @@ pub struct Loop {
         self.finishNow(p, got);
       }
       0u32
-    } else {
+    } #else {
       lxStartRecvFrom(self, p)
     }
   }
@@ -1604,7 +1608,7 @@ pub struct Loop {
   // The buffer as one datagram to the address in the record's address area
   fn startSendTo(self: &mut, p: *OpCore, sock: Handle) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       let raw = self.rawOf(sock, hDatagram);
       if raw == invalidHandle {return errorInvalidHandle;}
       if r.bufLen() > 0xFFFFFFFFusize {return errorInvalidParameter;}
@@ -1621,14 +1625,14 @@ pub struct Loop {
         self.finishNow(p, sent);
       }
       0u32
-    } else {
+    } #else {
       lxStartSendTo(self, p)
     }
   }
 
   fn startFile(self: &mut, p: *OpCore, file: Handle, at: u64, write: bool) u32 {
     let r = p as &mut OpCore;
-    if isWindows() {
+    #if #os == .windows {
       let raw = self.rawOf(file, hFile);
       if raw == invalidHandle {return errorInvalidHandle;}
       r.raw = raw;
@@ -1650,7 +1654,7 @@ pub struct Loop {
         if code != errorIoPending {return code;}
       }
       0u32
-    } else {
+    } #else {
       lxStartFile(self, p, write)
     }
   }
@@ -1747,7 +1751,7 @@ pub struct Loop {
     // The kernel is asked, and answers at the next wait: on Linux the loop
     // answers it then itself (settleCancels), after the events that came with
     // the wait, so an operation that finished first is Done, as on Windows
-    if isWindows() {CancelIoEx(r.raw, p as *u8);} else {lxAskCancel(self, p);}
+    #if #os == .windows {CancelIoEx(r.raw, p as *u8);} #else {lxAskCancel(self, p);}
   }
 
   // A cancel group has been cancelled: every operation in flight in a
@@ -1760,7 +1764,7 @@ pub struct Loop {
       if (*p).state == stFlight && (*p).asked == askedNone {
         var hit = false;
         match (*p).group {
-          case let Some(s) {hit = s.isCancelled();}
+          case let Some(s) {hit = s.isCancelled() && !timedOut(&s);}
           else {}
         }
         if hit {
@@ -1779,7 +1783,7 @@ pub struct Loop {
   // The kernel has completed record p, moving 'bytes'
   // (Windows only: Linux's operations are tried by linux.cone, not completed)
   fn complete(self: &mut, p: *OpCore, bytes: u32, at: Instant) {
-    if isWindows() {
+    #if #os == .windows {
       let r = p as &mut OpCore;
       if r.link == linkTransit {
         // Issued on a worker, and done before its 'link me' has come: kept,
@@ -1825,7 +1829,7 @@ pub struct Loop {
   // at once and posts nothing (a socket that skips the port on success)
   // (Windows only)
   fn finish(self: &mut, p: *OpCore, status: usize, bytes: u32, at: Instant) {
-    if isWindows() {
+    #if #os == .windows {
       let r = p as &mut OpCore;
       r.dequeued = at;
       let n = usize.from(bytes);
@@ -1906,7 +1910,7 @@ pub struct Loop {
   // error that stopped it (the socket is then closed)
   // (Windows only: Linux adopts a socket where it makes or accepts it)
   fn adopt(self: &mut, p: *OpCore) u32 {
-    if isWindows() {
+    #if #os == .windows {
       let r = p as &mut OpCore;
       let s = r.newSock;
       r.newSock = invalidHandle;
@@ -1930,7 +1934,7 @@ pub struct Loop {
       noDelay(s);
       r.newHandle = self.register(s, hSocket, r.family);
       0u32
-    } else {
+    } #else {
       badParameter()
     }
   }
@@ -2028,7 +2032,7 @@ pub struct Loop {
   // when wakeAt never comes
   fn armFor(self: &mut, wakeAt: Instant, now: Instant) u32 {
     if wakeAt >= forever() {return infinite;}
-    if isWindows() {
+    #if #os == .windows {
       let left = (wakeAt - now).nanos();
       if packet != 0usize && (!associated || armedFor != wakeAt) {
         // Relative, in 100 ns units: negative
@@ -2045,7 +2049,7 @@ pub struct Loop {
       }
       let ms = (left + 999999i64) / 1000000i64 + 1i64;
       if ms >= i64.from(infinite) {infinite - 1u32} else {u32.from(ms)}
-    } else {
+    } #else {
       lxArm(self, wakeAt, now)
     }
   }
@@ -2053,7 +2057,7 @@ pub struct Loop {
   // One wait in the kernel, for at most ms, and what it brought processed:
   // how many answers posted by other loops went to out
   fn dequeue(self: &mut, ms: u32, out: &mut List[Completion]) usize {
-    if isWindows() {
+    #if #os == .windows {
       var got = 0u32;
       let ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
       stats.passes = stats.passes + 1u64;
@@ -2090,7 +2094,7 @@ pub struct Loop {
       }
       if groupsDirty {self.sweepGroups();}
       n
-    } else {
+    } #else {
       lxDequeue(self, ms, out)
     }
   }
@@ -2157,7 +2161,7 @@ pub struct Loop {
       }
       return;
     }
-    if isWindows() && r.kind == diag.kindConnect && r.newSock != invalidHandle {
+    if (#if #os == .windows {r.kind == diag.kindConnect && r.newSock != invalidHandle} #else {false}) {
       CancelIoEx(r.newSock, null);
     }
   }
@@ -2172,9 +2176,9 @@ pub struct Loop {
       if handles.isLive(h) {
         // Unpublished first: nothing is issued on it from another thread after
         self.unpublish(h);
-        if isWindows() {
+        #if #os == .windows {
           CancelIoEx((*handles.at(h)).raw, null);
-        } else {
+        } #else {
           lxCancelAll(self, h);
           // Linux: the file jobs on it
           let e = handles.at(h) as &HEntry;
@@ -2216,7 +2220,7 @@ pub struct Loop {
     lxSettleCancels(self);
     // An asker's record answered early and still on the done list is away: it
     // is its job's thread's, and is dissolved when it comes home
-    var kept = List[*OpCore].empty();
+    var kept = List[*OpCore]();
     var k = 0usize;
     while k < done.len() {
       let d = *done[k];
@@ -2227,7 +2231,7 @@ pub struct Loop {
     // Wait until the kernel has given back every record, and deliver what
     // was owed to other loops and threads; what was owed here dies, buffers
     // going home
-    var scratch = List[Completion].empty();
+    var scratch = List[Completion]();
     self.flush(&mut scratch);
     scratch.clear();
     while kernelHeld > 0u32 {
@@ -2258,13 +2262,13 @@ pub struct Loop {
     // record
     port.close();
     port.drainDead();
-    if isWindows() {
+    #if #os == .windows {
       if packet != 0usize {
         NtCancelWaitCompletionPacket(packet, 1u8);
         CloseHandle(packet);
       }
       if timer != 0usize {CloseHandle(timer);}
-    } else {
+    } #else {
       // The timerfd and the epoll instance (the eventfd is the Port's, closed
       // by its last owner)
       sysClose(fdOf(timer));

@@ -7,7 +7,7 @@
 //   import time use Duration;
 //
 //   fn main() i32 {
-//     mut args = List[String].empty();
+//     mut args = List[String]();
 //     args.push(String.from("conec"));
 //     args.push(String.from("-o"));
 //     args.push(String.from("build/debug"));
@@ -39,8 +39,8 @@
 //   process.currentExe()          this program's executable, a Path
 //
 // Two systems run programs by two designs, and the package gives the same
-// interface over both; where they differ it is said below ('isWindows()', a
-// constant of the compile, chooses, so only the target's calls are generated).
+// interface over both; where they differ it is said below ('#if #os == .windows'
+// chooses, so only the target's calls are generated).
 //
 // **Paths.** A folder is a 'path' package 'Path': the working folder is the
 // last parameter of 'run' and 'runLine', a '&Path' that defaults to "", the
@@ -448,22 +448,22 @@ pub struct ProcessError is Error {
   // Whether it failed because there is no such program (or no folder on its
   // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND; on POSIX ENOENT
   pub fn notFound(self: &) bool {
-    if isWindows() {code == errorFileNotFound || code == errorPathNotFound} else {code == errnoNoEntry}
+    #if #os == .windows {code == errorFileNotFound || code == errorPathNotFound} #else {code == errnoNoEntry}
   }
 }
 
 // The error number for an argument the system cannot be given (a NUL byte, no
 // program at all): ERROR_INVALID_PARAMETER, or POSIX's EINVAL
-fn invalidParameter() u32 { if isWindows() {errorInvalidParameter} else {errnoInvalid} }
+fn invalidParameter() u32 { #if #os == .windows {errorInvalidParameter} #else {errnoInvalid} }
 
 fn failure(op: &str, program: &str, dir: &Path, code: u32) ProcessError {
-  ProcessError(String.from(op), String.from(program), dir.copy(), code)
+  ProcessError(String.from(op), String.from(program), dir.clone(), code)
 }
 
 // The system's text for an error number: Windows' own (in English where it
 // has it; empty where it has none), or on POSIX the C library's strerror
 fn systemText(code: u32) String {
-  if isWindows() {windowsText(code)} else {String.from(libc.strerror(i32.from(code)).view())}
+  #if #os == .windows {windowsText(code)} #else {String.from(libc.strerror(i32.from(code)).view())}
 }
 
 // Windows' text for an error number, in English where the system has it,
@@ -475,7 +475,7 @@ fn windowsText(code: u32) String {
   if n == 0u32 {
     n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
   }
-  var out = String.empty();
+  var out = String();
   if n == 0u32 {return out;}
   let text = narrow(bp, i32.from(n));
   let trimmed = text.trim();
@@ -513,7 +513,7 @@ fn widen(s: &Array[u8]) *u16 {
 // UTF-16 as UTF-8: n units from p, or up to its 0 when n is -1. A lone
 // surrogate, which is no character, becomes U+FFFD.
 fn narrow(p: *u16, n: i32) String {
-  var out = String.empty();
+  var out = String();
   if n == 0i32 { return out; }
   let size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
   if size <= 0i32 { return out; }
@@ -606,7 +606,7 @@ fn quoteProgram(out: &mut String, p: &Array[u8]) {
 // argument, quoted where it must be, one space between them. A program
 // holding a '"' cannot be written, and is written as it is.
 pub fn commandLine(args: &Array[String]) String {
-  var out = String.empty();
+  var out = String();
   var i = 0usize;
   while i < args.len {
     if i == 0usize {
@@ -677,14 +677,16 @@ pub fn run(args: &Array[String], opts: Options = Options(), dir: &Path = "") Res
     i = i + 1usize;
   }
   // The program's name may not hold a '"' on Windows, which cannot write it
-  if isWindows() && hasByte(program, '"') {
-    return Err[Output, ProcessError](failure("run", program, dir, errorInvalidName));
+  #if #os == .windows {
+    if hasByte(program, '"') {
+      return Err[Output, ProcessError](failure("run", program, dir, errorInvalidName));
+    }
   }
-  if isWindows() {
+  #if #os == .windows {
     let line = commandLine(args);
     start("run", program, line.view(), dir, opts)
   }
-  else {
+  #else {
     startPosix("run", program, args, dir, opts)
   }
 }
@@ -696,11 +698,11 @@ pub fn runLine(line: &str, opts: Options = Options(), dir: &Path = "") Result[Ou
   if hasByte(line, 0u8) {
     return Err[Output, ProcessError](failure("runLine", line, dir, invalidParameter()));
   }
-  if isWindows() {
+  #if #os == .windows {
     start("runLine", line, line, dir, opts)
   }
-  else {
-    var shell = List[String].empty();
+  #else {
+    var shell = List[String]();
     shell.push(String.from("/bin/sh"));
     shell.push(String.from("-c"));
     shell.push(String.from(line));
@@ -719,7 +721,7 @@ struct Stream {
 }
 
 fn noStream() Stream {
-  Stream(0usize, Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String.empty(), false)
+  Stream(0usize, Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String(), false)
 }
 
 // Each pipe a name of its own: this process, this thread, and a count
@@ -1217,7 +1219,7 @@ fn readReady(r: &mut Reader, buf: *u8) {
 // wait for it
 fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: Options) Result[Output, ProcessError] {
   // The working folder must be a folder there is
-  var cdir = String.empty();
+  var cdir = String();
   if !dir.isEmpty() {
     if hasByte(dir.view(), 0u8) {
       return Err[Output, ProcessError](failure(op, program, dir, errnoInvalid));
@@ -1261,8 +1263,8 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
   // The child's standard input from /dev/null and its output and error to
   // pipes of ours; close-on-exec, so no other program started meanwhile
   // holds them
-  var so = Reader(-1i32, String.empty());
-  var se = Reader(-1i32, String.empty());
+  var so = Reader(-1i32, String());
+  var se = Reader(-1i32, String());
   var outFds = Array[i32, 2]() <- fill 0i32;
   var errFds = Array[i32, 2]() <- fill 0i32;
   let outp: *i32 = &[]outFds as *i32;
@@ -1412,10 +1414,10 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
 // This program's arguments on POSIX, its own name first: argv's bytes, which
 // the kernel keeps as the NUL-ended strings of /proc/self/cmdline
 fn argsPosix() List[String] {
-  var out = List[String].empty();
+  var out = List[String]();
   let f = libc.fopen("/proc/self/cmdline", "rb");
   if f == null { return out; }
-  var whole = String.empty();
+  var whole = String();
   var buf = Array[u8, 4096]() <- fill 0u8;
   let bp: *u8 = &[]buf as *u8;
   var going = true;
@@ -1464,11 +1466,11 @@ fn currentExePosix() Result[Path, ProcessError] {
 // (CommandLineToArgvW) splits its command line, each in UTF-8, whatever the
 // system's code page: what 'main''s argv holds when every one is ASCII
 pub fn args() List[String] {
-  if isWindows() {argsWindows()} else {argsPosix()}
+  #if #os == .windows {argsWindows()} #else {argsPosix()}
 }
 
 fn argsWindows() List[String] {
-  var out = List[String].empty();
+  var out = List[String]();
   var n = 0i32;
   let argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
   if argv as usize == 0usize { return out; }
@@ -1484,7 +1486,7 @@ fn argsWindows() List[String] {
 
 // The path of this program's executable, normalized ('C:/work/build/app.exe')
 pub fn currentExe() Result[Path, ProcessError] {
-  if isWindows() {currentExeWindows()} else {currentExePosix()}
+  #if #os == .windows {currentExeWindows()} #else {currentExePosix()}
 }
 
 fn currentExeWindows() Result[Path, ProcessError] {

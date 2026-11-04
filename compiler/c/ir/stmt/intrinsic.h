@@ -125,6 +125,7 @@ enum IntrinsicFn {
     ReadRawIntrinsic,       // readRaw[T](p: *T) T
     WriteRawIntrinsic,      // writeRaw[T](p: *T, value: T)
     MoveRawIntrinsic,       // moveRaw[T](to: *T, from: *T, count: usize)
+    MoveRawIntoIntrinsic,   // moveRawInto[T](to: *T, from: *T, count: usize)
     ForgetIntrinsic,        // forget[T](value: T)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() bool
@@ -256,6 +257,17 @@ int invocationIsCore(INode *type);
 // gives them their 'hash' (nbrAddHashMethods) and supplies the 'hash' of a
 // struct that declares Hash and writes none (structSupplyHash)
 int coreIsHashTrait(INode *dcl);
+// Core's Eq trait, known the same way; a struct that declares it and writes no
+// '==' is given one (structEqCheck)
+int coreIsEqTrait(INode *dcl);
+// Core's Clone trait, known the same way; every Copy type meets it by grant
+// (genericTypeIs), and a struct that declares it and writes no 'clone' is given
+// one (structCloneCheck)
+int coreIsCloneTrait(INode *dcl);
+// Core's Default trait, known the same way; every number type and bool meet it by
+// grant (genericTypeIs): `T()` is 0 or false. A struct that declares it is made by
+// `T()` from its fields' defaults or their types' own `T()` (structDefaultCheck)
+int coreIsDefaultTrait(INode *dcl);
 // Core's Iterator trait, known by its name and its package; the compiler keeps the
 // declaration it met (coreIteratorTrait) to say, of a type that has a `next` and
 // does not declare it, that the shared methods come with the declaration
@@ -276,6 +288,11 @@ StructNode *typeRecordStruct(void);
 // A function declaration, once name resolved: if it is core's 'mem.sliceEq',
 // hold it to its signature and remember it for sliceEqFn
 void sliceEqDclNameRes(FnDclNode *fndcl);
+
+// Likewise core's 'mem.tupleEq2' to 'mem.tupleEq4', and the one for 'arity'
+// elements (NULL if the core found declares none), which '==' on two tuples calls
+void tupleEqDclNameRes(FnDclNode *fndcl);
+FnDclNode *tupleEqFn(uint32_t arity);
 
 // Core's generic 'mem.sliceEq[T](a: &Array[T], b: &Array[T]) bool', which '==' and '!=' on
 // two slices call (fnCallLowerSliceCompare); NULL before core's declaration is

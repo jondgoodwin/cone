@@ -1348,10 +1348,34 @@ holds the declaration to its shape at the end of the type's check
   does not make it untraceable (`itypeCannotTrace`, `HoldsAskElementsCovered`),
   which a pointer to a value that needs tracing, in a type declaring no
   `GcTraceElements`, does. A `GcTraceElements` type's `mem.writeRaw` and
-  `mem.moveRaw` are not refused (`ErrorTracedRaw`); a call from a method of any
-  other type is. Stores through `mem.writeRaw` are handed to a write barrier as
-  any store is (`genlBarrierAt`), and a store of the whole collection is handed
-  the barrier for each reference it holds, by the same walk.
+  `mem.moveRaw` and `mem.moveRawInto` are not refused (`ErrorTracedRaw`); a call
+  from a method of any other type is. Stores through `mem.writeRaw` are handed to a
+  write barrier as any store is (`genlBarrierAt`), and a store of the whole
+  collection is handed the barrier for each reference it holds, by the same walk.
+  A move into the collection from another container (`appendList`, `appendSlice`,
+  `joinPieces`) goes through `mem.moveRawInto`, which hands each value moved the
+  same barrier; a move inside the collection's own block (`mem.moveRaw`) needs none,
+  since a collector traces the block whole.
+- **Core's `Array[T]` declares it.** Its `gcTraceElements` takes the slice reference
+  `&mut Array[T]` a method of the body takes (an `ArrayRefTag` whose referent is `T`),
+  which `structGcTraceElements` accepts for the struct named `Array` (`arrayTypeDcl`)
+  and no other. That is what lets the body's methods place any `T` by `mem.writeRaw`
+  (`reverse`, the sorts). A value of the body is never walked by address, since the
+  address lacks the count (`genlTraceWalk` skips it); a slice reference is a borrow and
+  traces nothing, so what is traced is whatever owns the elements: a list by its own
+  `gcTraceElements`, a fixed `Array[T, n]` by its elements, and an owner of the body
+  (`Uni[Array[T]]`, what `freeze` gives) by the count it carries (`genlTraceThrough`
+  reads the pointer and count of the fat owner and walks the elements; before, such an
+  owner of traced elements was reported as untraceable). The rule that a value behind an
+  owner may not hold a reference into a collector declaring `writeBarrier`
+  (`itypeCannotTrace`) does not refuse an owner of the body, since a write barrier hears
+  of it: a store into an element is handed to the barrier as any store through a
+  reference is, and a store of the whole owner into memory that is not a local is handed
+  each element, by the same walk passing through the owner by its count (`genlTraceWalk`,
+  `genlTraceThrough` under `genlTraceBarrier`; no `visit`). Any other owner behind which
+  a barriered reference sits is still refused. (Bug 29: the owner's elements went unheard
+  when it was stored; test `region_barrier_frozen_array`.) A type folding Array in with
+  `use Array[T] via ...` names its own `gcTraceElements` in `but`, as `List` does.
 - **One element type.** The cursor gives references to values of one type, so a
   type argument that holds a traced reference and is not `E` is held where nothing
   finds it: `Dict[K, V]` gives its values, and a key that holds a traced reference
@@ -1438,6 +1462,100 @@ too. What the compiler adds:
   variant and a trait are not supplied; one that declares `Hash` is asked for a
   `hash` by the ordinary requirement check.
 
+### Eq, and the `==` it supplies
+
+Core's `Eq` (`pub trait Eq { pub fn `==`(self: &, o: &Self) bool; }`) is known
+by name and package (`coreIsEqTrait`), as `Hash` is. It requires the method by
+the name `==` itself, so a struct's own `==` fills it, and the requirement a
+type inherits bodiless (`structInheritTrait`) is found at `eqName`.
+
+- **The supplied `==`.** A struct declaring `Eq` that writes no `==`
+  (`structEqCheck`, at layout after `structHashCheck`) has the inherited
+  requirement filled: `return &self.f1 == &other.f1 && &self.f2 == &other.f2 ...`
+  in field order, `true` for a struct with no field. The fields are lent
+  because the supplied `==` takes `&Self` (so does every method of `Eq`), and a
+  field's own `==`, whether written for references or for values, is selected
+  through them. A mixin field is skipped. A float is allowed, its `==` being
+  IEEE's.
+- **Refusal.** `ErrorEqField`, at the field, where `structEqFieldHasEq` finds no
+  `==` against its own type: a number and a raw pointer have one, a struct that
+  meets `Eq` (`genericTypeIs`) or has a `==` in its namespace (an instance's
+  conditional `==` is absent when its clause fails), and a reference or slice
+  to such a type, which `==` reads through; an array, a tuple, a function type
+  and a virtual reference do not. A refused struct is given a body that says
+  false so nothing more is said of it.
+- **Not supplied** for an enum, a variant or a trait, as for `Hash`: an enum's
+  `==` is the compiler's (`structEnumAddEquality`).
+- **Number types and `bool`** meet `Eq` by their built-in `==`
+  (`genericNumberFits`, the route `Ordered`'s `<=>` takes); no compiler change
+  beyond L2's was needed. A struct whose `==` is written by value
+  (`fn `==`(self, o: Id)`) does not meet `Eq`, since a trait cannot hold `Self`
+  by value (Error 1069).
+- **`Option` and `Result`** have a conditional `==` of their own in core
+  (`where T is Eq`, and `E is Eq` for `Result`), taking `&` of the enum. The
+  enum's compiler `==` (`NoEqIntrinsic`) is then replaced, and a comparison with
+  an empty variant (`x == None`) still asks the tag alone: `fnCallTypeCheck`
+  and `fnCallLowerRefCompare` try `fnCallLowerEnumTagTest` for any enum
+  receiver before the enum's own method is looked for.
+
+### Clone, and the `clone` it supplies
+
+Core's `Clone` (`pub trait Clone { pub fn clone(self: &) Self; }`) is known by
+name and package (`coreIsCloneTrait`), as `Eq` is.
+
+- **The grant.** Every type that does not move is `Clone` (`genericTypeIsHow`,
+  beside `Copy`): numbers, `bool`, a Copy struct, tuple, array, pointer, and a
+  read-only borrow (`refIsCopyBorrow`: `&T`, a slice, a virtual reference; its
+  clone is the same borrow). Not `&mut`, which the compiler lets alias and so
+  copies, nor `&uni`, nor an owner. The grant has no method of its own to
+  call: `x.clone()` on a Copy type with no `clone` of its namespace is the value
+  (`fnCallCloneCopy` in [fncall](fncall.md): the call is replaced by its
+  receiver, read through its borrow when it is one).
+- **The supplied `clone`.** A struct declaring `Clone` that writes no `clone`
+  (`structCloneCheck`, at layout after `structEqCheck`) has the inherited
+  requirement filled: `return Self(self.f1.clone(), self.f2.clone(), ...)` in
+  field order, built as a construction (`fnCallMarkConstruction`), so the fields
+  clone by their own `clone` or, for a Copy field, by the grant; a read-only
+  borrow field is copied as it lies. A mixin field is skipped, as for `hash` and
+  `==`: it is the placeholder for a trait named in `is`, which holds no storage
+  (the fields the trait requires are the struct's own and are cloned as fields),
+  and an enum variant cannot declare `Clone`, so no derive meets a mixin that
+  stands for data.
+- **Refusal.** `ErrorCloneField` (1577), at the field, where the field's type is
+  neither Clone by `genericTypeIs` nor a Copy array, tuple, vector or pointer
+  (a struct that moves and has no `clone`, a unique owner, a `&mut`). The
+  struct gets a body whose value is already an error, so nothing more is said.
+- **Core and collections.** `Option` and `Result` have an `inline` conditional
+  `clone` (inline, so no instance of the enum compiles one unasked, as `==`);
+  `List` and `String` have `clone`. `List`'s `resize`, `appendSlice` (two
+  overloads: the block copy where `T` is Copy, a cloning loop where it moves and
+  is Clone) and the dictionaries' `getCopy` are present where `T` is Clone.
+- `=` never clones; no copy or move calls a `clone`.
+
+### Default, and the `T()` it supplies
+
+Core's `Default` (`pub trait Default {}`, no method) is known by name and package
+(`coreIsDefaultTrait`). A trait with nothing to ask is a marker (`genericTraitIsMarker`):
+a struct is `Default` only by declaring it.
+
+- **The grant.** Every number type and `bool` (`genericTypeIsHow`, not `char`). Their
+  `T()` is a zero literal, made where a construction of a number with no arguments
+  is type checked (`typeLitNewChecked`); a number given arguments is still `ErrorNewType`.
+- **The supplied `T()`.** A struct declaring `Default` that has no `init`
+  (`structDefaultCheck`, after `structCloneCheck`) is constructed by its implicit init:
+  a field left out takes its declared `= value` (constants only) or, where it declared
+  none and its type is `Default`, a fresh `FieldType()` (`structFieldDefault`, built by
+  `typeLitFieldFill` for each literal, since the shared `= value` node is a constant). A
+  struct with an `init` is made by it and nothing is supplied; the collections declare
+  `Default` for their `init`s whose last argument, the region, a construction may leave out.
+- **Refusal.** `ErrorDefaultField` (1575), at the field, where it has no `= value` and its
+  type is not `Default`.
+  A struct that declares `Default` and writes an `init` is refused (`ErrorDefaultInit`, 1578, at the
+  struct) unless one of its inits can be called with no arguments (`typeLitZeroArgConstructible`:
+  parameters with defaults and a CarriesRegion type's last region may be left out).
+- **Regions.** A generic `T()` has no region argument, so a `CarriesRegion` type is made in
+  the heap's (`typeLitRegionArg`); a container that makes a `V` of its own writes `V(region)`.
+
 The algorithm, `Hasher`, is core's Cone source (`mulFold` in
 [intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
 (`cone_hashSeed`, `packages/conestd/hash.cone`).
@@ -1457,6 +1575,10 @@ a type expression (`foldSourceDcl`), a star clause's items and its `but`
 would not admit (private, a lifecycle method, a static in a member fold, a field or
 alias in a sibling fold) is an error, since there is nothing to leave out; a private
 name a sibling has from the base is reported as the base's (`foldStarItems`' `base`).
+A name the folded *instance* lacks only because its member's `where` does not hold
+for these arguments is still a name the generic declares, so `but` tolerates it
+(`foldStarItems`' `src`, asked for its template by `genericTypeTemplate`); a name
+the generic never declared stays an error (`ErrorNoMbr`).
 What stays here is what the *site* decides — the copy with its
 hop, the receiver shift, the eligibility rules — because that is where the sites
 differ.
@@ -2142,7 +2264,9 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer** — a `SameSize` enum with exactly two variants, one of
   one field and one of two whose second is pointer-like. **No struct is emitted
   at all**; the value *is* the pointer and null is the empty variant (for a
-  slice or a virtual reference, the null pointer word of the pair). Each enum
+  slice or a virtual reference, the null pointer word of the pair; a slice's
+  pointer word is therefore never null, even for an empty slice, which
+  `sliceFromParts` makes a dangling aligned address when given a null one). Each enum
   decides it for its own set, so an `Option`-shaped base keeps it whatever extends
   it: the extension's copies are other declarations, and with a third variant the
   extension is tagged.
@@ -2247,12 +2371,31 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   (`structEnrichLifecycle`). `struct_extends_lifecycle` pins both generic
   shapes with a finalizer that calls a method bare.
 - **A finalizer an enrichment adds runs only while the value is typed as the
-  enrichment.** Where the base declares no `final`, the enrichment may declare one,
-  and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `let p: Plain = PlainFin(1)`, or passing
-  a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
-  pinned: nothing refuses it and nothing decides it. A base's own `final` has no
-  such gap, since every enrichment carries a copy.
+  enrichment, so a by-value conversion that would skip it is refused
+  (`ErrorEnrichFinalSkipped`).** Where the base declares no `final`, the enrichment
+  may declare one, and it is this type's drop and not the base's. A value that
+  crosses to the base's name by value is dropped as the base — so
+  `let p: Plain = PlainFin(1)`, or passing a `PlainFin` to a parameter typed
+  `Plain`, ran no finalizer at all (measured on master before the rule). Ruled
+  (design chat, 1 Nov): refuse the copy, move or owning handoff of a value whose
+  type has a `final` into a type that has none, naming the enrichment; a borrowed
+  reference is unaffected, since the owner keeps its type and its drop. It is made in
+  `iexpCoerceShape`'s `CastSubtype` arm, which every by-value path reaches (an
+  initialiser, an assignment, an argument, a return, a constructor's field, a move),
+  by `structEnrichFinalSkipped`: the two types are an enrichment and its base (or
+  siblings, or down a chain), the source's namespace has `final` and the target's
+  has none. An owning reference (`Uni`, `Rc`, an owning array reference) of the one
+  converted to the same of the other is answered through its pointee. Pinned in
+  `struct_typecheck_extends_final`, with what is not refused in
+  `struct_extends_final_borrow`. Two siblings that each declare a *different*
+  `final` are refused too: a type's `final` has an origin (the top of its `extends`
+  chain that has one, `structFinalOrigin`), and a conversion between types of
+  different origins skips the source's. Types of one origin (two enrichments of one
+  enrichment) carry copies of one `final` and convert freely. An array by value is
+  answered through its element type. A type that merely holds an enrichment inside a
+  generic (`Option[PlainFin]`) is no conversion of the pointee, and is refused as a
+  different type (`ErrorInvType`). A base's own `final`
+  has no such gap, since every enrichment carries a copy.
 - **A folded copy is a snapshot until the folding type is laid out.** It takes
   its origin's type node and index at expansion, in name resolution; if the
   origin's type is an instantiation of a generic, type check replaces that node

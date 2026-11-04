@@ -19,9 +19,7 @@ fn keyLo(k: u64) u32 { u32.from(k >> 32u64) }
 fn keyHi(k: u64) u32 { u32.from(k & 0xFFFFFFFFu64) }
 
 fn sortKeys(keys: &mut List[u64]) {
-  keys.sortBy(fn(a: &u64, b: &u64) i32 {
-    if *a < *b {-1i32} else if *a > *b {1i32} else {0i32}
-  });
+  keys.sort();
 }
 
 // The sorted list without its repeats
@@ -90,17 +88,13 @@ fn toTangent(n: Vec3, v: Vec3) Vec3 { unit(v - n * v.dot(n)) }
 
 // ---------------------------------------------------------------- the mesh
 
-struct Work {
+struct Work is Default {
   pos: List[Vec3];
   idx: List[u32];            // three a triangle
   dens: List[f32];           // per vertex: the density asked for
   fa: List[u32];             // feature edges
   fb: List[u32];
   fk: List[u32];
-
-  fn empty() Work {
-    Work(List[Vec3].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty())
-  }
 
   fn triCount(self: &) usize { idx.len() / 3usize }
 
@@ -126,7 +120,7 @@ struct Work {
 // than 'creaseAngle' (radians; 0 or less: none), or whose "crease" channel is
 // above 0 when 'useChannel'. Guides: pairs of source vertices.
 fn workFrom(m: &PolyMesh, creaseAngle: f32, useChannel: bool, guides: &List[u32], densityChannel: &str) Work {
-  var w = Work.empty();
+  var w = Work();
   let nv = m.vertexCount();
   let dch = if densityChannel.len() > 0usize { m.findFloatChannel(VertexDomain, densityChannel) } else { NoIndex };
   var v = 0usize;
@@ -135,7 +129,7 @@ fn workFrom(m: &PolyMesh, creaseAngle: f32, useChannel: bool, guides: &List[u32]
     w.dens.push(if dch != NoIndex { m.float(dch, u32.from(v)).max(0.0001) } else { 1. });
     v = v + 1usize;
   }
-  var cuts = List[u32].empty();
+  var cuts = List[u32]();
   var f = 0usize;
   while f < m.faceCount() {
     let vs = m.faceVertices(u32.from(f));
@@ -184,7 +178,7 @@ fn splitLong(w: &mut Work, maxLen: f32) {
   let limit2 = maxLen * maxLen;
   var round = 0;
   while round < 14 {
-    var keys = List[u64].empty();
+    var keys = List[u64]();
     var t = 0usize;
     while t < w.idx.len() {
       var e = 0usize;
@@ -264,9 +258,9 @@ fn splitLong(w: &mut Work, maxLen: f32) {
     }
     w.idx = out;
     // The features split with their edges
-    var na = List[u32].empty();
-    var nb = List[u32].empty();
-    var nk = List[u32].empty();
+    var na = List[u32]();
+    var nb = List[u32]();
+    var nk = List[u32]();
     var f = 0usize;
     while f < w.fa.len() {
       let a = *w.fa[f];
@@ -299,7 +293,7 @@ fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
     s.push(if positive { d } else { -d });
     v = v + 1usize;
   }
-  var keys = List[u64].empty();
+  var keys = List[u64]();
   var t = 0usize;
   while t < w.idx.len() {
     var e = 0usize;
@@ -313,7 +307,7 @@ fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
   }
   sortKeys(&mut keys);
   let cross = uniqueKeys(&keys);
-  var out = Work.empty();
+  var out = Work();
   var remap = List[u32].withCapacity(nv);
   v = 0usize;
   while v < nv {
@@ -341,7 +335,7 @@ fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
     k = k + 1usize;
   }
   t = 0usize;
-  var poly = List[u32].empty();
+  var poly = List[u32]();
   while t < w.idx.len() {
     poly.clear();
     var e = 0usize;
@@ -385,7 +379,7 @@ fn clipHalf(w: &Work, axis: u32, off: f32, positive: bool) Work {
 
 // Edges with one triangle only are the boundary: added as features
 fn markBoundary(w: &mut Work) {
-  var keys = List[u64].empty();
+  var keys = List[u64]();
   var t = 0usize;
   while t < w.idx.len() {
     var e = 0usize;
@@ -463,8 +457,8 @@ fn graphFrom(n: usize, ca: &List[u32], cb: &List[u32], cw: &List[f32]) Graph {
   i = 0usize;
   while i < n { cnt.set(i + 1usize, *cnt[i + 1usize] + *cnt[i]); i = i + 1usize; }
   var fill = copyOf[u32](&cnt);
-  var sb = List[u32].empty();
-  var sw = List[f32].empty();
+  var sb = List[u32]();
+  var sw = List[f32]();
   sb.resize(ca.len(), 0u32);
   sw.resize(ca.len(), 0.);
   i = 0usize;
@@ -479,25 +473,25 @@ fn graphFrom(n: usize, ca: &List[u32], cb: &List[u32], cw: &List[f32]) Graph {
   // Each row sorted by neighbour, repeats added
   var g = Graph(List[u32].withCapacity(n + 1usize), List[u32].withCapacity(ca.len()), List[f32].withCapacity(ca.len()));
   g.start.push(0u32);
+  var ord = List[usize]();
+  var rowB = List[u32]();
+  var rowW = List[f32]();
   var v = 0usize;
   while v < n {
     let lo = usize.from(*cnt[v]);
     let hi = usize.from(*cnt[v + 1usize]);
-    // insertion sort
-    var a = lo + 1usize;
-    while a < hi {
-      let kb = *sb[a];
-      let kw = *sw[a];
-      var b = a;
-      while b > lo && *sb[b - 1usize] > kb {
-        sb.set(b, *sb[b - 1usize]);
-        sw.set(b, *sw[b - 1usize]);
-        b = b - 1usize;
-      }
-      sb.set(b, kb);
-      sw.set(b, kw);
-      a = a + 1usize;
-    }
+    // a stable sort of the row's places by neighbour (the weights are summed in the order given),
+    // then the row laid out in that order
+    ord.clear();
+    var a = lo;
+    while a < hi { ord.push(a); a = a + 1usize; }
+    ord.sortByKey(fn(x: &usize) u32 { *sb[*x] });
+    rowB.clear();
+    rowW.clear();
+    a = 0usize;
+    while a < ord.len() { rowB.push(*sb[*ord[a]]); rowW.push(*sw[*ord[a]]); a = a + 1usize; }
+    a = 0usize;
+    while a < ord.len() { sb.set(lo + a, *rowB[a]); sw.set(lo + a, *rowW[a]); a = a + 1usize; }
     a = lo;
     while a < hi {
       var wsum = *sw[a];

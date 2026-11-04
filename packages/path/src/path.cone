@@ -25,7 +25,7 @@
 // made one), and answer a 'Path' where they answer a path.
 //
 // **Two systems' rules.** A path is read by the rules of the system the
-// program is built for ('isWindows()', a constant of the compile, chooses),
+// program is built for ('#if #os == .windows' chooses),
 // since a path means what its system says.
 //
 // **POSIX's rules** (Linux, and any system but Windows):
@@ -68,7 +68,7 @@ mod path;
 import collections use String, List;
 
 // Whether a byte separates names: '/', and on Windows '\' too
-pub fn isSeparator(b: u8) bool { b == '/' || (isWindows() && b == '\\') }
+pub fn isSeparator(b: u8) bool { b == '/' || (#if #os == .windows { b == '\\' } #else { false }) }
 
 // How a path starts: the length of its volume ('C:' is 2, '\\server\share'
 // its whole length), and the length of the volume and the root together,
@@ -82,33 +82,33 @@ fn isLetter(b: u8) bool { (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
 
 fn prefixOf(p: &Array[u8]) Prefix {
   // POSIX: no volume, and a root alone
-  if !isWindows() {
-    if p.len >= 1usize && p[0usize] == '/' { return Prefix(0usize, 1usize); }
-    return Prefix(0usize, 0usize);
-  }
-  // A share: two separators, a server, a separator, a share
-  if p.len >= 2usize && isSeparator(p[0usize]) && isSeparator(p[1usize]) {
-    var i = 2usize;
-    while i < p.len && !isSeparator(p[i]) { i = i + 1usize; }
-    let serverEnd = i;
-    if serverEnd > 2usize && serverEnd < p.len {
-      i = serverEnd + 1usize;
+  #if #os != .windows {
+    if p.len >= 1usize && p[0usize] == '/' {Prefix(0usize, 1usize)} else {Prefix(0usize, 0usize)}
+  } #else {
+    // A share: two separators, a server, a separator, a share
+    if p.len >= 2usize && isSeparator(p[0usize]) && isSeparator(p[1usize]) {
+      var i = 2usize;
       while i < p.len && !isSeparator(p[i]) { i = i + 1usize; }
-      if i > serverEnd + 1usize {
-        // A share always has its root, written or not
-        let whole = if i < p.len {i + 1usize} else {i};
-        return Prefix(i, whole);
+      let serverEnd = i;
+      if serverEnd > 2usize && serverEnd < p.len {
+        i = serverEnd + 1usize;
+        while i < p.len && !isSeparator(p[i]) { i = i + 1usize; }
+        if i > serverEnd + 1usize {
+          // A share always has its root, written or not
+          let whole = if i < p.len {i + 1usize} else {i};
+          return Prefix(i, whole);
+        }
       }
     }
+    // A drive
+    if p.len >= 2usize && isLetter(p[0usize]) && p[1usize] == ':' {
+      let whole = if p.len > 2usize && isSeparator(p[2usize]) {3usize} else {2usize};
+      return Prefix(2usize, whole);
+    }
+    // A root alone
+    if p.len >= 1usize && isSeparator(p[0usize]) { return Prefix(0usize, 1usize); }
+    Prefix(0usize, 0usize)
   }
-  // A drive
-  if p.len >= 2usize && isLetter(p[0usize]) && p[1usize] == ':' {
-    let whole = if p.len > 2usize && isSeparator(p[2usize]) {3usize} else {2usize};
-    return Prefix(2usize, whole);
-  }
-  // A root alone
-  if p.len >= 1usize && isSeparator(p[0usize]) { return Prefix(0usize, 1usize); }
-  Prefix(0usize, 0usize)
 }
 
 // Whether the prefix is a share's: a share has its root even when no
@@ -119,8 +119,11 @@ fn isShare(p: &Array[u8], pre: &Prefix) bool { pre.volume > 2usize }
 // ('\\server\share\x'); on POSIX, a root
 fn absoluteOf(p: &Array[u8]) bool {
   let pre = prefixOf(p);
-  if !isWindows() { return pre.whole == 1usize; }
-  isShare(p, &pre) || (pre.volume == 2usize && pre.whole == 3usize)
+  #if #os != .windows {
+    pre.whole == 1usize
+  } #else {
+    isShare(p, &pre) || (pre.volume == 2usize && pre.whole == 3usize)
+  }
 }
 
 // Where a path's names end once the separators after its last are left
@@ -193,7 +196,7 @@ fn extensionStart(n: &Array[u8]) usize {
 // or after the last, are left out. "" has no pieces.
 fn partsOf(p: &Array[u8]) List[String] {
   let pre = prefixOf(p);
-  var out = List[String].empty();
+  var out = List[String]();
   if pre.whole > 0usize { out.push(String.fromBytes(&p[..<pre.whole])); }
   var start = pre.whole;
   var i = pre.whole;
@@ -296,7 +299,7 @@ pub struct Path is Hash {
   pub fn fromLiteral(s: &str) Path { Path.from(s) }
 
   // A copy of this one
-  pub fn copy(self: &) Path { Path.from(self.view()) }
+  pub fn clone(self: &) Path { Path.from(self.view()) }
 
   // Its text, as written
   pub fn view(self: &) &str { text.view() }

@@ -29,7 +29,7 @@ fn holds(list: &List[usize], v: usize) bool {
 // which the compiler loads from the same include file its package line names.
 fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, String] {
   var mods = scanned;
-  var deps = List[usize].empty();
+  var deps = List[usize]();
   let pkg = &reg.packages[p];
   let order = walkOrder(&mods);
   var w = 0usize;
@@ -93,7 +93,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
   }
   match checkModuleLoops(pkg, &mods, reg) {
     case is Ok {}
-    case let Err(e) { return Err[Unit, String](e.copy()); }
+    case let Err(e) { return Err[Unit, String](e.clone()); }
   }
   // Only what is compiled for the GPU has its kernels built, so only its
   // source is read past the headers: a marked package's, or its gpu/ folder's
@@ -105,7 +105,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
       while f < mods[m].files.len() && !kernels {
         match holdsKernel(&mods[m].files[f]) {
           case let Ok(ok) { kernels = ok; }
-          case let Err(e) { return Err[Unit, String](e.copy()); }
+          case let Err(e) { return Err[Unit, String](e.clone()); }
         }
         f = f + 1usize;
       }
@@ -113,7 +113,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
     m = m + 1usize;
   }
   var hasGpu = false;
-  var gpuDeps = List[usize].empty();
+  var gpuDeps = List[usize]();
   w = 0usize;
   while w < order.len() {
     let g = *order[w];
@@ -134,7 +134,7 @@ fn resolveImports(reg: &Registry, p: usize, scanned: List[Module]) Result[Unit, 
 // The refusal of a gpu/ module's import or extends of src/: a sister there,
 // or a name of the root module, whose designated file is in src/
 fn gpuUsesSrc(pkg: &Package, imp: &Import, verb: &str, mods: &List[Module], isSister: bool, sister: usize) String {
-  var what = String.empty();
+  var what = String();
   if isSister {
     let place = shown(&mods[sister].files[0usize]);
     what <- mods[sister].name.view(), " is a module of ", pkg.name.view(), "'s src/ (", place.view(), ")";
@@ -148,10 +148,10 @@ fn gpuUsesSrc(pkg: &Package, imp: &Import, verb: &str, mods: &List[Module], isSi
 }
 
 fn importsOf(m: &Module) List[Import] {
-  var out = List[Import].empty();
+  var out = List[Import]();
   var i = 0usize;
   while i < m.imports.len() {
-    out.push(m.imports[i].copy());
+    out.push(m.imports[i].clone());
     i = i + 1usize;
   }
   out
@@ -179,7 +179,7 @@ fn firstImport(unit: &Unit, name: &str, gpuOnly: bool = false) Import {
     let m = *order[w];
     var i = 0usize;
     while i < unit.mods[m].imports.len() && (unit.mods[m].gpu || !gpuOnly) {
-      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
+      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].clone(); }
       i = i + 1usize;
     }
     w = w + 1usize;
@@ -200,7 +200,7 @@ struct Plan {
     var i = 0usize;
     while i < order.len() {
       let u = *order[i];
-      if reg.packages[units[u].pkg].name.equals(name) {
+      if !reg.packages[units[u].pkg].lone && reg.packages[units[u].pkg].name.equals(name) {
         *found = u;
         return true;
       }
@@ -215,17 +215,17 @@ struct Plan {
   }
 
   pub fn visit(self: &mut, reg: &Registry, p: usize) Result[void, String] {
-    let name = reg.packages[p].name.view();
-    state.insert(String.from(name), visiting);
-    var scanned = List[Module].empty();
+    let key = reg.packages[p].key();
+    state.insert(key.clone(), visiting);
+    var scanned = List[Module]();
     match scanPackage(&reg.packages[p]) {
       case var Ok(ok) { scanned <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
-    var unit = Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
+    var unit = Unit(p, List[Module](), List[usize](), false, false, List[usize]());
     match resolveImports(reg, p, scanned) {
       case var Ok(ok) { unit <-> ok; }
-      case let Err(e) { return Err[void, String](e.copy()); }
+      case let Err(e) { return Err[void, String](e.clone()); }
     }
     units.push(unit);
     let u = units.len() - 1usize;
@@ -237,9 +237,9 @@ struct Plan {
       let depName = reg.packages[dep].name.view();
       if self.stateOf(depName) == visiting {
         var at = 0usize;
-        while !reg.packages[units[*stack[at]].pkg].name.equals(depName) { at = at + 1usize; }
-        var chain = String.empty();
-        var text = String.empty();
+        while !reg.packages[units[*stack[at]].pkg].key().equals(depName) { at = at + 1usize; }
+        var chain = String();
+        var text = String();
         var j = at;
         while j < stack.len() {
           let unitHere = &units[*stack[j]];
@@ -259,20 +259,20 @@ struct Plan {
       if self.stateOf(depName) == unvisited {
         match self.visit(reg, dep) {
           case is Ok {}
-          case let Err(e) { return Err[void, String](e.copy()); }
+          case let Err(e) { return Err[void, String](e.clone()); }
         }
       }
       d = d + 1usize;
     }
     stack.pop();
-    state.insert(String.from(name), visited);
+    state.insert(key.clone(), visited);
     order.push(u);
     succeeded()
   }
 }
 
 fn depsOf(unit: &Unit) List[usize] {
-  var out = List[usize].empty();
+  var out = List[usize]();
   var i = 0usize;
   while i < unit.deps.len() {
     out.push(*unit.deps[i]);
@@ -282,7 +282,7 @@ fn depsOf(unit: &Unit) List[usize] {
 }
 
 fn emptyPlan() Plan {
-  Plan(List[Unit].empty(), List[usize].empty(), Dict[String, u8].empty(), List[usize].empty())
+  Plan(List[Unit](), List[usize](), Dict[String, u8](), List[usize]())
 }
 
 // Every package the build needs, each after what it imports. Imports are a
@@ -294,6 +294,7 @@ fn emptyPlan() Plan {
 fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
   var plan = emptyPlan();
   let topName = reg.packages[top].name.view();
+  let topKey = reg.packages[top].key();
   if topName != "core" {
     var core = 0usize;
     match reg.find("core") {
@@ -305,16 +306,16 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
     }
     match plan.visit(reg, core) {
       case is Ok {}
-      case let Err(e) { return Err[Plan, String](e.copy()); }
+      case let Err(e) { return Err[Plan, String](e.clone()); }
     }
-    if plan.state.contains(topName) {
+    if plan.state.contains(topKey.view()) {
       // One of core's own imports: built with what it imports, and no core
       plan = emptyPlan();
     }
   }
   match plan.visit(reg, top) {
     case is Ok {}
-    case let Err(e) { return Err[Plan, String](e.copy()); }
+    case let Err(e) { return Err[Plan, String](e.clone()); }
   }
   Ok[Plan, String](plan)
 }
@@ -324,7 +325,7 @@ fn buildOrder(reg: &Registry, top: usize) Result[Plan, String] {
 // description has no package line for core, whose include file does not
 // exist yet when it is compiled.
 fn preludeNeeds(plan: &Plan, reg: &Registry) List[usize] {
-  var needs = List[usize].empty();
+  var needs = List[usize]();
   var core = 0usize;
   if plan.unitNamed(reg, "core", &mut core) { needsOf(plan, reg, core, &mut needs); }
   needs
@@ -352,7 +353,7 @@ fn needsOf(plan: &Plan, reg: &Registry, u: usize, needs: &mut List[usize]) {
 // prelude's line is also where conec loads the prelude from. A package core
 // imports gets neither: it is built before core, and has no prelude.
 fn closure(plan: &Plan, reg: &Registry, u: usize) List[usize] {
-  var seen = List[usize].empty();
+  var seen = List[usize]();
   let p = plan.units[u].pkg;
   var core = 0usize;
   if !reg.packages[p].name.equals("core") && plan.unitNamed(reg, "core", &mut core) {
@@ -404,7 +405,7 @@ fn conePath(p: &Path) String {
 fn description(reg: &Registry, unit: &Unit, mode: &str, output: &str, out: &Path, packages: &List[usize]) String {
   let pkg = &reg.packages[unit.pkg];
   let label = pkg.label();
-  var text = String.empty();
+  var text = String();
   text <- "// The build description of ", label.view(), ", written by Congo for conec;\r\n";
   text <- "// rewritten on every build, so edit the source, not this.\r\n";
   text <- "\r\n";
@@ -429,7 +430,7 @@ fn description(reg: &Registry, unit: &Unit, mode: &str, output: &str, out: &Path
 }
 
 fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &mut String) {
-  var pad = String.empty();
+  var pad = String();
   var d = 0usize;
   while d < depth {
     pad <- "    ";
@@ -438,7 +439,7 @@ fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &
   let module = &unit.mods[m];
   // The names are copied before they are appended: 'text' and 'unit' are both reached
   // through references, and nothing shows 'text' is none of the Strings 'unit' holds
-  let moduleName = module.name.copy();
+  let moduleName = module.name.clone();
   text <- pad.view(), moduleName.view(), ": {\r\n";
   var i = 0usize;
   while i < module.files.len() {
@@ -451,7 +452,7 @@ fn emit(reg: &Registry, unit: &Unit, m: usize, depth: usize, out: &Path, text: &
     let line = &module.lines[i];
     let incl = includeFor(&reg.packages[line.pkg], out);
     let place = conePath(&incl);
-    let importName = line.name.copy();
+    let importName = line.name.clone();
     text <- pad.view(), "    import ", importName.view(), ": \"", place.view(), "\"\r\n";
     i = i + 1usize;
   }

@@ -1,0 +1,343 @@
+// The cancel group survives an 'await' (actors.cone, THE GROUP SURVIVES AN
+// AWAIT): the second half of a behaviour that awaited runs in the group its
+// first half ran in, and sees that group's cancellation, though it runs long
+// after, on whatever worker takes the actor. The group is kept in a side table
+// from the await to the resume; actors.groupAwaitsLive() counts its entries.
+//
+// 1. An await with a record (a value live across it) made in a group g: while
+//    the answer is held, the table has one entry; after the answer the second
+//    half sees g, not cancelled, and the table is empty.
+// 2. An await with an empty record (nothing live across it): the same.
+// 3. A cancel while parked: g is cancelled after the await was made and before the
+//    answer; the second half sees g cancelled, with the cause; the table is empty.
+// 4. An await made in no group notes nothing (the table stays empty throughout)
+//    and the second half sees the process's own group, as before.
+// 5. Many at once: 200 awaits in g, half with records, answered together: every
+//    second half in g, the table empty at the end.
+// 6. A second await after the first in the same behaviour is in g too, and the
+//    table is empty after the chain.
+// 7. A Reply dropped unanswered removes its entry (the test-only hook
+//    actors.testGroupedReply makes one owed to a made-up actor).
+// 8. An actor dying with a grouped await outstanding has its entries swept,
+//    and only its own (testActorWithGroupedAwait, testKillActor).
+// 9. A cancelled await always resumes (part 3 above: the second half runs, in the
+//    cancelled group, and sees it); the cancel is seen at the callee's answer or at the
+//    next check. actors.checkCancelled() is that check as an error: Ok, or
+//    Err(Cancelled) with the cause, which '?' passes on (as Cancelled, and converted to
+//    an AnyError); the clean-up after it runs once, the parked value is dropped exactly
+//    once, and the side table is empty.
+
+mod awaitgroup;
+
+import testing use *;
+import collections use AnyError;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub held: Atomic[u64];       // the slow answerer has a request in hand
+  pub gate: Atomic[u64];       // set to let it answer
+  pub idRec: Atomic[u64];      // the group a second half saw, per kind of await
+  pub idEmpty: Atomic[u64];
+  pub cancelRec: Atomic[u64];  // cancelled? (1 yes, 2 no), and the cause
+  pub causeRec: Atomic[u64];
+  pub plainId: Atomic[u64];
+  pub value: Atomic[u64];
+  pub inG: Atomic[u64];        // second halves in the wanted group (stress)
+  pub done: Atomic[u64];
+  pub chain1: Atomic[u64];
+  pub chain2: Atomic[u64];
+  pub want: Atomic[u64];       // the group id the stress wants
+  pub chkResumed: Atomic[u64]; // checkCancelled test: the continuation ran
+  pub chkOk: Atomic[u64];
+  pub chkErr: Atomic[u64];
+  pub chkCause: Atomic[u64];
+  pub chkAny: Atomic[u64];     // the AnyError form gave Err
+  pub cleanup: Atomic[u64];    // clean-up after the check ran
+}
+
+let seen: Seen;
+let markerDrops: Atomic[u64];    // Markers dropped
+
+struct Marker {
+  pub x: u64;
+
+  fn final(self: &uni) {markerDrops.add(1u64);}
+}
+
+fn @initpure init() {
+  markerDrops = Atomic[u64].of(0u64);
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+fn causeNum() u64 {
+  match actors.currentGroup().cause() {
+    case let Some(c) {
+      match c {
+        case Cause.Cancelled {1u64}
+        case Cause.TimedOut {2u64}
+        case Cause.SiblingFinished {3u64}
+        case Cause.Shutdown {4u64}
+      }
+    }
+    else {0u64}
+  }
+}
+
+actor Slow {
+  // answers once the gate is set (or after five seconds)
+  pub async fn answer(self, n: u64) u64 {
+    seen.held.add(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    n + 7u64
+  }
+
+  pub async fn quick(self, n: u64) u64 {n + 1u64}
+}
+
+actor Asker {
+  // a value live across the await: a record with an id
+  pub async fn withRecord(self, slow: Slow, base: u64) {
+    let s = await slow.answer(1u64);
+    seen.idRec.store(actors.currentGroup().id());
+    seen.value.store(base + s);
+    seen.cancelRec.store(if actors.isCancelled() {1u64} else {2u64});
+    seen.causeRec.store(causeNum());
+  }
+
+  // nothing live across it: an empty record
+  pub async fn noRecord(self, slow: Slow) {
+    let s = await slow.answer(2u64);
+    seen.idEmpty.store(actors.currentGroup().id());
+    seen.value.store(s);
+  }
+
+  pub async fn plain(self, slow: Slow, base: u64) {
+    let s = await slow.answer(3u64);
+    seen.plainId.store(actors.currentGroup().id());
+    seen.value.store(base + s);
+  }
+
+  // many in flight; half with a record
+  pub async fn stress(self, slow: Slow, k: u64) {
+    if k % 2u64 == 0u64 {
+      let s = await slow.answer(k);
+      if actors.currentGroup().id() == seen.want.load() && s == k + 7u64 {seen.inG.add(1u64);}
+    } else {
+      let keep = k * 3u64;
+      let s = await slow.answer(k);
+      if actors.currentGroup().id() == seen.want.load() && s == k + 7u64 && keep == k * 3u64 {seen.inG.add(1u64);}
+    }
+    seen.done.add(1u64);
+  }
+
+  // two awaits in a row
+  pub async fn chain(self, slow: Slow, base: u64) {
+    let a = await slow.quick(base);
+    if actors.currentGroup().id() == seen.want.load() {seen.chain1.add(1u64);}
+    let b = await slow.quick(a);
+    if actors.currentGroup().id() == seen.want.load() && b == base + 2u64 {seen.chain2.add(1u64);}
+  }
+
+  // the cancel as an error: the await resumes, and the check passes the Cancelled on
+  // with '?' (as Cancelled, and converted to an AnyError); the clean-up runs once
+  pub async fn checked(self, slow: Slow) {
+    let m = Marker(1u64);
+    let s = await slow.answer(8u64);
+    seen.chkResumed.add(1u64);
+    match finishA(s + m.x) {
+      case let Ok(v) { seen.chkOk.add(1u64); }
+      case let Err(e) {
+        seen.chkErr.add(1u64);
+        match e.cause {
+          case Cause.Shutdown { seen.chkCause.store(4u64); }
+          else { seen.chkCause.store(9u64); }
+        }
+      }
+    }
+    match finishB(s) {
+      case is Ok {}
+      case let Err(e) { seen.chkAny.add(1u64); }
+    }
+    seen.cleanup.add(1u64);
+  }
+}
+
+fn finishA(v: u64) Result[u64, Cancelled] {
+  actors.checkCancelled()?;
+  Ok[u64, Cancelled](v + 1u64)
+}
+
+fn finishB(v: u64) Result[u64, AnyError] {
+  actors.checkCancelled()?;
+  Ok[u64, AnyError](v)
+}
+
+fn waitHeld(n: u64) {
+  let limit = bounded(5000i64);
+  while seen.held.load() < n && Instant.now() < limit {thread.yieldNow();}
+}
+
+fn reset() {
+  seen.chkResumed.store(0u64);
+  seen.chkOk.store(0u64);
+  seen.chkErr.store(0u64);
+  seen.chkCause.store(0u64);
+  seen.chkAny.store(0u64);
+  seen.cleanup.store(0u64);
+  seen.held.store(0u64);
+  seen.gate.store(0u64);
+  seen.idRec.store(0u64);
+  seen.idEmpty.store(0u64);
+  seen.cancelRec.store(0u64);
+  seen.causeRec.store(0u64);
+  seen.plainId.store(0u64);
+  seen.value.store(0u64);
+  seen.inG.store(0u64);
+  seen.done.store(0u64);
+  seen.chain1.store(0u64);
+  seen.chain2.store(0u64);
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let rootId = actors.currentGroup().id();
+  let slow = Slow();
+  let a = Asker();
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "the table starts empty");
+
+  // 1. an await with a record, in g
+  let g = CancelGroup.make();
+  let gid = g.id();
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.withRecord(slow, 100u64); });
+  waitHeld(1u64);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "1: one entry while the answer is held");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.idRec.load(), gid, "1: the second half of an await with a record runs in g");
+  expectUInt(seen.value.load(), 100u64 + 8u64, "1: ... with the record and the value");
+  expectUInt(seen.cancelRec.load(), 2u64, "1: ... g not cancelled");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "1: the table is empty after the resume");
+
+  // 2. an empty record
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.noRecord(slow); });
+  waitHeld(1u64);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "2: one entry while held (a ticket, no record)");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.idEmpty.load(), gid, "2: the second half of an await with an empty record runs in g");
+  expectUInt(seen.value.load(), 9u64, "2: ... with the value");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "2: the table is empty after the resume");
+
+  // 3. a cancel while parked
+  reset();
+  let g3 = CancelGroup.make();
+  actors.withGroup(&g3, fn() [a, slow] { a.withRecord(slow, 0u64); });
+  waitHeld(1u64);
+  expectUInt(seen.cancelRec.load(), 0u64, "3: the second half has not run");
+  g3.cancelWith(Cause.Shutdown);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.idRec.load(), g3.id(), "3: the second half runs in the group that was cancelled meanwhile");
+  expectUInt(seen.cancelRec.load(), 1u64, "3: ... and sees it cancelled");
+  expectUInt(seen.causeRec.load(), 4u64, "3: ... with the cause");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "3: the table is empty");
+
+  // 4. no group
+  reset();
+  a.plain(slow, 5u64);
+  waitHeld(1u64);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "4: an await in no group notes nothing");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.plainId.load(), rootId, "4: the second half is in the process's own group, as before");
+  expectUInt(seen.value.load(), 5u64 + 10u64, "4: ... with its value");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "4: the table is still empty");
+
+  // 5. many at once
+  reset();
+  seen.want.store(gid);
+  var k = 0u64;
+  while k < 200u64 {
+    let kk = k;
+    actors.withGroup(&g, fn() [a, slow, kk] { a.stress(slow, kk); });
+    k += 1u64;
+  }
+  waitHeld(200u64);
+  expectUInt(u64.from(actors.groupAwaitsLive()), 200u64, "5: 200 entries while the answers are held");
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.done.load(), 200u64, "5: all 200 second halves ran");
+  expectUInt(seen.inG.load(), 200u64, "5: each in g, with its own value");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "5: the table is empty");
+
+  // 6. two awaits in a row
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.chain(slow, 40u64); });
+  actors.waitQuiet();
+  expectUInt(seen.chain1.load(), 1u64, "6: after the first await, in g");
+  expectUInt(seen.chain2.load(), 1u64, "6: after the second, in g");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "6: the table is empty");
+
+  // 7. a Reply never answered, dropped (the test-only hook makes one, owed to a made-up actor)
+  actors.withGroup(&g, fn() {
+    let r = actors.testGroupedReply();
+    expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "7: an await in g has an entry while its reply is owed");
+  });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "7: the unanswered reply's drop removed the entry");
+
+  // 8. an actor dying with a grouped await outstanding
+  actors.withGroup(&g, fn() {
+    let one = actors.testActorWithGroupedAwait();
+    let two = actors.testActorWithGroupedAwait();
+    expectUInt(u64.from(actors.groupAwaitsLive()), 2u64, "8: two actors, each with an entry");
+    actors.testKillActor(one);
+    expectUInt(u64.from(actors.groupAwaitsLive()), 1u64, "8: one dying removed only its own entry");
+    actors.testKillActor(two);
+  });
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "8: the table is empty after both deaths");
+
+  // 9. checkCancelled: a cancelled await resumes, and '?' passes the cancel on. A control, no cancel
+  markerDrops.store(0u64);
+  reset();
+  actors.withGroup(&g, fn() [a, slow] { a.checked(slow); });
+  waitHeld(1u64);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.chkResumed.load(), 1u64, "9: control: the continuation ran");
+  expectUInt(seen.chkOk.load(), 1u64, "9: ... checkCancelled said Ok");
+  expectUInt(seen.chkErr.load(), 0u64, "9: ... not Err");
+  expectUInt(seen.chkAny.load(), 0u64, "9: ... and the AnyError form passed it too");
+  expectUInt(seen.cleanup.load(), 1u64, "9: ... the clean-up ran once");
+
+  markerDrops.store(0u64);
+  reset();
+  let g9 = CancelGroup.make();
+  actors.withGroup(&g9, fn() [a, slow] { a.checked(slow); });
+  waitHeld(1u64);
+  g9.cancelWith(Cause.Shutdown);
+  seen.gate.store(1u64);
+  actors.waitQuiet();
+  expectUInt(seen.chkResumed.load(), 1u64, "9: a cancelled await resumes");
+  expectUInt(seen.chkErr.load(), 1u64, "9: checkCancelled gave Err(Cancelled), and '?' passed it on");
+  expectUInt(seen.chkOk.load(), 0u64, "9: ... not Ok");
+  expectUInt(seen.chkCause.load(), 4u64, "9: ... with the cause (Shutdown)");
+  expectUInt(seen.chkAny.load(), 1u64, "9: ... and '?' converted it to an AnyError in a function returning one");
+  expectUInt(seen.cleanup.load(), 1u64, "9: the clean-up after the check ran once");
+  expectUInt(markerDrops.load(), 1u64, "9: the parked value was dropped exactly once");
+  expectUInt(u64.from(actors.groupAwaitsLive()), 0u64, "9: the table is empty");
+  expect(actors.checkCancelled() is Ok, "9: outside any group checkCancelled says Ok");
+  done()
+}

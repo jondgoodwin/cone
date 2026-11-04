@@ -38,7 +38,7 @@ import deflate;
 import zstd;
 import cryptohash;
 
-fn total() usize { if isDebugBuild() {2097152usize} else {8388608usize} }
+fn total() usize { #if #debug {2097152usize} #else {8388608usize} }
 
 fn corpus(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
@@ -192,7 +192,7 @@ actor FileSource is ChunkSource {
   over: bool;
 
   pub fn init(self: &new, down: ChunkSink, name: String) {
-    *self = Self(down: down, link: Link.make(4usize, 65536usize), name: name, file: File.none(),
+    *self = Self(down: down, link: Link.own(262144usize), name: name, file: File.none(),
       at: 0u64, pumping: false, over: false);
     down.attach(selfactor);
   }
@@ -218,7 +218,7 @@ actor FileSource is ChunkSource {
     pumping = true;
     var more = true;
     while more {
-      match link.take() {
+      match link.take(65536usize) {
         case is None { more = false; }
         case let Some(b) {
           let r = await file.readAt(at, b);
@@ -261,7 +261,7 @@ actor MemorySource is ChunkSource {
   over: bool;
 
   pub fn init(self: &new, down: ChunkSink, data: List[u8]) {
-    *self = Self(down: down, link: Link.make(4usize, 65536usize), data: data, at: 0usize, over: false);
+    *self = Self(down: down, link: Link.own(262144usize), data: data, at: 0usize, over: false);
     down.attach(selfactor);
   }
 
@@ -280,7 +280,7 @@ actor MemorySource is ChunkSource {
         down.end(Ending.Finished);
         more = false;
       } else {
-        match link.take() {
+        match link.take(65536usize) {
           case is None { more = false; }
           case let Some(b) {
             var buf = b;
@@ -297,7 +297,7 @@ actor MemorySource is ChunkSource {
 }
 
 fn digestOf(a: &Array[u8]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   out.appendSlice(a);
   out
 }

@@ -1,0 +1,96 @@
+// Bug 34 ride-along: sortUnstableBy (a pattern-defeating quicksort) turns to a heap sort
+// when a range of more than 20 elements has met splitLimit() (64 minus the leading zeros
+// of the length: 6 for 40) unbalanced splits. This input of 40 values was found by a
+// search against a line-for-line port of core's pdqSort (choosePivot, breakPatterns,
+// partialInsertionSort, partitionBy and partitionEqual): the quicksort finds its sixth
+// unbalanced split, then heapSortBy runs once, on the range left. The same port counts the
+// comparisons of the whole sort: 402 (a debug build makes 39 more, to check the result
+// is in order; that is subtracted below). A count of 402 says the heap sort ran; a
+// quicksort that never fell back would make a different count.
+//
+// A collection (mem.traceRoots) runs inside EVERY comparison, and the worst trace is
+// reported: "found 40 of 40" means no element was ever out of sight, in the quicksort or
+// in the heap sort's sifting and swaps. The list is a local, so the shadow stack finds
+// it and its gcTraceElements walks the elements; elements held in a local while moved
+// are also found there.
+
+mod region_sort_unstable_heap_gc;
+
+import stdio use *;
+import collections;
+import libc;
+
+var @threadlocal nextId = 1i64;
+var @threadlocal seen = 0u64;
+var @threadlocal epoch = 1u32;
+var @threadlocal worst = 99i64;
+var @threadlocal traces = 0i64;
+var @threadlocal lossy = 0i64;
+
+struct Tr is RegionRef, Traced {
+  pub id: i64;
+  fn alloc(size: usize) *u8 {
+    let p = malloc(size);
+    mem.writeRaw(p as *Tr, Tr(nextId));
+    nextId = nextId + 1;
+    p
+  }
+  fn mark(self: &uni Tr, slot: *usize, perm: u32, mode: u32) {
+    seen = seen | (1u64 << u64.from(id));
+  }
+}
+struct Leaf { pub n: i32; }
+alias Ref = Tr[mut, Leaf];
+fn leaf(n: i32) Ref { Tr[mut, Leaf](n) }
+
+// Collect, and count how many of the 40 leaves (ids 1 to 40) were marked
+fn trace() {
+  seen = 0u64;
+  mem.traceRoots(epoch);
+  epoch = epoch + 1u32;
+  var found = 0i64;
+  var id = 1i64;
+  while id <= 40 {
+    if (seen & (1u64 << u64.from(id))) != 0u64 { found = found + 1; }
+    id = id + 1;
+  }
+  traces = traces + 1;
+  if found < worst { worst = found; }
+  if found < 40 { lossy = lossy + 1; }
+}
+
+fn byN(a: &Ref, b: &Ref) i32 { trace(); a.n <=> b.n }
+
+fn sortedList(l: &collections.List[Ref]) bool {
+  var i = 1usize;
+  while i < l.len() { if l[i - 1usize].n > l[i].n { return false; } i = i + 1usize; }
+  true
+}
+
+fn adversarial() {
+  var list = collections.List[Ref]();
+  // The found input, in order (a value is its element's n; ids are 1 to 40 in this order)
+  list.push(leaf(13)); list.push(leaf(15)); list.push(leaf(7));  list.push(leaf(30));
+  list.push(leaf(26)); list.push(leaf(8));  list.push(leaf(18)); list.push(leaf(1));
+  list.push(leaf(14)); list.push(leaf(36)); list.push(leaf(38)); list.push(leaf(16));
+  list.push(leaf(24)); list.push(leaf(22)); list.push(leaf(11)); list.push(leaf(6));
+  list.push(leaf(3));  list.push(leaf(31)); list.push(leaf(0));  list.push(leaf(35));
+  list.push(leaf(28)); list.push(leaf(4));  list.push(leaf(20)); list.push(leaf(9));
+  list.push(leaf(19)); list.push(leaf(5));  list.push(leaf(33)); list.push(leaf(39));
+  list.push(leaf(29)); list.push(leaf(34)); list.push(leaf(37)); list.push(leaf(2));
+  list.push(leaf(10)); list.push(leaf(25)); list.push(leaf(23)); list.push(leaf(21));
+  list.push(leaf(12)); list.push(leaf(17)); list.push(leaf(32)); list.push(leaf(27));
+  list.sortUnstableBy(&byN);
+  printStr("comparisons: ");
+  printInt(traces - (#if #debug { 39 } #else { 0 }));
+  printStr(", worst found ");
+  printInt(worst);
+  printStr(" of 40, collections that lost one: ");
+  printInt(lossy);
+  printStr("\n");
+  printStr(if sortedList(&list) { "in order\n" } else { "not in order\n" });
+}
+
+fn main() {
+  adversarial();
+}

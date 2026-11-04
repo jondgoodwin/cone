@@ -23,11 +23,11 @@ pub struct Tok {
   pub prespace: bool;
 
   pub fn make(text: String, tag: String, ws: bool) Tok {
-    Tok(text, tag, ws, String.empty(), false, true, String.empty(), false, String.empty(), false)
+    Tok(text, tag, ws, String(), false, true, String(), false, String(), false)
   }
 
-  pub fn copy(self: &) Tok {
-    Tok(text.copy(), tag.copy(), ws, ps.copy(), hasPs, isHead, spoken.copy(), hasAlias, currency.copy(), prespace)
+  pub fn clone(self: &) Tok {
+    Tok(text.clone(), tag.clone(), ws, ps.clone(), hasPs, isHead, spoken.clone(), hasAlias, currency.clone(), prespace)
   }
 
   pub fn setPs(self: &mut, p: String) { ps = p; hasPs = true; }
@@ -122,7 +122,7 @@ fn subtokenEnd(cs: &Array[u32], i: usize) usize {
 // misaki's subtokenize: the pieces of a token's text
 pub fn subtokenize(word: &str) List[String] {
   let cs = codepoints(word);
-  var out = List[String].empty();
+  var out = List[String]();
   var i = 0usize;
   while i < cs.len() {
     let e = subtokenEnd(cs.view(), i);
@@ -159,7 +159,7 @@ pub struct Word {
 
 // misaki's merge_tokens for a run of tokens: the text, the tag of the heaviest, the lexicon-visible state
 pub fn mergedText(toks: &List[Tok], a: usize, b: usize) String {
-  var s = String.empty();
+  var s = String();
   var i = a;
   while i < b {
     s <- toks[i].text.view();
@@ -182,14 +182,14 @@ fn mergedTag(toks: &List[Tok], a: usize, b: usize) String {
     if w > bestW { bestW = w; best = i; }
     i = i + 1usize;
   }
-  toks[best].tag.copy()
+  toks[best].tag.clone()
 }
 
 fn mergedCurrency(toks: &List[Tok], a: usize, b: usize) String {
-  var best = String.empty();
+  var best = String();
   var i = a;
   while i < b {
-    if toks[i].currency.len() > 0usize && toks[i].currency.view() > best.view() { best = toks[i].currency.copy(); }
+    if toks[i].currency.len() > 0usize && toks[i].currency.view() > best.view() { best = toks[i].currency.clone(); }
     i = i + 1usize;
   }
   best
@@ -197,7 +197,7 @@ fn mergedCurrency(toks: &List[Tok], a: usize, b: usize) String {
 
 // misaki's merge_tokens with a given 'unk', for a finished group: all the phonemes joined
 fn mergedPhonemes(toks: &List[Tok], unk: &str) String {
-  var ps = String.empty();
+  var ps = String();
   var i = 0usize;
   while i < toks.len() {
     let tk = &toks[i];
@@ -219,18 +219,18 @@ pub struct Retokenized {
 
 // misaki's G2P.retokenize
 pub fn retokenize(tokens: &List[Tok]) List[Word] {
-  var words = List[Word].empty();
-  var currency = String.empty();
+  var words = List[Word]();
+  var currency = String();
   var i = 0usize;
   while i < tokens.len() {
     let token = &tokens[i];
-    var tks = List[Tok].empty();
+    var tks = List[Tok]();
     if !token.hasAlias && !token.hasPs {
       let pieces = subtokenize(token.text.view());
       var k = 0usize;
       while k < pieces.len() {
-        var t = token.copy();
-        t.text = pieces[k].copy();
+        var t = token.clone();
+        t.text = pieces[k].clone();
         t.ws = false;
         t.isHead = true;
         t.prespace = false;
@@ -238,7 +238,7 @@ pub fn retokenize(tokens: &List[Tok]) List[Word] {
         k = k + 1usize;
       }
     } else {
-      tks.push(token.copy());
+      tks.push(token.clone());
     }
     if tks.len() == 0usize {
       i = i + 1usize;
@@ -252,24 +252,24 @@ pub fn retokenize(tokens: &List[Tok]) List[Word] {
       if tk.hasAlias || tk.hasPs {
         // nothing
       } else if tk.tag.view() == "$" && isCurrencySymbol(tk.text.view()) {
-        currency = tk.text.copy();
-        tk.setPs(String.empty());
+        currency = tk.text.clone();
+        tk.setPs(String());
       } else if tk.tag.view() == ":" && (tk.text.view() == "-" || tk.text.view() == "–") {
         tk.setPs(String.from("—"));
       } else if isPunctTag(tk.tag.view()) && !allAsciiLetters(tk.text.view()) {
         match punctTagPhonemes(tk.tag.view()) {
           case let Some(p) { tk.setPs(String.from(p)); }
           case is None {
-            var keep = List[u32].empty();
+            var keep = List[u32]();
             each c in tk.text.chars() { if inSet(u32.from(c), PUNCTS) { keep.push(u32.from(c)); } }
             tk.setPs(textOf(keep.view()));
           }
         }
       } else if currency.len() > 0usize {
         if tk.tag.view() != "CD" {
-          currency = String.empty();
+          currency = String();
         } else if j + 1usize == tks.len() && (i + 1usize == tokens.len() || tokens[i + 1usize].tag.view() != "CD") {
-          tk.currency = currency.copy();
+          tk.currency = currency.clone();
         }
       } else if j > 0usize && j + 1usize < tks.len() && tk.text.view() == "2" {
         let before = lastChar(tks[j - 1usize].text.view());
@@ -289,7 +289,7 @@ pub fn retokenize(tokens: &List[Tok]) List[Word] {
       match cur.next() {
         case var Some(tk) {
           if tk.hasAlias || tk.hasPs {
-            var one = List[Tok].empty();
+            var one = List[Tok]();
             one.push(tk);
             words.push(Word(one, false));
           } else if words.len() > 0usize && words[words.len() - 1usize].isGroup
@@ -299,7 +299,7 @@ pub fn retokenize(tokens: &List[Tok]) List[Word] {
             words[w].toks.push(tk);
           } else {
             let ws = tk.ws;
-            var one = List[Tok].empty();
+            var one = List[Tok]();
             one.push(tk);
             words.push(Word(one, !ws));
           }
@@ -351,7 +351,7 @@ pub fn tokenContext(ps: &str, text: &str, tag: &str, prev: &Ctx) Ctx {
 
 fn resolveTokens(toks: &mut List[Tok]) {
   // the text of the whole group and whether it mixes classes
-  var text = String.empty();
+  var text = String();
   var i = 0usize;
   while i < toks.len() {
     text <- toks[i].text.view();
@@ -378,10 +378,10 @@ fn resolveTokens(toks: &mut List[Tok]) {
     let tk = &mut toks[i];
     if !tk.hasPs {
       if i == count - 1usize && tk.text.charCount() == 1usize && inSet(cp(tk.text.view()), NON_QUOTE_PUNCTS) {
-        let t = tk.text.copy();
+        let t = tk.text.clone();
         tk.setPs(t);
       } else if allInSet(tk.text.view(), SUBTOKEN_JUNKS) {
-        tk.setPs(String.empty());
+        tk.setPs(String());
       }
     } else if i > 0usize {
       tk.prespace = prespace;
@@ -390,9 +390,9 @@ fn resolveTokens(toks: &mut List[Tok]) {
   }
   if prespace { return; }
   // (has primary stress, weight, index) of the tokens with phonemes
-  var hasP = List[bool].empty();
-  var weight = List[i32].empty();
-  var idx = List[usize].empty();
+  var hasP = List[bool]();
+  var weight = List[i32]();
+  var idx = List[usize]();
   i = 0usize;
   while i < toks.len() {
     if toks[i].hasPs && toks[i].ps.len() > 0usize {
@@ -413,17 +413,14 @@ fn resolveTokens(toks: &mut List[Tok]) {
   while i < hasP.len() { if *hasP[i] { sumP = sumP + 1usize; } i = i + 1usize; }
   if idx.len() < 2usize || sumP <= (idx.len() + 1usize) / 2usize { return; }
   // sorted(indices)[:len // 2]: by (has primary, weight, index), ascending
-  var order = List[usize].empty();
+  var order = List[usize]();
   i = 0usize;
-  while i < idx.len() {
-    var k = order.len();
-    order.push(i);
-    while k > 0usize && lessKey(&hasP, &weight, &idx, *order[k], *order[k - 1usize]) {
-      order.swap(k, k - 1usize);
-      k = k - 1usize;
-    }
-    i = i + 1usize;
-  }
+  while i < idx.len() { order.push(i); i = i + 1usize; }
+  order.sortBy(fn(a: &usize, b: &usize) i32 {
+    if lessKey(&hasP, &weight, &idx, *a, *b) { -1i32 }
+    else if lessKey(&hasP, &weight, &idx, *b, *a) { 1i32 }
+    else { 0i32 }
+  });
   var take = idx.len() / 2usize;
   i = 0usize;
   while i < take {
@@ -475,7 +472,7 @@ pub struct G2p {
   // misaki's G2P.__call__ from the tokens
   pub fn fromTokens(self: &, tokens: List[Tok]) G2pResult {
     var words = retokenize(&tokens);
-    var ctx = Ctx.empty();
+    var ctx = Ctx();
     var fallbackWords = 0usize;
     var count = 0usize;
     var wi = words.len();
@@ -485,9 +482,9 @@ pub struct G2p {
       if !w.isGroup {
         let tk = &mut w.toks[0usize];
         if !tk.hasPs {
-          let t = tk.text.copy();
+          let t = tk.text.clone();
           let r = self.lex(tk, t.view(), &ctx);
-          if r.some { tk.setPs(r.text.copy()); }
+          if r.some { tk.setPs(r.text.clone()); }
         }
         count = count + 1usize;
         if !tk.hasPs && useFallback {
@@ -510,8 +507,8 @@ pub struct G2p {
           k = k + 1usize;
         }
         var ps = Ps.none();
-        var mtext = String.empty();
-        var mtag = String.empty();
+        var mtext = String();
+        var mtag = String();
         if !anyDone {
           mtext = mergedText(&w.toks, left, right);
           mtag = mergedTag(&w.toks, left, right);
@@ -520,9 +517,9 @@ pub struct G2p {
           ps = lexicon.call(mtext.view(), mtag.view(), "", false, cur.view(), head, "", &ctx);
         }
         if ps.some {
-          w.toks[left].setPs(ps.text.copy());
+          w.toks[left].setPs(ps.text.clone());
           var x = left + 1usize;
-          while x < right { w.toks[x].setPs(String.empty()); x = x + 1usize; }
+          while x < right { w.toks[x].setPs(String()); x = x + 1usize; }
           ctx = tokenContext(ps.text.view(), mtext.view(), mtag.view(), &ctx);
           right = left;
           left = 0usize;
@@ -533,7 +530,7 @@ pub struct G2p {
           let tk = &mut w.toks[right];
           if !tk.hasPs {
             if allInSet(tk.text.view(), SUBTOKEN_JUNKS) {
-              tk.setPs(String.empty());
+              tk.setPs(String());
             } else if useFallback {
               shouldFallback = true;
               break;
@@ -547,14 +544,14 @@ pub struct G2p {
         let fb = fallbackPhonemes(whole.view(), lexicon.british);
         w.toks[0usize].setPs(fb);
         var x = 1usize;
-        while x < w.toks.len() { w.toks[x].setPs(String.empty()); x = x + 1usize; }
+        while x < w.toks.len() { w.toks[x].setPs(String()); x = x + 1usize; }
         fallbackWords = fallbackWords + 1usize;
       } else {
         resolveTokens(&mut w.toks);
       }
     }
     // the words in order, a group merged
-    var all = List[Tok].empty();
+    var all = List[Tok]();
     var drain = words.drain();
     var more = true;
     while more {
@@ -572,7 +569,7 @@ pub struct G2p {
             var d = w.toks.drain();
             match d.next() {
               case var Some(t) {
-                if !t.hasPs { t.setPs(self.unk.copy()); }
+                if !t.hasPs { t.setPs(self.unk.clone()); }
                 all.push(t);
               }
               case is None {}
@@ -582,7 +579,7 @@ pub struct G2p {
         case is None { more = false; }
       }
     }
-    var out = String.empty();
+    var out = String();
     var i = 0usize;
     while i < all.len() {
       // Kokoro's own spellings of the flap and glottal stop (misaki's version != '2.0' step)

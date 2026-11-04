@@ -129,7 +129,7 @@ fn newStream(id: u64, kind: StreamKind, buffer: usize) H3Stream {
     noBody: false, outstanding: 0usize, blocked: false, section: None, accepted: true,
     reported: false, isHead: false, requestSeen: false,
     ws: WriteState.Idle, wSized: false, wremaining: 0u64, out: Chain.make(noBound),
-    tail: IoBuf.empty(), fin: false, writeDone: false)
+    tail: IoBuf(), fin: false, writeDone: false)
 }
 
 // Append bytes to what a stream is to send, gathering small writes in its
@@ -160,7 +160,7 @@ fn putBuf(s: &mut H3Stream, buf: IoBuf) {
 // The tail, whole, queued; until the next byte there is none
 fn flushTail(s: &mut H3Stream) {
   if s.tail.len() == 0usize {return;}
-  var t = IoBuf.empty();
+  var t = IoBuf();
   t <-> s.tail;
   let refused = s.out.push(t);
 }
@@ -188,7 +188,7 @@ fn kindOfCode(code: u64) ErrorKind {
 }
 
 fn copyError(e: &HttpError) HttpError {
-  HttpError(e.kind, e.status, e.noResponse, e.detail.copy(), e.code, e.scope)
+  HttpError(e.kind, e.status, e.noResponse, e.detail.clone(), e.code, e.scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +256,10 @@ pub struct Connection is Move {
       panic("http3: streamBuffer must hold a whole HEADERS frame (maxFieldSectionSize and 16)", file, line);
     }
     let base = if client {2u64} else {3u64};
-    var control = List[u8].empty();
+    var control = List[u8]();
     encodeVarint(&mut control, streamControl);
-    var ids = List[u64].empty();
-    var values = List[u64].empty();
+    var ids = List[u64]();
+    var values = List[u64]();
     ids.push(settingQpackMaxTableCapacity);
     values.push(u64.from(cfg.qpack.maxTableCapacity));
     ids.push(settingMaxFieldSectionSize);
@@ -272,13 +272,13 @@ pub struct Connection is Move {
     }
     encodeSettings(&mut control, ids.view(), values.view());
     if cfg.grease {encodeFrameHead(&mut control, greaseValue, 0u64);}
-    var encOut = List[u8].empty();
+    var encOut = List[u8]();
     encodeVarint(&mut encOut, streamEncoder);
-    var decOut = List[u8].empty();
+    var decOut = List[u8]();
     encodeVarint(&mut decOut, streamDecoder);
     Connection(clientRole: client, cfg: cfg, now: now,
       enc: QpackEncoder.make(&cfg.qpack), dec: QpackDecoder.make(cfg.qpack),
-      streams: SlotTable[H3Stream].make(16u32), ids: Dict[u64, Slot].empty(),
+      streams: SlotTable[H3Stream].make(16u32), ids: Dict[u64, Slot](),
       requestRecords: 0usize, activeRequests: 0usize,
       controlId: base, encoderId: base + 4u64, decoderId: base + 8u64,
       controlOut: control, encoderOut: encOut, decoderOut: decOut,
@@ -286,7 +286,7 @@ pub struct Connection is Move {
       peerControl: false, peerEncoder: false, peerDecoder: false, settingsIn: false,
       peer: Settings.defaults(), goAwaySent: false, goAwaySentId: 0u64, goAwayIn: false,
       goAwayInId: 0u64, maxPushIn: false, maxPushId: 0u64, windowAt: now, windowFrames: 0usize,
-      commands: Deque[Transmit].empty(), events: Deque[Event].empty(), rr: 0usize, wrr: 0usize,
+      commands: Deque[Transmit](), events: Deque[Event](), rr: 0usize, wrr: 0usize,
       closed: false, gone: false, failure: None)
   }
 
@@ -498,7 +498,7 @@ pub struct Connection is Move {
     // Draining after a GOAWAY: once no request is open, the connection ends
     if (goAwaySent || (clientRole && goAwayIn)) && activeRequests == 0usize {
       closed = true;
-      return Transmit.Close(h3NoError, String.empty(), true);
+      return Transmit.Close(h3NoError, String(), true);
     }
     Transmit.Nothing
   }
@@ -580,7 +580,7 @@ pub struct Connection is Move {
     if !self.canSendRequest() {panic("http3: sendRequest after a GOAWAY or the connection's end", file, line);}
     let id = nextRequest;
     nextRequest = nextRequest + 4u64;
-    var fields = List[HeaderField].empty();
+    var fields = List[HeaderField]();
     requestFields(&head, &body, &mut fields, file, line);
     var s = newStream(id, StreamKind.Request, cfg.streamBuffer);
     s.isHead = head.method == Method.Head;
@@ -626,8 +626,8 @@ pub struct Connection is Move {
     if sl.isNone() {return;}
     let r = streams.at(sl.index) as &mut H3Stream;
     if !r.requestSeen || r.ws != WriteState.Idle {panic("http3: sendInterim with no request awaiting a response", file, line);}
-    var fields = List[HeaderField].empty();
-    let none = BodyLength.empty();
+    var fields = List[HeaderField]();
+    let none = BodyLength();
     responseFields(&head, &none, &mut fields, file, line);
     self.putSection(r, &fields);
   }
@@ -648,7 +648,7 @@ pub struct Connection is Move {
     if s.wSized && u64.from(n) > s.wremaining {panic("http3: sendData past the body's Content-Length", file, line);}
     let q = queuedOf(s);
     if q > 0usize && q + n > cfg.writeWatermark {return Some[IoBuf](buf);}
-    var head = List[u8].empty();
+    var head = List[u8]();
     encodeFrameHead(&mut head, frameData, u64.from(n));
     putBytes(s, head.view());
     putBuf(s, buf);
@@ -658,7 +658,7 @@ pub struct Connection is Move {
 
   // The body is whole, and the stream ends
   pub fn finish(self: &mut, stream: u64, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
-    self.finishWith(stream, Headers.empty(), file, line);
+    self.finishWith(stream, Headers(), file, line);
   }
 
   // The body is whole, these trailer fields follow it, and the stream ends.
@@ -674,7 +674,7 @@ pub struct Connection is Move {
     if s.ws == WriteState.Done {return;}
     if s.wSized && s.wremaining != 0u64 {panic("http3: finish short of the body's Content-Length", file, line);}
     if !trailers.isEmpty() {
-      var fields = List[HeaderField].empty();
+      var fields = List[HeaderField]();
       trailerFields(&trailers, &mut fields, file, line);
       self.putSection(s, &fields);
     }
@@ -851,9 +851,9 @@ pub struct Connection is Move {
 
   // A field list as one field section, in a HEADERS frame, on a stream
   fn putSection(self: &mut, s: &mut H3Stream, fields: &List[HeaderField]) {
-    var sec = List[u8].empty();
+    var sec = List[u8]();
     enc.encode(s.id, fields.view(), &mut sec);
-    var head = List[u8].empty();
+    var head = List[u8]();
     encodeFrameHead(&mut head, frameHeaders, u64.from(sec.len()));
     putBytes(s, head.view());
     putBytes(s, sec.view());
@@ -863,8 +863,8 @@ pub struct Connection is Move {
   fn respond(self: &mut, s: &mut H3Stream, head: ResponseHead, body: BodyLength, file: &Array[u8], line: u32) {
     let status = head.status;
     let noBody = s.isHead || status == 204u16 || status == 304u16;
-    var fields = List[HeaderField].empty();
-    let said = if status == 204u16 {BodyLength.empty()} else {body};
+    var fields = List[HeaderField]();
+    let said = if status == 204u16 {BodyLength()} else {body};
     responseFields(&head, &said, &mut fields, file, line);
     self.putSection(s, &fields);
     if noBody || body.isEmpty() || (body.isSized() && body.length == 0u64) {
@@ -879,7 +879,7 @@ pub struct Connection is Move {
 
   fn dropOutput(self: &mut, s: &mut H3Stream) {
     s.out = Chain.make(noBound);
-    s.tail = IoBuf.empty();
+    s.tail = IoBuf();
     s.fin = false;
   }
 
@@ -940,7 +940,7 @@ pub struct Connection is Move {
   // its message went whole, with H3_EXCESSIVE_LOAD
   fn sectionTooLarge(self: &mut, s: &mut H3Stream) {
     if !clientRole && !s.requestSeen && s.ws == WriteState.Idle && !s.writeDone {
-      self.respond(s, ResponseHead.make(431u16), BodyLength.empty(), srcFile(), srcLine());
+      self.respond(s, ResponseHead.make(431u16), BodyLength(), srcFile(), srcLine());
     }
     let e = HttpError(ErrorKind.TooLarge, if clientRole {0u16} else {431u16}, clientRole && s.rs == ReadState.Head,
       String.from("a field section past maxFieldSectionSize"), Some[u64](h3ExcessiveLoad), ErrorScope.Stream);
@@ -953,7 +953,7 @@ pub struct Connection is Move {
   // (STOP_SENDING with H3_NO_ERROR, section 4.1, unless it had all
   // arrived). The program never sees it
   fn answerConnect(self: &mut, s: &mut H3Stream) {
-    self.respond(s, ResponseHead.make(501u16), BodyLength.empty(), srcFile(), srcLine());
+    self.respond(s, ResponseHead.make(501u16), BodyLength(), srcFile(), srcLine());
     s.reported = true;
     self.stopReading(s, h3NoError);
   }
@@ -1046,7 +1046,7 @@ pub struct Connection is Move {
   // or the bytes copied into a buffer of their own where it does not
   fn deliver(self: &mut, s: &mut H3Stream) Event {
     let avail = if s.frameLeft < u64.from(s.input.len()) {usize.from(s.frameLeft)} else {s.input.len()};
-    var buf = IoBuf.empty();
+    var buf = IoBuf();
     if s.input.firstLen() <= avail {
       match s.input.popFront() {
         case let Some(b) {buf = b;}
@@ -1071,7 +1071,7 @@ pub struct Connection is Move {
   // arrive
   fn section(self: &mut, s: &mut H3Stream, h: FrameHead) Option[Event] {
     let len = usize.from(h.length);
-    var got = List[HeaderField].empty();
+    var got = List[HeaderField]();
     let r = self.decodeAt(s, h.size, len, &mut got);
     s.input.advance(h.size + len);
     match r {
@@ -1098,7 +1098,7 @@ pub struct Connection is Move {
       case let Some(sl) {return dec.decode(s.id, sl, got);}
       case is None[&Array[u8]] {}
     }
-    var payload = List[u8].empty();
+    var payload = List[u8]();
     payload.resize(len, 0u8);
     let copied = s.input.copyOut(at, payload.viewMut());
     dec.decode(s.id, payload.view(), got)
@@ -1137,7 +1137,7 @@ pub struct Connection is Move {
           s.noBody = !responseHasBody(if s.isHead {Method.Head} else {Method.Get}, head.status);
           s.hasLength = hasLength && !s.noBody;
           s.remaining = length;
-          let body = if s.noBody {BodyLength.empty()} else {bodyOf(s)};
+          let body = if s.noBody {BodyLength()} else {bodyOf(s)};
           return Some[Event](Event.Response(s.id, head, body));
         }
         case let Err(why) {
@@ -1170,7 +1170,7 @@ pub struct Connection is Move {
       // No message (section 4.1.2): a server's H3_REQUEST_INCOMPLETE
       if clientRole {
         let e = HttpError(ErrorKind.Closed, 0u16, true, String.from("the stream ended before a response"),
-          None, ErrorScope.Stream);
+          None[u64], ErrorScope.Stream);
         self.endStream(s, e, h3RequestCancelled);
       } else {
         let e = HttpError(ErrorKind.Closed, 400u16, false, String.from("the stream ended before a whole request"),
@@ -1188,7 +1188,7 @@ pub struct Connection is Move {
       return None;
     }
     s.rs = ReadState.Done;
-    Some[Event](Event.End(s.id, Headers.empty()))
+    Some[Event](Event.End(s.id, Headers()))
   }
 
   // A stream ended inside a frame (section 7.1): H3_FRAME_ERROR
@@ -1271,7 +1271,7 @@ pub struct Connection is Move {
       return;
     }
     while !closed {
-      var got = List[HeaderField].empty();
+      var got = List[HeaderField]();
       match dec.pollUnblocked(&mut got) {
         case let Some(u) {
           let id, result = u.(streamId, result);
@@ -1382,7 +1382,7 @@ pub struct Connection is Move {
       }
       let len = usize.from(h.length);
       if s.input.len() < h.size + len {return;}
-      var payload = List[u8].empty();
+      var payload = List[u8]();
       payload.resize(len, 0u8);
       let copied = s.input.copyOut(h.size, payload.viewMut());
       s.input.advance(h.size + len);
@@ -1439,7 +1439,7 @@ pub struct Connection is Move {
           let s = streams.at(u32.from(i)) as &mut H3Stream;
           if s.kind == StreamKind.Request && s.accepted && !s.reported && s.id >= id {
             let e = HttpError(ErrorKind.Refused, 0u16, true,
-              String.from("above the server's GOAWAY: not processed, safe to retry"), None, ErrorScope.Stream);
+              String.from("above the server's GOAWAY: not processed, safe to retry"), None[u64], ErrorScope.Stream);
             self.stopWriting(s, h3RequestCancelled);
             self.endStream(s, e, h3RequestCancelled);
             // Its end is the peer's to report no more: the record goes
@@ -1521,8 +1521,8 @@ fn wholeIn(s: &H3Stream) bool {s.peerFin && !s.blocked && s.writeDone}
 // What a message's head says of its body, as it arrives
 fn bodyOf(s: &H3Stream) BodyLength {
   if s.hasLength {
-    return if s.remaining == 0u64 {BodyLength.empty()} else {BodyLength.sized(s.remaining)};
+    return if s.remaining == 0u64 {BodyLength()} else {BodyLength.sized(s.remaining)};
   }
-  if s.peerFin && s.input.len() == 0usize {return BodyLength.empty();}
+  if s.peerFin && s.input.len() == 0usize {return BodyLength();}
   BodyLength.unsized()
 }

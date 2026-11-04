@@ -42,7 +42,7 @@ fn preference() u32 {
 fn reporting() bool { (libc.getenv("LLMRUN_REPORT") as usize) != 0usize }
 
 fn ids(n: usize, vocab: u32, seed: u32) List[u32] {
-  var l = List[u32].empty();
+  var l = List[u32]();
   var i = 0usize;
   var x = seed;
   while i < n {
@@ -122,17 +122,17 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
           expectUInt(u64.from(argmaxOf(&got)), u64.from(argmaxOf(&want)), label);
           // negative controls: the same weights read with the wrong rotation order, or with the q/k norm left out,
           // are far from the GPU's answer, so a bug of that kind could not hide inside the tolerance
-          var wrongRope = shape.copy();
+          var wrongRope = shape.clone();
           if shape.ropeMode == 0u32 { wrongRope.ropeMode = 1u32; } else { wrongRope.ropeMode = 0u32; }
-          let mRope = weights.withShape(wrongRope.copy());
+          let mRope = weights.withShape(wrongRope.clone());
           var cRope = RefCache.make(&wrongRope, 32usize);
           let lRope = cpuStep(&mRope, &mut cRope, promptIds.view(), 0usize);
           if reporting() { printStr(label); printStr(" wrong rotation order: "); printFloat(maxDiff(&got, &lRope) / scale); printStr("\n"); }
           expectBool(maxDiff(&got, &lRope) / scale > CONTROL, true, "a wrong rotation order is over 300 tolerances away");
           if shape.qkNorm {
-            var noNorm = shape.copy();
+            var noNorm = shape.clone();
             noNorm.qkNorm = false;
-            let mNo = weights.withShape(noNorm.copy());
+            let mNo = weights.withShape(noNorm.clone());
             var cNo = RefCache.make(&noNorm, 32usize);
             let lNo = cpuStep(&mNo, &mut cNo, promptIds.view(), 0usize);
             if reporting() { printStr(label); printStr(" no q/k norm: "); printFloat(maxDiff(&got, &lNo) / scale); printStr("\n"); }
@@ -143,7 +143,7 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
       }
       var t = 0usize;
       while t < 3usize {
-        var next = List[u32].empty();
+        var next = List[u32]();
         next.push((promptIds[t] + 7u32) % u32.from(shape.vocab));
         let w2 = cpuStep(&weights, &mut cache, next.view(), promptLen + t);
         match engine.feed(device, next.view(), true) {
@@ -166,7 +166,7 @@ fn runCase(device: &mut Device, label: &str, shape: &ModelShape, types: &ModelTy
         case is Ok { expect(false, "tokens past the context are refused"); }
         case let Err(e) { expectStr(e.message().view(), "llmrun: the context is full (32 positions)", "tokens past the context are refused"); }
       }
-      var outside = List[u32].empty();
+      var outside = List[u32]();
       outside.push(u32.from(shape.vocab));
       match engine.feed(device, outside.view(), true) {
         case is Ok { expect(false, "a token outside the vocabulary is refused"); }

@@ -161,6 +161,11 @@ static void rcWalk(INode *type, int ind) {
             }
         }
         if (type->tag == VirtRefTag) {
+            // Held as a field (Bug 30): a call through a reference marked '+ ShapeKeeping' reshapes
+            // nothing the caller reaches by a shared mutable path (held where the value became the
+            // reference, shapeKeepsVia), so it reaches nothing here. An unmarked one could be anything
+            if (ref->marks & RefMarkShapeKeeping)
+                return;
             // An owning virtual reference holds only global borrows (it names no lifetime), so
             // it cannot reach a local of this function
             if (rcLocalOnly && ref->region && itypeGetTypeDcl(ref->region) != borrowRef)

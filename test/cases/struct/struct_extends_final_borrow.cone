@@ -1,0 +1,98 @@
+// What an enrichment's own 'final' does not refuse. The refusals are
+// struct_typecheck_extends_final's.
+//
+// A borrowed reference to the enrichment is a reference to the base: the owner
+// keeps its own type and its own drop, so its 'final' runs when the owner dies.
+// An enrichment without a 'final' of its own converts by value as before, and so
+// does the base into the enrichment (the enrichment's drop is the one that runs).
+//
+// A run, because whether a finalizer ran is a runtime fact. Each finalizer
+// appends its number to 'log', two decimal digits apiece.
+
+mod struct_extends_final_borrow;
+
+import stdio use *;
+
+var @threadlocal log = 0;
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Plain {
+  pub n: i32;
+}
+
+struct PlainFin extends Plain {
+  fn final(self: &uni) {
+    log = log * 100 + n;
+  }
+}
+
+// An enrichment with no 'final' of its own
+struct PlainLite extends Plain {
+  pub fn twice(self: &) i32 {
+    n + n
+  }
+}
+
+fn peek(p: &Plain) i32 {
+  p.n
+}
+
+fn bump(p: &mut Plain) {
+  p.n = p.n + 1;
+}
+
+// A borrow of the enrichment as its base; the owner is finalized once, as itself
+fn borrowed() i32 {
+  var f = PlainFin(21);
+  bump(&mut f);
+  peek(&f)
+}
+
+// Without a 'final' of its own, the enrichment crosses by value as it always has
+fn lite() i32 {
+  let p: Plain = PlainLite(31);
+  let l: PlainLite = p;
+  l.twice()
+}
+
+// The base into the enrichment: the enrichment's drop is what runs, once
+fn intoEnrichment() {
+  let f: PlainFin = Plain(41);
+}
+
+// Two enrichments of one enrichment carry copies of one 'final': either becomes the
+// other, and the 'final' runs once
+struct KidA extends PlainFin {
+}
+
+struct KidB extends PlainFin {
+}
+
+fn sameFinal() {
+  let b: KidB = KidA(51);
+}
+
+fn main() i32 {
+  log = 0;
+  let got = borrowed();
+  show("borrowed-value", got);
+  show("borrowed-final-once", log);
+
+  show("lite", lite());
+
+  log = 0;
+  intoEnrichment();
+  show("base-into-enrichment", log);
+
+  log = 0;
+  sameFinal();
+  show("same-final-siblings", log);
+
+  0i32
+}

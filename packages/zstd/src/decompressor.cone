@@ -57,7 +57,7 @@ fn skippableMagic() u32 { 0x184D2A50u32 }
 // it, 'finish' it when the input is over, 'pull' the output.
 //
 //   mut d = zstd.Decompressor.make();
-//   mut out = List[u8].empty();
+//   mut out = List[u8]();
 //   d.feed(chunk);                          // any size, split anywhere
 //   while true {
 //     out.clear();
@@ -105,10 +105,10 @@ pub struct Decompressor {
   // A decompressor for a stream of zstd frames (and skippable frames), all
   // decoded one after another (see 'setMultiFrame')
   pub fn make() Decompressor {
-    Decompressor(List[u8].empty(), 0usize, 0u64, false, Stage.Magic, 0u64,
+    Decompressor(List[u8](), 0usize, 0u64, false, Stage.Magic, 0u64,
       0u64, 0usize, false, None[u64], 0u64, Xxh64.make(0u64), Entropy.make(),
-      List[u8].empty(), 0usize, 0usize, false, 0u64, defaultLimit(), defaultMaxWindow(),
-      List[u8].empty(), true, 0u32, None[ZstdError])
+      List[u8](), 0usize, 0usize, false, 0u64, defaultLimit(), defaultMaxWindow(),
+      List[u8](), true, 0u32, None[ZstdError])
   }
 
   // Appends input. It is copied, so the caller's bytes are its own again at
@@ -155,7 +155,7 @@ pub struct Decompressor {
   // Why the stream failed: None until a pull answers Failed
   pub fn error(self: &) Option[ZstdError] {
     match &err {
-      case let &Some(e) { Some[ZstdError](e.copy()) }
+      case let &Some(e) { Some[ZstdError](e.clone()) }
       else { None[ZstdError] }
     }
   }
@@ -164,7 +164,7 @@ pub struct Decompressor {
   // Failed, None before (a stage may ask at any time)
   pub fn failure(self: &) Option[AnyError] {
     match &err {
-      case let &Some(e) { Some[AnyError](AnyError.from(e.copy())) }
+      case let &Some(e) { Some[AnyError](AnyError.from(e.clone())) }
       else { None[AnyError] }
     }
   }
@@ -185,7 +185,7 @@ pub struct Decompressor {
   // After Done: the input bytes that came after the stream (with
   // 'setMultiFrame(false)', whatever follows the first frame), taken out
   pub fn takeRest(self: &mut) List[u8] {
-    var rest = List[u8].empty();
+    var rest = List[u8]();
     if stage == Stage.End {
       var i = pos;
       while i < inp.len() { rest.push(*inp[i]); i = i + 1usize; }
@@ -200,14 +200,14 @@ pub struct Decompressor {
   // Anything pulled before a failure was decoded from blocks that were
   // valid; a frame's checksum is checked only at its end.
   pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
-    var none = IoBuf.empty();
+    var none = IoBuf();
     self.pullInto(max, false, &mut none, out)
   }
 
   // The same into a buffer's spare room (the Transform of package streams):
   // appends at most 'out.room()' bytes and lengthens 'out' by them.
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
-    var none = List[u8].empty();
+    var none = List[u8]();
     let room = out.room();
     self.pullInto(room, true, out, &mut none)
   }

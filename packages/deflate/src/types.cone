@@ -1,4 +1,4 @@
-// ======== Formats and the gzip header ========
+// ======== Formats, failure, the gzip header ========
 
 // The framing around the DEFLATE data (RFC 1951)
 pub enum Format {
@@ -9,6 +9,47 @@ pub enum Format {
   // RFC 1952: a header of 10 bytes or more, the stream, the CRC-32 and the
   // size of the data (modulo 2^32); several members one after another
   Gzip;
+}
+
+// What kind of thing was wrong with a compressed stream
+pub enum ErrorKind is Sendable {
+  // The zlib or gzip header is wrong, or asks for something not supported
+  BadHeader;
+  // A block header or a Huffman code description is invalid
+  BadBlock;
+  // A symbol that is not in the code, or a length or distance code that
+  // does not exist
+  BadCode;
+  // A match that reaches back before the start of the output
+  BadDistance;
+  // The input ended before the stream did
+  Truncated;
+  // The Adler-32, the CRC-32 or the gzip size does not match
+  BadChecksum;
+  // More output than the limit allows
+  TooLarge;
+  // Bytes after the last gzip member that are not another member
+  TrailingData;
+}
+
+// Why a stream could not be inflated: what kind, how many bytes of input had
+// been used when it was noticed, and a sentence. Sendable, so that it crosses
+// between actors inside an AnyError.
+pub struct DeflateError is Error, Sendable {
+  pub kind: ErrorKind;
+  pub offset: u64;
+  pub reason: String;
+
+  pub fn make(kind: ErrorKind, offset: u64, reason: &str) DeflateError {
+    DeflateError(kind, offset, String.from(reason))
+  }
+
+  // The reason, as one line for a person
+  pub fn message(self: &) String { reason.clone() }
+
+  pub fn clone(self: &) DeflateError {
+    DeflateError(kind, offset, reason.clone())
+  }
 }
 
 // The fields of a gzip member's header (RFC 1952 section 2.3). The reader
@@ -33,10 +74,10 @@ pub struct GzipHeader {
 
   // A header that says nothing: no time, no name, system unknown
   pub fn plain() GzipHeader {
-    GzipHeader(0u32, 0u8, 255u8, false, List[u8].empty(), List[u8].empty(), List[u8].empty())
+    GzipHeader(0u32, 0u8, 255u8, false, List[u8](), List[u8](), List[u8]())
   }
 
-  pub fn copy(self: &) GzipHeader {
+  pub fn clone(self: &) GzipHeader {
     GzipHeader(mtime, xfl, os, text, copyBytes(name.view()), copyBytes(comment.view()), copyBytes(extra.view()))
   }
 }

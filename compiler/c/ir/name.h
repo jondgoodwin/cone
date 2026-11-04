@@ -124,6 +124,9 @@ extern Name *selectName;   // "select", a mask's choice between two vectors: 'm.
 extern Name *joinName;     // "join", two vectors laid end to end: 'a.join(b)'
 extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
 extern Name *hashTraitName;  // "Hash", core's trait of a value that feeds a hasher
+extern Name *cloneTraitName; // "Clone", core's trait of a value that can be duplicated on request
+extern Name *defaultTraitName; // "Default", core's trait of a type made by `T()`, with no arguments
+extern Name *eqTraitName;   // "Eq", core's trait of a value that has '=='
 extern Name *iteratorTraitName; // "Iterator", core's trait of a cursor, whose shared methods come with its declaration
 extern Name *hasherName;     // "Hasher", core's hasher, the algorithm a Hash feeds
 extern Name *writeU64Name;   // "writeU64", the Hasher method an integer's hash feeds its bits through

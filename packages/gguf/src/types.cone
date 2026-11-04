@@ -62,8 +62,8 @@ pub struct GgufError is Error {
     out
   }
 
-  pub fn copy(self: &) GgufError {
-    GgufError(kind, offset, reason.copy())
+  pub fn clone(self: &) GgufError {
+    GgufError(kind, offset, reason.clone())
   }
 }
 
@@ -121,7 +121,7 @@ pub enum ValueType {
     None
   }
 
-  pub fn copy(self: &ValueType) ValueType {
+  pub fn clone(self: &ValueType) ValueType {
     match self {
       case is U8 { ValueType.U8 }
       case is I8 { ValueType.I8 }
@@ -196,7 +196,7 @@ pub enum Value {
   }
 
   // An empty array of this element type
-  pub fn newList(elem: ValueType) Value { Value.Items(elem, List[Value].empty()) }
+  pub fn newList(elem: ValueType) Value { Value.Items(elem, List[Value]()) }
 
   // The value's type, as the file names it
   pub fn valueType(self: &Value) ValueType {
@@ -280,7 +280,7 @@ pub enum Value {
   }
 
   // A copy of the value, arrays and all
-  pub fn copy(self: &Value) Value {
+  pub fn clone(self: &Value) Value {
     match self {
       case let U8(x) { Value.U8(*x) }
       case let I8(x) { Value.I8(*x) }
@@ -290,11 +290,11 @@ pub enum Value {
       case let I32(x) { Value.I32(*x) }
       case let F32(x) { Value.F32(*x) }
       case let Bool(x) { Value.Bool(*x) }
-      case let Str(x) { Value.Str(x.copy()) }
+      case let Str(x) { Value.Str(x.clone()) }
       case let Items(x) {
         var out = List[Value].withCapacity(x.items.len());
-        each v in &x.items { out.push(v.copy()); }
-        Value.Items(x.elem.copy(), out)
+        each v in &x.items { out.push(v.clone()); }
+        Value.Items(x.elem.clone(), out)
       }
       case let U64(x) { Value.U64(*x) }
       case let I64(x) { Value.I64(*x) }
@@ -429,7 +429,7 @@ pub enum TensorType {
     }
   }
 
-  pub fn copy(self: &TensorType) TensorType {
+  pub fn clone(self: &TensorType) TensorType {
     match self {
       case is F32 { TensorType.F32 }
       case is F16 { TensorType.F16 }
@@ -469,17 +469,17 @@ pub struct Tensor {
     (*dims[0usize] / u64.from(kind.blockSize())) * u64.from(kind.blockBytes())
   }
 
-  pub fn copy(self: &) Tensor {
-    var d = List[u64].empty();
+  pub fn clone(self: &) Tensor {
+    var d = List[u64]();
     each x in &dims { d.push(*x); }
-    Tensor(name.copy(), kind.copy(), d, offset, elements, bytes)
+    Tensor(name.clone(), kind.clone(), d, offset, elements, bytes)
   }
 }
 
 // A GGUF file's header, metadata and tensor table. It holds none of the
 // tensors' bytes: those are in the file's own bytes, which the caller keeps
 // (a read buffer, or later a mapped file), and are reached with 'tensorBytes'.
-pub struct Model {
+pub struct Model is Default {
   // The file's version: 2 or 3
   pub version: u32;
   // The alignment tensor data and every tensor within it keep
@@ -489,8 +489,8 @@ pub struct Model {
   pub meta: List[MetaEntry];
   pub tensors: List[Tensor];
 
-  pub fn empty() Model {
-    Model(3u32, 32u64, 0u64, List[MetaEntry].empty(), List[Tensor].empty())
+  pub fn init(self: &new) {
+    *self = Model(3u32, 32u64, 0u64, List[MetaEntry](), List[Tensor]());
   }
 
   // -------- metadata --------

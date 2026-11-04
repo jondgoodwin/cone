@@ -55,13 +55,13 @@ extern {
 // The bytes the process has committed for itself: Windows' PrivateUsage
 // (PROCESS_MEMORY_COUNTERS_EX), Linux's data size (VmData)
 fn privateBytes() u64 {
-  if isWindows() {
+  #if #os == .windows {
     var c = Array[usize, 10]() <- fill 0usize;
     let p = &mut c as *u8;
     *(p as *u32) = 80u32;
     K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
     u64.from(c[9usize])
-  } else {
+  } #else {
     dataBytes()
   }
 }
@@ -102,7 +102,7 @@ fn certs(name: &str) Path {
 }
 
 fn readText(name: &str) String {
-  var out = String.empty();
+  var out = String();
   let file = certs(name);
   match fs.readFile(&file) {
     case var Ok(r) {out <-> r;}
@@ -335,13 +335,13 @@ fn cycles(label: &str, secure: bool, resume: bool, n: u32) {
   let port = listenOn(&mut drv, &mut lp, secure, &srv);
   var sv = Serving(ReqId.none(), 0u64);
   var h = Histogram.make();
-  var events = List[Event].empty();
+  var events = List[Event]();
   let r0 = tls.stats().resumed;
   var k = 0u32;
   while k < n + 1u32 {
     let t0 = Instant.now();
     let c = connect(&mut drv, &mut lp, secure, &cl, port, 0u64);
-    drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+    drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength(), Sink.Here(tokReq));
     var going = true;
     while going {
       drv.poll(&mut lp, forever(), &uni events);
@@ -371,7 +371,7 @@ fn cycles(label: &str, secure: bool, resume: bool, n: u32) {
 
 // A GET on a connection, driven to its final answer
 fn getOn(drv: &mut Driver, lp: &mut Loop, sv: &mut Serving, events: &uni List[Event], c: ConnId) {
-  drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+  drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength(), Sink.Here(tokReq));
   var going = true;
   while going {
     drv.poll(lp, forever(), events);
@@ -398,7 +398,7 @@ fn concurrentCycles(n: u32) {
   let port = listenOn(&mut drv, &mut lp, true, &srv);
   var sv = Serving(ReqId.none(), 0u64);
   var h = Histogram.make();
-  var events = List[Event].empty();
+  var events = List[Event]();
   let r0 = tls.stats().resumed;
   var k = 0u32;
   while k < n + 1u32 {
@@ -432,7 +432,7 @@ fn bulk(label: &str, secure: bool, size: u64) {
   let cl = makeClient(false);
   let port = listenOn(&mut drv, &mut lp, secure, &srv);
   var sv = Serving(ReqId.none(), 0u64);
-  var events = List[Event].empty();
+  var events = List[Event]();
   let c = connect(&mut drv, &mut lp, secure, &cl, port, 0u64);
   // A first GET, so the handshake is not timed
   var round = 0u32;
@@ -440,10 +440,10 @@ fn bulk(label: &str, secure: bool, size: u64) {
   var t0 = Instant.now();
   while round < 2u32 {
     if round == 0u32 {
-      drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+      drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength(), Sink.Here(tokReq));
     } else {
       t0 = Instant.now();
-      drv.request(&mut lp, c, RequestHead.get("/big", "localhost"), BodyLength.empty(), Sink.Here(tokReq));
+      drv.request(&mut lp, c, RequestHead.get("/big", "localhost"), BodyLength(), Sink.Here(tokReq));
     }
     var going = true;
     while going {
@@ -488,7 +488,7 @@ fn idleMemory(n: u64) {
   let cl = makeClient(true);
   let port = listenOn(&mut drv, &mut lp, true, &srv);
   var sv = Serving(ReqId.none(), 0u64);
-  var events = List[Event].empty();
+  var events = List[Event]();
   var round = 0u32;
   var before = 0u64;
   var heldBefore = 0usize;
@@ -500,14 +500,14 @@ fn idleMemory(n: u64) {
       before = privateBytes();
       heldBefore = stats().heldBytes - stats().idleBytes;
     }
-    var cs = List[ConnId].empty();
+    var cs = List[ConnId]();
     var connected = 0u64;
     var ended = 0u64;
     while ended < want {
       if u64.from(cs.len()) < want && u64.from(cs.len()) < connected + 64u64 {
         let k = u64.from(cs.len());
         let c = connect(&mut drv, &mut lp, true, &cl, port, k);
-        drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here(tokReq + k));
+        drv.request(&mut lp, c, RequestHead.get("/x", "localhost"), BodyLength(), Sink.Here(tokReq + k));
         cs.push(c);
         continue;
       }
@@ -563,8 +563,8 @@ fn idleMemory(n: u64) {
 fn sessionMemory(n: u32) {
   let srv = makeServer();
   let cl = makeClient(false);
-  var cs = List[tls.Session].empty();
-  var ss = List[tls.Session].empty();
+  var cs = List[tls.Session]();
+  var ss = List[tls.Session]();
   {
     var c = cl.session("localhost");
     var s = srv.session();

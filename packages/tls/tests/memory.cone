@@ -31,7 +31,7 @@ fn certs(name: &str) Path {
 
 fn readText(name: &str) String {
   let p = certs(name);
-  var out = String.empty();
+  var out = String();
   match fs.readFile(&p) {
     case var Ok(r) {
       out <-> r;
@@ -42,7 +42,7 @@ fn readText(name: &str) String {
   printStr("cannot read ");
   printStr(p.view());
   printStr("\n");
-  String.empty()
+  String()
 }
 
 fn client(v: tls.Verifier) tls.Client {
@@ -124,8 +124,8 @@ struct Driving {
 // A hundred sessions one after another, on a thread of its own: how many
 // resumed. OpenSSL hands each one's tickets over on this thread
 fn driveMany(d: Driving) u32 {
-  var cin = String.empty();
-  var sin = String.empty();
+  var cin = String();
+  var sin = String();
   var resumed = 0u32;
   var k = 0u32;
   while k < 100u32 {
@@ -150,8 +150,8 @@ fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsE
 // The same, the error's words printed only when 'show' (the OS's verifier has
 // its own words on each system: Windows' text, OpenSSL's)
 fn refusedShowing(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsErrorKind, show: bool) {
-  var a = String.empty();
-  var b = String.empty();
+  var a = String();
+  var b = String();
   pump(c, s, &mut a, &mut b);
   printStr(label);
   printStr(": client ");
@@ -184,8 +184,8 @@ fn main() i32 {
   // A handshake, ALPN, data both ways
   var c = cl.session("localhost");
   var s = srv.session();
-  var cin = String.empty();
-  var sin = String.empty();
+  var cin = String();
+  var sin = String();
   pump(&mut c, &mut s, &mut cin, &mut sin);
   require(c.isOpen() && s.isOpen(), "the handshake is done on both sides");
   expect(c.pollEvent() == tls.SessionEvent.HandshakeDone, "the client hears HandshakeDone");
@@ -209,7 +209,7 @@ fn main() i32 {
   pump(&mut c, &mut s, &mut cin, &mut sin);
   expectStr(sin.view(), "GET / HTTP/1.1\r\n\r\n", "the server reads it");
   // A body of 200,000 bytes: thirteen records
-  var body = String.empty();
+  var body = String();
   var k = 0u32;
   while k < 200000u32 {
     body.appendByte(u8.from(k % 251u32));
@@ -297,10 +297,10 @@ fn main() i32 {
 
   // A stream that ends without close_notify
   s.write("last words");
-  cin = String.empty();
+  cin = String();
   pump(&mut c, &mut s, &mut cin, &mut sin);
   c.feedEnd();
-  var x = String.empty();
+  var x = String();
   pump(&mut c, &mut s, &mut x, &mut sin);
   expectStr(cin.view(), "last words", "what came before the end is read");
   expect(c.peerEnded() && c.info().truncated && !c.info().closeNotify, "the end with no close_notify is truncated");
@@ -401,8 +401,8 @@ fn main() i32 {
   let platform = client(tls.Verifier.platform());
   c = platform.session("localhost");
   s = srv.session();
-  var a = String.empty();
-  var b = String.empty();
+  var a = String();
+  var b = String();
   // Run by hand, to see the handshake stop for it
   var buf = Array[u8, 20000]() <- fill 0u8;
   var n = c.transmit(&mut buf[0usize ..< 20000usize]);
@@ -415,10 +415,10 @@ fn main() i32 {
   refusedShowing("the OS's verifier, offline", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted, false);
   // The platform's own number: CERT_E_UNTRUSTEDROOT; on Linux OpenSSL's
   // X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-  expectUInt(u64.from(c.error().osError), if isWindows() {0x800B0109u64} else {20u64}, "the platform's own number");
+  expectUInt(u64.from(c.error().osError), #if #os == .windows {0x800B0109u64} #else {20u64}, "the platform's own number");
   expectUInt(u64.from(c.error().code), u64.from(c.error().osError), "...kept as the code too");
   expect(tls.certErrorKind(c.error().osError) == tls.TlsErrorKind.CertUntrusted, "...and read as the kind it is");
-  expect(c.error().detail.contains(if isWindows() {"(Windows 0x800b0109)"} else {"(OpenSSL's verify result 20)"}),
+  expect(c.error().detail.contains(#if #os == .windows {"(Windows 0x800b0109)"} #else {"(OpenSSL's verify result 20)"}),
     "...and in its words");
   expect(c.pollEvent() == tls.SessionEvent.Failed, "the client hears Failed");
 

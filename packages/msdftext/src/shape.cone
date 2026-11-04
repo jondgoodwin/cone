@@ -254,27 +254,25 @@ pub struct Contour {
   pub winding: i32;
 }
 
-pub struct Shape {
+pub struct Shape is Default {
   pub edges: List[Edge];
   pub contours: List[Contour];
-
-  pub fn empty() Shape { Shape(List[Edge].empty(), List[Contour].empty()) }
 
   // The shape of a glyph's outline: each contour's points become lines and
   // quadratics by TrueType's rule (two off-curve points in a row imply an
   // on-curve point halfway; a contour with no on-curve point starts at
   // such a midpoint). Zero-length edges are dropped.
   pub fn fromOutline(o: &Outline) Shape {
-    var shape = Shape.empty();
+    var shape = Shape();
     var first = 0usize;
     var ci = 0usize;
     while ci < o.ends.len() {
       let last = usize.from(*o.ends[ci]);
       if last >= first && last < o.xs.len() {
         // Expand: implied on-curve midpoints between off-curve neighbours
-        var px = List[f64].empty();
-        var py = List[f64].empty();
-        var pon = List[bool].empty();
+        var px = List[f64]();
+        var py = List[f64]();
+        var pon = List[bool]();
         let n = last - first + 1usize;
         var k = 0usize;
         while k < n {
@@ -500,27 +498,19 @@ pub struct Shape {
   // Answers whether it changed anything: a shape with no edge inside is left
   // as it was. Call it before 'colorEdges'.
   pub fn resolveOverlaps(self: &mut) bool {
-    var kept = List[Edge].empty();
-    var parent = List[usize].empty();         // for each kept piece: its edge, and the parameters it spans
-    var starts = List[f64].empty();
-    var stops = List[f64].empty();
+    var kept = List[Edge]();
+    var parent = List[usize]();         // for each kept piece: its edge, and the parameters it spans
+    var starts = List[f64]();
+    var stops = List[f64]();
     var changed = false;
     var i = 0usize;
     while i < edges.len() {
       let e = *edges[i];
-      var cuts = List[f64].empty();
+      var cuts = List[f64]();
       cuts.push(0.0);
       self.crossings(i, &mut cuts);
       cuts.push(1.0);
-      // Sorted by insertion
-      var a = 1usize;
-      while a < cuts.len() {
-        let v = *cuts[a];
-        var b = a;
-        while b > 0usize && *cuts[b - 1usize] > v { cuts.set(b, *cuts[b - 1usize]); b = b - 1usize; }
-        cuts.set(b, v);
-        a = a + 1usize;
-      }
+      cuts.sort();
       // Pieces between cuts: those on the boundary are kept
       var k = 0usize;
       while k + 1usize < cuts.len() {
@@ -549,7 +539,7 @@ pub struct Shape {
     if !changed { return false; }
     // Two contours along one line (a serif's top and a stem's) leave the same
     // piece twice: keep one
-    var unique = List[bool].empty();
+    var unique = List[bool]();
     i = 0usize;
     while i < kept.len() {
       let e = *kept[i];
@@ -566,7 +556,7 @@ pub struct Shape {
       i = i + 1usize;
     }
     // Pieces that follow one another along one edge join up again
-    var joined = List[Edge].empty();
+    var joined = List[Edge]();
     i = 0usize;
     while i < kept.len() {
       if *unique[i] {
@@ -594,11 +584,11 @@ pub struct Shape {
     var hi = Pt(0.0, 0.0);
     self.bounds(&mut lo, &mut hi);
     let tol = fmax64(hi.x - lo.x, hi.y - lo.y) * 0.003;
-    var used = List[bool].empty();
+    var used = List[bool]();
     i = 0usize;
     while i < kept.len() { used.push(false); i = i + 1usize; }
-    var linked = List[Edge].empty();
-    var made = List[Contour].empty();
+    var linked = List[Edge]();
+    var made = List[Contour]();
     i = 0usize;
     while i < kept.len() {
       if !*used[i] {
@@ -686,15 +676,15 @@ fn isCorner(a: Pt, b: Pt, crossThreshold: f64) bool {
 pub fn colorEdges(shape: &mut Shape, angleThreshold: f64, seed0: u64) {
   let crossThreshold = libc.sin(angleThreshold);
   var seed = seed0;
-  var outEdges = List[Edge].empty();
-  var outContours = List[Contour].empty();
+  var outEdges = List[Edge]();
+  var outContours = List[Contour]();
   var ci = 0usize;
   while ci < shape.contours.len() {
     let c = *shape.contours[ci];
     let m = usize.from(c.count);
     let begin = usize.from(c.start);
     // Corners: the index of each edge whose start is a sharp corner
-    var corners = List[usize].empty();
+    var corners = List[usize]();
     var prev = (*shape.edges[begin + m - 1usize]).direction(1.0).normalized();
     var i = 0usize;
     while i < m {
@@ -728,7 +718,7 @@ pub fn colorEdges(shape: &mut Shape, angleThreshold: f64, seed0: u64) {
         }
       } else {
         // Fewer than three edges: split in thirds
-        var parts = List[Edge].empty();
+        var parts = List[Edge]();
         let e0 = *shape.edges[begin];
         if m == 1usize {
           var k = 0u32;

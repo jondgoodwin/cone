@@ -262,7 +262,7 @@ fn xrCheck(r: i32, what: &str) bool {
 
 // A zero-terminated string out of a fixed array, at most 255 bytes
 fn cStringOf(p: *u8) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < 255usize && *(p + i) != 0u8 {
     s.appendByte(*(p + i));
@@ -313,7 +313,7 @@ const TIMESTAMP_SLOTS = 4usize;
 // objects, the mirror's swapchain and surface (made from the device and the
 // instance, which end after the headset); a Renderer made from the device is
 // declared after the headset, so that it ends first.
-pub struct Headset {
+pub struct Headset is Default {
   colors: List[Texture];            // every eye image wrapped: eye 0's, then eye 1's
   depths: List[Texture];            // one depth texture for each eye
   queries: QuerySet;                // timestamps around each eye's pass
@@ -374,18 +374,18 @@ pub struct Headset {
   syncFailures: u64 = 0u64;         // of them, the ones that failed
 
   // No headset: what a field holds before one is opened for it (not valid)
-  pub fn none() Headset { Headset.empty() }
+  pub fn none() Headset { Headset() }
 
   // No headset: all the fields empty (what 'open' fills in)
-  fn empty() Headset {
-    Headset(List[Texture].empty(), List[Texture].empty(), QuerySet.none(), Buffer.none(), Buffer.none(), Buffer.none(),
+  fn init(self: &new) {
+    *self = Headset(List[Texture](), List[Texture](), QuerySet.none(), Buffer.none(), Buffer.none(), Buffer.none(),
       Buffer.none(), SwapChain.none(), Surface.none(), openxr.InstanceFns(), 0usize as openxr.Instance,
       0usize as openxr.Session, 0usize as openxr.Space,
       [0usize as openxr.Swapchain, 0usize as openxr.Swapchain], 0u64, [0usize, 0usize], [0u32, 0u32], [0usize, 0usize],
       [false, false],
       0usize as openxr.ActionSet, Array[openxr.Action, 10]() <- fill (0usize as openxr.Action),
-      Array[openxr.Space, 4]() <- fill (0usize as openxr.Space), [0u64, 0u64], [String.empty(), String.empty()],
-      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String.empty(), String.empty())
+      Array[openxr.Space, 4]() <- fill (0usize as openxr.Space), [0u64, 0u64], [String(), String()],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, TEXTURE_FORMAT_DEPTH32_FLOAT, 0.1, 1000., String(), String());
   }
 
   // Open the headset: the OpenXR runtime's instance and system, the Vulkan
@@ -394,7 +394,7 @@ pub struct Headset {
   // Check 'isValid': with no OpenXR loader, no runtime, no headset, or a GPU
   // the layer cannot use, it is not, and why has gone to stderr.
   pub fn open(appName: &str, options: &HeadsetOptions, gpu: &mut HeadsetGpu) Headset {
-    var h = Headset.empty();
+    var h = Headset();
     h.start(appName, options, gpu);
     h
   }
@@ -423,7 +423,7 @@ pub struct Headset {
     var count = 0u32;
     var r = openxr.enumerateInstanceExtensionProperties(null, 0u32, &mut count, null);
     if !xrCheck(r, "xrEnumerateInstanceExtensionProperties (is an OpenXR runtime installed?)") { return; }
-    var props = List[openxr.ExtensionProperties].empty();
+    var props = List[openxr.ExtensionProperties]();
     props.resize(usize.from(count), openxr.ExtensionProperties(extensionName: Array[u8, 128]() <- fill 0u8,
       extensionVersion: 0u32));
     let offered = props.viewMut() as *openxr.ExtensionProperties;
@@ -531,7 +531,7 @@ pub struct Headset {
     // it, else the local space (the origin at the head when the session began)
     var spaceCount = 0u32;
     fns.enumerateReferenceSpaces(session, 0u32, &mut spaceCount, null);
-    var spaces = List[i32].empty();
+    var spaces = List[i32]();
     spaces.resize(usize.from(spaceCount), 0i32);
     fns.enumerateReferenceSpaces(session, spaceCount, &mut spaceCount, spaces.viewMut() as *i32);
     referenceSpace = openxr.REFERENCE_SPACE_TYPE_LOCAL;
@@ -552,7 +552,7 @@ pub struct Headset {
     // renderer writes in linear light, as a window's swapchain does
     var formatCount = 0u32;
     fns.enumerateSwapchainFormats(session, 0u32, &mut formatCount, null);
-    var formats = List[i64].empty();
+    var formats = List[i64]();
     formats.resize(usize.from(formatCount), 0i64);
     fns.enumerateSwapchainFormats(session, formatCount, &mut formatCount, formats.viewMut() as *i64);
     var chosen = 0i64;
@@ -585,7 +585,7 @@ pub struct Headset {
       if !xrCheck(r, "xrCreateSwapchain") { return; }
       var n = 0u32;
       fns.enumerateSwapchainImages(swapchains[eye], 0u32, &mut n, null);
-      var images = List[openxr.SwapchainImageVulkanKHR].empty();
+      var images = List[openxr.SwapchainImageVulkanKHR]();
       images.resize(usize.from(n), openxr.SwapchainImageVulkanKHR(image: vulkan.Image(0u64)));
       r = fns.enumerateSwapchainImages(swapchains[eye], n, &mut n, (images.viewMut() as *openxr.SwapchainImageVulkanKHR) as *openxr.SwapchainImageBaseHeader);
       if !xrCheck(r, "xrEnumerateSwapchainImages") { return; }
@@ -697,7 +697,7 @@ pub struct Headset {
   // poses, trigger and squeeze values, thumbstick and its click, the haptic
   // output; X and Y (and menu) on the left, A and B on the right
   fn suggestTouchBindings(self: &) {
-    var b = List[openxr.ActionSuggestedBinding].empty();
+    var b = List[openxr.ActionSuggestedBinding]();
     self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/left/input/grip/pose" as *u8);
     self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/right/input/grip/pose" as *u8);
     self.bindTo(&mut b, ACTION_AIM, &"/user/hand/left/input/aim/pose" as *u8);
@@ -723,7 +723,7 @@ pub struct Headset {
   // /interaction_profiles/khr/simple_controller: select (as the trigger),
   // menu, the grip and aim poses and the haptic output
   fn suggestSimpleBindings(self: &) {
-    var b = List[openxr.ActionSuggestedBinding].empty();
+    var b = List[openxr.ActionSuggestedBinding]();
     self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/left/input/grip/pose" as *u8);
     self.bindTo(&mut b, ACTION_GRIP, &"/user/hand/right/input/grip/pose" as *u8);
     self.bindTo(&mut b, ACTION_AIM, &"/user/hand/left/input/aim/pose" as *u8);
@@ -741,7 +741,7 @@ pub struct Headset {
   fn refreshProfiles(self: &mut) {
     var h = 0usize;
     while h < 2usize {
-      profiles[h] = String.empty();
+      profiles[h] = String();
       if inputReady {
         var state = openxr.InteractionProfileState();
         if openxr.succeeded(fns.getCurrentInteractionProfile(session, handPaths[h], &mut state)) && state.interactionProfile != 0u64 {

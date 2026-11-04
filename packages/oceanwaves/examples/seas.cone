@@ -51,7 +51,7 @@ fn parseMetres(s: &str) Option[f32] {
 
 fn main() i32 {
   let args = process.args();
-  var prefix = String.empty();
+  var prefix = String();
   var eyeHeight = 5.f;      // --height METRES: e.g. 70, a camera 70 m up looking down, to see the waves' pattern
   var a = 1usize;
   while a < args.len() {
@@ -157,19 +157,14 @@ fn main() i32 {
     var sr = OceanRenderer.create(&mut renderer, &mut device, &ocean, look);
     if !sr.isValid() { print <- "ocean renderer failed\n"; return 1i32; }
     // the upload: the first after a pause is slow on some drivers, so the median of 31
-    var ups = List[f64].empty();
+    var ups = List[f64]();
     var u = 0;
     while u < 31 {
       sr.upload(&mut renderer, &mut device, &ocean);
       ups.push(sr.uploadSeconds * 1000.0);
       u = u + 1;
     }
-    var ui = 1usize;
-    while ui < ups.len() {
-      var uj = ui;
-      while uj > 0usize && *ups[uj - 1usize] > *ups[uj] { ups.swap(uj - 1usize, uj); uj = uj - 1usize; }
-      ui = ui + 1usize;
-    }
+    ups.sort();
     let uploadMs = *ups[ups.len() / 2usize];
     print <- "heightAt: "; print <- heightUs; print <- " us a call (checksum "; print <- hsum; print <- "); spray: "; print <- u64.from(sprayAll.len());
     print <- " spots within 150 m at foam over 0.3";
@@ -184,10 +179,10 @@ fn main() i32 {
     camera.background = Color(0.4, 0.55, 0.8, 1.);
     let eye = Vec3(0., eyeHeight + ocean.heightAt(0., 0.), 0.);
     camera.lookAt(eye, Vec3(100., 1., 20.), Vec3(0., 1., 0.));
-    var list = DrawList.empty();
+    var list = DrawList();
     sr.addToList(&mut list, eye.x, eye.z);
 
-    var samples = List[f64].empty();
+    var samples = List[f64]();
     var f = 0u32;
     while f < 130u32 {
       var encoder = device.createCommandEncoder();
@@ -206,12 +201,7 @@ fn main() i32 {
       }
       f = f + 1u32;
     }
-    var si = 1usize;
-    while si < samples.len() {
-      var sj = si;
-      while sj > 0usize && *samples[sj - 1usize] > *samples[sj] { samples.swap(sj - 1usize, sj); sj = sj - 1usize; }
-      si = si + 1usize;
-    }
+    samples.sort();
     print <- "GPU: draw p50 "; print <- *samples[samples.len() / 2usize]; print <- " ms (min "; print <- *samples[0usize]; print <- ", max ";
     print <- *samples[samples.len() - 1usize]; print <- ") over 100 frames\n";
     if prefix.len() > 0usize {
@@ -224,7 +214,7 @@ fn main() i32 {
       device.endFrame();
       device.waitIdle();
       let image = Image.fromTexels(shot.mappedRange(), i32.from(W), i32.from(H), false);
-      var name = prefix.copy();
+      var name = prefix.clone();
       name <- "-beaufort"; name.appendInt(i64.from(force)); name <- ".bmp";
       image.save(&filepath.Path.from(name.view()));
       print <- "wrote "; printStr(name.view()); print <- "\n";

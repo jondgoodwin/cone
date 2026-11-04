@@ -33,7 +33,7 @@ mod hillside;
 import stdio use *;
 import libc;
 import sdl;
-import collections use *;
+import collections use * but median;
 import geomath use *;
 import mesh;
 import gpu use *;
@@ -88,7 +88,7 @@ fn terrain(x: f32, z: f32) f32 {
 fn streamZ(x: f32) f32 { 70. + 14. * sin(x / 38.) + 0.06 * x }
 
 fn streamLine() List[Vec2] {
-  var p = List[Vec2].empty();
+  var p = List[Vec2]();
   var x = 0f32;
   while x <= 240.01 {
     p.push(Vec2(x, streamZ(x)));
@@ -98,7 +98,7 @@ fn streamLine() List[Vec2] {
 }
 
 fn pathLine() List[Vec2] {
-  var p = List[Vec2].empty();
+  var p = List[Vec2]();
   p.push(Vec2(5., 95.));
   p.push(Vec2(35., 100.));
   p.push(Vec2(65., 104.));
@@ -158,7 +158,7 @@ fn buildWorld() World {
   }
   maps.deriveSlope();
   // trees: a jittered grid thinned by the woodland mask, a few in the meadow
-  var trees = List[Tree].empty();
+  var trees = List[Tree]();
   var gz = 0;
   while gz < 24 {
     var gx = 0;
@@ -183,7 +183,7 @@ fn buildWorld() World {
     t = t + 1usize;
   }
   // boulders beside the water
-  var boulders = List[Vec3].empty();
+  var boulders = List[Vec3]();
   boulders.push(Vec3(52., 0., streamZ(52.) + 6.));
   boulders.push(Vec3(54.5, 0., streamZ(54.5) + 7.5));
   boulders.push(Vec3(118., 0., streamZ(118.) - 5.5));
@@ -222,7 +222,7 @@ fn rgb(r: f32, g: f32, b: f32) Color { Color(r, g, b, 1.) }
 
 // Twelve types: objects first (others keep clear of them), then what grows between
 fn coverTypes(fern: i32, stone: i32, branch: i32, shrub: i32, shrubFar: i32) List[CoverType] {
-  var types = List[CoverType].empty();
+  var types = List[CoverType]();
 
   // 0: shrubs, scattered on the gentle ground where the woodland thins
   var shrubs = CoverType.meshKind("shrub");
@@ -565,7 +565,7 @@ fn coverTypes(fern: i32, stone: i32, branch: i32, shrub: i32, shrubFar: i32) Lis
 
 // A tube along a gently curved line, tapering: a fallen branch lying along +x on the ground
 fn branchTube(length: f32, radius: f32, bend: f32, twig: bool) mesh.Mesh {
-  var m = mesh.Mesh.empty();
+  var m = mesh.Mesh();
   let sides = 6;
   let steps = 8;
   var s = 0;
@@ -613,7 +613,7 @@ fn branchMeshOf() mesh.Mesh {
 fn terrainMesh(maps: &GroundMaps) mesh.Mesh {
   let n = 161;
   let step = SIZE / f32.from(n - 1);
-  var m = mesh.Mesh.empty();
+  var m = mesh.Mesh();
   var j = 0;
   while j < n {
     var i = 0;
@@ -646,7 +646,7 @@ fn terrainMesh(maps: &GroundMaps) mesh.Mesh {
 
 // A ribbon of water along the stream at its level
 fn waterMesh() mesh.Mesh {
-  var m = mesh.Mesh.empty();
+  var m = mesh.Mesh();
   let line = streamLine();
   var s = 0usize;
   while s < line.len() {
@@ -784,30 +784,16 @@ fn shoot(rig: &mut Rig, camera: &Camera, now: f32, withCover: bool, farBlend: f3
   if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
 }
 
-fn sorted(v: &mut List[f64]) {
-  var i = 1usize;
-  while i < v.len() {
-    let x = *v[i];
-    var j = i;
-    while j > 0usize && *v[j - 1usize] > x {
-      v.set(j, *v[j - 1usize]);
-      j = j - 1usize;
-    }
-    v.set(j, x);
-    i = i + 1usize;
-  }
-}
-
 fn median(v: &mut List[f64]) f64 {
-  sorted(v);
+  v.sort();
   *v[v.len() / 2usize]
 }
 
 // Time 'frames' frames of one view: p50 of the GPU's frame and cover time and the CPU's recording
 fn soak(rig: &mut Rig, name: &str, camera: &Camera, withCover: bool, frames: u32) {
-  var gf = List[f64].empty();
-  var gc = List[f64].empty();
-  var cc = List[f64].empty();
+  var gf = List[f64]();
+  var gc = List[f64]();
+  var cc = List[f64]();
   var f = 0u32;
   while f < frames + 30u32 {
     var a = 0.0;
@@ -859,13 +845,13 @@ fn throughput(rig: &mut Rig, name: &str, camera: &Camera, withCover: bool, frame
 }
 
 fn named(prefix: &String, suffix: &str) String {
-  var s = prefix.copy();
+  var s = prefix.clone();
   s <- suffix;
   s
 }
 
 fn main(argc: i32, argv: **u8) i32 {
-  var prefix = String.empty();
+  var prefix = String();
   var soakFrames = 0;
   var phaseFrames = 0;
   var a = 1;
@@ -985,7 +971,7 @@ fn main(argc: i32, argv: **u8) i32 {
   print <- " batches\n";
 
   // The scene around it
-  var list = DrawList.empty();
+  var list = DrawList();
   let terrainMeshData = terrainMesh(&world.maps);
   let terrainH = renderer.addMesh(&mut device, &terrainMeshData);
   let farTex = renderer.addTexture(&mut device, &farImage(&world.maps));
@@ -1002,8 +988,8 @@ fn main(argc: i32, argv: **u8) i32 {
   let leaves = Material.plain(Color(0.07, 0.19, 0.04, 1.));
   let leafM = renderer.addMaterial(&mut device, &leaves);
   var v = 0u32;
-  var trunkH = List[MeshHandle].empty();
-  var crownH = List[MeshHandle].empty();
+  var trunkH = List[MeshHandle]();
+  var crownH = List[MeshHandle]();
   while v < 3u32 {
     var tree = grow(&redMaple(100u32 + v, 11. + f32.from(v) * 1.5));
     let trunkMesh = branchMesh(&tree, &TubeParams());

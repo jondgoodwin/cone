@@ -41,6 +41,13 @@
 //                                   'Arc[opaq, Mailbox[M]]'
 //   actors.send[M](mb, msg)         queue msg in the actor's mailbox
 //   actors.sendable(v)              v, if it may cross threads (the check)
+//   actors.currentGroup()           the cancel group the caller works in: in a
+//                                   behaviour, its message's sender's
+//                                   (THE GROUP TRAVELS, below)
+//   actors.isCancelled()            whether that group is cancelled
+//   actors.checkCancelled()         Ok, or Err(Cancelled) with the cause where it is cancelled: for '?'
+//   actors.withGroup(&g, body)      run body in group g: the messages it sends
+//                                   carry g
 //   actors.Awaitable[R]             an operation a behaviour may 'await', whose
 //                                   answer is an R (AWAITING, below)
 //   actors.Future[T]                a behaviour's value kept, to 'await' later
@@ -56,6 +63,12 @@
 //   setMailboxLimit(mb, n), mailboxTooFull(mb)
 //                                   what a mailbox holds and when it is too
 //                                   full (MAILBOX LIMIT, below)
+//   actors.groupAwaitsLive()        the awaits parked in a cancel group (THE GROUP SURVIVES AN AWAIT)
+//   actors.testGroupedReply(), testActorWithGroupedAwait(), testKillActor(a)
+//                                   TEST-ONLY, not for programs (Cone has no test-only
+//                                   visibility, so they are public): reach the drop of an
+//                                   unanswered grouped Reply and the death of an actor with a
+//                                   grouped await outstanding
 //   actors.waitQuiet()            wait until no actor is queued or running
 //   actors.waitUntilIdle()          INTERIM: wait until no actor is queued or
 //                                   running and no awaited operation is
@@ -422,7 +435,8 @@
 // payload. The header's first word, 'seq', is the slot's publication; its
 // second, 'cause', is the id of the send that made the message (TRACING HOOKS,
 // below), 0 when the hooks are off. The payload is the message M itself,
-// in the size of M rounded to 16 bytes and not under 32: the size of a slot
+// in the size of M rounded to 16 bytes and not under 32 (a message sent in a
+// cancel group takes two slots, THE GROUP TRAVELS, below): the size of a slot
 // follows from M, so it is as big as the actor's largest message needs. A send
 // allocates nothing:
 //
@@ -868,14 +882,14 @@ mod actors use ActorGc;
 import libc;
 import sync use Arc;
 import thread;
+import cancelgroups use CancelGroup, Cancelled, Cause;
 
 // ---------------------------------------------------------------------------
 // A yield, for the waits that spin (a stalled sender's, a loop's caller's),
 // and a clock, for the idle spin: the calls the package makes to the OS
-// directly, kernel32's on Windows, POSIX's elsewhere. isWindows() is a
-// constant of the compile (TEMPORARY, a provisional mechanism; its final
-// design is open), so only the target's calls are generated, and the other's
-// symbols are never referenced. Everything else is the thread package's and
+// directly, kernel32's on Windows, POSIX's elsewhere. '#if #os == .windows'
+// chooses, in the parse, so only the target's calls are generated, and the
+// other's symbols are never referenced. Everything else is the thread package's and
 // sync's.
 // ---------------------------------------------------------------------------
 
@@ -885,7 +899,7 @@ extern {
 extern fn @c sched_yield() i32;
 
 fn yieldProcessor() {
-  if isWindows() {SwitchToThread();} else {sched_yield();}
+  #if #os == .windows {SwitchToThread();} #else {sched_yield();}
 }
 
 // The clock THE SPIN is bounded by (the header, IDLE WORKERS): a steady count
@@ -904,7 +918,7 @@ extern fn @c clock_gettime(clock: i32, ts: *PosixClock) i32;
 const clockMonotonic = 1i32;
 
 fn clockTicks() u64 {
-  if isWindows() {clockTicksWindows()} else {clockTicksPosix()}
+  #if #os == .windows {clockTicksWindows()} #else {clockTicksPosix()}
 }
 
 fn clockTicksWindows() u64 {
@@ -920,7 +934,7 @@ fn clockTicksPosix() u64 {
 }
 
 fn clockFrequency() u64 {
-  if isWindows() {clockFrequencyWindows()} else {1000000000u64}
+  #if #os == .windows {clockFrequencyWindows()} #else {1000000000u64}
 }
 
 fn clockFrequencyWindows() u64 {
@@ -943,7 +957,9 @@ fn die(msg: &str, file: &str = srcFile(), line: u32 = srcLine()) Never {
 // publication, and 'cause', one word for the id of the send that made the
 // message (the tracing hooks fill it; zero when they are off). The payload is the
 // message M itself for a message, and for a reply a record of its own
-// (REPLIES, above).
+// (REPLIES, above). A message sent in a cancel group takes two positions, the
+// first a slot of kind kindMsgGroup whose payload holds the group (THE GROUP
+// TRAVELS, below).
 const slotHead = 16usize;
 
 // A segment: this header, then 'count' slots. 'base' is the position of its
@@ -1002,6 +1018,7 @@ const posMask = 0x7FFFFFFFFFFFFFFFu64;
 
 // The kinds a published slot has
 const kindMsg = 1u64;        // a message: M is in the payload
+const kindMsgGroup = 6u64;   // the first of two positions of a message sent in a cancel group (THE GROUP TRAVELS): the group is in this payload, the message in the next position's slot, a kindMsg
 const kindReply = 2u64;      // a reply (REPLIES): 2 + 1 if its record has an id, + 2 if its value is boxed
 
 // The sizes, named. The first segment, made by the first send, holds
@@ -1038,6 +1055,7 @@ fn nullExtra() *Extra {null}
 
 // The size of a slot's payload for messages M: M rounded to 16 bytes, and not
 // less than minPayload, so that a reply's resume record and a small value fit
+// (and a cancel group, 16 bytes, THE GROUP TRAVELS)
 fn payloadBytes[M: Sendable]() usize {
   let n = roundUp(mem.sizeof[M](), 16usize);
   if n < minPayload {minPayload} else {n}
@@ -2015,6 +2033,7 @@ fn actorDied(h: *Header) {
 // Finalize actor h's state: moved out of the block and dropped, so its own
 // 'final' runs, then its fields'
 fn finalizeState[S, M: Sendable](h: *Header) {
+  groupSweep(h);
   let st = mem.readRaw[S](stateOf[S, M](h));
 }
 
@@ -2112,6 +2131,12 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   if running.load() == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
+  // a sender working in a cancel group sends a pair (THE GROUP TRAVELS)
+  let gp = curGroup;
+  if gp != 0usize {
+    sendGrouped[M](h, msg, gp);
+    return;
+  }
   // One atomic add claims the slot's position; the message is written in
   // place, then one store publishes it (THE MAILBOX, above)
   let c = claim(h);
@@ -2132,8 +2157,172 @@ fn sendNow[M: Sendable](h: *Header, msg: M) {
   }
 }
 
+// A message sent in a cancel group: TWO consecutive positions, claimed by one
+// atomic add of 2. The first is the carrier (kindMsgGroup): its payload holds a
+// copy of the sender's handle, another owner of the group. The second holds the
+// message exactly as an ungrouped send writes it, kindMsg. The message's slot is
+// published FIRST and the carrier's LAST, so a consumer that finds the carrier
+// published finds the message published too, and a consumer waiting on the
+// carrier's position (the waiting mark) is woken by the one publication that can
+// wake it. The pair may straddle two segments (see THE GROUP TRAVELS).
+fn sendGrouped[M: Sendable](h: *Header, msg: M, gp: usize) {
+  let prev = mem.atomicAdd[u64](&(*h).tail as *u64, 2u64, MemOrder.SeqCst);
+  let pos = prev & posMask;
+  let c1 = Claim(slotFor(h, pos), pos, (prev & idleBit) != 0u64);
+  let c2 = Claim(slotFor(h, pos + 1u64), pos + 1u64, false);
+  var cause = 0u64;
+  if traceLayerOn(traceLayerActors) {
+    cause = traceSend(h, traceKindSend);
+  }
+  mem.atomicStore[u64](ccause(c2.slot), cause, MemOrder.Relaxed);
+  mem.atomicStore[u64](ccause(c1.slot), 0u64, MemOrder.Relaxed);
+  mem.writeRaw[M](payloadOf(c2.slot) as *M, msg);
+  let g = *(gp as &CancelGroup);
+  mem.writeRaw[CancelGroup](payloadOf(c1.slot) as *CancelGroup, g);
+  if stallState.loadOrdered(MemOrder.Relaxed) != 0u32 {
+    stallHere();
+  }
+  publish(c2, kindMsg);
+  let waited = publish(c1, kindMsgGroup);
+  if wakeAfter(h, c1, waited) {
+    holdArc[M](h);
+    schedule(h);
+  }
+}
+
 // The slot's cause word (the header's second word)
 fn ccause(slot: *u8) *u64 {(slot + 8usize) as *u64}
+
+// THE GROUP TRAVELS. The cancel group (package cancelgroups) the running code
+// works in is the thread's CURRENT GROUP: 'curGroup', a thread-local pointer to a
+// handle some frame on this thread owns, or 0 for none. A send made while there
+// is one takes TWO consecutive positions (one atomic add of 2): the first, a
+// CARRIER (kindMsgGroup), holds a copy of that handle in its payload; the
+// second holds the message, written as any other (kindMsg). The message's slot is
+// published first and the carrier's last. A send made with none takes one
+// position and writes nothing more, so the common message pays a thread-local read
+// and a branch, and the slot, its size and its header are what they were. The
+// consumer takes the pair as one message (depth, high-water mark and limit count
+// two for it). THE PAIR AND A SEGMENT'S END: the pair may straddle two segments,
+// the carrier the last slot of one and the message the first of the next. Neither
+// padding the carrier's slot nor moving the pair on is possible with a claim by
+// one atomic add (the positions are taken before the segment is looked at), and
+// nothing needs them: each position's slot is found by its own position, as any
+// send's is (slotFor; the sender links the next segment for the second); the
+// carrier's segment cannot be reused while the carrier is unpublished, and it is
+// published last, after which the sender touches nothing; the consumer finds the
+// message's slot in its own segment or the next (pairSlot), which was linked
+// before the carrier was published; and the retiring mark counts both positions,
+// claimed together, as one claim. The dispatcher (runInGroup) moves the handle out of the carrier
+// into its own frame, makes it the current group for the behaviour, and drops it
+// after: so a behaviour sees the group its sender worked in, and the sends it
+// makes carry that group on. An envelope's group is another owner of the group,
+// so a request whose requester has gone still finds its group (and, by the
+// group's own guard, its deadline) alive.
+//
+// 'withGroup' names another group for the sends made in its body, and for the
+// body itself: the explicit form. The body is a closure run to its end inside
+// the call (it cannot 'await'), so a group named never outlives its call and
+// the current group is back to what it was when the call returns.
+//
+// A 'parallel each' begun in a group runs in a CHILD of it, made for the loop
+// (parallelEach, startHeld): a piece that cancels its current group stops this loop
+// alone, a cancel of the group above reaches the pieces by the child relation, and
+// gatherPiece skips the pieces not yet begun once the child is cancelled. A loop
+// begun from a thread (inside withGroup, or in a behaviour whose frame holds the
+// group) hands the pieces the address of the child (EachLoop.group); a loop a
+// behaviour's seam cut (ParPending) holds a copy of the behaviour's group, another
+// owner, from which the loop's child is made when it begins. The sends the pieces
+// gather and the rest of the behaviour use the group itself, not the child, and the
+// end of the behaviour drops the copy. Each piece sets the child as its thread's
+// current group around its body and restores the thread's own. A loop begun in no
+// group runs in none.
+//
+// The rest of a behaviour after an 'await' runs in the group the await was made
+// in, kept in a side table until the reply comes (THE GROUP SURVIVES AN AWAIT,
+// below).
+var @threadlocal curGroup: usize = 0usize;
+
+// The process's own group, made on first use: the group of code running in none,
+// which nothing cancels. An address, 0 before it is made
+let rootAt: Atomic[usize];
+
+fn rootGroup() &CancelGroup {
+  var p = rootAt.load();
+  if p == 0usize {
+    let cell = libc.malloc(mem.sizeof[CancelGroup]()) as *CancelGroup;
+    if cell as usize == 0usize {
+      die("actors: out of memory for the root cancel group");
+    }
+    mem.writeRaw[CancelGroup](cell, CancelGroup.make());
+    let was, ok = rootAt.compareSwap(0usize, cell as usize);
+    if ok {
+      p = cell as usize;
+    } else {
+      mem.finalize[CancelGroup](cell);
+      libc.free(cell as *u8);
+      p = was;
+    }
+  }
+  p as &CancelGroup
+}
+
+// The group the caller is working in: in a behaviour, the group its message
+// was sent in; inside 'withGroup', the group named; anywhere else, the
+// process's own group, which nothing cancels. A copy of the handle
+pub fn currentGroup() CancelGroup {
+  let p = curGroup;
+  if p != 0usize {
+    return *(p as &CancelGroup);
+  }
+  *rootGroup()
+}
+
+// Whether the current group is cancelled, without copying its handle: what a
+// loop in a behaviour asks between pieces of work. False where there is no
+// current group
+pub fn isCancelled() bool {
+  let p = curGroup;
+  if p == 0usize {
+    return false;
+  }
+  (p as &CancelGroup).isCancelled()
+}
+
+// The cancel as an error, for '?': Ok where the current group is live (or there is
+// none), Err(Cancelled) with the cause where it is cancelled. A cancelled await
+// ALWAYS resumes (the answer is delivered, whenever it comes, and the code after the
+// await runs); the cancel is seen at the callee's answer (a cancel-aware callee
+// answers its own Err, as an I/O operation does) or at the next check, and this is
+// the check that passes it on:
+//
+//   let r = await store.fetch(key);      // resumes even if the group was cancelled meanwhile
+//   actors.checkCancelled()?;            // ... then the clean-up code below does not run twice
+pub fn checkCancelled() Result[void, Cancelled] {
+  let p = curGroup;
+  if p != 0usize && (p as &CancelGroup).isCancelled() {
+    var why = Cause.Cancelled;
+    match (p as &CancelGroup).cause() {
+      case let Some(c) { why = c; }
+      case is None {}
+    }
+    return Err[void, Cancelled](Cancelled(why));
+  }
+  Ok[void, Cancelled](nil)
+}
+
+// Run body with g as the current group: the messages it sends carry g, and
+// 'currentGroup' and 'isCancelled' in it answer for g. When body returns the
+// current group is what it was before. g replaces the caller's group, which is
+// then not cancelled with g unless g descends from it: to name a group inside
+// the caller's, pass 'currentGroup().child()'
+pub fn withGroup[F: fn()](g: &CancelGroup, body: F) {
+  let mine = *g;
+  let prev = curGroup;
+  curGroup = &mine as *CancelGroup as usize;
+  body();
+  curGroup = prev;
+}
 
 // The thread check, asked of an argument of an actor's 'start': v,
 // unchanged, if its type may cross threads; refused where it is written if not
@@ -2171,30 +2360,78 @@ fn runBatch[S, M: Sendable](h: *Header, limit: u32) u32 {
       return n;
     }
     let kind = mem.atomicLoad[u64](seqOf(slot), MemOrder.Relaxed) % 8u64;
+    // a message sent in a group is the pair of slots at the head: the carrier
+    // (this one) and the message's, which is published (the carrier's publication
+    // came after it)
+    var mslot = slot;
+    var mkind = kind;
+    if kind == kindMsgGroup {
+      mslot = pairSlot(h);
+      mkind = kindMsg;
+    }
     // the tracing hooks: the message's cause id is in its slot's header
     let tracing = traceLayerOn(traceLayerActors) && (*h).untraced == 0u32;
     var cause = 0u64;
     var bhv = 0u64;
     if tracing {
-      cause = mem.atomicLoad[u64](ccause(slot), MemOrder.Relaxed);
-      bhv = behaviourOf(rec, kind, payloadOf(slot));
+      cause = mem.atomicLoad[u64](ccause(mslot), MemOrder.Relaxed);
+      bhv = behaviourOf(rec, mkind, payloadOf(mslot));
       traceRunStart(h, cause, bhv);
     }
     if kind == kindMsg {
       f(stateOf[S, M](h) as &uni S, payloadOf(slot) as *M);
+    } else if kind == kindMsgGroup {
+      runInGroup[S, M](f, h, slot, mslot);
     } else {
-      resumeSlot[S](st, payloadOf(slot), kind);
+      resumeSlot[S](st, h, payloadOf(slot), kind);
     }
     if tracing {
       traceRunEnd(h, cause, bhv);
     }
     ringDone(h);
+    if kind == kindMsgGroup {
+      ringDone(h);
+    }
     n = n + 1u32;
     afterMessage(h, st as *u8, rec);
   }
   curActor = 0usize;
   reclaim(h);
   n
+}
+
+// The slot of the position after the head, which holds the message of a pair
+// whose carrier is at the head (THE GROUP TRAVELS): in the consumer's segment, or
+// in the next, which the sender linked before it published the carrier. The
+// pair is found by POSITION, never by address: the carrier is the slot ringPeek
+// found for the head's position, and this finds the message's slot for the
+// position head + 1 through the segment that holds it (slotAt), so no code adds
+// a stride to a slot's address, which would be wrong across a segment's end
+fn pairSlot(h: *Header) *u8 {
+  var s = ldSeg(&(*h).cur as **Seg);
+  let pos = (*h).head + 1u64;
+  if pos >= (*s).base + u64.from((*s).count) {
+    s = ldSeg(&(*s).next as **Seg);
+    if s as usize == 0usize {
+      die("actors: a grouped message's second slot is in no segment");
+    }
+  }
+  let slot = slotAt(h, s, pos);
+  if !isPublished(mem.atomicLoad[u64](seqOf(slot), MemOrder.Acquire), pos) {
+    die("actors: a grouped message's carrier was published before its message");
+  }
+  slot
+}
+
+// A message sent in a cancel group: the group is moved out of the carrier slot
+// into this frame, made the thread's current group while the behaviour runs, and
+// dropped (the owner this message held let go) when it has returned. The message
+// is in mslot
+fn runInGroup[S, M: Sendable](f: &fn(s: &uni S, m: *M), h: *Header, slot: *u8, mslot: *u8) {
+  let g = mem.readRaw[CancelGroup](payloadOf(slot) as *CancelGroup);
+  curGroup = &g as *CancelGroup as usize;
+  f(stateOf[S, M](h) as &uni S, payloadOf(mslot) as *M);
+  curGroup = 0usize;
 }
 
 // The mailbox's depth, as the worker starting a turn sees it: the high-water
@@ -2228,7 +2465,21 @@ fn runReady[S](st: *S, p: *ParPending) {
   let run = (*p).resume;
   let id = (*p).id;
   let hasId = (*p).hasId;
+  let cell = (*p).group;
   libc.free(p as *u8);
+  if cell as usize != 0usize {
+    // the loop's group (THE GROUP TRAVELS): the rest of the behaviour runs in it
+    let g = mem.readRaw[CancelGroup](cell);
+    libc.free(cell as *u8);
+    curGroup = &g as *CancelGroup as usize;
+    if hasId {
+      resumeId[S](&mut *st, run, id, null);
+    } else {
+      resume[S](&mut *st, run, null);
+    }
+    curGroup = 0usize;
+    return;
+  }
   if hasId {
     resumeId[S](&mut *st, run, id, null);
   } else {
@@ -2393,7 +2644,7 @@ fn traceSend(h: *Header, kind: u32) u64 {
 // byte; 240 plus the kind for a reply's slot), with the actor's state type
 fn behaviourOf(rec: *TypeRecord, kind: u64, payload: *u8) u64 {
   var tag = 240u64 + kind;
-  if kind == kindMsg {
+  if kind == kindMsg || kind == kindMsgGroup {
     tag = u64.from(*payload);
   }
   (u64.from((rec as usize) >> 4usize) << 32u64) | tag
@@ -2457,6 +2708,10 @@ pub struct Reply is Sendable {
   // longer outstanding (waitUntilIdle)
   fn final(self: &uni) {
     if to as usize != 0usize {
+      // a reply never answered: the group noted at its await goes with it
+      if (id & groupBit) != 0u64 {
+        groupForget(to, id ^ groupBit);
+      }
       let release = (*to).release;
       release(to);
     }
@@ -2523,7 +2778,216 @@ pub fn replyFor[S, M: Sendable](st: &S, run: *u8, id: u64, hasId: bool, size: us
   if size > strideOf(h) - slotHead - replyHead || align > 16usize {
     flags = flags | replyBoxed;
   }
-  Reply(to: h, at: run, id: id, meta: metaOf(size, flags))
+  // an await made in a cancel group notes the group, keyed by this actor and
+  // the id word, and marks the id word (THE GROUP SURVIVES AN AWAIT)
+  var word = id;
+  let gp = curGroup;
+  if gp != 0usize {
+    if !hasId {
+      word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
+    }
+    groupNote(h, word, gp);
+    word = word | groupBit;
+  }
+  Reply(to: h, at: run, id: word, meta: metaOf(size, flags))
+}
+
+// THE GROUP SURVIVES AN AWAIT. An await is a seam: its second half runs when the
+// reply's slot reaches the front of the awaiting actor's mailbox, on whatever
+// worker takes the actor, long after the behaviour that began it has returned and
+// the frame that held its group has gone. So an await made while a cancel group
+// is current notes a copy of the group's handle (another owner) in a SIDE TABLE,
+// global, keyed by the awaiting actor and a word: the record's id where the
+// await has a record, else a ticket from a counter. The same word, with its top
+// bit set (groupBit), is the Reply's id word, and so the id word of the reply's
+// slot, which nothing else reads except the second half's resume through here.
+// resumeSlot sees the bit, takes the entry, makes the group the current group
+// for the second half and lets go of it after. An await made in no group sets
+// nothing, notes nothing, and costs the resume one bit test of a word it loads.
+// An entry is removed on every path: by the resume (above); by the drop of a
+// Reply never answered (Reply.final), the reply's hold on its actor let go with
+// it; and by the death of the actor (finalizeState), which sweeps what is
+// left of its entries. Nothing has a timeout or a cancel path of its own that
+// frees a parked record while its reply is in flight, so those are all.
+const groupBit = 0x8000000000000000u64;
+const gBuckets = 1024usize;
+
+struct GNode {
+  pub next: *GNode;
+  pub h: *Header;
+  pub w: u64;
+  pub g: CancelGroup;
+}
+
+var gTicket: u64 = 0u64;
+var gLock: u32 = 0u32;
+var gTable: usize = 0usize;       // the buckets, gBuckets pointers, made by the first note
+var gCount: usize = 0usize;       // entries in the table
+
+// How many awaits made in a cancel group are parked: for tests and finding leaks
+pub fn groupAwaitsLive() usize {
+  mem.atomicLoad[usize](&gCount, MemOrder.Acquire)
+}
+
+// TEST-ONLY hooks, not for programs (Cone has no test-only visibility, so they
+// are public, as aio.testLateQuiet is), that reach the two removal paths no
+// program can provoke: the drop of a Reply never answered, and the death of an
+// actor with a grouped await outstanding. They stand a made-up actor in for the
+// awaiting one (a Header that only frees itself), with the table code the real
+// paths run: Reply.final and finalizeState's groupSweep.
+fn fakeRelease(h: *Header) {
+  libc.free(h as *u8);
+}
+
+fn fakeActor() *Header {
+  let h = libc.calloc(1usize, mem.sizeof[Header]()) as *Header;
+  if h as usize == 0usize {
+    die("actors: out of memory for a test actor");
+  }
+  (*h).release = &fakeRelease;
+  h
+}
+
+// A Reply, as replyFor makes one for an await made in the current group, owed to
+// a made-up actor: dropped unanswered, it removes its entry and lets the actor go
+pub fn testGroupedReply() Reply {
+  let h = fakeActor();
+  let gp = curGroup;
+  var word = mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64;
+  if gp != 0usize {
+    groupNote(h, word, gp);
+    word = word | groupBit;
+  }
+  Reply(to: h, at: null, id: word, meta: metaOf(8usize, 0u64))
+}
+
+// A made-up actor with a grouped await outstanding (an entry for the current
+// group), as an address for testKillActor
+pub fn testActorWithGroupedAwait() usize {
+  let h = fakeActor();
+  let gp = curGroup;
+  if gp != 0usize {
+    groupNote(h, mem.atomicAdd[u64](&gTicket, 1u64, MemOrder.Relaxed) + 1u64, gp);
+  }
+  h as usize
+}
+
+// That actor's death: what finalizeState does for its entries
+pub fn testKillActor(a: usize) {
+  groupSweep(a as *Header);
+  libc.free(a as *u8);
+}
+
+fn gAcquire() {
+  var spins = 0u32;
+  while true {
+    var seen = 0u32;
+    var won = false;
+    seen, won = mem.atomicCompareSwap[u32](&gLock, 0u32, 1u32, MemOrder.Acquire, MemOrder.Relaxed);
+    if won {
+      return;
+    }
+    spins = spins + 1u32;
+    if spins > 64u32 {
+      yieldProcessor();
+    }
+  }
+}
+
+fn gRelease() {
+  mem.atomicStore[u32](&gLock, 0u32, MemOrder.Release);
+}
+
+fn gBucket(h: *Header, w: u64) usize {
+  let x = u64.from((h as usize) >> 4usize) ^ (w * 0x9E3779B97F4A7C15u64);
+  usize.from((x >> 20u64) % u64.from(gBuckets))
+}
+
+// Note a copy of the group at gp for (h, w)
+fn groupNote(h: *Header, w: u64, gp: usize) {
+  let n = libc.malloc(mem.sizeof[GNode]()) as *GNode;
+  if n as usize == 0usize {
+    die("actors: out of memory for an await's group");
+  }
+  (*n).h = h;
+  (*n).w = w;
+  mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
+  gAcquire();
+  if gTable == 0usize {
+    let t = libc.calloc(gBuckets, mem.sizeof[usize]());
+    if t as usize == 0usize {
+      die("actors: out of memory for the group table");
+    }
+    gTable = t as usize;
+  }
+  let at = (gTable as *usize) + gBucket(h, w);
+  (*n).next = *at as *GNode;
+  *at = n as usize;
+  gCount = gCount + 1usize;
+  gRelease();
+}
+
+// Take the entry for (h, w) out of the table: its node, which the caller moves
+// the group out of and frees, or 0
+fn groupTake(h: *Header, w: u64) *GNode {
+  gAcquire();
+  var found = null as *GNode;
+  if gTable != 0usize {
+    var link = (gTable as *usize) + gBucket(h, w);
+    while *link != 0usize && found as usize == 0usize {
+      let n = *link as *GNode;
+      if (*n).h as usize == h as usize && (*n).w == w {
+        *link = (*n).next as usize;
+        found = n;
+        gCount = gCount - 1usize;
+      } else {
+        link = &(*n).next as *usize;
+      }
+    }
+  }
+  gRelease();
+  found
+}
+
+// Remove the entry for (h, w) and let go of its group
+fn groupForget(h: *Header, w: u64) {
+  let n = groupTake(h, w);
+  if n as usize != 0usize {
+    mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
+    libc.free(n as *u8);
+  }
+}
+
+// Remove every entry of actor h (its death), letting go of their groups
+fn groupSweep(h: *Header) {
+  if mem.atomicLoad[usize](&gCount, MemOrder.Acquire) == 0usize {
+    return;
+  }
+  var gone = null as *GNode;
+  gAcquire();
+  var b = 0usize;
+  while gTable != 0usize && b < gBuckets {
+    var link = (gTable as *usize) + b;
+    while *link != 0usize {
+      let n = *link as *GNode;
+      if (*n).h as usize == h as usize {
+        *link = (*n).next as usize;
+        (*n).next = gone;
+        gone = n;
+        gCount = gCount - 1usize;
+      } else {
+        link = &(*n).next as *usize;
+      }
+    }
+    b = b + 1usize;
+  }
+  gRelease();
+  while gone as usize != 0usize {
+    let n = gone;
+    gone = (*n).next;
+    mem.finalize[CancelGroup](&(*n).g as *CancelGroup);
+    libc.free(n as *u8);
+  }
 }
 
 // A reply's slot, claimed in the awaiting actor's ring and its resume record
@@ -2842,9 +3306,29 @@ pub fn resumeId[S](st: &mut S, run: *u8, id: u64, data: *u8) {
 // resume function and the id, then the value (or a pointer to the box that
 // holds it). The resume function takes the value out; a box is freed after
 // it has (REPLIES, above)
-fn resumeSlot[S](st: *S, p: *u8, kind: u64) {
+fn resumeSlot[S](st: *S, h: *Header, p: *u8, kind: u64) {
+  let id0 = *((p + 8usize) as *u64);
+  if (id0 & groupBit) == 0u64 {
+    resumeSlotIn[S](st, p, kind, id0);
+    return;
+  }
+  // an await made in a cancel group (THE GROUP SURVIVES AN AWAIT): the entry
+  // noted at the await is taken, its group made the thread's current group for
+  // the second half, and let go after
+  let w = id0 ^ groupBit;
+  let node = groupTake(h, w);
+  if node as usize == 0usize {
+    die("actors: a reply made in a cancel group has no group noted");
+  }
+  let g = mem.readRaw[CancelGroup](&(*node).g as *CancelGroup);
+  libc.free(node as *u8);
+  curGroup = &g as *CancelGroup as usize;
+  resumeSlotIn[S](st, p, kind, w);
+  curGroup = 0usize;
+}
+
+fn resumeSlotIn[S](st: *S, p: *u8, kind: u64, id: u64) {
   let run = *(p as **u8);
-  let id = *((p + 8usize) as *u64);
   var data = p + replyHead;
   let boxed = kind >= kindReply + 2u64;
   if boxed {
@@ -4076,6 +4560,7 @@ fn @initpure init() {
   traceActors = Atomic[u32].of(0u32);
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
+  rootAt = Atomic[usize].of(0usize);
 }
 
 // The program is ending: wait until all is quiet, then stop the workers, if
@@ -4106,6 +4591,10 @@ fn ensureRunning() {
 
 // Start the workers as configure said, once
 fn startWorkers() {
+  // A group's carrier slot holds a CancelGroup in its payload (THE GROUP TRAVELS)
+  if mem.sizeof[CancelGroup]() > 16usize || mem.alignof[CancelGroup]() > 8usize {
+    die("actors: a CancelGroup no longer fits a slot's smallest payload");
+  }
   let chosenN = chosenWorkers.load();
   let n = if chosenN == 0u32 {thread.parallelism()} else {chosenN};
   let s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;

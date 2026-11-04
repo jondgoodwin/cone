@@ -18,7 +18,7 @@ pub struct WRef {
   pub rows: usize;
   pub cols: usize;
 
-  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+  pub fn clone(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
 }
 
 // The resident slots of one layer
@@ -38,9 +38,9 @@ pub struct LayerRefs {
   pub wDown: WRef;
 
   // A value of its own: recording a layer lends nothing out of the engine's list of layers while the kernels run
-  pub fn copy(self: &) LayerRefs {
-    LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache, wq.copy(), wk.copy(), wv.copy(), wo.copy(),
-      wGate.copy(), wUp.copy(), wDown.copy())
+  pub fn clone(self: &) LayerRefs {
+    LayerRefs(attnNorm, qNorm, kNorm, ffnNorm, kCache, vCache, wq.clone(), wk.clone(), wv.clone(), wo.clone(),
+      wGate.clone(), wUp.clone(), wDown.clone())
   }
 }
 
@@ -177,14 +177,14 @@ fn layerName(l: usize, suffix: &str) String {
 fn pushSpec(specs: &mut List[Spec], r: Result[Spec, LlmError]) Option[String] {
   match r {
     case let Ok(s) { specs.push(Spec(s.tensor, s.rows, s.cols, s.qtype, s.bytes, s.buf, s.off)); None }
-    case let Err(e) { Some[String](e.reason.copy()) }
+    case let Err(e) { Some[String](e.reason.clone()) }
   }
 }
 
 // Every matrix the model needs, in a fixed order: the output (the token table, when tied) first, then for each
 // layer q, k, v, o, gate, up, down
 fn collectSpecs(model: &gguf.Model, s: &ModelShape) Result[List[Spec], LlmError] {
-  var specs = List[Spec].empty();
+  var specs = List[Spec]();
   var name = String.from("output.weight");
   if s.tied { name = String.from("token_embd.weight"); }
   match pushSpec(&mut specs, findMatrix(model, name.view(), s.vocab, s.dim)) {
@@ -220,7 +220,7 @@ fn layerMatrix(specs: &mut List[Spec], model: &gguf.Model, s: &ModelShape, l: us
 // Put the matrices in buffers of at most 'limit' bytes, in order, each matrix at an offset that is a multiple of
 // 256 and never across two buffers; answers the size of each buffer
 fn planBuffers(specs: &mut List[Spec], limit: u64) List[u64] {
-  var sizes = List[u64].empty();
+  var sizes = List[u64]();
   var cur = 0u64;
   var idx = 0u32;
   var i = 0usize;
@@ -405,12 +405,12 @@ pub struct Engine {
   }
 
   fn placed(device: &mut Device, mapped: fs.MappedFile, model: gguf.Model, info: ModelInfo, options: &LoadOptions) Result[Engine, LlmError] {
-    let shape = info.shape.copy();
+    let shape = info.shape.clone();
     var plan = makePlan(&model, &info, options, device.maxStorageBufferBindingSize, device.compute.deviceLocalBytes)?;
     let specs, sizes = plan.(specs, sizes);
 
     // the weights
-    var resident = List[Buffer].empty();
+    var resident = List[Buffer]();
     var s = 0usize;
     var b = 0usize;
     while b < sizes.len() {
@@ -507,7 +507,7 @@ pub struct Engine {
     }
     let nres = resident.len();
     Ok[Engine, LlmError](Engine(info, options.ctx, options.chunk, 0usize, mapped, model, embdIndex, kernels, Works.make(),
-      resident, nres, List[Completion].empty(), layers, outRef, outNorm, sc, 0i64, 0i64, 0i64, 0u64, 0u64, 0u64, 0u32))
+      resident, nres, List[Completion](), layers, outRef, outNorm, sc, 0i64, 0i64, 0i64, 0u64, 0u64, 0u64, 0u32))
   }
 
   pub fn shape(self: &) &ModelShape { &info.shape }
@@ -533,7 +533,7 @@ pub struct Engine {
       return Err[List[f32], LlmError](LlmError(m));
     }
     var i = 0usize;
-    var logits = List[f32].empty();
+    var logits = List[f32]();
     while i < tokens.len {
       var m = tokens.len - i;
       if m > chunk { m = chunk; }
@@ -587,7 +587,7 @@ pub struct Engine {
     if wantLogits { back = job.readback(device, sc.logits); }
     let t1 = Instant.now();
     let ticket = works.submit(device, job, Target.Here(1u64));
-    var done = List[Completion].empty();
+    var done = List[Completion]();
     works.waitFor(device, ticket, &mut done);
     let t2 = Instant.now();
     recordNanos = recordNanos + t1.since(t0).nanos();
@@ -631,7 +631,7 @@ pub struct Engine {
     reusedGroups = reusedGroups + u64.from(all[0usize].reusedGroups());
     lastReused = all[0usize].reusedGroups();
     let good = recorded && all[0usize].ok;
-    var logits = List[f32].empty();
+    var logits = List[f32]();
     if good && wantLogits {
       logits = wordFloats(all[0usize].words(back).view());
     }
@@ -686,7 +686,7 @@ fn recordForward(e: &Engine, job: &mut Job, device: &mut Device, n: usize, pos0:
   var b = sc.r2;
   var l = 0usize;
   while l < s.layers {
-    let w = e.layers[l].copy();
+    let w = e.layers[l].clone();
     ok = k.rmsnorm(job, device, cur, w.attnNorm, sc.xn, dim, n, s.eps) && ok;
     ok = mm(k, job, device, &w.wq, sc.xn, sc.q, n) && ok;
     ok = mm(k, job, device, &w.wk, sc.xn, sc.k, n) && ok;

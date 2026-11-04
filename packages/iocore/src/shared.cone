@@ -186,7 +186,7 @@ pub struct Shared is Move, Sendable {
     if k != diag.kindRecv && k != diag.kindSend {return issueNot;}
     if k == diag.kindSend && r.isGather() {return issueNot;}
     if k == diag.kindRecv && r.bufRoom() == 0usize {return issueNot;}
-    if isWindows() && (*e).skip == 0u32 {return issueNot;}
+    #if #os == .windows { if (*e).skip == 0u32 {return issueNot;} }
     // A deadline or a group done with is answered by the Loop, as at a start
     let now = Instant.now();
     var dl = r.deadline;
@@ -199,10 +199,11 @@ pub struct Shared is Move, Sendable {
       else {}
     }
     if cancelled || dl <= now {return issueNot;}
-    if isWindows() {
-      return winIssue(p, (*e).raw, now);
+    #if #os == .windows {
+      winIssue(p, (*e).raw, now)
+    } #else {
+      lxIssue(p, (*e).raw, now)
     }
-    lxIssue(p, (*e).raw, now)
   }
 }
 
@@ -292,8 +293,8 @@ fn answeredHere(p: *OpCore, status: u32, n: usize, code: u32) u32 {
 // Windows: the receive or send on raw, whose completions skip the port on
 // success. Pending: the record is the kernel's, marked in transit BEFORE the
 // call, and nothing of it is touched here after
+#if #os == .windows {
 fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
-  if !isWindows() {return issueNot;}
   let r = p as &mut OpCore;
   var data = null as *u8;
   var len = 0usize;
@@ -328,10 +329,11 @@ fn winIssue(p: *OpCore, raw: usize, now: Instant) u32 {
   // Refused at once: no packet either, the same answer the Loop's start gives
   answeredHere(p, diag.outcomeFailed, 0usize, code)
 }
+}
 
 // Linux: the receive or send on the non-blocking descriptor raw
+#if #os != .windows {
 fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
-  if isWindows() {return issueNot;}
   let r = p as &mut OpCore;
   let fd = fdOf(raw);
   if r.kind == diag.kindRecv {
@@ -372,4 +374,5 @@ fn lxIssue(p: *OpCore, raw: usize, now: Instant) u32 {
     return answeredHere(p, diag.outcomeFailed, 0usize, u32.from(failed));
   }
   answeredHere(p, diag.outcomeDone, len, 0u32)
+}
 }

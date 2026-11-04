@@ -56,7 +56,7 @@ pub struct Viseme {
   pub channels: List[VisemeChannel];
   pub sharp: f32;       // how fast its dominance falls away: 1 is the standard rate
 
-  pub fn make(name: &str, sharp: f32) Viseme { Viseme(String.from(name), List[VisemeChannel].empty(), sharp) }
+  pub fn make(name: &str, sharp: f32) Viseme { Viseme(String.from(name), List[VisemeChannel](), sharp) }
 
   pub fn set(self, au: u32, value: f32, dominance: f32) Viseme {
     var v = self;
@@ -67,7 +67,7 @@ pub struct Viseme {
 
 // The fifteen visemes as unit tables (authored values; jaw is AU26)
 pub fn standardVisemes() List[Viseme] {
-  var t = List[Viseme].empty();
+  var t = List[Viseme]();
   t.push(Viseme.make("sil", 1.0));
   t.push(Viseme.make("PP", 2.2).set(AU_LIP_PRESSOR, 1.0, 3.2).set(AU_LIP_TIGHTENER, 0.25, 1.5)
     .set(AU_JAW_DROP, 0.0, 1.5).set(AU_LIPS_PART, 0.0, 2.0));
@@ -112,7 +112,7 @@ fn ph(name: &str, viseme: u32, viseme2: i32, duration: f32) PhonemeInfo {
 
 // The ARPAbet phonemes of CMUdict, each with its viseme and its duration
 pub fn standardPhonemes() List[PhonemeInfo] {
-  var t = List[PhonemeInfo].empty();
+  var t = List[PhonemeInfo]();
   t.push(ph("AA", VIS_AA, -1i32, 0.115));
   t.push(ph("AE", VIS_E, -1i32, 0.115));
   t.push(ph("AH", VIS_AA, -1i32, 0.085));
@@ -176,20 +176,18 @@ pub struct Segment {
 }
 
 // A spoken line: its segments, in order, and its length
-pub struct Utterance {
+pub struct Utterance is Default {
   pub segments: List[Segment];
   pub phonemes: List[String];       // the phonemes as read, for inspection
   pub starts: List[f32];            // each phoneme's start time
   pub duration: f32;
 
-  pub fn empty() Utterance { Utterance(List[Segment].empty(), List[String].empty(), List[f32].empty(), 0.) }
-
-  pub fn copy(self: &) Utterance {
-    var u = Utterance.empty();
+  pub fn clone(self: &) Utterance {
+    var u = Utterance();
     var i = 0usize;
     while i < segments.len() { u.segments.push(*segments[i]); i = i + 1usize; }
     i = 0usize;
-    while i < phonemes.len() { u.phonemes.push(phonemes[i].copy()); u.starts.push(*starts[i]); i = i + 1usize; }
+    while i < phonemes.len() { u.phonemes.push(phonemes[i].clone()); u.starts.push(*starts[i]); i = i + 1usize; }
     u.duration = duration;
     u
   }
@@ -198,10 +196,10 @@ pub struct Utterance {
 // Read phonemes into a timeline at 'rate' (1 is the standard pace; 1.3 is faster)
 pub fn utteranceFromPhonemes(text: &str, rate: f32) Utterance {
   let table = standardPhonemes();
-  var u = Utterance.empty();
+  var u = Utterance();
   var t = 0.f;
   let src = String.from(text);
-  var tok = String.empty();
+  var tok = String();
   var i = 0usize;
   while i <= src.len() {
     let c = if i < src.len() { src[i] } else { 32u8 };
@@ -215,7 +213,7 @@ pub fn utteranceFromPhonemes(text: &str, rate: f32) Utterance {
           if pi_ >= 0i32 {
             let info = &table[usize.from(pi_)];
             let d = info.duration / rate;
-            u.phonemes.push(tok.copy());
+            u.phonemes.push(tok.clone());
             u.starts.push(t);
             if info.viseme2 < 0i32 {
               u.segments.push(Segment(info.viseme, t, t + d));
@@ -226,7 +224,7 @@ pub fn utteranceFromPhonemes(text: &str, rate: f32) Utterance {
             t = t + d;
           }
         }
-        tok = String.empty();
+        tok = String();
       }
     } else {
       tok.appendByte(c);
@@ -267,11 +265,11 @@ pub struct Speech {
   // A player over the rig's unit table
   pub fn make(units: &List[UnitDef]) Speech {
     let v = standardVisemes();
-    var chans = List[List[VisChan]].empty();
-    var touched = List[usize].empty();
+    var chans = List[List[VisChan]]();
+    var touched = List[usize]();
     var k = 0usize;
     while k < v.len() {
-      var row = List[VisChan].empty();
+      var row = List[VisChan]();
       var c = 0usize;
       while c < v[k].channels.len() {
         let ch = v[k].channels[c];
@@ -294,11 +292,11 @@ pub struct Speech {
       chans.push(row);
       k = k + 1usize;
     }
-    Speech(v, chans, touched, Utterance.empty(), 0., false, 11., 15., 0.12, 0.)
+    Speech(v, chans, touched, Utterance(), 0., false, 11., 15., 0.12, 0.)
   }
 
   pub fn say(self: &mut, u: &Utterance) {
-    utterance = u.copy();
+    utterance = u.clone();
     time = 0.;
     playing = true;
   }
@@ -310,8 +308,8 @@ pub struct Speech {
   // The unit values at time 't' into 'out' (one a unit of the rig, added to what is there)
   pub fn valuesAt(self: &mut, t: f32, out: &mut List[f32]) {
     let nu = touched.len();
-    var num = List[f32].empty();
-    var den = List[f32].empty();
+    var num = List[f32]();
+    var den = List[f32]();
     num.resize(nu, 0.);
     den.resize(nu, self.rest);
     var best = 0.f;

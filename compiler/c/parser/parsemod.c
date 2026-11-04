@@ -490,6 +490,11 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         importnode->fold->ispub = 1;
     parseEndOfStatement();
 
+    // In a '#if' branch the build does not take (parsemeta.c) an import is read
+    // for its syntax alone: nothing is found, loaded or bound
+    if (parse->mod->scratch)
+        return NULL;
+
     Name *filesym = nametblFind(modstr, strlen(modstr));
 
     // THE REGISTRY FIRST, AND THE FILESYSTEM ONLY AFTER IT. A neighbour has
@@ -1329,8 +1334,88 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
 // [Jon 24 Sep], and its imports come right after it, before anything else it
 // declares. A module's other files have no 'mod' line, and so no place for an
 // import: a module's whole inbound dependency list is in its designated file
-// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it
+// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it, or one of these
+// for the statements of a '#if' branch, which read to the branch's '}' and have no
+// 'mod' line of their own: a branch where an import would be allowed anyway
+// (AtInHashIfHeader, the header it is in not yet past) may hold imports; one past
+// the header (AtInHashIf) or in a file with no 'mod' line (AtInHashIfNoMod) may not
+#define AtInHashIf 3
+#define AtInHashIfHeader 4
+#define AtInHashIfNoMod 5
+
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
+static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstart, int *pastp);
+
+// The items of a '#if' chain at a module's level. A branch the build takes joins
+// the module; one it does not is read into the scratch module parse->mod then is.
+// 'state' is how the branch begins (AtInHashIf and its kin), and 'past' is set by
+// a branch with a statement that is no import, which ends the header
+typedef struct GlobalIf {
+    ModuleNode *mod;
+    int state;
+    int past;
+} GlobalIf;
+
+static void parseGlobalBranch(ParseState *parse, void *ctx, int taken) {
+    GlobalIf *gif = (GlobalIf*)ctx;
+    int past = 0;
+    parseGlobalStmtsIn(parse, taken ? gif->mod : parse->mod, gif->state, &past);
+    gif->past |= past;
+}
+
+// The items of an 'extern' block's braces, to the '}' that closes them or
+// the branch of a '#if' inside them; 'items' is where their spans go
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items);
+
+typedef struct ExternIf {
+    uint16_t extflag;
+    DclSpans **items;
+} ExternIf;
+
+static void parseExternBranch(ParseState *parse, void *ctx, int taken) {
+    ExternIf *xif = (ExternIf*)ctx;
+    DclSpans *dropped = NULL;
+    parseExternItems(parse, xif->extflag, taken ? xif->items : &dropped);
+}
+
+static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **items) {
+    while (!parseBlockEnd()) {
+        // A lone ';' is an empty declaration, as in a type's braces
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            continue;
+        }
+        if (lexIsToken(HashIfToken)) {
+            ExternIf xif;
+            xif.extflag = extflag;
+            xif.items = items;
+            parseHashIf(parse, parseExternBranch, &xif);
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
+        char *itemat = lex->tokp;
+        uint16_t itemflag = extflag | parsePub();
+        char *itemkw = lex->tokp;
+        if (lexIsToken(FnToken) || lexIsDclStart()) {
+            INode *item = parseFnOrVarIn(parse, itemflag, 1);
+            if (item)
+                parseSpan(parse, items, item, itemat, itemkw, SpanDcl);
+        }
+        else {
+            errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
+            parseSkipToNextStmt();
+        }
+    }
+}
+
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
+    parseGlobalStmtsIn(parse, mod, atmodstart, NULL);
+}
+
+static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstart, int *pastp) {
     // An empty first file has no statement to report against, so the end of
     // the file stands in for it
     if (atmodstart == 1 && lexIsToken(EofToken))
@@ -1338,9 +1423,9 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
             &mod->namesym->namestr, &mod->namesym->namestr);
     // Set by the first statement that is neither the 'mod' line nor an import
-    int pastheader = 0;
+    int pastheader = atmodstart == AtInHashIf;
     // A file of the module other than its first has no 'mod' line to follow
-    int nomodline = atmodstart == 2;
+    int nomodline = atmodstart == 2 || atmodstart == AtInHashIfNoMod;
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
         int atstart = atmodstart;
         atmodstart = 0;
@@ -1352,6 +1437,29 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         stmtat.srcp = lex->tokp;
         stmtat.linep = lex->linep;
         stmtat.linenbr = lex->linenbr;
+        // '#if' chooses which declarations exist, from the facts of the build.
+        // The branch it takes is read into this module as though it were written
+        // here (parsemeta.c); no 'pub' goes before it, since it declares nothing
+        // itself. Imports may stand in its branches where they would be allowed
+        // anyway, in the header; a branch with any other statement ends the header
+        if (lexIsToken(HashIfToken)) {
+            if (atstart == 1)
+                errorMsgNode(&stmtat, ErrorNoModDcl,
+                    "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
+                    &mod->namesym->namestr, &mod->namesym->namestr);
+            GlobalIf gif;
+            gif.mod = mod;
+            gif.state = nomodline ? AtInHashIfNoMod : pastheader ? AtInHashIf : AtInHashIfHeader;
+            gif.past = 0;
+            parseHashIf(parse, parseGlobalBranch, &gif);
+            if (gif.past)
+                pastheader = 1;
+            continue;
+        }
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+            parseMetaStray(parse);
+            continue;
+        }
         uint16_t pubflag = parsePub();
         // Where the statement's keyword is, after its 'pub', and what it makes:
         // its span is recorded once it is parsed (dclspan.h)
@@ -1529,25 +1637,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 spankind = SpanExternBlock;
-                while (!parseBlockEnd()) {
-                    // A lone ';' is an empty declaration, as in a type's braces
-                    if (lexIsToken(SemiToken)) {
-                        lexNextToken();
-                        continue;
-                    }
-                    char *itemat = lex->tokp;
-                    uint16_t itemflag = extflag | parsePub();
-                    char *itemkw = lex->tokp;
-                    if (lexIsToken(FnToken) || lexIsDclStart()) {
-                        INode *item = parseFnOrVarIn(parse, itemflag, 1);
-                        if (item)
-                            parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
-                    }
-                    else {
-                        errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
-                        parseSkipToNextStmt();
-                    }
-                }
+                parseExternItems(parse, extflag, &items);
             }
             else
                 made = parseFnOrVar(parse, extflag);
@@ -1609,6 +1699,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         DclSpan *span = parseSpan(parse, &mod->spans, made, stmtat.srcp, kwat, spankind);
         span->members = items;
     }
+    if (pastp)
+        *pastp = pastheader;
 }
 
 // Give a module the position of the file that makes it one, line 1 column 1:
@@ -2108,6 +2200,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
 void parseInit(ConeOptions *opt) {
     nametblInit();
     lexInit(opt);
+    parseMetaInit(opt);
 }
 
 // Parse a program = the main module. 'desc' is the build description the

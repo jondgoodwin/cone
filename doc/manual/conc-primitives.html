@@ -15,8 +15,7 @@
 
 	<p style="margin-left: 40px;"><i>Note: The <span class="pre">sync</span> package, and so the locks, the channels and the
 		actors built on it, runs on Windows and Linux (x86-64), not yet on macOS. Not built yet: the
-		<span class="pre">atomic</span> permission, and the rule that a whole atomic value may be replaced plainly only
-		through a unique path.</i></p>
+		<span class="pre">atomic</span> permission.</i></p>
 
 	<p>Under the actors, the channels, the lock permissions and the parallel loop lie three small pieces: atomic values,
 		which several threads change with no lock; the futex, the one way a thread sleeps until another wakes it; and plain
@@ -180,13 +179,21 @@ and f32 is none of them.
 		never assumed unchanged.</li>
 	<li><b>A <span class="pre">const</span> may not hold one</b>, however deep: each use of a <span class="pre">const</span>
 		is a fresh copy, which no other use would see change. Use a global.</li>
+	<li><b>It is replaced plainly only through a unique path.</b> An assignment or swap over an atomic value, or over a
+		struct, tuple or array holding one, is refused when the place is reached through a reference that is not
+		<span class="pre">uni</span>: another thread may be changing it atomically as it is overwritten.
+		<span class="pre">*r = s</span> through a <span class="pre">&amp;mut Stats</span> that holds an
+		<span class="pre">Atomic[u64]</span> is error 1571, as is <span class="pre">r.hits = Atomic[u64].of(0)</span>. A
+		variable, a field of a value held by value, and a <span class="pre">&amp;uni</span> or <span class="pre">uni</span>
+		owner are unique paths and may be assigned; the atomic's own <span class="pre">store</span> works through any
+		reference. A value holding an atomic is never read out through a reference at all, since it moves.
+		The <span class="pre">&amp;mut</span> a lock's guard gives is refused too: the lock makes the write exclusive
+		only among lock holders, while an atomic is there to be read without the lock, so a lock-free reader could
+		still see a torn value. Under a guard, write the atomic with its own <span class="pre">store</span>.</li>
 	</ul>
 	<p>Not built yet: the <span class="pre">atomic</span> permission, the reference that allows only atomic operations on
-		what it points at, which every reference to an atomic value is to become; and the rule that a whole atomic value may
-		be replaced plainly only through a unique path. Until they are, <span class="pre">Atomic[T]</span>'s operations take
-		any reference (as <span class="pre">&amp;opaq</span>), and a plain assignment over an atomic value
-		(<span class="pre">*r = s</span> through a <span class="pre">&amp;mut Stats</span>) compiles, and is the program's to
-		get right.</p>
+		what it points at, which every reference to an atomic value is to become. Until it is,
+		<span class="pre">Atomic[T]</span>'s operations take any reference (as <span class="pre">&amp;opaq</span>).</p>
 
 	<h2 id="futex">The futex</h2>
 	<p>A thread that waits for another must sleep, not spin, or it burns a core doing nothing. A <b>futex</b> is a 32-bit

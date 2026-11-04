@@ -30,10 +30,10 @@ struct Spec {
 }
 
 fn byteTokens() List[String] {
-  var tokens = List[String].empty();
+  var tokens = List[String]();
   var b = 0u32;
   while b < 256u32 {
-    var one = List[u8].empty();
+    var one = List[u8]();
     one.push(u8.from(b));
     tokens.push(bpetokenize.toByteLevel(one.view()));
     b = b + 1u32;
@@ -64,7 +64,7 @@ fn helloSpec() Spec {
   tokens.push(spell("ld"));
   tokens.push(spell(" world"));
   tokens.push(spell("aa"));
-  var merges = List[String].empty();
+  var merges = List[String]();
   merges.push(rule("h", "e"));
   merges.push(rule("l", "l"));
   merges.push(rule("he", "ll"));
@@ -75,13 +75,13 @@ fn helloSpec() Spec {
   merges.push(rule("l", "d"));
   merges.push(rule(" wor", "ld"));
   merges.push(rule("a", "a"));
-  Spec(tokens, merges, List[String].empty())
+  Spec(tokens, merges, List[String]())
 }
 
 // -------- showing ids --------
 
 fn show(ids: &List[u32]) String {
-  var out = String.empty();
+  var out = String();
   var i = 0usize;
   while i < ids.len() {
     if i > 0usize { out.append(" "); }
@@ -168,10 +168,10 @@ fn laterRuleChecks() {
   var tokens = byteTokens();
   tokens.push(spell("bc"));
   tokens.push(spell("bcb"));
-  var merges = List[String].empty();
+  var merges = List[String]();
   merges.push(rule("bc", "b"));
   merges.push(rule("b", "c"));
-  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String]().view(),
                                     bpetokenize.PreTokenizer.Whole) {
     case let Ok(tok) {
       ids(&tok, "bcbc", "257 99");
@@ -188,11 +188,11 @@ fn laterRuleChecks() {
 // 'a' merges to 2, 4, 8, ... 1024 a's: a word of n a's ends as the binary digits of n
 fn doublingChecks() {
   var tokens = byteTokens();
-  var merges = List[String].empty();
+  var merges = List[String]();
   var width = 1usize;
   var k = 0usize;
   while k < 10usize {
-    var left = String.empty();
+    var left = String();
     var j = 0usize;
     while j < width { left.append("a"); j = j + 1usize; }
     merges.push(rule(left.view(), left.view()));
@@ -202,12 +202,12 @@ fn doublingChecks() {
     width = width * 2usize;
     k = k + 1usize;
   }
-  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String].empty().view(),
+  match bpetokenize.Tokenizer.build(tokens.view(), merges.view(), List[String]().view(),
                                     bpetokenize.PreTokenizer.Whole) {
     case let Ok(tok) {
       // ids 256 + k is 2^(k+1) a's
       ids(&tok, "aaaa", "257");
-      var text = String.empty();
+      var text = String();
       var i = 0usize;
       while i < 4096usize { text.append("a"); i = i + 1usize; }
       let four = tok.encode(text.view());
@@ -215,14 +215,14 @@ fn doublingChecks() {
       expectStr(shown.view(), "265 265 265 265", "4096 a's are four tokens of 1024");
       // 3000 = 2048 + 512 + 256 + 128 + 32 + 16 + 8, but the largest token is 1024:
       // 1024 + 1024 + 512 + 256 + 128 + 32 + 16 + 8
-      var t3 = String.empty();
+      var t3 = String();
       i = 0usize;
       while i < 3000usize { t3.append("a"); i = i + 1usize; }
       let three = tok.encode(t3.view());
       let shown3 = show(&three);
       expectStr(shown3.view(), "265 265 264 263 262 260 259 258", "3000 a's");
       // a long word merges in step: 200000 a's
-      var big = String.empty();
+      var big = String();
       i = 0usize;
       while i < 200000usize { big.append("a"); i = i + 1usize; }
       let many = tok.encode(big.view());
@@ -254,7 +254,7 @@ struct Lcg {
 // Merge a word as the algorithm is stated: while some adjacent pair has a rule,
 // join the one with the lowest rank, the leftmost of equals
 fn plainMerge(word: &Array[u8], ranks: &Dict[u64, u64]) List[u32] {
-  var sym = List[u32].empty();
+  var sym = List[u32]();
   var i = 0usize;
   while i < word.len { sym.push(u32.from(word[i])); i = i + 1usize; }
   while true {
@@ -289,18 +289,18 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
   var rng = Lcg(seed);
   var tokens = byteTokens();
   // each token's plain text, to name a new token and to keep texts distinct
-  var texts = List[String].empty();
+  var texts = List[String]();
   var b = 0u32;
   while b < 256u32 {
-    var one = List[u8].empty();
+    var one = List[u8]();
     one.push(u8.from(b));
     texts.push(String.fromBytes(one.view()));
     b = b + 1u32;
   }
   var seen = Dict[String, u32].deterministic();
   var b2 = 0usize;
-  while b2 < 256usize { seen.insert(texts.view()[b2].copy(), u32.from(b2)); b2 = b2 + 1usize; }
-  var lines = List[String].empty();
+  while b2 < 256usize { seen.insert(texts.view()[b2].clone(), u32.from(b2)); b2 = b2 + 1usize; }
+  var lines = List[String]();
   var ranks = Dict[u64, u64].deterministic();
   var tries = 0usize;
   while lines.len() < merges && tries < merges * 40usize {
@@ -314,7 +314,7 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
     if texts.len() > 256usize && rng.below(4u32) != 0u32 {
       r = 256u32 + rng.below(u32.from(texts.len() - 256usize));
     }
-    var joined = texts.view()[usize.from(l)].copy();
+    var joined = texts.view()[usize.from(l)].clone();
     joined.append(texts.view()[usize.from(r)].view());
     if seen.contains(joined.view()) { continue; }
     let key = (u64.from(l) << 32u64) | u64.from(r);
@@ -322,7 +322,7 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
     let id = u32.from(texts.len());
     let rank = u64.from(lines.len());
     ranks.insert(key, (rank << 32u64) | u64.from(id));
-    seen.insert(joined.copy(), id);
+    seen.insert(joined.clone(), id);
     tokens.push(spell(joined.view()));
     var line = spell(texts.view()[usize.from(l)].view());
     line.append(" ");
@@ -331,14 +331,14 @@ fn randomChecks(seed: u64, wordLetters: u32, merges: usize) {
     texts.push(joined);
   }
   expect(lines.len() >= merges / 2usize, "enough random merges were made");
-  match bpetokenize.Tokenizer.build(tokens.view(), lines.view(), List[String].empty().view(),
+  match bpetokenize.Tokenizer.build(tokens.view(), lines.view(), List[String]().view(),
                                     bpetokenize.PreTokenizer.Whole) {
     case let Ok(tok) {
       var agree = 0usize;
       var n = 0usize;
       while n < 400usize {
         let len = 1u32 + rng.below(40u32);
-        var word = List[u8].empty();
+        var word = List[u8]();
         var j = 0u32;
         while j < len { word.push(u8.from(97u32 + rng.below(wordLetters))); j = j + 1u32; }
         let want = plainMerge(word.view(), &ranks);
@@ -368,7 +368,7 @@ fn main() i32 {
     case let Err(e) { let m = e.message(); expectStr(m.view(), "<built>", "hello vocabulary, whole"); }
   }
   // the pairs form builds the same tokenizer
-  var pairs = List[bpetokenize.MergePair].empty();
+  var pairs = List[bpetokenize.MergePair]();
   pairs.push(bpetokenize.MergePair(spell("h"), spell("e")));
   pairs.push(bpetokenize.MergePair(spell("l"), spell("l")));
   pairs.push(bpetokenize.MergePair(spell("he"), spell("ll")));

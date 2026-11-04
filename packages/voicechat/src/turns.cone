@@ -51,8 +51,8 @@ pub fn endsSentence(text: &str) bool {
 
 // The words of a text: letters and digits in lower case, apostrophes dropped, anything else between words
 fn wordsOf(text: &str) List[String] {
-  var out = List[String].empty();
-  var cur = List[u8].empty();
+  var out = List[String]();
+  var cur = List[u8]();
   let b = text.bytes();
   var i = 0usize;
   while i < b.len {
@@ -119,7 +119,7 @@ pub fn isGoodbye(text: &str) bool {
 
 // ---- the turn in progress
 
-pub struct HeardTurn {
+pub struct HeardTurn is Default {
   audio: List[f32];
   offset: usize;           // the input sample index of audio[0]
   startAt: usize;          // where the first speech began
@@ -128,10 +128,6 @@ pub struct HeardTurn {
   forced: bool;            // the latest was cut by the detector's longest-utterance limit
   pub text: String;        // the transcript of everything joined so far (`hear` sets it)
   pub ends: bool;          // and whether that text ends the turn (`hear` sets it)
-
-  pub fn empty() HeardTurn {
-    HeardTurn(List[f32].empty(), 0usize, 0usize, 0usize, 0usize, false, String.empty(), false)
-  }
 
   pub fn isEmpty(self: &) bool { count == 0usize }
 
@@ -152,7 +148,7 @@ pub struct HeardTurn {
     endAt = 0usize;
     count = 0usize;
     forced = false;
-    text = String.empty();
+    text = String();
     ends = false;
   }
 
@@ -194,9 +190,9 @@ pub struct HeardTurn {
   // Transcribe the whole turn and decide whether its text ends it
   pub fn hear(self: &mut, device: &mut Device, stt: &mut speechtotext.Parakeet) Result[void, String] {
     // the audio is moved out for the call, so that no borrow of this turn is held while Parakeet runs
-    var mine = List[f32].empty();
+    var mine = List[f32]();
     mine <-> audio;
-    var failed = String.empty();
+    var failed = String();
     var ok = true;
     match stt.transcribe(device, mine.view()) {
       case let Ok(r) { text = r.text.trim(); }
@@ -241,9 +237,9 @@ pub fn turnsIn(device: &mut Device, stt: &mut speechtotext.Parakeet, samples: &A
   cfg.hangoverMs = endMs;
   cfg.trailMs = trailMs;
   var vad = voiceaudio.Vad.make(cfg);
-  var heard = List[voiceaudio.Utterance].empty();
-  var turn = HeardTurn.empty();
-  var out = Turns(List[String].empty(), List[f64].empty());
+  var heard = List[voiceaudio.Utterance]();
+  var turn = HeardTurn();
+  var out = Turns(List[String](), List[f64]());
   let step = 320usize;
   var at = 0usize;
   while at < samples.len {
@@ -262,7 +258,7 @@ pub fn turnsIn(device: &mut Device, stt: &mut speechtotext.Parakeet, samples: &A
       if !containsLetter(turn.text.view()) || isFiller(turn.text.view()) { turn.clear(); }
     }
     if !turn.isEmpty() && turn.due(vad.analysed(), vad.speaking(), rate, endMs, unfinishedMs) {
-      out.texts.push(turn.text.copy());
+      out.texts.push(turn.text.clone());
       out.endedAt.push(f64.from(vad.analysed()) / 16000.0);
       turn.clear();
     }
@@ -277,7 +273,7 @@ pub fn turnsIn(device: &mut Device, stt: &mut speechtotext.Parakeet, samples: &A
     turn.hear(device, stt)?;
   }
   if !turn.isEmpty() && containsLetter(turn.text.view()) && !isFiller(turn.text.view()) {
-    out.texts.push(turn.text.copy());
+    out.texts.push(turn.text.clone());
     out.endedAt.push(f64.from(samples.len) / 16000.0);
   }
   Ok[Turns, String](out)

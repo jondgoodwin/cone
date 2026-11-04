@@ -163,7 +163,7 @@ type while each call gives its own orderings.
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. A call of
-   `writeRaw` or `moveRaw` is also noted, where it is made (`regionTracedRawCall`,
+   `writeRaw`, `moveRaw` or `moveRawInto` is also noted, where it is made (`regionTracedRawCall`,
    from `fnCallFinalizeArgs`), for the rule that no traced reference is placed in
    raw memory unless the method making the call belongs to a type declaring `GcTraceElements`
    (`ErrorTracedRaw`), judged once type check has finished and reported at the
@@ -201,10 +201,11 @@ type while each call gives its own orderings.
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
-| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
+| `sliceFromParts[T]`, `…Mut`, `…Uni` | expansion | two `insertvalue`s into the `{ptr, usize}` pair; a null `p` is first replaced by the element's ABI alignment as an address (a `select`), because a slice's pointer word is never null: an `Option` of a slice reads null as `None` |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
-| `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
+| `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes; no write barrier, for moves inside one container |
+| `moveRawInto[T]` | operation | the same `LLVMBuildMemMove`, then, only where `itypeHoldsBarriered(T)`, a loop over `count` calling `genlBarrierAt` on each value now at `to`; for any other `T` it is `moveRaw` exactly. For moves from one container into another (`appendList`, `appendSlice`, the piece join) |
 | `forget[T]` | expansion | nothing: the value is moved into the call, which has no body to finalize it; no code |
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
@@ -272,7 +273,10 @@ comparison of two slices compares their elements"). Its body is its
 implementation, compiled as any generic function's, and it has no registry
 entry; the compiler knows it the way it knows `TypeRecord`, by its name and its
 package, and `sliceEqDclNameRes` holds the declaration to that one signature
-(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`).
+(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`). So are
+`tupleEq2[A, B]`, `tupleEq3` and `tupleEq4`, what `==` on two tuples calls
+([fncall](fncall.md), "A comparison of two tuples compares their elements"):
+`tupleEqDclNameRes` remembers each generic declaration with a body (`tupleEqFn`).
 
 ## Hazards
 

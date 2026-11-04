@@ -17,15 +17,18 @@ import time use Duration, Instant;
 import collections use String;
 
 // The OS's own answer to who is running: kernel32's on Windows, on Linux the
-// kernel's thread id, which conestd's oscalls.c makes callable. Both are
-// declared everywhere and only the target's is called
-extern {
-  fn @c(system) GetCurrentThreadId() u32;
+// kernel's thread id, which conestd's oscalls.c makes callable. Only the
+// target's is declared and called
+#if #os == .windows {
+  extern {
+    fn @c(system) GetCurrentThreadId() u32;
+  }
+} #else {
+  extern fn @c cone_threadId() u32;
 }
-extern fn @c cone_threadId() u32;
 
 fn osThreadId() u32 {
-  if isWindows() {GetCurrentThreadId()} else {cone_threadId()}
+  #if #os == .windows {GetCurrentThreadId()} #else {cone_threadId()}
 }
 
 // What a thread sees of itself
@@ -68,7 +71,7 @@ fn main() i32 {
   expect(plainSeen.id != seen.id, "two threads' ids differ");
 
   // A copy is the same thread
-  let again = main.copy();
+  let again = main.clone();
   expectUInt(u64.from(again.id()), u64.from(main.id()), "a copy of a ThreadRef names the same thread");
 
   // A name is text: a String's view names a thread with no cast, and the name

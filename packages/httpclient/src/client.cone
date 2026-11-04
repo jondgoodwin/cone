@@ -234,7 +234,7 @@ pub struct Client {
       else {}
     }
     let h3 = http3From(http3, &tlsConfig);
-    var h3Origins = List[String].empty();
+    var h3Origins = List[String]();
     var k = 0usize;
     while k < http3Origins.len() {
       match Url.parse(http3Origins[k].view()) {
@@ -254,11 +254,11 @@ pub struct Client {
     Client(cfg: Limits(maxPerOrigin, maxTotal, maxLifetime, maxQueued, maxRetries, maxRedirects, userAgent, priorKnowledge,
         h3Origins, h3Timeout),
       drv: d, tlsc: tlsc,
-      fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
-      queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
-      total: 0u32, undecided: List[u32].empty(), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event].empty(),
-      comps: List[Completion].empty(), ready: List[Event].empty(), heldEvents: List[Held].empty(),
-      wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event].empty(), attempts: List[u32].empty())
+      fetchBlocks: List[*Fetch](), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
+      queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn](), connCount: 0u32, freeConn: noEntry,
+      total: 0u32, undecided: List[u32](), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event](),
+      comps: List[Completion](), ready: List[Event](), heldEvents: List[Held](),
+      wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event](), attempts: List[u32]())
   }
 
   // Its counters, as they are now
@@ -334,10 +334,10 @@ pub struct Client {
 
   fn blankFetch(self: &, next: u32) Fetch {
     Fetch(gen: 1u32, state: fFree, nextFree: next, seq: 0u64, intent: Intent.Visible, score: 0i64,
-      sink: Sink.Here(0u64), method: Method.Get, methodText: String.empty(), url: Url.empty(),
-      headers: Headers.empty(), body: String.empty(), origin: noEntry, conn: noEntry,
+      sink: Sink.Here(0u64), method: Method.Get, methodText: String(), url: Url(),
+      headers: Headers(), body: String(), origin: noEntry, conn: noEntry,
       req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
-      ending: endNone, delivered: false, following: false, cutting: false, location: String.empty(),
+      ending: endNone, delivered: false, following: false, cutting: false, location: String(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
       maxRedirects: 0u32, heldEvents: 0u32, timing: Timing.zero())
   }
@@ -387,12 +387,12 @@ pub struct Client {
     f.state = fFree;
     f.gen = nextGen(f.gen);
     f.sink = Sink.Here(0u64);
-    f.methodText = String.empty();
-    f.url = Url.empty();
-    f.headers = Headers.empty();
-    f.body = String.empty();
+    f.methodText = String();
+    f.url = Url();
+    f.headers = Headers();
+    f.body = String();
     f.group = None;
-    f.location = String.empty();
+    f.location = String();
     f.nextFree = freeFetch;
     freeFetch = i;
     liveFetches = liveFetches - 1u32;
@@ -464,8 +464,8 @@ pub struct Client {
         j = j + 1usize;
       }
     }
-    origins.add(Origin(key: key, secure: secure, host: u.host.copy(),
-      port: port, queue: List[u32].empty(), idle: List[u32].empty(), shared: List[u32].empty(),
+    origins.add(Origin(key: key, secure: secure, host: u.host.clone(),
+      port: port, queue: List[u32](), idle: List[u32](), shared: List[u32](),
       open: 0u32, connecting: 0u32, undecided: 0u32, h2: !secure && cfg.priorKnowledge,
       h3Port: if prior {port} else {0u16}, h3Until: if prior {forever()} else {Instant()}, h3Prior: prior,
       h3Broken: Instant(), h3c: noEntry)).index
@@ -505,7 +505,7 @@ pub struct Client {
     f.headers = headers;
     if !f.headers.has("User-Agent") {
       // Copied: the fields hold Strings, and nothing shows the config's is none of them
-      let agent = cfg.userAgent.copy();
+      let agent = cfg.userAgent.clone();
       f.headers.add("User-Agent", agent.view());
     }
     if !f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
@@ -816,13 +816,13 @@ pub struct Client {
   // events stay behind its first still held
   fn retryHeld(self: &mut) {
     if heldEvents.len() == 0usize {return;}
-    var kept = List[Held].empty();
-    var blocked = List[u64].empty();
+    var kept = List[Held]();
+    var blocked = List[u64]();
     // The credit of those taken goes back to the driver after: its calls are
     // not visible here, so none is made while the held list is drained
-    var creditTo = List[httpconn.ReqId].empty();
-    var creditQ = List[H3Req].empty();
-    var credits = List[usize].empty();
+    var creditTo = List[httpconn.ReqId]();
+    var creditQ = List[H3Req]();
+    var credits = List[usize]();
     {
       each h in heldEvents.drain() {
         let e, var sink, fi, gen, n, q, qq = h.(e, sink, fetch, gen, credit, req, qreq);
@@ -906,7 +906,7 @@ pub struct Client {
     let w = self.wakeAt();
     if w < limit {limit = w;}
     if n > 0usize || self.held() < heldBefore {limit = Instant();}
-    var cs = List[Completion].empty();
+    var cs = List[Completion]();
     cs <-> comps;
     lp.poll(limit, &mut cs);
     var k = 0usize;
@@ -964,7 +964,7 @@ pub struct Client {
   // The driver's events, each to the fetch or connection it is about: how
   // many
   fn takeDriverEvents(self: &mut, lp: &mut Loop) usize {
-    var evs = List[httpconn.Event].empty();
+    var evs = List[httpconn.Event]();
     evs <-> dev;
     let n = drv.pump(lp, &uni evs);
     each e in evs.drain() {
@@ -1042,7 +1042,7 @@ pub struct Client {
         let fi = *og.queue[0usize];
         let f = self.fetchAt(fi) as &mut Fetch;
         f.timing.attempts = f.timing.attempts + 1u32;
-        self.finishFetch(lp, fi, endFailed, Some[Failure](fl.copy()));
+        self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
       }
     }
     self.freeConnRec(pc);
@@ -1215,7 +1215,7 @@ pub struct Client {
     let sink = httpconn.Sink.Here(tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc));
     // The driver is handed a copy of the host: it holds Strings, and nothing shows
     // the origin's is none of them
-    let host = og.host.copy();
+    let host = og.host.clone();
     if !og.secure {
       p.id = drv.connect(lp, host.view(), og.port, sink);
       return;
@@ -1225,7 +1225,7 @@ pub struct Client {
       case let &Ok(c) {
         p.id = drv.connectWith(lp, host.view(), og.port, Uni[tls.Stream](c.stream(host.view())), sink);
       }
-      case let &Err(x) {why = Some[Failure](x.copy());}
+      case let &Err(x) {why = Some[Failure](x.clone());}
     }
     match why {
       case var Some(fl) {
@@ -1236,7 +1236,7 @@ pub struct Client {
         self.freeConnRec(pc);
         while og.queue.len() > 0usize {
           let fi = *og.queue[0usize];
-          self.finishFetch(lp, fi, endFailed, Some[Failure](fl.copy()));
+          self.finishFetch(lp, fi, endFailed, Some[Failure](fl.clone()));
         }
       }
       else {}
@@ -1307,7 +1307,7 @@ pub struct Client {
     var k = 0usize;
     while k < headers.len() {
       if fieldIs(headers.nameAt(k), "alt-svc") {
-        let host = og.host.copy();
+        let host = og.host.clone();
         match readAltSvc(headers.valueAt(k), host.view()) {
           case is Clear {
             if !og.h3Prior {
@@ -1396,7 +1396,7 @@ pub struct Client {
     st.h3Attempts = st.h3Attempts + 1u64;
     attempts.push(pc);
     let tok = drv.upperToken(lp, kWatch, resolveBit | (u64.from(p.gen & watchGenMask) << 24u64) | u64.from(pc));
-    let host = og.host.copy();
+    let host = og.host.clone();
     p.lookup = lp.submitBy(resolveOp(host.view(), og.h3Port, IoBuf(resolveSize)), Target.Here(tok), p.h3By);
   }
 
@@ -1428,7 +1428,7 @@ pub struct Client {
       return;
     }
     let og = self.originAt(p.origin) as &Origin;
-    let host = og.host.copy();
+    let host = og.host.clone();
     let token = tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc);
     match h3.connect(lp, addr, host.view(), token) {
       case let Ok(q) {p.qid = q;}
@@ -1482,7 +1482,7 @@ pub struct Client {
 
   // The plug-in's events, each to the fetch or connection it is about: how many
   fn takeH3Events(self: &mut, lp: &mut Loop) usize {
-    var evs = List[H3Event].empty();
+    var evs = List[H3Event]();
     evs <-> h3evs;
     h3.turn(lp);
     let n = h3.takeEvents(&mut evs);
@@ -1703,9 +1703,9 @@ pub struct Client {
     let target = f.url.target();
     let authority = f.url.authority();
     var head = RequestHead.make(f.methodName(), target.view(), authority.view());
-    head.scheme = f.url.scheme.copy();
-    head.headers = f.headers.copy();
-    let body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength.empty()};
+    head.scheme = f.url.scheme.clone();
+    head.headers = f.headers.clone();
+    let body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()))} else {BodyLength()};
     f.timing.dispatched = Instant.now();
     f.timing.attempts = f.timing.attempts + 1u32;
     f.timing.reused = p.uses > 1u32;
@@ -1936,8 +1936,8 @@ pub struct Client {
       self.finishFetch(lp, fi, endFailed, Some[Failure](Failure.make(Stage.Redirect, 0u32, ErrorKind.TooLarge, d.view())));
       return;
     }
-    var next = Url.empty();
-    var why = String.empty();
+    var next = Url();
+    var why = String();
     match f.url.resolve(f.location.view()) {
       case let Ok(r) {next = r;}
       case let Err(x) {why = x.message();}
@@ -1956,8 +1956,8 @@ pub struct Client {
       ((status == 301u16 || status == 302u16) && f.method == Method.Post);
     if toGet && f.method != Method.Get {
       f.method = Method.Get;
-      f.methodText = String.empty();
-      f.body = String.empty();
+      f.methodText = String();
+      f.body = String();
       f.headers.remove("Content-Type");
       f.headers.remove("Content-Encoding");
       f.headers.remove("Content-Language");
@@ -1970,7 +1970,7 @@ pub struct Client {
       f.headers.remove("Cookie");
     }
     if !next.hasFragment && f.url.hasFragment {
-      next.fragment = f.url.fragment.copy();
+      next.fragment = f.url.fragment.clone();
       next.hasFragment = true;
     }
     f.url = next;
@@ -1990,9 +1990,9 @@ pub struct Client {
   pub fn fetchWhole(self: &mut, lp: &mut Loop, req: Request, limit: usize, file: &Array[u8] = srcFile(), line: u32 = srcLine()) Response {
     let id = self.send(lp, req, Sink.Here(0u64), file, line);
     var resp = Response.blank();
-    var others = List[Event].empty();
+    var others = List[Event]();
     var going = true;
-    var evs = List[Event].empty();
+    var evs = List[Event]();
     while going {
       self.poll(lp, forever(), &uni evs);
       each e in evs.drain() {
@@ -2076,7 +2076,7 @@ pub fn getWhole(text: &str, limit: usize) Response {
   var c = Client.make(Config.make());
   var r = c.fetchWhole(&mut lp, Request.get(text), limit);
   c.abortAll(&mut lp);
-  var evs = List[Event].empty();
+  var evs = List[Event]();
   c.pump(&mut lp, &uni evs);
   r
 }
@@ -2088,7 +2088,7 @@ pub fn getWhole(text: &str, limit: usize) Response {
 // The ALPN list a client's TLS offers: the config's, with "h2" put first
 // when it offers HTTP/2 (unless already there) and taken out when it does not
 fn alpnFor(names: &List[String], http2: bool) List[String] {
-  var out = List[String].empty();
+  var out = List[String]();
   var has = false;
   var k = 0usize;
   while k < names.len() {
@@ -2098,7 +2098,7 @@ fn alpnFor(names: &List[String], http2: bool) List[String] {
   if http2 && !has {out.push(String.from("h2"));}
   k = 0usize;
   while k < names.len() {
-    if http2 || names[k].view() != "h2" {out.push(names[k].copy());}
+    if http2 || names[k].view() != "h2" {out.push(names[k].clone());}
     k = k + 1usize;
   }
   out

@@ -152,7 +152,7 @@ pub fn @intrinsic readRaw[T](p: *T) T {*p}
 		and a body for it is an error. The compiler's <span class="pre">--intrinsic-fallback</span> option runs every
 		fallback body in place of the compiler's own implementation, so that the two can be tested to agree.</p>
 	<p>Today's LLVM back end implements every intrinsic itself. Those with a fallback body are
-		<span class="pre">readRaw</span>, <span class="pre">moveRaw</span>, the atomic operations and
+		<span class="pre">readRaw</span>, <span class="pre">moveRaw</span>, <span class="pre">moveRawInto</span>, the atomic operations and
 		<a href="#bits">an integer's bit operations</a>.</p>
 
 	<h2 id="memory">Sizes, finalizing and raw memory</h2>
@@ -314,7 +314,11 @@ fn @intrinsic sliceFromPartsUni[T](p: *T, len: usize) &amp;uni Array[T]
 		<span class="pre">p</span>: read-only from <span class="pre">sliceFromParts</span>, writable from
 		<span class="pre">sliceFromPartsMut</span>, and writable and the only way to reach them from
 		<span class="pre">sliceFromPartsUni</span>. A <span class="pre">len</span> of 0 gives an empty slice, whatever
-		<span class="pre">p</span> is.</p>
+		<span class="pre">p</span> is. A slice's address is never null, because an
+		<span class="pre">Option</span> of a slice reads a null address as <span class="pre">None</span>: where
+		<span class="pre">p</span> is null (an unallocated list's, say) the slice's address is instead the
+		alignment of <span class="pre">T</span>, an address that holds no value and that nothing reads, so an empty
+		slice is still <span class="pre">Some</span>.</p>
 	<p>Needs trust: the <span class="pre">len</span> values must be initialized, lie in one allocation, and stay
 		there, unmoved and unfreed, for as long as the slice is used, which the compiler cannot see. A writable slice
 		must be the only way those values are reached while it is used, and a <span class="pre">&amp;uni</span> one
@@ -381,6 +385,23 @@ fn @intrinsic moveRaw[T](to: *T, from: *T, count: usize)
 		<span class="pre">from</span> must be live. Fallback: a loop of <span class="pre">readRaw</span> and
 		<span class="pre">writeRaw</span>, running upward when <span class="pre">to</span> is below
 		<span class="pre">from</span> and downward otherwise. The LLVM back end does it as one block move.</p>
+	<p>It tells a collector nothing, so it is for a move that stays inside one container (a shift, a swap, a merge
+		through a scratch block): a collector traces a container whole. A move into a different container is
+		<span class="pre">moveRawInto</span>.</p>
+
+	<h3 id="moverawinto">moveRawInto</h3>
+<pre>
+fn @intrinsic moveRawInto[T](to: *T, from: *T, count: usize)
+</pre>
+	<p>The same move, for values going from one container into another, as
+		<span class="pre">List.appendList</span> does. Afterwards each value now at <span class="pre">to</span> is handed
+		to the write barrier of any traced region it refers into, as <span class="pre">writeRaw</span> hands its value: a
+		collector that marks while the program runs may have finished with the container <span class="pre">to</span> is
+		in, and without the barrier would never reach a reference moved into it from a container it has not yet
+		reached. A <span class="pre">T</span> holding no such reference gets the plain block move. It needs the same
+		trust as <span class="pre">moveRaw</span>, and refuses a <span class="pre">T</span> holding a traced
+		reference in the same way. Fallback: <span class="pre">moveRaw</span>'s, which writes through
+		<span class="pre">writeRaw</span>.</p>
 
 	<h2 id="source">Where the code is, and what the build is</h2>
 	<p>These are declared at core's top level, not in <span class="pre">mem</span>, and every module calls them

@@ -71,8 +71,8 @@ extern {
 const synchronize = 0x100000u32;     // SYNCHRONIZE
 
 // The answer for this system: Windows' or POSIX's
-fn os(windows: &str, posix: &str) &str { if isWindows() {windows} else {posix} }
-fn osCode(windows: u64, posix: u64) u64 { if isWindows() {windows} else {posix} }
+fn os(windows: &str, posix: &str) &str { #if #os == .windows {windows} #else {posix} }
+fn osCode(windows: u64, posix: u64) u64 { #if #os == .windows {windows} #else {posix} }
 
 // A line end as the C runtime's text mode writes it: '\r\n' on Windows
 fn eol() &str { os("\r\n", "\n") }
@@ -80,20 +80,20 @@ fn eol() &str { os("\r\n", "\n") }
 // The folder under which the test works: TEMP's on Windows, TMPDIR's or /tmp
 fn tempText() String {
   var variable: cstr = "TMPDIR";
-  if isWindows() { variable = "TEMP"; }
+  #if #os == .windows { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null || !isWindows(), "TEMP is set");
+  require(#if #os == .windows {temp != null} #else {true}, "TEMP is set");
   if temp != null {String.from(cstr.fromPtr(temp).view())} else {String.from("/tmp")}
 }
 
 // A system's own spelling of a program to sleep, in milliseconds
 fn pause(ms: u32) {
-  if isWindows() {Sleep(ms);} else {usleep(ms * 1000u32);}
+  #if #os == .windows {Sleep(ms);} #else {usleep(ms * 1000u32);}
 }
 
 // This process's id
 fn processId() u32 {
-  if isWindows() {GetCurrentProcessId()} else {u32.from(getpid())}
+  #if #os == .windows {GetCurrentProcessId()} #else {u32.from(getpid())}
 }
 
 // -------- the child --------
@@ -149,7 +149,7 @@ fn childArgs(a: &List[String], argc: i32, argv: **u8) i32 {
 // Bytes as hex, two digits each, so that nothing the C runtime's text mode
 // does to a line end can change them on the way back
 fn hexOf(s: &Array[u8]) String {
-  var h = String.empty();
+  var h = String();
   var i = 0usize;
   while i < s.len {
     h.appendHex(u64.from(s[i]), 2usize);
@@ -189,7 +189,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
   }
   if mode.equals("exit") {
     libc.fflush(libc.stdout());
-    if isWindows() {ExitProcess(u32.from(number(&a[3usize])));} else {_exit(i32.from(number(&a[3usize])));};
+    #if #os == .windows {ExitProcess(u32.from(number(&a[3usize])));} #else {_exit(i32.from(number(&a[3usize])));};
   }
   if mode.equals("streams") { return childStreams(usize.from(number(&a[3usize]))); }
   if mode.equals("panic") {
@@ -201,7 +201,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     // Windows, SIGTRAP on POSIX
     out("before the breakpoint\n");
     libc.fflush(libc.stdout());
-    if isWindows() {DebugBreak();} else {raise(5i32);};
+    #if #os == .windows {DebugBreak();} #else {raise(5i32);};
     return 0i32;
   }
   if mode.equals("sleep") {
@@ -211,7 +211,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
   }
   if mode.equals("grandchild") {
     // Says who it is, then sleeps
-    var id = String.empty();
+    var id = String();
     id.appendUInt(u64.from(processId()));
     let idPath = Path.from(a[3usize].view());
     if fs.writeFile(&idPath, id.view()) is Err {
@@ -223,12 +223,12 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
   }
   if mode.equals("tree") {
     // Starts a grandchild sharing its output, and waits for it
-    var g = List[String].empty();
-    g.push(a[0usize].copy());
+    var g = List[String]();
+    g.push(a[0usize].clone());
     g.push(String.from("--child"));
     g.push(String.from("grandchild"));
-    g.push(a[3usize].copy());
-    g.push(a[4usize].copy());
+    g.push(a[3usize].clone());
+    g.push(a[4usize].clone());
     let r = process.run(g.view(), process.Options(inherit: true));
     out("the grandchild ended\n");
     return 0i32;
@@ -249,7 +249,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
       total = total + u64.from(n);
       n = libc.fread(bp, 1usize, 256usize, libc.stdin());
     }
-    var s = String.empty();
+    var s = String();
     s.appendUInt(total);
     out(s.view());
     return 0i32;
@@ -259,7 +259,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
     // inherited, before any C runtime converts it. Windows keeps UTF-16;
     // POSIX keeps the bytes
     let name = a[3usize].view();
-    if isWindows() {
+    #if #os == .windows {
       var wname = Array[u16, 64]() <- fill 0u16;
       var i = 0usize;
       while i < name.len && i < 63usize {
@@ -272,7 +272,7 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
         out("<none>");
         return 0i32;
       }
-      var s = String.empty();
+      var s = String();
       i = 0usize;
       while i < usize.from(n) {
         if i > 0usize { s.appendByte(' '); }
@@ -281,22 +281,23 @@ fn child(a: &List[String], argc: i32, argv: **u8) i32 {
       }
       out(s.view());
       return 0i32;
-    }
-    var cname = String.from(name);
-    let held = libc.getenv(cname.cstr());
-    if held == null {
-      out("<none>");
+    } #else {
+      var cname = String.from(name);
+      let held = libc.getenv(cname.cstr());
+      if held == null {
+        out("<none>");
+        return 0i32;
+      }
+      var s = String();
+      var j = 0usize;
+      while held[j] != 0u8 {
+        if j > 0usize { s.appendByte(' '); }
+        s.appendUInt(u64.from(held[j]));
+        j = j + 1usize;
+      }
+      out(s.view());
       return 0i32;
     }
-    var s = String.empty();
-    var j = 0usize;
-    while held[j] != 0u8 {
-      if j > 0usize { s.appendByte(' '); }
-      s.appendUInt(u64.from(held[j]));
-      j = j + 1usize;
-    }
-    out(s.view());
-    return 0i32;
   }
   if mode.equals("envget") {
     // The same variable as the env package reads it, its UTF-8 in hex
@@ -330,7 +331,7 @@ fn makeRoot(name: &str) Path {
 
 // This executable, '--child' and a mode
 fn childCommand(exe: &str, mode: &str) List[String] {
-  var c = List[String].empty();
+  var c = List[String]();
   c.push(String.from(exe));
   c.push(String.from("--child"));
   c.push(String.from(mode));
@@ -338,7 +339,7 @@ fn childCommand(exe: &str, mode: &str) List[String] {
 }
 
 fn emptyOutput() process.Output {
-  process.Output(0u32, 0u32, false, String.empty(), String.empty())
+  process.Output(0u32, 0u32, false, String(), String())
 }
 
 // The Output of a run that must have started
@@ -385,9 +386,9 @@ fn captured(exe: &str) {
 
 fn exitsWith(exe: &str, code: u64) {
   var c = childCommand(exe, "exit");
-  var n = String.empty();
+  var n = String();
   n.appendUInt(code);
-  c.push(n.copy());
+  c.push(n.clone());
   var label = String.from("exit code ");
   label.append(n.view());
   let o = ran(process.run(c.view()), label.view());
@@ -452,12 +453,12 @@ fn crashesUnreported(exe: &str) {
   // UTF-16 (the rest of its environment is this test's: 'environment').
   // POSIX has no such variable added: the child's environment is this
   // program's, here a variable set for the purpose
-  if !isWindows() { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
+  #if #os != .windows { env.set("CONE_PROCESS_TEST_PLAIN", "1"); }
   var v = childCommand(exe, "env");
   v.push(String.from(os("_NO_DEBUG_HEAP", "CONE_PROCESS_TEST_PLAIN")));
   let heap = ran(process.run(v.view(), process.Options(crashReport: false)), "unreported env");
   expectStr(heap.stdout.view(), "49", "_NO_DEBUG_HEAP=1, crashes unreported");
-  if !isWindows() { env.unset("CONE_PROCESS_TEST_PLAIN"); }
+  #if #os != .windows { env.unset("CONE_PROCESS_TEST_PLAIN"); }
 
   let h = childCommand(exe, "hello");
   let o2 = ran(process.run(h.view(), process.Options(crashReport: false)), "unreported hello");
@@ -546,14 +547,14 @@ fn treeStopped(exe: &str, root: &Path) {
   }
   require(id != 0u64, "the grandchild said who it was");
   var gone = false;
-  if isWindows() {
+  #if #os == .windows {
     let h = OpenProcess(synchronize, 0i32, u32.from(id));
     gone = h == 0usize;
     if !gone {
       gone = WaitForSingleObject(h, 3000u32) == 0u32;
       CloseHandle(h);
     }
-  } else {
+  } #else {
     // Signal 0 only asks whether the process is there: gone within three
     // seconds (init reaps it when its parent, killed too, has left it)
     var waited = 0u32;
@@ -589,7 +590,7 @@ fn workingFolder(exe: &str, root: &Path) {
   // The same folder written with '\' (on POSIX, where '\' is a name's byte,
   // with a '/' after it)
   var back = String.from(root.view());
-  if isWindows() { back.replaceByte('/', '\\'); } else { back.appendByte('/'); }
+  #if #os == .windows { back.replaceByte('/', '\\'); } #else { back.appendByte('/'); }
   let backPath = Path.from(back.view());
   let b = ran(process.run(c.view(), process.Options(), &backPath), "cwd with backslashes");
   expectStr(b.stdout.view(), root.view(), "a folder written with '\\'");
@@ -608,11 +609,11 @@ fn workingFolder(exe: &str, root: &Path) {
   var rel = childCommand(os(".\\children.exe", "./children"), "cwd");
   let r = ran(process.run(rel.view(), process.Options(), root), "relative program");
   expectStr(r.stdout.view(), root.view(), "a relative program, read from this program's folder");
-  var oldPath = String.empty();
-  if !isWindows() {
+  var oldPath = String();
+  #if #os != .windows {
     let exeFolder = Path.from(exe).parent();
     match env.get("PATH") {
-      case let Some(held) { oldPath = held.copy(); }
+      case let Some(held) { oldPath = held.clone(); }
       case is None {}
     }
     var searched = String.from(exeFolder.view());
@@ -623,7 +624,7 @@ fn workingFolder(exe: &str, root: &Path) {
   var bare = childCommand("children", "cwd");
   let n = ran(process.run(bare.view(), process.Options(), root), "program with no extension");
   expectStr(n.stdout.view(), root.view(), "a program named with no '.exe'");
-  if !isWindows() { env.set("PATH", oldPath.view()); }
+  #if #os != .windows { env.set("PATH", oldPath.view()); }
 
   // 'runLine' takes the folder the same way
   var line = String.from("\"");
@@ -681,7 +682,7 @@ fn environment(exe: &str) {
 // Every string of up to four of these
 fn allStrings(list: &mut List[String]) {
   let alphabet: &Array[u8] = "a \t\"\\";
-  list.push(String.empty());
+  list.push(String());
   var from = 0usize;
   var len = 1usize;
   while len <= 4usize {
@@ -690,7 +691,7 @@ fn allStrings(list: &mut List[String]) {
     while i < end {
       var j = 0usize;
       while j < alphabet.len {
-        var s = list[i].copy();
+        var s = list[i].clone();
         s.appendByte(alphabet[j]);
         list.push(s);
         j = j + 1usize;
@@ -704,7 +705,7 @@ fn allStrings(list: &mut List[String]) {
 
 // What the child printed, split after each ','
 fn splitComma(s: &String) List[String] {
-  var parts = List[String].empty();
+  var parts = List[String]();
   var start = 0usize;
   var i = 0usize;
   while i < s.len() {
@@ -721,7 +722,7 @@ fn roundTrip(exe: &str, items: &List[String], label: &Array[u8]) {
   var c = childCommand(exe, "args");
   var i = 0usize;
   while i < items.len() {
-    c.push(items[i].copy());
+    c.push(items[i].clone());
     i = i + 1usize;
   }
   let o = ran(process.run(c.view()), label);
@@ -749,19 +750,19 @@ fn roundTrip(exe: &str, items: &List[String], label: &Array[u8]) {
 }
 
 fn arguments(exe: &str) {
-  var every = List[String].empty();
+  var every = List[String]();
   allStrings(&mut every);
   expectUInt(u64.from(every.len()), 781u64, "every string of up to four");
   roundTrip(exe, &every, "every string of up to four of a, space, tab, quote, backslash");
 
-  var some = List[String].empty();
+  var some = List[String]();
   some.push(String.from("é"));
   some.push(String.from("日本 語"));
   some.push(String.from("C:\\dir with space\\"));
   some.push(String.from("\\\\server\\share\\"));
   some.push(String.from("a\\\\\\\"b"));
   some.push(String.from("\"\""));
-  some.push(String.empty());
+  some.push(String());
   some.push(String.from("line\nbreak"));
   some.push(String.from("--flag=a b"));
   roundTrip(exe, &some, "UTF-8, paths, quotes, the empty string, a line break");
@@ -797,7 +798,7 @@ fn inherited(exe: &str) {
 }
 
 fn failures(exe: &str, root: &Path) {
-  var none = List[String].empty();
+  var none = List[String]();
   none.push(String.from("cone-process-test-no-such-program"));
   let r = process.run(none.view());
   failedWith(r, "", "", 2u32,
@@ -823,7 +824,7 @@ fn failures(exe: &str, root: &Path) {
     case is Ok { expect(false, "no such folder fails"); }
   }
   // A literal folder that is not there, too
-  if isWindows() {
+  #if #os == .windows {
     match process.run(c.view(), process.Options(), "C:\\cone-process-test-no-such-folder") {
       case let Err(e) {
         expectStr(e.dir.view(), "C:\\cone-process-test-no-such-folder", "a literal folder held by the error");
@@ -831,7 +832,7 @@ fn failures(exe: &str, root: &Path) {
       }
       case is Ok { expect(false, "a literal folder not there fails"); }
     }
-  } else {
+  } #else {
     match process.run(c.view(), process.Options(), "/cone-process-test-no-such-folder") {
       case let Err(e) {
         expectStr(e.dir.view(), "/cone-process-test-no-such-folder", "a literal folder held by the error");
@@ -841,7 +842,7 @@ fn failures(exe: &str, root: &Path) {
     }
   }
 
-  var empty = List[String].empty();
+  var empty = List[String]();
   failedWith(process.run(empty.view()), "", "", u32.from(osCode(87u64, 22u64)),
     os("run: The parameter is incorrect", "run: Invalid argument"), "no arguments");
 
@@ -854,10 +855,10 @@ fn failures(exe: &str, root: &Path) {
   // the child its bytes as they are
   var bad = childCommand(exe, "args");
   bad.push(String.from("\xFF"));
-  if isWindows() {
+  #if #os == .windows {
     failedWith(process.run(bad.view()), exe, "", 1113u32,
       "run <exe>: No mapping for the Unicode character exists in the target multi-byte code page", "not UTF-8");
-  } else {
+  } #else {
     let passed = ran(process.run(bad.view()), "not UTF-8");
     expectStr(passed.stdout.view(), "ff,", "not UTF-8");
     expectUInt(u64.from(passed.exitCode), 0u64, "not UTF-8 exit code");
@@ -865,7 +866,7 @@ fn failures(exe: &str, root: &Path) {
 
   // A '"' in the program's name: Windows cannot write it on its command line;
   // POSIX has no such rule, and the program is just not there
-  var quoted = List[String].empty();
+  var quoted = List[String]();
   quoted.push(String.from("a\"b"));
   failedWith(process.run(quoted.view()), "", "", u32.from(osCode(123u64, 2u64)),
     os("run a\"b: The filename, directory name, or volume label syntax is incorrect",
@@ -914,7 +915,7 @@ fn main(argc: i32, argv: **u8) i32 {
   // strerror gives one on POSIX), never 'Windows error N'
   let odd = process.ProcessError(String.from("run"), String.from("x"), Path.from(""), 12345678u32).message();
   expect(odd.contains("12345678") && !odd.contains("Windows error")
-    && (!isWindows() || odd.endsWith(": other, OS error 12345678")), "the wording of IoError.describe() for a number with no text");
+    && (#if #os == .windows {odd.endsWith(": other, OS error 12345678")} #else {true}), "the wording of IoError.describe() for a number with no text");
 
   let removed = fs.removeAll(&root);
   expect(removed is Ok, "the test's folder removed");

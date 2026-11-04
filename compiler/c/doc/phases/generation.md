@@ -576,7 +576,11 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   A slice or a virtual reference is two words, and the value is that pair: its
   first word, the pointer, null is the empty variant, so the literal writes that
   word and the variant test (`genlIsType`) and the drop read it, the second word
-  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
+  left alone. That is why no slice may be made with a null pointer word, empty
+  or not: the only place a slice is made from a raw pointer, the `sliceFromParts`
+  intrinsics, swaps a null pointer for the element's alignment as an address
+  (Rust's `NonNull::dangling()`), and every other slice (a sub-slice, a
+  reference to an array) derives from a non-null one. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
@@ -1148,8 +1152,17 @@ into — gets it as surely as one through a `R` reference.
   run beside cannot have been finished with. A declared init's stores into
   its `self` are stores through a reference, and get it. `mem.writeRaw` gets it
   too, for the value it wrote: a collection's push of a reference into its
-  block is such a store. `mem.moveRaw` gets none: it moves what was stored
-  already.
+  block is such a store. `mem.moveRaw` gets none, and is for moves inside one
+  container only (a shift, a swap, a merge through a scratch block): a collector
+  traces a container whole (`propagateOne`), so a reference moved within it is
+  neither hidden from a collector that has finished with the container nor from
+  one that has not. A move from one container into another (`appendList`,
+  `appendSlice`, the parallel builder's piece join) hides a reference from a
+  collector that has marked the destination but not the source, so it uses
+  `mem.moveRawInto`: the same block move, then `genlBarrierAt` over each of the
+  `count` values now at the destination, in a loop, emitted only where the
+  element type holds a reference into a region with a `writeBarrier`
+  (`itypeHoldsBarriered`); for any other element type it is the plain block move.
 - **What.** `genlBarrierAt` walks the value just stored, at its destination,
   with the trace's walk (`genlTraceWalk`), handing each reference into a
   region with a `writeBarrier` to it as the header of what it points at

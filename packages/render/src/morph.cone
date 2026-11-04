@@ -126,10 +126,10 @@ pub struct MorphTargets {
 
   // No targets, over a mesh of 'vertexCount' vertices
   pub fn empty(vertexCount: usize) MorphTargets {
-    var starts = List[u32].empty();
+    var starts = List[u32]();
     starts.push(0u32);
-    MorphTargets(vertexCount, starts, List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(),
-      List[Vec3].empty(), List[f32].empty())
+    MorphTargets(vertexCount, starts, List[u32](), List[Vec3](), List[Vec3](),
+      List[Vec3](), List[f32]())
   }
 
   // How many targets
@@ -181,9 +181,9 @@ pub struct MorphTargets {
   pub fn addSparse(self: &mut, indices: &List[u32], positions: &List[Vec3], normals: &List[Vec3],
       tangents: &List[Vec3]) usize {
     let zero = Vec3(0., 0., 0.);
-    var dp = List[Vec3].empty();
-    var dn = List[Vec3].empty();
-    var dt = List[Vec3].empty();
+    var dp = List[Vec3]();
+    var dn = List[Vec3]();
+    var dt = List[Vec3]();
     var v = 0usize;
     while v < vertexCount {
       dp.push(zero);
@@ -348,7 +348,7 @@ pub struct Morpher {
     var shader = device.createShaderModule(&MORPH_SPIRV);
     let desc = ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "morphMain");
     var pipeline = device.createComputePipeline(&desc);
-    Morpher(shader, groupLayout, layout, pipeline, Pool[MorphSetSlot].empty(), Pool[MorphCopySlot].empty(), List[MorphHandle].empty(), 0u32)
+    Morpher(shader, groupLayout, layout, pipeline, Pool[MorphSetSlot](), Pool[MorphCopySlot](), List[MorphHandle](), 0u32)
   }
 
   pub fn isValid(self: &) bool { pipeline.isValid() }
@@ -360,7 +360,7 @@ pub struct Morpher {
   pub fn addSet(self: &mut, device: &mut Device, targets: &MorphTargets, base: &Mesh) MorphSetHandle {
     let n = base.positions.len();
     if n == 0usize || n != targets.vertexCount { return MorphSetHandle.none(); }
-    var withNormals = Mesh.empty();
+    var withNormals = Mesh();
     withNormals.append(base);
     if withNormals.normals.len() != n { withNormals.computeSmoothNormals(); }
     let storage = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
@@ -368,7 +368,7 @@ pub struct Morpher {
     // The rows: for each vertex, the entries of every target that moves it,
     // by target. Counted, then filled in target order, which leaves each row
     // ascending by target.
-    var counts = List[u32].empty();
+    var counts = List[u32]();
     var v = 0usize;
     while v <= n {
       counts.push(0u32);
@@ -380,7 +380,7 @@ pub struct Morpher {
       counts.set(at + 1usize, *counts[at + 1usize] + 1u32);
       e = e + 1usize;
     }
-    var rows = List[u32].empty();
+    var rows = List[u32]();
     var run = 0u32;
     v = 0usize;
     while v <= n {
@@ -388,14 +388,14 @@ pub struct Morpher {
       rows.push(run);
       v = v + 1usize;
     }
-    var fill = List[u32].empty();
+    var fill = List[u32]();
     v = 0usize;
     while v < n {
       fill.push(*rows[v]);
       v = v + 1usize;
     }
-    var targetOf = List[u32].empty();
-    var deltas = List[f32].empty();
+    var targetOf = List[u32]();
+    var deltas = List[f32]();
     e = 0usize;
     while e < entries {
       targetOf.push(0u32);
@@ -433,7 +433,7 @@ pub struct Morpher {
       uploadWords(device, if entries > 0usize { bytesOf[f32](&deltas) } else { 0usize as *u8 }, u64.from(entries) * MORPH_ENTRY_BYTES, storage),
       uploadWords(device, bytesOf[Vec3](&withNormals.positions), u64.from(n) * 12u64, storage),
       uploadWords(device, bytesOf[Vec3](&withNormals.normals), u64.from(n) * 12u64, storage),
-      u32.from(n), u32.from(targets.count()), List[f32].empty());
+      u32.from(n), u32.from(targets.count()), List[f32]());
     t = 0usize;
     while t < targets.count() {
       slot.maxMove.push(*targets.maxMove[t]);
@@ -519,14 +519,14 @@ pub struct Morpher {
       BindGroupEntry.buffer(6u32, &g.positions),
       BindGroupEntry.buffer(7u32, &g.normals)];
     var group = device.createBindGroup(&self.groupLayout, &groupEntries);
-    var weights = List[f32].empty();
+    var weights = List[f32]();
     var t = 0u32;
     while t < targetCount {
       weights.push(0.);
       t = t + 1u32;
     }
     let copy = MorphCopySlot(set.slot, MeshHandle.none(), previous, active, group, weights,
-      List[f32].empty(), 0u32, g.radius, false, false);
+      List[f32](), 0u32, g.radius, false, false);
     let mesh = MeshHandle(renderer.meshes.add(MeshSlot(g, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
     var h = MorphHandle(copies.add(copy));
     copies[h.slot].mesh = mesh;
@@ -544,7 +544,7 @@ pub struct Morpher {
       device.queue.releaseBuffer(&mut c.previous);
       device.queue.releaseBuffer(&mut c.active);
     }
-    var kept = List[MorphHandle].empty();
+    var kept = List[MorphHandle]();
     var i = 0usize;
     while i < self.order.len() {
       if !(self.order[i].slot == h.slot) { kept.push(*self.order[i]); }
@@ -729,8 +729,8 @@ pub struct MorphMixer {
   hi: f32;
 
   pub fn make(targetCount: usize) MorphMixer {
-    MorphMixer(targetCount, List[f32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(),
-      List[u32].empty(), List[u32].empty(), List[u32].empty(), false, 0., 1.)
+    MorphMixer(targetCount, List[f32](), List[u32](), List[u32](), List[f32](),
+      List[u32](), List[u32](), List[u32](), false, 0., 1.)
   }
 
   // A new channel, at 0; its number

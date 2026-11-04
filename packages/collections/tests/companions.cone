@@ -1,0 +1,178 @@
+// List's dedup and dedupBy, and the statistics functions quantileSorted, quantile, median and
+// mean. Every expected value is worked out by hand:
+// - dedup keeps the first of each run of equals, so [1,1,2,2,2,1,3,3] has the runs 1 1 | 2 2 2 |
+//   1 | 3 3 and becomes [1,2,1,3]; a repeat that is not next to its twin stays;
+// - dedupBy finalizes each dropped value, first to last, and keeps the order of the rest;
+// - a quantile q of n sorted values lies at the rank q * (n - 1), between the values at the
+//   floor and the next, that share of the way. For 1 2 3 4: q 0.5 is rank 1.5, halfway between
+//   2 and 3, 2.5; q 0.25 is rank 0.75, 1 + 0.75 = 1.75; q 0.95 is rank 2.85, 3 + 0.85 = 3.85.
+//   For 1 3 5 7 9: q 0.25 is rank 1, exactly 3; q 0.9 is rank 3.6, 7 + 0.6 * 2 = 8.2.
+//   For -3 -1 2: q 0.75 is rank 1.5, -1 + 0.5 * 3 = 0.5.
+// - an empty input answers NaN, a q below 0 or above 1 the first or last value.
+
+mod companions;
+
+import testing use *;
+import collections use *;
+
+fn isNan(x: f64) bool { x != x }
+
+fn ints(l: &List[i64]) i64 {
+  // the list read as decimal digits, first to last (digits only)
+  var n = 0i64;
+  var i = 0usize;
+  while i < l.len() { n = n * 10i64 + *l[i]; i = i + 1usize; }
+  n
+}
+
+// A key to dedup by, and which one it was
+struct Pair {
+  pub key: i64;
+  pub seq: i64;
+}
+
+fn sameKey(a: &Pair, b: &Pair) bool { a.key == b.key }
+
+var @threadlocal log = 0i64;
+
+struct Fin {
+  pub n: i64;
+  pub id: i64;
+  fn final(self: &uni) { log = log * 10i64 + id; }
+}
+
+fn sameN(a: &Fin, b: &Fin) bool { a.n == b.n }
+
+fn finDedup() {
+  // (n, id): (1,1) (1,2) (2,3) (2,4) (2,5); the dropped are ids 2, 4, 5
+  var l = List[Fin]() <- Fin(1, 1), Fin(1, 2), Fin(2, 3), Fin(2, 4), Fin(2, 5);
+  l.dedupBy(&sameN);
+  expectInt(log, 245, "the dropped are finalized first to last");
+  expectUInt(u64.from(l.len()), 2, "two remain");
+  expectInt(l[0usize].id, 1, "the first of the first run stays");
+  expectInt(l[1usize].id, 3, "the first of the second run stays");
+}
+
+fn main() i32 {
+  // dedup on integers
+  var e = List[i64]();
+  e.dedup();
+  expectUInt(u64.from(e.len()), 0, "dedup of an empty list");
+
+  var one = List[i64]() <- 7;
+  one.dedup();
+  expectUInt(u64.from(one.len()), 1, "dedup of one value");
+
+  var same = List[i64]() <- 5, 5, 5, 5;
+  same.dedup();
+  expectUInt(u64.from(same.len()), 1, "all equal leaves one");
+  expectInt(*same[0usize], 5, "all equal leaves the value");
+
+  var distinct = List[i64]() <- 1, 2, 3;
+  distinct.dedup();
+  expectInt(ints(&distinct), 123, "no duplicates changes nothing");
+
+  var mixed = List[i64]() <- 1, 1, 2, 2, 2, 1, 3, 3;
+  mixed.dedup();
+  expectInt(ints(&mixed), 1213, "mixed: runs collapse, a later repeat stays");
+
+  var pair = List[i64]() <- 1, 2, 1, 2;
+  pair.dedup();
+  expectInt(ints(&pair), 1212, "equal but not adjacent stays");
+
+  var ends = List[i64]() <- 4, 4, 9, 8, 8;
+  ends.dedup();
+  expectInt(ints(&ends), 498, "runs at both ends");
+
+  // a float: equal by ==, so a NaN is never equal and none is dropped
+  var fl = List[f64]() <- 1.5, 1.5, 2.5, 2.5, 1.5;
+  fl.dedup();
+  expectUInt(u64.from(fl.len()), 3, "floats: three runs");
+  expectFloat(*fl[0usize], 1.5, 0.0, "floats: first");
+  expectFloat(*fl[1usize], 2.5, 0.0, "floats: second");
+  expectFloat(*fl[2usize], 1.5, 0.0, "floats: third");
+  let nan = 0.0 / 0.0;
+  var nans = List[f64]() <- nan, nan;
+  nans.dedup();
+  expectUInt(u64.from(nans.len()), 2, "NaNs are not equal to each other");
+
+  // dedupBy keeps the first of each run (by its seq)
+  var ps = List[Pair]() <- Pair(1, 0), Pair(1, 1), Pair(2, 2), Pair(1, 3), Pair(1, 4), Pair(3, 5);
+  ps.dedupBy(&sameKey);
+  expectUInt(u64.from(ps.len()), 4, "dedupBy: four runs");
+  expectInt(ps[0usize].seq, 0, "dedupBy: first of run 1");
+  expectInt(ps[1usize].seq, 2, "dedupBy: run 2");
+  expectInt(ps[2usize].seq, 3, "dedupBy: first of run 3");
+  expectInt(ps[3usize].seq, 5, "dedupBy: last run");
+
+  // a closure may say what "the same" means: within 1 of the value kept
+  var near = List[i64]() <- 1, 2, 3, 10, 11, 20;
+  near.dedupBy(fn(a: &i64, b: &i64) bool { *b - *a <= 1 });
+  // 1 kept; 2 is within 1 of 1, dropped; 3 is 2 from 1 (the kept), stays; 10 stays; 11 is within 1 of 10, dropped;
+  // 20 stays. So 1 3 10 20, and digits 1,3,10,20 read as 1*10+3 = 13, *10+10 = 140, *10+20 = 1420
+  expectInt(ints(&near), 1420, "dedupBy by a closure, the kept values");
+
+  finDedup();
+  expectInt(log, 24513, "the rest die first to last at the end");
+
+  // quantileSorted
+  var s4 = List[f64]() <- 1.0, 2.0, 3.0, 4.0;
+  expectFloat(quantileSorted(s4.view(), 0.0), 1.0, 0.0, "q 0 is the first");
+  expectFloat(quantileSorted(s4.view(), 1.0), 4.0, 0.0, "q 1 is the last");
+  expectFloat(quantileSorted(s4.view(), 0.5), 2.5, 1e-12, "q 0.5 of four is between the middle two");
+  expectFloat(quantileSorted(s4.view(), 0.25), 1.75, 1e-12, "q 0.25 interpolates");
+  expectFloat(quantileSorted(s4.view(), 0.95), 3.85, 1e-12, "q 0.95 interpolates");
+  expectFloat(quantileSorted(s4.view(), -1.0), 1.0, 0.0, "q below 0 is the first");
+  expectFloat(quantileSorted(s4.view(), 2.0), 4.0, 0.0, "q above 1 is the last");
+  expect(isNan(quantileSorted(s4.view(), 0.0 / 0.0)), "a NaN q answers NaN");
+  var s5 = List[f64]() <- 1.0, 3.0, 5.0, 7.0, 9.0;
+  expectFloat(quantileSorted(s5.view(), 0.25), 3.0, 0.0, "q at a whole rank is that value");
+  expectFloat(quantileSorted(s5.view(), 0.5), 5.0, 0.0, "median of five");
+  expectFloat(quantileSorted(s5.view(), 0.9), 8.2, 1e-12, "q 0.9 of five");
+  var s1 = List[f64]() <- 7.0;
+  expectFloat(quantileSorted(s1.view(), 0.3), 7.0, 0.0, "one value is every quantile");
+  var neg = List[f64]() <- -3.0, -1.0, 2.0;
+  expectFloat(quantileSorted(neg.view(), 0.75), 0.5, 1e-12, "negative values interpolate");
+  var flat = List[f64]() <- 2.0, 2.0, 2.0, 2.0;
+  expectFloat(quantileSorted(flat.view(), 0.4), 2.0, 0.0, "equal neighbours answer that value");
+  var none = List[f64]();
+  expect(isNan(quantileSorted(none.view(), 0.5)), "an empty input answers NaN");
+
+  // quantile, from any order; the same answers
+  var u5 = List[f64]() <- 9.0, 1.0, 5.0, 3.0, 7.0;
+  expectFloat(quantile(u5.viewMut(), 0.25), 3.0, 0.0, "unsorted q 0.25");
+  var u5b = List[f64]() <- 9.0, 1.0, 5.0, 3.0, 7.0;
+  expectFloat(quantile(u5b.viewMut(), 0.9), 8.2, 1e-12, "unsorted q 0.9");
+  var u5c = List[f64]() <- 9.0, 1.0, 5.0, 3.0, 7.0;
+  expectFloat(quantile(u5c.viewMut(), 0.0), 1.0, 0.0, "unsorted q 0");
+  var u5d = List[f64]() <- 9.0, 1.0, 5.0, 3.0, 7.0;
+  expectFloat(quantile(u5d.viewMut(), 1.0), 9.0, 0.0, "unsorted q 1");
+  var u4 = List[f64]() <- 4.0, 1.0, 3.0, 2.0;
+  expectFloat(quantile(u4.viewMut(), 0.95), 3.85, 1e-12, "unsorted q 0.95 of four");
+  var u4b = List[f64]() <- 4.0, 1.0, 3.0, 2.0;
+  expectFloat(quantile(u4b.viewMut(), 0.25), 1.75, 1e-12, "unsorted q 0.25 of four");
+  var emp = List[f64]();
+  expect(isNan(quantile(emp.viewMut(), 0.5)), "quantile of an empty input is NaN");
+
+  // median: odd and even lengths
+  var m5 = List[f64]() <- 5.0, 1.0, 4.0, 2.0, 3.0;
+  expectFloat(median(m5.viewMut()), 3.0, 0.0, "median of five");
+  var m4 = List[f64]() <- 4.0, 1.0, 3.0, 2.0;
+  expectFloat(median(m4.viewMut()), 2.5, 1e-12, "median of four");
+  var m1 = List[f64]() <- 7.0;
+  expectFloat(median(m1.viewMut()), 7.0, 0.0, "median of one");
+  var m2 = List[f64]() <- 8.0, 2.0;
+  expectFloat(median(m2.viewMut()), 5.0, 1e-12, "median of two");
+  var mneg = List[f64]() <- 2.0, -3.0, -1.0;
+  expectFloat(median(mneg.viewMut()), -1.0, 0.0, "median with negatives");
+  expect(isNan(median(emp.viewMut())), "median of an empty input is NaN");
+
+  // mean
+  var a4 = List[f64]() <- 1.0, 2.0, 3.0, 4.0;
+  expectFloat(mean(a4.view()), 2.5, 1e-12, "mean of four");
+  expectFloat(mean(s1.view()), 7.0, 0.0, "mean of one");
+  expectFloat(mean(neg.view()), -2.0 / 3.0, 1e-12, "mean with negatives");
+  expect(isNan(mean(none.view())), "mean of an empty input is NaN");
+
+  done()
+}

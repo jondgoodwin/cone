@@ -2827,8 +2827,7 @@ says how a collector reaches the values it holds where it points. So
 `itypeHoldsTraced` ("needs tracing") looks through owners and such types, and
 `itypeCannotTrace` ("cannot be traced", also infectious) marks a type holding a
 raw pointer to a value that needs tracing and declaring no `GcTraceElements`, or an owner a trace cannot pass through (a
-region with several owners and no `visit`; one whose value is behind an array
-body; a traced region declaring `writeBarrier`, whose stores a value behind an owner
+region with several owners and no `visit`; a traced region declaring `writeBarrier`, whose stores a value behind an owner
 does not make); both are remembered per struct (`holdstraced`, `cannottrace`,
 `holdsbarrier`) and answered where a cycle through an owner is reached again by
 settling the answers that waited on it where it was first asked
@@ -2836,7 +2835,7 @@ settling the answers that waited on it where it was first asked
 owning reference of a region that is not traced to a value holding a traced
 reference where the trace cannot pass through (`ErrorTracedHeld`); a global
 or static holding one (`ErrorTracedGlobal`); a call of `mem.writeRaw` or
-`mem.moveRaw` at a type holding one from a method of a type that declares no
+`mem.moveRaw` or `mem.moveRawInto` at a type holding one from a method of a type that declares no
 `GcTraceElements` (`ErrorTracedRaw`), the way an arena, a pool and a collection place their
 values and say how a collector reaches them, reported at the program's own
 instantiation where it was reached through a generic's body; a root (a local or

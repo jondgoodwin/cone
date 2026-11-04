@@ -1306,7 +1306,7 @@ an access conflicting with every loan of it: a holder still alive holding one
 — declared outside the block, or before the variable in it and so finalized
 after it — and used afterwards, is refused. That is the borrow kept past its
 source, `{ var a = 1i64; var b: &i64 = &zero; b = &a; r = b } *r`, or `{ var a
-= Arena.empty(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
+= Arena(); h = Holder(a.alloc(v)); } h.r`. A variable's lifetime
 follows what it holds now, so the stores themselves are legal, and so is
 `r` never used again after `a` ends; this is where a borrow kept past its
 source in a variable of the function is refused. A block handing a value on to a holder — its final
@@ -1599,6 +1599,14 @@ locals, which only a call that reaches one of them is asked of):
   reference was held to it where it became one (`shapeKeepsVia`, below), so a borrow into a
   collection survives the call. An unmarked one is the "body is not visible" case above, and its
   message says the mark would keep the borrow.
+- **A virtual reference held as a field, walked for what a type reaches** (`rcWalk`,
+  `reshape.c`): unmarked, it reaches "anything" (`ReachVirtual | ReachBorrowed`: a trait is
+  open, so an implementer may hold a shared owner of the very collection a borrow is into), so
+  every struct holding one, at any depth, reaches every container, and a call to code the
+  compiler cannot read that is handed such a struct is refused. One marked `+ ShapeKeeping`
+  reaches nothing more than the struct's other fields do, on the same promise as the call above,
+  held where the value becomes the reference (Bug 30; cancelgroups' registry of `Uni[Wakeup +
+  Sendable + ShapeKeeping]`). Tests: `collection_flow_traitfield_marked`, `_unmarked`, `_refuse`.
 - **Globals**: handed nothing that reaches the type, a visible callee still
   reshapes if it does so by something that is no parameter of its own
   (`SiModeOut`, which skips what is reached from the callee's parameters).

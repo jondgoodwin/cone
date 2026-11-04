@@ -39,11 +39,12 @@ const tokConn = 0x20000000u64;        // a client connection's: + its number
 const tokReq = 0x30000000u64;         // a request's: + its connection's number
 
 fn raiseFileLimit() {
-  if isWindows() {return;}
-  var l = RLimit(0u64, 0u64);
-  if getLimit(limitFiles, &mut l as *RLimit) == 0i32 && l.soft < l.hard {
-    l.soft = l.hard;
-    setLimit(limitFiles, &mut l as *RLimit);
+  #if #os != .windows {
+    var l = RLimit(0u64, 0u64);
+    if getLimit(limitFiles, &mut l as *RLimit) == 0i32 && l.soft < l.hard {
+      l.soft = l.hard;
+      setLimit(limitFiles, &mut l as *RLimit);
+    }
   }
 }
 
@@ -71,8 +72,8 @@ fn main() i32 {
   }
   require(port != 0u16, "the server listens");
 
-  var cs = List[ConnId].empty();
-  var held = List[ReqId].empty();
+  var cs = List[ConnId]();
+  var held = List[ReqId]();
   var connected = 0u64;
   var connectFails = 0u64;
   var requested = false;
@@ -80,7 +81,7 @@ fn main() i32 {
   var heldAtOnce = 0u64;
   var dones = 0u64;
   var bad = 0u64;
-  var events = List[Event].empty();
+  var events = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(60i64);
   while dones + bad < conns && Instant.now() < giveUp {
     // The connections, 64 at a time beyond those settled
@@ -94,7 +95,7 @@ fn main() i32 {
       requested = true;
       var k = 0usize;
       while k < cs.len() {
-        drv.request(&mut lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+        drv.request(&mut lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength(),
           Sink.Here(tokReq + u64.from(k)));
         k = k + 1usize;
       }

@@ -7,7 +7,7 @@
 //   import arena use *;
 //
 //   fn build() {
-//     mut a = Arena.empty();
+//     mut a = Arena();
 //     imm root = a.alloc(Node(0, null));
 //     imm leaf = a.alloc(Node(1, root as *Node));
 //     ...
@@ -34,10 +34,10 @@
 // one at work:
 //
 //   fn mostFrequent(text &Array[u8]) Answer {
-//     mut s = Arena.empty();                 // the scratch
-//     imm seen = s.alloc(List[&mut Tally].empty());
+//     mut s = Arena();                 // the scratch
+//     imm seen = s.alloc(List[&mut Tally]());
 //     ...count(&mut s, seen, word)...        // lent to the functions that work
-//     Answer(best.word.copy(), seen.len());  // only values of its own leave
+//     Answer(best.word.clone(), seen.len());  // only values of its own leave
 //   }   // every value in 's' dies here, then its blocks are freed
 //
 // An allocation loans nothing of the arena: Arena declares 'NoLoanMut' (a
@@ -46,7 +46,7 @@
 // from, read and borrowed while they are; a value allocated in it may even
 // hold a '&mut' of it. What an allocation held in a local keeps is the
 // arena's life: while one is still used, 'consume(a)', '{ imm b = a; }',
-// 'a <-> other' and 'a = Arena.empty()' are refused
+// 'a <-> other' and 'a = Arena()' are refused
 // (test/cases/region/region_flow_arena_freeze.cone).
 //
 // A borrow into a scratch held inside another value is checked as the bare
@@ -152,7 +152,7 @@
 // A value assigned over through the reference ('*r = v') is finalized as it
 // is replaced, as any value stored over is; the arena finalizes whatever the
 // slot holds when it dies. Assigning over the arena itself ('a =
-// Arena.empty()') tears the old one down first.
+// Arena()') tears the old one down first.
 
 mod arena;
 
@@ -350,15 +350,15 @@ fn regionResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, ali
 // Nothing is done with a block given back: the arena's blocks go together
 fn regionRelease(r: *MemRegion, block: *u8, bytes: usize) {}
 
-pub struct Arena is NoLoanMut, GcTraceElements {
+pub struct Arena is Default, NoLoanMut, GcTraceElements {
   // The arena's region, which the collections made in it point to: public so
   // that 'new a[T](...)' can hand it to what it makes (typelit.c). Not to be
   // changed.
   pub region: *MemRegion;
 
   // An arena holding nothing, with no block until the first value arrives
-  pub fn empty() Arena {
-    Arena(ArenaCore.make())
+  pub fn init(self: &new) {
+    *self = Arena(ArenaCore.make());
   }
 
   // An arena holding nothing yet, whose first block is allocated now, with
@@ -436,7 +436,7 @@ pub struct DynArena['=a] is NoLoanMut {
   // An arena holding nothing, of a brand of its own: ''=a' is named by no
   // parameter, so each call mints a fresh one for its caller
   pub fn empty() DynArena['=a] {
-    let a = Arena.empty();
+    let a = Arena();
     DynArena(a.region, a)
   }
 

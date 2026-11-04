@@ -345,8 +345,7 @@ static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef t
 }
 
 // '<=>' on two numbers: the i32 -1, 0 or 1 that is 'greater' minus 'less', each
-// a bool taken as 0 or 1. Two floats neither of which is greater or less than the
-// other, a NaN among them, answer 0.
+// a bool taken as 0 or 1. A float's are compared as IEEE total-order keys.
 static LLVMValueRef genlThreeWay(GenState *gen, LLVMValueRef greater, LLVMValueRef less) {
     LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
     return LLVMBuildSub(gen->builder, LLVMBuildZExt(gen->builder, greater, i32, ""),
@@ -518,7 +517,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case SliceFromPartsUniIntrinsic: {
         LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
         LLVMValueRef slice = LLVMGetUndef(slicetype);
-        slice = LLVMBuildInsertValue(gen->builder, slice, fnargs[0], 0, "sliceptr");
+        // A null pointer is the absence of an Option of a slice, so a slice
+        // never holds one: where there is no block (an unallocated List, a
+        // length of nothing) the pointer is the element's alignment, as Rust's
+        // NonNull::dangling(), aligned and never dereferenced. Every slice made
+        // from a raw pointer comes through here.
+        LLVMValueRef ptr = fnargs[0];
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
+        LLVMValueRef dangling = LLVMConstIntToPtr(LLVMConstInt(genlUsize(gen), align ? align : 1, 0), LLVMTypeOf(ptr));
+        ptr = LLVMBuildSelect(gen->builder, LLVMBuildIsNull(gen->builder, ptr, "noblock"), dangling, ptr, "sliceaddr");
+        slice = LLVMBuildInsertValue(gen->builder, slice, ptr, 0, "sliceptr");
         return LLVMBuildInsertValue(gen->builder, slice, fnargs[1], 1, "slice");
     }
 
@@ -536,11 +544,49 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         genlBarrierAt(gen, fnargs[0], type);
         return NULL;
 
-    // A block move of 'count' values, the two ranges free to overlap
+    // A block move of 'count' values, the two ranges free to overlap. It tells no
+    // write barrier: it is for a move that stays inside one container (a shift, a
+    // swap, a sort's merge), and a collector traces a container whole, so a
+    // reference moved within it is never hidden from a collector that has finished
+    // with the container. A move from one container into another is 'moveRawInto'
     case MoveRawIntrinsic: {
         unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
         LLVMValueRef bytes = LLVMBuildMul(gen->builder, fnargs[2], genlSizeof(gen, type), "movebytes");
         LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
+        return NULL;
+    }
+
+    // The same block move into a container other than the one the values came
+    // from, which a collector may have finished marking: each value now at the
+    // destination is handed to the write barrier (genlBarrierAt) as writeRaw's is,
+    // in a loop over 'count'. A type holding no reference into a region with a
+    // write barrier gets the plain block move and nothing more
+    case MoveRawIntoIntrinsic: {
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
+        LLVMValueRef bytes = LLVMBuildMul(gen->builder, fnargs[2], genlSizeof(gen, type), "movebytes");
+        LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
+        if (!itypeHoldsBarriered(type))
+            return NULL;
+        LLVMTypeRef usize = genlUsize(gen);
+        LLVMTypeRef elemllvm = genlType(gen, type);
+        LLVMBasicBlockRef entryblk = LLVMGetInsertBlock(gen->builder);
+        LLVMBasicBlockRef loopblk = genlInsertBlock(gen, "moveintoloop");
+        LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "moveintodone");
+        LLVMValueRef none = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[2], LLVMConstInt(usize, 0, 0), "moveintonone");
+        LLVMBuildCondBr(gen->builder, none, doneblk, loopblk);
+        LLVMPositionBuilderAtEnd(gen->builder, loopblk);
+        LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "moveintoindex");
+        LLVMValueRef elemptr = LLVMBuildInBoundsGEP2(gen->builder, elemllvm, fnargs[0], &counter, 1, "moveintoelem");
+        genlBarrierAt(gen, elemptr, type);
+        LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "moveintonext");
+        LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, fnargs[2], "moveintomore");
+        // The walk may have split the loop's block, so the back edge leaves from wherever the builder is now
+        LLVMBasicBlockRef loopend = LLVMGetInsertBlock(gen->builder);
+        LLVMBuildCondBr(gen->builder, more, loopblk, doneblk);
+        LLVMValueRef incoming[2] = { LLVMConstInt(usize, 0, 0), next };
+        LLVMBasicBlockRef fromblks[2] = { entryblk, loopend };
+        LLVMAddIncoming(counter, incoming, fromblks, 2);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
         return NULL;
     }
 
@@ -1035,10 +1081,23 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
             case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
             case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
+            // '<=>' and 'cmp' are IEEE 754 totalOrder: each float's bits as a signed integer
+            // key (a negative's other bits flipped), so -NaN < -inf < ... < -0 < +0 < ... < +inf < +NaN
             case CmpIntrinsic:
-                fncallret = genlThreeWay(gen, LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""),
-                    LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""));
+            {
+                LLVMTypeRef inttyp = LLVMIntTypeInContext(gen->context, (unsigned)bitwidth);
+                LLVMValueRef signmask = LLVMConstInt(inttyp, bitwidth - 1, 0);
+                LLVMValueRef one = LLVMConstInt(inttyp, 1, 0);
+                LLVMValueRef keys[2];
+                for (int k = 0; k < 2; ++k) {
+                    LLVMValueRef bits = LLVMBuildBitCast(gen->builder, fnargs[k], inttyp, "");
+                    LLVMValueRef flip = LLVMBuildLShr(gen->builder, LLVMBuildAShr(gen->builder, bits, signmask, ""), one, "");
+                    keys[k] = LLVMBuildXor(gen->builder, bits, flip, "totalkey");
+                }
+                fncallret = genlThreeWay(gen, LLVMBuildICmp(gen->builder, LLVMIntSGT, keys[0], keys[1], ""),
+                    LLVMBuildICmp(gen->builder, LLVMIntSLT, keys[0], keys[1], ""));
                 break;
+            }
             // Intrinsic functions
             case SqrtIntrinsic: 
             {

@@ -54,7 +54,7 @@ pub struct VoiceOptions {
         String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.f16.safetensors"),
         String.from("C:\\src\\speech-models\\parakeet-tdt-0.6b-v2.vocab.txt"),
         String.from("C:/src/speech-models/kokoro"), String.from("af_heart"), 1.0f, String.from("system"),
-        String.empty(), String.empty(), String.from("1"), 480u32, 3.0f, 400u32, 1500u32, 0u32, true, true)
+        String(), String(), String.from("1"), 480u32, 3.0f, 400u32, 1500u32, 0u32, true, true)
   }
 }
 
@@ -64,7 +64,7 @@ fn seconds(later: Instant, earlier: Instant) f64 { later.since(earlier).secondsF
 
 // Seconds with two decimals: 1.234 is "1.23"
 fn fmt2(x: f64) String {
-  var s = String.empty();
+  var s = String();
   var v = x;
   if v < 0.0 { s <- "-"; v = 0.0 - v; }
   let hundredths = u64.from(v * 100.0 + 0.5);
@@ -87,7 +87,7 @@ fn containsLetter(s: &str) bool {
 }
 
 fn bytesOf(s: &str) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   let b: &Array[u8] = s;
   var i = 0usize;
   while i < b.len { out.push(b[i]); i = i + 1usize; }
@@ -98,7 +98,7 @@ fn bytesOf(s: &str) List[u8] {
 // turn's words and its end (`tailTokens`) follow. Together they are what `ModelTokens.userTurn` makes; the text is
 // encoded apart from "user\n", which the pre-tokenizer does anyway (a newline never joins the letters after it).
 pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
-  var out = List[u32].empty();
+  var out = List[u32]();
   if closeFirst {
     let c = vocab.closeTurn();
     var i = 0usize;
@@ -112,7 +112,7 @@ pub fn headTokens(vocab: &llmrun.ModelTokens, closeFirst: bool) List[u32] {
 
 // What follows the user's words: the end of the turn, and the assistant's turn opened with its empty thinking block
 pub fn tailTokens(vocab: &llmrun.ModelTokens) List[u32] {
-  var out = List[u32].empty();
+  var out = List[u32]();
   out.push(vocab.imEnd);
   let nl = bytesOf("\n");
   let nn = bytesOf("\n\n");
@@ -165,7 +165,7 @@ fn speakSentence(tts: &mut texttospeech.Speaker, device: &mut Device, voice: &te
   let clean = speechText(text.bytes());
   if clean.len() == 0usize { return Ok[bool, String](false); }
   let t0 = Instant.now();
-  var raw = List[f32].empty();
+  var raw = List[f32]();
   match tts.speak(device, clean.view(), voice, speed) {
     case var Ok(l) { raw = l; }
     case let Err(e) { return Err[bool, String](e.message()); }
@@ -265,7 +265,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   {
     let hello = bytesOf("Hello.");
     let hi = vocab.userTurn(hello.view(), false);
-    var logits = List[f32].empty();
+    var logits = List[f32]();
     match engine.feed(device, hi.view(), true) {
       case var Ok(l) { logits = l; }
       case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
@@ -273,7 +273,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     var k = 0usize;
     while k < 4usize {
       let id = sampler.sample(logits.view(), &mut rng);
-      var one = List[u32].empty();
+      var one = List[u32]();
       one.push(id);
       match engine.feed(device, one.view(), true) {
         case var Ok(l) { logits = l; }
@@ -284,7 +284,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     engine.rewind(afterSystem);
   }
   {
-    var quiet = List[f32].empty();
+    var quiet = List[f32]();
     quiet.resize(8000usize, 0.0f);
     match stt.transcribe(device, quiet.view()) {
       case is Ok {}
@@ -326,7 +326,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   // given one as often as a sentence is (measured on 33 sentences with a pause put inside: 18 split in two turns at 400 ms of
   // trail, 11 at 200, 21 at none; the package's README.md has the table)
   var vad = voiceaudio.Vad.make(cfg);
-  var heard = List[voiceaudio.Utterance].empty();
+  var heard = List[voiceaudio.Utterance]();
 
   printStr("ready (audio: ");
   printStr(o.audio.view());
@@ -349,7 +349,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   }
   // Ctrl-C: SDL's audio swallows it (interrupt.cone says why), so the loop asks for it, here and in the reply's loop
   var intr = voiceaudio.Interrupt.start();
-  var hearing = HeardTurn.empty();  // the utterances of the turn being heard, joined
+  var hearing = HeardTurn();  // the utterances of the turn being heard, joined
   var detectedAt = Instant.now();   // the latest utterance of the turn came out of the detector
   var transcribedAt = detectedAt;   // and its transcript was ready
   var micLag = 0.0;                 // how far the microphone's samples trail the wall clock, measured at each read
@@ -357,7 +357,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   var running = true;
   let started = Instant.now();
   var lastWarm = started;
-  var warmth = List[f32].empty();
+  var warmth = List[f32]();
   warmth.resize(4000usize, 0.0f);
   var warmCalls = 0usize;
   var warmSeconds = 0.0;
@@ -433,7 +433,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     }
 
     // THE TURN IS OVER
-    let spoken = hearing.text.copy();
+    let spoken = hearing.text.clone();
     let speechEnded = micOpened + Duration.fromMillis(i64.from(hearing.lastSpeech() / 16usize));
     let talked = f64.from(hearing.lastSpeech() - hearing.firstSpeech()) / 16000.0;
     let pieces = hearing.pieces();
@@ -452,7 +452,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     // THINK: the user's words and the end of the turn into the cache (its start is already there). Without room for
     // them and a reply, a new conversation.
     let userBytes = bytesOf(spoken.view());
-    var turn = List[u32].empty();
+    var turn = List[u32]();
     vocab.text(userBytes.view(), &mut turn);
     {
       let tail = tailTokens(&vocab);
@@ -466,7 +466,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
         case let Err(m) { say(m.view()); say("\n"); break; }
       }
     }
-    var logits = List[f32].empty();
+    var logits = List[f32]();
     match engine.feed(device, turn.view(), true) {
       case var Ok(l) { logits = l; }
       case let Err(m) { say(m.message().view()); say("\n"); break; }
@@ -479,7 +479,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
     print.flush();
     var stream = llmrun.TextStream.make();
     var sentences = Sentences.make();
-    var marks = List[Mark].empty();
+    var marks = List[Mark]();
     var stats = Stats(0usize, 0.0, 0usize, false, prefilled, prefilled, 0.0);
     var made = 0usize;
     var generating = true;
@@ -530,7 +530,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
             if engine.pos + 1usize >= engine.ctx {
               generating = false;
             } else {
-              var one = List[u32].empty();
+              var one = List[u32]();
               one.push(id);
               match engine.feed(device, one.view(), true) {
                 case var Ok(l) { logits = l; }
@@ -593,7 +593,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
       }
       let written = engine.pos - promptEnd;
       engine.rewind(keep);
-      var note = String.empty();
+      var note = String();
       note <- "(interrupted: speech began at ";
       note <- fmt2(began).view();
       note <- " s and the speaker was cut at ";
@@ -626,7 +626,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
 
     // THE TURN'S TIMINGS
     if o.echoTimings {
-      var line = String.empty();
+      var line = String();
       line <- "timing: turn ";
       line <- u64.from(turnNumber);
       if pieces > 1usize {
@@ -696,7 +696,7 @@ pub fn run(device: &mut Device, o: &VoiceOptions) i32 {
   mic.close();
   device.waitIdle();
   if o.echoTimings && o.keepWarm {
-    var tail = String.empty();
+    var tail = String();
     tail <- "timing: over the whole session the GPU was kept warm ";
     tail <- u64.from(warmAllCalls);
     tail <- " times, ";

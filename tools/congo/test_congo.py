@@ -737,7 +737,7 @@ class Scenarios(unittest.TestCase):
             pub struct Bag {
               items: List[Pt];
 
-              pub fn empty() Bag { Bag(List[Pt].empty()) }
+              pub fn empty() Bag { Bag(List[Pt]()) }
               pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -746,7 +746,7 @@ class Scenarios(unittest.TestCase):
             pub struct Shelf is Sendable {
               items: List[Pt];
 
-              pub fn empty() Shelf { Shelf(List[Pt].empty()) }
+              pub fn empty() Shelf { Shelf(List[Pt]()) }
               pub fn first(self: &) &Pt { &items[0usize] }
               pub fn add(self: &mut, p: Pt) { items.push(p); }
             }
@@ -1495,6 +1495,27 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(run.returncode, 1)
         self.assertIn("import loop between packages: ping -> pong -> ping", run.stderr)
 
+    def test_a_program_named_like_a_package_it_reaches_builds_and_runs(self):
+        # Bug 24 (#844, #848). A program's module is named by its own 'mod'
+        # line, and a package it reaches through another may share the name:
+        # the program is not a package, so the two are different things and
+        # the build order must not read the one as a loop through the other.
+        packages = self.root / "named"
+        self.registry(packages)
+        write(packages / "inner" / "congo.toml",
+              '[package]\nname = "inner"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "inner" / "src" / "inner.cone",
+              "mod inner;\n\npub fn seven() i64 {\n  7i64\n}\n")
+        write(packages / "outer" / "congo.toml",
+              '[package]\nname = "outer"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "outer" / "src" / "outer.cone",
+              "mod outer;\n\nimport inner;\n\npub fn eight() i64 {\n  inner.seven() + 1i64\n}\n")
+        write(self.root / "inner.cone",
+              "mod inner;\n\nimport stdio use *;\nimport outer;\n\n"
+              "fn main() i32 {\n  print <- outer.eight(), \"\\n\";\n  0i32\n}\n")
+        run = self.congo("run", "inner.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "8\n")
+
     def test_an_import_loop_between_modules_is_refused(self):
         # Two sisters importing each other, and, once that is fixed, a child
         # importing a name of its parent: both loops, found before conec runs
@@ -1851,7 +1872,7 @@ class Testing(unittest.TestCase):
               total: u64;
 
               pub fn init(self: &new) {
-                *self = Self(entries: List[Entry].empty(), total: 0u64);
+                *self = Self(entries: List[Entry](), total: 0u64);
               }
 
               pub async fn add(self, n: u64) {

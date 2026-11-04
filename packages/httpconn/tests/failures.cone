@@ -111,7 +111,7 @@ fn note(drv: &mut Driver, lp: &mut Loop, st: &mut State, events: &mut List[Event
     k = k + 1usize;
     if e.token == tokServer {
       if e.kind == EventKind.Request {
-        let target = e.request.target.copy();
+        let target = e.request.target.clone();
         serve(drv, lp, st, e.req, target.view());
       }
       else if e.kind == EventKind.Data {
@@ -127,7 +127,7 @@ fn note(drv: &mut Driver, lp: &mut Loop, st: &mut State, events: &mut List[Event
     } else if e.token == tokServer2 {
       // The second driver's server, plain answers
       if e.kind == EventKind.Request {
-        let target = e.request.target.copy();
+        let target = e.request.target.clone();
         serve(drv, lp, st, e.req, target.view());
       }
     } else if e.token >= 100u64 && e.token < 200u64 {
@@ -159,12 +159,12 @@ fn note(drv: &mut Driver, lp: &mut Loop, st: &mut State, events: &mut List[Event
 // One turn of the loop for the driver (and the program's raw operations):
 // wait at most ms
 fn turn(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64) {
-  var events = List[Event].empty();
+  var events = List[Event]();
   drv.pump(lp, &uni events);
   var until = Instant.now() + Duration.fromMillis(ms);
   if drv.wakeAt() < until {until = drv.wakeAt();}
   if events.len() > 0usize {until = Instant();}
-  var comps = List[Completion].empty();
+  var comps = List[Completion]();
   lp.poll(until, &mut comps);
   var k = 0usize;
   while k < comps.len() {
@@ -188,7 +188,7 @@ fn until(drv: &mut Driver, lp: &mut Loop, st: &mut State, tok: u64, ms: i64) {
 }
 
 fn get(drv: &mut Driver, lp: &mut Loop, conn: ConnId, target: &str, tok: u64) ReqId {
-  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok))
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength(), Sink.Here(tok))
 }
 
 // The raw completion with token tok, taken out of st.raw: its count and
@@ -235,8 +235,8 @@ fn main() i32 {
   var cfg = Config.make();
   cfg.maxWaiting = 1u32;
   var drv = Driver.make(cfg);
-  var st = State(List[Slot].empty(), List[Slot].empty(), List[EventKind].empty(), List[Stage].empty(),
-    0u32, 0u32, 0u64, ConnId.none(), List[Raw].empty());
+  var st = State(List[Slot](), List[Slot](), List[EventKind](), List[Stage](),
+    0u32, 0u32, 0u64, ConnId.none(), List[Raw]());
   var i = 0usize;
   while i < slots {
     st.req.push(blankSlot());
@@ -332,13 +332,13 @@ fn main() i32 {
     var b = IoBuf(256usize);
     b.append("GET /ok HTTP/1.1\r\nHost: h\r\n\r\n");
     lp.submit(Op.Send(h, b), Target.Here(2u64));
-    var got = String.empty();
+    var got = String();
     var sentDone = false;
     var ended = false;
     var recvOut = false;
     while !ended && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, 5i64);
-      var scratch = String.empty();
+      var scratch = String();
       if !sentDone && takeRaw(&mut st, 2u64, &mut scratch) > 0i64 {
         sentDone = true;
         expectUInt(u64.from(lp.shutdown(h)), 0u64, "4: the raw client shuts its sending side");
@@ -378,7 +378,7 @@ fn main() i32 {
     }
     require(!h.isNone(), "5: the raw server accepted");
     // Read the request's head, then answer and shut the sending side
-    var req = String.empty();
+    var req = String();
     var recvOut = false;
     while !req.contains("\r\n\r\n") && Instant.now() < end {
       if !recvOut {
@@ -395,7 +395,7 @@ fn main() i32 {
     var shut = false;
     while st.req[5usize].finals == 0u32 && Instant.now() < end {
       turn(&mut drv, &mut lp, &mut st, 5i64);
-      var scratch = String.empty();
+      var scratch = String();
       if !shut && takeRaw(&mut st, 7u64, &mut scratch) > 0i64 {
         lp.shutdown(h);
         shut = true;
@@ -433,8 +433,8 @@ fn main() i32 {
     var d7 = Driver.make(c7);
     let a = d7.connect(&mut lp, "127.0.0.1", port, Sink.Here(105u64));
     let b = d7.connect(&mut lp, "127.0.0.1", port, Sink.Here(106u64));
-    d7.request(&mut lp, b, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here(8u64));
-    var events = List[Event].empty();
+    d7.request(&mut lp, b, RequestHead.get("/ok", "127.0.0.1"), BodyLength(), Sink.Here(8u64));
+    var events = List[Event]();
     d7.pump(&mut lp, &uni events);
     note(&mut drv, &mut lp, &mut st, &mut events);
     expect(st.conn[6usize].closes == 1u32 && st.conn[6usize].stage == Stage.Limit, "7: the second: Closed at Limit");
@@ -463,17 +463,17 @@ fn main() i32 {
       case let Err(e) {}
     }
     let deadline = Instant.now() + Duration.fromMillis(300i64);
-    var cs = List[ConnId].empty();
+    var cs = List[ConnId]();
     var k = 0u64;
     while k < 3u64 {
       let c = drv.connect(&mut lp, "127.0.0.1", p8, Sink.Here(107u64 + k));
-      drv.requestBy(&mut lp, c, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here(9u64 + k), deadline);
+      drv.requestBy(&mut lp, c, RequestHead.get("/ok", "127.0.0.1"), BodyLength(), Sink.Here(9u64 + k), deadline);
       cs.push(c);
       k = k + 1u64;
     }
     // Both drivers on the one loop
-    var events = List[Event].empty();
-    var comps = List[Completion].empty();
+    var events = List[Event]();
+    var comps = List[Completion]();
     while Instant.now() < deadline + Duration.fromMillis(100i64) {
       d8.pump(&mut lp, &uni events);
       drv.pump(&mut lp, &uni events);

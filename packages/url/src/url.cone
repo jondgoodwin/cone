@@ -23,7 +23,7 @@
 //   }
 //
 //   Url.parse(text)  u.resolve(ref)  resolveRef(base, ref)               (READING)
-//   u.text()  u.origin()  u.authority()  u.target()  u.copy()            (WRITING)
+//   u.text()  u.origin()  u.authority()  u.target()  u.clone()            (WRITING)
 //   u.scheme  u.userinfo  u.host  u.hostKind  u.port  u.hasPort u.path   (PARTS)
 //     u.query  u.hasQuery  u.fragment  u.hasFragment  u.hasAuthority
 //   u.effectivePort()  u.isHttp()  u.isSecure()  u.sameOrigin(o)  defaultPort(scheme)
@@ -177,7 +177,7 @@ pub struct UrlError is Error {
   pub why: String;
 
   pub fn make(at: usize, why: &str) UrlError {UrlError(at, String.from(why))}
-  pub fn none() UrlError {UrlError(0usize, String.empty())}
+  pub fn none() UrlError {UrlError(0usize, String())}
   pub fn isNone(self: &) bool {why.len() == 0usize}
 
   // 'url: a port is 0 to 65535 (at 22)'
@@ -207,7 +207,7 @@ pub fn defaultPort(scheme: &str) u16 {
 
 // A URL, or during resolution a reference, as its parts (see the package's
 // header)
-pub struct Url {
+pub struct Url is Default {
   pub scheme: String;        // lower case; empty in a reference that has none
   pub hasAuthority: bool;    // '//' was there
   pub userinfo: String;      // before '@', as written (httpclient sends none of it)
@@ -222,15 +222,15 @@ pub struct Url {
   pub hasFragment: bool;
 
   // No parts: a reference that is empty
-  pub fn empty() Url {
-    Url(scheme: String.empty(), hasAuthority: false, userinfo: String.empty(), host: String.empty(),
-      hostKind: HostKind.Empty, port: 0u16, hasPort: false, path: String.empty(), query: String.empty(),
-      hasQuery: false, fragment: String.empty(), hasFragment: false)
+  pub fn init(self: &new) {
+    *self = Url(scheme: String(), hasAuthority: false, userinfo: String(), host: String(),
+      hostKind: HostKind.Empty, port: 0u16, hasPort: false, path: String(), query: String(),
+      hasQuery: false, fragment: String(), hasFragment: false);
   }
 
   // An absolute URL read from text (see the package's header, READING)
   pub fn parse(text: &str) Result[Url, UrlError] {
-    var u = Url.empty();
+    var u = Url();
     let t = trimEnds(text);
     let e = parseInto(t, &mut u);
     if !e.isNone() {return Err[Url, UrlError](e);}
@@ -244,10 +244,10 @@ pub struct Url {
   pub fn resolve(self: &, ref: &str) Result[Url, UrlError] {resolveRef(self, ref)}
 
   // Another Url with the same parts
-  pub fn copy(self: &) Url {
-    Url(scheme: scheme.copy(), hasAuthority: hasAuthority, userinfo: userinfo.copy(), host: host.copy(),
-      hostKind: hostKind, port: port, hasPort: hasPort, path: path.copy(), query: query.copy(),
-      hasQuery: hasQuery, fragment: fragment.copy(), hasFragment: hasFragment)
+  pub fn clone(self: &) Url {
+    Url(scheme: scheme.clone(), hasAuthority: hasAuthority, userinfo: userinfo.clone(), host: host.clone(),
+      hostKind: hostKind, port: port, hasPort: hasPort, path: path.clone(), query: query.clone(),
+      hasQuery: hasQuery, fragment: fragment.clone(), hasFragment: hasFragment)
   }
 
   // Whether the scheme is http or https
@@ -262,7 +262,7 @@ pub struct Url {
   // Host and port as HTTP writes them in Host: the port only when it is not
   // the scheme's default
   pub fn authority(self: &) String {
-    var out = String.empty();
+    var out = String();
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     if hasPort && port != defaultPort(scheme.view()) {
       out.append(":");
@@ -274,7 +274,7 @@ pub struct Url {
   // 'https://example.com:443': scheme, host and port, the port always
   // written
   pub fn origin(self: &) String {
-    var out = scheme.copy();
+    var out = scheme.clone();
     out.append("://");
     appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6);
     out.append(":");
@@ -290,7 +290,7 @@ pub struct Url {
 
   // The request target: the path (at least '/') and the query
   pub fn target(self: &) String {
-    var out = if path.len() == 0usize {String.from("/")} else {path.copy()};
+    var out = if path.len() == 0usize {String.from("/")} else {path.clone()};
     if hasQuery {
       out.append("?");
       out.append(query.view());
@@ -300,7 +300,7 @@ pub struct Url {
 
   // The URL as text (see the package's header, WRITING)
   pub fn text(self: &) String {
-    var out = String.empty();
+    var out = String();
     if scheme.len() > 0usize {
       out.append(scheme.view());
       out.append(":");
@@ -618,7 +618,7 @@ fn dropLastSegment(s: &String) String {
     k = k - 1usize;
     if v[k] == '/' {return String.from(&v[0usize ..< k]);}
   }
-  String.empty()
+  String()
 }
 
 // base's path merged with a relative path (RFC 3986, 5.2.3)
@@ -639,10 +639,10 @@ fn merge(base: &Url, rel: &str) String {
 // The reference ref resolved against base, an absolute URL (RFC 3986,
 // 5.2.2), and checked as Url.parse checks one
 pub fn resolveRef(base: &Url, ref: &str) Result[Url, UrlError] {
-  var r = Url.empty();
+  var r = Url();
   let e = parseInto(trimEnds(ref), &mut r);
   if !e.isNone() {return Err[Url, UrlError](e);}
-  var t = Url.empty();
+  var t = Url();
   if r.scheme.len() > 0usize {
     t = r;
   } else {
@@ -660,12 +660,12 @@ pub fn resolveRef(base: &Url, ref: &str) Result[Url, UrlError] {
       t.hasQuery = hasQuery;
     } else {
       if path.len() == 0usize {
-        t.path = base.path.copy();
+        t.path = base.path.clone();
         if hasQuery {
           t.query = query;
           t.hasQuery = true;
         } else {
-          t.query = base.query.copy();
+          t.query = base.query.clone();
           t.hasQuery = base.hasQuery;
         }
       } else {
@@ -678,13 +678,13 @@ pub fn resolveRef(base: &Url, ref: &str) Result[Url, UrlError] {
         t.hasQuery = hasQuery;
       }
       t.hasAuthority = base.hasAuthority;
-      t.userinfo = base.userinfo.copy();
-      t.host = base.host.copy();
+      t.userinfo = base.userinfo.clone();
+      t.host = base.host.clone();
       t.hostKind = base.hostKind;
       t.port = base.port;
       t.hasPort = base.hasPort;
     }
-    t.scheme = base.scheme.copy();
+    t.scheme = base.scheme.clone();
     t.fragment = fragment;
     t.hasFragment = hasFragment;
   }

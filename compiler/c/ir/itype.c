@@ -1198,15 +1198,17 @@ int itypeCannotTrace(INode *type) {
         if (ref->tag == VirtRefTag || !regionIsRegionRef(ref->region) || regionIsTraced(ref->region))
             return 0;
         INode *behind = itypeBehindOwner(ref);
-        // An array body of values a trace must find: nothing here walks it
-        if (behind == NULL || refIsFat(ref))
-            return refIsFat(ref) && behind != NULL && itypeHoldsTraced(behind);
-        if (!itypeHoldsTraced(behind))
+        if (behind == NULL || !itypeHoldsTraced(behind))
             return 0;
-        // A collector that marks while the program runs must hear of each store
-        // of a reference to a value holding a traced reference, and can hear of
-        // the traced reference only: a value behind an owner is not walked then
-        if (!regionCanPassTrace(ref->region) || itypeHoldsBarriered(behind))
+        // The elements of an array body are walked by the count the owner carries
+        // (genlTraceThrough), for a trace and for a write barrier alike: a store of
+        // the whole owner hands the barrier each element, as a store into the body
+        // does. A collector that marks while the program runs must hear of each store
+        // of a reference to a value holding a traced reference, and can hear of the
+        // traced reference only: a value behind any other owner is not walked then,
+        // so such an owner is refused.
+        int arrayowner = refIsFat(ref) && itypeIsArrayBody(ref->vtexp);
+        if (!regionCanPassTrace(ref->region) || (!arrayowner && itypeHoldsBarriered(behind)))
             return 1;
         return itypeCannotTrace(behind);
     }

@@ -99,7 +99,7 @@ fn answerDue(drv: &mut Driver, st: &mut State) {
 
 fn run(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64, tok: u64) {
   let until = Instant.now() + Duration.fromMillis(ms);
-  var events = List[Event].empty();
+  var events = List[Event]();
   while Instant.now() < until {
     if tok != 0u64 && st.req[usize.from(tok)].finals > 0u32 {return;}
     answerDue(drv, st);
@@ -146,11 +146,11 @@ fn run(drv: &mut Driver, lp: &mut Loop, st: &mut State, ms: i64, tok: u64) {
 }
 
 fn get(drv: &mut Driver, lp: &mut Loop, conn: ConnId, target: &str, tok: u64) ReqId {
-  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok))
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength(), Sink.Here(tok))
 }
 
 fn getBy(drv: &mut Driver, lp: &mut Loop, conn: ConnId, target: &str, tok: u64, at: Instant) ReqId {
-  drv.requestBy(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here(tok), at)
+  drv.requestBy(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength(), Sink.Here(tok), at)
 }
 
 fn main() i32 {
@@ -158,7 +158,7 @@ fn main() i32 {
   var cfg = Config.make();
   cfg.maxWaiting = 4u32;
   var drv = Driver.make(cfg);
-  var st = State(List[Slot].empty(), List[Slot].empty(), List[ReqId].empty(), List[Instant].empty());
+  var st = State(List[Slot](), List[Slot](), List[ReqId](), List[Instant]());
   var i = 0usize;
   while i < slots {
     st.req.push(blankSlot());
@@ -198,7 +198,7 @@ fn main() i32 {
     let c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(101u64));
     let t0 = Instant.now();
     let g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
-    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(2u64), g, forever());
+    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength(), Sink.Here(2u64), g, forever());
     run(&mut drv, &mut lp, &mut st, 3000i64, 2u64);
     let s = st.req[2usize];
     expect(s.kind == EventKind.TimedOut, "2: TimedOut");
@@ -241,11 +241,11 @@ fn main() i32 {
     var d5 = Driver.make(c5);
     let c = d5.connect(&mut lp, "127.0.0.1", port, Sink.Here(104u64));
     let t0 = Instant.now();
-    d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here(6u64));
+    d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength(), Sink.Here(6u64));
     // Two drivers on one loop: d5's completions are its own, the server's
     // the other's
-    var events = List[Event].empty();
-    var comps = List[iocore.Completion].empty();
+    var events = List[Event]();
+    var comps = List[iocore.Completion]();
     let until = t0 + Duration.fromSeconds(3i64);
     while st.req[6usize].finals == 0u32 && Instant.now() < until {
       d5.pump(&mut lp, &uni events);
@@ -309,8 +309,8 @@ fn main() i32 {
     var d6 = Driver.make(c6);
     let t0 = Instant.now();
     let c = d6.connect(&mut lp, "127.0.0.1", dead, Sink.Here(105u64));
-    d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength.empty(), Sink.Here(7u64));
-    var events = List[Event].empty();
+    d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength(), Sink.Here(7u64));
+    var events = List[Event]();
     let until = t0 + Duration.fromSeconds(5i64);
     var closedAt = Instant();
     var closed: Event = Event.make(EventKind.Writable, 0u64, ConnId.none(), ReqId.none());
@@ -328,7 +328,7 @@ fn main() i32 {
           gotClosed = true;
           closedAt = Instant.now();
           closed.clean = e.clean;
-          closed.failure = e.failure.copy();
+          closed.failure = e.failure.clone();
         } else if e.token == 7u64 && e.isTerminal() {
           req7 = req7 + 1u32;
           req7Unsent = e.failure.unsent;
@@ -345,9 +345,9 @@ fn main() i32 {
     expectUInt(u64.from(req7), 1u64, "6: its request: one final answer");
     expect(req7Unsent, "6: ...unsent");
     expect(req7Stage == Stage.Connect, "6: ...at the Connect stage");
-    if isWindows() {
+    #if #os == .windows {
       expect(closed.failure.error.kind == ErrorKind.TimedOut, "6: ...timed out: Windows had not refused it within 200 ms");
-    } else {
+    } #else {
       expect(closed.failure.error.kind == ErrorKind.Closed && took < 200i64,
         "6: ...refused at once, before connectTimeout: Linux says so on loopback");
     }

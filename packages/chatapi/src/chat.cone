@@ -4,11 +4,11 @@
 // model and role seen, every chunk's text in order, the last finish reason and
 // the usage the stream gave
 pub fn absorb(r: &mut ChatReply, d: &Delta) {
-  if r.id.len() == 0usize {r.id = d.id.copy();}
-  if r.model.len() == 0usize {r.model = d.model.copy();}
-  if r.role.len() == 0usize {r.role = d.role.copy();}
+  if r.id.len() == 0usize {r.id = d.id.clone();}
+  if r.model.len() == 0usize {r.model = d.model.clone();}
+  if r.role.len() == 0usize {r.role = d.role.clone();}
   r.content.append(d.content.view());
-  if d.finishReason.len() > 0usize {r.finishReason = d.finishReason.copy();}
+  if d.finishReason.len() > 0usize {r.finishReason = d.finishReason.clone();}
   match &d.usage {
     case let Some(u) {r.usage = Some[Usage](Usage(u.promptTokens, u.completionTokens, u.totalTokens));}
     case is None {}
@@ -57,7 +57,7 @@ pub actor Chat {
     let bs = await client.streamIn(hreq, lim)?;
     if !bs.isOk() {
       // An error status: the body is the API's error object. Read it (the first 64 KiB of it)
-      var body = String.empty();
+      var body = String();
       var going = true;
       while going {
         let n = await bs.read();
@@ -79,7 +79,7 @@ pub actor Chat {
       return Err[ChatStream, ChatError](ChatError.make(ChatErrorKind.Decode,
         "the server answered a streamed request with something that is not an event stream"));
     }
-    let cs = ChatStream(bs, sse.Reader.make(), List[sse.Event].empty(), 0usize, 0u64, false, false, false);
+    let cs = ChatStream(bs, sse.Reader.make(), List[sse.Event](), 0usize, 0u64, false, false, false);
     Ok[ChatStream, ChatError](cs)
   }
 }
@@ -165,7 +165,7 @@ pub actor ChatStream {
 
   // The rest of the stream gathered into a whole reply
   pub async fn collect(self) Result[ChatReply, ChatError] {
-    var reply = ChatReply.empty();
+    var reply = ChatReply();
     var why = ChatError.make(ChatErrorKind.Stream, "");
     var failed = false;
     var going = true;
@@ -179,7 +179,7 @@ pub actor ChatStream {
           }
         }
         case let Err(e) {
-          why = e.copy();
+          why = e.clone();
           failed = true;
           going = false;
         }
@@ -213,11 +213,11 @@ pub actor ChatStream {
         }
         case let Err(e) {
           over = true;
-          var m = e.detail.copy();
+          var m = e.detail.clone();
           m.append(" (chunk ");
           m.appendUInt(chunks);
           m.append(")");
-          var c = e.copy();
+          var c = e.clone();
           c.detail = m;
           return Step.Fail(c);
         }

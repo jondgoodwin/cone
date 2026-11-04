@@ -29,9 +29,9 @@ import fs;
 // that it is that and nothing shorter
 fn makeRoot(name: &str) Path {
   var variable: cstr = "TMPDIR";
-  if isWindows() { variable = "TEMP"; }
+  #if #os == .windows { variable = "TEMP"; }
   let temp = libc.getenv(variable);
-  require(temp != null || !isWindows(), "TEMP is set");
+  require(#if #os == .windows { temp != null } #else { true }, "TEMP is set");
   let tempPath = if temp != null {Path.from(cstr.fromPtr(temp).view())} else {Path.from("/tmp")};
   var root = Path.from("");
   match fs.absolute(&tempPath) {
@@ -70,7 +70,7 @@ fn failsWith[T](root: &Path, r: Result[T, fs.FsError], want: &Array[u8], label: 
 // A listing shown on one line: each entry's path (the root as '<root>'),
 // then '/' for a folder, '@' for a link, nothing for a file, then ' '
 fn showEntries(root: &Path, entries: &List[fs.DirEntry]) String {
-  var out = String.empty();
+  var out = String();
   var i = 0usize;
   while i < entries.len() {
     let e = &entries[i];
@@ -124,7 +124,7 @@ fn making(root: &Path) {
   ok(fs.makeDirAll(&deep), "makeDirAll");
   expect(fs.isDir(&deep), "made with its parents");
   ok(fs.makeDirAll(&deep), "makeDirAll of a folder there is success");
-  let trailing = root.join(if isWindows() {"five\\six\\"} else {"five/six/"});
+  let trailing = root.join(#if #os == .windows {"five\\six\\"} #else {"five/six/"});
   ok(fs.makeDirAll(&trailing), "makeDirAll with a trailing separator");
   let six = root.join("five/six");
   expect(fs.isDir(&six), "made through a trailing separator");
@@ -177,11 +177,11 @@ fn listing(root: &Path) {
   // Windows: names are one name whatever their ASCII case; POSIX: 'B' is
   // another folder (made, then removed, so the listings below read the same)
   let capitalB = list.join("B");
-  if isWindows() {
+  #if #os == .windows {
     failsWith(root, fs.makeDir(&capitalB), "makeDir <root>/list/B: File exists",
       "Windows: 'B' is the folder 'b'");
     expect(fs.isDir(&capitalB), "Windows: 'B' names a folder");
-  } else {
+  } #else {
     ok(fs.makeDir(&capitalB), "POSIX: 'B' is another folder");
     ok(fs.removeDir(&capitalB), "and is removed again");
   }
@@ -197,8 +197,8 @@ fn listing(root: &Path) {
   let none = list.join("none");
   listingIs(root, &none, "readDir <root>/list/none: No such file or directory", "readDir of nothing");
   // A trailing separator ('\' on Windows, where it separates)
-  let slashed = list.join(if isWindows() {"a\\"} else {"a/"});
-  listingIs(root, &slashed, if isWindows() {"<root>/list/a\\inner.txt "} else {"<root>/list/a/inner.txt "},
+  let slashed = list.join(#if #os == .windows {"a\\"} #else {"a/"});
+  listingIs(root, &slashed, #if #os == .windows {"<root>/list/a\\inner.txt "} #else {"<root>/list/a/inner.txt "},
     "readDir with a trailing separator");
 
   walkIs(root, &list,
@@ -215,8 +215,8 @@ fn listing(root: &Path) {
 // made by the shell's 'ln -s'. Both paths are inside the test's folder, and
 // quoted, since TEMP may hold a space
 fn junction(link: &Path, target: &Path) bool {
-  var command = String.empty();
-  if isWindows() {
+  var command = String();
+  #if #os == .windows {
     var paths = String.from(link.view());
     paths.append("\" \"");
     paths.append(target.view());
@@ -224,7 +224,7 @@ fn junction(link: &Path, target: &Path) bool {
     command.append("mklink /J \"");
     command.append(paths.view());
     command.append("\" >nul");
-  } else {
+  } #else {
     command.append("ln -s '");
     command.append(target.view());
     command.append("' '");
@@ -273,18 +273,18 @@ fn guards(root: &Path) {
   failsWith(root, fs.removeAll("../.."), "removeAll ../..: Invalid argument", "removeAll ending in '..'");
   // A drive's root, a drive and a share are Windows'; POSIX has the root
   // spelled other ways instead
-  if isWindows() {
+  #if #os == .windows {
     failsWith(root, fs.removeAll("C:\\"), "removeAll C:\\: Invalid argument", "removeAll of a drive's root");
     failsWith(root, fs.removeAll("C:"), "removeAll C:: Invalid argument", "removeAll of a drive");
-  } else {
+  } #else {
     failsWith(root, fs.removeAll("//"), "removeAll //: Invalid argument", "removeAll of a root written twice");
     failsWith(root, fs.removeAll("/."), "removeAll /.: Invalid argument", "removeAll of a root's '.'");
   }
   failsWith(root, fs.removeAll("/"), "removeAll /: Invalid argument", "removeAll of a root");
-  if isWindows() {
+  #if #os == .windows {
     failsWith(root, fs.removeAll("\\\\server\\share"), "removeAll \\\\server\\share: Invalid argument",
       "removeAll of a share");
-  } else {
+  } #else {
     failsWith(root, fs.removeAll("/.."), "removeAll /..: Invalid argument", "removeAll of a root's '..'");
   }
   let withDot = root.join("x/.");
@@ -323,7 +323,7 @@ fn currentFolder(root: &Path) {
     case let Ok(a) { expectStr(a.view(), wantRel.view(), "absolute of a name"); }
     case is Err { expect(false, "absolute of a name"); }
   }
-  let dotted = Path.from(if isWindows() {"sub\\..\\.\\rel.txt"} else {"sub/.././rel.txt"});
+  let dotted = Path.from(#if #os == .windows {"sub\\..\\.\\rel.txt"} #else {"sub/.././rel.txt"});
   match fs.absolute(&dotted) {
     case let Ok(a) { expectStr(a.view(), wantRel.view(), "absolute reads '.' and '..'"); }
     case is Err { expect(false, "absolute with '..'"); }
@@ -346,9 +346,9 @@ fn currentFolder(root: &Path) {
     }
     case is Err { expect(false, "absolute of '..'"); }
   }
-  let elsewhere = Path.from(if isWindows() {"C:\\Some\\..\\Where"} else {"/Some/../Where"});
+  let elsewhere = Path.from(#if #os == .windows {"C:\\Some\\..\\Where"} #else {"/Some/../Where"});
   match fs.absolute(&elsewhere) {
-    case let Ok(a) { expectStr(a.view(), if isWindows() {"C:/Where"} else {"/Where"}, "absolute of an absolute path"); }
+    case let Ok(a) { expectStr(a.view(), #if #os == .windows {"C:/Where"} #else {"/Where"}, "absolute of an absolute path"); }
     case is Err { expect(false, "absolute of an absolute path"); }
   }
   let missing = root.join("missing");

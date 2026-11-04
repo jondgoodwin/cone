@@ -30,7 +30,7 @@ pub struct WRef {
   pub rows: usize;
   pub cols: usize;
 
-  pub fn copy(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
+  pub fn clone(self: &) WRef { WRef(buf, off, qtype, rows, cols) }
 }
 
 struct LayerRefs {
@@ -62,9 +62,9 @@ struct LayerRefs {
   dwB: usize;
 
   // A value of its own: recording a layer lends nothing out of the model's list of layers while the kernels run
-  fn copy(self: &) LayerRefs {
-    LayerRefs(ff1a.copy(), ff1b.copy(), q.copy(), k.copy(), v.copy(), o.copy(), pos.copy(), pw1.copy(), pw2.copy(), ff2a.copy(),
-      ff2b.copy(), nFf1W, nFf1B, nAttW, nAttB, nConvW, nConvB, nFf2W, nFf2B, nOutW, nOutB, posU, posV, dwW, dwB)
+  pub fn clone(self: &) LayerRefs {
+    LayerRefs(ff1a.clone(), ff1b.clone(), q.clone(), k.clone(), v.clone(), o.clone(), pos.clone(), pw1.clone(), pw2.clone(), ff2a.clone(),
+      ff2b.clone(), nFf1W, nFf1B, nAttW, nAttB, nConvW, nConvB, nFf2W, nFf2B, nOutW, nOutB, posU, posV, dwW, dwB)
   }
 }
 
@@ -133,7 +133,7 @@ fn isMatrix(name: &str) bool {
 pub struct SpeechToTextError is Error, Sendable {
   pub reason: String;
 
-  pub fn message(self: &) String { reason.copy() }
+  pub fn message(self: &) String { reason.clone() }
 
   // What '?' makes of a model file that could not be read
   pub fn fromSafetensors overload from(e: SafetensorsError) SpeechToTextError {
@@ -249,12 +249,12 @@ pub struct Parakeet {
   pub fn open(device: &mut Device, modelPath: &Path, vocabPath: &Path) Result[Parakeet, SpeechToTextError] {
     var file = openSafetensors(modelPath)?;
     // the vocabulary
-    var vocab = List[String].empty();
+    var vocab = List[String]();
     match fs.readFile(vocabPath) {
       case let Ok(text) {
         let lines = text.lines();
         var i = 0usize;
-        while i < lines.len() { vocab.push(lines[i].copy()); i = i + 1usize; }
+        while i < lines.len() { vocab.push(lines[i].clone()); i = i + 1usize; }
       }
       case let Err(e) { return Err[Parakeet, SpeechToTextError](SpeechToTextError(describe("speechtotext: the vocabulary: ", e.message().view(), ""))); }
     }
@@ -268,19 +268,19 @@ pub struct Parakeet {
     let st = &file.header;
     let bytes = file.bytes();
     // the front end's tables
-    var window = List[f32].empty();
-    var fb = List[f32].empty();
+    var window = List[f32]();
+    var fb = List[f32]();
     match st.floats(bytes, "mel.window") { case var Some(w) { window = w; } case is None {} }
     match st.floats(bytes, "mel.fb") { case var Some(w) { fb = w; } case is None {} }
     var Some(frontend) = Frontend.make(window.view(), fb.view()) else {
       return Err[Parakeet, SpeechToTextError](SpeechToTextError(String.from("speechtotext: the model has no mel.window and mel.fb of 400 and 128 x 257")));
     };
     // the matrices, placed in buffers; everything else into 'small'
-    var specs = List[Spec].empty();
-    var specNames = List[String].empty();
-    var smallNames = List[String].empty();
-    var smallOffs = List[usize].empty();
-    var smallWords = List[u32].empty();
+    var specs = List[Spec]();
+    var specNames = List[String]();
+    var smallNames = List[String]();
+    var smallOffs = List[usize]();
+    var smallWords = List[u32]();
     var embedBegin = 0usize;
     var haveEmbed = false;
     var t = 0usize;
@@ -302,12 +302,12 @@ pub struct Parakeet {
             var q = QTYPE_F32;
             if ti.dtype == ST_F16 { q = QTYPE_F16; }
             specs.push(Spec(ti.begin, ti.rows(), ti.cols(), q, u64.from(ti.bytes()), 0u32, 0usize));
-            specNames.push(ti.name.copy());
+            specNames.push(ti.name.clone());
           } else {
             if ti.dtype != ST_F32 {
               return Err[Parakeet, SpeechToTextError](SpeechToTextError(describe("speechtotext: tensor ", name, " must be F32 (a small tensor)")));
             }
-            smallNames.push(ti.name.copy());
+            smallNames.push(ti.name.clone());
             smallOffs.push(smallWords.len());
             let w = packWords(st.bytesOf(bytes, ti));
             var i = 0usize;
@@ -320,7 +320,7 @@ pub struct Parakeet {
     }
     if !haveEmbed { return Err[Parakeet, SpeechToTextError](SpeechToTextError(String.from("speechtotext: the model has no dec.embed"))); }
     // plan the weight buffers
-    var sizes = List[u64].empty();
+    var sizes = List[u64]();
     {
       var cur = 0u64;
       var idx = 0u32;
@@ -340,7 +340,7 @@ pub struct Parakeet {
       }
       sizes.push(cur);
     }
-    var resident = List[Buffer].empty();
+    var resident = List[Buffer]();
     var weightBytes = 0u64;
     var b = 0usize;
     while b < sizes.len() {
@@ -379,7 +379,7 @@ pub struct Parakeet {
     if !kernels.isValid() || !sk.isValid() { return Err[Parakeet, SpeechToTextError](SpeechToTextError(String.from("speechtotext: the kernels could not be made on this device"))); }
 
     // the references
-    var err = String.empty();
+    var err = String();
     var layers = List[LayerRefs].withCapacity(24usize);
     var l = 0usize;
     while l < 24usize {
@@ -450,7 +450,7 @@ pub struct Parakeet {
     Ok[Parakeet, SpeechToTextError](Parakeet(file, kernels, sk, Works.make(), frontend, vocab, layers, subOut, jointEnc, jointPred, jointOut,
       lstmIh0, lstmHh0, lstmIh1, lstmHh1, embedBegin, c0w, c0b, c2w, c2b, c3w, c3b, c5w, c5b, c6w, c6b, subOutBias,
       jointEncBias, jointPredBias, jointOutBias, lstmBias0, lstmBias1, resident, nres, nWeights, slotSmall, slotX0, slotGi,
-      slotGh, slotPp, slotZ, slotLogits, slotState, List[Buffer].empty(), weightBytes, MAX_ENC_FRAMES, timings))
+      slotGh, slotPp, slotZ, slotLogits, slotState, List[Buffer](), weightBytes, MAX_ENC_FRAMES, timings))
   }
 
   // Bytes of GPU memory the weights and small tensors take
@@ -474,10 +474,10 @@ pub struct Parakeet {
     let t0 = Instant.now();
     let feats = frontend.features(samples);
     let t1 = Instant.now();
-    var tokens = List[u32].empty();
-    var times = List[u32].empty();
-    var steps = List[Step].empty();
-    var enc = EncoderTrace(List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(), 0usize);
+    var tokens = List[u32]();
+    var times = List[u32]();
+    var steps = List[Step]();
+    var enc = EncoderTrace(List[f32](), List[f32](), List[f32](), List[f32](), List[f32](), 0usize);
     var frames = 0usize;
     var t2 = t1;
     if feats.frames >= 2usize {
@@ -485,7 +485,7 @@ pub struct Parakeet {
       frames, enc = e.(frames, trace);
       t2 = Instant.now();
       match decodeGreedy(self, device, frames, &mut steps, trace, &mut tokens, &mut times) {
-        case let Some(m) { return Err[Run, SpeechToTextError](SpeechToTextError(m.copy())); }
+        case let Some(m) { return Err[Run, SpeechToTextError](SpeechToTextError(m.clone())); }
         case is None {}
       }
     }

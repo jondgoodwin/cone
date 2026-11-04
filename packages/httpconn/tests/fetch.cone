@@ -69,11 +69,11 @@ fn answer(drv: &mut Driver, req: ReqId, target: &Array[u8], method: Method, echo
     var c = IoBuf(64usize);
     c.append("three");
     drv.sendData(req, c);
-    var t = Headers.empty();
+    var t = Headers();
     t.add("X-Checksum", "abc123");
     drv.finishWith(req, t);
   } else if target == "/nocontent" {
-    drv.respond(req, ResponseHead.make(204u16), BodyLength.empty());
+    drv.respond(req, ResponseHead.make(204u16), BodyLength());
   } else {
     // /echo
     drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(echo.len)));
@@ -100,33 +100,33 @@ fn main() i32 {
   require(port != 0u16, "the server listens");
   let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
 
-  var cl = Client(0u16, String.empty(), Headers.empty(), 0u64, 0u64, 0u64, 0u64, 0u64, false, 0u64);
-  var sv = Server(0u64, String.empty(), 0u64, 0u64, 0u64, 0u64, 0u64);
+  var cl = Client(0u16, String(), Headers(), 0u64, 0u64, 0u64, 0u64, 0u64, false, 0u64);
+  var sv = Server(0u64, String(), 0u64, 0u64, 0u64, 0u64, 0u64);
   // What the server is reading, to answer on its End
-  var svTarget = String.empty();
+  var svTarget = String();
   var svMethod: Method = Method.Get;
   var svReq = ReqId.none();
 
   // The client's requests, one after another
   var step = 0u32;
   var req = ReqId.none();
-  var events = List[Event].empty();
+  var events = List[Event]();
   let giveUp = Instant.now() + Duration.fromSeconds(10i64);
   var connected = false;
   while step < 6u32 && Instant.now() < giveUp {
     // The next request, once the one before has ended
     if req.isNone() && step < 5u32 {
-      cl.body = String.empty();
-      cl.trailers = Headers.empty();
+      cl.body = String();
+      cl.trailers = Headers();
       cl.status = 0u16;
       if step == 0u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+        req = drv.request(&mut lp, conn, RequestHead.get("/hello", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
       } else if step == 1u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/chunked", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+        req = drv.request(&mut lp, conn, RequestHead.get("/chunked", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
       } else if step == 2u32 {
-        req = drv.request(&mut lp, conn, RequestHead.make("HEAD", "/hello", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+        req = drv.request(&mut lp, conn, RequestHead.make("HEAD", "/hello", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
       } else if step == 3u32 {
-        req = drv.request(&mut lp, conn, RequestHead.get("/nocontent", "127.0.0.1"), BodyLength.empty(), Sink.Here(tokReq));
+        req = drv.request(&mut lp, conn, RequestHead.get("/nocontent", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
       } else {
         req = drv.request(&mut lp, conn, RequestHead.make("POST", "/echo", "127.0.0.1"),
           BodyLength.sized(u64.from(postBody().len)), Sink.Here(tokReq));
@@ -144,7 +144,7 @@ fn main() i32 {
           svTarget = String.from(e.request.target.view());
           svMethod = e.request.method;
           svReq = e.req;
-          sv.echo = String.empty();
+          sv.echo = String();
         } else if e.kind == EventKind.Data {
           sv.echo.appendBytes(e.buf.view());
           drv.release(e.req, e.buf.len());
@@ -173,7 +173,7 @@ fn main() i32 {
           drv.release(e.req, e.buf.len());
         } else if e.kind == EventKind.End {
           cl.ends = cl.ends + 1u64;
-          cl.trailers = e.trailers.copy();
+          cl.trailers = e.trailers.clone();
         } else if e.kind == EventKind.Writable {
           cl.writable = cl.writable + 1u64;
           var b = IoBuf(postBody().len);

@@ -11,8 +11,8 @@ struct Import {
   pub file: Path;
   pub line: u32;
 
-  pub fn copy(self: &) Import {
-    Import(hasName, name.copy(), written.copy(), file.copy(), line)
+  pub fn clone(self: &) Import {
+    Import(hasName, name.clone(), written.clone(), file.clone(), line)
   }
 
   // 'file:line', for messages
@@ -24,7 +24,7 @@ struct Import {
   }
 }
 
-fn noImport() Import { Import(false, String.empty(), String.empty(), Path.from(""), 0u32) }
+fn noImport() Import { Import(false, String(), String(), Path.from(""), 0u32) }
 
 // A file's header
 struct Header {
@@ -36,7 +36,7 @@ struct Header {
   pub c: bool;                // 'mod @c ...': a C-named module
 }
 
-fn noHeader() Header { Header(false, String.empty(), List[Import].empty(), false, noImport(), false) }
+fn noHeader() Header { Header(false, String(), List[Import](), false, noImport(), false) }
 
 // -------- names --------
 
@@ -95,7 +95,7 @@ fn nameFault(name: &str) String {
   if isPermission(name) {
     return String.from("is a Cone permission, and a permission cannot name a package or a module");
   }
-  String.empty()
+  String()
 }
 
 // -------- the tokens --------
@@ -178,7 +178,7 @@ struct Toks {
     self.skip();
     let start = pos;
     let n = text.len();
-    if start >= n { return Tok(tokEof, String.empty(), line); }
+    if start >= n { return Tok(tokEof, String(), line); }
     let ch = self.at(start);
     if isNameStart(ch) || ch >= 0x80u8 {
       var end = start + 1usize;
@@ -214,7 +214,7 @@ struct Toks {
 
   pub fn valueAt(self: &mut, k: usize) String {
     self.fill(k);
-    ahead[head + k].value.copy()
+    ahead[head + k].value.clone()
   }
 
   pub fn lineAt(self: &mut, k: usize) u32 {
@@ -284,7 +284,7 @@ fn withoutBom(text: String) String {
 // 'pub', and whatever 'as' and 'use' clause follow: the name read is the
 // package's, whatever name 'as' binds it under.
 fn scanHeader(file: &Path) Result[Header, String] {
-  var text = String.empty();
+  var text = String();
   match fs.readFile(file) {
     case var Ok(ok) { text <-> ok; }
     case let Err(e) {
@@ -293,7 +293,7 @@ fn scanHeader(file: &Path) Result[Header, String] {
       return Err[Header, String](cat("cannot read ", place.view(), ": ", m.view()));
     }
   }
-  var toks = Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  var toks = Toks(withoutBom(text), 0usize, 1u32, List[Tok](), 0usize);
   var header = noHeader();
   var k = if toks.isName("pub", 0usize) {1usize} else {0usize};
   if toks.isName("mod", k) && !toks.isName("trait", k + 1usize) {
@@ -319,7 +319,7 @@ fn scanHeader(file: &Path) Result[Header, String] {
         if toks.kindAt(0usize) == tokName {
           let v = toks.valueAt(0usize);
           header.hasExtends = true;
-          header.extended = Import(true, v.copy(), v.copy(), file.copy(), toks.lineAt(0usize));
+          header.extended = Import(true, v.clone(), v.clone(), file.clone(), toks.lineAt(0usize));
         }
       }
     }
@@ -337,10 +337,10 @@ fn scanHeader(file: &Path) Result[Header, String] {
     let v = toks.valueAt(0usize);
     let line = toks.lineAt(0usize);
     if kind == tokName {
-      header.imports.push(Import(true, v.copy(), v.copy(), file.copy(), line));
+      header.imports.push(Import(true, v.clone(), v.clone(), file.clone(), line));
     }
     else if kind == tokString {
-      header.imports.push(Import(false, String.empty(), cat("\"", v.view(), "\""), file.copy(), line));
+      header.imports.push(Import(false, String(), cat("\"", v.view(), "\""), file.clone(), line));
     }
     toks.skipStatement();
   }
@@ -351,7 +351,7 @@ fn scanHeader(file: &Path) Result[Header, String] {
 // holds_kernel): read to its end with the header scan's tokens, so that one
 // written in a comment or a string does not count
 fn holdsKernel(file: &Path) Result[bool, String] {
-  var text = String.empty();
+  var text = String();
   match fs.readFile(file) {
     case var Ok(ok) { text <-> ok; }
     case let Err(e) {
@@ -360,7 +360,7 @@ fn holdsKernel(file: &Path) Result[bool, String] {
       return Err[bool, String](cat("cannot read ", place.view(), ": ", m.view()));
     }
   }
-  var toks = Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  var toks = Toks(withoutBom(text), 0usize, 1u32, List[Tok](), 0usize);
   while toks.kindAt(0usize) != tokEof {
     if toks.isName("fn", 0usize) && toks.isTok(1usize, tokPunct, "@") && toks.isName("compute", 2usize) {
       return Ok[bool, String](true);

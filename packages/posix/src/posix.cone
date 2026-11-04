@@ -11,10 +11,10 @@
 // Linux's layouts are written) each is the C library's own function. On
 // Windows, which is not a POSIX system, the runtime (the UCRT) spells most
 // POSIX functions with a leading underscore ('_mkdir', '_popen'), sizes some
-// of their arguments differently, and lacks others. core's 'isWindows()', a
-// constant of the compile (this module, being C-named, gets no prelude and
-// names it through the core it imports), chooses, so only the target's calls are generated; every
-// extern is declared on every platform. On Windows:
+// of their arguments differently, and lacks others. '#if #os == .windows'
+// chooses (it is resolved while parsing, so the other system's branch is never
+// looked up), so only the target's calls are generated; every extern is
+// declared on every platform. On Windows:
 //
 // - Where the runtime's function takes POSIX's arguments in POSIX's order,
 //   the POSIX name is a small 'inline' function over the runtime's symbol.
@@ -226,13 +226,13 @@ fn statOfLinux(raw: &LinuxStat) Stat {
 // sys/stat.h: a file's status. 'stat' follows a symbolic link or a directory
 // junction to what it leads to, as POSIX's does; 'lstat', below, does not.
 pub fn @c("cone_posix_stat") stat(path: cstr, buf: &mut Stat) i32 {
-  if core.isWindows() {
+  #if #os == .windows {
     var raw = emptyWinStat();
     let r = _stat64(path, &mut raw);
     if r == 0i32 {*buf = statOfWin(&raw);}
     r
   }
-  else {
+  #else {
     var raw = emptyLinuxStat();
     let r = linuxStat(path, &mut raw as *u8);
     if r == 0i32 {*buf = statOfLinux(&raw);}
@@ -242,29 +242,29 @@ pub fn @c("cone_posix_stat") stat(path: cstr, buf: &mut Stat) i32 {
 
 // chdir(path), rmdir(path): the runtime's '_chdir' and '_rmdir'
 pub fn chdir(path: cstr) i32 inline {
-  if core.isWindows() {_chdir(path)} else {linuxChdir(path)}
+  #if #os == .windows {_chdir(path)} #else {linuxChdir(path)}
 }
 pub fn rmdir(path: cstr) i32 inline {
-  if core.isWindows() {_rmdir(path)} else {linuxRmdir(path)}
+  #if #os == .windows {_rmdir(path)} #else {linuxRmdir(path)}
 }
 
 // unlink(path): removes a file, or a symbolic link itself, and refuses a
 // directory (EISDIR on Linux, EACCES on Windows), which libc's 'remove'
 // does not on Linux: there it removes an empty directory
 pub fn unlink(path: cstr) i32 inline {
-  if core.isWindows() {_unlink(path)} else {linuxUnlink(path)}
+  #if #os == .windows {_unlink(path)} #else {linuxUnlink(path)}
 }
 
 // mkdir(path, mode): Windows has no permission bits, so 'mode' is ignored
 pub fn mkdir(path: cstr, mode: u32) i32 inline {
-  if core.isWindows() {_mkdir(path)} else {linuxMkdir(path, mode)}
+  #if #os == .windows {_mkdir(path)} #else {linuxMkdir(path, mode)}
 }
 
 // getcwd(buf, size): the runtime's '_getcwd' takes the size as an 'int'. With
 // a null 'buf' and a size of 0 both answer a block from malloc for the caller
 // to free
 pub fn getcwd(buf: *u8, size: usize) *u8 inline {
-  if core.isWindows() {_getcwd(buf, i32.from(size))} else {linuxGetcwd(buf, size)}
+  #if #os == .windows {_getcwd(buf, i32.from(size))} #else {linuxGetcwd(buf, size)}
 }
 
 // realpath(path, resolved): the runtime's '_fullpath(resolved, path, size)'
@@ -277,7 +277,7 @@ pub fn getcwd(buf: *u8, size: usize) *u8 inline {
 pub const PATH_MAX = 4096usize;
 const winPathMax = 260usize;
 pub fn realpath(path: cstr, resolved: *u8) *u8 inline {
-  if core.isWindows() {_fullpath(resolved, path, winPathMax)} else {linuxRealpath(path, resolved)}
+  #if #os == .windows {_fullpath(resolved, path, winPathMax)} #else {linuxRealpath(path, resolved)}
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ var @threadlocal envAnswerSize = 0usize;
 // getenv(name): the variable's value, in a block overwritten by the same
 // thread's next call, as POSIX allows; null when it is not set
 pub fn @c("cone_posix_getenv") getenv(name: cstr) *u8 {
-  if core.isWindows() {
+  #if #os == .windows {
     let nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
     if nameLen == 0i32 {return null;};
     let wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
@@ -327,7 +327,7 @@ pub fn @c("cone_posix_getenv") getenv(name: cstr) *u8 {
     WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, null, null);
     envAnswer as *u8
   }
-  else {
+  #else {
     linuxGetenv(name)
   }
 }
@@ -337,7 +337,7 @@ pub fn @c("cone_posix_getenv") getenv(name: cstr) *u8 {
 // is done, as POSIX says. On Windows it returns 0, or an error number where
 // POSIX returns -1.
 pub fn @c("cone_posix_setenv") setenv(name: cstr, value: cstr, overwrite: i32) i32 {
-  if core.isWindows() {
+  #if #os == .windows {
     let nameLen = MultiByteToWideChar(utf8Page, invalidUtf8Fails, name.ptr(), -1i32, null, 0i32);
     if nameLen == 0i32 {return EINVAL;};
     let wname = libc.malloc(usize.from(nameLen) * 2usize) as *u16;
@@ -357,7 +357,7 @@ pub fn @c("cone_posix_setenv") setenv(name: cstr, value: cstr, overwrite: i32) i
     libc.free(wvalue as *u8);
     result
   }
-  else {
+  #else {
     linuxSetenv(name, value, overwrite)
   }
 }
@@ -367,10 +367,10 @@ pub fn @c("cone_posix_setenv") setenv(name: cstr, value: cstr, overwrite: i32) i
 // also why, on Windows, 'setenv' with an empty value removes the variable
 // rather than setting it empty.
 pub fn @c("cone_posix_unsetenv") unsetenv(name: cstr) i32 {
-  if core.isWindows() {
+  #if #os == .windows {
     setenv(name, "", 1i32)
   }
-  else {
+  #else {
     linuxUnsetenv(name)
   }
 }
@@ -380,10 +380,10 @@ pub fn @c("cone_posix_unsetenv") unsetenv(name: cstr) i32 {
 // 'pclose' waits for it and returns its exit status (on Linux, the status
 // 'wait' gives: the exit code shifted left eight bits).
 pub fn popen(command: cstr, mode: cstr) *libc.FILE inline {
-  if core.isWindows() {_popen(command, mode)} else {linuxPopen(command, mode)}
+  #if #os == .windows {_popen(command, mode)} #else {linuxPopen(command, mode)}
 }
 pub fn pclose(stream: *libc.FILE) i32 inline {
-  if core.isWindows() {_pclose(stream)} else {linuxPclose(stream)}
+  #if #os == .windows {_pclose(stream)} #else {linuxPclose(stream)}
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +448,7 @@ fn hasWildcard(cpath: cstr) bool {
 // junction, and the special entries '_A_REPARSE' names), its size zero and
 // its times its own; anything else is '_stat64''s answer.
 pub fn @c("cone_posix_lstat") lstat(path: cstr, buf: &mut Stat) i32 {
-  if core.isWindows() {
+  #if #os == .windows {
     if !hasWildcard(path) {
       var info = emptyFindData();
       let handle = _findfirst64(path, &mut info);
@@ -463,7 +463,7 @@ pub fn @c("cone_posix_lstat") lstat(path: cstr, buf: &mut Stat) i32 {
     };
     stat(path, buf)
   }
-  else {
+  #else {
     var raw = emptyLinuxStat();
     let r = linuxLstat(path, &mut raw);
     if r == 0i32 {*buf = statOfLinux(&raw);}
@@ -512,7 +512,7 @@ fn emptyDirent() dirent {
 // errno set: ENOENT where nothing has that name, ENOTDIR where a file does.
 // On Windows it lists the pattern 'name/*'.
 pub fn @c("cone_posix_opendir") opendir(cname: cstr) *DIR {
-  if core.isWindows() {
+  #if #os == .windows {
     var st = emptyStat();
     if stat(cname, &mut st) != 0i32 {return null;};
     if (st.st_mode & S_IFMT) != S_IFDIR {
@@ -545,7 +545,7 @@ pub fn @c("cone_posix_opendir") opendir(cname: cstr) *DIR {
     if d.handle == -1isize {*libc.errno() = saved;} else {d.pending = true;};
     dir
   }
-  else {
+  #else {
     let stream = linuxOpendir(cname);
     if stream == null {return null;};
     let zero: *DIR = null;
@@ -561,7 +561,7 @@ pub fn @c("cone_posix_opendir") opendir(cname: cstr) *DIR {
 // directory's own, overwritten by the next call and freed by 'closedir'.
 pub fn @c("cone_posix_readdir") readdir(dir: *DIR) *dirent {
   let d = dir as &mut DIR;
-  if core.isWindows() {
+  #if #os == .windows {
     if d.handle == -1isize {return null;};
     if !d.pending {
       let saved = *libc.errno();
@@ -578,7 +578,7 @@ pub fn @c("cone_posix_readdir") readdir(dir: *DIR) *dirent {
     d.entry.d_name = d.data.name;
     &d.entry as *dirent
   }
-  else {
+  #else {
     let got = linuxReaddir(d.handle as *u8);
     if got == null {return null;};
     let raw = got as &LinuxDirent;
@@ -596,10 +596,10 @@ pub fn @c("cone_posix_readdir") readdir(dir: *DIR) *dirent {
 pub fn @c("cone_posix_closedir") closedir(dir: *DIR) i32 {
   let d = dir as &mut DIR;
   var result = 0i32;
-  if core.isWindows() {
+  #if #os == .windows {
     if d.handle != -1isize {_findclose(d.handle);};
   }
-  else {
+  #else {
     result = linuxClosedir(d.handle as *u8);
   }
   libc.free(dir as *u8);

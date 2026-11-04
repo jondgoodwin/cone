@@ -20,7 +20,7 @@ import collections use *;
 import http2 use *;
 
 fn hex(b: &Array[u8]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < b.len {
     s.appendHex(u64.from(b[i]), 2usize);
@@ -32,7 +32,7 @@ fn hex(b: &Array[u8]) String {
 fn nibble(c: u8) u8 {if c >= 'a' {c - 'a' + 10u8} else {c - '0'}}
 
 fn unhex(s: &Array[u8]) List[u8] {
-  var out = List[u8].empty();
+  var out = List[u8]();
   var i = 0usize;
   while i + 1usize < s.len {
     out.push((nibble(s[i]) << 4u8) | nibble(s[i + 1usize]));
@@ -42,8 +42,8 @@ fn unhex(s: &Array[u8]) List[u8] {
 }
 
 fn run(dec: &mut HpackDecoder, block: &Array[u8]) String {
-  var got = List[HeaderField].empty();
-  var s = String.empty();
+  var got = List[HeaderField]();
+  var s = String();
   match dec.decode(block, &mut got) {
     case let Ok(size) {
       s.append("ok ");
@@ -110,7 +110,7 @@ fn headerTableSize() {
 }
 
 fn block(enc: &mut HpackEncoder) String {
-  var out = List[u8].empty();
+  var out = List[u8]();
   enc.startBlock(&mut out);
   hex(out.view())
 }
@@ -134,9 +134,9 @@ fn encoderTableSize() {
 
   c.encoderTableSize = 0usize;
   enc = HpackEncoder.make(&c);
-  var fields = List[HeaderField].empty();
+  var fields = List[HeaderField]();
   fields.push(HeaderField.make("a", "b"));
-  var out = List[u8].empty();
+  var out = List[u8]();
   enc.encode(fields.view(), &mut out);
   expectStr(hex(out.view()).view(), "200001610162", "a cap of 0: an update to 0, then a literal not indexed");
   expectUInt(u64.from(enc.dynamicTable().len()), 0u64, "a cap of 0: nothing in the table");
@@ -155,8 +155,8 @@ fn maxHeaderListSize() {
   var enc = HpackEncoder.make(&c);
   var dec = HpackDecoder.make(c);
 
-  var out = List[u8].empty();
-  var fields = List[HeaderField].empty();
+  var out = List[u8]();
+  var fields = List[HeaderField]();
   fields.push(HeaderField.make("a", repeat('v', 67usize).view()));
   enc.encode(fields.view(), &mut out);
   expectStr(run(&mut dec, out.view()).view(), "ok 1 size 100", "a list of exactly 100");
@@ -178,7 +178,7 @@ fn maxHeaderListSize() {
   expectStr(run(&mut dec, out.view()).view(), "ok 1 size 34", "...and decodes");
 
   // Decoded to its end: a bad byte after the crossing is found
-  var bad = List[u8].empty();
+  var bad = List[u8]();
   encodeLiteral(&mut bad, Indexing.Without, 0usize, "c", repeat('v', 100usize).view(), false);
   bad.push(0x80u8);
   expectStr(run(&mut dec, bad.view()).view(), "malformed: an index of 0", "past the bound, then an index of 0");
@@ -186,7 +186,7 @@ fn maxHeaderListSize() {
 
 fn headerListAbortSize() {
   // The bomb: one 4000-byte entry, then a hundred references to it
-  var bomb = List[u8].empty();
+  var bomb = List[u8]();
   encodeLiteral(&mut bomb, Indexing.Incremental, 0usize, "x", repeat('v', 4000usize).view(), false);
   var k = 0usize;
   while k < 100usize {
@@ -201,14 +201,14 @@ fn headerListAbortSize() {
 
   // Four references: past maxHeaderListSize, not the abort size, so decoded
   // to the end, where the index of 0 is
-  var small = List[u8].empty();
+  var small = List[u8]();
   encodeLiteral(&mut small, Indexing.Incremental, 0usize, "x", repeat('v', 4000usize).view(), false);
   small.push(0xBEu8);
   small.push(0xBEu8);
   small.push(0xBEu8);
   small.push(0xBEu8);
   var d2 = HpackDecoder.make(HpackConfig.make());
-  var copy = List[u8].empty();
+  var copy = List[u8]();
   copy.reserve(small.len());
   var i = 0usize;
   while i < small.len() {
@@ -224,7 +224,7 @@ fn headerListAbortSize() {
   var c = HpackConfig.make();
   c.maxHeaderListSize = 100usize;
   c.headerListAbortSize = 200usize;
-  var edge = List[u8].empty();
+  var edge = List[u8]();
   encodeLiteral(&mut edge, Indexing.Without, 0usize, "a", repeat('v', 167usize).view(), false);
   var d4 = HpackDecoder.make(c);
   expectStr(run(&mut d4, edge.view()).view(), tooLarge, "a list of 200, the abort size");
@@ -235,11 +235,11 @@ fn headerListAbortSize() {
 
   // A string past it, refused before it is copied: raw by its length,
   // Huffman as it decodes (100,000 'a's code to 62,500 bytes)
-  var raw = List[u8].empty();
+  var raw = List[u8]();
   encodeLiteral(&mut raw, Indexing.Without, 0usize, "a", repeat('v', 70000usize).view(), false);
   var d6 = HpackDecoder.make(HpackConfig.make());
   expectStr(run(&mut d6, raw.view()).view(), abandoned, "a raw value of 70,000 bytes");
-  var huff = List[u8].empty();
+  var huff = List[u8]();
   encodeLiteral(&mut huff, Indexing.Without, 0usize, "a", repeat('a', 100000usize).view(), true);
   expectUInt(u64.from(huff.len()), 62507u64, "a Huffman value of 100,000 bytes, in a block of 62,507");
   var d7 = HpackDecoder.make(HpackConfig.make());

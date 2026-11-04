@@ -239,6 +239,16 @@ StructNode *structExtendsRoot(StructNode *node);
 // other, or because both enrich one base? Nothing else answers yes.
 int structExtendsEquiv(INode *type1, INode *type2);
 
+// Would handing a value of 'fromtype' on as 'totype', by value, skip a finalizer?
+// Answers the enrichment whose 'final' would not run, or NULL, and sets *basep to
+// the type that would drop it instead. True where the two
+// are an enrichment and its base (or two enrichments of one base) and the source
+// has a 'final' the target lacks: the value is then dropped as the target, which
+// runs none. An owning reference (Uni, Rc) of the one handed on as one of the
+// other is the same handoff, and is answered through its pointee. A borrowed
+// reference never is: the owner keeps its own type and its own drop.
+StructNode *structEnrichFinalSkipped(INode *fromtype, INode *totype, StructNode **basep);
+
 // The enum an 'extends' on an enum adds variants to, or NULL for anything else.
 // The two are distinct types that do not substitute for each other in either
 // direction, so nothing that answers substitution reads this.
@@ -280,6 +290,9 @@ StructNode *structGetBaseTrait(StructNode *node);
 // Type check a struct type: its layout. Its members are checked once no layout
 // is in flight.
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+// The value `T()` gives a field of a struct declaring core's Default that names none
+// and whose declaration gave no `= value`, or NULL (structFieldDefault)
+INode *structFieldDefault(StructNode *node, FieldDclNode *field);
 
 // An array type checked as a reference's target waits for its element's
 // layout before it asks the element's size and takes its move and thread

@@ -150,7 +150,7 @@ fn forget(sv: &mut Srv, k: usize) {
 // The answer to request k, read whole
 fn answer(sv: &mut Srv, k: usize) {
   let req = *sv.reqs[k];
-  let full = sv.targets[k].copy();
+  let full = sv.targets[k].clone();
   let path = full.view();
   let head = *sv.methods[k] == Method.Head;
   if path == "/echo" {
@@ -161,7 +161,7 @@ fn answer(sv: &mut Srv, k: usize) {
   } else if path == "/nobody" {
     reply(sv, req, head, 204u16, "");
   } else if path == "/conns" {
-    var b = String.empty();
+    var b = String();
     b.appendUInt(sv.accepted);
     reply(sv, req, head, 200u16, b.view());
   } else if path.len > 10usize && &path[0usize ..< 10usize] == "/redirect/" {
@@ -202,8 +202,8 @@ fn serveEvent(sv: &mut Srv, e: &mut httpconn.Event) {
     sv.requests = sv.requests + 1u64;
     sv.reqs.push(e.req);
     sv.methods.push(e.request.method);
-    sv.targets.push(e.request.target.copy());
-    sv.bodies.push(String.empty());
+    sv.targets.push(e.request.target.clone());
+    sv.bodies.push(String());
   } else if kind == httpconn.EventKind.Data {
     let k = findReq(sv, e.req);
     if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
@@ -232,9 +232,9 @@ fn url(port: u16, path: &str) String {
 fn serve(portTx: Sender[u16]) Report {
   var lp = Loop.mustMake();
   var sv = Srv(drv: httpconn.Driver.make(httpconn.Config.make()), accepted: 0u64,
-    requests: 0u64, reqs: List[httpconn.ReqId].empty(), methods: List[Method].empty(),
-    targets: List[String].empty(), bodies: List[String].empty(), streams: List[httpconn.ReqId].empty(),
-    sent: List[u64].empty(), totals: List[u64].empty());
+    requests: 0u64, reqs: List[httpconn.ReqId](), methods: List[Method](),
+    targets: List[String](), bodies: List[String](), streams: List[httpconn.ReqId](),
+    sent: List[u64](), totals: List[u64]());
   var port = 0u16;
   match sv.drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here(1u64)) {
     case let Ok(r) {
@@ -246,7 +246,7 @@ fn serve(portTx: Sender[u16]) Report {
     case let Err(e) {}
   }
   portTx.send(port);
-  var events = List[httpconn.Event].empty();
+  var events = List[httpconn.Event]();
   while halt.load() == 0u32 {
     sv.drv.poll(&mut lp, Instant.now() + Duration.fromMillis(20i64), &uni events);
     var k = 0usize;

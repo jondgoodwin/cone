@@ -26,16 +26,12 @@ pub const TRUNK_SIDES = 16usize;
 pub const ARM_SIDES = 8usize;
 pub const LEG_SIDES = 10usize;
 
-pub struct Cage {
+pub struct Cage is Default {
   pub positions: List[Vec3];
   pub counts: List[u32];
   pub indices: List[u32];
   pub weights: List[f32];       // HUMANOID_BONES a vertex
   pub seam: List[u32];          // the neck's open ring, in order round it
-
-  pub fn empty() Cage {
-    Cage(List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[u32].empty())
-  }
 
   pub fn vertexCount(self: &) usize { positions.len() }
 
@@ -76,13 +72,13 @@ pub struct Cage {
   }
 
   fn quad(self: &mut, a: u32, b: u32, c: u32, d: u32, inside: Vec3) {
-    var vs = List[u32].empty();
+    var vs = List[u32]();
     vs.push(a); vs.push(b); vs.push(c); vs.push(d);
     self.face(&vs, inside);
   }
 
   fn tri(self: &mut, a: u32, b: u32, c: u32, inside: Vec3) {
-    var vs = List[u32].empty();
+    var vs = List[u32]();
     vs.push(a); vs.push(b); vs.push(c);
     self.face(&vs, inside);
   }
@@ -105,14 +101,14 @@ pub struct Cage {
   // first guess, wrong where a face is far from its part's axis (the shoulder's cap).
   pub fn orient(self: &mut) {
     let nf = counts.len();
-    var first = List[usize].empty();
+    var first = List[usize]();
     var at = 0usize;
     var f = 0usize;
     while f < nf { first.push(at); at = at + usize.from(*counts[f]); f = f + 1usize; }
     // each directed edge: its key (the smaller vertex high, the larger low), its face, whether it runs low to high
-    var keys = List[u64].empty();
-    var faces = List[usize].empty();
-    var ups = List[bool].empty();
+    var keys = List[u64]();
+    var faces = List[usize]();
+    var ups = List[bool]();
     f = 0usize;
     while f < nf {
       let n = usize.from(*counts[f]);
@@ -129,30 +125,15 @@ pub struct Cage {
       }
       f = f + 1usize;
     }
-    // sorted by key, equal keys in the order the edges were listed (a shell sort of their order, compared by
-    // key and then by edge number so that no two compare equal; a shell sort alone is not stable, and where
-    // more than two faces share an edge the pairs below would depend on how the sort happened to leave them)
-    var order = List[usize].empty();
+    // sorted by key, equal keys in the order the edges were listed (a stable sort: where more than two
+    // faces share an edge the pairs below depend on that order)
+    var order = List[usize]();
     var i = 0usize;
     while i < keys.len() { order.push(i); i = i + 1usize; }
-    var gap = keys.len() / 2usize;
-    while gap > 0usize {
-      i = gap;
-      while i < order.len() {
-        let x = *order[i];
-        var j = i;
-        while j >= gap && (*keys[*order[j - gap]] > *keys[x] || (*keys[*order[j - gap]] == *keys[x] && *order[j - gap] > x)) {
-          order.set(j, *order[j - gap]);
-          j = j - gap;
-        }
-        order.set(j, x);
-        i = i + 1usize;
-      }
-      gap = gap / 2usize;
-    }
+    order.sortByKey(fn(e: &usize) u64 { *keys[*e] });
     // each edge's partner (the other face's run along it), or none
     let NONE = 0xFFFFFFFFusize;
-    var partner = List[usize].empty();
+    var partner = List[usize]();
     partner.resize(keys.len(), NONE);
     i = 0usize;
     while i + 1usize < order.len() {
@@ -162,9 +143,9 @@ pub struct Cage {
       i = i + 1usize;
     }
     // spread the flips from each face not yet reached
-    var flip = List[u8].empty();
+    var flip = List[u8]();
     flip.resize(nf, 2u8);              // 2: not yet reached
-    var queue = List[usize].empty();
+    var queue = List[usize]();
     f = 0usize;
     while f < nf {
       if *flip[f] == 2u8 {
@@ -267,7 +248,7 @@ fn rs(a: usize, b: usize, t: f32) RingSkin { RingSkin(a, b, t) }
 fn ringPoint(c: Vec3, f: &Frame, ang: f32, r1: f32, r2: f32) Vec3 { c + f.e1 * (cos(ang) * r1) + f.e2 * (sin(ang) * r2) }
 
 fn addRing(cage: &mut Cage, c: Vec3, f: &Frame, angles: &List[f32], r1: f32, r2: f32, sk: RingSkin) List[u32] {
-  var out = List[u32].empty();
+  var out = List[u32]();
   var i = 0usize;
   while i < angles.len() {
     let p = ringPoint(c, f, *angles[i], r1, r2);
@@ -279,7 +260,7 @@ fn addRing(cage: &mut Cage, c: Vec3, f: &Frame, angles: &List[f32], r1: f32, r2:
 
 // The angles of a root loop's vertices round 'centre' in the plane of 'e1' and 'e2'
 fn loopAngles(cage: &Cage, loop: &List[u32], centre: Vec3, e1: Vec3, e2: Vec3) List[f32] {
-  var out = List[f32].empty();
+  var out = List[f32]();
   var i = 0usize;
   while i < loop.len() {
     let r = *cage.positions[usize.from(*loop[i])] - centre;
@@ -303,7 +284,7 @@ pub fn seamHeight(m: &Measures) f32 { (m.acromionAt + 0.030) * m.height }
 pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
   let h = m.height;
   let hs = h / 1.75;
-  var cage = Cage.empty();
+  var cage = Cage();
   let X = HUMANOID_BONES;
 
   // ---- the trunk's rings: height, half-width, half-depth, middle's z, and two bones and the share of the second ----
@@ -324,10 +305,10 @@ pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
   let b0s = [PELVIS, PELVIS, PELVIS, SPINE, SPINE, CHEST, CHEST, CHEST, CHEST];
   let b1s = [PELVIS, PELVIS, SPINE, SPINE, CHEST, CHEST, CHEST, CHEST, NECK];
   let ts = [0.f, 0., 0.5, 0., 0.5, 0., 0., 0., 0.25];
-  var rings = List[List[u32]].empty();
+  var rings = List[List[u32]]();
   var r = 0usize;
   while r < 9usize {
-    var ring = List[u32].empty();
+    var ring = List[u32]();
     var k = 0usize;
     while k < TRUNK_SIDES {
       let p = trunkPoint(ys[r], aw[r], bs[r], zs[r], k);
@@ -358,7 +339,7 @@ pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
     r = r + 1usize;
   }
   // the neck: the seam's ring of 16 above the shoulder line (the head's grid takes over from it)
-  var seam = List[u32].empty();
+  var seam = List[u32]();
   var k = 0usize;
   while k < TRUNK_SIDES {
     let phi = f32.from(k) * pi / 8.;
@@ -381,7 +362,7 @@ pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
     let c0 = if sideI == 0usize { 13usize } else { 3usize };
     let c1 = if sideI == 0usize { 12usize } else { 4usize };
     let c2 = if sideI == 0usize { 11usize } else { 5usize };
-    var root = List[u32].empty();
+    var root = List[u32]();
     root.push(*rings[7usize][c1]); root.push(*rings[7usize][c0]); root.push(*rings[6usize][c0]); root.push(*rings[5usize][c0]);
     root.push(*rings[5usize][c1]); root.push(*rings[5usize][c2]); root.push(*rings[6usize][c2]); root.push(*rings[7usize][c2]);
     // the patch's vertices share the upper arm's weight
@@ -477,7 +458,7 @@ pub fn bodyCage(m: &Measures, models: &List[Transform3]) Cage {
     let sn = th + 2usize;
     let ft = th + 4usize;
     // half the bottom ring, front to back down its own side, and the crotch
-    var root = List[u32].empty();
+    var root = List[u32]();
     k = 0usize;
     while k <= 8usize {
       let kk = if sideI == 1usize { k } else { (TRUNK_SIDES - k) % TRUNK_SIDES };

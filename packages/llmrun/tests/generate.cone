@@ -30,7 +30,7 @@ fn preference() u32 {
 }
 
 fn listText(l: &List[u32]) String {
-  var s = String.empty();
+  var s = String();
   var i = 0usize;
   while i < l.len() {
     if i > 0usize { s <- " "; }
@@ -43,14 +43,14 @@ fn listText(l: &List[u32]) String {
 // Greedy tokens from the CPU reference: the prompt, then n more
 fn cpuGreedy(m: &ModelWeights, prompt: &List[u32], n: usize) List[u32] {
   var cache = RefCache.make(&m.shape, 256usize);
-  var out = List[u32].empty();
+  var out = List[u32]();
   var logits = forwardCpu(m, &mut cache, prompt.view(), 0usize);
   var pos = prompt.len();
   var i = 0usize;
   while i < n {
     let id = argmax(logits.view());
     out.push(id);
-    var one = List[u32].empty();
+    var one = List[u32]();
     one.push(id);
     logits = forwardCpu(m, &mut cache, one.view(), pos);
     pos = pos + 1usize;
@@ -60,8 +60,8 @@ fn cpuGreedy(m: &ModelWeights, prompt: &List[u32], n: usize) List[u32] {
 }
 
 fn engineGreedy(engine: &mut Engine, device: &mut Device, prompt: &Array[u32], n: usize) List[u32] {
-  var out = List[u32].empty();
-  var logits = List[f32].empty();
+  var out = List[u32]();
+  var logits = List[f32]();
   match engine.feed(device, prompt, true) {
     case var Ok(l) { logits <-> l; }
     case let Err(e) { require(false, "the prompt runs"); }
@@ -70,7 +70,7 @@ fn engineGreedy(engine: &mut Engine, device: &mut Device, prompt: &Array[u32], n
   while i < n {
     let id = argmax(logits.view());
     out.push(id);
-    var one = List[u32].empty();
+    var one = List[u32]();
     one.push(id);
     match engine.feed(device, one.view(), true) {
       case var Ok(l) { logits <-> l; }
@@ -133,27 +133,27 @@ fn main() i32 {
           // ---- the chat flow: two turns on one cache give what the whole conversation run at once gives ----
           engine.reset();
           let first = vocab.userTurn("Hello", false);
-          var logits1 = List[f32].empty();
+          var logits1 = List[f32]();
           match engine.feed(&mut device, first.view(), true) { case var Ok(l) { logits1 <-> l; } case is Err { require(false, "turn 1 runs"); } }
           let reply1 = argmax(logits1.view());
-          var reply = List[u32].empty();
+          var reply = List[u32]();
           reply.push(reply1);
           match engine.feed(&mut device, reply.view(), false) { case is Ok {} case is Err { require(false, "the reply runs"); } }
           var turn2 = vocab.closeTurn();
           let second = vocab.userTurn("And you?", false);
           var k = 0usize;
           while k < second.len() { turn2.push(*second[k]); k = k + 1usize; }
-          var logits2 = List[f32].empty();
+          var logits2 = List[f32]();
           match engine.feed(&mut device, turn2.view(), true) { case var Ok(l) { logits2 <-> l; } case is Err { require(false, "turn 2 runs"); } }
           // the whole conversation as one run on a fresh cache
-          var whole = List[u32].empty();
+          var whole = List[u32]();
           k = 0usize;
           while k < first.len() { whole.push(*first[k]); k = k + 1usize; }
           whole.push(reply1);
           k = 0usize;
           while k < turn2.len() { whole.push(*turn2[k]); k = k + 1usize; }
           engine.reset();
-          var logitsWhole = List[f32].empty();
+          var logitsWhole = List[f32]();
           match engine.feed(&mut device, whole.view(), true) { case var Ok(l) { logitsWhole <-> l; } case is Err { require(false, "the whole conversation runs"); } }
           expectUInt(u64.from(argmax(logits2.view())), u64.from(argmax(logitsWhole.view())), "turn 2 on the kept cache chooses what the whole conversation chooses");
           var worst = 0.0;

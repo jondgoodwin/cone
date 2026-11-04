@@ -21,22 +21,22 @@ struct Stall {
   pub made: u64;
 
   pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {}
-  pub fn wireOut(self: &mut, now: Instant) IoBuf {IoBuf.empty()}
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {IoBuf()}
   pub fn wireRoom(self: &) usize {1048576usize}
   pub fn plainIn(self: &mut, buf: IoBuf) {}
-  pub fn plainOut(self: &mut) IoBuf {IoBuf.empty()}
+  pub fn plainOut(self: &mut) IoBuf {IoBuf()}
   pub fn pending(self: &) usize {0usize}
   pub fn isOpen(self: &) bool {false}
   pub fn peerEnded(self: &) bool {false}
   pub fn closeSend(self: &mut) {}
   pub fn failed(self: &) bool {false}
   pub fn failureCode(self: &) u32 {0u32}
-  pub fn failureText(self: &) String {String.empty()}
+  pub fn failureText(self: &) String {String()}
   pub fn wantsCall(self: &) bool {false}
-  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf.empty())}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
   pub fn describe(self: &) String {String.from("stall")}
-  pub fn alpn(self: &) String {String.empty()}
+  pub fn alpn(self: &) String {String()}
 }
 
 fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
@@ -62,7 +62,7 @@ struct Seen {
   pub at: Instant;
 }
 
-fn seen() Seen {Seen(false, false, false, Stage.Closed, ErrorKind.Closed, String.empty(), Instant())}
+fn seen() Seen {Seen(false, false, false, Stage.Closed, ErrorKind.Closed, String(), Instant())}
 
 fn note(s: &mut Seen, e: &mut Event) {
   if e.kind == EventKind.Connected || e.kind == EventKind.Accepted {s.opened = true;}
@@ -71,7 +71,7 @@ fn note(s: &mut Seen, e: &mut Event) {
     s.clean = e.clean;
     s.stage = e.failure.stage;
     s.kind = e.failure.error.kind;
-    s.detail = e.failure.error.detail.copy();
+    s.detail = e.failure.error.detail.clone();
     s.at = Instant.now();
   }
 }
@@ -104,7 +104,7 @@ fn main() i32 {
     var client = seen();
     var server = seen();
     var serverConn = ConnId.none();
-    var events = List[Event].empty();
+    var events = List[Event]();
     let giveUp = Instant.now() + Duration.fromSeconds(5i64);
     while !(client.opened && server.opened) && Instant.now() < giveUp {
       drv.poll(&mut lp, giveUp, &uni events);
@@ -122,7 +122,7 @@ fn main() i32 {
     }
     require(client.opened && server.opened, "a plain connection made");
     // Windows has no TCP_USER_TIMEOUT: it reads as 0 there
-    let wantUser = if isWindows() {Duration.zero()} else {Duration.fromSeconds(30i64)};
+    let wantUser = #if #os == .windows {Duration.zero()} #else {Duration.fromSeconds(30i64)};
     match drv.keepAliveOf(&lp, conn) {
       case let Ok(ka) {
         expect(ka.idle == Duration.fromSeconds(15i64) && ka.interval == Duration.fromSeconds(15i64) && ka.probes == 3u32,
@@ -154,11 +154,11 @@ fn main() i32 {
     }
     let started = Instant.now();
     let conn = drv.connectWith(&mut lp, "127.0.0.1", port(&drv, &lp, l), Uni[Stall](Stall(0u64)), Sink.Here(21u64));
-    drv.request(&mut lp, conn, RequestHead.get("/", "127.0.0.1"), BodyLength.empty(), Sink.Here(22u64));
+    drv.request(&mut lp, conn, RequestHead.get("/", "127.0.0.1"), BodyLength(), Sink.Here(22u64));
     var client = seen();
     var finals = 0u32;
     var reqStage: Stage = Stage.Closed;
-    var events = List[Event].empty();
+    var events = List[Event]();
     let giveUp = Instant.now() + Duration.fromSeconds(5i64);
     while !(client.closed && finals > 0u32) && Instant.now() < giveUp {
       drv.poll(&mut lp, giveUp, &uni events);
@@ -199,7 +199,7 @@ fn main() i32 {
     let started = Instant.now();
     drv.connect(&mut lp, "127.0.0.1", port(&drv, &lp, l), Sink.Here(31u64));
     var server = seen();
-    var events = List[Event].empty();
+    var events = List[Event]();
     let giveUp = Instant.now() + Duration.fromSeconds(5i64);
     while !server.closed && Instant.now() < giveUp {
       drv.poll(&mut lp, giveUp, &uni events);

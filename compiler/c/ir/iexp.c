@@ -434,6 +434,19 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             borrowOwnerLend(from, totypedcl);
             return iexpCoerce(from, totype);
         }
+        // An enrichment's own 'final' runs only while the value is typed as the
+        // enrichment: by value, into its base, it would never run. The recast is
+        // built anyway, so what uses the value says nothing more.
+        StructNode *skipbase = NULL;
+        StructNode *skipped = structEnrichFinalSkipped(iexpGetTypeDcl(*from), totypedcl, &skipbase);
+        if (skipped && namespaceFind(&skipbase->namespace, finalName) != NULL)
+            errorMsgNode(*from, ErrorEnrichFinalSkipped,
+                "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has a different 'final', and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
+                itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));
+        else if (skipped)
+            errorMsgNode(*from, ErrorEnrichFinalSkipped,
+                "%s declares its own 'final', which would be skipped: this hands the value on as %s, which has none, and the value is then dropped as %s. Keep it typed as %s, or lend it as a '&' reference.",
+                itypeName((INode*)skipped), itypeName((INode*)skipbase), itypeName((INode*)skipbase), itypeName((INode*)skipped));
         INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

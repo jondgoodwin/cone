@@ -421,7 +421,19 @@ generic's instance such as `Atomic[f64]`, at the outermost place the program
 named it; the remedy is the type argument. `ErrorAtomicValueConst` is a `const`
 whose type holds an atomic value anywhere inline, whose remedy is a global.
 `is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
-moves and says Copy.
+moves and says Copy. `ErrorAtomicPlainWrite` is an assignment or swap over a
+place holding an atomic value, reached through a reference that is not `uni`
+(a `&mut`, an `Rc[mut, T]`): it is reported at the place, and the remedy is the
+atomic's own `store` or a unique path. A lock guard's `&mut` is refused on
+purpose (design chat, 2 Nov): the lock excludes only other lock holders, and an
+atomic is read without the lock, so a plain write could tear under a lock-free
+reader.
+
+`ErrorEnrichFinalSkipped` is a by-value conversion (a copy, a move, an argument, a
+return, a field, an owning `Uni`/`Rc`, or an array) of an enrichment declaring its own `final`
+into a type that has none, or a different one: the value would be dropped as the target and the `final`
+never run. It is reported at the value converted, naming both types; the remedy is
+to keep the value typed as the enrichment or lend it as a `&` reference.
 
 Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
 `Hash` with no `==`, whose remedy is to write one, reported on the type.
@@ -431,6 +443,26 @@ itself and whose -0 equals 0, so that no hash of its bits agrees with its `==`,
 and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
+
+Core's `Eq` takes one. `ErrorEqField` is a field of a struct that declares `Eq` and
+writes no `==` whose type has no `==` against itself (an array, a tuple, a struct
+declaring none), reported at the field. The remedy is an `==` of the struct's own,
+or an `==` for the field's type.
+
+Core's `Clone` takes one. `ErrorCloneField` is a field of a struct that declares
+`Clone` and writes no `clone` whose type is neither Copy nor Clone (a struct that
+moves and has no `clone`, a unique owner, a `&mut`), reported at the field.
+The remedy is a `clone` of the struct's own, or a `clone` for the field's type.
+
+Core's `Default` takes one. `ErrorDefaultField` is a field of a struct that declares
+`Default` and writes no `init` that has neither a declared `= value` nor a type that
+is `Default` (a number, `bool`, or a type declaring it), reported at the field. The
+remedy is a `= value` on the field, an `init` of the struct's own, or declaring the
+field's type `Default`.
+`ErrorDefaultInit` is a struct that declares `Default` and writes an `init`, none of
+whose inits can be called with no arguments (the region of a CarriesRegion type, and
+parameters with defaults, may be left out), reported at the struct. The remedy is an
+init that needs none, or not declaring `Default`.
 
 `ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
 the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
@@ -817,8 +849,11 @@ a plain path is `ErrorAwaitLeftCall`, also a rule, its message naming the fix
 an I/O operation) whose answer nothing uses, a statement of its own, is
 warned by the rule for every dropped value, `WarnDiscard` (below); 1280 and 3005
 are holds. An `await`
-on anything but a behaviour's reply, a future or an operation, which waits for
-no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
+on anything but a behaviour's reply, a future, an operation or a value whose type
+has an `await` method, which waits for
+no answer, is `ErrorAwaitNotFuture`, a rule; a type's `await` method that takes
+more than `self` or gives neither an `Awaitable[R]` nor a `Future[T]` is
+`ErrorAwaitMethod`, also a rule. `ErrorAwaitNotFuture`'s message also says what the
 seam's continuation would carry, which is how the seam's rules are pinned on a
 plain function's call; where it stands and is not built is
 `ErrorUnbuiltAwait`, whose message says why: in a construct the split does not
@@ -988,3 +1023,17 @@ complaint from every enclosing node.
 - Finding out what the compiler actually reports: [Measuring](measuring.md)
 - The three type sentinels and `newErrorNode`: [IR Nodes](../nodes/_index.md)
 - Which codes each phase owns: the "Diagnostics" section of each phase note
+
+`ErrorMetaIf` and `ErrorMetaFact` are the meta layer's `#if` on the facts of the build.
+`ErrorMetaIf` is the chain's shape: an `#elif` or `#else` with no `#if` or `#elif`
+before it (including one after an `#else`), a `#if` that gives a value with no
+`#else`, and a condition's own punctuation missing (`#defined("NAME"`). A block
+missing its `{` is `ErrorNoLCurly`, and a branch missing a `;` the ordinary
+`ErrorNoSemi`. `ErrorMetaFact` is the condition: a fact outside the closed
+vocabulary used as a name or a call, a `.member` the fact lacks (naming the
+members it has), a comparison of unlike kinds, `#defined` or `#define` of
+something that is not a string literal, `!`, `&&` or `||` of what is not a
+bool, a condition that is not a bool, and a fact met outside a condition. A
+misspelt `#` word is `ErrorReserved`, from the lexer. Each is reported at the
+word it is about, and the rest of the condition is read past so that nothing
+follows it.

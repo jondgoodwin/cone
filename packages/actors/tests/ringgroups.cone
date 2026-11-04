@@ -1,0 +1,166 @@
+// A message sent in a cancel group takes two consecutive ring positions (the
+// carrier, holding the group, then the message; actors.cone, THE GROUP TRAVELS),
+// claimed by one atomic add. This tests the ring with them in it.
+//
+// A. A pair meets a segment's end at every offset. The sink is held while a
+//    first message and then n ungrouped ones are queued behind it, then 3 grouped
+//    ones (n = 0 to 139, a fresh sink each time): the carriers fall on every
+//    slot of the first segments, among them the last slot of a segment (the
+//    pair then straddles two). Released, the sink must see the n ungrouped
+//    messages and the 3 grouped ones once each, in the order sent, the grouped
+//    ones in their group and the others not.
+// B. Mixed traffic, many senders. Six sender actors, each sending a sink 30,000
+//    messages in a pattern of runs of grouped and ungrouped sends, all at once on
+//    four workers: every message arrives exactly once (the count), in its
+//    sender's order (a sequence number per sender), in the group it was sent in
+//    or none.
+
+mod ringgroups;
+
+import testing use *;
+import collections use *;
+import thread;
+import actors;
+import cancelgroups use *;
+import time use Instant, Duration;
+
+struct Seen {
+  pub got: Atomic[u64];          // messages the sink took
+  pub badOrder: Atomic[u64];     // ... out of its sender's order, or twice
+  pub badGroup: Atomic[u64];     // ... in the wrong group
+  pub grouped: Atomic[u64];      // ... of which sent in the group
+  pub wantGid: Atomic[u64];      // the group's id
+  pub held: Atomic[u64];
+  pub gate: Atomic[u64];
+}
+
+let seen: Seen;
+
+fn @initpure init() {
+  seen = Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn bounded(limitMs: i64) Instant {Instant.now() + Duration.fromMillis(limitMs)}
+
+actor Sink {
+  next: List[u64];
+
+  fn init(self: &new) {
+    var l = List[u64]();
+    var k = 0usize;
+    while k < 16usize { l.push(0u64); k += 1usize; }
+    *self = Self(next: l);
+  }
+
+  // Holds its worker until the gate is set (or five seconds)
+  pub async fn hold(self) {
+    seen.held.store(1u64);
+    let limit = bounded(5000i64);
+    while seen.gate.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+  }
+
+  pub async fn rec(self, sid: u64, i: u64, grouped: u64, a: u64, b: u64, c: u64) {
+    let at = usize.from(sid);
+    if next[at] != i || a != i + 1u64 || b != i * 3u64 || c != sid {
+      seen.badOrder.add(1u64);
+    }
+    next[at] = i + 1u64;
+    let inG = actors.currentGroup().id() == seen.wantGid.load();
+    if grouped == 1u64 {
+      seen.grouped.add(1u64);
+      if !inG {seen.badGroup.add(1u64);}
+    } else if inG {
+      seen.badGroup.add(1u64);
+    }
+    seen.got.add(1u64);
+  }
+}
+
+actor Sender {
+  // n messages to the sink as sender sid, grouped in runs: sid + 1 grouped,
+  // then 2 ungrouped, and so on, from a different start for each sender
+  pub async fn run(self, sink: Sink, sid: u64, n: u64, g: CancelGroup) {
+    var i = 0u64;
+    while i < n {
+      let phase = (i + sid * 5u64) % (sid + 4u64);
+      if phase < sid + 1u64 {
+        let ii = i;
+        actors.withGroup(&g, fn() [sink, sid, ii] { sink.rec(sid, ii, 1u64, ii + 1u64, ii * 3u64, sid); });
+      } else {
+        sink.rec(sid, i, 0u64, i + 1u64, i * 3u64, sid);
+      }
+      i += 1u64;
+    }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let g = CancelGroup.make();
+  seen.wantGid.store(g.id());
+
+  // A. every offset
+  var n = 0usize;
+  var gotA = 0u64;
+  var badA = 0u64;
+  while n < 140usize {
+    seen.got.store(0u64);
+    seen.badOrder.store(0u64);
+    seen.badGroup.store(0u64);
+    seen.grouped.store(0u64);
+    seen.gate.store(0u64);
+    seen.held.store(0u64);
+    let sink = Sink();
+    sink.hold();
+    let limit = bounded(5000i64);
+    while seen.held.load() == 0u64 && Instant.now() < limit {thread.yieldNow();}
+    var k = 0usize;
+    while k < n {
+      sink.rec(0u64, u64.from(k), 0u64, u64.from(k) + 1u64, u64.from(k) * 3u64, 0u64);
+      k += 1usize;
+    }
+    var j = 0usize;
+    while j < 3usize {
+      let ii = u64.from(n + j);
+      actors.withGroup(&g, fn() [sink, ii] { sink.rec(0u64, ii, 1u64, ii + 1u64, ii * 3u64, 0u64); });
+      j += 1usize;
+    }
+    seen.gate.store(1u64);
+    actors.waitQuiet();
+    if seen.got.load() != u64.from(n) + 3u64 || seen.badOrder.load() != 0u64
+        || seen.badGroup.load() != 0u64 || seen.grouped.load() != 3u64 {
+      badA += 1u64;
+    }
+    gotA += seen.got.load();
+    n += 1usize;
+  }
+  expectUInt(badA, 0u64, "A: for every one of 140 offsets the sink saw each message once, in order, in its group or none");
+  expectUInt(gotA, 140u64 * 3u64 + 139u64 * 140u64 / 2u64 + 140u64 * 0u64 + 0u64, "A: and the messages in all");
+
+  // B. many senders
+  seen.got.store(0u64);
+  seen.badOrder.store(0u64);
+  seen.badGroup.store(0u64);
+  seen.grouped.store(0u64);
+  let per = #if #debug {8000u64} #else {30000u64};
+  let sink = Sink();
+  var senders = List[Sender]();
+  var s = 0usize;
+  while s < 6usize {
+    senders.push(Sender());
+    s += 1usize;
+  }
+  s = 0usize;
+  while s < 6usize {
+    senders[s].run(sink, u64.from(s), per, g);
+    s += 1usize;
+  }
+  actors.waitQuiet();
+  expectUInt(seen.got.load(), 6u64 * per, "B: every message arrived, once");
+  expectUInt(seen.badOrder.load(), 0u64, "B: each sender's messages in the order sent, none twice");
+  expectUInt(seen.badGroup.load(), 0u64, "B: each in the group it was sent in, or none");
+  expect(seen.grouped.load() > 6u64 * per / 4u64 && seen.grouped.load() < 6u64 * per, "B: grouped and ungrouped sends were both in the mix");
+  done()
+}

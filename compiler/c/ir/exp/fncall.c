@@ -920,18 +920,33 @@ int fnCallIsNever(INode *node) {
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
 // points at (pwOwnedLent), so the owner stays, frozen while the call uses it.
 // Passed as it is, the owner was moved into the call. A 'self: &uni' method
-// is lent nothing: the recast to a move type would still move the owner.
+// is lent by a borrow of what the owner points at (borrowOwnerLend), for a recast
+// to a move type would move the owner. A '&<uni' receiver held in a place is
+// reborrowed (borrowUniReborrow), and so is not used up by its first call.
 static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
     RefNode *owner = (RefNode*)iexpGetTypeDcl(*selfp);
     RefNode *parm = (RefNode*)itypeGetTypeDcl(parmtype);
-    if (owner->tag != VirtRefTag || itypeGetTypeDcl(owner->region) == borrowRef || parm->tag != RefTag)
+    if (owner->tag != VirtRefTag || parm->tag != RefTag)
         return;
     RefNode *lent = newRefNodeFull(VirtRefTag, *selfp, borrowRef, parm->perm, owner->vtexp);
     // The owner's markers are the lent borrow's: a call through an owner marked
     // '+ ShapeKeeping' keeps the caller's borrows
     lent->marks = owner->marks;
-    if (itypeIsMove((INode*)lent))
+    // A '&<uni' held in a place is reborrowed, not used up, by a call through
+    // it, as a '&uni' is by one of its methods: the method gets a borrow of the
+    // place, with the permission 'self' declares
+    if (itypeGetTypeDcl(owner->region) == borrowRef) {
+        if (borrowUniReborrows(*selfp, (INode*)lent))
+            borrowUniReborrow(selfp, (INode*)lent);
         return;
+    }
+    // A 'self: &uni' method is lent the owner as a '&<uni', a move type that
+    // would move it: lend it by a borrow of what it owns, so that it stays
+    if (itypeIsMove((INode*)lent)) {
+        if (iexpIsLval(*selfp))
+            borrowOwnerLend(selfp, (INode*)lent);
+        return;
+    }
     iexpCoerce(selfp, (INode*)lent);
 }
 
@@ -2233,6 +2248,27 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         }
     }
 
+    // A comparison whose '==' (or ordering) takes its other operand by '&' lends it:
+    // 'a == b' is '&a == &b' for a type that wrote its comparison against '&Self'
+    // (the receiver was lent just above). Read-only, where the operand lies; a
+    // temporary lasts to the end of its statement. Only the comparison operators,
+    // and only after the operands as written found no candidate, so a comparison
+    // declared for values or written with its borrows is selected as before.
+    if (selected == NULL && status == OverloadNone && (callnode->flags & FlagOperator)
+        && (methsym == eqName || methsym == ltName || methsym == leName || methsym == gtName
+            || methsym == geName)
+        && callnode->args && callnode->args->used == 1 && isExpNode(nodesGet(callnode->args, 0))) {
+        INode **argp = &nodesGet(callnode->args, 0);
+        INode *arg = *argp;
+        // (a struct: a number has its own comparison, which a borrow cannot cure)
+        if (iexpGetTypeDcl(arg)->tag == StructTag) {
+            fnCallLendEnumOperand(pstate, argp);
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+            if (selected == NULL)
+                *argp = arg;
+        }
+    }
+
     // 'x[i].m()' where no 'm' takes the element's read-only borrow: the index
     // is in set position, so a type declaring '&[]' lends its mutable borrow
     if (selected == NULL && status == OverloadNone && fnCallIndexAsMut(pstate, callnode)) {
@@ -2621,6 +2657,65 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(pstate, node);
 }
 
+// '==' on two tuples of the same types, from two to four elements, compares them
+// element by element: core's 'mem.tupleEq2' to 'tupleEq4' (tupleEqFn), generic
+// functions whose bodies are the comparison '&a.0 == &b.0 && ...', instantiated at
+// the element types. As for a slice's comparison the instance is then checked as
+// any call is, so an element with no '==' is refused inside it, naming the
+// element's type. Both operands are lent read-only where they lie (a value that is
+// not a place, to the end of its statement), so nothing is copied or moved in.
+// '!=' arrives as '==' under a '!' (fnCallNeFromEq).
+static void fnCallLowerTupleCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    TupleNode *tuple = (TupleNode*)iexpGetTypeDcl(node->objfn);
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two tuples is refused: a tuple has no order. Compare their elements one by one.", &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    if (op == neName) {
+        errorUnreachable((INode*)node, "a tuple's '!=' not derived from its '=='");
+        node->vtype = errorType;
+        return;
+    }
+    uint32_t arity = tuple->elems->used;
+    FnDclNode *tupleeq = arity >= 2 && arity <= 4 ? tupleEqFn(arity) : NULL;
+    if (tupleeq == NULL) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            arity >= 2 && arity <= 4
+                ? "`==` on two tuples calls the core package's 'mem.tupleEq%d', and the core package found declares none."
+                : "`==` compares tuples of two to four elements, and this one has %d. Compare their elements one by one.",
+            (int)arity);
+        node->vtype = errorType;
+        return;
+    }
+    if (node->args == NULL || node->args->used != 1 || !isExpNode(nodesGet(node->args, 0))
+        || !itypeIsSame((INode*)tuple, iexpGetTypeDcl(nodesGet(node->args, 0)))) {
+        errorMsgNode((INode*)node, ErrorInvType,
+            "A tuple is compared with a tuple of the same element types, and this one is not.");
+        node->vtype = errorType;
+        return;
+    }
+    Nodes *typeargs = newNodes(arity);
+    INode **elemp;
+    uint32_t cnt;
+    for (nodesFor(tuple->elems, cnt, elemp))
+        nodesAdd(&typeargs, *elemp);
+    FnDclNode *instance = genericMethodInstance(pstate, node, tupleeq, typeargs, unknownType);
+    if (instance == NULL) {
+        node->vtype = errorType;
+        return;
+    }
+    fnCallLendEnumOperand(pstate, &node->objfn);
+    fnCallLendEnumOperand(pstate, &nodesGet(node->args, 0));
+    nodesInsert(&node->args, node->objfn, 0);
+    node->objfn = (INode*)newNameUseFromDclNode((INode*)instance, (INode*)node);
+    node->methfld = NULL;
+    node->vtype = ((FnSigNode*)instance->vtype)->rettype;
+    fnCallFinalizeArgs(pstate, node);
+}
+
 // An array, a reference to one, or a '&str' (a string literal is one), compared
 // with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
@@ -2707,6 +2802,18 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
             fnCallLowerSliceCompare(pstate, node);
         else
             fnCallLowerPtrMethod(node, ptrType);
+        return;
+    }
+    // An enum against an empty variant of it asks the tag alone, whoever wrote its '=='
+    if (op == eqName && referent->tag == StructTag && (referent->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)referent))
+        return;
+    // Tuples are compared as the values they refer to (fnCallLowerTupleCompare)
+    if (referent->tag == TTupleTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        if (iexpGetTypeDcl(*argp)->tag == RefTag)
+            fnCallDerefOperand(argp, node);
+        fnCallLowerTupleCompare(pstate, node);
         return;
     }
     if (!isMethodType(referent)) {
@@ -3100,6 +3207,9 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    // a tuple's, from the '==' that compares its elements (fnCallLowerTupleCompare)
+    if (objtype->tag == TTupleTag)
+        return 1;
     if (objtype->tag == ArrayRefTag) {
         char buf[256];
         return fnCallSliceElemNoEq(((RefNode*)objtype)->vtexp, buf, sizeof(buf)) == NULL;
@@ -3939,6 +4049,14 @@ static void fnCallReadThroughRefs(FnCallNode *node) {
         RefNode *held = (RefNode*)itypeGetTypeDcl(step->vtexp);
         if (held->tag != RefTag && held->tag != ArrayRefTag && held->tag != VirtRefTag)
             return;
+        // 'clone' takes '&Self': on a borrow of a read-only borrow, Self is that
+        // inner borrow, which copies (core's Clone, genericTypeIs), so the call
+        // stops at the outer level instead of reading through it
+        if (node->methfld && isNameUseNode(node->methfld)
+            && ((NameUseNode*)node->methfld)->namesym == cloneName
+            && (node->args == NULL || node->args->used == 0)
+            && refIsCopyBorrow((INode*)held))
+            return;
         if (clamp == NULL && !(permGetFlags(step->perm) & MayWrite))
             clamp = step->perm;
         derefInject(&node->objfn);
@@ -4591,6 +4709,63 @@ int fnCallLogicMethod(TypeCheckState *pstate, LogicNode **nodep) {
     return 1;
 }
 
+// 'x.clone()' on a Copy type that declares no 'clone' of its own is the value:
+// every Copy type is core's Clone by the compiler's grant (genericTypeIs), and
+// this is the method it grants. The call becomes the receiver, read through its
+// borrow when it is one, so a copy is made as any read of a Copy value makes it.
+// A type that has a 'clone' (written, derived, or core's for Option) keeps it, and
+// a type that moves and has none is not asked: the call is refused as any missing
+// method is. Answers 1 when the node was replaced.
+static int fnCallCloneCopy(FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != cloneName
+        || node->args == NULL || node->args->used != 0
+        || (node->flags & (FlagIndex | FlagLvalOp | FlagOperator | FlagBorrow | FlagRange)))
+        return 0;
+    INode *recvtype = iexpGetTypeDcl(node->objfn);
+    INode *valtype = recvtype;
+    if (recvtype->tag == RefTag) {
+        if (itypeGetTypeDcl(((RefNode*)recvtype)->region) != borrowRef)
+            return 0;
+        valtype = itypeGetTypeDcl(((RefNode*)recvtype)->vtexp);
+    }
+    switch (valtype->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        // A read-only borrow held behind a borrow ('a' of 'Option[&T]'s Some(a)):
+        // its clone is the same borrow, genericTypeIs. Reached only through the
+        // outer borrow, since a borrow named directly clones to what it points at.
+        if (recvtype->tag != RefTag || !refIsCopyBorrow(valtype))
+            return 0;
+        break;
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case VectorTag:
+    case TTupleTag:
+    case ArrayTag:
+    case PtrTag:
+    case VoidTag:
+        break;
+    case StructTag:
+        if ((valtype->flags & TraitType) && !(valtype->flags & EnumType))
+            return 0;
+        if (iNsTypeFindFnField((INsTypeNode*)valtype, cloneName) != NULL)
+            return 0;
+        break;
+    default:
+        return 0;
+    }
+    if (itypeIsMove(valtype))
+        return 0;
+    if (recvtype->tag == RefTag)
+        derefInject(&node->objfn);
+    *nodep = (FnCallNode*)node->objfn;
+    return 1;
+}
+
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
@@ -5217,6 +5392,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if (vectorLaneName(node) && node->vtype == errorType)
         return;
 
+    // 'x.clone()' of a Copy type with no 'clone' is the value
+    if (fnCallCloneCopy(nodep))
+        return;
+
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
@@ -5276,6 +5455,13 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         }
         goto tagtested;
     }
+
+    // An enum against an empty variant of it, 'x == None', asks the tag alone, whether
+    // the enum's '==' is the compiler's or one written (Option's and Result's are
+    // written, where their payload is Eq, against another of the enum)
+    if (opname == eqName && objtype->tag == StructTag && (objtype->flags & EnumType)
+        && fnCallLowerEnumTagTest(pstate, node, (StructNode*)objtype))
+        goto tagtested;
 
     // An owner of 'Array[T]' indexed is indexed as the slice it lends
     int lent = fnCallBodyAsSlice(pstate, node);
@@ -5364,7 +5550,9 @@ dispatch:
 
     // Tuple type
     case TTupleTag:
-        if (fnCallLowerIntField(node) == 0)
+        if (fnCallIsValueCompare(opname) && node->args && node->args->used == 1)
+            fnCallLowerTupleCompare(pstate, node);
+        else if (fnCallLowerIntField(node) == 0)
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid expression on a tuple");
         break;
 
