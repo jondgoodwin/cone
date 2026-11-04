@@ -486,8 +486,11 @@ fn report(line: &str, detail: &str) {
 }
 
 // Build the package, then run each test and build each example
+// phase 0 runs everything, the package's quiet tests (its manifest's [package]
+// quiet) last; 1 leaves the quiet tests out, and 2 runs only them, for cmdTest
+// to run alone after every package's other tests
 fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: bool, bless: bool,
-    defines: &List[String], useCache: bool, strip: bool) Tally {
+    defines: &List[String], useCache: bool, strip: bool, phase: i32) Tally {
   var tally = emptyTally();
   let label = pkg.label();
   let rootPlace = native(&pkg.root);
@@ -501,6 +504,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   let indexes = registryIndexes();
   var s = newSession(repo, readRegistry(folders, &indexes), &out, mode, defines, useCache, strip);
   let name = pkg.name.clone();
+  let quietNames = copyStrings(&pkg.quiet);
   let isLibrary = pkg.output.equals("library");
   let testsFolder = pkg.root.join("tests");
   let examplesFolder = pkg.root.join("examples");
@@ -522,7 +526,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
   // Its kernels, where it has them, checked by the Vulkan SDK's validator for
   // Vulkan 1.3, counted as a test; where the SDK is not installed they are
   // only built, and that is said
-  if s.spvs.contains(name.view()) && !hasFilter {
+  if s.spvs.contains(name.view()) && !hasFilter && phase != 2i32 {
     let spv = s.spvs[name.view()].clone();
     let spvName = spv.name();
     let v = validateKernels(&spv);
@@ -545,7 +549,21 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
       }
     }
   }
-  if !fs.isDir(&testsFolder) {
+  if !hasFilter && fs.isDir(&testsFolder) && phase != 2i32 {
+    var q = 0usize;
+    while q < quietNames.len() {
+      let quietFile = cat(quietNames[q].view(), ".cone");
+      let quietPath = testsFolder.join(quietFile.view());
+      if !fs.isFile(&quietPath) {
+        warn(cat("error: ", name.view(), ": [package] quiet names '", quietNames[q].view(), "', and tests/", quietFile.view(), " is not a test"));
+        tally.failed = tally.failed + 1u64;
+        tally.failures.push(cat(name.view(), ": quiet test ", quietNames[q].view(), " does not exist"));
+      }
+      q = q + 1usize;
+    }
+  }
+  if phase == 2i32 {}
+  else if !fs.isDir(&testsFolder) {
     let none = cat("none: ", name.view(), " has no tests folder");
     say("Tests", none.view());
   }
@@ -563,6 +581,28 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
     let none = cat("none: ", name.view(), "'s tests folder holds no .cone program");
     say("Tests", none.view());
   }
+  // The quiet tests go last: out of the first pass, then run in the second
+  var ordered = List[Path]();
+  var quietTests = List[Path]();
+  var t = 0usize;
+  while t < tests.len() {
+    var isQuiet = false;
+    var q = 0usize;
+    while q < quietNames.len() {
+      if tests[t].stem() == quietNames[q].view() { isQuiet = true; }
+      q = q + 1usize;
+    }
+    if isQuiet { quietTests.push(tests[t].clone()); } else { ordered.push(tests[t].clone()); }
+    t = t + 1usize;
+  }
+  if phase == 2i32 { ordered.clear(); }
+  if phase == 1i32 { quietTests.clear(); }
+  var k = 0usize;
+  while k < quietTests.len() {
+    ordered.push(quietTests[k].clone());
+    k = k + 1usize;
+  }
+  tests <-> ordered;
   var i = 0usize;
   while i < tests.len() {
     let file = &tests[i];
@@ -594,6 +634,7 @@ fn testPackage(repo: &Path, pkg: Package, mode: &str, filter: &str, hasFilter: b
     }
     i = i + 1usize;
   }
+  if phase == 2i32 { return tally; }
   i = 0usize;
   while i < examples.len() {
     let file = &examples[i];
@@ -660,6 +701,12 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
   if !fs.isFile(&own) { manifests = packageManifests(&here); }
   if manifests.len() == 0usize { manifests.push(currentManifest()); }
   var total = emptyTally();
+  // Over several packages, each package's quiet tests wait (phase 1) and run
+  // after all of them, one at a time with nothing else running (phase 2)
+  let several = manifests.len() > 1usize;
+  var phase = 0i32;
+  if several { phase = 1i32; }
+  var withQuiet = List[usize]();
   var i = 0usize;
   while i < manifests.len() {
     var pkg = emptyPackage();
@@ -667,9 +714,24 @@ fn cmdTest(filter: &str, hasFilter: bool, release: bool, bless: bool, defines: &
       case var Ok(ok) { pkg <-> ok; }
       case let Err(e) { fail(e.clone()); }
     }
-    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip);
+    if several && pkg.quiet.len() > 0usize { withQuiet.push(i); }
+    let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, phase);
     total.add(&tally);
     i = i + 1usize;
+  }
+  if withQuiet.len() > 0usize {
+    say("Quiet", "tests that run alone, one at a time, after all the others");
+    var j = 0usize;
+    while j < withQuiet.len() {
+      var pkg = emptyPackage();
+      match readManifest(&manifests[withQuiet[j]]) {
+        case var Ok(ok) { pkg <-> ok; }
+        case let Err(e) { fail(e.clone()); }
+      }
+      let tally = testPackage(&repo, pkg, mode, filter, hasFilter, bless, defines, !noCache, strip, 2i32);
+      total.add(&tally);
+      j = j + 1usize;
+    }
   }
   if hasFilter && total.passed + total.failed + total.skipped + u64.from(total.unrun.len()) + total.built + total.unbuilt + total.broken == 0u64 {
     fail(cat("no test or example has '", filter, "' in its name"));

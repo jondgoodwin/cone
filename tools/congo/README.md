@@ -120,6 +120,7 @@ output = "executable"
 | `name` | the package's name, a Cone name; the root is `src/<name>.cone` |
 | `version` | `MAJOR.MINOR.PATCH`. Recorded and checked for form; never compared yet |
 | `output` | `"executable"` or `"library"`: what the package builds into |
+| `quiet` | a list of the package's test names (`quiet = ["pipeline"]`) that depend on timing and fail when the machine is loaded. `congo test` runs them last, one at a time, with nothing else running (below, "Testing a package"). Optional; each name must be a file in `tests/` |
 | `targets` | what the package may be compiled for: `"native"`, the machine Congo runs on, and `"gpu"`. `["native", "gpu"]` marks a library for the GPU, all of it (below, "Kernels for the GPU"); a package with GPU code beside the rest puts it in its `gpu/` folder instead, and names no target for it. Optional: `["native"]` where it is not written |
 
 A package that needs C libraries linked adds a `[link]` table (below, "C
@@ -796,6 +797,12 @@ so, and still builds its examples.
   line of it by hand against the source before committing it.** A value worked
   out from the math catches what a copied run cannot (`geomath`'s first test
   found two errors in the Pegasus code it was ported from that way).
+- **A quiet test** is one the package's `congo.toml` lists under `quiet`: a
+  test whose result depends on the wall clock, which another test running
+  beside it can disturb. In one package it runs after the package's other
+  tests; over a folder of packages, after every package's other tests, one at a
+  time, so no other test is running beside it. `congo test <text>` orders them
+  the same way.
 - **At a folder of packages**, such as the repository's `packages/`, `congo
   test` tests each package in it in turn, and ends with a summary of them all.
   Each package's builds go in its own `build/` folder, as a build of it would.

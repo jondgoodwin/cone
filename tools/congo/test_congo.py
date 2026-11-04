@@ -1292,8 +1292,8 @@ class Scenarios(unittest.TestCase):
                       " [link].", run.stderr)
         write(pkg / "congo.toml", head + '[package.x]\nk = 1\n')
         run = self.congo("build", cwd=pkg, ok=False)
-        self.assertIn("'x' is not a [package] key; the keys are name, version, output and"
-                      " targets", run.stderr)
+        self.assertIn("'x' is not a [package] key; the keys are name, version, output,"
+                      " targets and quiet", run.stderr)
 
     def test_the_prelude_rests_on_libc(self):
         # core imports libc, a C package the compiler gives no prelude, so libc
@@ -2007,6 +2007,59 @@ class Testing(unittest.TestCase):
         self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
         self.congo("test", "doubles", cwd=pkg)
 
+    def quiet_packages(self, root: Path) -> Path:
+        """A folder of two packages: qone has a test 'steady' and a quiet one,
+        'timing'; qtwo has a test 'other'."""
+        folder = root / "quietpkgs"
+        test = """
+            mod {name};
+
+            import stdio use *;
+
+            fn main() i32 {{
+              printStr("{name}\\n");
+              0i32
+            }}
+            """
+        for pkg_name, quiet, names in (("qone", '\nquiet = ["timing"]', ("steady", "timing")),
+                                       ("qtwo", "", ("other",))):
+            pkg = folder / pkg_name
+            write(pkg / "congo.toml", f'[package]\nname = "{pkg_name}"\nversion = "0.1.0"\n'
+                                      f'output = "library"{quiet}\n')
+            write(pkg / "src" / f"{pkg_name}.cone", f"mod {pkg_name};\n")
+            for name in names:
+                write(pkg / "tests" / f"{name}.cone", test.format(name=name))
+                write(pkg / "tests" / f"{name}.out", f"{name}\n")
+        return folder
+
+    def test_quiet_tests_run_after_the_others_and_alone(self):
+        folder = self.quiet_packages(self.root)
+        run = self.congo("test", cwd=folder)
+        out = run.stdout
+        # Over several packages: every other test of every package first, the
+        # quiet one after them all, by itself
+        order = [out.index(f"test {n} ... ok") for n in ("steady", "other", "timing")]
+        self.assertEqual(order, sorted(order), out)
+        self.assertEqual(out.count("test timing ... ok"), 1, out)
+        self.assertIn("2 packages: 3 tests: 3 passed", out)
+        # One package: the quiet test runs last in it
+        run = self.congo("test", cwd=folder / "qone")
+        self.assertLess(run.stdout.index("test steady ... ok"),
+                        run.stdout.index("test timing ... ok"), run.stdout)
+        # A named test is run as it always was
+        run = self.congo("test", "timing", cwd=folder)
+        self.assertIn("test timing ... ok", run.stdout)
+        self.assertNotIn("test steady", run.stdout)
+
+    def test_quiet_names_a_test_that_exists(self):
+        folder = self.quiet_packages(self.root)
+        write(folder / "qone" / "congo.toml",
+              '[package]\nname = "qone"\nversion = "0.1.0"\noutput = "library"\n'
+              'quiet = ["nosuch"]\n')
+        run = self.congo("test", cwd=folder / "qone", ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("quiet names 'nosuch'", run.stdout + run.stderr)
+
     def test_bless_makes_the_exit_file_match_the_run(self):
         pkg = self.counter(self.root)
         tests = pkg / "tests"
@@ -2546,8 +2599,8 @@ class GpuKernels(unittest.TestCase):
             run = self.congo("build", cwd=pkg, ok=False)
             self.assertIn(said, run.stderr, targets)
         write(pkg / "congo.toml", head + 'colour = "red"\n')
-        self.assertIn("'colour' is not a [package] key; the keys are name, version, output and"
-                      " targets", self.congo("build", cwd=pkg, ok=False).stderr)
+        self.assertIn("'colour' is not a [package] key; the keys are name, version, output,"
+                      " targets and quiet", self.congo("build", cwd=pkg, ok=False).stderr)
         # A program has no kernels to build: they go in a library it imports
         write(pkg / "congo.toml", '[package]\nname = "lib1"\nversion = "0.1.0"\n'
                                   'output = "executable"\ntargets = ["native", "gpu"]\n')

@@ -14,6 +14,7 @@ struct Package {
   pub linkPaths: List[Path];    // [link] paths, absolute
   pub runtime: List[String];    // [link] runtime: DLLs, bare names
   pub gpu: bool;                // [package] targets names "gpu": it may be compiled for the GPU
+  pub quiet: List[String];      // [package] quiet: tests that run alone, after all the others
 
   // What the build's tables are keyed by: a package's name, but for a lone
   // file, a program. Its module is named by its own 'mod' line and may be
@@ -39,7 +40,7 @@ struct Package {
 
 fn emptyPackage() Package {
   Package(String(), String(), String(), Path.from(""), Path.from(""),
-    false, List[String](), List[Path](), List[String](), false)
+    false, List[String](), List[Path](), List[String](), false, List[String]())
 }
 
 fn copyStrings(from: &List[String]) List[String] {
@@ -347,8 +348,8 @@ fn readManifest(file: &Path) Result[Package, String] {
   i = 0usize;
   while i < keys.len() {
     let key = keys[i].view();
-    if key != "name" && key != "version" && key != "output" && key != "targets" {
-      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output and targets"));
+    if key != "name" && key != "version" && key != "output" && key != "targets" && key != "quiet" {
+      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output, targets and quiet"));
     }
     i = i + 1usize;
   }
@@ -357,7 +358,7 @@ fn readManifest(file: &Path) Result[Package, String] {
   while i < names.len() {
     let parts = splitText(names[i].view(), '.');
     if parts.len() > 1usize && parts[0usize].equals("package") {
-      return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output and targets"));
+      return manifestError(file, cat("'", parts[1usize].view(), "' is not a [package] key; the keys are name, version, output, targets and quiet"));
     }
     i = i + 1usize;
   }
@@ -389,6 +390,14 @@ fn readManifest(file: &Path) Result[Package, String] {
   }
   let wrongTargets = readTargets(file, table, &mut pkg);
   if !wrongTargets.isEmpty() { return Err[Package, String](wrongTargets); }
+  if table.has("quiet") {
+    match table.getStrings("quiet") {
+      case var Some(q) { pkg.quiet <-> q; }
+      case is None {
+        return manifestError(file, String.from("[package] quiet must be a list of test names, such as [\"pipeline\"]"));
+      }
+    }
+  }
   if doc.root.has("link") {
     return manifestError(file, String.from("[link] must be a table, with libraries, paths and runtime"));
   }

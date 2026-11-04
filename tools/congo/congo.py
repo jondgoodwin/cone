@@ -223,6 +223,7 @@ class Package:
     link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
     runtime: list[str] = field(default_factory=list)      # [link] runtime: DLLs, bare names
     gpu: bool = False     # [package] targets names "gpu": it may be compiled for the GPU
+    quiet: list[str] = field(default_factory=list)       # [package] quiet: tests run alone, last
 
     @property
     def hand_include(self) -> Path:
@@ -337,9 +338,9 @@ def read_manifest(path: Path) -> Package:
         raise CongoError(f"{path}: the manifest needs a [package] table with name,"
                          " version and output")
     for key in table:
-        if key not in ("name", "version", "output", "targets"):
+        if key not in ("name", "version", "output", "targets", "quiet"):
             raise CongoError(f"{path}: '{key}' is not a [package] key; the keys are"
-                             " name, version, output and targets")
+                             " name, version, output, targets and quiet")
     name, version, output = table.get("name"), table.get("version"), table.get("output")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise CongoError(f"{path}: [package] name must be a Cone name, such as \"hello\"")
@@ -351,11 +352,16 @@ def read_manifest(path: Path) -> Package:
     if output not in OUTPUTS:
         raise CongoError(f"{path}: [package] output must be \"executable\" or \"library\"")
     gpu = read_targets(path, table.get("targets", ["native"]), output)
+    quiet = table.get("quiet", [])
+    if not isinstance(quiet, list) or not all(isinstance(q, str) for q in quiet):
+        raise CongoError(f"{path}: [package] quiet must be a list of test names, such as"
+                         " [\"pipeline\"]")
     libraries, link_paths, runtime = (read_link(path, data["link"]) if "link" in data
                                       else ([], [], []))
     root = path.parent.resolve()
     return Package(name, version, output, root, root / "src" / f"{name}.cone",
-                   libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu)
+                   libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu,
+                   quiet=list(quiet))
 
 
 def read_targets(path: Path, targets: object, output: str) -> bool:
@@ -3081,8 +3087,38 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool | None, st
     return not problems, "\n".join(problems)
 
 
-def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) -> Tally:
-    """Build the package, then run each test and build each example."""
+def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: bool,
+                 tally: Tally) -> None:
+    """Run one test and print and count its result."""
+    # Not built or run, so nothing is blessed for it either
+    if mode == "release" and debug_only(file):
+        print(f"        test {file.stem} ... skipped (debug only)", flush=True)
+        tally.skipped += 1
+        return
+    try:
+        passed, detail = run_test(session, file, bless)
+    except CongoError as exc:
+        passed, detail = False, str(exc)
+    if passed is None:
+        print(f"        test {file.stem} ... skipped ({detail})", flush=True)
+        tally.unrun.append(detail)
+        return
+    print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
+    if detail:
+        print(indent(detail), flush=True)
+    if passed:
+        tally.passed += 1
+    else:
+        tally.failed += 1
+        tally.failures.append(f"{pkg.name}: test {file.stem}")
+
+
+def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
+                 later: list | None = None) -> Tally:
+    """Build the package, then run each test and build each example. A test the
+    manifest marks quiet runs after the package's other tests and its examples;
+    where `later` is a list, it is left there as (package, session, file) for the
+    caller to run, alone, after every package's other tests."""
     tally = Tally()
     say("Testing", f"{pkg.label()} ({pkg.root})")
     # The package under test is found first, under its own name, so a test
@@ -3130,28 +3166,24 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
         tests = []
     elif not tests and name_filter is None:
         say("Tests", f"none: {pkg.name}'s {TESTS} folder holds no .cone program")
+    quiet = [f for f in tests if f.stem in pkg.quiet]
+    if name_filter is None and (pkg.root / TESTS).is_dir():
+        for q in pkg.quiet:
+            if not (pkg.root / TESTS / f"{q}.cone").is_file():
+                print(f"error: {pkg.name}: [package] quiet names '{q}', and {TESTS}/{q}.cone"
+                      f" is not a test", file=sys.stderr)
+                tally.failed += 1
+                tally.failures.append(f"{pkg.name}: quiet test {q} does not exist")
     for file in tests:
-        # Not built or run, so nothing is blessed for it either
-        if mode == "release" and debug_only(file):
-            print(f"        test {file.stem} ... skipped (debug only)", flush=True)
-            tally.skipped += 1
-            continue
-        try:
-            passed, detail = run_test(session, file, bless)
-        except CongoError as exc:
-            passed, detail = False, str(exc)
-        if passed is None:
-            print(f"        test {file.stem} ... skipped ({detail})", flush=True)
-            tally.unrun.append(detail)
-            continue
-        print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
-        if detail:
-            print(indent(detail), flush=True)
-        if passed:
-            tally.passed += 1
-        else:
-            tally.failed += 1
-            tally.failures.append(f"{pkg.name}: test {file.stem}")
+        if file not in quiet:
+            run_one_test(pkg, session, file, mode, bless, tally)
+    if quiet and later is not None:
+        print(f"        {len(quiet)} quiet test(s) run last, alone: "
+              + ", ".join(f.stem for f in quiet), flush=True)
+        later.extend((pkg, session, f, tally) for f in quiet)
+    else:
+        for file in quiet:
+            run_one_test(pkg, session, file, mode, bless, tally)
     for file in examples:
         try:
             build_program(session, file, session.out / EXAMPLES / file.stem)
@@ -3186,8 +3218,15 @@ def cmd_test(args: argparse.Namespace) -> int:
     if not manifests:
         manifests = [current_package_manifest()]
     total = Tally()
+    later: list = []
     for manifest in manifests:
-        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless))
+        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
+                               later if len(manifests) > 1 else None))
+    if later:
+        say("Quiet", f"{len(later)} test(s), one at a time, nothing else running")
+        for pkg, session, file, _ in later:
+            print(f"     {pkg.name}:", flush=True)
+            run_one_test(pkg, session, file, mode, args.bless, total)
     if args.name is not None and not (total.passed + total.failed + total.skipped + len(total.unrun)
                                       + total.built + total.unbuilt + total.broken):
         raise CongoError(f"no test or example has '{args.name}' in its name")
