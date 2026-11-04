@@ -76,6 +76,7 @@ int sizeofConstRefused(INode *node, const char *where) {
     SizeofNode *size = (SizeofNode*)node;
     errorMsgNode(node, ErrorMetaLayoutConst,
         "%s is the code generator's constant, which the front end has not worked out, so it cannot be %s yet. Use it in an expression the program runs, or write the number.",
-        size->what == SizeofAlign ? "'#align'" : size->what == SizeofOffset ? "'#f.offset'" : "'#size'", where);
+        size->what == SizeofAlign ? "A type's alignment ('#align' or 'mem.alignof')"
+            : size->what == SizeofOffset ? "A field's offset ('#f.offset')" : "A type's size ('#size' or 'mem.sizeof')", where);
     return 1;
 }
