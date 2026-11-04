@@ -217,6 +217,8 @@ enum TokenTypes {
     HashDebugToken, // '#debug': whether this is a debug build, a fact
     HashDefinedToken, // '#defined("NAME")': whether a '-D' named it, a fact
     HashDefineToken, // '#define("NAME")': the integer a '-D' gave it, 0 where none did, a fact
+    HashEachToken, // '#each': repeats a block once per item of a constant list
+    MetaVarToken,  // '#name' where the meta layer has declared it ('#each #x in ..', 'let #n', 'var #i'): the token's ident is the name with its '#'
 
     // Words held for language features that are documented but not implemented.
     // The lexer never returns this token: it diagnoses the use and hands back an
@@ -234,6 +236,23 @@ extern Lexer *lex;
 // has reported and dropped, which tells the parser that a condition lost a word
 extern int lexInHashCond;
 extern uint32_t lexHashDropped;
+// The '#' word the next token scan reads is a meta variable being declared (parsemeta.c); cleared by the scan
+extern int lexMetaDecl;
+// With the lexer on a token: is the text after it, past white space, a '#'?
+int lexNextIsHash();
+// Everything the lexer holds of where it stands, to read a stretch of source again
+typedef struct LexMark {
+    char val[sizeof(((Lexer*)0)->val)];
+    uint32_t strlen;
+    INode *langtype;
+    char *srcp, *tokp, *linep, *prevend, *prevlinep;
+    uint32_t linenbr, prevlinenbr;
+    uint16_t toktype;
+} LexMark;
+void lexMarkSave(LexMark *mark);
+void lexMarkRestore(LexMark *mark);
+// Is the name a meta variable the parser has declared and not yet left behind? (parsemeta.c)
+int parseMetaIsBound(Name *name);
 
 #define lexIsToken(tok) (lex->toktype == (tok))
 
