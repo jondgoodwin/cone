@@ -788,6 +788,10 @@ enum ErrorCode {
     ErrorInterpBrace = 1586,   // A brace of an interpolated string `$"..."` that breaks its rule: an open brace no close brace closes, a close brace with no open one before it, or braces with nothing between them. A brace in the text is `{{` or `}}`. Pointed at the brace
     ErrorInterpExpr = 1587,    // The text between an interpolation's braces is not one expression: something is left over after it (`{a; b}`). Pointed at the first token the expression does not take
     ErrorMetaTypeFact = 1580,   // A '#if' that asks what a type is (T is Float, T == i32) where it cannot be decided: outside a generic function or type or about a name that is no type parameter, at a module's level or in an 'extern' block, or around anything in a generic type's body but fields and methods. Pointed at the condition or the member
+    ErrorMetaEach = 1582,       // A '#each' header malformed: no '#name' to bind, no 'in', or no list after it (a '[' list of values, a '(' list of types, or a meta constant); a list item that cannot be read; a body that is no block. Pointed at the word
+    ErrorMetaEachPlace = 1583,  // A '#each' where this step does not build it: at a module's level, in a type's braces, in an 'extern' block or in expression position. It repeats statements in a function body; generating declarations waits for generated names. Pointed at the word
+    ErrorMetaQuota = 1584,      // A '#each' (with the '#each's it holds) that would run more passes than the step quota allows (--meta-steps, 10000 by default). Names the loop whose pass went over, and the pass. Pointed at the loop
+    ErrorMetaVar = 1585,        // A meta variable misused: '#name' not declared where it stands, a 'let' given a new value, a '#each' variable assigned, an integer expected of something else, a list used as a value or a value as a list, a meta declaration outside a function body. Pointed at the word
 
     // Warnings
     WarnCode = 3000,
@@ -841,6 +845,19 @@ void errorLoudEnd(int saved);
 // The errors counted, less those a loud window reported inside a trial: a count
 // for a question about the code being checked alone
 int errorsOwn(void);
+
+// One pass of a '#each' (compiler/c/doc/phases/parse.md, "The meta layer"): the code of a pass is
+// the loop's body read again with the loop's variable bound to one item, so an error in it reads like
+// an error in the others. While a pass is being read, or its block is name-resolved, type checked or
+// flow analysed, 'errorEachPass' is set, and each error says which pass of which loop it was in
+typedef struct EachPass {
+    struct EachPass *outer;     // The pass this loop is itself inside, or NULL
+    struct INode *loop;         // A node positioned at the '#each' word
+    uint32_t pass, npasses;     // This pass, counted from 1, of this many
+    char *var;                  // The loop variable, '#x'
+    char *item;                 // The item it stands for, as written
+} EachPass;
+extern EachPass *errorEachPass;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);

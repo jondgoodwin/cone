@@ -1,0 +1,445 @@
+// A body decoded as it arrives (httpdecode.Decoder over actorhttp's streamTo),
+// against a loopback server of the test's own. GET /<coding>/<N> answers N bytes
+// (byte i being i % 251) compressed as 'coding' with Content-Encoding to match;
+// /zeros/<coding>/<N> answers N zero bytes compressed (a bomb); /bad/gzip/<N> is
+// a gzip stream with a byte of its deflate data changed; /br/<N> claims a coding
+// that cannot be decoded. Checked: gzip, deflate, zstd and an unencoded body each
+// arrive whole and exact, the sink's one end Finished, every buffer home;
+// a bomb of each codec is refused (Failed, the codec's own message, far short of
+// the zeros); a corrupt gzip body ends Failed; an unsupported coding ends Failed.
+
+mod decode;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError, BodyHead;
+import stages use ChunkSink, ChunkSource, Ending;
+import deflate;
+import zstd;
+import httpdecode use Decoder;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+const mib = 1048576u64;
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub bad: Atomic[u64];
+  pub finished: Atomic[u64];
+  pub failed: Atomic[u64];
+  pub heads: Atomic[u64];
+  pub hash: Atomic[u64];   // of every byte the sink saw, in order
+  pub sent: Atomic[u64];   // body bytes the server handed to the connection
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
+fn mix(h: u64, b: u8) u64 { (h * 1000003u64 + u64.from(b)) % 4294967291u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 0u64;
+  var i = 0usize;
+  while i < v.len {h = mix(h, v[i]); i = i + 1usize;}
+  h
+}
+
+// The one-shot result for what the server sends as /<coding>/<n>: the pattern compressed, then
+// decompressed in one call by the codec's own one-shot function, hashed (0 if that did not give n bytes)
+fn oneShotHash(coding: &str, n: usize) u64 {
+  var raw = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n {raw.push(u8.from(u64.from(i) % 251u64)); i = i + 1usize;}
+  if coding == "plain" {return hashOf(raw.view());}
+  let packed = compress(coding, raw.view());
+  var h = 0u64;
+  if coding == "gzip" {
+    match deflate.gzipDecompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  } else if coding == "deflate" {
+    match deflate.zlibDecompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  } else {
+    match zstd.decompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  }
+  h
+}
+
+fn reset() {
+  tally.hash.store(0u64);
+  tally.sent.store(0u64);
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.finished.store(0u64);
+  tally.failed.store(0u64);
+  tally.heads.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn lent() u64 { u64.from(iobuf.stats().lentBytes) }
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+fn number(s: &str) u64 { collections.parseUInt(s) || 0u64 }
+
+// The path's segments after the first '/', split at '/'
+fn segments(p: &str) List[String] {
+  var out = List[String]();
+  var cur = String();
+  var i = 1usize;
+  while i < p.len {
+    if p[i] == 47u8 {out.push(cur); cur = String();}
+    else {cur.append(&p[i ..< i + 1usize]);}
+    i = i + 1usize;
+  }
+  out.push(cur);
+  out
+}
+
+fn compress(coding: &str, raw: &Array[u8]) List[u8] {
+  if coding == "gzip" {deflate.gzipCompress(raw, 6i32)}
+  else if coding == "deflate" {deflate.zlibCompress(raw, 6i32)}
+  else if coding == "zstd" {zstd.compress(raw, 3i32)}
+  else {
+    var o = List[u8].withCapacity(raw.len);
+    var i = 0usize;
+    while i < raw.len {o.push(raw[i]); i = i + 1usize;}
+    o
+  }
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let segs = segments(path.view());
+    var zeros = false;
+    var bad = false;
+    var rand = false;
+    var k = 0usize;
+    if segs[k].view() == "zeros" {zeros = true; k = k + 1usize;}
+    if segs[k].view() == "bad" {bad = true; k = k + 1usize;}
+    if segs[k].view() == "rand" {rand = true; k = k + 1usize;}
+    let coding = String.from(segs[k].view());
+    let n = number(segs[k + 1usize].view());
+    var raw = List[u8].withCapacity(usize.from(n));
+    var i = 0u64;
+    var x = 12345u64;
+    while i < n {
+      if rand {
+        // incompressible, so the body on the wire is about n bytes
+        x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
+        raw.push(u8.from((x / 65536u64) % 256u64));
+      } else {
+        raw.push(if zeros {0u8} else {u8.from(i % 251u64)});
+      }
+      i = i + 1u64;
+    }
+    var body = compress(coding.view(), raw.view());
+    if bad && rand {
+      // the gzip magic: refused by the first chunk
+      body.set(0usize, body[0usize] ^ 255u8);
+    } else if bad && body.len() > 40usize {
+      let at = body.len() / 2usize;
+      body.set(at, body[at] ^ 255u8);
+    }
+    var head = ResponseHead.make(200u16);
+    if coding.view() != "plain" {head.headers.add("Content-Encoding", coding.view());}
+    ex.start(head, BodyLength.sized(u64.from(body.len())));
+    var at = 0usize;
+    var going = true;
+    while going && at < body.len() {
+      let left = body.len() - at;
+      let m = if left < 65536usize {left} else {65536usize};
+      let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
+      match w {
+        case is Ok { at = at + m; tally.sent.add(u64.from(m)); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sink: counts, checks the pattern (unless it is zeros), gives back at once
+// ---------------------------------------------------------------------------
+
+actor Count is ChunkSink {
+  up: Option[ChunkSource];
+  check: bool;
+  at: u64;
+  msgs: Sender[String];
+
+  pub fn init(self: &new, check: bool, msgs: Sender[String]) {
+    *self = Self(up: None[ChunkSource], check: check, at: 0u64, msgs: msgs);
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    let v = c.view();
+    if check {
+      var bad = 0u64;
+      var i = 0usize;
+      while i < v.len {
+        if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+        i = i + 1usize;
+      }
+      if bad > 0u64 {tally.bad.add(bad);}
+    }
+    var h = tally.hash.load();
+    var j = 0usize;
+    while j < v.len {h = mix(h, v[j]); j = j + 1usize;}
+    tally.hash.store(h);
+    at = at + u64.from(v.len);
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    tally.bytes.add(at);
+    match how {
+      case is Finished { tally.finished.add(1u64); }
+      case let Failed(e) {
+        msgs.send(String.from(e.message().view()));
+        tally.failed.add(1u64);
+      }
+    }
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn run(self, u: String, d: Decoder) {
+    let r = await d.open(client.clone(), Request.get(u.view()));
+    match r {
+      case is Ok { tally.heads.add(1u64); }
+      case is Err {}
+    }
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+// One fetch of 'path' through a Decoder with 'limit': the sink's message, if it failed
+fn fetch(port: u16, path: &str, check: bool, limit: usize, msgs: &mut Receiver[String], mtx: Sender[String]) String {
+  reset();
+  let sink = Count(check, mtx.clone());
+  let d = Decoder(sink, limit);
+  let f = Fetcher(Client.standard());
+  f.run(url(port, path), d);
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while tally.finished.load() + tally.failed.load() < 1u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+  thread.sleep(Duration.fromMillis(30i64));
+  var m = String();
+  if tally.failed.load() > 0u64 {m = take[String](msgs, String());}
+  m
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var mtx: Sender[String];
+  var mrx: Receiver[String];
+  mtx, mrx = Channel[String].make();
+  {
+    let plain = Acceptor(Server.none());
+    plain.open(ServerConfig.make(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    plain.serve();
+    printStr("a server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    let size = 3u64 * mib + 17u64;
+    var names = List[String]();
+    names.push(String.from("plain"));
+    names.push(String.from("gzip"));
+    names.push(String.from("deflate"));
+    names.push(String.from("zstd"));
+    var j = 0usize;
+    while j < names.len() {
+      let name = &names[j];
+      j = j + 1usize;
+      var path = String.from("/");
+      path.append(name.view());
+      path.append("/");
+      path.appendUInt(size);
+      let m = fetch(port, path.view(), true, 16777216usize, &mut mrx, mtx.clone());
+      printStr(name.view());
+      printStr(": head ok ");
+      printStr(yes(tally.heads.load() == 1u64));
+      printStr(", bytes ");
+      printUInt(tally.bytes.load());
+      printStr(", wrong bytes ");
+      printUInt(tally.bad.load());
+      printStr(", ends finished ");
+      printUInt(tally.finished.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr(", equals the one-shot result ");
+      printStr(yes(tally.hash.load() == oneShotHash(name.view(), usize.from(size)) && tally.hash.load() != 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // bombs: 64 MiB of zeros in a few KiB, a limit of 1 MiB
+    names = List[String]();
+    names.push(String.from("/zeros/gzip/67108864"));
+    names.push(String.from("/zeros/deflate/67108864"));
+    names.push(String.from("/zeros/zstd/67108864"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetch(port, p.view(), false, 1048576usize, &mut mrx, mtx.clone());
+      printStr(p.view());
+      printStr(": refused, ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr(", out no more than the limit ");
+      printStr(yes(tally.bytes.load() <= mib));
+      printStr(", the codec says: ");
+      printStr(m.view());
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // corrupt, and an unsupported coding
+    let c = fetch(port, "/bad/gzip/200000", true, 16777216usize, &mut mrx, mtx.clone());
+    printStr("a corrupt gzip body: ends failed ");
+    printUInt(tally.failed.load());
+    printStr(" finished ");
+    printUInt(tally.finished.load());
+    printStr(", the codec says: ");
+    printStr(c.view());
+    printStr("\n");
+    let u = fetch(port, "/br/1000", false, 16777216usize, &mut mrx, mtx.clone());
+    printStr("an unsupported coding: ends failed ");
+    printUInt(tally.failed.load());
+    printStr(" finished ");
+    printUInt(tally.finished.load());
+    printStr(", ");
+    printStr(u.view());
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A refused body ends the fetch: 16 MiB of incompressible data on the wire, the stream refused
+    // within its first chunks (a corrupt gzip magic; a limit of 1 MiB for each coding; br), and the
+    // server must not be able to write it all
+    names = List[String]();
+    names.push(String.from("/bad/rand/gzip/16777216"));
+    names.push(String.from("/rand/gzip/16777216"));
+    names.push(String.from("/rand/deflate/16777216"));
+    names.push(String.from("/rand/zstd/16777216"));
+    names.push(String.from("/br/16777216"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetch(port, p.view(), false, 1048576usize, &mut mrx, mtx.clone());
+      thread.sleep(Duration.fromMillis(1500i64));
+      printStr(p.view());
+      printStr(": sink ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr(", the server wrote less than half the body ");
+      printStr(yes(tally.sent.load() < 8u64 * mib));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    plain.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}

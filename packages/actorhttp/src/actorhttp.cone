@@ -80,6 +80,8 @@
 //   defaultMaxBody                the most body bytes a client takes unless made with another limit
 //   c.stream(request)  c.streamIn(request, lim)     a response read as it arrives, in chunks   (STREAMS)
 //                                                               Result[BodyStream, FetchError]
+//   c.streamTo(request, sink)  c.streamToIn(request, sink, lim)   a response body sent to a ChunkSink     (STREAMS)
+//                                                               Result[BodyHead, FetchError]
 //   c.events(request)  c.eventsIn(request, lim)     a response read as server-sent events      (STREAMS)
 //                                                               Result[EventStream, FetchError]
 //   bs.read()   BodyStream: bs.status bs.version bs.headers bs.url bs.isOk()    Result[Option[String], FetchError]
@@ -231,6 +233,31 @@
 // go. CREDIT (invariant I9): a piece is released to the connection as it is
 // handed over (and not before more than 64 events or pieces wait), so a reader
 // that awaits slowly slows the sender through TCP, and memory stays bounded.
+// A BODY TO A STAGE. 'client.streamTo(request, sink)' (and 'streamToIn' with an
+// IoLimits) sends the body to a stages.ChunkSink instead: it is answered, as
+// 'stream' is, when the head arrives, with a BodyHead (status, version, headers,
+// url, isOk()), and the sink gets, in this order, 'attach(source)' (the source is
+// a small actor of this package's, BodySource), then each piece the connection
+// received as an IoBuf MOVED to 'accept' (the same buffer the client read into,
+// not copied), then one 'end': Finished when the body is whole, Failed(AnyError)
+// otherwise (the AnyError holds a FetchError: cancelled, timed out, or failed
+// with httpclient's Failure). A failure before the head is both: the caller's Err
+// and the sink's one Failed end. A 4xx or 5xx body goes to the sink too: read
+// 'isOk()' of the head. THERE IS ONE CREDIT: the buffers are the client's, not a
+// Link's, and the HTTP window is the window. A buffer's bytes are released to the
+// connection when the sink gives that buffer back (giveBack, on the BodySource), so
+// a sink that holds buffers or gives them back slowly slows the connection, and
+// through TCP or its HTTP/2 stream the server, and nothing else. The credit is
+// what the service's own record says was lent in that buffer (kept by the buffer's
+// address), never the length it comes back with, so a sink may trim a buffer
+// first; a buffer the record does not hold releases nothing. A body to be decoded
+// (Content-Encoding) goes through package httpdecode's Decoder, which sits over
+// this call. A fetch's group (lim's, or the
+// request's) cancels it at the client as for any fetch, ending the sink Failed once;
+// and a buffer given back in a cancelled group (a Stage that has seen its consumer
+// quit gives its input back so) cancels it too. 'read()' stays, for text and for
+// small bodies; it is the same fetch with a String copy per piece.
+//
 // 'events' asks for 'Accept: text/event-stream' and 'Cache-Control: no-cache'
 // unless the request has them; a 'Last-Event-ID' is a field the request
 // carries, as any, and reconnecting after the stream breaks is the program's
@@ -345,7 +372,7 @@
 mod actorhttp;
 
 import slots use SlotTable;
-import collections use List, Deque, String, Dict, Error;
+import collections use List, Deque, String, Dict, Error, AnyError;
 import iobuf use IoBuf;
 import time use Instant, Duration;
 import iocore use Loop, Completion, SocketAddr, CancelGroup, IoError, forever;
@@ -356,7 +383,7 @@ import tls;
 import sse;
 import aio use IoLimits;
 import actors;
-
+import stages use ChunkSink, ChunkSource, Ending;
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
   svcHost = aio.host[Service](&makeService);
@@ -533,6 +560,22 @@ pub struct Client is Move {
       actors.Awaitable[Result[BodyStream, FetchError]] {
     let r = limitedRequest(req, lim, file, line);
     awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, false))
+  }
+
+  // A request whose response body goes to a sink as it arrives (the package's
+  // header, STREAMS): answered when the head arrives, with its BodyHead; the
+  // body then reaches 'sink' as chunks (IoBufs moved on, uncopied), and the
+  // end, or a failure, as its one 'end(how)'
+  pub fn streamTo(self: &, req: httpclient.Request, sink: ChunkSink, file: &Array[u8] = srcFile(), line: u32 = srcLine())
+      actors.Awaitable[Result[BodyHead, FetchError]] {
+    self.streamToIn(req, sink, IoLimits.none(), file, line)
+  }
+
+  // The same, the whole fetch ended if lim says so (its group's cancel too), and the request's own deadline and group too
+  pub fn streamToIn(self: &, req: httpclient.Request, sink: ChunkSink, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
+      actors.Awaitable[Result[BodyHead, FetchError]] {
+    let r = limitedRequest(req, lim, file, line);
+    awaitable[StreamToJob, Result[BodyHead, FetchError]](StreamToJob(id, r, sink))
   }
 
   // A request whose response is read as server-sent events (STREAMS): it asks

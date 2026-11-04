@@ -1820,8 +1820,25 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
     INode *expstmt = tail->expstmt, *expsemi = tail->expsemi;   // the latest expression statement, and its ';'
     int expopen = tail->expopen;
     INode *blockstmt = tail->blockstmt, *blocksemi = tail->blocksemi;   // the latest statement that ends in a block, and its ';'
+    uint32_t metamark = parseMetaScope();   // The meta variables this block declares are its own
 
     while (!parseBlockEnd()) {
+        // '#each' repeats the block after it once for each item of a list: each pass is a block of
+        // its own among this block's statements (parsemeta.c), so it ends as any block does
+        if (lexIsToken(HashEachToken)) {
+            uint32_t before = blk->stmts->used;
+            parseHashEach(parse, blk);
+            if (blk->stmts->used > before) {
+                blockstmt = nodesLast(blk->stmts);
+                blocksemi = NULL;
+            }
+            continue;
+        }
+        // '#i += 1;' gives a meta variable a new value, as the passes before it have left it
+        if (lexIsToken(MetaVarToken) && parseMetaIsAssign()) {
+            parseMetaAssign(parse);
+            continue;
+        }
         // '#if' chooses which statements exist, from the facts of the build. The
         // branch it takes is read into this block as though it were written here
         // (parsemeta.c), so a declaration in it is the block's, and a last
@@ -1989,6 +2006,11 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
         case LetToken:
         case VarToken:
         {
+            // 'let #n = 3;' declares a meta variable, held by the parser and gone from the code
+            if (parseMetaIsDecl()) {
+                parseMetaDecl(parse);
+                break;
+            }
             // 'let Some(n) = x else {...};' binds a variant or leaves
             if (!lexIsToken(PermToken) && lexNextOpensPattern()) {
                 parseLetPattern(parse, blk);
@@ -2069,6 +2091,7 @@ static void parseBlockStmts(ParseState *parse, BlockNode *blk, BlockTail *tail) 
             blocksemi = NULL;
         }
     }
+    parseMetaScopeEnd(metamark);
     tail->expstmt = expstmt;
     tail->expsemi = expsemi;
     tail->expopen = expopen;
