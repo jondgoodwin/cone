@@ -4262,14 +4262,20 @@ fn nbrTryFromFloat[T: Integer, S: Float](x: S) Result[T, NumberConvError[T]] {
   Ok[T, NumberConvError[T]](y)
 }
 
-// Integer to float: the value must be held exactly, which is every integer of
-// magnitude up to 2 to the 24th (f32) or 2 to the 53rd (f64)
+// Integer to float: the float must hold the value exactly, which is so when the
+// value's significant bits (from its first 1 to its last) fit the float's
+// mantissa: 24 bits for an f32, 53 for an f64. So 2 to the 60th is held, as is
+// the least i64, and 2 to the 24th plus 1 (f32) is not. Decided on the integer,
+// with no float conversion and no reliance on how an out-of-range 'from' acts.
 fn nbrTryFromIntToFloat[T: Float, S: Integer](x: S) Result[T, NumberConvError[T]] {
   let m = if mem.sizeof[T]() == 4usize { 24u64 } else { 53u64 };
   let neg = x < S.from(0i32);
-  let mag = if neg { u64.from(~x) + 1u64 } else { u64.from(x) };
-  if mag > (1u64 << m) {
-    return Err[T, NumberConvError[T]](if neg {NumberConvError.TooSmall[T]} else {NumberConvError.TooLarge[T]});
+  var mag = if neg { u64.from(~x) + 1u64 } else { u64.from(x) };
+  if mag != 0u64 {
+    while (mag & 1u64) == 0u64 { mag = mag >> 1u64; }
+    if (mag >> m) != 0u64 {
+      return Err[T, NumberConvError[T]](NumberConvError.Inexact[T]);
+    }
   }
   Ok[T, NumberConvError[T]](T.from(x))
 }
