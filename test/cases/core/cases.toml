@@ -699,3 +699,41 @@ category = "reject"
 description = "A borrow passed to a call in the values of a declaration of several names, as in a single name's initializer: the temporary ends with its statement"
 tags = ["flow"]
 diagnostics = 2
+
+# -------- a float's encoding as methods --------
+
+# 'x.bits()', 'f32.fromBits(b)' and the rest read and build a float's encoding
+# with no 'as'. Every value comes through a C function the optimizer cannot see
+# into, so the methods run as the program runs, and the release and debug builds
+# give the one .out. Both widths, with the edge values listed in the source.
+[scenario.core_float_bits]
+category = "run"
+description = "A float's bits(), fromBits(), exponent(), mantissa() and signBit() on f32 and f64: 0.0, -0.0, the smallest subnormal, the largest finite, both infinities, two NaNs (one with the sign bit set), 1.0, 0.5 and -2.5, as run-time values and as literals; the round trip through fromBits, and the sign, exponent and mantissa rebuilding the bits"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.core_float_bits.run]]
+name = "release"
+options = []
+
+[[scenario.core_float_bits.run]]
+name = "debug"
+options = ["--debug"]
+
+# A float's encoding methods cost the bit operation and nothing more: compiled as
+# a library so that the public functions are kept, the optimized IR holds only
+# bitcasts, a compare, a mask and a shift, with no call, branch, select or load
+[scenario.core_genllvm_floatbits]
+category = "compile"
+description = "A float's bits(), fromBits(), signBit(), mantissa() and exponent() are one bit operation each once optimized: a bitcast, a signed compare with zero, a mask, a shift and the bias, with no call, branch, select or memory access"
+tags = ["genllvm"]
+
+[[scenario.core_genllvm_floatbits.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.core_genllvm_floatbits.check]]
+name = "each-is-the-bit-operation"
+target = "llvmir"
+contains = ["bitcast float %0 to i32", "bitcast double %0 to i64", "bitcast i32 %0 to float", "bitcast i64 %0 to double", "icmp slt i32", "icmp slt i64", "and i32", "and i64", "lshr i32", "lshr i64", "add nsw i32 %2, -127", "add nsw i32 %3, -1023"]
+excludes = ["call ", "br ", "select", "load", "store", "alloca"]

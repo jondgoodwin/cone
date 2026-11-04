@@ -380,7 +380,11 @@ fn main() {
 		same size. <span class="pre">as</span> does it, with the type on its right. The colour program used it to
 		read a float's exponent: <span class="pre">light as u64</span> is the same 64 bits, now an integer whose
 		bits can be shifted and masked. This kind of access is what floating-point functions a processor does not
-		provide are built from.</p>
+		provide are built from. For a float's encoding in particular, no <span class="pre">as</span> is needed:
+		<span class="pre">light.bits()</span>, <span class="pre">f64.fromBits(b)</span>,
+		<span class="pre">light.exponent()</span>, <span class="pre">light.mantissa()</span> and
+		<span class="pre">light.signBit()</span> read and build it by name, and are the bit operation alone
+		(<a href="guide-numbers.html#floatbits">A float's encoding</a>).</p>
 	<p>The two types must be the same size on every target, not just the one being compiled for.
 		<span class="pre">usize</span> and <span class="pre">isize</span> are pointer-sized, 64 bits on some targets
 		and 32 on others, such as WebAssembly, so neither may be reinterpreted as a fixed-width number type, nor a
@@ -398,6 +402,29 @@ let wide = u64.from(count);      // not count as u64
 		ones, the largest <span class="pre">usize</span> (18446744073709551615 on a 64-bit target). A slice, two
 		words wide, is reinterpreted as neither; <span class="pre">bytes as *u8</span> takes the address of its first
 		element (<a href="#slicenoptr">above</a>).</p>
+	<p id="astarget">A struct, an enum or a <span class="pre">char</span> is made by <span class="pre">as</span> only
+		from a coercion to it, a recast. The one such coercion is a variant, by value, into its enum
+		(<span class="pre">circle as Shape</span>), and a value as its own type changes nothing. These values are more
+		than their bits: a struct has private fields and may hold a reference, an enum has a tag that names its
+		variant, a <span class="pre">char</span> is a code point. So the casts that would forge one are refused (1594),
+		the message naming the way to make it:</p>
+<pre>
+let c = 200u8 as Color;              // **ERROR** 1594: `as` may not make Color from u8 ...
+let s = 12345u32 as Secret;          // **ERROR** 1594: a struct is made by its constructor or a method
+let h = 0xDEADBEEF00u64 as Holder;   // **ERROR** 1594: a number would forge Holder's reference
+let q = p as Q;                      // **ERROR** 1594: no struct is a subtype of another
+let r = ref_to_p as P;               // **ERROR** 1594: nor a reference, read as the struct's bytes
+let k = s as Shape.Circle;           // **ERROR** 1594: nothing checks which variant s holds;
+                                     //   match it with a pattern (`case let`)
+let ch = 65u32 as char;              // **ERROR** 1594: convert with char.from(x)
+let ch = char.from(65u32);           // fine
+let t = Shape.Circle(5) as Shape;    // fine: a variant into its enum is a recast
+</pre>
+	<p>A generic <span class="pre">x as T</span> is checked where <span class="pre">T</span> is known: refused at the
+		instance where it is a struct, an enum or a <span class="pre">char</span>, accepted where it is a number of the
+		same size. <span class="pre">char.from(x)</span> is the conversion into a <span class="pre">char</span> today; it
+		does not check that the number is a code point. These refusals are for
+		<a href="safe-trust.html#reinterpret"><span class="pre">trust</span></a>, which is not built yet.</p>
 	<p>Between two references, <span class="pre">as</span> may change the referenced type, but the permission
 		only as a coercion would: the permission it gives must be the source's or one it coerces to.
 		<span class="pre">&amp;uni</span> may be cast <span class="pre">&amp;mut</span>,
