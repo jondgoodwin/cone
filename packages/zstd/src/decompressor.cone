@@ -57,11 +57,11 @@ fn skippableMagic() u32 { 0x184D2A50u32 }
 // it, 'finish' it when the input is over, 'pull' the output.
 //
 //   mut d = zstd.Decompressor.make();
-//   mut out = List[u8]();
+//   mut out = IoBuf(65536usize);
 //   d.feed(chunk);                          // any size, split anywhere
 //   while true {
 //     out.clear();
-//     imm s = d.pull(&mut out, 65536usize);   // at most 64 KiB at a time
+//     imm s = d.pull(&mut out);             // at most the buffer's room at a time
 //     ... use out ...
 //     if s != zstd.Status.MoreOutput { break; }
 //   }
@@ -194,18 +194,12 @@ pub struct Decompressor {
     rest
   }
 
-  // Decodes, appending at most 'max' bytes to 'out', and answers what it is
-  // waiting for: NeedInput (all input used), MoreOutput (the limit of this
-  // pull came first), Done, or Failed (and the Decompressor stays failed).
-  // Anything pulled before a failure was decoded from blocks that were
-  // valid; a frame's checksum is checked only at its end.
-  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
-    var none = IoBuf();
-    self.pullInto(max, false, &mut none, out)
-  }
-
-  // The same into a buffer's spare room (the Transform of package streams):
-  // appends at most 'out.room()' bytes and lengthens 'out' by them.
+  // Decodes into a buffer's spare room (the Transform of package streams),
+  // appending at most 'out.room()' bytes and lengthening 'out' by them, and
+  // answers what it is waiting for: NeedInput (all input used), MoreOutput
+  // (the room came first), Done, or Failed (and the Decompressor stays
+  // failed). Anything pulled before a failure was decoded from blocks that
+  // were valid; a frame's checksum is checked only at its end.
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
     var none = List[u8]();
     let room = out.room();

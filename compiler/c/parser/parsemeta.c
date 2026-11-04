@@ -909,7 +909,8 @@ INode *parseHashIfExpr(ParseState *parse) {
 typedef enum {
     MetaBindItem,       // A loop's variable: one item of a list
     MetaBindInt,        // A number: 'let #n = 3', 'var #i = 0'
-    MetaBindList        // A list: 'let #xs = [8, 16, 32]', 'let #ts = (i32, i64)'
+    MetaBindList,       // A list: 'let #xs = [8, 16, 32]', 'let #ts = (i32, i64)'
+    MetaBindField       // A '#each #f in #fields(T)' variable: the description of one field of T
 } MetaBindKind;
 
 // A list read from the source: its items, as nodes to copy, and as the text they were written in
@@ -930,6 +931,7 @@ typedef struct MetaBind {
     char *text;         // MetaBindItem: the item as written
     int istype;         // MetaBindItem: the item is a type
     MetaItems *list;    // MetaBindList
+    FieldEach *fe;      // MetaBindField
 } MetaBind;
 
 static MetaBind *metaEnv = NULL;
@@ -1322,9 +1324,46 @@ void parseMetaAssign(ParseState *parse) {
 }
 
 // A meta variable met as a term: a copy of the loop's item, or the number it holds
+int parseMetaIsFieldVar(Name *name) {
+    MetaBind *bind = metaFind(name);
+    return bind && bind->kind == MetaBindField;
+}
+
+// '#f.name', '#f.type', '#f.region', '#f.perm' or '#f.pub', the lexer on the '#f': a placeholder the
+// clone for an instance replaces with that field's answer (fields.h). A bare '#f' is only spliced
+// ('val.#f', handled by parseDotCall)
+static INode *metaFieldTerm(FieldEach *fe) {
+    INode *at = (INode*)newNilLitNode();
+    lexNextToken();
+    if (!lexIsToken(DotToken)) {
+        errorMsgNode(at, ErrorMetaFields, "'%s' describes a field of the type: ask it '%s.name', '%s.type', '%s.region', '%s.perm' or '%s.pub', or splice it as 'value.%s'.",
+            &fe->var->namestr, &fe->var->namestr, &fe->var->namestr, &fe->var->namestr, &fe->var->namestr, &fe->var->namestr, &fe->var->namestr);
+        return NULL;
+    }
+    lexNextToken();
+    int prop = lexIsToken(IdentToken) || lexIsToken(PubToken) || lexIsToken(PermToken)
+        ? fieldPropFromWord(&lex->val.ident->namestr) : FieldPropCount;
+    if (prop == -1) {
+        errorMsgLex(ErrorMetaFields, "Attributes on fields are not built yet, so '%s.attrs' has nothing to describe.", &fe->var->namestr);
+        lexNextToken();
+        return NULL;
+    }
+    if (prop == FieldPropCount) {
+        errorMsgLex(ErrorMetaFields, "A field description answers '.name', '.type', '.region', '.perm' and '.pub'.");
+        if (!lexIsToken(DotToken))
+            lexNextToken();
+        return NULL;
+    }
+    INode *node = fieldEachProp(fe, (FieldProp)prop, at);
+    lexNextToken();
+    return node;
+}
+
 INode *parseMetaTerm(ParseState *parse) {
     MetaBind *bind = metaFind(lex->val.ident);
     INode *node = NULL;
+    if (bind && bind->kind == MetaBindField)
+        return metaFieldTerm(bind->fe);
     if (bind == NULL)
         errorMsgLex(ErrorMetaVar, "'%s' is not a meta variable declared here ('#each %s in ...', 'let %s = ...').",
             &lex->val.ident->namestr, &lex->val.ident->namestr, &lex->val.ident->namestr);
@@ -1373,6 +1412,55 @@ static void metaEachDump(INode *loop, Name *var, MetaItems *list, Nodes *passes,
     irIsNL = svnl;
 }
 
+// '#fields(T) { body }' after '#each #f in', the lexer on the '#fields': the body is read once, with
+// '#f' standing for a field of T, as a block (the loop) that holds it; cloning that for an instance of
+// T makes the passes (fields.h). T is a type parameter of the function or type this is written in
+static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name *var) {
+    lexNextToken();
+    if (!lexIsToken(LParenToken)) {
+        errorMsgLex(ErrorMetaFields, "'#fields' names the type whose fields it describes: '#each #f in #fields(T) { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    lexNextToken();
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorMetaFields, "'#fields' names a type parameter of the generic it is written in: '#fields(T)'.");
+        metaEachSkip();
+        return;
+    }
+    NameUseNode *subject = newNameUseNode(lex->val.ident);
+    inodeLexCopy((INode*)subject, loop);
+    lexNextToken();
+    if (!lexIsToken(RParenToken)) {
+        errorMsgLex(ErrorMetaFields, "'#fields(T)' takes one type parameter's name, closed by ')'.");
+        metaEachSkip();
+        return;
+    }
+    lexNextToken();
+    if (!lexIsToken(LCurlyToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' repeats a block, which follows its list: '#each #f in #fields(T) { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    FieldEach *fe = newFieldEach(var, (INode*)subject, parse->mod);
+    uint32_t scope = metaEnvUsed;
+    MetaBind bind;
+    memset(&bind, 0, sizeof(bind));
+    bind.name = var;
+    bind.kind = MetaBindField;
+    bind.fe = fe;
+    metaBindPush(&bind);
+    INode *body = parseExprBlock(parse, 0);
+    metaEnvUsed = scope;
+    if (body == NULL || body->tag != BlockTag)
+        return;
+    BlockNode *wrap = newBlockNode();
+    inodeLexCopy((INode*)wrap, loop);
+    nodesAdd(&wrap->stmts, body);
+    wrap->fieldeach = fe;
+    nodesAdd(&blk->stmts, (INode*)wrap);
+}
+
 // '#each #x in list { body }' among a block's statements, the lexer on the '#each'. The passes are
 // added to 'blk' as blocks of their own
 void parseHashEach(ParseState *parse, BlockNode *blk) {
@@ -1392,6 +1480,10 @@ void parseHashEach(ParseState *parse, BlockNode *blk) {
         return;
     }
     lexNextToken();
+    if (lexIsToken(HashFieldsToken)) {
+        parseHashFields(parse, blk, loop, var);
+        return;
+    }
     if (!lexIsToken(LBracketToken) && !lexIsToken(LParenToken) && !lexIsToken(MetaVarToken)) {
         errorMsgLex(ErrorMetaEach, "A '#each' goes through a list: '[a, b]' of values, '(T, U)' of types, or a meta variable declared as one ('let #xs = [1, 2];').");
         metaEachSkip();

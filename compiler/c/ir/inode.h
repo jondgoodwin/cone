@@ -619,6 +619,9 @@ int inodeIsError(INode *node);
 // Verify IR well-formedness across the whole program (--checktree)
 void inodeCheckTree(INode *pgm);
 
+// List the program's unconstrained operations (--report-trust, ir/trustreport.c)
+void trustReport(INode *pgm);
+
 // Dispatch a node walk for the name resolution pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced

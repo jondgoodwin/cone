@@ -1,0 +1,269 @@
+// allOk and nextOk over a FutureSet of Results. Each case is a step of Asker.go,
+// run after the one before it; every number recorded was worked out by hand
+// from the source below. The blocks between the "manual:" lines are shown
+// verbatim by doc/manual/conc-await.html ("Waiting on several futures").
+//
+// - all: three members that answer Ok, collected in the order added: 12, 15, 18;
+// - early: a member that fails at once while the worker holding two others is
+//   held: allOk gives that Err, the others (sent in the set's group) are
+//   cancelled and see it when they run, and the held member's late reply is
+//   dropped;
+// - gone: a member whose actor died while it waited comes out as MemberGone;
+// - empty: allOk of a set with nothing in it is an empty list;
+// - nextOk: values and a failure, one at a time;
+// - retry: a failed member is added again to the same set while the others run.
+
+mod futureallok;
+
+import testing use *;
+import actors use SetError;
+import thread;
+import collections use List;
+
+struct Sums {
+  pub all: Atomic[u64];
+  pub early: Atomic[u64];
+  pub cancelled: Atomic[u64];
+  pub gone: Atomic[u64];
+  pub empty: Atomic[u64];
+  pub nextSum: Atomic[u64];
+  pub nextFail: Atomic[u64];
+  pub retry: Atomic[u64];
+  pub retries: Atomic[u64];
+  pub gate: Atomic[u64];
+}
+
+let sums: Sums;
+
+fn @initpure init() {
+  sums = Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// Awaiting this gives nothing and never will: the envelope is dropped unanswered
+struct Hang {
+  pub n: u64;
+  pub fn await(self) actors.Awaitable[Result[u64, u64]] {
+    actors.Awaitable[Result[u64, u64]].make(fn(rp: actors.Reply) {})
+  }
+}
+
+// manual: allok
+actor Shop {
+  // an item's price, or Err(item) for item 0, which is not for sale
+  pub async fn price(self, item: u64) Result[u64, u64] {
+    if item == 0u64 {Err[u64, u64](item)} else {Ok[u64, u64](item * 3u64)}
+  }
+}
+
+actor Cart {
+  shop: Shop;
+
+  // the cost of two items; 1000 plus the item if one cannot be priced
+  pub async fn cost(self, second: u64) u64 {
+    var set = actors.FutureSet[Result[u64, u64]].make();
+    set.start(fn() actors.Future[Result[u64, u64]] {shop.price(4u64)});
+    set <- shop.price(second);
+    match await actors.allOk(set) {
+      case let Ok(prices) {
+        var sum = 0u64;
+        var i = 0usize;
+        while i < prices.len() {
+          sum = sum + prices[i];
+          i = i + 1usize;
+        }
+        sum
+      }
+      case let Err(e) {
+        match e {
+          case let MemberFailed(item) {1000u64 + item}
+          case let MemberGone(a) {2000u64}
+        }
+      }
+    }
+  }
+}
+// manual: end
+
+// manual: retry
+actor Flaky {
+  // fails with the number of the attempt until the third
+  pub async fn fetch(self, attempt: u64) Result[u64, u64] {
+    if attempt < 2u64 {Err[u64, u64](attempt)} else {Ok[u64, u64](100u64)}
+  }
+}
+
+actor Retrier {
+  flaky: Flaky;
+  shop: Shop;
+
+  // every member's value, a failed fetch tried again (up to 3 times) while the others go on
+  pub async fn gather(self) u64 {
+    var set = actors.FutureSet[Result[u64, u64]].make();
+    set <- flaky.fetch(0u64);
+    set <- shop.price(5u64);
+    var sum = 0u64;
+    while true {
+      match await actors.nextOk(&mut set) {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {sum = sum + n;}
+            case let Err(e) {
+              match e {
+                case let MemberFailed(attempt) {
+                  if attempt < 3u64 {
+                    set <- flaky.fetch(attempt + 1u64);
+                  }
+                }
+                case let MemberGone(a) {}
+              }
+            }
+          }
+        }
+        case is None {break;}
+      }
+    }
+    sum
+  }
+}
+// manual: end
+
+actor Worker {
+  pub async fn val(self, n: u64) Result[u64, u64] {Ok[u64, u64](n)}
+  pub async fn fail(self, n: u64) Result[u64, u64] {Err[u64, u64](n)}
+  pub async fn stuck(self) Result[u64, u64] {await Hang(1u64)}
+  // holds this worker until the gate opens, so what is queued behind it runs after
+  pub async fn block(self) Result[u64, u64] {
+    while sums.gate.load() == 0u64 {
+      thread.yieldNow();
+    }
+    Ok[u64, u64](0u64)
+  }
+  pub async fn check(self, n: u64) Result[u64, u64] {
+    if actors.isCancelled() {
+      sums.cancelled.add(n);
+    }
+    Ok[u64, u64](n)
+  }
+}
+
+actor Asker {
+  w: Worker;
+  v: Worker;
+  cart: Cart;
+  retrier: Retrier;
+
+  pub async fn go(self) {
+    // all
+    {
+      var set = actors.FutureSet[Result[u64, u64]].make();
+      set <- v.val(12u64);
+      set <- w.val(15u64);
+      set <- v.val(18u64);
+      match await actors.allOk(set) {
+        case let Ok(vals) {
+          var seq = 0u64;
+          var i = 0usize;
+          while i < vals.len() {
+            seq = seq * 100u64 + vals[i];
+            i = i + 1usize;
+          }
+          sums.all.store(seq);
+        }
+        case let Err(e) {sums.all.store(1u64);}
+      }
+    }
+    // early: w is held, with two checks queued behind it, sent in the set's group
+    {
+      var set = actors.FutureSet[Result[u64, u64]].make();
+      set <- w.block();
+      set.start(fn() actors.Future[Result[u64, u64]] {w.check(1u64)});
+      set.start(fn() actors.Future[Result[u64, u64]] {w.check(10u64)});
+      set <- v.fail(7u64);
+      match await actors.allOk(set) {
+        case let Ok(vals) {sums.early.store(1u64);}
+        case let Err(e) {
+          match e {
+            case let MemberFailed(code) {sums.early.store(code);}
+            case let MemberGone(a) {sums.early.store(2u64);}
+          }
+        }
+      }
+    }
+    // gone
+    {
+      var set = actors.FutureSet[Result[u64, u64]].make();
+      {
+        let s = Worker();
+        set <- s.stuck();
+      }
+      match await actors.allOk(set) {
+        case let Ok(vals) {sums.gone.store(2u64);}
+        case let Err(e) {
+          match e {
+            case let MemberFailed(code) {sums.gone.store(3u64);}
+            case let MemberGone(a) {sums.gone.store(1u64);}
+          }
+        }
+      }
+    }
+    // empty
+    {
+      var set = actors.FutureSet[Result[u64, u64]].make();
+      match await actors.allOk(set) {
+        case let Ok(vals) {sums.empty.store(u64.from(vals.len()) + 1u64);}
+        case let Err(e) {sums.empty.store(0u64);}
+      }
+    }
+    // nextOk: 3 and 9 are values, 40 a failure
+    {
+      var set = actors.FutureSet[Result[u64, u64]].make();
+      set <- v.val(3u64);
+      set <- v.fail(40u64);
+      set <- v.val(9u64);
+      while true {
+        match await actors.nextOk(&mut set) {
+          case let Some(p) {
+            match p.1 {
+              case let Ok(n) {sums.nextSum.add(n);}
+              case let Err(e) {
+                match e {
+                  case let MemberFailed(code) {sums.nextFail.add(code);}
+                  case let MemberGone(a) {}
+                }
+              }
+            }
+          }
+          case is None {break;}
+        }
+      }
+    }
+    sums.retry.store(await retrier.gather());
+    let good = await cart.cost(5u64);
+    let bad = await cart.cost(0u64);
+    sums.retries.store(good * 10000u64 + bad);
+    sums.gate.store(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let shop = Shop();
+    let a = Asker(Worker(), Worker(), Cart(shop), Retrier(Flaky(), shop));
+    a.go();
+  }
+  finalAll();
+  expectUInt(sums.all.load(), 121518u64, "allOk gives the values in the order added");
+  expectUInt(sums.early.load(), 7u64, "the first Err is what allOk gives");
+  expectUInt(sums.cancelled.load(), 11u64, "allOk cancels the members sent in the set's group");
+  expectUInt(sums.gone.load(), 1u64, "an abandoned member is MemberGone");
+  expectUInt(sums.empty.load(), 1u64, "allOk of an empty set is an empty list");
+  expectUInt(sums.nextSum.load(), 12u64, "nextOk gives the values");
+  expectUInt(sums.nextFail.load(), 40u64, "nextOk gives a failure as MemberFailed");
+  expectUInt(sums.retry.load(), 115u64, "a failed member added again while the others run");
+  expectUInt(sums.retries.load(), 270000u64 + 1000u64, "cost: both priced; one unpriced");
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
+  done()
+}

@@ -9,6 +9,18 @@ mod tour;
 import stdio use *;
 import collections use *;
 import deflate;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN(x: &mut deflate.Inflater, out: &mut List[u8], max: usize) deflate.Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
 
 fn main() i32 {
   let text = "the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog";
@@ -39,7 +51,7 @@ fn main() i32 {
     var st: deflate.Status = deflate.Status.MoreOutput;
     while st == deflate.Status.MoreOutput {
       piece.clear();
-      st = inf.pull(&mut piece, 8usize);
+      st = pullN(&mut inf, &mut piece, 8usize);
       pulls += 1;
       var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
