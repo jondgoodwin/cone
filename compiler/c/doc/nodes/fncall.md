@@ -1103,7 +1103,14 @@ pieces made first, each expression run once, left to right. Anywhere else
 `FlagInterpString`, so that with no `String` in scope the diagnostic says what to
 import (collections) rather than naming an unknown. Nothing is held: there is no
 node for an interpolated string after parsing, so a generic body's include file
-prints the send list and reads back the same pieces. Pinned by
+prints the send list and reads back the same pieces (`meta_text_interp_include`
+compiles a package's include file and has a program expand its generic bodies
+from it). **A shadowing `String` wins where the `$"..."` is written**: the name is
+looked up there, so a `String` the module declares or imports is the one built,
+accepted for now. When that type has no matching init or `<-`, the errors are the
+ordinary ones on a type literal and a missing `<-` at the string, and none says
+the string stands for `String`: this lead is open until an error names it.
+Pinned by
 `module_text_interp` and its `_threads`, `_await`, `_refuse*`, `_unclosed` and
 `_nocollections` scenarios.
 
