@@ -691,6 +691,13 @@ permissions and says the cast needs `trust`, which is not built yet ([cast](../n
 (`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
 made a pointer, are not asked.
 
+An `as` onto a struct, an enum or a `char` from anything that is not a coercion to it
+(a type as itself and a variant as its enum are the coercions) is `ErrorAsTarget` (type check,
+`castRecastTargetCheck` in `cast.c`): these values are more than their bits. The message names the
+fix, `char.from(x)` for a `char`, a pattern for an enum read as a variant, a constructor or a method
+otherwise, and says the cast needs `trust`, which is not built yet. A generic `x as T` is refused at
+the instance where `T` is one of these ([cast](../nodes/cast.md), "`castTypeCheck`").
+
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
 is no variant's). A trait pattern that binds needs a borrowed reference to build a virtual reference

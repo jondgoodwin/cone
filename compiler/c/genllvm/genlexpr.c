@@ -1900,6 +1900,10 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         // the real size. Without it the store/load below allocated the source's
         // bytes and loaded the target's, reading past the allocation whenever
         // the target was larger.
+        // A guard now: castTypeCheck refuses (ErrorAsTarget) every 'as' onto a
+        // struct or enum but a coercion, a variant as its enum, which is always
+        // the same size, so no user path reaches the error below until 'trust'
+        // allows other struct recasts, when this same-size check matters again.
         LLVMTypeRef fromllvm = genlType(gen, ((IExpNode*)exp)->vtype);
         LLVMTypeRef tollvm = genlType(gen, totype);
         unsigned long long fromsize = LLVMABISizeOfType(gen->datalayout, fromllvm);

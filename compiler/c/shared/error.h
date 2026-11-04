@@ -795,7 +795,8 @@ enum ErrorCode {
     ErrorMetaVar = 1585,        // A meta variable misused: '#name' not declared where it stands, a 'let' given a new value, a '#each' variable assigned, an integer expected of something else, a list used as a value or a value as a list, a meta declaration outside a function body. Pointed at the word
     ErrorMetaFields = 1589,   // A '#each #f in #fields(T)' or a description of '#f' misused: the header malformed, the type named not a generic's type parameter, '#f' used bare rather than as '#f.name', '#f.type', '#f.region', '#f.perm', '#f.pub' or the splice 'val.#f', a property that is not one, or '#f.attrs' (field attributes are not built). Pointed at the word
     ErrorMetaFieldsPrivate = 1591, // A '#fields(T)' of a type with a private field the reflecting code cannot see and the type has not opted in with '@reflect': refused, not listed without it. Pointed at the loop, inside the generic's instance
-    ErrorMetaFieldsType = 1590,// A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
+    ErrorAsTarget = 1594,       // 'as' onto a struct, an enum or a char from a type that is not a coercion to it (a variant as its enum is one): reinterpreting a value as such a type could forge a private field, a reference, a variant or a code point, so it needs 'trust', which is not built yet
+    ErrorMetaFieldsType = 1590,//A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings
     WarnCode = 3000,
