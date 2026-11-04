@@ -1,0 +1,164 @@
+// '#if' on what a type parameter is (mod-generativity.html#meta): inside a generic
+// function, or a method of a generic type, or the braces of a generic struct, a
+// condition 'T is Trait' or 'T == Type', joined with '!', '&&' and '||' and with the
+// facts of the build, is decided when the generic is cloned for its arguments. The
+// clone copies only the branch taken. Both branches are name resolved where the
+// generic is written, so a name in either must exist, but only the branch taken is
+// type checked: the integer branch of 'cmp' calls leadingZeros, which a float has
+// none of, and the instance for a float compiles all the same.
+//
+// The printed values were checked by hand against the source:
+//   cmp(1.5, 2.5)    float branch, 1.5 < 2.5: -1
+//   cmp(7, 3)        integer branch, 7 > 3: 2
+//   cmp(3, 3)        integer branch, equal, leadingZeros of 3i32 is 30, not above 100: 0
+//   kind(1.0)        Float: 1               kind(true)   bool: 2
+//   kind(Thing)      neither Integer nor Float: 3
+//   kind(5i32)       Signed, not i64: 4     kind(5i64)   the last '#else': 5
+//   onlyWhere        an integer 10 (on either host: one of the two build branches folds
+//                    away, the other leaves 'T is Integer'), a float 20, a bool 30
+//   nested           a float 100, an integer 200 (the outer branch is the build's)
+//   describe(1.0)    not Move: tag 8, scale 1000: 8000;  describe(1i32): 8;
+//   describe(Owner)  Move: tag 7, scale 1: 7
+//   Tagged           a float instance has 'scale' (so scaled() is 2), an integer one has
+//                    'bits' instead (so bitsOf() is 3)
+//   Box.weigh        a float 1, an integer 2
+//   Box.mix          T float and U integer 1; T float 2; U integer 3; neither 4
+
+mod meta_typefact_fn;
+
+import stdio use *;
+
+struct Thing {
+  n: i32;
+}
+
+struct Owner is Move {
+  n: i32;
+}
+
+fn cmp[T](a: T, b: T) i32 {
+  #if T is Float {
+    if a < b { -1 } else if a > b { 1 } else { 0 }
+  } #else {
+    if a < b { -2 } else if a > b { 2 } else {
+      let z = a.leadingZeros();
+      if z > 100u32 { 99 } else { 0 }
+    }
+  }
+}
+
+// '#elif' and '#else' chains, '!', '&&', '||' and '!='
+fn kind[T](x: T) i64 {
+  #if T is Float {
+    1
+  } #elif T == bool {
+    2
+  } #elif !(T is Integer) && !(T is Float) {
+    3
+  } #elif T is Signed && T != i64 {
+    4
+  } #else {
+    5
+  }
+}
+
+// A fact of the build inside the question about the type (a chain asking about both at
+// once is refused): the fact is known while the file is read, so it folds
+fn onlyWhere[T](x: T) i64 {
+  #if T is Integer {
+    #if #os == .windows || #os == .linux { 10 } #else { 20 }
+  } #elif T is Float {
+    20
+  } #else {
+    30
+  }
+}
+
+// Nested: a question about the type inside a build fact's branch
+fn nested[T](x: T) i64 {
+  #if #os == .windows || #os == .linux {
+    #if T is Float {
+      100
+    } #else {
+      200
+    }
+  } #else {
+    300
+  }
+}
+
+// Statements, with locals of each branch's own, and a value from a '#if' in expression position
+fn describe[T](x: T) i64 {
+  var n = 0i64;
+  #if T is Move {
+    let tag = 7i64;
+    n = n + tag;
+  } #else {
+    let tag = 8i64;
+    n = n + tag;
+  }
+  let scale = #if T is Float { 1000i64 } #else { 1i64 };
+  n * scale
+}
+
+// Fields and methods under a question about the type
+struct Tagged[T] {
+  v: T;
+  #if T is Float {
+    scale: i64;
+    fn scaled(self: &) i64 { scale }
+  } #else {
+    bits: i64;
+    fn bitsOf(self: &) i64 { bits }
+  }
+}
+
+struct Box[T] {
+  v: T;
+  fn weigh(self: &) i64 {
+    #if T is Float { 1 } #else { 2 }
+  }
+  // A generic method of a generic type: the type's parameter is substituted when Box[T]
+  // is cloned and the method's when it is, so the chain is kept whole by the first copy
+  fn mix[U](self: &, u: U) i64 {
+    #if T is Float && U is Integer { 1 } #elif T is Float { 2 } #elif U is Integer { 3 } #else { 4 }
+  }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  show("cmp float lt", i64.from(cmp(1.5, 2.5)));
+  show("cmp int gt", i64.from(cmp(7i32, 3i32)));
+  show("cmp int eq", i64.from(cmp(3i32, 3i32)));
+  show("kind f64", kind(1.0));
+  show("kind bool", kind(true));
+  show("kind Thing", kind(Thing(1i32)));
+  show("kind i32", kind(5i32));
+  show("kind i64", kind(5i64));
+  show("onlyWhere i32", onlyWhere(1i32));
+  show("onlyWhere f64", onlyWhere(1.0));
+  show("onlyWhere bool", onlyWhere(true));
+  show("nested f64", nested(1.0));
+  show("nested i32", nested(1i32));
+  show("describe f64", describe(1.0));
+  show("describe i32", describe(1i32));
+  show("describe Owner", describe(Owner(1i32)));
+  let tf = Tagged[f64](1.0, 2i64);
+  let ti = Tagged[i32](1i32, 3i64);
+  show("tagged f64", tf.scaled());
+  show("tagged i32", ti.bitsOf());
+  let b = Box[f64](2.0);
+  let c = Box[i32](2i32);
+  show("box f64", b.weigh());
+  show("box i32", c.weigh());
+  show("mix f64 i32", b.mix(1i32));
+  show("mix f64 f64", b.mix(1.0));
+  show("mix i32 i32", c.mix(1i32));
+  show("mix i32 f64", c.mix(1.0));
+}

@@ -107,10 +107,10 @@
 			<span class="pre">sep</span> between each two.</li>
 	</ul>
 	<p><b>Adding to the end:</b> <span class="pre">s &lt;- text</span> or <span class="pre">append(text)</span>, and
-		<span class="pre">s &lt;- n</span> for an integer as its digits (<span class="pre">appendInt</span>,
-		<span class="pre">appendUInt</span>), and <span class="pre">s &lt;- x</span> for an <span class="pre">f64</span> or
-		<span class="pre">f32</span> as the shortest text that reads back as the same float
-		(<span class="pre">appendF64</span>, <span class="pre">appendF32</span>; core's
+		<span class="pre">s &lt;- x</span> for any value that can be written as text (<a href="#totext">below</a>): an
+		integer as its digits (<span class="pre">appendInt</span>, <span class="pre">appendUInt</span> by name), an
+		<span class="pre">f64</span> or <span class="pre">f32</span> as the shortest text that reads back as the same float
+		(<span class="pre">appendF64</span>, <span class="pre">appendF32</span> by name; core's
 		<span class="pre">FloatText</span>): <span class="pre">0.1</span>, <span class="pre">1.0</span>,
 		<span class="pre">-0.0</span>, <span class="pre">1e+16</span>, <span class="pre">5e-324</span>,
 		<span class="pre">inf</span>, <span class="pre">nan</span>, fixed notation for a decimal exponent from -4 to 15,
@@ -176,6 +176,46 @@ HELLO!!, WORLD33!
 a-b-c
 17
 </pre>
+
+	<h2 id="totext">Writing a value as text: toText</h2>
+	<p>A value writes its own text into a writer, core's <span class="pre">TextOut</span>, with a method
+		<span class="pre">toText(self: &amp;, out: &amp;uni TextOut)</span>. The numbers, bool, char and text have one;
+		a type of your own writes its by sending to <span class="pre">out</span>, which takes text and anything else with a
+		<span class="pre">toText</span>. Then <span class="pre">&lt;-</span> sends the value to any receiver of text, with
+		no overload written for it: a String, <span class="pre">print</span> and <span class="pre">eprint</span>, a
+		trace message, or another <span class="pre">toText</span>'s <span class="pre">out</span>. A type with no
+		<span class="pre">toText</span> is refused, naming the type and the method. A receiver's own
+		<span class="pre">&lt;-</span> comes first: a List receiving a point still appends the point, and a String
+		receiving a text appends the text.</p>
+<pre>
+struct Point {
+  x: i64;
+  y: i64;
+  pub fn toText(self: &amp;, out: &amp;uni TextOut) {
+    out &lt;- "(", self.x, ", ", self.y, ")";
+  }
+}
+
+var s = String();
+s &lt;- "at ", Point(3, -4), " n=", 42;      // at (3, -4) n=42
+print &lt;- "moved to ", Point(0, 0), "\n";
+</pre>
+	<p><b>A send to the console is one record.</b> <span class="pre">print &lt;- a, b, c</span> writes its pieces into
+		a writer that the statement owns and hands the finished record to the console as one piece when the statement
+		ends, so output from several threads never tears a record in the middle: another thread's record comes before
+		or after, whole. One thread's records appear in the order it sent them. <span class="pre">print</span> and
+		<span class="pre">eprint</span> are two outputs of one console, so what is printed and what is eprinted stay in
+		order. A record can be held across statements, <span class="pre">var rec = print.record()</span>, sent to with
+		<span class="pre">&lt;-</span> like any writer, and is written when its scope ends. Standard output
+		is written at once if it is a terminal, and held in the console's own buffer if it is a file or a pipe, until the
+		buffer fills, standard error writes, <span class="pre">print.flush()</span> is called or the program ends;
+		standard error is written at once. The buffer is the console's, not the C library's, so text that C code in the
+		same program prints with <span class="pre">printf</span> is written by C's library at its own times.
+		<span class="pre">print.flush()</span> also flushes C's own <span class="pre">stdout</span>.</p>
+	<p><b>Floats print as the shortest text that reads back.</b> <span class="pre">print &lt;- 0.1</span> prints
+		<span class="pre">0.1</span>, <span class="pre">print &lt;- 3.0</span> prints <span class="pre">3.0</span> and
+		one third prints <span class="pre">0.3333333333333333</span>; an f32 prints the shortest text that reads back as
+		that f32.</p>
 
 	<h2 id="bytes">Text and bytes</h2>
 	<p>Text is a <span class="pre">&amp;str</span> throughout, and a <span class="pre">&amp;Array[u8]</span> is bytes.

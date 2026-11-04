@@ -174,4 +174,8 @@ void stdNbrInit(int ptrsize);
 // 'hash(self, h &mut Hasher)', once core's Hasher is name resolved
 void nbrAddHashMethods(StructNode *hasher);
 
+// Give every number type, bool and char the method a value writes its text
+// with, 'toText(self, out &uni TextOut)', once core's TextOut is name resolved
+void nbrAddTextMethods(StructNode *textout);
+
 #endif

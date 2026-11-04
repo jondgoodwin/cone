@@ -1,0 +1,96 @@
+// Values that write themselves as text: a type with a
+// 'toText(self: &, out: &uni TextOut)' is sent to a String, to 'print', to
+// 'eprint' (records.err has that text) and to a trace Message with '<-', and
+// the text is exactly what 'toText' wrote. A 'toText' sends other values with
+// the same '<-': text, numbers, a bool, another type's own 'toText'. A list of
+// points is written by a loop, a piece at a time. A send statement to the
+// console is one record, taken away whole when the statement ends; a record
+// held in a variable (print.record()) is taken away when its scope ends,
+// after what was printed while it was held.
+
+mod records;
+
+import stdio use *;
+import collections use *;
+import trace;
+
+struct Point {
+  x: i64;
+  y: i64;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "(", self.x, ", ", self.y, ")";
+  }
+}
+
+// A 'toText' that sends another type's, a float, a bool and a char
+struct Segment {
+  a: Point;
+  b: Point;
+  weight: f64;
+  open: bool;
+  mark: char;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- self.a, " -> ", self.b, " x", self.weight, " ", self.open, " ", self.mark;
+  }
+}
+
+fn main() i32 {
+  let p = Point(3i64, -4i64);
+  let seg = Segment(Point(0i64, 0i64), p, 2.5, true, 'e');
+
+  // To a String: a text, a type's own text, numbers
+  var s = String();
+  s <- "p=", p, " seg=", seg, " n=", 42;
+  print <- s, "\n";
+
+  // To print and to eprint: a statement is one record
+  print <- "direct: ", p, " | ", seg, "\n";
+  eprint <- "error: ", p, "\n";
+  print <- p;
+  print <- "\n";
+
+  // To a trace Message, which cuts what does not fit and takes the rest as it comes
+  var m = trace.Message();
+  m <- "msg ", p, " ", 7u8, " ", true, " ", -1.5;
+  print <- m.text(), "\n";
+
+  // A list of points written by a loop, a piece at a time
+  var points = List[Point]();
+  var i = 0i64;
+  while i < 3i64 {
+    points.push(Point(i, i * i));
+    i = i + 1i64;
+  }
+  var line = String();
+  line <- "[";
+  var k = 0usize;
+  while k < points.len() {
+    if k > 0usize {line <- ", ";}
+    line <- points[k];
+    k = k + 1usize;
+  }
+  line <- "]";
+  print <- line, "\n";
+
+  // A record held across statements, in a loop, taken away once, at its scope's end
+  {
+    var rec = print.record();
+    var j = 0;
+    while j < 3 {
+      rec <- "row ", j, " ", points[usize.from(j)], "\n";
+      j = j + 1;
+    }
+    print <- "while the record is held\n";
+  }
+  print <- "after the record\n";
+
+  // A statement longer than the writer's own buffer spills into more, whole
+  var long = String();
+  var n = 0;
+  while n < 40 {
+    long <- "0123456789";
+    n = n + 1;
+  }
+  print <- "long: ", long, " ", p, "\n";
+  0
+}
