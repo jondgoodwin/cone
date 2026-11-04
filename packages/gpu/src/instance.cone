@@ -463,6 +463,13 @@ pub struct Adapter {
     self.makeDevice(false, &ComputeRequest(), maker, user, true, window, fragmentShadingRate)
   }
 
+  // The same, also asking for ray queries and acceleration structures ('rayTracing', enabled where 'supportsRayTracing' says
+  // the GPU has them; check 'device.rayTracing'), with or without the shading rates. A runtime that refuses the device
+  // answers an invalid one, and the caller may ask again without.
+  pub fn requestDeviceViaRay(self: &, maker: DeviceMaker, user: *u8, window: bool, fragmentShadingRate: bool, rayTracing: bool) Device {
+    self.makeDevice(rayTracing, &ComputeRequest(), maker, user, true, window, fragmentShadingRate)
+  }
+
   // Whether this GPU offers fragment shading rates from an attachment (VK_KHR_fragment_shading_rate with
   // attachmentFragmentShadingRate), and the tile and fragment sizes it has
   pub fn fragmentShadingRateSupport(self: &) FragmentShadingRateSupport {
@@ -558,18 +565,26 @@ pub struct Adapter {
     var f11 = vulkan.PhysicalDeviceVulkan11Features(pNext: &mut f12 as *u8,
       storageBuffer16BitAccess: vkBool(on.storage16Bit), uniformAndStorageBuffer16BitAccess: vkBool(on.storage16Bit));
     // Fragment shading rates from an attachment (VK_KHR_fragment_shading_rate), if asked for and the GPU has them:
-    // the feature structure goes at the head of the chain, and the extension is added to the list below. Never with ray
-    // tracing. Without it nothing here differs from a device made before.
+    // the feature structure goes at the head of the chain, and the extension is added to the list below; it may go with
+    // ray tracing (the rate's structure then leads to the ray structures). Without it nothing here differs from a
+    // device made before.
     let rateSupport = queryFragmentShadingRate(&backend.fns, backend.physical);
-    let useRate = rateWanted && rateSupport.supported && !useRay;
+    let useRate = rateWanted && rateSupport.supported;
     var ratef = vulkan.PhysicalDeviceFragmentShadingRateFeaturesKHR(
-      pNext: if chained { &mut f11 as *u8 } else { null }, attachmentFragmentShadingRate: vulkan.TRUE);
+      pNext: if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null }, attachmentFragmentShadingRate: vulkan.TRUE);
     let f13 = vulkan.PhysicalDeviceVulkan13Features(
-      pNext: if useRay { &mut addressf as *u8 } else if useRate { &mut ratef as *u8 } else if chained { &mut f11 as *u8 } else { null },
+      pNext: if useRate { &mut ratef as *u8 } else if useRay { &mut addressf as *u8 } else if chained { &mut f11 as *u8 } else { null },
       synchronization2: vulkan.TRUE, dynamicRendering: vulkan.TRUE, shaderIntegerDotProduct: vkBool(on.integerDotProduct));
     var exts: Array[*u8, 5] = [&"VK_KHR_swapchain" as *u8, &"VK_KHR_acceleration_structure" as *u8,
       &"VK_KHR_ray_query" as *u8, &"VK_KHR_deferred_host_operations" as *u8, &"VK_KHR_fragment_shading_rate" as *u8];
     var extCount = if useRay { 4u32 } else if swapchain { 1u32 } else { 0u32 };
+    if useRay && !swapchain {
+      // (a runtime's device without a window: no swapchain extension, the three ray ones in its place)
+      exts[0usize] = &"VK_KHR_acceleration_structure" as *u8;
+      exts[1usize] = &"VK_KHR_ray_query" as *u8;
+      exts[2usize] = &"VK_KHR_deferred_host_operations" as *u8;
+      extCount = 3u32;
+    }
     if useRate {
       // (the extension takes the place after the ones in use)
       exts[usize.from(extCount)] = &"VK_KHR_fragment_shading_rate" as *u8;

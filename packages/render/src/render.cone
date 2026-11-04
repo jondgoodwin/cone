@@ -484,6 +484,11 @@ pub struct Renderer {
   // the render in progress draws with (0 raster, 1 ray-traced)
   pub rayTracing: bool = false;
   pub extActive: usize = 0usize;
+  // Sharing the ray-traced structure between renders (a headset's two eyes): 0 each render builds its own; 1 this
+  // render builds it and keeps it; 2 this render uses the one a render with 1 kept, if no other render has built
+  // one since (else it builds its own). Set by the caller before each 'render'.
+  pub rtShare: u32 = 0u32;
+  rtKept: bool = false;
   pub frameItemsLive: bool = false;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
@@ -1719,9 +1724,10 @@ pub struct Renderer {
       e.bake(encoder);
     }
     // The structure rays are cast into, built from the draw list (raytrace.cone)
-    if extActive == 1usize {
+    if extActive == 1usize && !(rtShare == 2u32 && rtKept) {
       var r = &mut rt[0usize];
       r.update(device, encoder, &mut meshes, &materials, &drawList.items, mainItems);
+      rtKept = rtShare == 1u32;
     }
     // With the depth pyramid, the view is drawn in two render passes with the
     // pyramid built between them (hiz.cone); otherwise in one

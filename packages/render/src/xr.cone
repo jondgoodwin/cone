@@ -139,6 +139,10 @@ pub struct HeadsetOptions {
   // offers them. Not offered, or refused by the runtime's device creation, the device is made without, one line
   // says so, and 'Headset.foveated' is false.
   pub foveation: bool = false;
+  // Ask for ray queries and acceleration structures (VK_KHR_ray_query, VK_KHR_acceleration_structure) on the headset's device,
+  // if the GPU has them, alongside foveation's extension. Not offered, or refused by the runtime's device creation, the device
+  // is made without, one line says so, and the HeadsetGpu's 'device.rayTracing' is false.
+  pub rayTracing: bool = false;
 }
 
 // The GPU a headset's runtime chose and the program draws with: made by
@@ -526,11 +530,21 @@ pub struct Headset is Default {
       logLine("render: foveation: the GPU does not offer fragment shading rates from an attachment; no foveation");
       askRate = false;
     }
-    gpu.device = gpu.adapter.requestDeviceViaWith(&makeVkDevice, &maker as *u8, mirroring, askRate);
+    var askRay = options.rayTracing;
+    if askRay && !gpu.adapter.supportsRayTracing() {
+      logLine("render: ray queries: the GPU does not offer them; no ray tracing on the headset's device");
+      askRay = false;
+    }
+    gpu.device = gpu.adapter.requestDeviceViaRay(&makeVkDevice, &maker as *u8, mirroring, askRate, askRay);
+    if !gpu.device.isValid() && askRay {
+      logLine("render: ray queries: the device could not be made with them; made without, no ray tracing");
+      askRay = false;
+      gpu.device = gpu.adapter.requestDeviceViaRay(&makeVkDevice, &maker as *u8, mirroring, askRate, false);
+    }
     if !gpu.device.isValid() && askRate {
       logLine("render: foveation: the device could not be made with VK_KHR_fragment_shading_rate; made without it, no foveation");
       askRate = false;
-      gpu.device = gpu.adapter.requestDeviceViaWith(&makeVkDevice, &maker as *u8, mirroring, false);
+      gpu.device = gpu.adapter.requestDeviceViaRay(&makeVkDevice, &maker as *u8, mirroring, false, false);
     }
     if !gpu.device.isValid() { return; }
     foveated = gpu.device.fragmentShadingRate;
