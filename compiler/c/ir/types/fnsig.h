@@ -101,6 +101,8 @@ int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);
 // never converted: a Cone function and a C-named one are called differently.
 // Also when they differ in a parameter or result held by value that is not one
 // layout (a variant for its enum): '*code' is the error code to report it under.
+// Also when a method written over the whole enum keeps a variant from being viewed
+// as a trait (fnSigVrefWholeEnumRefusal).
 char *fnSigConvRefusal(INode *from, INode *to, int *code);
 
 // Return TypeCompare indicating whether from type matches the function signature
@@ -142,8 +144,9 @@ char *fnSigVrefFieldRefusal(StructNode *trait, StructNode *impl);
 // the error code to report it under.
 char *fnSigCallRefusal(INode *from, INode *to, int *code);
 
-// Report at 'node' the refusal fnSigCallRefusal gave, under its code. One that is
-// the caller's to fix (ErrorWholeEnumMeth) goes to where the outermost instantiation began.
+// Report at 'node' the refusal fnSigConvRefusal or fnSigCallRefusal gave, under its code.
+// One that is the caller's to fix (ErrorWholeEnumMeth) goes to where the outermost
+// instantiation began.
 void fnSigRefusalMsg(INode *node, int code, char *why);
 
 // Can a call passing 'self' (NULL if none) and 'args' call this signature?

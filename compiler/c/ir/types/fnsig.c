@@ -587,11 +587,31 @@ static char *fnSigByValueRefusal(FnSigNode *tosig, FnSigNode *fromsig, int calla
     return msg;
 }
 
+// Why a reference 'from' is refused where the virtual reference 'to' is wanted, when
+// the enum it refers to writes a method the trait requires over the whole enum
+// (fnSigVrefWholeEnumRefusal); NULL when it is not that
+static char *fnSigConvWholeEnumRefusal(INode *from, INode *to) {
+    INode *fromdcl = itypeGetTypeDcl(from);
+    if (fromdcl->tag != RefTag)
+        return NULL;
+    INode *todcl = itypeGetTypeDcl(to);
+    if (todcl->tag != VirtRefTag)
+        return NULL;
+    return fnSigVrefWholeEnumRefusal((StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp),
+        (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp));
+}
+
 // Why a value of type 'from' is refused where the type 'to' is wanted, when the
 // two are function references that differ only in the calling convention they
 // are marked for, or in a parameter or result held by value that is not one
-// layout (fnSigByValueRefusal); NULL when it is not that
+// layout (fnSigByValueRefusal), or when a whole-enum method keeps a variant from
+// being viewed as a trait; NULL when it is not that
 char *fnSigConvRefusal(INode *from, INode *to, int *code) {
+    char *enumwhy = fnSigConvWholeEnumRefusal(from, to);
+    if (enumwhy) {
+        *code = ErrorWholeEnumMeth;
+        return enumwhy;
+    }
     FnSigNode *fromsig = fnSigRefTarget(from);
     if (fromsig == NULL)
         return NULL;
@@ -1056,9 +1076,10 @@ char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl) {
     return NULL;
 }
 
-// Report at 'node' the refusal fnSigCallRefusal gave. A whole-enum method refused inside
-// a generic's instance (AnyError.from, '?') is the caller's to fix, not the library
-// body's: it is reported at the user's own line, where the outermost instantiation began
+// Report at 'node' the refusal fnSigConvRefusal or fnSigCallRefusal gave. A whole-enum
+// method refused inside a generic's instance (AnyError.from, '?') is the caller's to fix,
+// not the library body's: it is reported at the user's own line, where the outermost
+// instantiation began
 void fnSigRefusalMsg(INode *node, int code, char *why) {
     if (code == ErrorWholeEnumMeth)
         while (node->instnode)
@@ -1106,11 +1127,6 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
             selfwhy = fnSigVrefFieldRefusal(trait, (StructNode*)target);
             if (selfwhy)
                 *code = ErrorVtableField;
-        }
-        if (selfwhy == NULL && target->tag == StructTag) {
-            selfwhy = fnSigVrefWholeEnumRefusal(trait, (StructNode*)target);
-            if (selfwhy)
-                *code = ErrorWholeEnumMeth;
         }
         if (selfwhy == NULL && target->tag == StructTag) {
             selfwhy = fnSigVrefLayoutRefusal(trait, (StructNode*)target);
