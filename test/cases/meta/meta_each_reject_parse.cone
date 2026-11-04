@@ -1,0 +1,71 @@
+// What '#each' refuses while the file is read: a header that is no header, a list that is not a
+// list, a '#each' where this step does not build it (a module's level, a type's braces, an
+// 'extern' block, inside an expression), and the meta variables misused.
+
+mod meta_each_reject_parse;
+
+// ---- where a '#each' is not built
+#each #x in [1, 2] {                             //~ ErrorMetaEachPlace:1 "repeats the statements of a function's body"
+  fn atModule() i32 { 1 }
+}
+
+struct Holder {
+  n: i32;
+  #each #f in [1, 2] {                           //~ ErrorMetaEachPlace:3 "repeats the statements of a function's body"
+    m: i32;
+  }
+}
+
+extern {
+  #each #x in [1, 2] {                           //~ ErrorMetaEachPlace:3 "generating declarations waits for generated names"
+    fn externFn() i32;
+  }
+}
+
+fn inExpr() i32 {
+  let v = #each #x in [1, 2] { 1 };              //~ ErrorMetaEachPlace:11 "inside an expression"
+  0
+}
+
+// ---- the header
+fn headers() {
+  #each in [1, 2] {                              //~ ErrorMetaEach:9 "binds the item of each pass to a '#' name"
+    0;
+  }
+  #each #x [1, 2] {                              //~ ErrorMetaEach:12 "names its list after 'in'"
+    0;
+  }
+  #each #x in 5 {                                //~ ErrorMetaEach:15 "goes through a list"
+    0;
+  }
+  #each #x in [1, 2] 0;                          //~ ErrorMetaEach:22 "repeats a block, which follows its list"
+  #each #x in [1, 2 {                            //~ ErrorMetaEach:21 "closed by a ']'"
+    0;
+  }
+}
+
+// ---- the meta variables
+fn variables() {
+  let #n = 3;
+  #n = 4;                                        //~ ErrorMetaVar:3 "cannot be given a new value"
+  #each #x in [1, 2] {
+    #x = 5;                                      //~ ErrorMetaVar:5 "a '#each' variable is the item of its pass"
+  }
+  let #xs = [1, 2];
+  let a = #xs;                                   //~ ErrorMetaVar:11 "holds a list"
+  var #i = 0;
+  #i += "text";                                  //~ ErrorMetaVar:9 "built from integer literals"
+  let #t = (i32, i64);
+  #i = #t;                                       //~ ErrorMetaVar:8 "holds something else"
+  #i /= 0;                                       //~ ErrorMetaVar:10 "divided by zero"
+  let #bad = ;                                   //~ ErrorMetaVar:14 "built from integer literals"
+  let #z;                                        //~ ErrorMetaVar:9 "given its value where it is declared"
+}
+
+// ---- a '#if' asks about the build and about a generic's type parameter, not a meta variable
+fn conditions() {
+  #each #T in (i32, f64) {
+    #if #T is Float {                            //~ ErrorMetaFact:9 "cannot ask about a meta variable"
+    }
+  }
+}
