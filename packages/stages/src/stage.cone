@@ -100,6 +100,13 @@ pub enum Ending {
 
 // A stage that takes chunks: the chunk is moved in, the end follows the last
 // chunk, and 'attach' comes before the first.
+//
+// WHO HOLDS WHOM. A sink may keep the 'up' it was attached with: that costs
+// nothing, because whoever sends a sink its 'end' lets go of the sink in the
+// same step (a stage sets its 'down' to None, a forwarder its target), so the
+// source no longer holds the sink and the pair is not a reference cycle. A
+// sender therefore sends nothing after 'end' and keeps no handle to the sink
+// past it. A sink that keeps 'up' need not drop it on 'end'.
 pub actor trait ChunkSink {
   // A chunk of the stream. Give it back to the source when its bytes are used.
   pub async fn accept overload `<-`(self, c: IoBuf);
@@ -162,7 +169,7 @@ fn handBack(up: &Option[ChunkSource], b: IoBuf) {
 pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   t: T;
   link: Link;                 // the output's window, and its buffers from a pool
-  down: ChunkSink;
+  down: Option[ChunkSink];    // the consumer; let go when our 'end' is sent
   up: Option[ChunkSource];
   cur: Option[IoBuf];         // the input chunk being worked on; held until its output is all out
   backlog: Deque[IoBuf];      // chunks that arrived while 'cur' was held (at most the upstream's window)
@@ -173,7 +180,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   ended: bool;                // our 'end' has been sent downstream
 
   pub fn own overload init(self: &new, down: ChunkSink, t: T) {
-    *self = Self(t: t, link: Link.own(linkWindow), down: down, up: None[ChunkSource],
+    *self = Self(t: t, link: Link.own(linkWindow), down: Some[ChunkSink](down), up: None[ChunkSource],
       cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
       upEnded: false, ended: false);
     down.attach(selfactor);
@@ -181,7 +188,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
 
   // The same, its output buffers from a shared 'pool' and its window 'window' bytes
   pub fn shared overload init(self: &new, down: ChunkSink, t: T, pool: Pool, window: usize) {
-    *self = Self(t: t, link: Link.make(window, pool), down: down, up: None[ChunkSource],
+    *self = Self(t: t, link: Link.make(window, pool), down: Some[ChunkSink](down), up: None[ChunkSource],
       cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
       upEnded: false, ended: false);
     down.attach(selfactor);
@@ -276,7 +283,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
         case let Some(b) {
           var out = b;
           let st = t.pull(&mut out);
-          if out.isEmpty() { link.give(out); } else { down <- out; }
+          if out.isEmpty() { link.give(out); } else { self.send(out); }
           if st == Status.Done {
             self.finish(Ending.Finished);
             go = false;
@@ -324,7 +331,20 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   fn finish(self: &mut, how: Ending) {
     if ended { return; }
     ended = true;
-    down.end(how);
+    // the end is the last thing sent down, so the handle goes with it (the ChunkSink contract)
+    var d = None[ChunkSink];
+    d <-> down;
+    match d {
+      case let Some(k) { k.end(how); }
+      case is None {}
+    }
+  }
+
+  fn send(self: &mut, c: IoBuf) {
+    match &down {
+      case let &Some(k) { k.accept(c); }
+      case is None { link.give(c); }   // 'c' is this stage's own output buffer, never upstream's
+    }
   }
 
   fn failed(self: &) Ending {
@@ -368,7 +388,7 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
 //   HashStage[cryptohash.Sha256](down, cryptohash.Sha256.make(), to)   // to: DigestSink[Array[u8, 32]]
 pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   d: D;
-  down: ChunkSink;
+  down: Option[ChunkSink];    // let go when the end is sent (the ChunkSink contract)
   up: Option[ChunkSource];
   out: usize;                 // chunks passed on and not yet back
   upEnded: bool;
@@ -376,7 +396,7 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   stopped: bool;              // the stream's cancel group was cancelled: the answer and the end have gone
 
   pub fn init(self: &new, down: ChunkSink, d: D, to: DigestSink[D.Out]) {
-    *self = Self(d: d, down: down, up: None[ChunkSource], out: 0usize, upEnded: false, to: to, stopped: false);
+    *self = Self(d: d, down: Some[ChunkSink](down), up: None[ChunkSource], out: 0usize, upEnded: false, to: to, stopped: false);
     down.attach(selfactor);
   }
 
@@ -391,8 +411,18 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
     if stopped || upEnded || !actors.isCancelled() { return; }
     stopped = true;
     to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
-    down.end(Ending.Failed(AnyError.msg("streams: cancelled")));
+    self.endDown(Ending.Failed(AnyError.msg("streams: cancelled")));
     up = None[ChunkSource];
+  }
+
+  // The one end downstream; the handle goes with it
+  fn endDown(self: &mut, how: Ending) {
+    var k = None[ChunkSink];
+    k <-> down;
+    match k {
+      case let Some(s) { s.end(how); }
+      case is None {}
+    }
   }
 
   pub async fn accept(self, c: IoBuf) {
@@ -404,7 +434,10 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
     }
     d.feed(c.view());
     out = out + 1usize;
-    down <- c;
+    match &down {
+      case let &Some(k) { k.accept(c); }
+      case is None { handBack(&up, c); }
+    }
   }
 
   pub async fn giveBack(self, b: IoBuf) {
@@ -437,7 +470,7 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
         to.digest(Err[D.Out, AnyError](AnyError.msg(text.view())));
       }
     }
-    down.end(how);
+    self.endDown(how);
     self.settle();
   }
 
