@@ -199,6 +199,36 @@ fn floats() {
   z.push(f32FromBits(0u32));
   z.sort();
   expect(bitsOf(z[0usize]) == 2147483648u32 && bitsOf(z[1usize]) == 0u32 && bitsOf(z[2usize]) == 0u32, "-0.0 sorts before 0.0");
+
+  // Specials: both zeros and NaNs of both signs and several payloads, 8 copies each in a
+  // scrambled order (72 values, so past insertion), sorted by sort() and by the stable path:
+  // every position must hold the same bits
+  let specials = [0u32, 2147483648u32, 2143289344u32, 4290772992u32, 2143289345u32, 4290772993u32, 2143289346u32, 2139095040u32, 4286578688u32];
+  var s1 = List[f32]();
+  var s2 = List[f32]();
+  var k = 0usize;
+  while k < 72usize {
+    let v = f32FromBits(specials[(k * 5usize) % 9usize]);
+    s1.push(v);
+    s2.push(v);
+    k = k + 1usize;
+  }
+  s1.sort();
+  s2.sortBy(&byNatural[f32]);
+  var same = true;
+  k = 0usize;
+  while k < 72usize { if bitsOf(s1[k]) != bitsOf(s2[k]) { same = false; } k = k + 1usize; }
+  expect(same, "zeros and NaNs of both signs and several payloads: sort() has the stable path's bits");
+  expect(bitsOf(s1[0usize]) == 4290772993u32 || bitsOf(s1[0usize]) != bitsOf(s1[71usize]), "and they are not all one value");
+
+  var c = Counting(MemRegion(&countAlloc, &countResize, &countRelease, &countSize), 0usize, 0usize, 0isize);
+  {
+    var l = List[f32](1000usize, regionOf(&mut c));
+    var j = 0usize;
+    while j < 1000usize { l.push(f32FromBits(specials[(j * 7usize) % 9usize])); j = j + 1usize; }
+    l.sort();
+    expect(c.allocs == 1usize && c.releases == 0usize && c.live == 4000isize, "1,000 f32 sort() asks its region for no buffer");
+  }
 }
 
 fn main() i32 {
