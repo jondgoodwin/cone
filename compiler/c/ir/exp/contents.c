@@ -1382,7 +1382,7 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
 // The call is rewritten in place, its receiver and piece already checked.
 // Answers 1 when it rewrote the call (or reported that the piece has no toText),
 // 0 when the receiver is not text's
-int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *recv, int debug) {
     if (callnode->args == NULL || callnode->args->used != 1 || !isExpNode(recv))
         return 0;
     INode *rtype = iexpGetTypeDcl(recv);
@@ -1398,7 +1398,7 @@ int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) 
     INode *pbase = ptype;
     while (pbase->tag == RefTag && itypeGetTypeDcl(((RefNode*)pbase)->region) == borrowRef)
         pbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
-    if (!isNbr(pbase) && pbase != (INode*)boolType && pbase != (INode*)charType
+    if (!debug && !isNbr(pbase) && pbase != (INode*)boolType && pbase != (INode*)charType
         && !(isMethodType(pbase) && iNsTypeFindFnField((INsTypeNode*)pbase, textName("toText")) != NULL)) {
         errorMsgNode(piece, ErrorNoText,
             "%s cannot be written as text: it has no `toText(self: &, out: &uni TextOut)`. Give it one that writes its text with `out <- ...`.",
@@ -1425,21 +1425,54 @@ int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) 
         // the statement, borrowed '&uni' for the piece's write
         const char *method = kind == TextRecord ? "record" : "textOut";
         writer = (INode*)textAsk((INode*)callnode, recv, method);
-        inodeTypeCheckAny(pstate, &writer);
-        if (!isExpNode(writer) || iexpGetTypeDcl(writer) == errorType) {
+        // (A debug piece is checked once, with the generated call: debugfn.c)
+        if (debug != 2)
+            inodeTypeCheckAny(pstate, &writer);
+        if (debug != 2 && (!isExpNode(writer) || iexpGetTypeDcl(writer) == errorType)) {
             callnode->vtype = errorType;
             return 1;
         }
         borrowTempRef(&writer, textOutOf(base, method), newPermUseNode(uniPerm), borrowTempScope(pstate));
     }
-    NameUseNode *meth = newMemberUseNode(textName("toText"));
+    NameUseNode *meth = newMemberUseNode(textName(debug ? "toDebug" : "toText"));
     inodeLexCopy((INode*)meth, (INode*)callnode);
     callnode->objfn = piece;
     callnode->methfld = (INode*)meth;
     callnode->args = newNodes(1);
     nodesAdd(&callnode->args, writer);
     callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    if (debug)
+        callnode->flags &= ~FlagOperator;
     return 1;
+}
+
+int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+    return textSendPiece(pstate, callnode, recv, 0);
+}
+
+// Does this text receiver's type declare core's DebugText?
+static int textTakesDebug(INode *base) {
+    if (base == NULL || base->tag != StructTag || ((StructNode*)base)->traits == NULL)
+        return 0;
+    INode **traitp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)base)->traits, cnt, traitp))
+        if (coreIsDebugText(itypeGetTypeDcl(*traitp)))
+            return 1;
+    return 0;
+}
+
+int textSendDebug(TypeCheckState *pstate, FnCallNode *callnode, INode *recv) {
+    if (callnode->args == NULL || callnode->args->used != 1 || !isExpNode(recv))
+        return 0;
+    INode *base = textReceiverBase(iexpGetTypeDcl(recv));
+    if (base == NULL || textKindOf(base) == TextNone || !textTakesDebug(base))
+        return 0;
+    INode *piece = nodesGet(callnode->args, 0);
+    if (!isExpNode(piece) || litIsLiteral(piece))
+        return 0;
+    int generated = debugWillGenerate(piece);
+    return textSendPiece(pstate, callnode, recv, generated ? 2 : 1) ? (generated ? 2 : 1) : 0;
 }
 
 // Is this type, a method's declared 'self', a text receiver or a borrow of one

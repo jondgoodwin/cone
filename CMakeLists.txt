@@ -101,6 +101,7 @@ add_executable(conec
 	compiler/c/ir/exp/borrow.c
 	compiler/c/ir/exp/cast.c
 	compiler/c/ir/exp/contents.c
+	compiler/c/ir/exp/debugfn.c
 	compiler/c/ir/exp/deref.c
 	compiler/c/ir/exp/destruct.c
 	compiler/c/ir/exp/each.c

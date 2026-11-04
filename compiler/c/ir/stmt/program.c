@@ -529,6 +529,7 @@ static void pgmCInitCheck(ProgramNode *pgm, ModuleNode *mod) {
 void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
+    debugSetProgram((INode*)pgm);
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
     }
