@@ -1318,6 +1318,21 @@ included, so a name in any branch must exist; it is never type checked.
   block's. Not built: a module's level (a generic module's declarations), an `extern` block, an enum
   or a trait, and a condition over a region parameter (a region is no generic parameter yet).
 
+### A `#each #f in #fields(T)` in a struct's braces
+
+The template holds each member of the loop once (`FieldDclNode.gen`, `FnDclNode.gen`), under the spelling of
+its name (`#f`, `#name("get_", #f)`), name resolved once like every member (the loop's `T` at the first member:
+`fieldEachSubjectNameRes`). `cloneStructNode` makes the instance's: the fields of a loop pass by pass
+(`structCloneGenFields`), the methods as shells after the written ones and filled afterwards with the pass's
+hooks set. The pass's hooks are the ones a `#each` in a body uses (`fieldEachPassBegin`): `#f.type` and the
+other properties are pseudo generic parameters whose `Name.node` is the field's answer while the member is
+cloned, and `x.#f` is a member name `#f` that `cloneNameUseNode` turns into the field's. A generated member's name
+is the field's with the loop's fixed word (`genNameFor`); a name already in the instance is
+`ErrorMetaGenClash` (`structGenClash`). A generated member's `gen` is cleared in the instance, so the instance is
+an ordinary struct. Not built: a generated member in a plain (non-generic) struct, an enum or a trait, a static,
+macro or alias, a `#if` on a type inside the loop, and a loop inside a loop. An error in a generated member's
+body does not name its pass (a body's loops do, via `EachPass`).
+
 ## Flow
 
 **Templates are never flowed** — the only `blockFlow` entry point is the tail of

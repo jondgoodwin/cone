@@ -2930,7 +2930,15 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // bound, it would also clash with the built-in permission. 'await' is a keyword,
     // but nothing that begins an expression can follow 'fn', so it may name the
     // convention method a type is awaited by (ir/exp/await.c)
-    if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)
+    // In a '#each #f in #fields(T)' in a generic type's braces, a method is named '#f' or
+    // '#name("get", #f)': the template holds it under that spelling, and each instance under the
+    // name made for each field of T
+    if (parseMetaIsGenName()) {
+        fnnode->namesym = parseMetaGenName(parse, &fnnode->gen);
+        if (fnnode->namesym == NULL)
+            fnnode->gen = NULL;
+    }
+    else if (lexIsToken(IdentToken) || lexIsToken(PermToken) || lexIsToken(LetToken) || lexIsToken(VarToken)
         || lexIsToken(AwaitToken)) {
         if (lexIsToken(PermToken))
             errorMsgLex(ErrorNoName, "'%s' is a permission, so it cannot name a function. Rename it.",

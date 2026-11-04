@@ -668,7 +668,7 @@ void parseMetaStray(ParseState *parse) {
     // A '#each' where a function's statements are not: at a module's level, in a type's braces, in an
     // 'extern' block, or inside an expression
     if (lexIsToken(HashEachToken)) {
-        errorMsgLex(ErrorMetaEachPlace, "A '#each' repeats the statements of a function's body. It is not built at a module's level, in a type's braces, in an 'extern' block or inside an expression: generating declarations waits for generated names.");
+        errorMsgLex(ErrorMetaEachPlace, "A '#each' repeats the statements of a function's body. It is not built at a module's level, in a type's braces (other than a generic struct's, where only '#each #f in #fields(T) { ... }' makes members), in an 'extern' block or inside an expression: generating declarations waits for generated names.");
         metaEachSkip();
         return;
     }
@@ -1466,10 +1466,103 @@ static void metaEachDump(INode *loop, Name *var, MetaItems *list, Nodes *passes,
     irIsNL = svnl;
 }
 
+// ---- Members generated in a generic struct's braces
+
+// A member read inside '#each #f in #fields(T) { ... }' in a generic struct's braces belongs to the
+// loop: its name must have been made of '#f', and it is one of the loop's, made once per field of T
+static void metaGenMark(INode *member, FieldEach *fe) {
+    GenName *gen = NULL;
+    if (member->tag == FieldDclTag)
+        gen = ((FieldDclNode*)member)->gen;
+    else if (member->tag == FnDclTag)
+        gen = ((FnDclNode*)member)->gen;
+    else {
+        errorMsgNode(member, ErrorMetaGenName,
+            "A '#each #f in #fields(T)' in a type's braces generates fields and methods; a static, a macro or an alias in it is not built.");
+        return;
+    }
+    if (gen == NULL || gen->fe != fe) {
+        errorMsgNode(member, ErrorMetaGenName,
+            "A member in a '#each %s in #fields(T)' is made once for each field, so its name is made of %s: '%s' or '#name(\"get\", %s)'.",
+            &fe->var->namestr, &fe->var->namestr, &fe->var->namestr, &fe->var->namestr);
+    }
+}
+
+// Does a member name begin here: '#f' of a loop, or '#name(...)'
+int parseMetaIsGenName(void) {
+    return lexIsToken(HashNameToken) || (lexIsToken(MetaVarToken) && parseMetaIsFieldVar(lex->val.ident));
+}
+
+// A generated member's name: '#f' (the described field's own name), '#name("get", #f)' or
+// '#name(#f, "Count")' (that name with a fixed word before or after it; nothing else is computed).
+// The name the template holds it under is its spelling. NULL where it is malformed
+Name *parseMetaGenName(ParseState *parse, GenName **out) {
+    *out = NULL;
+    GenName *gen = (GenName*)memAllocBlk(sizeof(GenName));
+    memset(gen, 0, sizeof(GenName));
+    char buf[400];
+    if (lexIsToken(MetaVarToken)) {
+        gen->fe = metaFind(lex->val.ident)->fe;
+        snprintf(buf, sizeof(buf), "%s", &lex->val.ident->namestr);
+        lexNextToken();
+    }
+    else {
+        lexNextToken();
+        if (!lexIsToken(LParenToken)) {
+            errorMsgLex(ErrorMetaGenName, "'#name' takes a fixed word and the loop's variable: '#name(\"get\", #f)'.");
+            return NULL;
+        }
+        lexNextToken();
+        char *word = NULL;
+        int wordfirst = 0;
+        for (int k = 0; k < 2; ++k) {
+            if (lexIsToken(StringLitToken) && word == NULL) {
+                word = (char*)memAllocBlk(lex->strlen + 1);
+                memcpy(word, lex->val.strlit, lex->strlen);
+                word[lex->strlen] = 0;
+                wordfirst = k == 0;
+                lexNextToken();
+            }
+            else if (lexIsToken(MetaVarToken) && parseMetaIsFieldVar(lex->val.ident) && gen->fe == NULL) {
+                gen->fe = metaFind(lex->val.ident)->fe;
+                lexNextToken();
+            }
+            else {
+                errorMsgLex(ErrorMetaGenName, "'#name' takes one string literal and the loop's variable, in either order: '#name(\"get\", #f)'.");
+                return NULL;
+            }
+            if (k == 0) {
+                if (!lexIsToken(CommaToken)) {
+                    errorMsgLex(ErrorMetaGenName, "'#name' takes a fixed word and the loop's variable, separated by a comma: '#name(\"get\", #f)'.");
+                    return NULL;
+                }
+                lexNextToken();
+            }
+        }
+        if (!lexIsToken(RParenToken)) {
+            errorMsgLex(ErrorMetaGenName, "'#name' ends after its two parts: '#name(\"get\", #f)'.");
+            return NULL;
+        }
+        lexNextToken();
+        if (wordfirst)
+            gen->prefix = word;
+        else
+            gen->suffix = word;
+        const char *var = &gen->fe->var->namestr;
+        if (wordfirst)
+            snprintf(buf, sizeof(buf), "#name(\"%s\", %s)", word, var);
+        else
+            snprintf(buf, sizeof(buf), "#name(%s, \"%s\")", var, word);
+    }
+    *out = gen;
+    return nametblFind(buf, strlen(buf));
+}
+
 // '#fields(T) { body }' after '#each #f in', the lexer on the '#fields': the body is read once, with
 // '#f' standing for a field of T, as a block (the loop) that holds it; cloning that for an instance of
 // T makes the passes (fields.h). T is a type parameter of the function or type this is written in
-static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name *var) {
+static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name *var,
+        StructNode *strnode, MetaMembersFn items, void *ctx) {
     lexNextToken();
     if (!lexIsToken(LParenToken)) {
         errorMsgLex(ErrorMetaFields, "'#fields' names the type whose fields it describes: '#each #f in #fields(T) { ... }'.");
@@ -1504,6 +1597,19 @@ static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name
     bind.kind = MetaBindField;
     bind.fe = fe;
     metaBindPush(&bind);
+    if (strnode) {
+        // The braces of a generic struct: the members read here are the loop's body, each carrying the
+        // loop, and the instance makes one of each per field of T (cloneStructNode)
+        uint32_t f0 = strnode->fields.used, n0 = strnode->nodelist.used;
+        parseBlockStart();
+        items(parse, ctx);
+        metaEnvUsed = scope;
+        for (uint32_t i = f0; i < strnode->fields.used; ++i)
+            metaGenMark(strnode->fields.nodes[i], fe);
+        for (uint32_t i = n0; i < strnode->nodelist.used; ++i)
+            metaGenMark(strnode->nodelist.nodes[i], fe);
+        return;
+    }
     INode *body = parseExprBlock(parse, 0);
     metaEnvUsed = scope;
     if (body == NULL || body->tag != BlockTag)
@@ -1535,7 +1641,7 @@ void parseHashEach(ParseState *parse, BlockNode *blk) {
     }
     lexNextToken();
     if (lexIsToken(HashFieldsToken)) {
-        parseHashFields(parse, blk, loop, var);
+        parseHashFields(parse, blk, loop, var, NULL, NULL, NULL);
         return;
     }
     if (!lexIsToken(LBracketToken) && !lexIsToken(LParenToken) && !lexIsToken(MetaVarToken)) {
@@ -1619,5 +1725,33 @@ void parseHashEach(ParseState *parse, BlockNode *blk) {
         metaEachSkip();
     if (metaOpt && metaOpt->print_meta && outermost && parse->mod != metaScratchMod && passes->used)
         metaEachDump(loop, var, list, passes, eps);
+}
+
+// '#each #f in #fields(T) { members }' in a generic struct's braces, the lexer on the '#each'. The
+// members are read once, by 'items' (which reads through the '}'), and join the struct as its own,
+// each marked with the loop; the instance makes one of each per field of T
+void parseHashEachMembers(ParseState *parse, StructNode *strnode, MetaMembersFn items, void *ctx) {
+    INode *loop = (INode*)newNilLitNode();
+    lexMetaDecl = 1;
+    lexNextToken();
+    if (!lexIsToken(MetaVarToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' binds the item of each pass to a '#' name of its own: '#each #f in #fields(T) { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    Name *var = lex->val.ident;
+    lexNextToken();
+    if (!lexIsToken(InToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' names its list after 'in': '#each #f in #fields(T) { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    lexNextToken();
+    if (!lexIsToken(HashFieldsToken)) {
+        errorMsgLex(ErrorMetaEachPlace, "In a type's braces a '#each' goes through the fields of a type parameter: '#each #f in #fields(T) { ... }'.");
+        metaEachSkip();
+        return;
+    }
+    parseHashFields(parse, NULL, loop, var, strnode, items, ctx);
 }
 
