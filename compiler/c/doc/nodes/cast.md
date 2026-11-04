@@ -188,9 +188,11 @@ Check both children, set `vtype` from `typ`, then split on `FlagConvert`.
 to a struct, which this size test skips, because `castBitsize` knows nothing of
 field layout, padding or alignment. A struct, an enum (a struct carrying
 `EnumType`) or `char` target is first held to `castRecastTargetCheck`: the
-source must be a coercion to it, `itypeMatches(typ, source, Coercion)` answering
-`EqMatch` or `CastSubtype`, which is a type as itself or a variant as its enum.
-Anything else is `ErrorAsTarget` (1594), whose message names the fix (`char.from`
+source must be a recast, as coercion defines it: `itypeMatches(typ, source, Coercion)`
+answering `EqMatch` or `CastSubtype`, which today is a type as itself or a variant
+as its enum. The relation is the definition, not a list of those two, so the two
+cannot drift apart; a converting coercion is out, and whatever passes could be
+written by assignment with no `as`. Anything else is `ErrorAsTarget` (1594), whose message names the fix (`char.from`
 for a `char`, a pattern for an enum read as a variant, a constructor or method
 otherwise) and says `trust` is not built. A generic `x as T` is checked in the
 instance, where `T` is known. So the size check in generation (`genlRecast`,
