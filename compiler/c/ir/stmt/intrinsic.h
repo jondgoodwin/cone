@@ -236,6 +236,9 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl);
 // whose value is an IntrinsicNode of a kind declared in Cone
 int intrinsicIsDeclared(FnDclNode *fndcl);
 
+// The registry's name for a function that is an intrinsic marked 'trust', else NULL (--report-trust)
+char *intrinsicTrustName(FnDclNode *fndcl);
+
 // Whether a type is '*TypeRecord', a pointer to core's type record: the struct
 // named TypeRecord that the core package declares, whose constants the
 // compiler builds (genlTypeRecord). A template may still hold the '*' as a

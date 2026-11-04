@@ -14,6 +14,23 @@ typedef struct Name Name;    // ../ast/nametbl.h
 #include "../coneopts.h"
 #include <stdint.h>
 
+// The parts of an interpolated string, $"moved {n} files": a text part, or the
+// source of a brace's expression (exprp up to exprend, the closing brace), read by
+// the parser with a lexer of its own set at exprp (linenbr and linep say where)
+typedef struct InterpPart {
+    char *text;        // A text part's characters, null-terminated; NULL for an expression
+    uint32_t len;      // A text part's length
+    char *exprp;       // An expression part's first character, after the open brace
+    char *exprend;     // The close brace that ends it
+    char *linep;       // Start of the line exprp is on
+    uint32_t linenbr;  // That line's number
+} InterpPart;
+
+typedef struct InterpLit {
+    uint32_t nparts;
+    InterpPart parts[1];
+} InterpLit;
+
 // Lexer state (one per source file)
 typedef struct Lexer {
     // Value info about a discovered token
@@ -21,6 +38,7 @@ typedef struct Lexer {
         double floatlit;
         uint64_t uintlit;
         char *strlit;
+        InterpLit *interp;  // InterpToken
         Name *ident;
     } val;
     uint32_t strlen;   // Size of string literal
@@ -78,6 +96,7 @@ enum TokenTypes {
     IntLitToken,    // Integer literal
     FloatLitToken,  // Float literal
     StringLitToken, // String literal
+    InterpToken,    // Interpolated string literal, $"...{expr}..."
     IdentToken,     // Identifier
     LifetimeToken,  // Lifetime variable ('a)
     PermToken,      // Permission identifier
@@ -217,6 +236,8 @@ enum TokenTypes {
     HashDebugToken, // '#debug': whether this is a debug build, a fact
     HashDefinedToken, // '#defined("NAME")': whether a '-D' named it, a fact
     HashDefineToken, // '#define("NAME")': the integer a '-D' gave it, 0 where none did, a fact
+    HashEachToken, // '#each': repeats a block once per item of a constant list
+    MetaVarToken,  // '#name' where the meta layer has declared it ('#each #x in ..', 'let #n', 'var #i'): the token's ident is the name with its '#'
 
     // Words held for language features that are documented but not implemented.
     // The lexer never returns this token: it diagnoses the use and hands back an
@@ -234,6 +255,23 @@ extern Lexer *lex;
 // has reported and dropped, which tells the parser that a condition lost a word
 extern int lexInHashCond;
 extern uint32_t lexHashDropped;
+// The '#' word the next token scan reads is a meta variable being declared (parsemeta.c); cleared by the scan
+extern int lexMetaDecl;
+// With the lexer on a token: is the text after it, past white space, a '#'?
+int lexNextIsHash();
+// Everything the lexer holds of where it stands, to read a stretch of source again
+typedef struct LexMark {
+    char val[sizeof(((Lexer*)0)->val)];
+    uint32_t strlen;
+    INode *langtype;
+    char *srcp, *tokp, *linep, *prevend, *prevlinep;
+    uint32_t linenbr, prevlinenbr;
+    uint16_t toktype;
+} LexMark;
+void lexMarkSave(LexMark *mark);
+void lexMarkRestore(LexMark *mark);
+// Is the name a meta variable the parser has declared and not yet left behind? (parsemeta.c)
+int parseMetaIsBound(Name *name);
 
 #define lexIsToken(tok) (lex->toktype == (tok))
 
@@ -258,6 +296,9 @@ void lexPop();
 void lexNextToken();
 // Is the token after the current one the keyword 'word'? The lexer is left where it was.
 int lexNextIsWord(char *word);
+// With the lexer on an interpolated string: does an entry of a '<-' list end
+// right after it (a ',' ';' ')' '}' or the end of the file comes next)? The lexer is left where it was.
+int lexInterpEndsEntry();
 // Is the current token a '&' with another '&' directly against it ('&&')? The
 // lexer keeps '&&' as two '&' tokens, because it is two borrows in a type or a
 // prefix ('&&Pt', '&&x'); only a parser holding an operand reads it as the
