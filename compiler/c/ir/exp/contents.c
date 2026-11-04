@@ -1446,9 +1446,8 @@ static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *re
     callnode->args = newNodes(1);
     nodesAdd(&callnode->args, writer);
     callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
-    // Called on a virtual reference, as a call on one is: through the vtable. toDebug is no
-    // trait's method: a trait object's is generated, and written as the trait's name (debugfn.c)
-    if (!debug && pbase->tag == VirtRefTag)
+    // Called on a virtual reference, as a call on one is: through the vtable
+    if (pbase->tag == VirtRefTag)
         callnode->flags |= FlagVDisp;
     if (debug)
         callnode->flags &= ~FlagOperator;
