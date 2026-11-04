@@ -13,7 +13,10 @@
 // After type checking, one line per site where the program does what the
 // compiler cannot check, printed as
 //     <kind> <file>:<line> <enclosing function or type> [<what>]
-// Kinds: deref, ref-from-ptr, intrinsic, extern, reinterpret, sendable. It
+// Kinds: deref, ref-from-ptr, intrinsic, extern, reinterpret, reinterpret-perm
+// (an 'as' between references that changes only the permission), sendable. A
+// generic template also prints 'generic <file>:<line> <name> [<instances>]',
+// which is no site. It
 // refuses nothing and changes nothing; it reads the checked tree.
 //
 // A generic is analysed only as instances, so its body is read from them; a
@@ -54,6 +57,15 @@ static char *spellFile(INode *node) {
     for (; url[i] && i < sizeof(buf) - 1; ++i)
         buf[i] = url[i] == '\\' ? '/' : url[i];
     buf[i] = '\0';
+    // Text read from a generated include file is named as the package's source file it was copied
+    // from (a line mark, relative to the package's src/); the include file is added after a '#',
+    // which says which package it is
+    if (node->lexer && (node->lexer->flags & LexLineMarks) && node->lexer->path && i < sizeof(buf) - 2) {
+        buf[i++] = '#';
+        for (char *p = node->lexer->path; *p && i < sizeof(buf) - 1; ++p)
+            buf[i++] = *p == '\\' ? '/' : *p;
+        buf[i] = '\0';
+    }
     return buf;
 }
 
@@ -112,20 +124,35 @@ static void walkNodeList(NodeList *list) {
         walk(*nodesp);
 }
 
-static void walkInstances(GenericInfo *info, INode *template) {
+// A generic's line: where its template is, and how many instances this program made
+static void reportGeneric(INode *template, char *name, uint32_t instances) {
+    char text[2048];
+    char *owner = curOwner;
+    snprintf(text, sizeof(text), "generic %s:%u %s%s%s [%u]", spellFile(template), (unsigned)template->linenbr,
+        owner ? owner : "", owner ? "." : "", name, (unsigned)instances);
+    addLine(&sites, copyText(text));
+}
+
+static uint32_t walkInstances(GenericInfo *info, INode *template) {
+    uint32_t instances = 0;
     if (info->memonodes == NULL)
-        return;
+        return 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(info->memonodes, cnt, nodesp)) {
         nodesp++; cnt--;
-        if (*nodesp != template)
+        if (*nodesp != template) {
+            ++instances;
             walk(*nodesp);
+        }
     }
+    return instances;
 }
 
 // Whether a type holds a raw pointer by value, directly or through a field
 static int holdsPointer(INode *type, int depth) {
+    if (type != NULL && type->tag == DerefTag)   // '*T' in a template, before it becomes a pointer type
+        return 1;
     type = itypeGetTypeDcl(type);
     if (type == NULL || depth > 8)
         return 0;
@@ -162,6 +189,12 @@ static FnDclNode *calleeOf(FnCallNode *call) {
     return NULL;
 }
 
+// A package's function as its generated include file declares it: 'extern' with no body, though the
+// package defines it. Only a C-named declaration there is a foreign function.
+static int declaredByInclude(FnDclNode *fn) {
+    return fn->lexer && (fn->lexer->flags & LexLineMarks) && !(fn->dclinfo.facts & DclCName);
+}
+
 static void walkCall(FnCallNode *call) {
     FnDclNode *fn = calleeOf(call);
     if (fn) {
@@ -169,7 +202,8 @@ static void walkCall(FnCallNode *call) {
         char *trust = intrinsicTrustName(fn);
         if (trust)
             report(strncmp(trust, "sliceFromParts", 14) == 0 ? "ref-from-ptr" : "intrinsic", (INode*)call, trust);
-        else if ((fn->flags & FlagExtern) && fn->value == NULL)
+        else if ((fn->flags & FlagExtern) && fn->value == NULL
+                 && !declaredByInclude(fn))
             report("extern", (INode*)call, name);
     }
     walk(call->objfn);
@@ -195,8 +229,15 @@ static void walkCast(CastNode *cast) {
         int toref = to->tag == RefTag || to->tag == ArrayRefTag;
         if (from->tag == PtrTag && toref)
             report("ref-from-ptr", (INode*)cast, NULL);
-        else if (from->tag != PtrTag && to->tag != PtrTag)
-            report("reinterpret", (INode*)cast, NULL);
+        else if (from->tag != PtrTag && to->tag != PtrTag) {
+            // A reference made another permission of the same referent is counted on its own
+            int refs = (from->tag == RefTag || from->tag == ArrayRefTag || from->tag == VirtRefTag)
+                && (to->tag == RefTag || to->tag == ArrayRefTag || to->tag == VirtRefTag);
+            int permonly = refs && from->tag == to->tag
+                && itypeIsSame(((RefNode*)from)->vtexp, ((RefNode*)to)->vtexp)
+                && !permIsSame(((RefNode*)from)->perm, ((RefNode*)to)->perm);
+            report(permonly ? "reinterpret-perm" : "reinterpret", (INode*)cast, NULL);
+        }
     }
     walk(cast->exp);
 }
@@ -208,27 +249,46 @@ static void walkFn(FnDclNode *fn) {
     curFn = svfn;
 }
 
-static void walkStruct(StructNode *str) {
-    if (str->genericinfo != NULL) {
-        walkInstances(str->genericinfo, (INode*)str);
+// A struct declaring Sendable that holds a raw pointer, directly or through a field's type
+static void reportSendable(StructNode *str, char *name) {
+    if (str->flags & TraitType)
         return;
+    // A template's trait list holds the names it was written with, an instance's the traits
+    int declares = 0;
+    if (str->traits) {
+        INode **traitp;
+        uint32_t tcnt;
+        for (nodesFor(str->traits, tcnt, traitp))
+            if (*traitp == (INode*)sendableTrait || itypeGetTypeDcl(*traitp) == (INode*)sendableTrait)
+                declares = 1;
     }
-    char *svowner = curOwner;
-    char *name = str->namesym ? &str->namesym->namestr : "?";
-    if (!(str->flags & TraitType) && structDeclaresTrait(str, sendableTrait)) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodelistFor(&str->fields, cnt, nodesp)) {
-            FieldDclNode *field = (FieldDclNode*)*nodesp;
-            if (field->vtype && holdsPointer(field->vtype, 0)) {
-                char text[2048];
-                snprintf(text, sizeof(text), "sendable %s:%u %s [%s]", spellFile((INode*)str),
-                    (unsigned)str->linenbr, name, field->namesym ? &field->namesym->namestr : "?");
-                addLine(&sites, copyText(text));
-                break;
-            }
+    if (!declares)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&str->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->vtype && holdsPointer(field->vtype, 0)) {
+            char text[2048];
+            snprintf(text, sizeof(text), "sendable %s:%u %s [%s]", spellFile((INode*)str),
+                (unsigned)str->linenbr, name, field->namesym ? &field->namesym->namestr : "?");
+            addLine(&sites, copyText(text));
+            break;
         }
     }
+}
+
+static void walkStruct(StructNode *str) {
+    char *svowner = curOwner;
+    char *name = str->namesym ? &str->namesym->namestr : "?";
+    if (str->genericinfo != NULL) {
+        // The template's own declaration is read for Sendable (a field of type *T holds a
+        // pointer whatever T is); its methods only through the instances
+        reportSendable(str, name);
+        reportGeneric((INode*)str, name, walkInstances(str->genericinfo, (INode*)str));
+        return;
+    }
+    reportSendable(str, name);
     curOwner = name;
     walkNodeList(&str->nodelist);
     walkNodeList(&str->fields);
@@ -252,9 +312,11 @@ static void walk(INode *node) {
     case ModuleTag:
         walkNodes(((ModuleNode*)node)->nodes); break;
     case FnDclTag:
-        if (((FnDclNode*)node)->genericinfo != NULL)
-            walkInstances(((FnDclNode*)node)->genericinfo, node);
-        else
+        if (((FnDclNode*)node)->genericinfo != NULL) {
+            FnDclNode *fn = (FnDclNode*)node;
+            uint32_t made = walkInstances(fn->genericinfo, node);
+            reportGeneric(node, fn->namesym ? &fn->namesym->namestr : "?", made);
+        } else
             walkFn((FnDclNode*)node);
         break;
     case FnOverloadDclTag:
