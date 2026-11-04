@@ -117,6 +117,9 @@ struct Conn {
   connectBy: Instant;
   peer: SocketAddr;
   recvOut: bool;             // a receive is in flight
+  recvOp: OpId;              // ...its id, for the cancel below
+  recvReading: bool;         // ...a buffered one, submitted while a message was being read
+  recvAsked: bool;           // ...and it has been asked to end (its answer, Done or Cancelled, is to come)
   readyOut: bool;            // a zero-byte receive is in flight
   readyHit: bool;            // ...and has said data is there: the next receive takes it
   sendsOut: u32;
@@ -345,7 +348,7 @@ pub struct Driver {
       decided: false, cleartext: false,
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr](), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
-      recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
+      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
       waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
       dirty: false, held: 0u32, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
@@ -399,6 +402,9 @@ pub struct Driver {
     c.connOp = OpId.none();
     c.callOp = OpId.none();
     c.recvOut = false;
+    c.recvOp = OpId.none();
+    c.recvReading = false;
+    c.recvAsked = false;
     c.readyOut = false;
     c.readyHit = false;
     c.sendsOut = 0u32;
@@ -1322,10 +1328,21 @@ pub struct Driver {
   // reset) come
   fn receive(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
-    if c.recvOut || c.readyOut || c.eof || c.shut {return;}
-    if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
     let reading = if c.isH2 {c.streams.len() > 0usize}
       else {c.current != noEntry && !(self.reqAt(c.current) as &Req).readDone};
+    // A buffered receive left over when nothing is being read any more (a
+    // cancel took the last stream): ask it to end, so its buffer goes home.
+    // It answers Cancelled and the connection is driven again, which then
+    // waits with a zero-byte receive. If it finishes first it answers Done
+    // with its bytes, and they are fed to the core like any other
+    if c.recvOut && c.recvReading && !c.recvAsked && !reading && cfg.idleRecvReady &&
+        c.state == cOpen && !c.eof && !c.shut {
+      c.recvAsked = true;
+      lp.cancel(c.recvOp);
+      return;
+    }
+    if c.recvOut || c.readyOut || c.eof || c.shut {return;}
+    if coreCredit(c) < cfg.recvSize || c.layer.wireRoom() < cfg.recvSize {return;}
     if !reading && cfg.idleRecvReady && !c.readyHit {
       lp.submit(Op.RecvReady(c.sock), Target.Here(self.tok(kReady, i, c.gen)));
       c.readyOut = true;
@@ -1333,8 +1350,10 @@ pub struct Driver {
     }
     c.readyHit = false;
     let b = IoBuf(cfg.recvSize);
-    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
+    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
+    c.recvReading = reading;
+    c.recvAsked = false;
   }
 
   // Close the connection once the core says it is over and all it sent has
@@ -1381,8 +1400,10 @@ pub struct Driver {
     let c = self.connAt(i) as &mut Conn;
     if c.eof || c.recvOut || c.readyOut {return;}
     let b = IoBuf(lingerSize);
-    lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
+    c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
+    c.recvReading = false;
+    c.recvAsked = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -1600,6 +1621,13 @@ pub struct Driver {
     }
     if kind == kRecv {
       c.recvOut = false;
+      c.recvOp = OpId.none();
+      c.recvAsked = false;
+      if comp.status == diag.outcomeCancelled {
+        // Ended by receive()'s ask: nothing was read; arm again
+        self.markDirty(index);
+        return true;
+      }
       if c.state == cClosing {
         if comp.count() > 0usize {
           self.markDirty(index);
