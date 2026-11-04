@@ -2377,6 +2377,9 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         }
     }
 
+    if (selected == NULL && status == OverloadNone && textValueFallback(pstate, callnode))
+        return fnCallLowerMethodOn(pstate, callnode, NULL);
+
     if (selected == NULL) {
         // A text receiver's '<-' that no candidate took (a writer, a String, the
         // console) is the piece's own toText written into the writer the receiver

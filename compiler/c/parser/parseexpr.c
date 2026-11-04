@@ -553,8 +553,12 @@ INode *parseTerm(ParseState *parse) {
         return NULL;
     case HashElifToken:
     case HashElseToken:
+    case HashEachToken:
         parseMetaStray(parse);
         return NULL;
+    // A meta variable stands for what the layer holds of it: a loop's item or a number
+    case MetaVarToken:
+        return parseMetaTerm(parse);
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
         if (!lexIsToken(SemiToken))

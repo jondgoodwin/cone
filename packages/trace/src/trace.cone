@@ -1321,11 +1321,11 @@ pub struct Private[T] {
   pub fn toDebug(self: &, out: &uni TextOut) {
     let o = out.ownerOf();
     if o != null && mem.readRaw[u64](o as *u64) == logMagic {
-      let rec = o as *LogRecord;
-      if (*rec).allow {
+      let rec = o as &mut LogRecord;
+      if rec.allow {
         var t = Message();
-        t <- toDebug(self.v);
-        (*rec).takePrivate(t.text());
+        debugInto(&mut t, self.v);
+        rec.takePrivate(&t.buf as *u8, t.len);
       }
     }
     out.writeStr("<private>");
@@ -1333,6 +1333,11 @@ pub struct Private[T] {
   pub fn toText(self: &, out: &uni TextOut) {
     self.toDebug(out);
   }
+}
+
+// (a free function: inside Private, 'toDebug' names its own method)
+fn debugInto[T](m: &mut Message, x: &T) {
+  m <- toDebug(x);
 }
 
 pub fn private[T](x: &T) Private[T] {
@@ -1352,7 +1357,7 @@ fn textSlice(m: &Message, from: usize, to: usize) &str {
 }
 
 // One event being made from a call site's pieces. The compiler sends the fixed
-// text to 'text', a typed value to 'v_<type>', any other to '<-' (debug text)
+// text to 'text', each value to 'value' (overloaded), any value no overload takes by '<-' (debug text)
 pub struct LogRecord is DebugText {
   magic: u64;                               // first: a private value's writer finds the record by it
   msg: Message;                             // the message, private values shown as <private>
@@ -1405,62 +1410,57 @@ pub struct LogRecord is DebugText {
     self.slot(v, t);
   }
 
-  pub fn takePrivate(self: &mut, s: &str) {
+  // The private value's text, at p for n bytes
+  pub fn takePrivate(self: &mut, p: *u8, n: usize) {
     if !hasPriv {
       full <- msg.text();
       hasPriv = true;
     }
     privFrom = full.len;
-    full <- s;
+    full <- rawText(p, 0usize, n);
     privTo = full.len;
     privPending = true;
   }
 
-  pub fn v_i64(self: &mut, n: i64) {
+  // A value of the call, kept typed: the compiler sends each piece to 'value', chosen
+  // by overload; a piece no overload takes is sent by '<-' as its debug text
+  pub fn valueI64 overload value(self: &mut, n: i64) {
     let s = msg.len;
     msg <- n;
     self.note(s, Value.I64(n), Type.I64);
   }
-  pub fn v_u64(self: &mut, n: u64) {
+  pub fn valueU64 overload value(self: &mut, n: u64) {
     let s = msg.len;
     msg <- n;
     self.note(s, Value.U64(n), Type.U64);
   }
-  pub fn v_f64(self: &mut, x: f64) {
+  pub fn valueF64 overload value(self: &mut, x: f64) {
     let s = msg.len;
     msg <- x;
     self.note(s, Value.F64(x), Type.F64);
   }
-  pub fn v_bool(self: &mut, b: bool) {
+  pub fn valueBool overload value(self: &mut, b: bool) {
     let s = msg.len;
     msg <- b;
     self.note(s, Value.Bool(b), Type.Bool);
   }
-  pub fn v_str(self: &mut, t: &str) {
+  // The field's text is a view of the message's copy, so a piece's temporary text may die at once
+  pub fn valueStr overload value(self: &mut, t: &str) {
     let s = msg.len;
     msg <- t;
-    self.note(s, Value.Text(t), Type.Text);
+    self.note(s, Value.Text(rawText(&msg.buf as *u8, s, msg.len)), Type.Text);
   }
-  pub fn v_Nanos(self: &mut, d: Nanos) {
+  pub fn valueNanos overload value(self: &mut, d: Nanos) {
     let s = msg.len;
     msg <- d.ns;
     msg <- "ns";
     self.note(s, Value.Duration(d.ns), Type.Duration);
   }
-  pub fn v_Ticks(self: &mut, d: Ticks) {
+  pub fn valueTicks overload value(self: &mut, d: Ticks) {
     let s = msg.len;
     msg <- d.count;
     self.note(s, Value.Time(d.count), Type.Time);
   }
-  pub fn v_i8(self: &mut, n: i8) { self.v_i64(i64.from(n)); }
-  pub fn v_i16(self: &mut, n: i16) { self.v_i64(i64.from(n)); }
-  pub fn v_i32(self: &mut, n: i32) { self.v_i64(i64.from(n)); }
-  pub fn v_isize(self: &mut, n: isize) { self.v_i64(i64.from(n)); }
-  pub fn v_u8(self: &mut, n: u8) { self.v_u64(u64.from(n)); }
-  pub fn v_u16(self: &mut, n: u16) { self.v_u64(u64.from(n)); }
-  pub fn v_u32(self: &mut, n: u32) { self.v_u64(u64.from(n)); }
-  pub fn v_usize(self: &mut, n: usize) { self.v_u64(u64.from(n)); }
-  pub fn v_f32(self: &mut, x: f32) { self.v_f64(f64.from(x)); }
 
   // A writer onto the message for a value kept as its debug text
   pub fn textOut(self: &mut) TextOut {

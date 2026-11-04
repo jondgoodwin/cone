@@ -63,8 +63,22 @@ struct Printer is trace.Sink {
       }
       i = i + 1usize;
     }
-    print <- " msg='", e.message, "'\n";
+    print <- " msg='", e.message, "'";
+    // The two calls of login share one site, so one kind
+    if k.name[0] == 'u' {
+      let addr = (k as *u8) as usize;
+      print <- if loginKind == 0usize {" (first login)"} else if loginKind == addr {" (same kind as the first login)"} else {" (A DIFFERENT KIND)"};
+      loginKind = addr;
+    }
+    print <- "\n";
   }
+}
+
+var loginKind = 0usize;
+
+// A log send in a generic: each instance has the brace's name, from the source text
+fn tagged[T](x: &T) {
+  log <- $"tagged {x}";
 }
 
 fn bump() i32 {
@@ -89,7 +103,7 @@ fn main() i32 {
   log <- $"point {p} ok={flag} name={u.name} ratio={0.5}";
   log <- $"timer {Nanos(1500i64)} {ms + 1}";
   log <- "just text";
-  log <- $"five {1} {2} {3} {4} {5}";
+  log <- $"five {ms} {ms + 1} {ms + 2} {ms + 3} {ms + 4}";
 
   // Off: no piece runs
   trace.setLevel("app", Level.Error);
@@ -98,5 +112,15 @@ fn main() i32 {
   trace.setLevel("app", Level.Info);
   log <- $"again {bump()}";
   expect(made == 1, "on again: the piece ran once");
-  0
+
+  // A filter set at run time reaches a site's kind, as it reaches a declared kind
+  tagged(&p);
+  trace.filter("app=error");
+  log <- $"filtered out {bump()}";
+  expect(made == 1, "a filter turns the site off");
+  trace.filter("app=info");
+  log <- $"filtered back {bump()}";
+  expect(made == 2, "and on again");
+  tagged(&u);
+  done()
 }

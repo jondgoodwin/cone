@@ -1139,6 +1139,26 @@ and arguments are lent as). A call whose body changes state, or one reached thro
 a `&` or a global, is not seen. Pinned by `module_text_wants` and its `_move`,
 `_move_use`, `_warn`, `_await` and `_ir` scenarios.
 
+**A log receiver** (a type whose `open(self: &, site: &mut S, spec: &str, file: &str,
+line: u32)` exists: `TextSite`, found by name and signature as `record` is;
+`textSiteLower`) makes each `<-` to it one event of one call site:
+`{ static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
+-lw.text("lit"); { -lw.value(x) }; ...; -lw.finish() }`. `-siteN` is a zeroed static,
+one per call site (so a log send in an `inline` function is refused with
+`ErrorBadStatic`: `module_text_site_inline`). `spec` is the fixed text with `{name}`
+for each value, then each name after a `\x01`; a name is the brace's source text
+(each brace's sub-lexer holds `interpstart`/`interpend`, read through the piece's
+`lexer`, so it survives generics) or the value's number in a plain list. `value` is
+chosen by ordinary overload resolution; when no overload takes the piece
+(`OverloadNone`), `textValueFallback` (called from `fnCallLowerMethodOn` ahead of the
+no-candidate error) turns the call into `-lw <- x`, the debug-text send. Each piece's
+`value` call is a block of its own: a debug writer a piece makes is a statement
+temporary, and had it lived to the end of the whole send, its length would have
+overwritten the pieces written after it. An ambiguous `value` (a bare integer literal
+among signed and unsigned overloads) is `ErrorAmbiguous` as for any overload. Pinned
+by `module_text_site` and `module_text_site_inline`, and the `trace` package's
+`logsite`, `logprivate` and `logasync` tests.
+
 **An interpolated string** `$"moved {n} files to {dir}"` and the send list
 `"moved ", n, " files to ", dir` are one thing in two spellings, made so by the
 parser, before any of the above sees it. The lexer reads `$"..."` as one

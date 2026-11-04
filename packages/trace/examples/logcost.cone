@@ -1,0 +1,105 @@
+// What a log line costs next to a declared kind's 'emit', on and off: a million
+// 'log <- $"line {i}"' against a million 'hot.emit(i)', each with a sink installed that
+// takes the event and does nothing. "On" is the event reaching the sink; "off" is the
+// level below the event's (the pieces are then not evaluated). Three rounds of each,
+// interleaved, the median of each reported. Run it on a quiet machine, pinned to a core
+// ('taskset -c 2' on Linux, 'start /affinity 4' on Windows):
+//
+//   congo run --release packages/trace/examples/logcost.cone -- [count]
+//
+// Prints nanoseconds a line for each of the four, and the log's ratio to emit in
+// thousandths for on and for off ('ratio_milli 1000' is the same time). Over about 1100
+// on is the figure the brief says goes to design chat.
+
+mod logcost;
+
+import stdio use *;
+import trace use Level, Kind1, Log;
+
+let hot: Kind1[u64];
+let log: Log;
+
+fn @initpure init() {
+  hot = Kind1[u64].make("hot", "benchemit", Level.Info, "i");
+  log = Log.make("benchlog", Level.Info);
+}
+
+struct Nowhere is trace.Sink {
+  pub n: u64;
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+  pub fn record(self: &, e: &trace.Event) {}
+}
+
+fn digits(p: *u8) u64 {
+  var n = 0u64;
+  var q = p;
+  while *q >= 48u8 && *q <= 57u8 {
+    n = n * 10u64 + u64.from(*q - 48u8);
+    q = q + 1usize;
+  }
+  n
+}
+
+fn emits(n: u64) {
+  var i = 0u64;
+  while i < n {
+    hot.emit(i);
+    i = i + 1u64;
+  }
+}
+
+fn logs(n: u64) {
+  var i = 0u64;
+  while i < n {
+    log <- $"line {i}";
+    i = i + 1u64;
+  }
+}
+
+// Picoseconds a line of one pass
+fn time(n: u64, withLog: bool) u64 {
+  let t0 = trace.ticks();
+  if withLog {logs(n);} else {emits(n);}
+  let t1 = trace.ticks();
+  (t1 - t0) * 1000000000000u64 / trace.clockFrequency() / n
+}
+
+fn median(a: u64, b: u64, c: u64) u64 {
+  if (a <= b && b <= c) || (c <= b && b <= a) {b}
+  else if (b <= a && a <= c) || (c <= a && a <= b) {a}
+  else {c}
+}
+
+fn main(argc: i32, argv: **u8) i32 {
+  var n = 1000000u64;
+  if argc > 1i32 {
+    n = digits(*(argv + 1usize));
+  }
+  if !trace.install(Uni[Nowhere](0u64)) {
+    return 1;
+  }
+  var emitOn = Array[u64, 3]() <- fill 0u64;
+  var logOn = Array[u64, 3]() <- fill 0u64;
+  var emitOff = Array[u64, 3]() <- fill 0u64;
+  var logOff = Array[u64, 3]() <- fill 0u64;
+  var r = 0usize;
+  while r < 3usize {
+    trace.setLevel("benchemit", Level.Info);
+    trace.setLevel("benchlog", Level.Info);
+    emitOn[r] = time(n, false);
+    logOn[r] = time(n, true);
+    trace.setLevel("benchemit", Level.Error);
+    trace.setLevel("benchlog", Level.Error);
+    emitOff[r] = time(n, false);
+    logOff[r] = time(n, true);
+    r = r + 1usize;
+  }
+  let eOn = median(emitOn[0], emitOn[1], emitOn[2]);
+  let lOn = median(logOn[0], logOn[1], logOn[2]);
+  let eOff = median(emitOff[0], emitOff[1], emitOff[2]);
+  let lOff = median(logOff[0], logOff[1], logOff[2]);
+  print <- "emit_on_ps ", eOn, " log_on_ps ", lOn, "\n";
+  print <- "emit_off_ps ", eOff, " log_off_ps ", lOff, "\n";
+  print <- "ratio_milli_on ", lOn * 1000u64 / (eOn + 1u64), " ratio_milli_off ", lOff * 1000u64 / (eOff + 1u64), "\n";
+  0
+}

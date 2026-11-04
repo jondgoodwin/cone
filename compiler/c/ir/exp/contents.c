@@ -1337,14 +1337,14 @@ static int textGuardLower(TypeCheckState *pstate, FnCallNode **nodep, INode *rec
 // A log receiver (a type whose 'open(self: &, site: &mut S, spec: &str, file: &str,
 // line: u32)' answers a record): one call site of a '<-' to it is one kind of event.
 //   { static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
-//     -lw.text("fixed"); -lw.v_i32(n); -lw <- other; ...; -lw.finish() }
+//     -lw.text("fixed"); { -lw.value(n) }; { -lw.value(other) }; ...; -lw.finish() }
 // The compiler makes the site's storage (zeroed, one per call site, filled on the
 // first event) and the 'spec' text: the fixed text with each value as '{name}', then
 // each name after a \x01. A name is the brace's own source text (the lexer of an
 // interpolated string's brace remembers it), or the value's number in a plain send
-// list. A value whose type is a number, bool, '&str', Nanos or Ticks goes to the
-// record's method 'v_<type>' and stays typed; any other goes by '<-', which a record
-// declaring DebugText takes as the value's debug text. Answers 1 when it replaced the send.
+// list. A value goes to the record's overloaded 'value(x)', which keeps it typed; one
+// no overload takes goes by '<-' (textValueFallback), which a record declaring
+// DebugText takes as the value's debug text. Answers 1 when it replaced the send.
 static Name *textSiteWriterName() {
     static Name *name = NULL;
     if (name == NULL)
@@ -1358,36 +1358,6 @@ static int textOpensSite(INode *base) {
         return 0;
     INode *sig = ((FnDclNode*)found)->vtype;
     return sig != NULL && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used == 5;
-}
-
-// The record method that keeps a piece typed, or NULL when it is kept as debug text
-static const char *textFieldMethod(TypeCheckState *pstate, INode *piece, char *buf, size_t size) {
-    INode *probe = textTrial(pstate, piece);
-    if (probe == NULL)
-        return NULL;
-    INode *type = iexpGetTypeDcl(probe);
-    if (type == NULL)
-        return NULL;
-    if (type == (INode*)boolType)
-        return "v_bool";
-    if (isNbr(type)) {
-        const char *nm = &((NbrNode*)type)->namesym->namestr;
-        if (nm[0] != 'i' && nm[0] != 'u' && nm[0] != 'f')
-            return NULL;
-        snprintf(buf, size, "v_%s", nm);
-        return buf;
-    }
-    if (type->tag == RefTag) {
-        INode *target = itypeGetTypeDcl(((RefNode*)type)->vtexp);
-        return target && target->tag == StructTag && ((StructNode*)target)->namesym == strTypeName ? "v_str" : NULL;
-    }
-    if (type->tag == StructTag) {
-        if (((StructNode*)type)->namesym == textName("Nanos"))
-            return "v_Nanos";
-        if (((StructNode*)type)->namesym == textName("Ticks"))
-            return "v_Ticks";
-    }
-    return NULL;
 }
 
 // A brace's source text, trimmed, as a field name; NULL when the piece is not from a brace
@@ -1416,6 +1386,13 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
     for (uint32_t i = 0; i < npieces; ++i)
         if (isEntryNode(piecep[i]))
             return 0;
+    // The call site's kind is a static: an inline function's body is copied to each caller, so it would
+    // be one kind per caller of the function, not one for the call site written
+    if (pstate->fn && (pstate->fn->flags & FlagInline)) {
+        errorMsgNode(lex, ErrorBadStatic, "A log send in an inline function would make one kind per caller, not one for this call site. Log from a function that is not inline, or take the logging out of this one.");
+        node->vtype = errorType;
+        return 1;
+    }
     FnSigNode *sig = (FnSigNode*)((FnDclNode*)iNsTypeFindFnField((INsTypeNode*)base, textName("open")))->vtype;
     INode *sref = itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, 1))->vtype);
     if (sref == NULL || sref->tag != RefTag)
@@ -1428,13 +1405,10 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
         cap += (piecep[i]->tag == StringLitTag ? ((SLitNode*)piecep[i])->strlen : 0) + 200;
     char *spec = (char*)malloc(cap);
     char *names = (char*)malloc(cap);
-    char (*meth)[24] = (char(*)[24])malloc(npieces * 24 + 1);
-    const char **method = (const char**)malloc(npieces * sizeof(char*) + 1);
     size_t slen = 0, nlen = 0;
     uint32_t fields = 0;
     for (uint32_t i = 0; i < npieces; ++i) {
         INode *piece = piecep[i];
-        method[i] = NULL;
         if (piece->tag == StringLitTag) {
             memcpy(spec + slen, ((SLitNode*)piece)->strlit, ((SLitNode*)piece)->strlen);
             slen += ((SLitNode*)piece)->strlen;
@@ -1443,7 +1417,6 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
         char name[80];
         if (!textBraceName(piece, name, sizeof(name)))
             snprintf(name, sizeof(name), "%u", fields);
-        method[i] = textFieldMethod(pstate, piece, meth[i], 24);
         ++fields;
         slen += (size_t)snprintf(spec + slen, 100, "{%s}", name);
         nlen += (size_t)snprintf(names + nlen, 100, "\x01%s", name);
@@ -1493,16 +1466,22 @@ static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base
 
     for (uint32_t i = 0; i < npieces; ++i) {
         INode *piece = piecep[i];
-        if (piece->tag == StringLitTag || method[i] != NULL) {
-            FnCallNode *call = textAsk(piece, contentsVarUse(w, lex), piece->tag == StringLitTag ? "text" : method[i]);
-            nodesAdd(&call->args, piece);
+        FnCallNode *call = textAsk(piece, contentsVarUse(w, lex), piece->tag == StringLitTag ? "text" : "value");
+        nodesAdd(&call->args, piece);
+        if (piece->tag == StringLitTag)
             nodesAdd(&blk->stmts, (INode*)call);
+        else {
+            // No overload of 'value' taking it: its debug text (textValueFallback)
+            call->methfld->flags |= FlagTextLowered;
+            // A block of its own: a debug-text writer the piece makes dies here, with its piece written
+            BlockNode *one = newBlockNode();
+            inodeLexCopy((INode*)one, piece);
+            nodesAdd(&one->stmts, (INode*)call);
+            nodesAdd(&blk->stmts, (INode*)one);
         }
-        else
-            nodesAdd(&blk->stmts, textSend(piece, contentsVarUse(w, lex), piece));
     }
     nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
-    free(spec); free(names); free(meth); free((void*)method);
+    free(spec); free(names);
     *((INode**)nodep) = (INode*)blk;
     inodeTypeCheckAny(pstate, (INode**)nodep);
     return 1;
@@ -1631,6 +1610,21 @@ static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *re
     callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
     if (debug)
         callnode->flags &= ~FlagOperator;
+    return 1;
+}
+
+// A log record's 'value(x)' that no overload takes is the debug text of x, sent as '<-'
+int textValueFallback(TypeCheckState *pstate, FnCallNode *callnode) {
+    (void)pstate;
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld) || !(callnode->methfld->flags & FlagTextLowered)
+        || ((NameUseNode*)callnode->methfld)->namesym != textName("value")
+        || callnode->args == NULL || callnode->args->used != 1)
+        return 0;
+    NameUseNode *meth = newMemberUseNode(lessDashName);
+    inodeLexCopy((INode*)meth, (INode*)callnode);
+    meth->flags |= FlagTextLowered;
+    callnode->methfld = (INode*)meth;
+    callnode->flags |= FlagOpAssgn | FlagLvalOp;
     return 1;
 }
 
