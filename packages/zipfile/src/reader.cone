@@ -200,8 +200,14 @@ pub struct EntryReader {
     while true {
       let produced = out.len() - before;
       if produced >= cap { return Status.MoreOutput; }
-      let s = inf.pull(out, cap - produced);
-      if s == deflate.Status.MoreOutput { return Status.MoreOutput; }
+      // A pool block can be larger than asked, so the room is cut to the ask by calling the front of it filled
+      let want = cap - produced;
+      var buf = IoBuf(if want < 65536usize {want} else {65536usize});
+      let pre = buf.capacity() - (if want < 65536usize {want} else {65536usize});
+      buf.setLen(pre);
+      let s = inf.pull(&mut buf);
+      out.appendSlice(&buf.view()[pre ..< buf.len()]);
+      if s == deflate.Status.MoreOutput { continue; }
       if s == deflate.Status.Done { return Status.Done; }
       if s == deflate.Status.Failed {
         let k = inf.error().kind;
@@ -237,8 +243,13 @@ pub struct EntryReader {
     while true {
       let produced = out.len() - before;
       if produced >= cap { return Status.MoreOutput; }
-      let s = zd.pull(out, cap - produced);
-      if s == zstd.Status.MoreOutput { return Status.MoreOutput; }
+      let want = cap - produced;
+      var buf = IoBuf(if want < 65536usize {want} else {65536usize});
+      let pre = buf.capacity() - (if want < 65536usize {want} else {65536usize});
+      buf.setLen(pre);
+      let s = zd.pull(&mut buf);
+      out.appendSlice(&buf.view()[pre ..< buf.len()]);
+      if s == zstd.Status.MoreOutput { continue; }
       if s == zstd.Status.Done { return Status.Done; }
       if s == zstd.Status.Failed { return self.zstdFault(); }
       // NeedInput: feed the next piece, or say there is no more
