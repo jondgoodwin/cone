@@ -1065,8 +1065,11 @@ stays one and a text goes in as it did. Then, by the shape of the right side:
   maker's function after the last piece and before the statement's temporaries are
   finalized, so a `final` that prints runs after the pieces before it. A
   writer's becomes a send per piece. A list with an entry that is not a plain value
-  (`3 of x`, `fill`, `each`) is the general list, a piece at a time, each
-  piece its own record on the console.
+  (`3 of x`, `fill`, `each`) sent to a writer in hand is the general list, a piece
+  at a time. For a record maker it is still one record: the block makes the writer,
+  lends it `&uni` to a variable, sends the whole list to that (the general list
+  lowering, piece by piece into the one writer) and finishes it
+  (`module_text_listrecord`).
 - **A list sent to a sink** is the general list lowering with its temporaries
   dying per statement (`contentsTextList`), so each piece's writer is finished
   before the next piece's begins.
@@ -1077,7 +1080,12 @@ stays one and a text goes in as it did. Then, by the shape of the right side:
   the statement's end (for a single piece the record is delivered when that
   temporary dies, after the temporaries the piece made if it is a number, since a
   number's `toText` is rewritten to a call on the writer). A piece with no
-  `toText` is `ErrorNoText`. A text receiver's `<-` candidates do not
+  `toText` is `ErrorNoText`. A number's, bool's or char's `toText` is no function
+  (`nbrAddTextMethods` declares it): `fnCallTextNumber` rewrites the call to the
+  `TextOut` method that writes that kind (`putI64` for a signed integer, `putU64`
+  for an unsigned one, `putF32`, `putF64`, `putBool`, `putChar`), with the writer
+  as receiver and the value converted to the type the method takes; core's
+  `TextOut` lacking the method is `ErrorNoMbr`. A text receiver's `<-` candidates do not
   propose an expected type for the piece (`fnCallArgAgreed`).
 
 Parenthesized and nested sends are statements or values where they stand: a

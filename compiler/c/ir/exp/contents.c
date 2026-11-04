@@ -1199,9 +1199,16 @@ static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKi
     INode *lex = (INode*)node;
     uint32_t npieces;
     INode **piecep = contentsEntries(node, &npieces);
+    int hasentry = 0;
     for (uint32_t i = 0; i < npieces; ++i)
-        if (isEntryNode(piecep[i]))
-            return 0;
+        hasentry |= isEntryNode(piecep[i]);
+    // A list with an entry that is not a plain value ('3 of "ab"', 'fill', 'each')
+    // is the general list lowering's, a piece at a time, into a writer in hand.
+    // For a record maker it is still one record: the whole list is sent to the
+    // record's writer (which lowers as a writer's list does) and the record is
+    // finished after it.
+    if (hasentry && kind != TextRecord)
+        return 0;
     uint16_t scope = (uint16_t)(pstate->scope + 1);
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, lex);
@@ -1213,6 +1220,8 @@ static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKi
     for (uint32_t i = 0; i < npieces; ++i)
         if (awaitWithin(piecep[i]))
             lastawait = i + 1;
+    if (hasentry)
+        lastawait = 0;
     for (uint32_t i = 0; i < lastawait; ++i) {
         if (litIsLiteral(piecep[i]))
             continue;
@@ -1245,7 +1254,17 @@ static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKi
         w = contentsVar(tempLocalName, unknownType, immPerm, held, scope, lex);
         nodesAdd(&blk->stmts, (INode*)w);
     }
-    for (uint32_t i = 0; i < npieces; ++i)
+    if (hasentry) {
+        // The writer is lent '&uni' to the general list lowering, as a writer in
+        // hand is, which then sends each entry to it
+        INode *whole = nodesGet(node->args, 0);
+        INode *lent = contentsVarUse(w, lex);
+        borrowMutRef(&lent, textOutOf(base, "record"), newPermUseNode(uniPerm));
+        VarDclNode *ref = contentsVar(tempLocalName, unknownType, immPerm, lent, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)ref);
+        nodesAdd(&blk->stmts, textSend(whole, contentsVarUse(ref, lex), whole));
+    }
+    else for (uint32_t i = 0; i < npieces; ++i)
         nodesAdd(&blk->stmts, textSend(piecep[i], contentsVarUse(w, lex), piecep[i]));
     // The record ends with its last piece, before the statement's temporaries
     // are finalized (a finalizer that prints comes after the pieces before it)

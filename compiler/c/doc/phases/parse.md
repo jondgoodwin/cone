@@ -875,7 +875,7 @@ A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
-(`actors.answerNow`); sent with no `await`, its value is dropped. It has a
+(`actors.answerNow`); sent with no `await`, its value is dropped (the unasked arm writes `_ = self.f(...)`, so a `Result` there is not warned as thrown away). It has a
 third send method too (`fetch'future`), which makes an `actors.Future` of the
 returned type, written as the behaviour's return type was (its text recorded
 by `parseFnSig`), sends the request awaited with the future's producer's
@@ -1312,6 +1312,25 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
     or in expression position is `ErrorMetaEachPlace` (`parseMetaStray`), its header and block read past.
     It would generate declarations, which waits for generated names. A `#if` condition cannot ask
     about a meta variable (`ErrorMetaFact`).
+- **`#each #f in #fields(T) { body }`** (`parseHashFields`, called by `parseHashEach` when the list is
+  `HashFieldsToken`) cannot be expanded by reading the body again: T's fields are known only when the
+  generic is cloned. The body is read **once**, with `#f` bound as `MetaBindField`, and the loop is a
+  `BlockNode` with `fieldeach` set (`ir/meta/fields.c`) whose one statement is the body. `#f.name`,
+  `.type`, `.region`, `.perm` and `.pub` are name uses pre-resolved to a pseudo generic parameter of
+  the loop (`fieldEachProp`), so name resolution leaves them and the clone's existing substitution of a
+  parameter's use puts the field's answer there; `value.#f` is a member name `#f` that
+  `cloneNameUseNode` turns into the field's (`fieldEachSplice`). `cloneBlockNode` hands a loop to
+  `cloneFieldEach`, which makes one clone of the body per field of the instance of T, each a block with an
+  `EachPass` (so an error names its pass), and decides what T's fields are to the reflecting code:
+  every field when the loop is written in the module that declares the type, or in a trait default taken
+  into it (`cstate->selftype`), or the type is `@reflect` (`StructNode.reflect`, a placeholder spelling);
+  else a private field is `ErrorMetaFieldsPrivate`, never left out. `#fields(Self)` in a trait default
+  is accepted at name resolution (`fieldEachNameRes`) and decided when the default is cloned into a type,
+  where `Self` is repointed at it; cloned with no type to take it, it is the trait and is refused as a
+  non-struct. A loop cloned while T is still
+  a parameter of another generic is copied whole to be decided later. The `--meta-ir` dump does not
+  show these loops. Not built: `#f.attrs` (there are no field attributes), `#fields` outside a `#each`,
+  layout facts (PR 2 of step 4), generated members (step 5).
 
 ## 7. Contract
 

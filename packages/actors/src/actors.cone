@@ -401,6 +401,20 @@
 // the actors are doing: messages still in flight are dropped silently, and no
 // actor still alive is finalized.
 //
+// THE CONSOLE'S OWNER. When the workers start, this package installs the
+// console's owner (console.cone): a thread of its own that alone writes
+// standard output and standard error from then on, so that no behaviour ever
+// makes a console system call. A record a send statement finishes is moved to
+// it (the sender pays a hand-over, not the write) and the owner combines the
+// queued records into few writes. A stalled destination grows the owner's queue
+// up to 64 MB, where a sender waits: the one place a print waits. 'print.flush()'
+// waits until everything sent before it has been written; it blocks the caller
+// (a worker, in a behaviour). The final waits for the owner to drain before it
+// stops the workers, and the owner stays until the process ends, so that
+// nothing printed by a later finalizer is lost; a panic gives it a moment to
+// drain and writes its message itself; C's exit runs conestd's atexit flush,
+// which waits for it.
+//
 // WAITING FOR IDLE (INTERIM). A program whose actors await I/O or a timer
 // ends as soon as 'main' returns if no actor is queued or running: an actor
 // paused on an operation is neither, so the finalizer above finds quiet, the
@@ -4797,6 +4811,11 @@ fn @initpure init() {
   futuresLive = Atomic[usize].of(0usize);
   futuresMade = Atomic[u64].of(0u64);
   rootAt = Atomic[usize].of(0usize);
+  coLock = sync.Mutex.make();
+  coWake = sync.Condvar.make();
+  coRoom = sync.Condvar.make();
+  coDone = sync.Condvar.make();
+  coHold = Atomic[u32].of(0u32);
 }
 
 // The program is ending: wait until all is quiet, then stop the workers, if
@@ -4873,6 +4892,8 @@ fn startWorkers() {
       thread.startWith(thread.Options(name: "actors worker"), WorkerArg(w), &workerMain));
     i = i + 1u32;
   }
+  // From here a print is a hand-over to the console's owner (console.cone)
+  consoleOwnerStart();
 }
 
 // Wait until s is quiescent. 'done' says the stop has begun, so that the
@@ -5000,11 +5021,17 @@ fn stopWorkers() {
   }
   let s = running.load() as *Sched;
   quiesce(s);
-  // SEAM (text PR 1b): the console's owner drains HERE, before any table is
-  // dropped, so that what the dropped frames' finalizers print has a console
-  // to go through. Then the parked records of every actor still alive are
-  // dropped (ABANDONING AT THE END), the workers still running
+  // The console's owner drains here, before any parked table is dropped, so
+  // what the dropped frames' finalizers print goes through a console that is
+  // still there; it stays up to the end of the process (console.cone)
+  consoleDrain();
+  // Then the parked records of every actor still alive are dropped (ABANDONING
+  // AT THE END), the workers still running
   abandonParked(s);
+  // A second drain: what the finalizers printed during abandonParked reaches
+  // the console before the process ends. The owner is its own thread and
+  // abandonParked leaves nothing running that it waits on
+  consoleDrain();
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst);
   // Mark every worker and wake its word (THE PARK WORD): a worker asleep
   // wakes chosen and sees 'stopping'; one not yet asleep finds its word not
