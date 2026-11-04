@@ -1098,6 +1098,12 @@ the loop's `#f` in either order, a `#f` or `#name` naming a member outside such 
 named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
 the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
 
+`ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
+method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
+(`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
+(reached from `fnSigConvRefusal`, as `ErrorVtableSelf` is) names the method and says `self: &` makes the variants
+comply. The rule of what complies is unchanged; only the message is. A private requirement has no slot, so it never fails.
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),

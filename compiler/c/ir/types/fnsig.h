@@ -130,6 +130,7 @@ int fnSigVrefSelfFits(FnDclNode *traitmeth, FnDclNode *implmeth);
 // Why 'impl' cannot be viewed as 'trait' behind a virtual reference because a
 // method asks for a stronger 'self' than the trait's; NULL when it is not that
 char *fnSigVrefSelfRefusal(StructNode *trait, StructNode *impl);
+char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl);
 
 // Why 'impl' cannot be viewed as 'trait' behind a virtual reference that may write
 // because a field the trait requires has a narrower type in 'impl'; NULL when it is

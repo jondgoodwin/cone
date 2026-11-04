@@ -1024,6 +1024,34 @@ static char *fnSigVrefLayoutRefusal(StructNode *trait, StructNode *impl) {
     return NULL;
 }
 
+// Why a variant (or an enum) cannot be viewed as the trait 'trait' behind a virtual
+// reference when the enum writes a method the trait requires over the whole enum
+// ('self: &Two'): that method is one function no variant has a copy of, so it makes
+// no variant comply. NULL when it is not that.
+char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl) {
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType))
+        return NULL;
+    StructNode *en = (impl->flags & EnumType) ? impl : structVariantEnum((INode*)impl);
+    if (en == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        INode *binding = namespaceFind(&en->namespace, meth->namesym);
+        if (binding == NULL || binding->tag != FnDclTag || !structIsWholeEnumMethod(binding))
+            continue;
+        static char msg[700];
+        snprintf(msg, sizeof(msg),
+            "%s's `%s` is written over the whole enum (`self: &%s`), so no variant has it and none can be viewed as %s. Write `self: &`, which gives each variant its own copy.",
+            &en->namesym->namestr, &meth->namesym->namestr, &en->namesym->namestr, &trait->namesym->namestr);
+        return msg;
+    }
+    return NULL;
+}
+
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,
 // when that is the permission its '()' or the borrow needs; NULL when it is not
 // that. The message leads with the cause in the author's words.
@@ -1064,6 +1092,11 @@ char *fnSigCallRefusal(INode *from, INode *to, int *code) {
             selfwhy = fnSigVrefFieldRefusal(trait, (StructNode*)target);
             if (selfwhy)
                 *code = ErrorVtableField;
+        }
+        if (selfwhy == NULL && target->tag == StructTag) {
+            selfwhy = fnSigVrefWholeEnumRefusal(trait, (StructNode*)target);
+            if (selfwhy)
+                *code = ErrorWholeEnumMeth;
         }
         if (selfwhy == NULL && target->tag == StructTag) {
             selfwhy = fnSigVrefLayoutRefusal(trait, (StructNode*)target);
