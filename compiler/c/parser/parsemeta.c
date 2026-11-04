@@ -774,8 +774,13 @@ INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char
 // block's: a block of one expression is that expression, so a constant can be
 // made from one ('const sep = #if #os == .windows {'\\'} #else {'/'}'); a longer
 // block stays a block, and opens a scope of its own, as a block does
+const char parseMixBodyMsg[] =
+    "A '#if' chain in a function body asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so the two could choose different branches (and share one static between them). Put the build's '#if' around the chain, or inside a branch of it: the package decides it.";
+
 INode *parseHashIfExpr(ParseState *parse) {
     metaParse = parse;
+    int buildany = 0;
+    INode *firsttype = NULL;
     INode *value = NULL;
     int done = 0;
     int sawelse = 0;
@@ -791,7 +796,13 @@ INode *parseHashIfExpr(ParseState *parse) {
         if (iselse)
             lexNextToken();
         else {
+            uint32_t reads = metaBuildReads;
+            metaTypeAt = NULL;
             holds = metaReadCond();
+            if (metaBuildReads != reads)
+                buildany = 1;
+            if (metaTypeAt && firsttype == NULL)
+                firsttype = metaTypeAt;
             tree = metaCondTree;
             metaCondTree = NULL;
         }
@@ -836,6 +847,8 @@ INode *parseHashIfExpr(ParseState *parse) {
     if (!sawelse)
         errorMsgLexAfter(ErrorMetaIf,
             "A '#if' that gives a value ends in an '#else': with no branch taken there would be no value.");
+    if (firsttype && buildany)
+        errorMsgNode(firsttype, ErrorMetaMixFact, "%s", parseMixBodyMsg);
     // A chain with a branch that asks about a type is an 'if' for a generic's clone to decide,
     // and stays whole in the include file
     if (ifnode)

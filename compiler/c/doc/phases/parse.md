@@ -1265,9 +1265,12 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   reads a fact of the build and asks about a type (in one condition or across `#elif`/`#else`, folded
   away or not) is refused (`ErrorMetaMixFact`): `parseHashIf` counts the build facts and notes the first
   type question per condition (`metaBuildReads`, `metaTypeAt`) and the struct's caller passes the message
-  (`nomix`). A function body's chain is not refused: there the importer can choose a different
-  branch from the package's, and a per-instance `static` that differs between branches is one symbol
-  (`linkonce_odr`) shared by both objects.
+  (`nomix`). A function body's chain is refused the same way, statement or value (`parseMixBodyMsg`):
+  the importer could choose a different branch from the package's, and a per-instance `static` that
+  differs between branches is one symbol (`linkonce_odr`) shared by both objects, so one side would
+  write through the other's smaller one. A build `#if` nested in a type question's branch, or around
+  the chain, is a chain of its own: the package decides it and the include file is cut to the branch
+  taken (test `meta_typefact_include_nested`).
 
 ## 7. Contract
 

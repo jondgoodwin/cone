@@ -382,6 +382,8 @@ void parseMetaInit(ConeOptions *opt);
 // A chain, with the lexer on its '#if'. A place that cannot hold a question about a
 // type gives 'nodefer', what is said of one; the deferred chain, if any, is returned
 INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix);
+// What a function body's '#if' chain is told when it asks about both the build and a type
+extern const char parseMixBodyMsg[];
 // The condition a member added by a deferred branch exists under (a fresh copy for each call)
 INode *parseMetaMemberCond(void);
 // A chain that gives a value, with the lexer on its '#if'
