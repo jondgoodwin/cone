@@ -1306,7 +1306,7 @@ pub struct Log {
       }
       i = i + 1usize;
     }
-    LogRecord(logMagic, Message(), Message(), false, allow, false, 0usize, 0usize,
+    LogRecord(Message(), Message(), false, allow, false, 0usize, 0usize,
       [Value.U64(0u64), Value.U64(0u64), Value.U64(0u64), Value.U64(0u64)],
       [Value.U64(0u64), Value.U64(0u64), Value.U64(0u64), Value.U64(0u64)],
       [Type.U64, Type.U64, Type.U64, Type.U64], 0u32, 0usize, site as *Site, self as *Log, file, line, spec)
@@ -1319,9 +1319,9 @@ pub struct Private[T] {
 
   // Written into a log record, the value goes only to a sink that was allowed it
   pub fn toDebug(self: &, out: &uni TextOut) {
-    let o = out.ownerOf();
-    if o != null && mem.readRaw[u64](o as *u64) == logMagic {
-      let rec = o as &mut LogRecord;
+    // Only a log record's writer ends in logTextDone: any other writer's owner is not a record
+    if out.done == &logTextDone as usize {
+      let rec = out.ownerOf() as &mut LogRecord;
       if rec.allow {
         var t = Message();
         debugInto(&mut t, self.v);
@@ -1344,8 +1344,6 @@ pub fn private[T](x: &T) Private[T] {
   Private[T](x)
 }
 
-const logMagic = 0x4C4F47524543u64;
-
 // A view of bytes at an address
 fn rawText(p: *u8, from: usize, to: usize) &str {
   mem.sliceFromParts[u8](p + from, to - from) as &str
@@ -1359,7 +1357,6 @@ fn textSlice(m: &Message, from: usize, to: usize) &str {
 // One event being made from a call site's pieces. The compiler sends the fixed
 // text to 'text', each value to 'value' (overloaded), any value no overload takes by '<-' (debug text)
 pub struct LogRecord is DebugText {
-  magic: u64;                               // first: a private value's writer finds the record by it
   msg: Message;                             // the message, private values shown as <private>
   full: Message;                            // the message with them, kept once one is seen and allowed
   hasPriv: bool;

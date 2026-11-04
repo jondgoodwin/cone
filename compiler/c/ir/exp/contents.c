@@ -1352,12 +1352,46 @@ static Name *textSiteWriterName() {
     return name;
 }
 
+// The type of the parameter at this index of a signature, as declared
+static INode *textParmType(FnSigNode *sig, uint32_t index) {
+    return itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, index))->vtype);
+}
+
+// Is this type '&str'?
+static int textIsStrRef(INode *type) {
+    return type != NULL && type->tag == RefTag
+        && itypeGetTypeDcl(((RefNode*)type)->vtexp) == (INode*)strTypeDcl;
+}
+
+// A type that has a method of this name
+static int textHasMethod(INode *type, const char *name) {
+    if (type == NULL || !isMethodType(type))
+        return 0;
+    // An overloaded name ('value') is found as its set of methods, not as one
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, textName(name));
+    return found != NULL && (found->tag == FnDclTag || found->tag == FnOverloadDclTag);
+}
+
+// A method 'open(self, site: &mut S, spec: &str, file: &str, line: u32)' that
+// answers a type with 'text', 'value' and 'finish', all as declared
 static int textOpensSite(INode *base) {
     INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("open"));
     if (found == NULL || found->tag != FnDclTag)
         return 0;
-    INode *sig = ((FnDclNode*)found)->vtype;
-    return sig != NULL && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used == 5;
+    INode *vtype = ((FnDclNode*)found)->vtype;
+    if (vtype == NULL || vtype->tag != FnSigTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode*)vtype;
+    if (sig->parms->used != 5 || sig->rettype == NULL)
+        return 0;    INode *site = textParmType(sig, 1);
+    if (site == NULL || site->tag != RefTag || ((RefNode*)site)->perm == NULL
+        || itypeGetTypeDcl(((RefNode*)site)->perm) != (INode*)mutPerm)
+        return 0;
+    if (!textIsStrRef(textParmType(sig, 2)) || !textIsStrRef(textParmType(sig, 3))
+        || textParmType(sig, 4) != (INode*)u32Type)
+        return 0;
+    INode *rec = itypeGetTypeDcl(sig->rettype);
+    return textHasMethod(rec, "text") && textHasMethod(rec, "value") && textHasMethod(rec, "finish");
 }
 
 // A brace's source text, trimmed, as a field name; NULL when the piece is not from a brace
