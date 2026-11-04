@@ -1097,6 +1097,11 @@ include file cannot record in `__uses` (no bare spelling: a type argument that i
 or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
 the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
 (`module_generic_pkguse_unspelled`.)
+`ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
+a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
+the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
+named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
