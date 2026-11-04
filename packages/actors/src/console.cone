@@ -63,8 +63,8 @@ let coWake: sync.Condvar;      // the owner sleeps here while nothing is queued
 let coRoom: sync.Condvar;      // senders wait here at the limit
 let coDone: sync.Condvar;      // flushers wait here
 let coHold: Atomic[u32];       // 1 while a test holds the destination stalled
-// Everything below is touched only under coLock, through lockedGet and
-// lockedSet (actors.cone), except coStarted
+// Everything below is touched only under coLock, with loadOrdered and storeOrdered
+// at Relaxed (the lock's acquire and release order it), except coStarted
 let coHead: Atomic[usize];
 let coTail: Atomic[usize];
 let coQueued: Atomic[usize];        // bytes queued or being written
@@ -76,10 +76,13 @@ let coRoomWaiters: Atomic[u32];
 let coDoneWaiters: Atomic[u32];
 let coLimit: Atomic[usize];         // consoleLimit until a test sets it (init)
 let coStarted: Atomic[bool];        // set once as the owner starts; consoleDrain reads it without the lock
-// The owner's own: used by its thread alone, so each is thread-local
-var @threadlocal coBuf: usize = 0usize;          // its write buffer
-var @threadlocal coBufLen: usize = 0usize;
-var @threadlocal coTty: bool = false;
+
+// The owner's own: a local of its thread, which lends it to the functions below
+struct OwnerOut {
+  buf: usize;            // its write buffer
+  len: usize;            // the bytes the buffer holds
+  tty: bool;             // standard output is a terminal
+}
 
 struct OwnerArg is Sendable {
   pub unused: usize;
@@ -101,22 +104,22 @@ fn nodeBytes(n: *ConsoleNode) *u8 {
 fn consolePush(n: *ConsoleNode) {
   let cost = (*n).size + mem.sizeof[ConsoleNode]();
   coLock.lock();
-  while lockedGet(&coQueued) >= lockedGet(&coLimit) && lockedGet(&coQueued) != 0usize {
-    lockedSet(&coRoomWaiters, lockedGet(&coRoomWaiters) + 1u32);
+  while coQueued.loadOrdered(MemOrder.Relaxed) >= coLimit.loadOrdered(MemOrder.Relaxed) && coQueued.loadOrdered(MemOrder.Relaxed) != 0usize {
+    coRoomWaiters.storeOrdered(coRoomWaiters.loadOrdered(MemOrder.Relaxed) + 1u32, MemOrder.Relaxed);
     coRoom.condWait(&coLock);
-    lockedSet(&coRoomWaiters, lockedGet(&coRoomWaiters) - 1u32);
+    coRoomWaiters.storeOrdered(coRoomWaiters.loadOrdered(MemOrder.Relaxed) - 1u32, MemOrder.Relaxed);
   }
   (*n).next = null;
-  if lockedGet(&coTail) == 0usize {
-    lockedSet(&coHead, n as usize);
+  if coTail.loadOrdered(MemOrder.Relaxed) == 0usize {
+    coHead.storeOrdered(n as usize, MemOrder.Relaxed);
   }
   else {
-    (*(lockedGet(&coTail) as *ConsoleNode)).next = n;
+    (*(coTail.loadOrdered(MemOrder.Relaxed) as *ConsoleNode)).next = n;
   }
-  lockedSet(&coTail, n as usize);
-  lockedSet(&coQueued, lockedGet(&coQueued) + cost);
-  lockedSet(&coPushed, lockedGet(&coPushed) + 1u64);
-  let wake = lockedGet(&coAsleep);
+  coTail.storeOrdered(n as usize, MemOrder.Relaxed);
+  coQueued.storeOrdered(coQueued.loadOrdered(MemOrder.Relaxed) + cost, MemOrder.Relaxed);
+  coPushed.storeOrdered(coPushed.loadOrdered(MemOrder.Relaxed) + 1u64, MemOrder.Relaxed);
+  let wake = coAsleep.loadOrdered(MemOrder.Relaxed);
   coLock.unlock();
   if wake {
     coWake.notifyOne();
@@ -189,10 +192,10 @@ fn consoleTakeBytes(fd: i32, p: *u8, len: usize) {
 // ---- the owner's side ----
 
 // What the buffer holds is written
-fn ownerFlushBuf() {
-  if coBufLen > 0usize {
-    cone_consoleWrite(1i32, coBuf as *u8, coBufLen);
-    coBufLen = 0usize;
+fn ownerFlushBuf(o: &mut OwnerOut) {
+  if o.len > 0usize {
+    cone_consoleWrite(1i32, o.buf as *u8, o.len);
+    o.len = 0usize;
   }
 }
 
@@ -225,8 +228,8 @@ fn ownerWriteNode(fd: i32, n: *ConsoleNode) {
 }
 
 // Copy a node's bytes into the buffer, which has room for them
-fn ownerBuffer(n: *ConsoleNode) {
-  let dst = (coBuf as *u8) + coBufLen;
+fn ownerBuffer(o: &mut OwnerOut, n: *ConsoleNode) {
+  let dst = (o.buf as *u8) + o.len;
   if (*n).inlen > 0usize {
     mem.moveRaw[u8](dst, nodeBytes(n), (*n).inlen);
   }
@@ -240,26 +243,26 @@ fn ownerBuffer(n: *ConsoleNode) {
     }
     c = (*c).next;
   }
-  coBufLen = coBufLen + at;
+  o.len = o.len + at;
 }
 
 // One record, written or held for the next write, in order
-fn ownerWrite(n: *ConsoleNode) {
+fn ownerWrite(o: &mut OwnerOut, n: *ConsoleNode) {
   if (*n).fd == 2i32 {
-    ownerFlushBuf();
+    ownerFlushBuf(o);
     ownerWriteNode(2i32, n);
   }
-  else if coTty {
+  else if o.tty {
     ownerWriteNode(1i32, n);
   }
   else if (*n).size < consoleBufCap {
-    if (*n).size > consoleBufCap - coBufLen {
-      ownerFlushBuf();
+    if (*n).size > consoleBufCap - o.len {
+      ownerFlushBuf(o);
     }
-    ownerBuffer(n);
+    ownerBuffer(o, n);
   }
   else {
-    ownerFlushBuf();
+    ownerFlushBuf(o);
     ownerWriteNode(1i32, n);
   }
 }
@@ -276,22 +279,22 @@ fn ownerFree(n: *ConsoleNode) {
 }
 
 fn ownerMain(arg: OwnerArg) u32 {
-  coTty = cone_consoleIsTty(1i32) != 0i32;
-  coBuf = libc.malloc(consoleBufCap) as usize;
-  if coBuf == 0usize {
+  var out = OwnerOut(0usize, 0usize, cone_consoleIsTty(1i32) != 0i32);
+  out.buf = libc.malloc(consoleBufCap) as usize;
+  if out.buf == 0usize {
     die("actors: out of memory for the console's buffer");
   }
   while true {
     coLock.lock();
-    while lockedGet(&coHead) == 0usize {
-      lockedSet(&coAsleep, true);
+    while coHead.loadOrdered(MemOrder.Relaxed) == 0usize {
+      coAsleep.storeOrdered(true, MemOrder.Relaxed);
       coWake.condWait(&coLock);
-      lockedSet(&coAsleep, false);
+      coAsleep.storeOrdered(false, MemOrder.Relaxed);
     }
-    var n = lockedGet(&coHead) as *ConsoleNode;
-    lockedSet(&coHead, 0usize);
-    lockedSet(&coTail, 0usize);
-    lockedSet(&coBusy, true);
+    var n = coHead.loadOrdered(MemOrder.Relaxed) as *ConsoleNode;
+    coHead.storeOrdered(0usize, MemOrder.Relaxed);
+    coTail.storeOrdered(0usize, MemOrder.Relaxed);
+    coBusy.storeOrdered(true, MemOrder.Relaxed);
     coLock.unlock();
 
     // A test's stalled destination (holdConsole)
@@ -303,19 +306,19 @@ fn ownerMain(arg: OwnerArg) u32 {
     while n != null {
       let following = (*n).next;
       cost = cost + (*n).size + mem.sizeof[ConsoleNode]();
-      ownerWrite(n);
+      ownerWrite(&mut out, n);
       ownerFree(n);
       count = count + 1u64;
       n = following;
     }
-    ownerFlushBuf();
+    ownerFlushBuf(&mut out);
 
     coLock.lock();
-    lockedSet(&coQueued, lockedGet(&coQueued) - cost);
-    lockedSet(&coWritten, lockedGet(&coWritten) + count);
-    lockedSet(&coBusy, false);
-    let room = lockedGet(&coRoomWaiters) != 0u32;
-    let done = lockedGet(&coDoneWaiters) != 0u32;
+    coQueued.storeOrdered(coQueued.loadOrdered(MemOrder.Relaxed) - cost, MemOrder.Relaxed);
+    coWritten.storeOrdered(coWritten.loadOrdered(MemOrder.Relaxed) + count, MemOrder.Relaxed);
+    coBusy.storeOrdered(false, MemOrder.Relaxed);
+    let room = coRoomWaiters.loadOrdered(MemOrder.Relaxed) != 0u32;
+    let done = coDoneWaiters.loadOrdered(MemOrder.Relaxed) != 0u32;
     coLock.unlock();
     if room {
       coRoom.notifyAll();
@@ -334,7 +337,7 @@ fn consoleControl(op: u32) {
     var tries = 0u32;
     while tries < 200u32 {
       if coLock.tryLock() {
-        let idle = lockedGet(&coHead) == 0usize && !lockedGet(&coBusy);
+        let idle = coHead.loadOrdered(MemOrder.Relaxed) == 0usize && !coBusy.loadOrdered(MemOrder.Relaxed);
         coLock.unlock();
         if idle {
           return;
@@ -346,11 +349,11 @@ fn consoleControl(op: u32) {
     return;
   }
   coLock.lock();
-  let target = lockedGet(&coPushed);
-  while lockedGet(&coWritten) < target {
-    lockedSet(&coDoneWaiters, lockedGet(&coDoneWaiters) + 1u32);
+  let target = coPushed.loadOrdered(MemOrder.Relaxed);
+  while coWritten.loadOrdered(MemOrder.Relaxed) < target {
+    coDoneWaiters.storeOrdered(coDoneWaiters.loadOrdered(MemOrder.Relaxed) + 1u32, MemOrder.Relaxed);
     coDone.condWait(&coLock);
-    lockedSet(&coDoneWaiters, lockedGet(&coDoneWaiters) - 1u32);
+    coDoneWaiters.storeOrdered(coDoneWaiters.loadOrdered(MemOrder.Relaxed) - 1u32, MemOrder.Relaxed);
   }
   coLock.unlock();
 }
@@ -377,10 +380,16 @@ fn consoleOwnerStart() {
   cone_consoleInstall(&consoleTake as usize, &consoleTakeBytes as usize, &consoleControl as usize);
 }
 
+// For a test: the console's owner has been started in this process, whatever
+// runtime round it is (it stays up across finalAll and a second initAll)
+pub fn consoleStarted() bool {
+  coStarted.load()
+}
+
 // For a test: the bytes the queue may hold before a sender waits
 pub fn setConsoleLimit(bytes: usize) {
   coLock.lock();
-  lockedSet(&coLimit, bytes);
+  coLimit.storeOrdered(bytes, MemOrder.Relaxed);
   coLock.unlock();
 }
 
@@ -397,7 +406,7 @@ pub fn releaseConsole() {
 // For a test: the bytes queued or being written now
 pub fn consoleQueued() usize {
   coLock.lock();
-  let q = lockedGet(&coQueued);
+  let q = coQueued.loadOrdered(MemOrder.Relaxed);
   coLock.unlock();
   q
 }
