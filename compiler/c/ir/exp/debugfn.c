@@ -321,6 +321,36 @@ static void debugReplaceWithMark(TypeCheckState *pstate, FnCallNode **nodep, con
     inodeTypeCheckAny(pstate, (INode**)nodep);
 }
 
+// An array, list or dictionary is written by a generic free function of its
+// own module ('debugArray', 'debugList', 'debugDict'), which is checked only for
+// the element types a call asks about. (A method would be checked for every
+// instance, asked or not.) NULL for any other type.
+static FnDclNode *debugCollectionFn(INode *valtype) {
+    if (valtype->tag == ArrayTag) {
+        INode *textout = debugTextOut();
+        ModuleNode *core = textout ? (ModuleNode*)dclInfoGetModule(textout) : NULL;
+        INode *arr = core ? namespaceFind(&core->namespace, debugMethodName("debugArray")) : NULL;
+        return arr && arr->tag == FnDclTag ? (FnDclNode*)arr : NULL;
+    }
+    if (valtype->tag != StructTag)
+        return NULL;
+    const char *fname;
+    const char *tname = &((StructNode*)valtype)->namesym->namestr;
+    if (strcmp(tname, "Array") == 0)
+        fname = "debugArray";
+    else if (strcmp(tname, "List") == 0)
+        fname = "debugList";
+    else if (strcmp(tname, "Dict") == 0)
+        fname = "debugDict";
+    else
+        return NULL;
+    ModuleNode *mod = (ModuleNode*)dclInfoGetModule(valtype);
+    if (mod == NULL)
+        return NULL;
+    INode *found = namespaceFind(&mod->namespace, debugMethodName(fname));
+    return found && found->tag == FnDclTag ? (FnDclNode*)found : NULL;
+}
+
 int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     if (node->methfld == NULL || !isNameUseNode(node->methfld)
@@ -367,6 +397,8 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep) {
         return 1;
     case StructTag:
         break;
+    case ArrayTag:
+        break;
     case TTupleTag:
         break;
     default:
@@ -387,7 +419,9 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep) {
             return 1;
         }
     }
-    FnDclNode *fn = debugMake(pstate, valtype, (INode*)node);
+    FnDclNode *fn = debugCollectionFn(valtype);
+    if (fn == NULL)
+        fn = debugMake(pstate, valtype, (INode*)node);
     if (fn == NULL)
         return 0;
 
