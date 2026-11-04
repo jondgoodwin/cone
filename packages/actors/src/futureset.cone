@@ -5,7 +5,7 @@
 //   set.start(fn() Future[u64] {peer.count(1u64)});  // the form to reach for: dropping the set cancels it
 //   set <- peer.count(2u64);                 // or set.add(fut): returns a SetKey; dropping the set cannot cancel it
 //   while true {
-//     match await set.next() {               // in completion order
+//     match await set.next() {               // in the order the set learned of them
 //       case let Some((k, r)) { ... }
 //       case is None { break; }              // the set is empty
 //     }
@@ -150,8 +150,10 @@ pub struct FutureSet[T] is Move {
     usize.from((*core).added - (*core).arrived)
   }
 
-  // The next result in order of arrival, with the member's key; None once every
-  // member has been taken. A member whose request went unanswered is an Err
+  // The next result, in the order the set learned of them, with the member's
+  // key; None once every member has been taken. That is not strict completion
+  // order, since no global completion order exists across actors. A member
+  // whose request went unanswered is an Err
   pub fn next(self: &mut) Awaitable[Option[(SetKey, Result[T, Abandoned])]] {
     Awaitable[Option[(SetKey, Result[T, Abandoned])]].of(self.core, &nextRun[T], &nextDrop)
   }
