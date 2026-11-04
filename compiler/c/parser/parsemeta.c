@@ -190,11 +190,17 @@ static MetaVal metaTypeVal(INode *tree) {
 // known only when a generic is cloned for its arguments (ifHashClone)
 static INode *metaTypeAt = NULL;   // The first question about a type the condition being read has asked
 
-static MetaVal metaTypeFact() {
-    INode *subject = (INode*)newNameUseNode(lex->val.ident);
+static INode *metaFieldSubject(void);
+
+// 'subject' is read already, where it is a field's '#f.type' (a '#each #f in #fields(T)' loop's)
+static MetaVal metaTypeFact(INode *given) {
+    INode *subject = given;
+    if (subject == NULL) {
+        subject = (INode*)newNameUseNode(lex->val.ident);
+        lexNextToken();
+    }
     if (metaTypeAt == NULL)
         metaTypeAt = subject;
-    lexNextToken();
     int negate = 0;
     if (lexIsToken(NeToken)) {
         negate = 1;
@@ -353,12 +359,28 @@ static MetaVal metaPrimary(MetaKind hint) {
     }
     // A type parameter and what it is, in a generic: decided when the generic is cloned
     case IdentToken:
-        return metaTypeFact();
-    // A '#each' variable is not a type parameter: what it stands for is known as the passes are
-    // read, but asking about it ('#T is Float') belongs to the layer's reflection
+        return metaTypeFact(NULL);
+    // A field of a '#fields' loop: '#if #f.type is Copy', its type asked what it is
     case MetaVarToken:
+        if (parseMetaIsFieldVar(lex->val.ident)) {
+            INode *subject = metaFieldSubject();
+            if (subject == NULL) {
+                metaSkipCond();
+                return metaVal(MetaBad, 0);
+            }
+            return metaTypeFact(subject);
+        }
+        // A '#each' variable is not a type parameter: what it stands for is known as the passes are
+        // read, but asking about it ('#T is Float') belongs to the layer's reflection
         errorMsgLex(ErrorMetaFact, "A '#if' condition asks about the build's facts and, in a generic, about what a type parameter is; it cannot ask about a meta variable ('%s').",
             &lex->val.ident->namestr);
+        metaSkipCond();
+        return metaVal(MetaBad, 0);
+    // A layout fact is the code generator's constant, so a '#if' cannot be decided by it yet
+    case HashSizeToken:
+    case HashAlignToken:
+        errorMsgLex(ErrorMetaLayoutConst, "'%s' is the code generator's constant, which the front end has not worked out, so it cannot decide a '#if' yet. Ask it in an expression the program runs ('if %s(T) > 16 {..}'), where the code generator folds it.",
+            lexIsToken(HashAlignToken) ? "#align" : "#size", lexIsToken(HashAlignToken) ? "#align" : "#size");
         metaSkipCond();
         return metaVal(MetaBad, 0);
     default:
@@ -1323,6 +1345,25 @@ void parseMetaAssign(ParseState *parse) {
     parseEndOfStatement();
 }
 
+// '#size(T)' or '#align(T)', the lexer on the word: the byte size or alignment of a type, a usize that
+// the code generator reads from the layout it generated. T may be a type parameter, cloned for its
+// argument, or any type. Asked while T's layout is in flight, it is refused (sizeofLayoutRefused)
+INode *parseMetaLayout(ParseState *parse) {
+    int isalign = lexIsToken(HashAlignToken);
+    const char *word = isalign ? "#align" : "#size";
+    SizeofNode *node = newSizeofNode();
+    node->what = isalign ? SizeofAlign : SizeofSize;
+    lexNextToken();
+    if (!lexIsToken(LParenToken)) {
+        errorMsgLex(ErrorMetaFields, "'%s' names the type it measures: '%s(T)'.", word, word);
+        return NULL;
+    }
+    lexNextToken();
+    node->type = parseTypeReq(parse, "'(' of a layout question");
+    parseCloseTok(RParenToken);
+    return (INode*)node;
+}
+
 // A meta variable met as a term: a copy of the loop's item, or the number it holds
 int parseMetaIsFieldVar(Name *name) {
     MetaBind *bind = metaFind(name);
@@ -1349,7 +1390,7 @@ static INode *metaFieldTerm(FieldEach *fe) {
         return NULL;
     }
     if (prop == FieldPropCount) {
-        errorMsgLex(ErrorMetaFields, "A field description answers '.name', '.type', '.region', '.perm' and '.pub'.");
+        errorMsgLex(ErrorMetaFields, "A field description answers '.name', '.type', '.region', '.perm', '.pub' and '.offset'.");
         if (!lexIsToken(DotToken))
             lexNextToken();
         return NULL;
@@ -1357,6 +1398,19 @@ static INode *metaFieldTerm(FieldEach *fe) {
     INode *node = fieldEachProp(fe, (FieldProp)prop, at);
     lexNextToken();
     return node;
+}
+
+// '#f.type' as the subject of a condition ('#if #f.type is Copy'), the lexer on the '#f'
+static INode *metaFieldSubject(void) {
+    FieldEach *fe = metaFind(lex->val.ident)->fe;
+    INode *subject = metaFieldTerm(fe);
+    if (subject == NULL)
+        return NULL;
+    if (!isNameUseNode(subject) || ((NameUseNode*)subject)->namesym != fe->propnames[FieldPropType]) {
+        errorMsgNode(subject, ErrorMetaFact, "A '#if' condition asks what a field's type is: '%s.type is Copy'.", &fe->var->namestr);
+        return NULL;
+    }
+    return subject;
 }
 
 INode *parseMetaTerm(ParseState *parse) {
