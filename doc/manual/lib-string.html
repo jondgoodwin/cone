@@ -216,6 +216,16 @@ print &lt;- "moved to ", Point(0, 0), "\n";
 		standard error is written at once. The buffer is the console's, not the C library's, so text that C code in the
 		same program prints with <span class="pre">printf</span> is written by C's library at its own times.
 		<span class="pre">print.flush()</span> also flushes C's own <span class="pre">stdout</span>.</p>
+	<p><b>In a program that runs actors, one owner writes the console.</b> When the first actor starts the runtime,
+		the console's writing passes to an owner, a thread of its own: a finished record moves to it (no copy of a big
+		one), and the sender goes on at once, so no behaviour makes a console system call and none waits for a slow
+		terminal or a pipe nobody reads. The owner combines queued records into few writes. What was printed before the
+		runtime started is written first, and nothing is reordered. The one place a print waits is a destination that has
+		stalled so long that 64 MB are queued: the sender then waits, a behaviour holding its worker, until the owner
+		catches up; nothing is dropped. <span class="pre">print.flush()</span> returns when everything this program had
+		sent before the call has reached the operating system; in a behaviour it holds the worker until then (it is not an
+		<span class="pre">await</span>, since a plain method cannot be both). The program's end waits for the owner, and
+		so does <span class="pre">exit()</span>; a panic gives it a moment to catch up and then writes its own message.</p>
 	<p><b>Floats print as the shortest text that reads back.</b> <span class="pre">print &lt;- 0.1</span> prints
 		<span class="pre">0.1</span>, <span class="pre">print &lt;- 3.0</span> prints <span class="pre">3.0</span> and
 		one third prints <span class="pre">0.3333333333333333</span>; an f32 prints the shortest text that reads back as
