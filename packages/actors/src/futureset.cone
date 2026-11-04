@@ -2,8 +2,8 @@
 // FUTURES; the design is the work item "waiting on several futures").
 //
 //   var set = actors.FutureSet[u64].make();
-//   set <- peer.count(1u64);                 // or set.add(fut): returns a SetKey
-//   set <- peer.count(2u64);
+//   set.start(fn() Future[u64] {peer.count(1u64)});  // the form to reach for: dropping the set cancels it
+//   set <- peer.count(2u64);                 // or set.add(fut): returns a SetKey; dropping the set cannot cancel it
 //   while true {
 //     match await set.next() {               // in completion order
 //       case let Some((k, r)) { ... }
@@ -90,7 +90,9 @@ pub struct FutureSet[T] is Move {
 
   // The future joins the set; its result will come out of 'next()' or 'await
   // set'. The key says which one it is. A future that has arrived already is
-  // queued at once
+  // queued at once. Reach for 'start' first: a future given to 'add' was sent
+  // already, in whatever group sent it, so dropping the set cannot cancel it;
+  // it can only drop its reply when that comes late
   pub fn add(self: &mut, fut: Future[T]) SetKey {
     let core = self.core as *SetCore[T];
     setOwner[T](core);
@@ -106,7 +108,7 @@ pub struct FutureSet[T] is Move {
       }
       (*m).core = core as *u8;
       (*m).key = key;
-      holdArc[u8](h);
+      holdHeader(h);
       var rf = &setArrive[T];
       let run = mem.readRaw[*u8](&mut rf as *(*u8));
       if futureJoin(at, h, run, u64.from(m as usize)) {
@@ -299,7 +301,7 @@ fn nextRun[T](ctx: *u8, rp: Reply) {
     return;
   }
   if (*core).parked.isTrue() {
-    die("actors: a FutureSet is waited on twice at once");
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
   }
   (*core).parked = Some[Reply](rp);
   (*core).parkedAll = false;
@@ -314,7 +316,7 @@ fn allRun[T](ctx: *u8, rp: Reply) {
     return;
   }
   if (*core).parked.isTrue() {
-    die("actors: a FutureSet is waited on twice at once");
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
   }
   (*core).parked = Some[Reply](rp);
   (*core).parkedAll = true;
