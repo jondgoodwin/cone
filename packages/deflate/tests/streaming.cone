@@ -19,6 +19,26 @@ mod streaming;
 import testing use *;
 import collections use *;
 import deflate use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn words(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
@@ -46,7 +66,7 @@ fn splitRun(fmt: Format, s: &Array[u8], split: usize, maxPull: usize, want: &Arr
     st = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = inf.pull(&mut piece, maxPull);
+      st = pullN(&mut inf, &mut piece, maxPull);
       if piece.len() > maxPull { return false; }
       var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
@@ -58,7 +78,7 @@ fn splitRun(fmt: Format, s: &Array[u8], split: usize, maxPull: usize, want: &Arr
   st = Status.MoreOutput;
   while st == Status.MoreOutput {
     piece.clear();
-    st = inf.pull(&mut piece, maxPull);
+    st = pullN(&mut inf, &mut piece, maxPull);
     if piece.len() > maxPull { return false; }
     var k = 0usize;
     while k < piece.len() { out.push(*piece[k]); k += 1usize; }
@@ -86,7 +106,7 @@ fn everySplit(fmt: Format, s: &Array[u8], want: &Array[u8], label: &str) {
     st = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = inf.pull(&mut piece, 1usize);
+      st = pullN(&mut inf, &mut piece, 1usize);
       if piece.len() > 1usize { st = Status.Failed; }
       var k = 0usize;
       while k < piece.len() { out.push(*piece[k]); k += 1usize; }
@@ -97,7 +117,7 @@ fn everySplit(fmt: Format, s: &Array[u8], want: &Array[u8], label: &str) {
   st = Status.MoreOutput;
   while st == Status.MoreOutput {
     piece.clear();
-    st = inf.pull(&mut piece, 1usize);
+    st = pullN(&mut inf, &mut piece, 1usize);
     var k = 0usize;
     while k < piece.len() { out.push(*piece[k]); k += 1usize; }
   }
@@ -141,7 +161,7 @@ fn main() i32 {
     st = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = inf.pull(&mut piece, 3000usize);
+      st = pullN(&mut inf, &mut piece, 3000usize);
       if piece.len() > biggest { biggest = piece.len(); }
       var k = 0usize;
       while k < piece.len() { got.push(*piece[k]); k += 1usize; }
@@ -159,27 +179,27 @@ fn main() i32 {
     var i1 = Inflater.make(Format.Raw);
     i1.feed(r.view());
     var o = List[u8]();
-    let s1 = i1.pull(&mut o, 100000usize);
+    let s1 = pullN(&mut i1, &mut o, 100000usize);
     expect(s1 == Status.Done && o.view() == w.view(), "raw: Done as soon as the last bit is in, without 'finish'");
     let z = zlibCompress(w.view(), 2);
     var i2 = Inflater.make(Format.Zlib);
     i2.feed(z.view());
     var o2 = List[u8]();
-    let s2 = i2.pull(&mut o2, 100000usize);
+    let s2 = pullN(&mut i2, &mut o2, 100000usize);
     expect(s2 == Status.Done && o2.view() == w.view(), "zlib: Done as soon as the Adler-32 is in, without 'finish'");
     let g = gzipCompress(w.view(), 2);
     var i3 = Inflater.make(Format.Gzip);
     i3.feed(g.view());
     var o3 = List[u8]();
-    let s3 = i3.pull(&mut o3, 100000usize);
+    let s3 = pullN(&mut i3, &mut o3, 100000usize);
     expect(s3 == Status.NeedInput && o3.view() == w.view(), "gzip: the data is out, but another member may follow: NeedInput");
     i3.finish();
-    expect(i3.pull(&mut o3, 100000usize) == Status.Done, "gzip: Done at 'finish'");
+    expect(pullN(&mut i3, &mut o3, 100000usize) == Status.Done, "gzip: Done at 'finish'");
     var i4 = Inflater.make(Format.Gzip);
     i4.setMultiMember(false);
     i4.feed(g.view());
     var o4 = List[u8]();
-    expect(i4.pull(&mut o4, 100000usize) == Status.Done && o4.view() == w.view(), "gzip, one member: Done without 'finish'");
+    expect(pullN(&mut i4, &mut o4, 100000usize) == Status.Done && o4.view() == w.view(), "gzip, one member: Done without 'finish'");
   }
 
   // What follows the stream
@@ -193,14 +213,14 @@ fn main() i32 {
     inf2.feed(withTail.view());
     inf2.finish();
     var o = List[u8]();
-    let s = inf2.pull(&mut o, 100usize);
+    let s = pullN(&mut inf2, &mut o, 100usize);
     expect(s == Status.Done && o.len() == 3usize, "a raw stream with bytes after it ends Done");
     let rest = inf2.takeRest();
     expectInt(i64.from(rest.len()), 3i64, "the rest after a raw stream: its length");
     expect(rest.len() == 3usize && *rest[0usize] == 7u8 && *rest[2usize] == 9u8, "the rest after a raw stream: its bytes");
     expectInt(i64.from(inf2.totalIn()), i64.from(r.len()), "totalIn stops at the end of the stream");
     // pulling again after Done
-    expect(inf2.pull(&mut o, 100usize) == Status.Done && o.len() == 3usize, "a pull after Done gives Done and nothing");
+    expect(pullN(&mut inf2, &mut o, 100usize) == Status.Done && o.len() == 3usize, "a pull after Done gives Done and nothing");
   }
 
   // The deflater's pieces
@@ -208,7 +228,7 @@ fn main() i32 {
     var def = Deflater.make(Format.Zlib, 2);
     def.feed("");
     var o = List[u8]();
-    let s0 = def.pull(&mut o, 100usize);
+    let s0 = pullN(&mut def, &mut o, 100usize);
     expect(s0 == Status.NeedInput && o.len() == 2usize, "an empty feed: the header only, then NeedInput");
     def.feed(w.view());
     def.finish();
@@ -219,7 +239,7 @@ fn main() i32 {
     var biggest2 = 0usize;
     while st2 == Status.MoreOutput {
       piece2.clear();
-      st2 = def.pull(&mut piece2, 17usize);
+      st2 = pullN(&mut def, &mut piece2, 17usize);
       if piece2.len() > biggest2 { biggest2 = piece2.len(); }
       total += piece2.len();
     }
@@ -228,13 +248,13 @@ fn main() i32 {
     expectInt(i64.from(def.totalIn()), 600i64, "the deflater's totalIn: bytes fed before 'finish' only");
     expectInt(i64.from(def.totalOut()), i64.from(total + 2usize), "the deflater's totalOut counts what was delivered");
     piece2.clear();
-    expect(def.pull(&mut piece2, 17usize) == Status.Done && piece2.len() == 0usize, "a pull after Done gives Done and nothing");
+    expect(pullN(&mut def, &mut piece2, 17usize) == Status.Done && piece2.len() == 0usize, "a pull after Done gives Done and nothing");
     // the whole thing is the stream of w
     var whole = List[u8]();
     var again = Deflater.make(Format.Zlib, 2);
     again.feed(w.view());
     again.finish();
-    again.pull(&mut whole, 100000usize);
+    pullN(&mut again, &mut whole, 100000usize);
     expectInt(i64.from(whole.len()), i64.from(total + 2usize), "the pieces total the stream (less the 2 header bytes pulled first)");
   }
   done()
