@@ -33,7 +33,7 @@ struct EndRecord {
 // Looks for the end record from the last byte back, over the 65535 a comment can take. The one whose
 // comment runs exactly to the end of the file wins (a comment may hold bytes that look like a record);
 // failing that, the nearest one that fits (a few bytes after the comment are forgiven).
-fn findEnd(data: &Array[u8]) Result[EndRecord, ZipError] {
+fn findEnd(data: &Array[u8], base: u64) Result[EndRecord, ZipError] {
   let len = data.len;
   if len < 22usize {
     return refusal[EndRecord](ErrorKind.NotZip, 0u64, "too short to be a zip file");
@@ -76,8 +76,8 @@ fn findEnd(data: &Array[u8]) Result[EndRecord, ZipError] {
     let disks = le32(data, at - 4usize);
     var rec = 0usize;
     var have = false;
-    if fits(recOff, 56u64, u64.from(len)) && le32(data, usize.from(recOff)) == sigEnd64 {
-      rec = usize.from(recOff);
+    if recOff >= base && fits(recOff - base, 56u64, u64.from(len)) && le32(data, usize.from(recOff - base)) == sigEnd64 {
+      rec = usize.from(recOff - base);
       have = true;
     } else if at >= 76usize && le32(data, at - 76usize) == sigEnd64 {
       // The offset is not where the record is: bytes were put before the archive. It lies just
@@ -96,13 +96,13 @@ fn findEnd(data: &Array[u8]) Result[EndRecord, ZipError] {
     if onDisk64 != total {
       return refusal[EndRecord](ErrorKind.Unsupported, u64.from(rec), "an archive in several disks is not supported");
     }
-    return Ok[EndRecord, ZipError](EndRecord(rec, total, le64(data, rec + 40usize), le64(data, rec + 48usize),
+    return Ok[EndRecord, ZipError](EndRecord(rec + usize.from(base), total, le64(data, rec + 40usize), le64(data, rec + 48usize),
       true, at, commentLen));
   }
   if diskNo != 0u16 || cdDisk != 0u16 || onDisk != total16 {
     return refusal[EndRecord](ErrorKind.Unsupported, u64.from(at), "an archive in several disks is not supported");
   }
-  Ok[EndRecord, ZipError](EndRecord(at, u64.from(total16), u64.from(cdSize32), u64.from(cdOff32), false, at, commentLen))
+  Ok[EndRecord, ZipError](EndRecord(at + usize.from(base), u64.from(total16), u64.from(cdSize32), u64.from(cdOff32), false, at, commentLen))
 }
 
 // One archive, as its central directory describes it. Made by 'Archive.open', which reads the
@@ -121,8 +121,8 @@ pub struct Archive {
 
   // Reads the end records and the central directory of the zip file in 'data'
   pub fn open(data: &Array[u8]) Result[Archive, ZipError] {
-    let rec = findEnd(data)?;
-    readDirectory(data, &rec)
+    let rec = findEnd(data, 0u64)?;
+    readDirectory(data, &rec, 0u64)
   }
 
   // How many entries
@@ -180,7 +180,14 @@ pub struct Archive {
 }
 
 // Reads the central directory 'rec' describes
-fn readDirectory(data: &Array[u8], rec: &EndRecord) Result[Archive, ZipError] {
+// The archive's end, in 'tail': the bytes from absolute offset 'base' to the archive's last byte. What
+// 'Archive.open' reads, for a reader that has dropped the archive's front (ArchiveStream).
+fn openTail(tail: &Array[u8], base: u64) Result[Archive, ZipError] {
+  let rec = findEnd(tail, base)?;
+  readDirectory(tail, &rec, base)
+}
+
+fn readDirectory(data: &Array[u8], rec: &EndRecord, base: u64) Result[Archive, ZipError] {
   let limit = u64.from(rec.limit);
   if rec.cdSize > limit || rec.cdOffset > limit - rec.cdSize {
     return refusal[Archive](ErrorKind.Corrupt, limit, "the central directory is not inside the archive");
@@ -188,6 +195,9 @@ fn readDirectory(data: &Array[u8], rec: &EndRecord) Result[Archive, ZipError] {
   // Bytes before the archive proper shift every offset it holds
   let prefix = limit - rec.cdSize - rec.cdOffset;
   let start = prefix + rec.cdOffset;
+  if start < base {
+    return refusal[Archive](ErrorKind.Corrupt, start, "the central directory starts before the bytes held");
+  }
   let bound = start + rec.cdSize;
   if rec.total > rec.cdSize / 46u64 {
     return refusal[Archive](ErrorKind.Corrupt, start, "the central directory is too small for its entry count");
@@ -201,7 +211,7 @@ fn readDirectory(data: &Array[u8], rec: &EndRecord) Result[Archive, ZipError] {
     if !fits(q, 46u64, bound) {
       return refusal[Archive](ErrorKind.Corrupt, q, "the central directory ends inside an entry's record");
     }
-    let at = usize.from(q);
+    let at = usize.from(q - base);
     if le32(data, at) != sigCentral {
       return refusal[Archive](ErrorKind.Corrupt, q, "an entry's central directory record is not where it should be");
     }
