@@ -134,7 +134,81 @@ INode *parseNew(ParseState *parse) {
 }
 
 static INode *parseEntries(ParseState *parse);
+static void parseEntryNest(INode *entries, uint16_t nest);
 INode *parseAssignFrom(ParseState *parse, INode *lval);
+
+// The pieces of the interpolated string the lexer is on, `$"moved {n} files"`: its
+// text parts as string literals and each brace's expression, read by the ordinary
+// expression parser with a lexer of its own set over the brace's source (so an
+// error in it points at its real line and column). The lexer is left on the
+// string. A string with nothing in it has the one empty literal.
+static Nodes *parseInterpPieces(ParseState *parse) {
+    InterpLit *lit = lex->val.interp;
+    Nodes *pieces = newNodes(lit->nparts ? lit->nparts : 1);
+    int svparen = parse->entryparen;
+    int svlist = parse->inlist;
+    parse->entryparen = 0;
+    parse->inlist = 0;
+    for (uint32_t i = 0; i < lit->nparts; ++i) {
+        InterpPart *part = &lit->parts[i];
+        if (part->exprp == NULL) {
+            nodesAdd(&pieces, (INode*)newSLitNode(part->text, part->len));
+            continue;
+        }
+        Lexer *sub = (Lexer*)memAllocBlk(sizeof(Lexer));
+        *sub = *lex;
+        sub->srcp = sub->tokp = sub->prevend = part->exprp;
+        sub->linep = sub->prevlinep = part->linep;
+        sub->linenbr = sub->prevlinenbr = part->linenbr;
+        int errs = errors;
+        lexPush(sub);
+        INode *piece = parseSimpleExpr(parse);
+        if (!(lexIsToken(RCurlyToken) && lex->tokp == part->exprend) && errors == errs)
+            errorMsgLex(ErrorInterpExpr, "An interpolation's braces hold one expression, but this does not belong to it. Options (a width, a precision) are wrappers around the value, as in `{fixed(x, 2)}`.");
+        lexPop();
+        nodesAdd(&pieces, piece);
+    }
+    if (pieces->used == 0)
+        nodesAdd(&pieces, (INode*)newSLitNode("", 0));
+    parse->entryparen = svparen;
+    parse->inlist = svlist;
+    return pieces;
+}
+
+// One entry for a list of pieces: the piece, or the pieces as a parenthesized list
+static INode *parseInterpEntry(Nodes *pieces) {
+    if (pieces->used == 1)
+        return nodesGet(pieces, 0);
+    TupleNode *tuple = newTupleNode(pieces->used);
+    INode *first = nodesGet(pieces, 0);
+    if (first)
+        inodeLexCopy((INode*)tuple, first);
+    for (uint32_t i = 0; i < pieces->used; ++i)
+        nodesAdd(&tuple->elems, nodesGet(pieces, i));
+    return (INode*)tuple;
+}
+
+// Is the interpolated string the lexer is on a whole entry of a `<-` list, so
+// its pieces are entries of the list (`sink <- $"a {n}"` is `sink <- "a ", n`)?
+static int parseInterpIsEntry() {
+    return lexIsToken(InterpToken) && lexInterpEndsEntry();
+}
+
+// An interpolated string anywhere else is a String, `String() <- pieces`. The
+// name String is looked up where the string is written: it comes from collections.
+static INode *parseInterpString(ParseState *parse) {
+    Nodes *pieces = parseInterpPieces(parse);
+    NameUseNode *str = newNameUseNode(nametblFind("String", 6));
+    str->flags |= FlagInterpString;
+    FnCallNode *ctor = newFnCallNode((INode*)str, 2);
+    FnCallNode *append = newFnCallOpname((INode*)ctor, lessDashName, 2);
+    append->flags |= FlagOpAssgn | FlagLvalOp;
+    INode *entries = parseInterpEntry(pieces);
+    parseEntryNest(entries, 2);
+    nodesAdd(&append->args, entries);
+    lexNextToken();
+    return (INode*)append;
+}
 
 // The body of a closure written 'x => body': one expression, or a block. An
 // expression is the block's one statement, whose value the closure returns.
@@ -379,6 +453,8 @@ INode *parseTerm(ParseState *parse) {
             lexNextToken();
             return (INode *)node;
         }
+    case InterpToken:
+        return parseInterpString(parse);
     case IdentToken:
     {
         INode *name = (INode*)parseNameUse(parse);
@@ -1613,6 +1689,13 @@ static INode *parseEntryValue(ParseState *parse) {
 // (parseTerm), which is how a construction's contents are written inside
 // another comma list: 'draw(List[i32]() <- (1, 2), x)'.
 static INode *parseEntry(ParseState *parse) {
+    // A whole entry that is an interpolated string, where the list is one entry
+    // (after a construction in an argument list): its pieces, parenthesized
+    if (parseInterpIsEntry()) {
+        INode *entry = parseInterpEntry(parseInterpPieces(parse));
+        lexNextToken();
+        return entry;
+    }
     if (lexIsToken(EachToken))
         return parseEachEntry(parse);
     // 'parallel' is a word only directly before 'each' (as parseExprBlock reads it)
@@ -1656,16 +1739,37 @@ static INode *parseEntry(ParseState *parse) {
 // (contentsLower). The list runs to whatever ends it, the statement's ';'
 // or a ')', across lines.
 static INode *parseEntries(ParseState *parse) {
-    INode *entry = parseEntry(parse);
+    // An interpolated string that is a whole entry stands for its pieces
+    Nodes *pieces = NULL;
+    INode *entry;
+    if (parseInterpIsEntry()) {
+        pieces = parseInterpPieces(parse);
+        entry = parseInterpEntry(pieces);
+        lexNextToken();
+    }
+    else
+        entry = parseEntry(parse);
     if (!lexIsToken(CommaToken))
         return entry;
     TupleNode *tuple = newTupleNode(4);
     if (entry)  // a refused entry is NULL, already reported
         inodeLexCopy((INode*)tuple, entry);
-    nodesAdd(&tuple->elems, entry);
+    if (pieces) {
+        for (uint32_t i = 0; i < pieces->used; ++i)
+            nodesAdd(&tuple->elems, nodesGet(pieces, i));
+    }
+    else
+        nodesAdd(&tuple->elems, entry);
     while (lexIsToken(CommaToken)) {
         lexNextToken();
-        nodesAdd(&tuple->elems, parseEntry(parse));
+        if (parseInterpIsEntry()) {
+            pieces = parseInterpPieces(parse);
+            for (uint32_t i = 0; i < pieces->used; ++i)
+                nodesAdd(&tuple->elems, nodesGet(pieces, i));
+            lexNextToken();
+        }
+        else
+            nodesAdd(&tuple->elems, parseEntry(parse));
     }
     return (INode*)tuple;
 }

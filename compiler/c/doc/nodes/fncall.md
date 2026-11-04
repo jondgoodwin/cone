@@ -1086,6 +1086,34 @@ function a piece calls that prints writes its own record first
 (`module_text_nesting`). Pinned by `module_text_overloads`,
 `module_text_nesting` and `module_text_refuse`.
 
+**An interpolated string** `$"moved {n} files to {dir}"` and the send list
+`"moved ", n, " files to ", dir` are one thing in two spellings, made so by the
+parser, before any of the above sees it. The lexer reads `$"..."` as one
+`InterpToken` holding its parts (`InterpLit`): text parts as a plain literal's
+text is read (escapes, the multi-line margin, `{{` and `}}` for a brace), and for
+each brace the source of its expression, which the parser reads with a lexer of
+its own set over that source (`parseInterpPieces`: the ordinary
+`parseSimpleExpr`, so an error in it points at its real line and column). Where
+the string is a whole entry of a `<-` list (`parseEntries`: `,` `;` `)` `}` or
+the end follows it) its pieces become entries of that list, text parts string
+literals and each expression a value, so `sink <- $"..."` and `sink <- a, $"...", b`
+are the same lists the lowering above takes: one record, an `await` among the
+pieces made first, each expression run once, left to right. Anywhere else
+(`parseInterpString`) it is `String() <- pieces`, the `String` a name use flagged
+`FlagInterpString`, so that with no `String` in scope the diagnostic says what to
+import (collections) rather than naming an unknown. Nothing is held: there is no
+node for an interpolated string after parsing, so a generic body's include file
+prints the send list and reads back the same pieces (`meta_text_interp_include`
+compiles a package's include file and has a program expand its generic bodies
+from it). **A shadowing `String` wins where the `$"..."` is written**: the name is
+looked up there, so a `String` the module declares or imports is the one built,
+accepted for now. When that type has no matching init or `<-`, the errors are the
+ordinary ones on a type literal and a missing `<-` at the string, and none says
+the string stands for `String`: this lead is open until an error names it.
+Pinned by
+`module_text_interp` and its `_threads`, `_await`, `_refuse*`, `_unclosed` and
+`_nocollections` scenarios.
+
 ### Construction
 
 A construction by a declared init stays an `FnCallTag` flagged `FlagNew`: its

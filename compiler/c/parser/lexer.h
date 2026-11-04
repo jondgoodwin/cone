@@ -14,6 +14,23 @@ typedef struct Name Name;    // ../ast/nametbl.h
 #include "../coneopts.h"
 #include <stdint.h>
 
+// The parts of an interpolated string, $"moved {n} files": a text part, or the
+// source of a brace's expression (exprp up to exprend, the closing brace), read by
+// the parser with a lexer of its own set at exprp (linenbr and linep say where)
+typedef struct InterpPart {
+    char *text;        // A text part's characters, null-terminated; NULL for an expression
+    uint32_t len;      // A text part's length
+    char *exprp;       // An expression part's first character, after the open brace
+    char *exprend;     // The close brace that ends it
+    char *linep;       // Start of the line exprp is on
+    uint32_t linenbr;  // That line's number
+} InterpPart;
+
+typedef struct InterpLit {
+    uint32_t nparts;
+    InterpPart parts[1];
+} InterpLit;
+
 // Lexer state (one per source file)
 typedef struct Lexer {
     // Value info about a discovered token
@@ -21,6 +38,7 @@ typedef struct Lexer {
         double floatlit;
         uint64_t uintlit;
         char *strlit;
+        InterpLit *interp;  // InterpToken
         Name *ident;
     } val;
     uint32_t strlen;   // Size of string literal
@@ -78,6 +96,7 @@ enum TokenTypes {
     IntLitToken,    // Integer literal
     FloatLitToken,  // Float literal
     StringLitToken, // String literal
+    InterpToken,    // Interpolated string literal, $"...{expr}..."
     IdentToken,     // Identifier
     LifetimeToken,  // Lifetime variable ('a)
     PermToken,      // Permission identifier
@@ -277,6 +296,9 @@ void lexPop();
 void lexNextToken();
 // Is the token after the current one the keyword 'word'? The lexer is left where it was.
 int lexNextIsWord(char *word);
+// With the lexer on an interpolated string: does an entry of a '<-' list end
+// right after it (a ',' ';' ')' '}' or the end of the file comes next)? The lexer is left where it was.
+int lexInterpEndsEntry();
 // Is the current token a '&' with another '&' directly against it ('&&')? The
 // lexer keeps '&&' as two '&' tokens, because it is two borrows in a type or a
 // prefix ('&&Pt', '&&x'); only a parser holding an operand reads it as the

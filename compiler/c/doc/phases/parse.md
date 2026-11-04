@@ -1409,6 +1409,8 @@ numbers.
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
+| | `lexScanStr` (interpolated) | `$"..."` as one `InterpToken`: the text read as a plain literal's, `{{`/`}}` for a brace, and each brace's expression left as source (`InterpPart`, found by `lexInterpSkipBraces`, which steps over strings and characters inside); an open brace no close brace closes ends the literal at the line's last quote, so the rest of the file lexes as before |
+| | `parseInterpPieces`, `parseEntries` (`parseexpr.c`) | an interpolated string's expressions read by a lexer of their own over the brace's source (`lexPush`/`lexPop`); a whole entry of a `<-` list splices its pieces into the list, anywhere else it is `String() <- pieces` |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.` or by type arguments), read off the text with nothing lexed (section 2) |
