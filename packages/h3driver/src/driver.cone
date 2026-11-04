@@ -680,7 +680,7 @@ pub struct Driver {
   // to open it
   fn heldInQuic(self: &, c: &Conn, s: &Strm) u64 {
     if !s.opened {return u64.from(s.pendingOut.len());}
-    c.q.queued(s.id as i64)
+    c.q.queued(i64.from(s.id))
   }
 
   // A request Failed at once, never made
@@ -785,7 +785,7 @@ pub struct Driver {
         }
         case let PeerStream(p) {
           moved = true;
-          let id = p.stream as u64;
+          let id = u64.from(p.stream);
           match c.byId.getCopy(&id) {
             case let Some(sl) {}
             case is None[Slot] {
@@ -800,7 +800,7 @@ pub struct Driver {
         case let Data(d) {
           moved = true;
           let stream, buf, fin = d.(stream, buf, fin);
-          let s = self.strmById(c, stream as u64);
+          let s = self.strmById(c, u64.from(stream));
           let n = buf.len();
           if s as usize == 0usize || (*s).inDone {
             // A stream that is over here: its bytes dropped, their credit back
@@ -815,7 +815,7 @@ pub struct Driver {
         }
         case let Reset(x) {
           moved = true;
-          let s = self.strmById(c, x.stream as u64);
+          let s = self.strmById(c, u64.from(x.stream));
           if s as usize != 0usize {
             self.dropInbound(c, s as &mut Strm);
             if !(*s).inDone {
@@ -826,7 +826,7 @@ pub struct Driver {
         }
         case let WriteStopped(x) {
           moved = true;
-          let s = self.strmById(c, x.stream as u64);
+          let s = self.strmById(c, u64.from(x.stream));
           if s as usize != 0usize {
             // No code (the package's header, THE STREAM MAP, 4)
             let code = if c.server {http3.h3RequestCancelled} else {http3.h3NoError};
@@ -868,7 +868,7 @@ pub struct Driver {
     let n = s.inbound.len();
     if n == 0usize {return;}
     s.inbound.advance(n);
-    c.q.release(s.id as i64, n);
+    c.q.release(i64.from(s.id), n);
   }
 
   // The handshake is done: Connected or Accepted, once
@@ -915,7 +915,7 @@ pub struct Driver {
         let last = s.inFin && s.inbound.len() == 0usize;
         if last {s.inDone = true;}
         c.h.handleStream(s.id, piece, last, now);
-        c.q.release(s.id as i64, n);
+        c.q.release(i64.from(s.id), n);
         moved = true;
         if c.h.isClosed() {return moved;}
       }
@@ -1135,7 +1135,7 @@ pub struct Driver {
                 case let Some(b) {
                   if s.opened {
                     let n = b.len();
-                    if c.q.write(s.id as i64, b) && n > 0usize {s.wrote = true;}
+                    if c.q.write(i64.from(s.id), b) && n > 0usize {s.wrote = true;}
                   } else {
                     let back = s.pendingOut.push(b);
                   }
@@ -1145,7 +1145,7 @@ pub struct Driver {
             }
             if fin {
               if s.opened {
-                c.q.finish(s.id as i64);
+                c.q.finish(i64.from(s.id));
                 s.finWritten = true;
               } else {
                 s.pendingFin = true;
@@ -1159,7 +1159,7 @@ pub struct Driver {
           let s = self.strmById(c, x.stream);
           if s as usize != 0usize {
             if (*s).opened {
-              c.q.reset(x.stream as i64, x.code);
+              c.q.reset(i64.from(x.stream), x.code);
             } else {
               (*s).pendingReset = true;
               (*s).resetCode = x.code;
@@ -1173,7 +1173,7 @@ pub struct Driver {
           let s = self.strmById(c, x.stream);
           if s as usize != 0usize {
             if (*s).opened {
-              c.q.stopSending(x.stream as i64, x.code);
+              c.q.stopSending(i64.from(x.stream), x.code);
             } else {
               (*s).pendingStop = true;
               (*s).stopCode = x.code;
@@ -1217,7 +1217,7 @@ pub struct Driver {
       }
       waitPop(c, bidi);
       let s = sp as &mut Strm;
-      if qid as u64 != s.id {
+      if u64.from(qid) != s.id {
         // The numbers have parted: an internal error, which ends the connection
         c.h.abort(http3.h3InternalError);
         return;
@@ -1254,7 +1254,7 @@ pub struct Driver {
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
       let s = c.streams.at(cell) as &Strm;
-      if !s.opened || c.q.queued(s.id as i64) > 0u64 {return false;}
+      if !s.opened || c.q.queued(i64.from(s.id)) > 0u64 {return false;}
     }
     c.closeWait = false;
     c.q.close(c.closeCode);
@@ -1310,7 +1310,7 @@ pub struct Driver {
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
       let s = c.streams.at(cell) as &mut Strm;
-      if s.req && s.readDone && s.finWritten && c.q.queued(s.id as i64) == 0u64 {
+      if s.req && s.readDone && s.finWritten && c.q.queued(i64.from(s.id)) == 0u64 {
         self.answer(c, cid, cell, s, EventKind.Done, Failure.none());
       }
     }
@@ -1342,7 +1342,7 @@ pub struct Driver {
       k = k + 1usize;
       if !c.streams.isLive(cell) {continue;}
       let s = c.streams.at(cell) as &mut Strm;
-      if s.opened && !s.req && s.inbound.len() == 0usize && !c.q.hasStream(s.id as i64) {
+      if s.opened && !s.req && s.inbound.len() == 0usize && !c.q.hasStream(i64.from(s.id)) {
         let id = s.id;
         let removed = c.byId.remove(&id);
         c.streams.removeAt(cell);
