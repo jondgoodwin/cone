@@ -13,6 +13,7 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
+#include <math.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -1691,13 +1692,54 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
 // A float converted to an integer type saturates (Bug 43): a value too large
 // gives the type's top, one too small its bottom (0 for an unsigned type), a
-// NaN 0, so no value is poison.
-static LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned) {
-    char *name = issigned ? "llvm.fptosi.sat" : "llvm.fptoui.sat";
-    LLVMTypeRef types[2] = {to, LLVMTypeOf(val)};
-    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
-    LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, types, 2);
-    return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, types, 2), fn, &val, 1, "");
+// NaN 0, so no value is poison. val may be a scalar or a vector. On a CPU that
+// is LLVM's fptosi.sat / fptoui.sat. A Vulkan shader cannot have those (they
+// lower to SPIR-V's SaturatedConversion, an OpenCL Kernel capability), so a GPU
+// gets the same answers from compares and selects around a plain conversion
+// that sees only in-range values. The compares are against the float value of
+// each bound, never a clamp to it (i32's top is not an f32). The bounds are
+// powers of two, so exact in any float wide enough to hold them; one it cannot
+// (f16 against 2^16) becomes infinity, and the value is never past it.
+LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned) {
+    LLVMTypeRef valtype = LLVMTypeOf(val);
+    if (!gen->opt->gpu) {
+        char *name = issigned ? "llvm.fptosi.sat" : "llvm.fptoui.sat";
+        LLVMTypeRef types[2] = {to, valtype};
+        unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+        LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, types, 2);
+        return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, types, 2), fn, &val, 1, "");
+    }
+    LLVMBuilderRef bld = gen->builder;
+    int isvec = LLVMGetTypeKind(valtype) == LLVMVectorTypeKind;
+    unsigned lanes = isvec ? LLVMGetVectorSize(valtype) : 0;
+    LLVMTypeRef ftype = isvec ? LLVMGetElementType(valtype) : valtype;
+    LLVMTypeRef itype = isvec ? LLVMGetElementType(to) : to;
+    unsigned bits = LLVMGetIntTypeWidth(itype);
+    // Float constants and int constants, splatted over a vector
+    double top = ldexp(1.0, issigned ? bits - 1 : bits);
+    double bottom = issigned ? -top : 0.0;
+    LLVMValueRef fhi = LLVMConstReal(ftype, top), flo = LLVMConstReal(ftype, bottom), fzero = LLVMConstReal(ftype, 0.0);
+    LLVMValueRef imax = LLVMConstInt(itype, issigned ? (bits == 64 ? 0x7FFFFFFFFFFFFFFFULL : (1ULL << (bits - 1)) - 1)
+        : (bits == 64 ? ~0ULL : (1ULL << bits) - 1), 0);
+    LLVMValueRef imin = LLVMConstInt(itype, issigned ? (1ULL << (bits - 1)) : 0, 0);
+    if (isvec) {
+        LLVMValueRef *cs = (LLVMValueRef*)malloc(lanes * sizeof(LLVMValueRef));
+        LLVMValueRef *all[6] = {&fhi, &flo, &fzero, &imax, &imin, NULL};
+        for (int k = 0; all[k]; ++k) {
+            for (unsigned i = 0; i < lanes; ++i)
+                cs[i] = *all[k];
+            *all[k] = LLVMConstVector(cs, lanes);
+        }
+        free(cs);
+    }
+    LLVMValueRef big = LLVMBuildFCmp(bld, LLVMRealOGE, val, fhi, "satbig");
+    LLVMValueRef small = LLVMBuildFCmp(bld, LLVMRealOLT, val, flo, "satsmall");
+    LLVMValueRef inrange = LLVMBuildAnd(bld, LLVMBuildFCmp(bld, LLVMRealOGE, val, flo, ""),
+        LLVMBuildFCmp(bld, LLVMRealOLT, val, fhi, ""), "satin");
+    LLVMValueRef safe = LLVMBuildSelect(bld, inrange, val, fzero, "satsafe");
+    LLVMValueRef conv = issigned ? LLVMBuildFPToSI(bld, safe, to, "") : LLVMBuildFPToUI(bld, safe, to, "");
+    conv = LLVMBuildSelect(bld, big, imax, conv, "");
+    return LLVMBuildSelect(bld, small, imin, conv, "sat");
 }
 
 // A number converted to a char: the number if it is a code point, otherwise
