@@ -798,6 +798,7 @@ enum ErrorCode {
     ErrorMetaLayout = 1592,   // A layout fact ('#size(T)', '#align(T)', or '#f.type is Copy' or 'is Move') asked of a type whose layout is still in flight: refused rather than answered by the order the declarations are laid out in, naming the by-value cycle where there is one. Pointed at the question
     ErrorMetaFieldsPrivate = 1591, // A '#fields(T)' of a type with a private field the reflecting code cannot see and the type has not opted in with '@reflect': refused, not listed without it. Pointed at the loop, inside the generic's instance
     ErrorAsTarget = 1594,       // 'as' onto a struct, an enum or a char from a type that is not a coercion to it (a variant as its enum is one): reinterpreting a value as such a type could forge a private field, a reference, a variant or a code point, so it needs 'trust', which is not built yet
+    ErrorConstChar = 1600,      // A constant converted to a char that is no code point: above 0x10FFFF, a surrogate, a negative, a float that cuts to none, or a NaN. At run time such a conversion gives U+FFFD, the replacement character; a constant is refused rather than folded to it. Pointed at the conversion
     ErrorMetaFieldsType = 1590,//A '#fields(T)' that cannot be answered for the type the generic was cloned for: T is no struct (a primitive, reference, enum or trait), or a field has no written permission or region for '#f.perm' or '#f.region' to describe. Pointed at the loop, inside the generic's instance
 
     // Warnings

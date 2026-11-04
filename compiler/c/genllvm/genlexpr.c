@@ -1689,6 +1689,45 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs, selftype);
 }
 
+// A float converted to an integer type saturates (Bug 43): a value too large
+// gives the type's top, one too small its bottom (0 for an unsigned type), a
+// NaN 0, so no value is poison.
+static LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned) {
+    char *name = issigned ? "llvm.fptosi.sat" : "llvm.fptoui.sat";
+    LLVMTypeRef types[2] = {to, LLVMTypeOf(val)};
+    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+    LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, types, 2);
+    return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, types, 2), fn, &val, 1, "");
+}
+
+// A number converted to a char: the number if it is a code point, otherwise
+// U+FFFD, the replacement character. A code point is at most 0x10FFFF and not a
+// surrogate (0xD800 to 0xDFFF). A signed number is widened by sign, so a
+// negative one is past the top; a float is converted as an integer is
+// (saturating), and a NaN is no code point. A u8 or bool is always one.
+static LLVMValueRef genlNumberToChar(GenState *gen, LLVMValueRef val, INode *fromtype, LLVMTypeRef to) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+    LLVMValueRef nan = NULL;
+    if (fromtype->tag == FloatNbrTag) {
+        nan = LLVMBuildFCmp(bld, LLVMRealUNO, val, val, "isnan");
+        val = genlFloatToInt(gen, val, i64, 1);
+    }
+    else if (fromtype->tag == UintNbrTag && ((NbrNode*)fromtype)->bits <= 8)
+        return LLVMBuildZExt(bld, val, to, "");
+    else if (fromtype->tag == IntNbrTag)
+        val = LLVMBuildSExt(bld, val, i64, "");
+    else if (((NbrNode*)fromtype)->bits < 64)
+        val = LLVMBuildZExt(bld, val, i64, "");
+    LLVMValueRef intop = LLVMBuildICmp(bld, LLVMIntULE, val, LLVMConstInt(i64, 0x10FFFF, 0), "");
+    LLVMValueRef nosurrogate = LLVMBuildICmp(bld, LLVMIntUGE,
+        LLVMBuildSub(bld, val, LLVMConstInt(i64, 0xD800, 0), ""), LLVMConstInt(i64, 0x800, 0), "");
+    LLVMValueRef valid = LLVMBuildAnd(bld, intop, nosurrogate, "");
+    if (nan)
+        valid = LLVMBuildAnd(bld, valid, LLVMBuildNot(bld, nan, ""), "");
+    return LLVMBuildSelect(bld, valid, LLVMBuildTrunc(bld, val, to, ""), LLVMConstInt(to, 0xFFFD, 0), "codepoint");
+}
+
 // Generate a value converted to another type
 // - Numbers to another number (extending or truncating)
 // - Number or ref/ptr to true/false
@@ -1716,8 +1755,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
     switch (totype->tag) {
 
     case UintNbrTag:
+        if (totype == (INode*)charType && fromtype != (INode*)charType)
+            return genlNumberToChar(gen, genexp, fromtype, genlType(gen, totype));
         if (fromtype->tag == FloatNbrTag)
-            return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
+            return genlFloatToInt(gen, genexp, genlType(gen, totype), 0);
         else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
             return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
         else /* if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */
@@ -1725,7 +1766,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
 
     case IntNbrTag:
         if (fromtype->tag == FloatNbrTag)
-            return LLVMBuildFPToSI(gen->builder, genexp, genlType(gen, totype), "");
+            return genlFloatToInt(gen, genexp, genlType(gen, totype), 1);
         else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
             return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
         else /*if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */ {
