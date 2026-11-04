@@ -15,6 +15,9 @@
 //    request Failed: Reset, CANCEL), the client cancels another mid-body (the
 //    server's Failed: Reset), and a third, beside them, is whole; the
 //    connection goes on.
+//    cancelIdle: a local cancel takes the last stream, the server silent and
+//    the connection open: no buffer stays lent (the receive that waited for
+//    the stream is ended), and a new stream on it is answered whole.
 // 4. goAway: the server allows 2 streams; with 2 held in flight and 4 in the
 //    client's queue, the server closes (GOAWAY): the 4 are refused (Refused,
 //    unsent, safe to retry) and so is a new request, the 2 in flight are
@@ -97,6 +100,7 @@ struct Out {
   pub finished: bool;
   pub got: u64;           // request body bytes read
   pub afterBody: bool;    // a POST's: answered once its body is read whole
+  pub stopAt: u64;        // when above 0: no more body once this many bytes have gone, and no end
 }
 
 struct Srv {
@@ -304,7 +308,12 @@ fn serve(w: &mut World, events: &uni List[Event]) {
       var size = 0u64;
       var hold = false;
       var resetAt = 0u64;
+      var stopAt = 0u64;
       if starts(t, "/n/") {size = numAt(t, 3usize, &mut end);}
+      else if starts(t, "/half/") {
+        size = numAt(t, 6usize, &mut end);
+        stopAt = numAt(t, end + 1usize, &mut end);
+      }
       else if starts(t, "/hold/") {
         size = numAt(t, 6usize, &mut end);
         hold = true;
@@ -313,7 +322,7 @@ fn serve(w: &mut World, events: &uni List[Event]) {
         resetAt = numAt(t, end + 1usize, &mut end);
       }
       let post = e.request.method == Method.Post;
-      w.sv.outs.push(Out(e.req, size, 0u64, hold || post, resetAt, false, 0u64, post));
+      w.sv.outs.push(Out(e.req, size, 0u64, hold || post, resetAt, false, 0u64, post, stopAt));
       if !hold && !post {w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));}
     } else if e.kind == EventKind.End {
       // A POST is answered once its body is whole
@@ -392,7 +401,8 @@ fn sendBodies(w: &mut World) {
       finished = true;
       w.srv.cancel(&mut w.lp, req);
     }
-    while left > 0u64 && !finished && !(resetAt > 0u64 && sent >= resetAt) {
+    let stopAt = w.sv.outs[i].stopAt;
+    while left > 0u64 && !finished && !(resetAt > 0u64 && sent >= resetAt) && !(stopAt > 0u64 && sent >= stopAt) {
       let n = if left < 16384u64 {left} else {16384u64};
       var taken = true;
       match w.srv.sendData(req, fill(sent, usize.from(n))) {
@@ -403,7 +413,7 @@ fn sendBodies(w: &mut World) {
       sent = sent + n;
       left = left - n;
     }
-    if left == 0u64 && !finished {
+    if left == 0u64 && !finished && !(stopAt > 0u64 && sent >= stopAt) {
       finished = true;
       w.srv.finish(req);
     }
@@ -758,6 +768,93 @@ fn resetMidBody(secure: bool) {
   finish(&mut w, &uni sev, &uni cev, &scene);
 }
 
+fn lentNow() u64 {u64.from(stats().lentBytes)}
+
+// A local cancel takes the last stream while the server stays silent and the
+// connection stays open: the receive that waited for the stream's bytes (a
+// buffer lent) is ended, the connection waiting with a zero-byte receive
+// instead, so no buffer stays lent; and the connection still carries a new
+// stream
+fn cancelIdle(secure: bool) {
+  let scene = sceneName(secure, "cancelIdle");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event]();
+  var cev = List[Event]();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  let settle = Instant.now() + Duration.fromSeconds(5i64);
+  while lentNow() > 0u64 && Instant.now() < settle {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(lentNow(), 0u64, lab(&scene, "idle after the first request: nothing lent").view());
+  // A download the server sends 32 KiB of and then holds, in silence: the
+  // client's receive for the rest is a buffered one
+  let held = ask(&mut w, "/half/1000000/32768", 1000000u64, true);
+  let seen = Instant.now() + Duration.fromSeconds(5i64);
+  while w.cl.gots[held].bytes < 32768u64 && Instant.now() < seen {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(w.cl.gots[held].bytes, 32768u64, lab(&scene, "the client has the 32 KiB sent").view());
+  var n = 0u32;
+  while n < 20u32 {
+    step(&mut w, &uni sev, &uni cev);
+    n = n + 1u32;
+  }
+  expect(lentNow() > 0u64, lab(&scene, "a stream under way: a receive's buffer is lent").view());
+  let silentOut = w.srv.stats().bytesOut;
+  let silentIn = w.cli.stats().bytesIn;
+  expect(w.cli.cancel(&mut w.lp, w.cl.gots[held].req), lab(&scene, "the client cancels its only stream").view());
+  // The server hears the reset and stays silent: the buffer must come home
+  // by the client's own doing
+  let home = Instant.now() + Duration.fromSeconds(5i64);
+  while lentNow() > 0u64 && Instant.now() < home {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(lentNow(), 0u64, lab(&scene, "...and no buffer stays lent").view());
+  expectUInt(w.srv.stats().bytesOut - silentOut, 0u64, lab(&scene, "...the server sent nothing meanwhile").view());
+  expectUInt(w.cli.stats().bytesIn - silentIn, 0u64, lab(&scene, "...the client read nothing meanwhile").view());
+  expect(w.cl.gots[held].last == EventKind.Cancelled, lab(&scene, "...its answer: Cancelled").view());
+  expectUInt(w.cl.closed, 0u64, lab(&scene, "...the client's connection is open").view());
+  // The connection carries a new stream, its bytes whole
+  let again = ask(&mut w, "/n/1000", 1000u64, true);
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while w.cl.gots[again].finals == 0u64 && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  expect(w.cl.gots[again].last == EventKind.Done, lab(&scene, "a new stream after the cancel: Done").view());
+  expectUInt(w.cl.gots[again].bytes, 1000u64, lab(&scene, "...its 1000 bytes").view());
+  expectUInt(w.cl.gots[again].bad, 0u64, lab(&scene, "...all as sent").view());
+  expectUInt(w.sv.accepted, 1u64, lab(&scene, "...on the same connection").view());
+  // Idle again: the client holds nothing. The count is the process's, and
+  // the server side is not covered by this fix (a server's last stream ends
+  // by its own response, leaving its one buffered receive until the client
+  // next sends; a separate lead), so up to that one receive may stay lent.
+  let home2 = Instant.now() + Duration.fromSeconds(5i64);
+  while lentNow() > 0u64 && Instant.now() < home2 {step(&mut w, &uni sev, &uni cev);}
+  expect(lentNow() <= 16384u64, lab(&scene, "idle again: nothing lent by the client (the server's one receive may be)").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
+// The same cancel, and the client's close asked at once: the connection goes
+// on to close whichever way the ended receive and the close meet, both sides
+// close, and nothing stays lent
+fn cancelClose(secure: bool) {
+  let scene = sceneName(secure, "cancelClose");
+  var w = world(secure, h2Config(), h2Config(), true, true);
+  var sev = List[Event]();
+  var cev = List[Event]();
+  warm(&mut w, &uni sev, &uni cev, &scene);
+  let held = ask(&mut w, "/half/1000000/32768", 1000000u64, true);
+  let seen = Instant.now() + Duration.fromSeconds(5i64);
+  while w.cl.gots[held].bytes < 32768u64 && Instant.now() < seen {step(&mut w, &uni sev, &uni cev);}
+  var n = 0u32;
+  while n < 20u32 {
+    step(&mut w, &uni sev, &uni cev);
+    n = n + 1u32;
+  }
+  expect(w.cli.cancel(&mut w.lp, w.cl.gots[held].req), lab(&scene, "the client cancels its only stream").view());
+  expect(w.cli.close(&mut w.lp, w.cl.conn), lab(&scene, "...and asks to close").view());
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while (w.cl.closed == 0u64 || w.sv.closed == 0u64) && Instant.now() < giveUp {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(w.cl.closed, 1u64, lab(&scene, "the client's connection closes").view());
+  expectUInt(w.sv.closed, 1u64, lab(&scene, "...and the server's").view());
+  let home = Instant.now() + Duration.fromSeconds(5i64);
+  while lentNow() > 0u64 && Instant.now() < home {step(&mut w, &uni sev, &uni cev);}
+  expectUInt(lentNow(), 0u64, lab(&scene, "...with nothing lent").view());
+  finish(&mut w, &uni sev, &uni cev, &scene);
+}
+
 fn goAway(secure: bool) {
   let scene = sceneName(secure, "goAway");
   var scfg = h2Config();
@@ -940,6 +1037,8 @@ fn main() i32 {
     many(secure);
     slowReader(secure);
     resetMidBody(secure);
+    cancelIdle(secure);
+    cancelClose(secure);
     goAway(secure);
     streamLimit(secure);
     upload3(secure);
