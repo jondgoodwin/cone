@@ -483,6 +483,10 @@ Some facts belong to the file rather than a line:
   is written `<masked>` before it is compared with the `.err` file, which
   writes `<masked>` in its place (a thread's identity in a panic's report,
   `exception_thread`).
+- **Lines under a diagnostic that are no diagnostic**, `notes`, a list of strings for a `reject`
+  scenario: each must appear in the compiler's output. An error in a pass of a `#each` is followed by
+  `... in pass 2 of 3 of this '#each', where #x is 2.5`, a line that an annotation cannot pin
+  (`meta_each_reject_check`).
 - **A longer limit for a scenario that needs one**, `timeout = <seconds>`, a
   positive finite number (an integer or a float), for a scenario of any
   category. The runner gives every process it starts 20 seconds (`--timeout`
@@ -561,6 +565,12 @@ loads are still there, and an inline method's body is pasted in whole, its
 parameters stored to allocas of their own — and are read out of the dump
 rather than chosen. The same rule about symbol bytes
 applies.
+
+#### `meta`
+
+Matches against what `--meta-ir` wrote, `<name>.meta`: each outermost `#each` and the IR of every pass
+the parser made of it, before name resolution (`meta_each_dump`). For a `compile` or `run` scenario;
+the runner adds the option.
 
 #### `asm`
 
@@ -693,6 +703,11 @@ dump — `q.preir`, from `q/q.conebuild` — in place of the scenario's own; the
 runner then compiles that entry with `--llvmir`. It is how a scenario that
 links two objects asserts on both: that a symbol both define has the same
 linkage in each, say.
+
+The `trust` target (a `compile` or `run` scenario) is the output of a second run
+of the same source with `--report-trust`, which generates no code; its lines are
+`<kind> <file>:<line> <function> [<what>]`, so a check names a site by kind, line
+and function (`doc/design/safety.md` says what the kinds are).
 
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a
