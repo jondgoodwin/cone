@@ -207,6 +207,7 @@ void keywordInit() {
     keyAdd("#fields", HashFieldsToken);
     keyAdd("#size", HashSizeToken);
     keyAdd("#align", HashAlignToken);
+    keyAdd("#name", HashNameToken);
     keyAdd("@reflect", ReflectToken);
 
     // Words the language claims but has not implemented yet. Holding them now
