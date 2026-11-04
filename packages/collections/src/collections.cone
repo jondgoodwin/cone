@@ -1251,6 +1251,17 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     self.appendBytes(s);
   }
 
+  // A writer onto this String's own storage, which 'x.toText(&uni s.textOut())'
+  // writes a value's text into: what '<-' sends to a String that its own
+  // overload does not take. The text goes straight into the block (no copy
+  // through anything between), the block grown when the writer needs room, and
+  // the String's length and NUL set when the writer dies, at the end of the
+  // statement. The String is not read in between, so it is lent for the one
+  // send only.
+  pub fn textOut(self: &mut) TextOut {
+    TextOut.over(buf.ptr, buf.used, buf.cap, self as *u8, &stringTextSpill as usize, &stringTextDone as usize)
+  }
+
   // Add these bytes at the end, for bytes that are text; nothing checks they
   // are UTF-8 (see 'fromBytes')
   pub fn appendBytes(self: &mut, b: &Array[u8]) {
@@ -1265,8 +1276,9 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     self.seal();
   }
 
-  // An integer in decimal, with a '-' before a negative one
-  pub fn appendInt overload `<-`(self: &mut, n: i64) {
+  // An integer in decimal, with a '-' before a negative one. (Sent with '<-',
+  // a number is written by its own 'toText', through textOut.)
+  pub fn appendInt(self: &mut, n: i64) {
     if n < 0i64 {
       buf.push('-');
       // The magnitude as a u64, which holds even the most negative i64's
@@ -1277,7 +1289,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     }
   }
 
-  pub fn appendUInt overload `<-`(self: &mut, n: u64) {
+  pub fn appendUInt(self: &mut, n: u64) {
     var digits = Array[u8, 20]() <- fill 0u8;
     var count = 0usize;
     var rest = n;
@@ -1298,7 +1310,7 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
   // A float as the shortest text that reads back as it (core's FloatText):
   // "0.1", "1.0", "-0.0", "1e+16", "inf". An f32 has its own, 'appendF32':
   // given to '<-' it is widened to an f64 and written as one
-  pub fn appendF64 overload `<-`(self: &mut, x: f64) {
+  pub fn appendF64(self: &mut, x: f64) {
     self.append(FloatText(x).text());
   }
 
@@ -1550,6 +1562,22 @@ pub struct String is Default, ShapeChanging, Hash, CarriesRegion {
     }
     CStr.fromPtr(buf.ptr)
   }
+}
+
+// The String's writer (String.textOut) needs room: the bytes written so far
+// are the String's, then its block grows and the writer is told where it is
+fn stringTextSpill(w: &uni TextOut, need: usize) {
+  let me = w.ownerOf() as &mut String;
+  me.buf.used = w.used();
+  me.buf.reserve(need + 1usize);
+  w.setBuffer(me.buf.ptr, me.buf.cap);
+}
+
+// The String's writer dies: what it wrote is the String's now
+fn stringTextDone(w: &uni TextOut) {
+  let me = w.ownerOf() as &mut String;
+  me.buf.used = w.used();
+  me.seal();
 }
 
 // -------- Dict --------

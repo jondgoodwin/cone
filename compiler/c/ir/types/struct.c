@@ -2566,6 +2566,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // it is declared as soon as the Hasher is (nbrAddHashMethods)
     if (coreIsHasher((INode*)node))
         nbrAddHashMethods(node);
+    // and so is the numbers', bool's and char's 'toText', which names TextOut
+    if (coreIsTextOut((INode*)node))
+        nbrAddTextMethods(node);
     // An extension's comparison waits until its set is its base's plus its own,
     // below: what the comparison can be is decided by whether any variant in the
     // whole set carries fields.

@@ -920,3 +920,14 @@ void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *order
             errorUnreachable((INode *)call, "an atomic intrinsic's ordering that type check found constant is not");
     }
 }
+
+// Core's TextOut, the writer a value's text is written into, known by its name
+// and its package as the Hasher is (contents.c, the text sends)
+int coreIsTextOut(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "TextOut") == 0
+        && strnode->genericinfo == NULL && !(strnode->flags & (TraitType | EnumType))
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}

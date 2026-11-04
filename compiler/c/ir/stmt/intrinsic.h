@@ -72,6 +72,13 @@ enum IntrinsicFn {
     // core's 'Hasher.writeU64' of the value's bits (fnCallHashNumber)
     HashNbrIntrinsic,
 
+    // A number's, bool's or char's 'toText(self, out &uni TextOut)': the text of
+    // the value, written into core's TextOut. Declared on each of them so that
+    // 'x.toText(out)' in a generic, or written by hand, reaches a method. Never
+    // generated: the call is rewritten at type check to the TextOut method that
+    // writes that kind of value (fnCallTextNumber)
+    TextNbrIntrinsic,
+
     // Bitwise
     NotIntrinsic,
     AndIntrinsic,
@@ -261,6 +268,8 @@ int coreIsDefaultTrait(INode *dcl);
 int coreIsIteratorTrait(INode *dcl);
 extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
+// Core's TextOut, the writer a text send writes into (contents.c), known the same way
+int coreIsTextOut(INode *dcl);
 // Core's Erased struct, '{p *u8, rec: *TypeRecord}': a value known only by its type
 // record, which a trace of it calls (genlTraceErased). Known by its name, its two
 // fields and its package.

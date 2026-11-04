@@ -1039,6 +1039,53 @@ An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
 only possible inside a tuple used as a value: `ErrorEntryPlace`. (A yield is the
 exception: it is reached as its loop's statement and lowers there.)
 
+### Text sends
+
+A value writes its text into core's `TextOut` with its own
+`toText(self: &, out: &uni TextOut)`; a `<-` whose receiver takes text is
+lowered to that (`contents.c`, the last section; the names `toText`,
+`record`, `textOut`, `TextOut` and `writeStr` are the compiler's, known by
+their names, `coreIsTextOut`). Three kinds of receiver, told by the receiver
+type's methods (`textKindOf`): a **writer** (`TextOut` itself, held in a
+variable or lent `&uni`); a **record maker** (a method `record(self: &)`
+answering a `TextOut`: `IOStream`, the console); a **text sink** (a method
+`textOut(self: &mut)` answering a `TextOut` onto the receiver's own bytes:
+`String`, trace's `Message`).
+
+A receiver's own `<-` is always tried first, so a `List`'s element append
+stays one and a text goes in as it did. Then, by the shape of the right side:
+
+- **A list of pieces** on a writer or a record maker is lowered before its pieces
+  are looked at (`textSendLower`; the receiver alone is checked, on a copy as a
+  trial, so what is not text's is checked once, as written). A record maker's
+  becomes the block
+  `{ var -w = recv.record(); -w <- p1; -w <- p2; ...; -w.finish() }`
+  (`FlagKeepTemps`): the writer is a local, so it is finalized at the statement's
+  end if an early `return` leaves first, and `finish` hands the record to the
+  maker's function after the last piece and before the statement's temporaries are
+  finalized, so a `final` that prints runs after the pieces before it. A
+  writer's becomes a send per piece. A list with an entry that is not a plain value
+  (`3 of x`, `fill`, `each`) is the general list, a piece at a time, each
+  piece its own record on the console.
+- **A list sent to a sink** is the general list lowering with its temporaries
+  dying per statement (`contentsTextList`), so each piece's writer is finished
+  before the next piece's begins.
+- **A single piece no `<-` took** is rewritten where the choice failed
+  (`fnCallLowerMethodOn`, no candidate; `textSendFallback`), the call node
+  changed in place to `piece.toText(&uni W)`: `W` is the writer itself, or a
+  temporary `recv.textOut()` or `recv.record()` borrowed `&uni`, finalized at
+  the statement's end (for a single piece the record is delivered when that
+  temporary dies, after the temporaries the piece made if it is a number, since a
+  number's `toText` is rewritten to a call on the writer). A piece with no
+  `toText` is `ErrorNoText`. A text receiver's `<-` candidates do not
+  propose an expected type for the piece (`fnCallArgAgreed`).
+
+Parenthesized and nested sends are statements or values where they stand: a
+`(String() <- ...)` piece is a String made before the outer record is finished, a
+function a piece calls that prints writes its own record first
+(`module_text_nesting`). Pinned by `module_text_overloads`,
+`module_text_nesting` and `module_text_refuse`.
+
 ### Construction
 
 A construction by a declared init stays an `FnCallTag` flagged `FlagNew`: its

@@ -70,6 +70,19 @@ the Hasher's own `writeU64` of the value converted to a `u64`
 reaches something for a `K` that is a number; the grant that makes `u32 is Hash`
 true is in `genericTypeIs` ([generic](generic.md), "Constraints").
 
+**A number's, bool's and char's 	oText is a method with no function behind it,
+too.** 
+brAddTextMethods (corenumber.c), called when name resolution reaches
+core's TextOut, gives ool, char and every number type
+	oText(self, out &uni TextOut), whose value is a TextNbrIntrinsic node. It is
+never generated: type check, once the method is selected, rewrites the call to the
+TextOut method that writes that kind of value, putI64 or putU64 of the value
+converted, putF64, putF32, putBool or putChar (nCallTextNumber; a borrow
+of the number is read through first). It exists so that x.toText(out), which the
+compiler writes for every value sent as text (	extSendFallback, contents.c) and
+which a generic function or a type's own 	oText may write, reaches something for
+a number.
+
 *Provenance: read from source and measured, September 2026.*
 
 ## Principles — [derived]
@@ -308,5 +321,6 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
 | generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlBitIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
 | a number's math methods | `corenumber.c` `nbrMathMethods`; a vector's, `vector.c` `vecAddLanewise`; `genlexpr.c` `genlNumberIntrinsic` |
 | an integer's bit methods | `corenumber.c` `nbrBitMethods`; its `hash`, `nbrAddHashMethods` and `fncall.c` `fnCallHashNumber` |
+| a number's `toText` | `corenumber.c` `nbrAddTextMethods` and `fncall.c` `fnCallTextNumber` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |
