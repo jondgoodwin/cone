@@ -254,6 +254,18 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(node->dimens, cnt, nodesp)) {
+            // A size may name a constant (of type usize, or an untyped integer
+            // one), or a chain of them: the size is the literal it comes to
+            if (nameUseNames(*nodesp, ConstDclTag)) {
+                ConstDclNode *cdcl = (ConstDclNode*)((NameUseNode*)*nodesp)->dclnode;
+                INode *val = cdcl->value;
+                while (val && nameUseNames(val, ConstDclTag))
+                    val = ((ConstDclNode*)((NameUseNode*)val)->dclnode)->value;
+                INode *ctype = cdcl->vtype;
+                if (val && val->tag == ULitTag && (ctype == (INode*)usizeType
+                    || ((ULitNode*)val)->vtype == (INode*)usizeType || litIsUntypedNumber(val)))
+                    *nodesp = (INode*)newULitNode(((ULitNode*)val)->uintlit, (INode*)u64Type);
+            }
             if ((*nodesp)->tag != ULitTag)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size must be an integer literal");
             else if (((*nodesp)->flags & FlagLitNeg) && ((ULitNode*)*nodesp)->uintlit != 0)

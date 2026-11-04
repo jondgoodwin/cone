@@ -2633,8 +2633,7 @@ Sep]: raw bindings, C names, C types and C strings, with the Cone-flavoured
 layer over them in packages of their own (`fs`, `path` and `env`). Neither
 names a `[link]` library: the C runtime or C library they bind is the one every
 link already names. `libc`, which `core` imports, cannot choose by target; `posix`
-imports `core` and does, by `core.isWindows()` (a C-named module gets no
-prelude), so each of its functions calls the target's own and the other
+imports `core` and does, by `#if #os == .windows`, so each of its functions calls the target's own and the other
 system's calls are not generated (every `extern` is declared on every
 platform). `posix` presents POSIX names. On Linux each is the C library's
 function, bound under a Cone name of its own where the Cone function of the

@@ -201,7 +201,8 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # addresses), and cnames.c a third (the C library's stdin, stdout and stderr,
 # errno and the numbers that differ by C library, which Cone cannot name), and oscalls.c a fourth
 # (the futex and the other system calls sync and thread need on Linux, which
-# Cone cannot call; empty on Windows). All go into the one library. The object also holds what it uses of core and
+# Cone cannot call; empty on Windows), and console.c a fifth (the console's lock,
+# terminal test and write, in each system's own calls). All go into the one library. The object also holds what it uses of core and
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
@@ -231,5 +232,6 @@ add_library(conestd STATIC
 	packages/conestd/heapregion.c
 	packages/conestd/cnames.c
 	packages/conestd/oscalls.c
+	packages/conestd/console.c
 	${CONESTD_OBJ}
 )

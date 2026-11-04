@@ -51,6 +51,15 @@ typedef struct INode {
     INodeHdr; \
     INode *vtype
 
+// What a name table slot's node must share, whether a variable or a field: the table may hold
+// either where a variable is expected, and varDclHook reads 'scope' through a VarDclNode.
+// VarDclNode and FieldDclNode both begin with this, so the overlay is by construction.
+#define DclScopeHdr \
+    IExpNodeHdr; \
+    Name *namesym; \
+    uint16_t scope; \
+    uint16_t index
+
 // The four groups a node can belong to
 typedef enum NodeGroup {
     StmtGroup,      // Statement nodes that return no value

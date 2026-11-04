@@ -1,0 +1,69 @@
+// How a send to the console brackets, when sends nest. A statement 'print <- a, b, c'
+// is one record, taken away when the statement ends. A send written inside it,
+// in parentheses as a piece, or in a function a piece calls, is a statement of
+// its own where it stands, and takes its own record away when ITS statement
+// ends, which is before the outer one's.
+//
+// - a parenthesized String send, '(String() <- "b", 5)', is a value: a String
+//   built before the outer record is, whose text is one piece of it;
+// - a function a piece calls that prints writes its own record at once, so
+//   its text comes before the outer record's, which is written when the outer
+//   statement is over;
+// - a record held in a variable ('rec') takes what is sent to it and nothing else,
+//   and is written when its scope ends;
+// - a writer sent to inside a 'toText' is the one the caller's statement owns.
+
+mod module_text_nesting;
+
+import stdio use *;
+import collections use *;
+
+fn shout(n: i32) i32 {
+  print <- "[inner ", n, "]\n";
+  n * 2
+}
+
+struct Pair {
+  a: i32;
+  b: i32;
+  pub fn toText(self: &, out: &uni TextOut) {
+    // Sent into the writer the caller owns, in order with its other pieces
+    out <- "<", self.a;
+    out <- ",", self.b, ">";
+  }
+}
+
+// A value whose death prints, made by a piece
+struct Noisy {
+  pub n: i32;
+  fn final(self: &uni) { print <- "[final ", n, "]\n"; }
+}
+
+fn make(n: i32) Noisy { Noisy(n) }
+
+fn main() i32 {
+  // A parenthesized String send is a value of the outer one
+  print <- "a", (String() <- "b", 5), "c\n";
+
+  // A function that prints, called by a piece: its record is written first
+  print <- "outer ", shout(1), " ", shout(2), " done\n";
+
+  // A parenthesized send of a list inside a list, nested twice
+  print <- "x", (String() <- "y", (String() <- "z", 1), 2), "w\n";
+
+  // A held record is its own, whatever is printed beside it
+  {
+    var rec = print.record();
+    rec <- "held 1\n";
+    print <- "between\n";
+    rec <- "held 2\n";
+  }
+
+  // A toText's own sends are the caller's record
+  print <- "pairs ", Pair(1, 2), " ", Pair(3, 4), "\n";
+
+  // A value a piece made dies at the statement's end, after its record was
+  // written whole: what its death prints comes after the pieces before it
+  print <- "made ", make(1).n, " here\n";
+  0
+}

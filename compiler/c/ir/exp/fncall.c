@@ -1843,6 +1843,60 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
     return (FnDclNode*)write;
 }
 
+// A number's, bool's or char's 'toText(self, out &uni TextOut)' (corenumber.c,
+// nbrAddTextMethods). It is no function: the call becomes the TextOut method that
+// writes that kind of value, 'out.putI64(i64.from(x))' for a signed integer,
+// putU64 for an unsigned, putF32 and putF64, putBool and putChar, the value
+// converted to the type the method takes. The receiver is the value, already
+// selected, and the one argument is the writer. Answers the method the call is
+// now to, or NULL after reporting that core's TextOut lacks it.
+static FnDclNode *fnCallTextNumber(FnCallNode *callnode, FnDclNode *selected) {
+    FnSigNode *sig = (FnSigNode*)selected->vtype;
+    VarDclNode *oparm = (VarDclNode*)nodesGet(sig->parms, 1);
+    INode *textout = itypeGetTypeDcl(((RefNode*)itypeGetTypeDcl(oparm->vtype))->vtexp);
+    INode *valtype = iexpGetTypeDcl(callnode->objfn);
+    while (valtype->tag == RefTag)
+        valtype = itypeGetTypeDcl(((RefNode*)valtype)->vtexp);
+    const char *method = "putBool";
+    INode *to = NULL;
+    if (valtype == (INode*)boolType)
+        method = "putBool";
+    else if (valtype == (INode*)charType)
+        method = "putChar";
+    else if (valtype == (INode*)f32Type)
+        method = "putF32";
+    else if (valtype == (INode*)f64Type)
+        method = "putF64";
+    else if (valtype->tag == IntNbrTag) {
+        method = "putI64";
+        to = (INode*)i64Type;
+    }
+    else {
+        method = "putU64";
+        to = (INode*)u64Type;
+    }
+    INode *write = textout->tag == StructTag ? iNsTypeFindFnField((INsTypeNode*)textout, nametblFind((char*)method, strlen(method))) : NULL;
+    if (write == NULL || write->tag != FnDclTag) {
+        errorMsgNode((INode*)callnode, ErrorNoMbr,
+            "core's TextOut has no `%s`, which a number's `toText` writes its text through.", method);
+        callnode->vtype = errorType;
+        return NULL;
+    }
+    fnCallDemandCandidates(write);
+    INode *val = callnode->objfn;
+    // The number itself, read through any borrow of it
+    while (iexpGetTypeDcl(val)->tag == RefTag && derefInject(&val))
+        ;
+    if (to != NULL && valtype != to) {
+        val = (INode*)newConvCastNode(val, to);
+        inodeLexCopy(val, callnode->objfn);
+    }
+    callnode->objfn = nodesGet(callnode->args, 0);
+    callnode->args = newNodes(1);
+    nodesAdd(&callnode->args, val);
+    return (FnDclNode*)write;
+}
+
 // The body 'Array[T]' of an element type T: an instance of the generic struct
 // core declares, whose methods (core.cone) an array, a reference to one and a
 // slice call. NULL if core has not declared it or it could not be made.
@@ -2306,6 +2360,15 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     }
 
     if (selected == NULL) {
+        // A text receiver's '<-' that no candidate took (a writer, a String, the
+        // console) is the piece's own toText written into the writer the receiver
+        // is or lends (textSendFallback)
+        if (methsym == lessDashName && (callnode->flags & FlagOpAssgn) && status == OverloadNone
+            && textSendFallback(pstate, callnode, obj)) {
+            if (callnode->vtype == errorType)
+                return -1;
+            return fnCallLowerMethodOn(pstate, callnode, NULL);
+        }
         // A lock-managed reference reaches its value through a borrow only,
         // which a method's receiver is not made of
         INode *objtype = iexpGetTypeDcl(obj);
@@ -2339,6 +2402,12 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
     if (selected->value && selected->value->tag == IntrinsicTag
         && ((IntrinsicNode*)selected->value)->intrinsicFn == HashNbrIntrinsic) {
         selected = fnCallHashNumber(callnode, selected);
+        if (selected == NULL)
+            return -1;
+    }
+    else if (selected->value && selected->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)selected->value)->intrinsicFn == TextNbrIntrinsic) {
+        selected = fnCallTextNumber(callnode, selected);
         if (selected == NULL)
             return -1;
     }
@@ -4117,6 +4186,10 @@ static INode *fnCallArgAgreed(INode *set, uint32_t firstparm, uint32_t argi, uin
         INode *ptype = ((VarDclNode*)nodesGet(sig->parms, firstparm + argi))->vtype;
         if (ptype == NULL)
             return NULL;
+        // A text receiver's '<-' takes a text, and a value of any other type goes in
+        // by its own toText: the text is no type to expect of the value
+        if (firstparm == 1 && sig->parms->used > 0 && textIsReceiver(((VarDclNode*)nodesGet(sig->parms, 0))->vtype))
+            return NULL;
         if (agreed == NULL)
             agreed = ptype;
         else if (!itypeIsSame(agreed, ptype))
@@ -4880,6 +4953,8 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     // contents of a construction becomes the applications they stand for
     // (contents.c). Ahead of the arguments below, because the list is taken
     // apart rather than checked as an argument in its own right.
+    if (textSendLower(pstate, nodep))
+        return;
     if (contentsIsAppend(node)) {
         contentsLower(pstate, nodep);
         return;

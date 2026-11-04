@@ -53,6 +53,9 @@ typedef struct ClosureInfo {
 
 ClosureNode *newClosureNode();
 INode *cloneClosureNode(CloneState *cstate, ClosureNode *node);
+// How many closure literals have been cloned: a caller that clones an expression to
+// check it as a trial asks whether any was inside it
+extern uint32_t closuresCloned;
 void closurePrint(ClosureNode *node);
 
 // Name resolution of a literal, and of a name used inside one

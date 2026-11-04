@@ -5,7 +5,8 @@
 // index out of bounds, a slice's range out of bounds, a region's allocation
 // that failed. What happens is one fixed sequence:
 //
-// - stdout is flushed, so what the program printed before is kept;
+// - stdout is flushed (what the console holds, stdio.cone, and C's own
+//   buffer), so what the program printed before is kept;
 // - one line goes to stderr, 'panic at <file>:<line>: <message>', naming the
 //   thread ('panic in thread <id> at ...') when it is not the one the program
 //   started on;
@@ -51,6 +52,7 @@ pub fn cone_setPanicHook(hook: Hook) {
 
 pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
   let file = fileBytes as &str;
+  consoleFlushForPanic();
   libc.fflush(libc.stdout());
   var out = newText(libc.stderr());
   if panicking {
@@ -90,6 +92,7 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
     let call = hook as Hook;
     call(msg, file, line);
   }
+  consoleFlushForPanic();
   libc.fflush(libc.stdout());
   libc.fflush(libc.stderr());
   libc.abort()
@@ -101,6 +104,7 @@ pub fn cone_panic(msg: &str, fileBytes: &Array[u8], line: u32) Never {
 // with that status. stdout is flushed first, so what the program printed is
 // kept, and one line goes to stderr: 'Error: <message>'.
 pub fn cone_mainError(msg: &str) {
+  consoleFlushForPanic();
   libc.fflush(libc.stdout());
   var out = newText(libc.stderr());
   out.text("Error: ");

@@ -1345,19 +1345,6 @@ last is a compiler defect, reported (`ErrorUnreachable`) with the block and its
 function, and the object is not made. LLVM's verifier says the same, but only
 under `--verify`; this check runs on every compile.
 
-**An arm whose condition is a constant of the build is decided at
-generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
-`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
-(TEMPORARY; its final design is open), or `!`, `&&`, `||` of them. A false
-arm generates nothing, not even its test; a true one generates its body as the
-`else` would and ends the chain, the arms after it generating nothing. A call
-on an untaken side therefore never reaches the object, in either build, and an
-`extern` only that side names is declared and never referenced, and a function
-only that side calls is not emitted (section 2, "Only what live code reaches
-is emitted"). Everything
-before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
-"Constants of the build drop the untaken side at generation").
-
 Short-circuit `&&`/`||` are two blocks and a 2-way `i1` phi. `!` is
 `xor i1 %x, true`.
 
@@ -2720,7 +2707,9 @@ variables.
 | `packages/conestd/rawblocks.cone` | `cone_rawBlockAlloc`, `cone_rawBlockResize`, `cone_rawBlockRelease` | the raw blocks layer, `libc`'s `malloc`, `realloc` and `free` and nothing more: core's `RawBlocks`, which the regions of `Uni`, `Rc` and `Arc`, the heap region (`heapregion.c`), the collections' `freeze`, an arena's blocks and an actor's chunks go through |
 | `packages/conestd/hash.cone` | `cone_hashSeed` | the process's hash seed, 64 random bits from the OS (the C runtime's `rand_s` on Windows, `getentropy` elsewhere) drawn once, the first time core's `processSeed` asks, from any thread: what `Hasher.seeded()` starts from |
 | `packages/conestd/cnames.c` | `cone_stdin`, `cone_stdout`, `cone_stderr`, `cone_errno`, `cone_time`, `cone_timespec_get`; the globals `EILSEQ`, `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` | the C library's names that differ by platform or that Cone cannot spell, each answered from the C library's own header, which `libc`'s `stdin()`, `stdout()`, `stderr()`, `errno()`, `time`, `timespec_get`, `EILSEQ` and the locale categories bind (`libc` is C-named, with no prelude and so no `isWindows()`, so a number that differs by C library is a global read as a constant is) |
-| `packages/conestd/floatfmt.cone` | `floatText` (private; `printFloat` and `eprintFloat` call it) | a float as C's `%g` writes it: six significant digits of the exact value, correctly rounded (a tie to the even digit), the digits found over a 1536-bit integer so no C library's `printf` is involved, an infinity as `inf` and every NaN as `nan`; the text is the same on every OS |
+| `packages/conestd/floatfmt.cone` | `cone_floatShortest`, `cone_floatShortest32` | a float as the shortest text that reads back as the same float (Ryu's digits), written as Python's `repr` writes it: core's `FloatText`, and so the text of every f64 and f32 a `TextOut` writes; an infinity as `inf` and every NaN as `nan`; the same text on every OS |
+| `packages/conestd/stdio.cone` | `consoleDeliver`, `cone_setConsoleEngine`, `printStr` and the other `print` and `eprint` functions, `cone_textGrow`, `cone_textFinish` | the console: a send statement's record handed over whole, under the console's lock, and written at once to a terminal and to standard error, or held in the console's own buffer for a file or a pipe until it fills, standard error writes, a flush or the program's end; one slot, `consoleEngine`, for an engine that takes records instead. Also the slow side of core's `TextOut` (making room for a record, the writer's death) |
+| `packages/conestd/console.c` | `cone_consoleLock`, `cone_consoleIsTty`, `cone_consoleWrite`, `cone_consoleWriteParts`, `cone_consoleAtExit` | the console's operating-system calls: an SRWLOCK or a pthread mutex, the terminal test, a write that carries on until every byte is out (`_write`, `write`), a gathered write (`writev` on POSIX; Windows has none for a console or a pipe, so the parts go out one after another under the lock), and `atexit` |
 | `packages/conestd/oscalls.c` | `cone_futexWait`, `cone_futexWake`, `cone_threadId`, `cone_processors`, `cone_flushProcessWriteBuffers` | Linux's system calls the `sync` and `thread` packages need and Cone cannot call (the futex is one variadic `syscall`), empty on Windows, whose kernel32 those packages bind directly: the futex's wait and wake on a 32-bit word, the kernel's thread id, the online processors, and the process-wide memory barrier (`membarrier`, or a protection change on a dirty page when the kernel refuses it); the packages choose by `isWindows()`, and POSIX's `pthread_create`, `sched_yield` and `nanosleep` they bind by name |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |

@@ -223,13 +223,20 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     uint32_t cnt;
     if (reenrich)
         newnode->fields.used = 0;
-    else for (nodelistFor(&node->fields, cnt, nodesp)) {
-        *newnodesp = cloneNode(cstate, *nodesp);
-        if ((*newnodesp)->tag == FieldDclTag) {
-            FieldDclNode *newfld = (FieldDclNode*)*newnodesp;
-            namespaceAdd(&newnode->namespace, newfld->namesym, (INode*)newfld);
+    else {
+        // A field under a '#if' on a type parameter that these arguments make false is
+        // not in the instance: it is not copied, so it is neither laid out nor named
+        for (nodelistFor(&node->fields, cnt, nodesp)) {
+            if (structMemberAbsent(absent, *nodesp))
+                continue;
+            *newnodesp = cloneNode(cstate, *nodesp);
+            if ((*newnodesp)->tag == FieldDclTag) {
+                FieldDclNode *newfld = (FieldDclNode*)*newnodesp;
+                namespaceAdd(&newnode->namespace, newfld->namesym, (INode*)newfld);
+            }
+            ++newnodesp;
         }
-        ++newnodesp;
+        newnode->fields.used = (uint32_t)(newnodesp - newnode->fields.nodes);
     }
     // An 'is' entry with a condition is the instance's where its arguments meet
     // the condition, and missing from it (listed in 'absent') where they do not.
@@ -2559,6 +2566,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // it is declared as soon as the Hasher is (nbrAddHashMethods)
     if (coreIsHasher((INode*)node))
         nbrAddHashMethods(node);
+    // and so is the numbers', bool's and char's 'toText', which names TextOut
+    if (coreIsTextOut((INode*)node))
+        nbrAddTextMethods(node);
     // An extension's comparison waits until its set is its base's plus its own,
     // below: what the comparison can be is decided by whether any variant in the
     // whole set carries fields.

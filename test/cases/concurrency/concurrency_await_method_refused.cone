@@ -5,6 +5,8 @@
 //   argument for the wait (ErrorAwaitMethod);
 // - one that gives neither an Awaitable[R] nor a Future[T]: the wait has no
 //   operation to start and no future to park on (ErrorAwaitMethod);
+// - a type whose 'await' is overloaded: said to be overloaded, not missing
+//   (ErrorAwaitMethod);
 // - a type with no such method, still ErrorAwaitNotFuture, the message
 //   naming the method.
 
@@ -24,6 +26,16 @@ struct GivesNumber {
   pub fn await(self) u64 {n}
 }
 
+struct Twice {
+  pub n: u64;
+  pub fn plain overload `await`(self) actors.Awaitable[u64] {
+    actors.Awaitable[u64].make(fn(rp: actors.Reply) {})
+  }
+  pub fn more overload `await`(self, extra: u64) actors.Awaitable[u64] {
+    actors.Awaitable[u64].make(fn(rp: actors.Reply) {})
+  }
+}
+
 struct Nothing {
   pub n: u64;
 }
@@ -37,6 +49,11 @@ actor Asker {
   pub async fn number(self) {
     let g = GivesNumber(1u64);
     let v = await g;             //~ ErrorAwaitMethod "the wait is on an Awaitable[R]"
+  }
+
+  pub async fn twice(self) {
+    let t = Twice(1u64);
+    let v = await t;             //~ ErrorAwaitMethod "is overloaded"
   }
 
   pub async fn none(self) {

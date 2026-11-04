@@ -364,14 +364,28 @@ DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start
 // places a list of items is read (a module, a type's braces, an 'extern' block,
 // a block of statements) each give parseHashIf the function that reads their
 // items. It is called with the lexer after a branch's '{', and reads through the
-// matching '}'; 'taken' says whether the build takes the branch. When it does
-// not, parse->mod is a scratch module that keeps and binds nothing, and the
-// function reads into scratch of its own for anything else it would add to.
-typedef void (*MetaBranchFn)(ParseState *parse, void *ctx, int taken);
+// matching '}'; 'mode' says what the build does with the branch. When it does not
+// take it (MetaUntaken), parse->mod is a scratch module that keeps and binds
+// nothing, and the function reads into scratch of its own for anything else it
+// would add to. A condition that asks what a type parameter is leaves the choice
+// to a generic's clone (MetaDeferred): the branch is read as real code. A place
+// that holds its branches in a list of their own (a block's statements) returns
+// the branch as a block, and one that keeps them in the enclosing list (a type's
+// braces) returns NULL and asks parseMetaMemberCond for the condition each member
+// it added exists under.
+#define MetaUntaken  0
+#define MetaTaken    1
+#define MetaDeferred 2
+typedef INode *(*MetaBranchFn)(ParseState *parse, void *ctx, int mode);
 // The options the facts come from
 void parseMetaInit(ConeOptions *opt);
-// A chain, with the lexer on its '#if'
-void parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx);
+// A chain, with the lexer on its '#if'. A place that cannot hold a question about a
+// type gives 'nodefer', what is said of one; the deferred chain, if any, is returned
+INode *parseHashIf(ParseState *parse, MetaBranchFn branch, void *ctx, const char *nodefer, const char *nomix);
+// What a function body's '#if' chain is told when it asks about both the build and a type
+extern const char parseMixBodyMsg[];
+// The condition a member added by a deferred branch exists under (a fresh copy for each call)
+INode *parseMetaMemberCond(void);
 // A chain that gives a value, with the lexer on its '#if'
 INode *parseHashIfExpr(ParseState *parse);
 // A '#elif' or '#else' met where no chain is waiting for it: reported and read past
