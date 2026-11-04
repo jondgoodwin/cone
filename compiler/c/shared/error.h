@@ -806,6 +806,7 @@ enum ErrorCode {
     // 3005 was WarnAwaitUnused, an awaited operation's answer thrown away; it is one case of WarnDiscard now
     WarnDiscard = 3006,    // A statement throws a value away that is a value of a type declared @mustUse (core's Result is), or the answer of an awaited operation; `_ = f();` says the drop is meant
     WarnIndexStar = 3007,  // `*x[i]` over an index through a type's `[]` that lends a borrow: `x[i]` is the element itself now, and the transitional `*` keeps its old meaning. Reported only under `--warn-index-star` until the cleanup is done. Pointed at the `*`
+    WarnTextEffect = 3008, // An expression sent with `<-` to a receiver that has `wants` changes state (an assignment, an increment, a send, a `&mut` or `&uni` call): it does not run when `wants` says no. Pointed at the expression
 
     // Uncounted
     Uncounted = 9000,
