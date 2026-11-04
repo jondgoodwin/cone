@@ -1,0 +1,33 @@
+// What a float's conversion leaves the optimizer (Bug 43). 'usize.from(x)' was a
+// plain 'fptoui', which is poison for a NaN, a negative or a value past the
+// type: the optimizer, seeing a constant argument after inlining, took the
+// bounds check on the converted index for undefined, and deleted the check, the
+// panic and the read with it. The conversion saturates now, so an index from
+// 1.0e30 is the top of usize (the check fails and the panic stays, with that
+// index), one from NaN or -1.0 is 0, and no value is poison.
+//
+// 'idx' is called with constants, which inline into 'main'; 'at' is called with
+// a run-time value, which keeps the conversion and its bounds check.
+
+mod core_from_saturate_ir;
+
+import stdio use *;
+
+fn idx(a: &Array[i32, 4], x: f64) i32 {
+  a[usize.from(x)]
+}
+
+pub fn at(a: &Array[i32, 4], x: f64) i32 {
+  a[usize.from(x)]
+}
+
+fn main() i32 {
+  let a: Array[i32, 4] = [10, 20, 30, 40];
+  var total = idx(&a, 2.5) + idx(&a, 0.0 - 1.0) + idx(&a, 0.0 / 0.0 - 0.0 / 0.0);
+  printInt(i64.from(total)); printStr("\n");
+  total = total + at(&a, 1.0);
+  printInt(i64.from(total)); printStr("\n");
+  total = total + idx(&a, 1.0e30);
+  printInt(i64.from(total)); printStr("\n");
+  0
+}

@@ -3470,7 +3470,16 @@ static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
 
     node->methfld = NULL;
     node->tag = TypeLitTag;
-    typeLitNbrFromCheck(node, nbrtype);
+    if (!typeLitNbrFromCheck(node, nbrtype))
+        return 1;
+    // A float into an integer, or a number into a char, takes a value for every
+    // input at run time (saturating; U+FFFD). A constant with no such value is
+    // refused here, in any expression, as a 'const' is, rather than left to the
+    // run time's answer (Bug 43). One that has a value stays what it is.
+    INode *srctype = itypeGetTypeDcl(((IExpNode*)nodesGet(node->args, 0))->vtype);
+    if ((nbrtype == (INode*)charType && srctype != (INode*)charType)
+        || (srctype->tag == FloatNbrTag && nbrtype != (INode*)boolType && (nbrtype->tag == IntNbrTag || nbrtype->tag == UintNbrTag)))
+        litFoldConst((INode**)nodep);
     return 1;
 }
 

@@ -320,8 +320,7 @@ static LLVMValueRef genlVectorLanes(GenState *gen, LLVMValueRef val, INode *from
         return fromlane->tag == IntNbrTag ? LLVMBuildSIToFP(bld, val, totype, "") : LLVMBuildUIToFP(bld, val, totype, "");
     }
     if (fromlane->tag == FloatNbrTag) {
-        LLVMTypeRef types[2] = {totype, fromtype};
-        return genlVecCall(gen, tolane->tag == IntNbrTag ? "llvm.fptosi.sat" : "llvm.fptoui.sat", types, 2, &val, 1);
+        return genlFloatToInt(gen, val, totype, tolane->tag == IntNbrTag);
     }
     (void)llvmlane;
     if (tobits < frombits)
