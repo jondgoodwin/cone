@@ -34,6 +34,12 @@
 // data that was whole and checked but not yet confirmed to be in the archive a directory-first reader
 // (Archive.open) would see; one that cannot live with that waits for Done.
 //
+// A CALLER THAT NEEDS THE DIRECTORY'S VERDICT therefore acts on the entries only after the end (Done). The
+// local headers and the central directory disagreeing is how an archive hides things (an entry the directory
+// does not list, or lists differently, is read by one kind of reader and not by the other), and a stream can
+// only compare them when the directory, which is last, arrives. Step.End says an entry is whole and
+// matches its own header, never that the archive agrees with itself.
+//
 // AN ENTRY WITH A DATA DESCRIPTOR (flag bit 3) has no sizes in its local header, so where its data ends is
 // not told. A deflate or zstd entry ends where its own stream ends (the leftover bytes are put back,
 // the descriptor read after them in any of its four shapes, the width the local header's zip64 field points
@@ -577,7 +583,7 @@ pub struct ArchiveStream is Move {
     if used == 0usize {
       if cur.method == methodStored() && tried {
         return self.fail(ErrorKind.Unsupported, cur.offset,
-          about("the stored entry", cur.name.view(), "has a data descriptor and data, so its end cannot be found in a stream").view());
+          about("the stored entry", cur.name.view(), "has a data descriptor and data: its local header gives no sizes, so where its data ends cannot be framed in a stream").view());
       }
       if !tried { return self.fail(ErrorKind.Truncated, pos, about("the archive ends inside the data descriptor of", cur.name.view(), "").view()); }
       return self.fail(ErrorKind.BadChecksum, pos,
