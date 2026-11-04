@@ -215,6 +215,13 @@ int genericAssocCompleteIs(TypeCheckState *pstate, INode *entry, StructNode *typ
 // evaluates it, as it does a method's 'where').
 int genericIsConditionNameRes(NameResState *pstate, Nodes *parms, INode *cond);
 
+// A type-fact '#if' asks what a type parameter is, as a 'where' clause does, and
+// may negate it. Its condition is resolved here (0, reported, where a clause is
+// refused) and decided once a clone has substituted the instance's arguments:
+// 1, 0, or -1 while it still turns on a parameter bound elsewhere.
+int genericHashCondNameRes(NameResState *pstate, INode *cond);
+int genericHashCondHolds(INode *cond);
+
 // Is 'type' what 'trait' says, as a constraint asks it? A marker trait -- one
 // requiring nothing of a value, the compiler's own among them -- by the
 // compiler's grant or an 'is' declaration only; any other trait by a

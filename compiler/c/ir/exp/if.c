@@ -19,8 +19,50 @@ IfNode *newIfNode() {
     return ifnode;
 }
 
+// The branch of a type-fact '#if' the clone takes: a copy of its block, and of a
+// block that is one expression, that expression
+static INode *ifHashTaken(CloneState *cstate, IfNode *node, INode *branch) {
+    INode *copy = cloneNode(cstate, branch);
+    BlockNode *blk = (BlockNode*)copy;
+    if ((node->flags & FlagIfHashExpr) && blk->tag == BlockTag && blk->stmts->used == 1
+        && (blk->flags & FlagTailOpen))
+        return nodesGet(blk->stmts, 0);
+    return copy;
+}
+
+// Clone a type-fact '#if'. Cloning for an instance has put the instance's types where
+// the parameters were, so each condition can be asked in turn and the first that holds
+// names the branch that exists: the rest are never copied, so never checked. With no
+// branch taken nothing exists (an empty block). A condition still turning on a parameter
+// bound elsewhere (this is a copy of a template inside another generic) is not decided:
+// the chain is copied whole, to be decided for that generic's instances.
+static INode *ifHashClone(CloneState *cstate, IfNode *node) {
+    Nodes *condblk = node->condblk;
+    for (uint32_t i = 0; i + 1 < condblk->used; i += 2) {
+        INode *cond = nodesGet(condblk, i);
+        if (cond == elseCond)
+            return ifHashTaken(cstate, node, nodesGet(condblk, i + 1));
+        int holds = genericHashCondHolds(cloneNode(cstate, cond));
+        if (holds < 0)
+            break;
+        if (holds)
+            return ifHashTaken(cstate, node, nodesGet(condblk, i + 1));
+        if (i + 2 >= condblk->used) {
+            BlockNode *none = newBlockNode();
+            inodeLexCopy((INode*)none, (INode*)node);
+            return (INode*)none;
+        }
+    }
+    IfNode *newnode = memAllocBlk(sizeof(IfNode));
+    memcpy(newnode, node, sizeof(IfNode));
+    newnode->condblk = cloneNodes(cstate, condblk);
+    return (INode*)newnode;
+}
+
 // Clone if
 INode *cloneIfNode(CloneState *cstate, IfNode *node) {
+    if (node->flags & FlagIfHash)
+        return ifHashClone(cstate, node);
     IfNode *newnode;
     newnode = memAllocBlk(sizeof(IfNode));
     memcpy(newnode, node, sizeof(IfNode));
@@ -147,6 +189,16 @@ int ifAllPathsJump(IfNode *ifnode) {
 void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
+    // A type-fact '#if': each condition is a 'where' clause's kind, and every branch
+    // is resolved, whichever an instance will take, so a name in any of them must exist
+    if (ifnode->flags & FlagIfHash) {
+        for (uint32_t i = 0; i + 1 < ifnode->condblk->used; i += 2) {
+            if (nodesGet(ifnode->condblk, i) != elseCond)
+                genericHashCondNameRes(pstate, nodesGet(ifnode->condblk, i));
+            inodeNameRes(pstate, &nodesGet(ifnode->condblk, i + 1));
+        }
+        return;
+    }
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }

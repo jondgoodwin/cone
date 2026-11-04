@@ -156,19 +156,6 @@ enum IntrinsicFn {
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
     SrcFileIntrinsic,       // srcFile() &str
     SrcLineIntrinsic,       // srcLine() u32
-    // Whether this is a debug build ('conec --debug', or 'build: debug' in a
-    // build description): a constant, so only the side of an 'if' on it that
-    // the build takes is generated (genlIf)
-    IsDebugBuildIntrinsic,  // isDebugBuild() bool
-    // TEMPORARY, a provisional mechanism whose final design is open: constants
-    // of the build like isDebugBuild, the target's OS from its triple, and
-    // what '-D' defined (intrinsicBuildConst)
-    IsWindowsIntrinsic,     // isWindows() bool
-    IsLinuxIntrinsic,       // isLinux() bool
-    IsMacOSIntrinsic,       // isMacOS() bool
-    IsWasmIntrinsic,        // isWasm() bool
-    IsDefinedIntrinsic,     // isDefined(name: &Array[u8]) bool
-    DefinedIntIntrinsic,    // definedInt(name: &Array[u8]) i64
     // An integer's bits. Each is also a method of every integer type
     // (corenumber.c), its node carrying that type as its typearg, which is how
     // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
@@ -363,19 +350,5 @@ int intrinsicIsSrcDefault(INode *node);
 // A copy of a call to 'srcFile()' or 'srcLine()' placed at 'site': a
 // parameter's default value, taken by the call 'site', answers where that call is
 INode *intrinsicSrcCallAt(INode *call, INode *site);
-
-// TEMPORARY, a provisional mechanism whose final design is open. The options
-// the build constants are read from: the build, the target triple and each
-// '-D'. Set once by main; the triple is read only once generation's setup has
-// filled in the host's
-struct ConeOptions;
-void intrinsicBuildSetup(struct ConeOptions *opt);
-
-// Whether a node is a constant of the build, and its value: a call to
-// isDebugBuild, isWindows, isLinux, isMacOS, isWasm, isDefined or definedInt
-// (whose argument type check held to a string literal), or '!', '&&' or '||'
-// of such constants. Generation reads it to generate only the side of an 'if'
-// the build takes (genlIf), and as the value of each call (genlFnCall)
-int intrinsicBuildConst(INode *node, int64_t *value);
 
 #endif

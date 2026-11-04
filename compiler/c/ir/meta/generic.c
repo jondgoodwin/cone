@@ -1538,7 +1538,13 @@ static int genericIsParmOf(INode *dcl, Nodes *parms) {
 // a trait. Every clause is resolved and reported; 0 if any is refused.
 // 'ownparms' is NULL for a 'where' clause; for the condition on an 'is' entry
 // it is the type's parameters, the only ones such a condition may ask about.
+// Set while the condition of a type-fact '#if' is resolved (genericHashCondNameRes),
+// which says so in what it refuses
+static int genericInHashCond = 0;
+
 static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *ownparms) {
+    if (cond->tag == NotLogicTag)
+        return genericConditionNameRes(pstate, ((LogicNode*)cond)->lexp, ownparms);
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
         int lok = genericConditionNameRes(pstate, ((LogicNode*)cond)->lexp, ownparms);
         int rok = genericConditionNameRes(pstate, ((LogicNode*)cond)->rexp, ownparms);
@@ -1561,6 +1567,12 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
     else if (subject->dclnode->tag == GenVarDclTag && ((GenVarDclNode*)subject->dclnode)->valtype) {
         errorMsgNode(clause->exp, ErrorGenValueParm,
             "%s is a value parameter, a number, and a 'where' clause asks what a type is or fits.",
+            &subject->namesym->namestr);
+        ok = 0;
+    }
+    else if (subject->dclnode->tag != GenVarDclTag && genericInHashCond) {
+        errorMsgNode(clause->exp, ErrorMetaTypeFact,
+            "A '#if' that asks what a type is asks about a type parameter of the generic function or type it stands in, and %s is not one: outside a generic there is no type to ask about.",
             &subject->namesym->namestr);
         ok = 0;
     }
@@ -1605,6 +1617,16 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
 
 int genericIsConditionNameRes(NameResState *pstate, Nodes *parms, INode *cond) {
     return genericConditionNameRes(pstate, cond, parms);
+}
+
+// The condition of a type-fact '#if' (ifHashNameRes, a member's condition):
+// resolved as a 'where' clause's is, but it may be negated, and what it refuses
+// it says in the '#if''s own words
+int genericHashCondNameRes(NameResState *pstate, INode *cond) {
+    genericInHashCond = 1;
+    int ok = genericConditionNameRes(pstate, cond, NULL);
+    genericInHashCond = 0;
+    return ok;
 }
 
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep) {
@@ -2308,6 +2330,12 @@ static void genericAskerLeave(GenericAsker *asker) {
 // bound already was decided then. Inside a '||' or a '&&', a subject the
 // clone substituted is asked as it stands, since the whole is decided here.
 static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, int nested) {
+    // '!' (a type-fact '#if' has it, and the chain's '#else' is the negation of the
+    // conditions before it): what is decided is reversed, what is not stays so
+    if (cond->tag == NotLogicTag) {
+        WhereValue inner = genericConditionValue(((LogicNode*)cond)->lexp, parms, args, nested);
+        return inner == WhereTrue ? WhereFalse : inner == WhereFalse ? WhereTrue : inner;
+    }
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
         WhereValue decides = cond->tag == OrLogicTag ? WhereTrue : WhereFalse;
         WhereValue lval = genericConditionValue(((LogicNode*)cond)->lexp, parms, args, 1);
@@ -2377,6 +2405,17 @@ static WhereValue genericEntryValue(INode *generic, INode *cond, Nodes *parms, N
     WhereValue value = genericConditionValue(cond, parms, args, 0);
     genericAskerLeave(&asker);
     return value;
+}
+
+// Whether the condition of a type-fact '#if' holds, once a clone has put the
+// instance's arguments where the parameters were: 1 or 0, or -1 while it still
+// turns on a parameter bound elsewhere (a clone of a template inside another
+// generic keeps the chain for its own instances to decide). The question is
+// asked as the generic's own code would ask it. Every clause is asked of its
+// subject as it stands, since the clone substituted it.
+int genericHashCondHolds(INode *cond) {
+    WhereValue value = genericConditionValue(cond, NULL, NULL, 1);
+    return value == WhereTrue ? 1 : value == WhereFalse ? 0 : -1;
 }
 
 // The first condition of 'where' these arguments make false, or NULL if none
@@ -2500,6 +2539,17 @@ static void genericTemplateNameCat(char *buf, size_t size, INode *node, int dept
 // a '&&' in parentheses ('grouped'), a substituted subject by its type's name
 static void genericConditionCat(char *buf, size_t size, INode *cond, int grouped) {
     size_t used = strlen(buf);
+    if (cond->tag == NotLogicTag) {
+        INode *inner = ((LogicNode*)cond)->lexp;
+        int paren = inner->tag == OrLogicTag || inner->tag == AndLogicTag;
+        snprintf(buf + used, size - used, paren ? "not (" : "not ");
+        genericConditionCat(buf, size, inner, 0);
+        if (paren) {
+            used = strlen(buf);
+            snprintf(buf + used, size - used, ")");
+        }
+        return;
+    }
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
         int paren = grouped && cond->tag == OrLogicTag;
         int inand = cond->tag == AndLogicTag;
@@ -2529,6 +2579,8 @@ static void genericConditionCat(char *buf, size_t size, INode *cond, int grouped
 
 // Does the condition ask about parameter 'parm'?
 static int genericConditionNames(INode *cond, INode *parm) {
+    if (cond->tag == NotLogicTag)
+        return genericConditionNames(((LogicNode*)cond)->lexp, parm);
     if (cond->tag == OrLogicTag || cond->tag == AndLogicTag)
         return genericConditionNames(((LogicNode*)cond)->lexp, parm)
             || genericConditionNames(((LogicNode*)cond)->rexp, parm);
@@ -3241,6 +3293,16 @@ static Nodes *genericAbsentMembersIn(StructNode *generic, Nodes *args, Nodes **l
             absent = newNodes(4);
         nodesAdd(&absent, *nodesp);
     }
+    // A field under a '#if' on a type parameter exists where the condition holds
+    for (nodelistFor(&generic->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag != FieldDclTag || ((FieldDclNode*)*nodesp)->hashcond == NULL)
+            continue;
+        if (genericEntryValue((INode*)generic, ((FieldDclNode*)*nodesp)->hashcond, generic->genericinfo->parms, args) == WhereTrue)
+            continue;
+        if (absent == NULL)
+            absent = newNodes(4);
+        nodesAdd(&absent, *nodesp);
+    }
     if (generic->condis) {
         for (nodesFor(generic->condis, cnt, nodesp)) {
             INode *cond = ((FieldDclNode*)*nodesp)->value;
@@ -3769,10 +3831,15 @@ static int genericWhereReadsLayout(Nodes *where) {
 static int genericMembersConditioned(StructNode *type, int typelevel) {
     if (type->condis)
         return 1;
-    if (typelevel)
-        return 0;
     INode **nodesp;
     uint32_t cnt;
+    // A field a '#if' on a type parameter keeps is decided at once, never waited for
+    for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag && ((FieldDclNode*)*nodesp)->hashcond != NULL)
+            return 1;
+    }
+    if (typelevel)
+        return 0;
     for (nodelistFor(&type->nodelist, cnt, nodesp)) {
         if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->where != NULL)
             return 1;

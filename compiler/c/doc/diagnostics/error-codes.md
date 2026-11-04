@@ -1044,3 +1044,21 @@ bool, a condition that is not a bool, and a fact met outside a condition. A
 misspelt `#` word is `ErrorReserved`, from the lexer. Each is reported at the
 word it is about, and the rest of the condition is read past so that nothing
 follows it.
+
+`ErrorMetaTypeFact` is the `#if` that asks what a type parameter is (`T is Float`,
+`T == i32`) where it cannot be decided: in a struct with no type parameters, at a
+module's level, in an `extern` block, in an enum's or a trait's braces, around a
+static, macro or alias in a generic struct's braces (parser), and about a name that
+is no type parameter of the generic it stands in (name resolution, so `#if i32 is
+Integer` in an ordinary function). A condition of that kind that names a trait or
+a name that does not exist is the ordinary lookup error, and one that is no clause
+(`#if T {`) is `ErrorMetaFact`.
+
+`ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
+statement or a value) that rests on a fact of the build in one place and on a type in
+another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
+however the build folds it. The include file keeps such a chain whole and each importer
+reads the build's facts again for its own build, so a field or method could exist in a
+package's object and not in its importer, or a body choose another branch and share a
+`static` of another type with it. A type question alone, and a build question in a `#if` of its own around
+or inside the chain, are allowed. Pointed at the first type question.

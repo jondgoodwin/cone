@@ -17,6 +17,8 @@
 // 6. A stall: the destination is held, the queue stops at its limit (8 KiB
 //    here), the sender waits, and nothing is lost once the destination is
 //    released.
+// 7. The end abandons a parked behaviour, and the finalizer of a value its record
+//    held prints: that line appears (the drain after abandonParked).
 
 mod consoleowner;
 
@@ -209,7 +211,56 @@ fn childStall() i32 {
   0i32
 }
 
+struct Note {
+  pub n: u64;
+  fn final(self: &uni) {print <- "finalized in abandon ", n, "\n";}
+}
+
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.Reply) { })
+}
+
+actor Stuck {
+  pub async fn count(self) u64 {
+    let note = Note(7u64);
+    let n = await never();
+    n
+  }
+}
+
+// Stuck stays parked and alive to the end of the program, so the end drops its
+// record (abandonParked), and the finalizer of 'note' prints during that drop
+// The destination is held, so the line cannot be written until a detached thread
+// releases it, 300 ms later: only a drain that waits for the owner, after the drop,
+// lets it out before the process ends (the thread is never joined)
+fn releaseLater(n: u32) u32 {
+  thread.sleep(Duration.fromMillis(300i64));
+  actors.releaseConsole();
+  n
+}
+
+fn childAbandon() i32 {
+  initAll();
+  let s = Stuck();
+  s.count();
+  actors.waitQuiet();
+  actors.holdConsole();
+  let t = thread.start(0u32, &releaseLater);
+  t.detach();
+  finalAll();
+  // The program's exit would drain too, so what shows the second drain is that
+  // the stop itself has waited: nothing is left queued when finalAll returns
+  if actors.consoleQueued() == 0usize {
+    print <- "abandon: nothing queued after the stop\n";
+  }
+  else {
+    print <- "abandon: NOT drained after the stop\n";
+  }
+  0i32
+}
+
 fn child(mode: &str) i32 {
+  if mode == "abandon" { return childAbandon(); }
   if mode == "writers" { return childWriters(); }
   if mode == "switch" { return childSwitch(); }
   if mode == "exit" { return childExit(); }
@@ -380,6 +431,13 @@ fn stallCase(exe: &str) {
   expectBool(inOrder, true, "stall: in order");
 }
 
+fn abandonCase(exe: &str) {
+  let o = ran(exe, "abandon");
+  expectUInt(u64.from(o.exitCode), 0u64, "abandon: exits 0");
+  expectBool(o.stdout.contains("finalized in abandon 7"), true, "abandon: a finalizer's print during the end's drop appears");
+  expectBool(o.stdout.contains("abandon: nothing queued after the stop"), true, "abandon: the stop waited for the owner after the drop");
+}
+
 fn main() i32 {
   let a = process.args();
   if a.len() >= 3usize && a[1usize].equals("--child") {
@@ -396,5 +454,6 @@ fn main() i32 {
   panicCase(exe.view());
   flushCase(exe.view());
   stallCase(exe.view());
+  abandonCase(exe.view());
   done()
 }

@@ -179,6 +179,13 @@ set_property(TARGET conec APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/CMake
 # "Paths are UTF-8")
 if(WIN32)
 	target_sources(conec PRIVATE compiler/c/conec.manifest)
+	# LLVM's optimiser recurses along a long chain of dependent operations;
+	# a straight-line function of ~300 calls overflowed the default 1 MB
+	# stack in a release compile (llvmc's symbols test, Bug 16). Linux's
+	# main thread already has 8 MB.
+	if(MSVC)
+		target_link_options(conec PRIVATE /STACK:16777216)
+	endif()
 endif()
 
 # The fallback packages folder, where core and stdio are: this repository's
