@@ -1142,8 +1142,10 @@ a `&` or a global, is not seen. Pinned by `module_text_wants` and its `_move`,
 `_move_use`, `_warn`, `_await` and `_ir` scenarios.
 
 **A log receiver** (a type whose `open(self: &, site: &mut S, spec: &str, file: &str,
-line: u32)` exists: `TextSite`, found by name and signature as `record` is;
-`textSiteLower`) makes each `<-` to it one event of one call site:
+line: u32)` exists and answers a type with `text`, `value` and `finish`: `TextSite`,
+found by name and signature as `record` is (`textOpensSite` checks the parameters'
+types as declared: the second `&mut`, then `&str`, `&str`, `u32`; one that does not
+match leaves its type ordinary, `module_text_site_plain`); `textSiteLower`) makes each `<-` to it one event of one call site:
 `{ static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
 -lw.text("lit"); { -lw.value(x) }; ...; -lw.finish() }`. `-siteN` is a zeroed static,
 one per call site (so a log send in an `inline` function is refused with
