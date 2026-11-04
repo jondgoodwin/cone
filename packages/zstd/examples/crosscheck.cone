@@ -22,6 +22,18 @@ import zstd use *;
 import fs;
 import path use Path;
 import process;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
 
 fn rd32(b: &Array[u8], p: usize) usize {
   usize.from(b[p]) | (usize.from(b[p + 1usize]) << 8usize) | (usize.from(b[p + 2usize]) << 16usize)
@@ -51,7 +63,7 @@ fn streamed(d: &Array[u8], level: i32, chunk: usize, maxPull: usize) List[u8] {
     var st: Status = Status.MoreOutput;
     while st == Status.MoreOutput {
       piece.clear();
-      st = c.pull(&mut piece, maxPull);
+      st = pullN(&mut c, &mut piece, maxPull);
       var k = 0usize;
       while k < piece.len() {
         out.push(*piece[k]);

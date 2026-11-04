@@ -45,11 +45,11 @@ fn paramsOf(level: i32) Params {
 // it, 'finish' it when the input is over, 'pull' the output.
 //
 //   mut c = zstd.Compressor.make(3);
-//   mut out = List[u8]();
+//   mut out = IoBuf(65536usize);
 //   c.feed(chunk);                          // any size, split anywhere
 //   while true {
 //     out.clear();
-//     imm s = c.pull(&mut out, 65536usize);   // at most 64 KiB at a time
+//     imm s = c.pull(&mut out);             // at most the buffer's room at a time
 //     ... write out ...
 //     if s != zstd.Status.MoreOutput { break; }
 //   }
@@ -117,27 +117,12 @@ pub struct Compressor {
   // Whether the frame is complete and every byte of it delivered
   pub fn isDone(self: &) bool { done && outPos >= out.len() }
 
-  // Appends compressed bytes to 'out', at most 'max' of them, and answers
-  // what it waits for: NeedInput (all input used; feed more or 'finish'),
-  // MoreOutput (more is ready; pull again) or Done. A block's output comes
-  // whole when the block is written, so the output lags the input by up to
-  // 128 KiB; 'max' bounds what one pull hands over, not what the compressor
-  // holds.
-  pub fn pullList overload pull(self: &mut, dest: &mut List[u8], max: usize) Status {
-    let n = self.ready(max);
-    // (A copy in one call, 'dest.appendSlice', is refused here: error 1339
-    // cannot tell 'dest' from 'out')
-    dest.reserve(n);
-    var i = 0usize;
-    while i < n {
-      dest.push(*out[outPos + i]);
-      i += 1usize;
-    }
-    self.delivered(n, max)
-  }
-
-  // The same into a buffer's spare room (the Transform of package streams):
-  // appends at most 'dest.room()' bytes and lengthens 'dest' by them.
+  // Appends compressed bytes into the buffer's spare room (the Transform of
+  // package streams), at most 'dest.room()' of them, and answers what it
+  // waits for: NeedInput (all input used; feed more or 'finish'), MoreOutput
+  // (more is ready; pull again) or Done. A block's output comes whole when
+  // the block is written, so the output lags the input by up to 128 KiB; the
+  // room bounds what one pull hands over, not what the compressor holds.
   pub fn pullBuf overload pull(self: &mut, dest: &mut IoBuf) Status {
     let room = dest.room();
     let n = self.ready(room);

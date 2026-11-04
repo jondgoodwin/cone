@@ -875,7 +875,7 @@ A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
-(`actors.answerNow`); sent with no `await`, its value is dropped. It has a
+(`actors.answerNow`); sent with no `await`, its value is dropped (the unasked arm writes `_ = self.f(...)`, so a `Result` there is not warned as thrown away). It has a
 third send method too (`fetch'future`), which makes an `actors.Future` of the
 returned type, written as the behaviour's return type was (its text recorded
 by `parseFnSig`), sends the request awaited with the future's producer's
@@ -1428,6 +1428,8 @@ numbers.
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
+| | `lexScanStr` (interpolated) | `$"..."` as one `InterpToken`: the text read as a plain literal's, `{{`/`}}` for a brace, and each brace's expression left as source (`InterpPart`, found by `lexInterpSkipBraces`, which steps over strings and characters inside); an open brace no close brace closes ends the literal at the line's last quote, so the rest of the file lexes as before |
+| | `parseInterpPieces`, `parseEntries` (`parseexpr.c`) | an interpolated string's expressions read by a lexer of their own over the brace's source (`lexPush`/`lexPop`); a whole entry of a `<-` list splices its pieces into the list, anywhere else it is `String() <- pieces` |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.` or by type arguments), read off the text with nothing lexed (section 2) |

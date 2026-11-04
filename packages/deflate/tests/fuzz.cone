@@ -17,6 +17,26 @@ mod fuzz;
 import testing use *;
 import collections use *;
 import deflate use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn words(n: usize) List[u8] {
   let w: Array[&str, 6] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon ", "zeta "];
@@ -41,16 +61,16 @@ fn run(fmt: Format, s: &Array[u8], split: usize) i32 {
   if split > 0usize {
     inf.feed(&s[0usize..<split]);
     st = Status.MoreOutput;
-    while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 700usize); }
+    while st == Status.MoreOutput { piece.clear(); st = pullN(&mut inf, &mut piece, 700usize); }
     if st == Status.Failed { return 1; }
   }
   if split < s.len { inf.feed(&s[split..<s.len]); }
   inf.finish();
   st = Status.MoreOutput;
-  while st == Status.MoreOutput { piece.clear(); st = inf.pull(&mut piece, 700usize); }
+  while st == Status.MoreOutput { piece.clear(); st = pullN(&mut inf, &mut piece, 700usize); }
   if st == Status.Done { return 0; }
   if st == Status.Failed {
-    if inf.pull(&mut piece, 700usize) != Status.Failed { return 101; }
+    if pullN(&mut inf, &mut piece, 700usize) != Status.Failed { return 101; }
     return 1;
   }
   100

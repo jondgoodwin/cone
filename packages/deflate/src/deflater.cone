@@ -161,12 +161,12 @@ fn xflOf(level: i32) u8 {
 // 'finish' it when the input is over, 'pull' the output.
 //
 //   mut def = deflate.Deflater.make(deflate.Format.Gzip, 2);
-//   mut out = List[u8]();
+//   mut out = IoBuf(65536usize);
 //   def.feed(chunk);                         // any size, split anywhere
 //   while true {
 //     out.clear();
-//     imm s = def.pull(&mut out, 65536usize);    // at most 64 KiB at a time
-//     ... write out ...
+//     imm s = def.pull(&mut out);            // at most the buffer's room at a time
+//     ... write out.view() ...
 //     if s != deflate.Status.MoreOutput { break; }
 //   }
 //   // NeedInput: feed the next chunk, or def.finish() and pull until Done
@@ -256,22 +256,13 @@ pub struct Deflater {
   // Whether the stream is complete and every byte of it delivered
   pub fn isDone(self: &) bool { done && outPos >= bw.out.len() }
 
-  // Appends compressed bytes to 'out', at most 'max' of them, and answers
-  // what it waits for: NeedInput (all input used; feed more or 'finish'),
-  // MoreOutput (more is ready; pull again) or Done. The output of a block
-  // comes whole when the block is full, so the compressed bytes lag the input
-  // by up to 32768 tokens; 'max' bounds what one pull hands over, not what
-  // the deflater holds.
-  pub fn pullList overload pull(self: &mut, out: &mut List[u8], max: usize) Status {
-    let n = self.ready(max);
-    out.reserve(n);
-    var i = 0usize;
-    while i < n { out.push(*bw.out[outPos + i]); i += 1usize; }
-    self.delivered(n, max)
-  }
-
-  // The same into a buffer's spare room (the Transform of package streams):
-  // appends at most 'out.room()' bytes and lengthens 'out' by them.
+  // Appends compressed bytes into the buffer's spare room (the Transform of
+  // package streams), at most 'out.room()' of them, and answers what it waits
+  // for: NeedInput (all input used; feed more or 'finish'), MoreOutput (more
+  // is ready; pull again) or Done. The output of a block comes whole when the
+  // block is full, so the compressed bytes lag the input by up to 32768
+  // tokens; the room bounds what one pull hands over, not what the deflater
+  // holds.
   pub fn pullBuf overload pull(self: &mut, out: &mut IoBuf) Status {
     let room = out.room();
     let n = self.ready(room);

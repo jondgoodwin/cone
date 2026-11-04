@@ -11,6 +11,26 @@ mod streaming;
 import testing use *;
 import collections use *;
 import zstd use *;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled). A 'max' over 1 MiB pulls in 1 MiB pieces
+// until the answer is not MoreOutput.
+fn pullN[T](x: &mut T, out: &mut List[u8], max: usize) Status {
+  let big = max > 1048576usize;
+  let n = if big {1048576usize} else {max};
+  var s = Status.MoreOutput;
+  var more = true;
+  while more {
+    var buf = IoBuf(n);
+    let pre = buf.capacity() - n;
+    buf.setLen(pre);
+    s = x.pull(&mut buf);
+    out.appendSlice(&buf.view()[pre ..< buf.len()]);
+    more = big && s == Status.MoreOutput;
+  }
+  s
+}
 
 fn put32(f: &mut List[u8], v: u32) {
   var k = 0u32;
@@ -49,7 +69,7 @@ fn text(n: usize, seed: u64) List[u8] {
 
 fn pullAll(d: &mut Decompressor, out: &mut List[u8], max: usize) Status {
   var st: Status = Status.MoreOutput;
-  while st == Status.MoreOutput { st = d.pull(out, max); }
+  while st == Status.MoreOutput { st = pullN(d, out, max); }
   st
 }
 
@@ -71,7 +91,7 @@ fn main() i32 {
   expectUInt(u64.from(d.frameCount()), 1u64, "one frame read");
   expect(!d.isDone(), "not done until finish");
   d.finish();
-  expect(d.pull(&mut out, 100usize) == Status.Done, "finish: Done");
+  expect(pullN(&mut d, &mut out, 100usize) == Status.Done, "finish: Done");
   expect(d.isDone(), "done");
   expectUInt(d.totalIn(), u64.from(firstLen), "totalIn");
   expectUInt(d.totalOut(), 700u64, "totalOut");
@@ -81,8 +101,8 @@ fn main() i32 {
   z.feed(two.view());
   z.finish();
   var none = List[u8]();
-  expect(z.pull(&mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "a pull of 0: MoreOutput, nothing");
-  expect(z.pull(&mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "and again");
+  expect(pullN(&mut z, &mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "a pull of 0: MoreOutput, nothing");
+  expect(pullN(&mut z, &mut none, 0usize) == Status.MoreOutput && none.len() == 0usize, "and again");
   expect(pullAll(&mut z, &mut none, 1000000usize) == Status.Done && none.len() == 1000usize, "then all of it");
 
   // One frame only: what follows is left for takeRest
@@ -154,6 +174,6 @@ fn main() i32 {
     }
     else { expect(false, "an error after a failure"); }
   }
-  expect(f.pull(&mut fo, 1000usize) == Status.Failed, "still Failed");
+  expect(pullN(&mut f, &mut fo, 1000usize) == Status.Failed, "still Failed");
   done()
 }
