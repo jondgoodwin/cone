@@ -822,6 +822,11 @@ static StructNode *genericNamedGenericTrait(INode *node) {
     return (StructNode*)dcl;
 }
 
+// "trait" or "type": an enum carries 'TraitType' but is a type
+static const char *genericKindWord(StructNode *snode) {
+    return (snode->flags & EnumType) ? "type" : "trait";
+}
+
 // A generic trait named with no type arguments, 'Stack': it names no trait
 // until it is given them
 static StructNode *genericNamedBareGenericTrait(INode *node) {
@@ -1604,8 +1609,8 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
         StructNode *bare = ownparms ? NULL : genericNamedBareGenericTrait(clause->typ);
         if (bare)
             errorMsgNode(clause->typ, ErrorWhereTrait,
-                "%s is a generic trait, and a constraint names an instance of it, with its type arguments: %s[T]. (A bare generic trait names no trait.)",
-                &bare->namesym->namestr, &bare->namesym->namestr);
+                "%s is a generic %s, and a constraint names an instance of it, with its type arguments: %s[T]. (A bare generic %s names no trait.)",
+                &bare->namesym->namestr, genericKindWord(bare), &bare->namesym->namestr, genericKindWord(bare));
         else if (!isNameUseNode(clause->typ) || ((NameUseNode*)clause->typ)->dclnode != NULL)
             errorMsgNode(clause->typ, ErrorWhereTrait, ownparms
                 ? "What a type parameter 'is' in a condition on an 'is' entry is a trait or a type, and this is neither. (A generic trait's or type's instance is not built in a condition yet.)"
@@ -1681,8 +1686,8 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
                     StructNode *bare = genericNamedBareGenericTrait(*annotp);
                     if (bare)
                         errorMsgNode(*annotp, ErrorGenParmConstr,
-                            "%s is a generic trait, and what follows the type parameter %s names an instance of it, with its type arguments: %s[T]. (A bare generic trait names no trait.)",
-                            &bare->namesym->namestr, &parm->namesym->namestr, &bare->namesym->namestr);
+                            "%s is a generic %s, and what follows the type parameter %s names an instance of it, with its type arguments: %s[T]. (A bare generic %s names no trait.)",
+                            &bare->namesym->namestr, genericKindWord(bare), &parm->namesym->namestr, &bare->namesym->namestr, genericKindWord(bare));
                     else if (!isNameUseNode(*annotp) || ((NameUseNode*)*annotp)->dclnode != NULL)
                         errorMsgNode(*annotp, ErrorGenParmConstr,
                             "What follows the type parameter %s constrains it, so it names a trait, and this is not one. (A value parameter's annotation is an integer type, '[N usize]'; a parameter of another kind is not built yet.)",

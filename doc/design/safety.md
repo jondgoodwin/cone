@@ -109,6 +109,26 @@ for the intrinsics whose misuse breaks memory safety (`finalize`, the slice
 constructors, `readRaw`, `writeRaw`, `moveRaw`, `moveRawInto`, the atomic operations): the compiler's registry marks
 each as needing `trust`, and nothing yet asks for it (`safe-intrinsics.html`).
 
+What the guard would cover can be listed. `conec --report-trust` type checks the
+program, prints one line per site and generates no code: `deref` (a dereference
+or index through a raw pointer, not through a reference), `ref-from-ptr` (a
+reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`),
+`intrinsic` (a call of an intrinsic the registry marks `trust`), `extern` (a call
+of an extern function), `reinterpret` (a written `as` that keeps the bits),
+`reinterpret-perm` (an `as` between two references that changes only the
+permission, counted apart because it may need a different answer) and
+`sendable` (a struct declaring `is Sendable` that holds a raw pointer, directly
+or through a field; a generic struct is read from its declaration). Making,
+storing, passing and comparing a pointer, its arithmetic and casts between
+pointer types are not sites; the report counts them by file. A generic's body is
+read from its instances and each site is kept once, so a generic never
+instantiated has no sites, and a `generic <file>:<line> <name> [<instances>]` line
+says how many instances the run made. `tools/trustmap.py` runs it through
+Congo's build descriptions over every package, and over each package's tests and
+examples, so that what real code instantiates is counted
+(`compiler/c/ir/trustreport.c` is the walk). With `--report-trust` a library
+description still writes its include file, which that tool relies on.
+
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior
 that may actually be safe, but which the compiler does not have the insight to
