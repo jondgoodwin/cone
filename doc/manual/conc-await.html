@@ -554,6 +554,111 @@ struct Delay {
 		returns, so an <span class="pre">await</span> method on that result type does not apply to it. The method applies
 		to a value, such as a future's <span class="pre">T</span> held in a variable, not to a call's reply.</p>
 
+	<p>The contract is exactly once, and the maker keeps it: the closure given to <span class="pre">Awaitable.make</span>
+		must answer the envelope once and no more. If it drops the envelope unanswered, the awaiter is abandoned, as for a
+		behaviour that ended without answering (<a href="#future">Futures</a>).</p>
+
+	<h2 id="futureset">Waiting on several futures</h2>
+	<p>Futures of one type in flight together can be gathered in an <span class="pre">actors.FutureSet[T]</span> and
+		waited on as a group, instead of one after another. A set belongs to the actor that makes it and stays in it (it
+		is not sent to another actor). <span class="pre">set.start(fn() actors.Future[T] {...})</span> sends a request and
+		adds its future. <span class="pre">set &lt;- fut</span>, or <span class="pre">set.add(fut)</span>, adds one already
+		made. Each gives a <span class="pre">SetKey</span>, the member's number from 0 in the order added. A member's
+		result is a <span class="pre">Result[T, Abandoned]</span>: its value, or <span class="pre">Err</span> where the
+		behaviour owing it ended without answering. In a set that is an error the caller sees, not the panic a plain
+		<span class="pre">await</span> on an abandoned future gives.</p>
+	<p><b>Wait for all.</b> <span class="pre">await set</span> waits until every member has arrived. It gives a
+		<span class="pre">List[Result[T, Abandoned]]</span> of the results not yet taken by <span class="pre">next()</span>
+		(below), in the order the members were added. Like awaiting a future of a move type, it uses the set up:</p>
+<pre>
+actor Stock {
+  pub async fn price(self, item: u64) u64 {item * 3u64}
+}
+
+actor Basket {
+  stock: Stock;
+
+  pub async fn total(self) u64 {
+    var set = actors.FutureSet[u64].make();
+    set.start(fn() actors.Future[u64] {stock.price(4u64)});
+    set.start(fn() actors.Future[u64] {stock.price(5u64)});
+    let rows = await set;
+    var sum = 0u64;
+    var i = 0usize;
+    while i &lt; rows.len() {
+      match rows[i] {
+        case let Ok(n) {sum = sum + n;}
+        case let Err(e) {}
+      }
+      i = i + 1usize;
+    }
+    sum
+  }
+}
+</pre>
+	<p><span class="pre">await basket.total()</span> is 27 (12 and 15). <b>One at a time.</b>
+		<span class="pre">await set.next()</span> gives the next result as an
+		<span class="pre">Option[(SetKey, Result[T, Abandoned])]</span>, in <b>the order the set learned of them</b>.
+		That is not strict completion order: the members' actors run on their own threads and no global order of
+		completion exists among them, so the set orders them by when it was told. Once every member has been taken,
+		<span class="pre">next()</span> gives <span class="pre">None</span>, which ends a loop:</p>
+<pre>
+actor Tally {
+  stock: Stock;
+
+  pub async fn drain(self) u64 {
+    var set = actors.FutureSet[u64].make();
+    set &lt;- stock.price(1u64);
+    set &lt;- stock.price(2u64);
+    var seen = 0u64;
+    while true {
+      match await set.next() {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {seen = seen + n;}
+            case let Err(e) {}
+          }
+        }
+        case is None {break;}
+      }
+    }
+    seen
+  }
+}
+</pre>
+	<p><span class="pre">await tally.drain()</span> is 9, whichever order the two arrive in. <b>First of several.</b>
+		One <span class="pre">next()</span>, then letting the set go, takes the first and abandons the rest:</p>
+<pre>
+actor Race {
+  stock: Stock;
+
+  pub async fn quickest(self) u64 {
+    var set = actors.FutureSet[u64].make();
+    set.start(fn() actors.Future[u64] {stock.price(7u64)});
+    set.start(fn() actors.Future[u64] {stock.price(8u64)});
+    var best = 0u64;
+    match await set.next() {
+      case let Some(p) {
+        match p.1 {
+          case let Ok(n) {best = n;}
+          case let Err(e) {}
+        }
+      }
+      case is None {}
+    }
+    best
+  }
+}
+</pre>
+	<p><b>Cancellation by drop.</b> Dropping a set (it ends with its scope, or is used up by <span class="pre">await set</span>)
+		cancels the group it made and drops the replies that arrive late. A request made by <span class="pre">start</span>
+		is sent in that group, so a callee that looks sees the cancel: it asks <span class="pre">actors.isCancelled()</span>,
+		or stops with <span class="pre">actors.checkCancelled()?</span>, and a behaviour that does neither runs to its
+		answer, which is dropped. A future given to <span class="pre">add</span> was sent already, in whatever group sent it,
+		so dropping the set cannot cancel that one, only discard its late reply. Reach for <span class="pre">start</span>
+		when the losers should stop. Two waits on one set at once (a <span class="pre">next()</span> still waiting when
+		another begins) stop the program with a message, for now.</p>
+
 	<h2 id="await-nothing">A behaviour that returns nothing</h2>
 	<p>Whether an answer is sent is the behaviour's declaration to say, never its caller's: one with no return type sends
 		none, so there is nothing to await, and an <span class="pre">await</span> on it is refused. A caller that needs to
@@ -643,9 +748,10 @@ actor Sizes {
 		nothing else holds its actor (<a href="conc-ioloop.html#io-thread">The I/O thread, and the program's end</a>); a
 		behaviour whose answer was owed by one abandoned so is abandoned with it, and a future it owed is abandoned
 		(<a href="#future">Futures</a>).</li>
-	<li><b>Awaiting several futures at once.</b> An <span class="pre">await</span> waits for one future. Waiting for
-		whichever of several arrives first, or for all of them in one <span class="pre">await</span>, is not built: several
-		are awaited one after another.</li>
+	<li><b>Stopping a set at the first error.</b> <span class="pre">await set</span> always waits for every member, even
+		in a <span class="pre">FutureSet</span> of <span class="pre">Result</span>s. A function
+		<span class="pre">allOk</span> will be the call that stops at the first <span class="pre">Err</span> and cancels
+		the rest.</li>
 	<li><b>Looking at a future without opening it.</b> An <span class="pre">await</span> opens the future and panics if
 		its value never arrives. There is no way yet to ask whether it arrived, or to handle an abandoned one, without the
 		panic.</li>
