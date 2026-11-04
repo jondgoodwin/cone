@@ -193,12 +193,31 @@ static void debugStructBody(DebugBuild *b, BlockNode *blk, StructNode *st) {
         debugFields(b, blk, st, st->namesym, debugSelf);
 }
 
-// The function for a value type, or NULL
+static ProgramNode *debugProgram = NULL;
+
+void debugSetProgram(INode *pgm) {
+    debugProgram = (ProgramNode*)pgm;
+}
+
+// The function for a value type, or NULL. It joins the module the call stands in; when
+// this compile does not generate that module (a call in core's wrapper, or any
+// package's generic, reached from the program's own code) it joins the first
+// module that it does generate, where the object that holds the call's instance
+// can link to it.
 static FnDclNode *debugMake(TypeCheckState *pstate, INode *valtype, INode *lex) {
     ModuleNode *mod = pstate->fn ? dclInfoGetModule((INode*)pstate->fn)
         : pstate->typenode ? dclInfoGetModule(pstate->typenode) : NULL;
     if (mod == NULL)
         return NULL;
+    if (!(mod->flags & FlagGenMod) && debugProgram) {
+        INode **modp;
+        uint32_t mcnt;
+        for (nodesFor(debugProgram->modules, mcnt, modp))
+            if (((ModuleNode*)*modp)->flags & FlagGenMod && !modIsTemplate((ModuleNode*)*modp)) {
+                mod = (ModuleNode*)*modp;
+                break;
+            }
+    }
     for (size_t i = 0; i < debugCount; ++i)
         if (debugCache[i].type == valtype && debugCache[i].mod == mod)
             return debugCache[i].fn;

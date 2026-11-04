@@ -20,4 +20,9 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep);
 // type's private fields, as the type's own methods do.
 int debugFnIsGenerated(INode *fn);
 
+// The program being type checked, whose generating module holds the functions
+// written for a call that stands in a module this compile does not generate
+// (core's wrappers, reached from the program's own code)
+void debugSetProgram(INode *pgm);
+
 #endif
