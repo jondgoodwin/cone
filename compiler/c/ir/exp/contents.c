@@ -1398,8 +1398,13 @@ static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *re
     INode *pbase = ptype;
     while (pbase->tag == RefTag && itypeGetTypeDcl(((RefNode*)pbase)->region) == borrowRef)
         pbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
+    // A virtual reference ('&<Error', 'Uni[Error + Sendable]') has the toText its trait
+    // declares, called through the vtable
+    INode *hasbase = pbase;
+    if (pbase->tag == VirtRefTag)
+        hasbase = itypeGetTypeDcl(((RefNode*)pbase)->vtexp);
     if (!debug && !isNbr(pbase) && pbase != (INode*)boolType && pbase != (INode*)charType
-        && !(isMethodType(pbase) && iNsTypeFindFnField((INsTypeNode*)pbase, textName("toText")) != NULL)) {
+        && !(isMethodType(hasbase) && iNsTypeFindFnField((INsTypeNode*)hasbase, textName("toText")) != NULL)) {
         errorMsgNode(piece, ErrorNoText,
             "%s cannot be written as text: it has no `toText(self: &, out: &uni TextOut)`. Give it one that writes its text with `out <- ...`.",
             pbase->tag == PtrTag ? "a raw pointer" : itypeName(ptype));
@@ -1441,6 +1446,9 @@ static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *re
     callnode->args = newNodes(1);
     nodesAdd(&callnode->args, writer);
     callnode->flags &= ~(FlagOpAssgn | FlagLvalOp);
+    // Called on a virtual reference, as a call on one is: through the vtable
+    if (pbase->tag == VirtRefTag)
+        callnode->flags |= FlagVDisp;
     if (debug)
         callnode->flags &= ~FlagOperator;
     return 1;

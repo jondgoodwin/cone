@@ -1079,9 +1079,20 @@ tags = ["typecheck", "runtime"]
 
 [scenario.enum_main_result_report]
 category = "run"
-description = "A 'main' returning a Result prints its error with the error type's 'report()' where it has one (the Error trait's default: the message and each cause under it, INTERIM text), else its 'message()': a typed error with two causes, converted by '?' into an AnyError with a line of context, prints as a chain to stderr and the exit status is 1"
+description = "A 'main' returning a Result prints its error with the error type's 'report()' where it has one (the Error trait's default in core: the text and each cause under it, INTERIM text), else its 'message()': a typed error with two causes, converted by '?' into an AnyError with a line of context, prints as a chain to stderr and the exit status is 1"
 tags = ["typecheck", "genllvm", "runtime"]
 program_exit = 1
+
+[scenario.enum_main_result_typed]
+category = "run"
+description = "A 'main' returning a Result whose error is a typed error meeting core's Error, not an AnyError, with a cause under it: 'Error: ', its text and 'caused by:' its cause go to stderr as one record, the exit status is 1"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = 1
+
+[scenario.enum_error_core]
+category = "run"
+description = "core's Error: types that write their text into a TextOut meet it; a send of one prints its line, 'String() <- e' makes a String of it, source() answers a '&<Error' that is called through, report writes the chain, and '?' converts a core-only error into an AnyError that holds it under two lines of context (holds, downcastRef, report)"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.enum_propagate_from_plain]
 category = "run"
@@ -1124,3 +1135,40 @@ options = []
 [[scenario.enum_nullable_empty_slice.run]]
 name = "debug"
 options = ["--debug"]
+
+[scenario.enum_error_text_virtual]
+category = "run"
+description = "a '&<Error' and a 'Uni[Error + Sendable]' are written as text through the vtable's toText: 'print <- e' and 'String() <- e'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_error_debug_virtual]
+category = "run"
+description = "a '&<Error' has a display form through the vtable's toText and a debug form that is the trait's name; a trait declaring its own toDebug is called through the vtable on a DebugText sink"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.enum_error_interp]
+category = "run"
+description = "An interpolated string holding an error, $\"{e}\", is that error's own toText line (not its causes), sent directly, made into a String, and through a '&<Error'"
+tags = ["typecheck", "runtime"]
+
+# Read before optimization: after it an unused internal function is gone and the
+# exclude would pass for the wrong reason.
+[scenario.enum_error_unused]
+category = "compile"
+description = "A program that never meets core's Error carries no body for the failure printer 'Error.reportFailure'"
+tags = ["genllvm"]
+
+[[scenario.enum_error_unused.check]]
+name = "no-failure-printer"
+target = "preir"
+excludes = ["reportFailure", "call %void @cone_mainErrorRecord(", "define internal %void @_CNvC4core"]
+
+[scenario.enum_error_used]
+category = "compile"
+description = "The control for enum_error_unused: a 'main' returning an error is given the failure printer's body"
+tags = ["genllvm"]
+
+[[scenario.enum_error_used.check]]
+name = "failure-printer-present"
+target = "preir"
+contains = ["call %void @cone_mainErrorRecord("]
