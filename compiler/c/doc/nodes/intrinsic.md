@@ -322,5 +322,6 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
 | a number's math methods | `corenumber.c` `nbrMathMethods`; a vector's, `vector.c` `vecAddLanewise`; `genlexpr.c` `genlNumberIntrinsic` |
 | an integer's bit methods | `corenumber.c` `nbrBitMethods`; its `hash`, `nbrAddHashMethods` and `fncall.c` `fnCallHashNumber` |
 | a number's `toText` | `corenumber.c` `nbrAddTextMethods` and `fncall.c` `fnCallTextNumber` |
+| a float's encoding (`bits`, `exponent`, `mantissa`, `signBit`, and the static `f32.fromBits`) | `corenumber.c` `nbrFloatBitMethods` (kinds `FloatBitsIntrinsic` to `FloatSignBitIntrinsic`, built in C, no registry entry, no Cone declaration since the integer type follows the width); `genlexpr.c` `genlFloatBits`; the static path `fncall.c` `fnCallNumberStatic`. The `fromBits` declaration is marked `TypeChecked` because a call by name demands the declaration's check and a number type has no struct or module to check it under |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |

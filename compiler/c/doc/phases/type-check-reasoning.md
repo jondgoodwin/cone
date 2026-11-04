@@ -437,7 +437,8 @@ Two syntaxes and a pattern's binding, all `CastNode`:
 | `case let &Circle(c)` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked, and never joins pointer-sized `usize` or `isize` to a
+which is size-checked in generation, and held to a coercion to it (a struct, an
+enum or a `char` target is `ErrorAsTarget` otherwise), and never joins pointer-sized `usize` or `isize` to a
 fixed-width number, whose widths agree on some targets only
 (`ErrorPtrSizedAs`, [cast](../nodes/cast.md)). **Convert**, a bound pattern's, permits reference to
 reference, virtual reference to reference, `SameSize` struct to struct, and a
