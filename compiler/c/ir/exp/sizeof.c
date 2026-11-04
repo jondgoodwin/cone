@@ -7,11 +7,15 @@
 
 #include "../ir.h"
 
+#include <stdio.h>
+
 // Create a new sizeof node
 SizeofNode *newSizeofNode() {
     SizeofNode *node;
     newNode(node, SizeofNode, SizeofTag);
     node->vtype = (INode*)usizeType;
+    node->what = SizeofSize;
+    node->field = NULL;
     return node;
 }
 
@@ -26,8 +30,10 @@ INode *cloneSizeofNode(CloneState *cstate, SizeofNode *node) {
 
 // Serialize sizeof
 void sizeofPrint(SizeofNode *node) {
-    inodeFprint("(sizeof, ");
+    inodeFprint(node->what == SizeofAlign ? "(alignof, " : node->what == SizeofOffset ? "(offsetof, " : "(sizeof, ");
     inodePrintNode(node->type);
+    if (node->what == SizeofOffset)
+        inodeFprint(", %s", &node->field->namesym->namestr);
     inodeFprint(")");
 }
 
@@ -40,4 +46,37 @@ void sizeofNameRes(NameResState *pstate, SizeofNode *node) {
 void sizeofTypeCheck(TypeCheckState *pstate, SizeofNode *node) {
     if (itypeTypeCheck(pstate, &node->type) == 0)
         return;
+    if (node->what == SizeofSize || node->what == SizeofAlign) {
+        char what[200];
+        char name[128];
+        name[0] = '\0';
+        itypeSpellCat(name, sizeof(name), node->type, 0);
+        snprintf(what, sizeof(what), "%s(%s)", node->what == SizeofSize ? "#size" : "#align", name);
+        sizeofLayoutRefused((INode*)node, node->type, what);
+    }
+}
+
+int sizeofLayoutRefused(INode *errnode, INode *type, const char *what) {
+    if (!isTypeNode(type) || !structLayoutUnsettled(type))
+        return 0;
+    INode *root = NULL;
+    char *cause = itypeNoSizeCause(type, &root);
+    char name[128];
+    name[0] = '\0';
+    itypeSpellCat(name, sizeof(name), type, 0);
+    errorMsgNode(errnode, ErrorMetaLayout,
+        "'%s' asks about the layout of '%s' while that layout is still being settled, which would answer by the order the declarations happen to be laid out in%s%s%s%s.",
+        what, name, cause ? ": " : "", cause ? name : "", cause ? " " : "", cause ? cause : "");
+    return 1;
+}
+
+int sizeofConstRefused(INode *node, const char *where) {
+    if (node == NULL || node->tag != SizeofTag)
+        return 0;
+    SizeofNode *size = (SizeofNode*)node;
+    errorMsgNode(node, ErrorMetaLayoutConst,
+        "%s is the code generator's constant, which the front end has not worked out, so it cannot be %s yet. Use it in an expression the program runs, or write the number.",
+        size->what == SizeofAlign ? "A type's alignment ('#align' or 'mem.alignof')"
+            : size->what == SizeofOffset ? "A field's offset ('#f.offset')" : "A type's size ('#size' or 'mem.sizeof')", where);
+    return 1;
 }

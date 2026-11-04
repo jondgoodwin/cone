@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 
-static const char *fieldPropWords[FieldPropCount] = { "name", "type", "region", "perm", "pub" };
+static const char *fieldPropWords[FieldPropCount] = { "name", "type", "region", "perm", "pub", "offset" };
 
 FieldEach *newFieldEach(Name *var, INode *subject, ModuleNode *mod) {
     FieldEach *fe = (FieldEach*)memAllocBlk(sizeof(FieldEach));
@@ -69,8 +69,17 @@ INode *fieldEachSplice(NameUseNode *node) {
     return (INode*)member;
 }
 
-static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, BlockNode *at, int ispub) {
+static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, BlockNode *at, int ispub, INode *subj) {
     switch (prop) {
+    case FieldPropOffset: {
+        // Only once T's layout has settled: asked inside it, the answer would depend on the order of declaration
+        SizeofNode *off = newSizeofNode();
+        inodeLexCopy((INode*)off, (INode*)at);
+        off->what = SizeofOffset;
+        off->type = subj;
+        off->field = field;
+        return (INode*)off;
+    }
     case FieldPropName: {
         size_t len = strlen(&field->namesym->namestr);
         char *text = (char*)memAllocBlk(len + 1);
@@ -186,7 +195,9 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
         for (int p = 0; p < FieldPropCount; ++p) {
             if (!fe->used[p])
                 continue;
-            INode *answer = fieldPropAnswer(fe, p, field, node, !inodeIsPrivate((INode*)field));
+            if (p == FieldPropOffset && sizeofLayoutRefused((INode*)node, subj, "#f.offset"))
+                break;
+            INode *answer = fieldPropAnswer(fe, p, field, node, !inodeIsPrivate((INode*)field), subj);
             fe->propnames[p]->node = answer ? answer : (INode*)fe->props[p];
         }
         NameUseNode *member = newMemberUseNode(field->namesym);

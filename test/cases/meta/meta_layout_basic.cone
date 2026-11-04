@@ -1,0 +1,89 @@
+// Layout facts (mod-generativity.html#metalayout): '#size(T)', '#align(T)' and '#f.offset' answer from the
+// layout the code generator makes, so each is checked against 'mem.sizeof' and 'mem.alignof' (the same
+// layout asked another way), and against the offsets the pointers of a real value show. A struct with
+// padding makes the three differ from the sum of the fields. '#f.type is Copy' and 'is Move' decide
+// which branch of a '#if' exists, for a field that moves and one that does not.
+//
+// The printed values were checked by hand against the layout of Pad (a: u8 at 0; b: i64 aligned to 8 at 8;
+// c: u8 at 16; d: i32 aligned to 4 at 20; 24 bytes, a multiple of its alignment 8):
+//   size 24 align 8 and the offsets 0 8 16 20
+// and Plain, a single i32: size 4 align 4, offset 0.
+
+mod meta_layout_basic;
+
+import stdio use *;
+
+struct Pad {
+  pub a: u8;
+  pub b: i64;
+  pub c: u8;
+  pub d: i32;
+}
+
+struct Plain {
+  pub x: i32;
+}
+
+struct Owner is Move {
+  pub id: i32;
+}
+
+struct Mixed {
+  pub n: i32;
+  pub o: Owner;
+  pub m: Pad;
+}
+
+// Each answer beside the same fact asked of mem
+fn layout[T](name: &str) {
+  printStr(name);
+  printStr(" size ");
+  printInt(i64.from(#size(T)));
+  printStr(" align ");
+  printInt(i64.from(#align(T)));
+  let sizeagrees = #size(T) == mem.sizeof[T]();
+  let alignagrees = #align(T) == mem.alignof[T]();
+  printStr(if sizeagrees && alignagrees { " agrees" } else { " DISAGREES" });
+  printStr("\n");
+  #each #f in #fields(T) {
+    printStr("  ");
+    printStr(#f.name);
+    printStr(" at ");
+    printInt(i64.from(#f.offset));
+    printStr("\n");
+  }
+}
+
+// The offsets again, from the addresses of a value's own fields
+fn addresses[T](v: &T) {
+  let base = (v as *u8) as usize;
+  var ok = true;
+  #each #f in #fields(T) {
+    let at = ((&v.#f) as *u8) as usize - base;
+    if at != #f.offset {
+      ok = false;
+    }
+  }
+  printStr(if ok { "addresses agree\n" } else { "addresses DISAGREE\n" });
+}
+
+// Which fields move: the branch for a field that does not is never checked for one that does
+fn moves[T]() {
+  #each #f in #fields(T) {
+    #if #f.type is Move {
+      printStr(#f.name);
+      printStr(" moves\n");
+    }
+    #else {
+      printStr(#f.name);
+      printStr(" copies\n");
+    }
+  }
+}
+
+fn main() {
+  layout[Pad]("Pad");
+  layout[Plain]("Plain");
+  addresses(&Pad(1, 2, 3, 4));
+  moves[Mixed]();
+}
