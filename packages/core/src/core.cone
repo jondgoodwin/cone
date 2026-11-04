@@ -380,6 +380,9 @@ pub struct @opaque str {
   // 'put' methods directly: nothing written in Cone can add a method to a number.)
   pub fn toText(self: &, out: &uni TextOut) inline { out.writeStr(self); }
 
+  // This text in quotes, escaped: the debug form (a String has it through the fold)
+  pub fn toDebug(self: &, out: &uni TextOut) inline { out.putDebugStr(self); }
+
   // The code points, in order: a cursor whose 'next' gives each as a char. A
   // byte that is not part of well-formed UTF-8 reads as U+FFFD, one for each
   // such byte, so every char given is valid. Code points, not graphemes: a
@@ -554,6 +557,19 @@ pub struct @opaque Array[T] is GcTraceElements {
   // The number of elements. Not 'inline', so that a type folding it in can fill
   // a trait's slot with it (a slot points at a function that exists)
   pub fn len(self: &) usize { self.len }
+
+  // The elements in the debug form, '[a, b, c]', each by its own toDebug (an array
+  // of a fixed size and a slice both reach this)
+  pub fn toDebug(self: &, out: &uni TextOut) inline {
+    out.writeStr("[");
+    var i = 0usize;
+    while i < self.len {
+      if i > 0usize { out.writeStr(", "); }
+      self[i].toDebug(out);
+      i = i + 1usize;
+    }
+    out.writeStr("]");
+  }
 
   // The elements before index 'at' and those from it on, as two slices of the same
   // elements (a panic if 'at' is past the end). With 'len', this is what makes a
@@ -3725,13 +3741,17 @@ pub struct TextOut {
   pub first: *TextChunk;
   pub last: *TextChunk;
   pub store: Array[u8, 128];
+  // How many generated 'toDebug' bodies are open in this writer (enter, leave):
+  // at 128 the next writes '...', so a value that reaches itself through an Rc or
+  // a Gc ends. This one word is what every writer pays for that.
+  pub depth: u32;
 
   // A record: starts in its store. 'done' is the address of the function that
   // takes the record away when the writer dies (a TextDone), 0 for none; 'tag'
   // and 'owner' are the maker's, read back by that function.
   pub fn record(done: usize, owner: *u8, tag: u32) TextOut inline {
     TextOut(null, 0usize, textInlineBytes, 0u32, tag, 0usize, done, owner, 0usize, null, null,
-      Array[u8, 128]() <- fill 0u8)
+      Array[u8, 128]() <- fill 0u8, 0u32)
   }
 
   // A window onto 'cap' bytes at 'base', the first 'len' of them written. A
@@ -3740,7 +3760,7 @@ pub struct TextOut {
   // writer dies.
   pub fn over(base: *u8, len: usize, cap: usize, owner: *u8, spill: usize, done: usize) TextOut inline {
     TextOut(base, len, cap, if spill == 0usize {2u32} else {1u32}, 0u32, spill, done, owner, 0usize, null, null,
-      Array[u8, 128]() <- fill 0u8)
+      Array[u8, 128]() <- fill 0u8, 0u32)
   }
 
   // The maker's: the tag, and the thing the record was made for
@@ -3864,6 +3884,92 @@ pub struct TextOut {
     }
   }
 
+  // The debug form's pieces. A generated 'toDebug' (the compiler's, for a struct or
+  // enum that wrote none) opens with 'enter' and closes with 'leave'; at 128 open
+  // levels 'enter' writes '...' and answers false, so a value that reaches itself ends.
+  pub fn enter(self: &uni) bool inline {
+    if depth >= 128u32 {
+      self.writeStr("...");
+      return false;
+    }
+    depth = depth + 1u32;
+    true
+  }
+  pub fn leave(self: &uni) inline {
+    depth = depth - 1u32;
+  }
+
+  fn hexDigit(self: &, n: u8) u8 inline {
+    if n < 10u8 {n + '0'} else {n - 10u8 + 'a'}
+  }
+
+  // One byte of quoted text: the quote and the backslash escaped, a line end as
+  // \n \r \t, any other control byte as \xHH; every other byte as it is, so
+  // multibyte text passes whole
+  fn putEscaped(self: &uni, c: u8, quote: u8) inline {
+    if c == quote || c == '\\' {
+      self.putByte('\\');
+      self.putByte(c);
+    }
+    else if c == '\n' {
+      self.writeStr("\\n");
+    }
+    else if c == '\r' {
+      self.writeStr("\\r");
+    }
+    else if c == '\t' {
+      self.writeStr("\\t");
+    }
+    else if c < 32u8 || c == 127u8 {
+      self.writeStr("\\x");
+      self.putByte(self.hexDigit(c >> 4u8));
+      self.putByte(self.hexDigit(c & 15u8));
+    }
+    else {
+      self.putByte(c);
+    }
+  }
+
+  // A text in quotes, escaped (str's toDebug)
+  pub fn putDebugStr(self: &uni, s: &str) inline {
+    let b: &Array[u8] = s;
+    self.putByte('"');
+    var i = 0usize;
+    while i < b.len {
+      self.putEscaped(b[i], '"');
+      i = i + 1usize;
+    }
+    self.putByte('"');
+  }
+
+  // A char in single quotes, escaped (char's toDebug)
+  pub fn putDebugChar(self: &uni, c: char) inline {
+    self.putByte('\'');
+    if u64.from(c) < 128u64 {
+      self.putEscaped(u8.from(u64.from(c)), '\'');
+    }
+    else {
+      self.putChar(c);
+    }
+    self.putByte('\'');
+  }
+
+  // An address: '0x' and its hex digits (a raw pointer's toDebug)
+  pub fn putHex(self: &uni, n: u64) inline {
+    self.writeStr("0x");
+    var shift = 60u64;
+    var started = false;
+    while shift > 0u64 {
+      let d = u8.from((n >> shift) & 15u64);
+      if started || d != 0u8 {
+        started = true;
+        self.putByte(self.hexDigit(d));
+      }
+      shift = shift - 4u64;
+    }
+    self.putByte(self.hexDigit(u8.from(n & 15u64)));
+  }
+
   // The record is finished: its maker's function takes it away now, and the
   // writer's death will have nothing more to do. A send statement to the console
   // ends its writer so, with its last piece written, before the temporaries of
@@ -3880,6 +3986,29 @@ pub struct TextOut {
     textFinish(self);
   }
 }
+
+// The two forms a value may be written in. A type's 'toText' is its display form and
+// its 'toDebug' (its own, or the compiler's, generated when a call asks) the form for
+// programmers: field names, quoted and escaped text, a variant's name.
+//
+// 'toText(x)' and 'toDebug(x)' borrow x and are written, doing nothing until a
+// writer takes them (nothing is allocated). Each wrapper writes the form it names,
+// from either of its two methods, so the choice holds on a sink whatever form the
+// sink prefers: 'toDebug(x)' on the console, 'toText(x)' on a sink that takes debug.
+pub struct TextForm['a, T] {
+  value: &'a T;
+  pub fn toText(self: &, out: &uni TextOut) inline { value.toText(out); }
+  pub fn toDebug(self: &, out: &uni TextOut) inline { value.toText(out); }
+}
+
+pub struct DebugForm['a, T] {
+  value: &'a T;
+  pub fn toText(self: &, out: &uni TextOut) inline { value.toDebug(out); }
+  pub fn toDebug(self: &, out: &uni TextOut) inline { value.toDebug(out); }
+}
+
+pub fn toText[T](x: &T) TextForm[T] inline { TextForm(x) }
+pub fn toDebug[T](x: &T) DebugForm[T] inline { DebugForm(x) }
 
 extern {
   // Make room in the writer for 'need' more bytes (a record chains a block on;

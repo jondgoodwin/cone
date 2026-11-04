@@ -2430,6 +2430,9 @@ int structSeesPrivate(TypeCheckState *pstate, INode *type) {
     INode *site = pstate->fn ? (INode*)pstate->fn : pstate->typenode;
     if (site == NULL)
         return 0;
+    // A debug form the compiler wrote for a type is in that type's scope (debugfn.c)
+    if (pstate->fn && debugFnIsGenerated(site))
+        return 1;
     ModuleNode *typemod = dclInfoGetModule(type);
     if (typemod != NULL && typemod == dclInfoGetModule(site))
         return 1;

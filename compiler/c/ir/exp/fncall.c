@@ -5471,6 +5471,10 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
     if (fnCallCloneCopy(nodep))
         return;
 
+    // 'x.toDebug(out)' of a type that declares none: generated when asked (debugfn.c)
+    if (fnCallDebugLower(pstate, nodep))
+        return;
+
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
