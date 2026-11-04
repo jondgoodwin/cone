@@ -19,19 +19,22 @@
 // and the stage gives the input chunk back once it has fed it and pulled its
 // output out, so a slow sink slows the stage, the stage the fetch.
 //
-// THE LIMIT is on bytes OUT: 'limit' is what the decompression may produce
-// (past it the decoder fails with the codec's own TooLarge error, and the sink's
-// one end is Failed). Use actorhttp.defaultMaxBody, the limit a client's
-// get/send/fetchWhole applies to a body, so that a decoded body is held to the
-// same bound as an undecoded one.
+// THE LIMIT bounds bytes OUT, the DECODED output: 'limit' is what the
+// decompression may produce (past it the decoder fails with the codec's own
+// TooLarge error, and the sink's one end is Failed). This differs from
+// fetchWhole (and get/send), whose limit counts bytes ON THE WIRE, the
+// undecoded body. Use actorhttp.defaultMaxBody, the same number, so that a
+// decoded body is held to the same bound as an undecoded one; the wire side of
+// a compressed body is not bounded by it.
 //
-// HOW IT ENDS. A corrupt stream ends the sink with Failed(the codec's own
-// error, message and typed error intact). The rest of the body the server is
-// still sending is given back unread, so the fetch runs to its end; a caller who
-// wants the download stopped cancels the group the request was sent in. A
-// Content-Encoding this package cannot decode (br, several codings listed) ends
-// the sink with Failed("httpdecode: unsupported Content-Encoding"), the head
-// answered as it came. A failure before the head is the caller's Err and the
+// HOW IT ENDS. A corrupt or oversized stream ends the sink with Failed(the
+// codec's own error, message and typed error intact), and a Content-Encoding
+// this package cannot decode (br, several codings listed) ends it with
+// Failed("httpdecode: unsupported Content-Encoding"), the head answered as it
+// came. Each of the three also ENDS THE FETCH: 'open' sends the request in a
+// child group of the request's own group (or of the caller's current group) and
+// cancels that child, so the server's remaining bytes are not read. The sink
+// still sees one Failed. A failure before the head is the caller's Err and the
 // sink's Failed end, as for streamTo. 'Content-Encoding' stays in the head as
 // the server sent it.
 
@@ -46,6 +49,7 @@ import actorhttp use Client, BodyHead, FetchError;
 import stages use ChunkSink, ChunkSource, Ending, Stage;
 import deflate;
 import zstd;
+import iocore use CancelGroup;
 
 // What 'open' asks for with Accept-Encoding, unless the request has its own
 pub const acceptEncoding = "gzip, deflate, zstd";
@@ -84,8 +88,37 @@ fn handBack(up: &Option[ChunkSource], b: IoBuf) {
   }
 }
 
+// Between a codec stage and the caller's sink: passes everything on, and when the
+// stage ends Failed (corrupt or oversized) cancels the fetch's group first, so the
+// body the server is still sending is not read
+actor Tap is ChunkSink {
+  down: ChunkSink;
+  group: CancelGroup;
+
+  pub fn init(self: &new, down: ChunkSink, group: CancelGroup) {
+    *self = Self(down: down, group: group);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    down.attach(source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    down.accept(c);
+  }
+
+  pub async fn end(self, how: Ending) {
+    match &how {
+      case is Failed {group.cancel();}
+      else {}
+    }
+    down.end(how);
+  }
+}
+
 pub actor Decoder is ChunkSink, ChunkSource {
   sink: ChunkSink;
+  group: Option[CancelGroup];    // the child group the fetch runs in; cancelled when the stream is refused or fails
   limit: u64;
   up: Option[ChunkSource];       // the body's source, whom every buffer goes back to
   target: Option[ChunkSink];     // where chunks go once the head has said (the decoder stage, or the sink)
@@ -96,7 +129,7 @@ pub actor Decoder is ChunkSink, ChunkSource {
 
   // A decoder in front of 'sink', the output of a decompression held to 'limit' bytes
   pub fn init(self: &new, sink: ChunkSink, limit: usize) {
-    *self = Self(sink: sink, limit: u64.from(limit), up: None[ChunkSource], target: None[ChunkSink],
+    *self = Self(sink: sink, limit: u64.from(limit), group: None[CancelGroup], up: None[ChunkSource], target: None[ChunkSink],
       chosen: false, refused: false, backlog: Deque[IoBuf](), early: None[Ending]);
   }
 
@@ -106,6 +139,15 @@ pub actor Decoder is ChunkSink, ChunkSource {
   pub async fn open(self, client: Client, req: httpclient.Request) Result[BodyHead, FetchError] {
     var r = req;
     if !r.headers.has("Accept-Encoding") {r.headers.add("Accept-Encoding", acceptEncoding);}
+    // the fetch runs in a child group of the request's (or the caller's), ours to cancel
+    var parent = actors.currentGroup();
+    match r.group {
+      case let Some(g) {parent = g;}
+      else {}
+    }
+    let mine = parent.child();
+    r.group = Some[CancelGroup](mine);
+    group = Some[CancelGroup](mine);
     let res = await client.streamTo(r, selfactor);
     match &res {
       case let &Ok(head) {self.choose(codingOf(&head.headers));}
@@ -117,22 +159,31 @@ pub actor Decoder is ChunkSink, ChunkSource {
   fn choose(self: &mut, c: Coding) {
     if chosen {return;}
     chosen = true;
+    var down = sink;
+    match &group {
+      case let &Some(g) {down = asSink(Tap(sink, *g));}
+      else {}
+    }
     if c == Coding.Gzip {
       var t = deflate.Inflater.make(deflate.Format.Gzip);
       t.setLimit(limit);
-      target = Some[ChunkSink](asSink(Stage[deflate.Inflater](sink, t)));
+      target = Some[ChunkSink](asSink(Stage[deflate.Inflater](down, t)));
     } else if c == Coding.Zlib {
       var t = deflate.Inflater.make(deflate.Format.Zlib);
       t.setLimit(limit);
-      target = Some[ChunkSink](asSink(Stage[deflate.Inflater](sink, t)));
+      target = Some[ChunkSink](asSink(Stage[deflate.Inflater](down, t)));
     } else if c == Coding.Zstd {
       var t = zstd.Decompressor.make();
       t.setLimit(limit);
-      target = Some[ChunkSink](asSink(Stage[zstd.Decompressor](sink, t)));
+      target = Some[ChunkSink](asSink(Stage[zstd.Decompressor](down, t)));
     } else if c == Coding.Identity {
       target = Some[ChunkSink](sink);
     } else {
       refused = true;
+      match &group {
+        case let &Some(g) {g.cancel();}
+        else {}
+      }
       sink.end(Ending.Failed(AnyError.msg("httpdecode: unsupported Content-Encoding")));
     }
     match &target {

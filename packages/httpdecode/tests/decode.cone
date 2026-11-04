@@ -36,15 +36,58 @@ struct Tally {
   pub finished: Atomic[u64];
   pub failed: Atomic[u64];
   pub heads: Atomic[u64];
+  pub hash: Atomic[u64];   // of every byte the sink saw, in order
+  pub sent: Atomic[u64];   // body bytes the server handed to the connection
 }
 
 let tally: Tally;
 
 fn @initpure init() {
-  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// A running hash of bytes in order (stays below 2^32, so the product stays far below 2^64)
+fn mix(h: u64, b: u8) u64 { (h * 1000003u64 + u64.from(b)) % 4294967291u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 0u64;
+  var i = 0usize;
+  while i < v.len {h = mix(h, v[i]); i = i + 1usize;}
+  h
+}
+
+// The one-shot result for what the server sends as /<coding>/<n>: the pattern compressed, then
+// decompressed in one call by the codec's own one-shot function, hashed (0 if that did not give n bytes)
+fn oneShotHash(coding: &str, n: usize) u64 {
+  var raw = List[u8].withCapacity(n);
+  var i = 0usize;
+  while i < n {raw.push(u8.from(u64.from(i) % 251u64)); i = i + 1usize;}
+  if coding == "plain" {return hashOf(raw.view());}
+  let packed = compress(coding, raw.view());
+  var h = 0u64;
+  if coding == "gzip" {
+    match deflate.gzipDecompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  } else if coding == "deflate" {
+    match deflate.zlibDecompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  } else {
+    match zstd.decompress(packed.view(), n) {
+      case let Ok(out) {if out.len() == n {h = hashOf(out.view());}}
+      else {}
+    }
+  }
+  h
 }
 
 fn reset() {
+  tally.hash.store(0u64);
+  tally.sent.store(0u64);
   tally.bytes.store(0u64);
   tally.bad.store(0u64);
   tally.finished.store(0u64);
@@ -105,19 +148,31 @@ actor Handler {
     let segs = segments(path.view());
     var zeros = false;
     var bad = false;
+    var rand = false;
     var k = 0usize;
     if segs[k].view() == "zeros" {zeros = true; k = k + 1usize;}
     if segs[k].view() == "bad" {bad = true; k = k + 1usize;}
+    if segs[k].view() == "rand" {rand = true; k = k + 1usize;}
     let coding = String.from(segs[k].view());
     let n = number(segs[k + 1usize].view());
     var raw = List[u8].withCapacity(usize.from(n));
     var i = 0u64;
+    var x = 12345u64;
     while i < n {
-      raw.push(if zeros {0u8} else {u8.from(i % 251u64)});
+      if rand {
+        // incompressible, so the body on the wire is about n bytes
+        x = (x * 1103515245u64 + 12345u64) % 2147483648u64;
+        raw.push(u8.from((x / 65536u64) % 256u64));
+      } else {
+        raw.push(if zeros {0u8} else {u8.from(i % 251u64)});
+      }
       i = i + 1u64;
     }
     var body = compress(coding.view(), raw.view());
-    if bad && body.len() > 40usize {
+    if bad && rand {
+      // the gzip magic: refused by the first chunk
+      body.set(0usize, body[0usize] ^ 255u8);
+    } else if bad && body.len() > 40usize {
       let at = body.len() / 2usize;
       body.set(at, body[at] ^ 255u8);
     }
@@ -131,7 +186,7 @@ actor Handler {
       let m = if left < 65536usize {left} else {65536usize};
       let w = await ex.write(String.fromBytes(&body.view()[at ..< at + m]));
       match w {
-        case is Ok { at = at + m; }
+        case is Ok { at = at + m; tally.sent.add(u64.from(m)); }
         case is Err { going = false; }
       }
     }
@@ -199,6 +254,10 @@ actor Count is ChunkSink {
       }
       if bad > 0u64 {tally.bad.add(bad);}
     }
+    var h = tally.hash.load();
+    var j = 0usize;
+    while j < v.len {h = mix(h, v[j]); j = j + 1usize;}
+    tally.hash.store(h);
     at = at + u64.from(v.len);
     match &up {
       case let &Some(u) {u.giveBack(c);}
@@ -297,6 +356,8 @@ fn main() i32 {
       printUInt(tally.finished.load());
       printStr(" failed ");
       printUInt(tally.failed.load());
+      printStr(", equals the one-shot result ");
+      printStr(yes(tally.hash.load() == oneShotHash(name.view(), usize.from(size)) && tally.hash.load() != 0u64));
       printStr("\n");
     }
     printStr("...every buffer home: ");
@@ -345,6 +406,34 @@ fn main() i32 {
     printStr(", ");
     printStr(u.view());
     printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // A refused body ends the fetch: 16 MiB of incompressible data on the wire, the stream refused
+    // within its first chunks (a corrupt gzip magic; a limit of 1 MiB for each coding; br), and the
+    // server must not be able to write it all
+    names = List[String]();
+    names.push(String.from("/bad/rand/gzip/16777216"));
+    names.push(String.from("/rand/gzip/16777216"));
+    names.push(String.from("/rand/deflate/16777216"));
+    names.push(String.from("/rand/zstd/16777216"));
+    names.push(String.from("/br/16777216"));
+    j = 0usize;
+    while j < names.len() {
+      let p = &names[j];
+      j = j + 1usize;
+      let m = fetch(port, p.view(), false, 1048576usize, &mut mrx, mtx.clone());
+      thread.sleep(Duration.fromMillis(1500i64));
+      printStr(p.view());
+      printStr(": sink ends failed ");
+      printUInt(tally.failed.load());
+      printStr(" finished ");
+      printUInt(tally.finished.load());
+      printStr(", the server wrote less than half the body ");
+      printStr(yes(tally.sent.load() < 8u64 * mib));
+      printStr("\n");
+    }
     printStr("...every buffer home: ");
     printStr(yes(allHome()));
     printStr("\n");
