@@ -1054,6 +1054,12 @@ Integer` in an ordinary function). A condition of that kind that names a trait o
 a name that does not exist is the ordinary lookup error, and one that is no clause
 (`#if T {`) is `ErrorMetaFact`.
 
+`ErrorLitFieldType` is a struct or variant literal's value, given by position or by name,
+whose type does not convert to its field's (type check, `typeLitStructCheck`). A field takes
+a value on the terms a variable initializer does, so an actor made in place converts to an
+actor trait there as a variable's would; a count of values that does not match the fields is
+`ErrorBadArray`.
+
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in
 another (`#if #debug && T is Float`, or `#if T is Float {..} #elif #os == .windows {..}`),
