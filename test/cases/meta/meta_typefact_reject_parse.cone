@@ -1,0 +1,123 @@
+// What '#if' on what a type parameter is refuses while the file is read. The question
+// belongs to the body of a generic function or type: it is decided when the generic is
+// cloned for its arguments, so a place that is not one has no type to ask about.
+
+mod meta_typefact_reject_parse;
+
+// ---- a struct with no type parameters
+struct Holder {
+  n: i32;
+  #if Holder is Move {                           //~ ErrorMetaTypeFact:7 "this type has no type parameters"
+    m: i32;
+  }
+}
+
+// ---- at a module's level, and in an 'extern' block
+#if i32 is Integer {                             //~ ErrorMetaTypeFact:5 "at a module's level"
+  fn atModule() i32 { 1 }
+}
+
+extern {
+  #if i32 is Integer {                           //~ ErrorMetaTypeFact:7 "'extern' block declares what exists whatever a type is"
+    fn externFn() i32;
+  }
+}
+
+// ---- in an enum's braces
+enum Choice[T] {
+  Nada;
+  #if T is Float {                               //~ ErrorMetaTypeFact:7 "not built in the body of an enum or a trait"
+    Some(T);
+  }
+}
+
+// ---- a generic struct's braces hold fields and methods under a question about a type
+struct Stat[T] {
+  v: T;
+  #if T is Float {
+    static count: i32 = 0;                       //~ ErrorMetaTypeFact:12 "holds fields and methods"
+  }
+}
+
+// ---- a condition that is no question
+fn notquestion[T](x: T) i32 {
+  #if T {                                        //~ ErrorMetaFact:7 "built from the build's facts"
+    1
+  } #else {
+    2
+  }
+}
+
+// ---- a value from '#if' ends in an '#else', as with a fact of the build
+fn novalue[T](x: T) i32 {
+  let v = #if T is Float { 1 };                  //~ ErrorMetaIf "ends in an '#else'"
+  v
+}
+
+// ---- a chain in a generic struct's braces asks about the build or about a type, not both: the
+// include file keeps it whole and an importer reads the build's facts again for its own build
+struct MixedAnd[T] {
+  v: T;
+  #if #debug && T is Float {                     //~ ErrorMetaMixFact:17 "asks either about the build or about a type"
+    a: i64;
+  }
+}
+
+struct MixedElif[T] {
+  v: T;
+  #if T is Float {                               //~ ErrorMetaMixFact:7 "asks either about the build or about a type"
+    b: i64;
+  } #elif #os == .windows {
+    c: i64;
+  }
+}
+
+struct MixedBuildFirst[T] {
+  v: T;
+  #if #defined("MIXED") {
+    d: i64;
+  } #elif T is Float {                           //~ ErrorMetaMixFact:11 "asks either about the build or about a type"
+    e: i64;
+  }
+}
+
+// ---- a type question alone, and a build question alone (also around or inside it), are allowed
+struct NotMixed[T] {
+  v: T;
+  #if T is Float {
+    f: i64;
+    #if #debug {
+      g: i64;
+    }
+  } #else {
+    h: i64;
+  }
+  #if #debug {
+    #if T is Integer {
+      i: i64;
+    }
+  }
+}
+
+// ---- the same in a function body, as a statement chain and as a value: the build's '#if' goes
+// around the chain or inside a branch of it, where the package decides it
+fn mixedBody[T](x: T) i32 {
+  #if #debug && T is Float {                     //~ ErrorMetaMixFact:17 "asks either about the build or about a type"
+    1
+  } #else {
+    2
+  }
+}
+
+fn mixedValue[T](x: T) i32 {
+  let v = #if T is Float { 1 } #elif #os == .windows { 2 } #else { 3 };   //~ ErrorMetaMixFact:15 "asks either about the build or about a type"
+  v
+}
+
+fn notMixedBody[T](x: T) i32 {
+  #if #debug {
+    #if T is Float { 1 } #else { 2 }
+  } #else {
+    #if T is Float { 3 } #else { 4 }
+  }
+}

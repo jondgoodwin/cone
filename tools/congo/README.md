@@ -19,7 +19,7 @@ congo test vec             only the tests and examples with 'vec' in their name
 congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
-congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
+congo run -D FAST -D N=2   a constant for #defined and #define
 congo build --no-cache     compile everything, whatever an earlier build left
 congo build --release --strip   no debug info, and no .pdb beside the .exe
 congo publish              point an index registry at this package's current commit
@@ -27,9 +27,8 @@ congo publish              point an index registry at this package's current com
 
 `-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
 every `conec` compile of the build, the packages it imports included, where
-core's `isDefined` and `definedInt` read them. They are a provisional
-mechanism whose final design is open (`doc/manual/safe-intrinsics.html#buildconst`,
-"Constants of the build: a provisional mechanism; its final design is open").
+`#defined("NAME")` and `#define("NAME")` read them in an `#if`
+(`doc/manual/mod-generativity.html#meta`).
 
 A native build carries debug information, release or debug: each function the
 program defines, with its file and lines, so that a profiler can name the

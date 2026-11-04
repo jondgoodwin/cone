@@ -11,9 +11,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// TEMPORARY, a provisional mechanism whose final design is open: a constant
-// named on the command line, '-D NAME' (1) or '-D NAME=123', which core's
-// isDefined and definedInt answer (ir/stmt/intrinsic.c, intrinsicBuildConst)
+// A constant named on the command line, '-D NAME' (1) or '-D NAME=123', which
+// '#defined' and '#define' answer (parser/parsemeta.c)
 typedef struct ConeDefine {
     char *name;
     int64_t value;

@@ -90,7 +90,7 @@ a number.
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
 over the one type parameter `T` (or over none: `traceRoots`, `srcFile`,
-`srcLine`, `isDebugBuild` and the provisional constants of the build beside it are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
+`srcLine` are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
@@ -230,9 +230,6 @@ type while each call gives its own orderings.
 | `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple. On a GPU target each atomic is settled after the pipeline, its scope its memory's, and a `cmpxchg` made LLVM's `llvm.spv.cmpxchg` ([Generation](../phases/generation.md), "What invocations share") |
 | `workgroupBarrier`, `storageBarrier` | operation | on a GPU target a call to `llvm.spv.group.memory.barrier.with.group.sync` or `llvm.spv.device.memory.barrier.with.group.sync` (`genlGpuBarrier`); on a native target a load of conestd's thread-local `cone_barrierHook` and, where it is not null, a call of it with `cone_barrierCtx` and the kind, 0 or 1 (`genlCpuBarrier`; [Generation](../phases/generation.md), "Barriers on the CPU"); on WebAssembly nothing. Declared at core's top level with an empty fallback body, beside `setBarrierHook` and `clearBarrierHook`, which are conestd's |
 | `srcFile`, `srcLine` | expansion | constants of where the call is, the source file's name without its folders, as `&str` (`ShapeStr`; a private constant, one per file per module, laid out as the slice it shares a layout with) and the line, `genlFnCall`. Declared at core's top level rather than in `mem`. Each may be a parameter's default value, the one default that is not a literal (`varDclTypeCheck`); a `srcFile()` default under the cast that makes the text the `&Array[u8]` a parameter declares counts as one (`intrinsicIsSrcDefault`). `fnCallFinalizeArgs` appends a copy placed at the call taking the default (`intrinsicSrcCallAt`, which copies that cast too), so each call answers its own place. Written in a macro's body, each answers where the macro is used: `macroExpand` sets `CloneState.srcsite` to the outermost use (`macroSrcSite`), and `cloneFnCallNode` places a call to either there, while an argument keeps its own place ([generic](generic.md), "Macros") |
-| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), answered in `genlFnCall` by `intrinsicBuildConst` before any argument is generated. A constant of the build, not of a type: `genlIf` generates only the side of an `if` on it that the build takes (below). Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
-| `isWindows`, `isLinux`, `isMacOS`, `isWasm` | constant | TEMPORARY, a provisional mechanism whose final design is open. An `i1` read from `opt->triple` (filled in with the host's by `genlCreateMachine` before parse): `windows` or `win32`, `linux`, `darwin` or `macos` in it, or a `wasm` architecture. Answered and branched on as `isDebugBuild` is |
-| `isDefined(name)`, `definedInt(name)` | constant | TEMPORARY, as above. Whether `-D` defined `name`, an `i1`, and its integer, an `i64`, 0 when it was not (`opt->defines`, parsed by `coneOptDefine`). `name` must be a string literal under its borrow and coercion (`intrinsicCallCheck`, `ErrorDefineName`); the literal is read, never generated |
 | `countOnes[T]`, `leadingZeros[T]`, `trailingZeros[T]` | operation | `llvm.ctpop`, and `llvm.ctlz` and `llvm.cttz` told 0 is not poison (`is_zero_poison` false), so 0 counts as the width; the count resized to an `i32`, `genlBitIntrinsic`. `T` an integer of 8 to 64 bits (`ClassInt`) |
 | `rotateLeft[T]`, `rotateRight[T]` | operation | `llvm.fshl` and `llvm.fshr` with `x` as both halves, the `u32` amount resized to `T`; the funnel shifts take it modulo the width themselves |
 | `shlMasked[T]`, `shrMasked[T]` | operation | the amount resized to `T` and anded with width - 1 (the width a power of two, so that is modulo the width), then `shl`, or `ashr` for a signed `T` and `lshr` for an unsigned one |
@@ -241,19 +238,11 @@ type while each call gives its own orderings.
 | `floor[T]`, `ceil[T]`, `round[T]`, `fma[T]` | operation | `llvm.floor`, `llvm.ceil`, `llvm.round` (half away from zero, never `roundeven`) and `llvm.fma`. `T` a float (`ClassFloat`) |
 | `mulFold` | operation | both `u64`s zero-extended to `i128`, one `mul`, the product's high half `lshr` 64, and the two halves `trunc`ated and xored (`genlDeclaredIntrinsic`): one multiply on a 64-bit target. Declared in `mem` with a fallback body that forms the product from 32-bit halves, which `intrinsic_mulfold` checks against the lowering. The mixing step of core's `Hasher` ([struct](struct.md), "Hash") |
 
-**Constants of the build drop the untaken side at generation.**
-`intrinsicBuildConst` answers whether a node is one of the constants above, or
-`!`, `&&` or `||` of them, and its value. `genlIf` asks it of each condition:
-a false one's block is not generated at all, and a true one's is generated as
-an `else` would be, with nothing after it. So no call on the untaken side, and
-no reference to its symbol, reaches the object, in a debug build as in a
-release one: a call to an `extern` only another platform defines links. Name
-resolution, type check and flow analysis still see both sides, so every name on
-either side must resolve on every target. Generic instances and functions
-reached only from the untaken side are generated and then dropped with the
-rest of what no live symbol reaches ([Generation](../phases/generation.md),
-"Only what live code reaches is emitted"), so a helper holding another
-platform's calls links as the calls themselves do.
+**Facts of the build are not intrinsics.** `isDebugBuild`, `isWindows`,
+`isLinux`, `isMacOS`, `isWasm`, `isDefined` and `definedInt`, and
+`intrinsicBuildConst` with them, are gone; the parser reads `#os`, `#arch`,
+`#debug`, `#defined` and `#define` in an `#if` (`parser/parsemeta.c`) and drops
+the untaken branches, so generation has no build-constant path.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
