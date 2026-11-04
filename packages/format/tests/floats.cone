@@ -21,6 +21,15 @@ struct All {
   }
 }
 
+// The same wrappers inside an interpolated string, in a toText body
+struct Line {
+  price: f64;
+  id: u32;
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- $"{fixed(self.price, 2)}  {hex(self.id)}";
+  }
+}
+
 fn chk(w: FloatFormat, want: &Array[u8], label: &Array[u8]) {
   var s = String();
   s <- w;
@@ -816,6 +825,23 @@ fn main() i32 {
   let big = text(fixed(1.0, 1000));
   expectUInt(u64.from(big.view().len()), 1002u64, "huge n length");
 
-  // $"..." is on text-pr5-wants, not this branch: test it once that lands
+  // Inside $"...": sent to a String, the brief's own example. 1234.5 is exact in
+  // binary, so fixed to 2 places is "1234.50"; 48879 is 0xbeef (11*4096+14*256+14*16+15
+  // is 45056+3584+224+15 = 48879); -1i8 is 0xff at 8 bits; 64 is 0o100; 10 is 0b1010.
+  var q = String();
+  let price = 1234.5;
+  let id = 48879u32;
+  q <- $"{fixed(price, 2)}  {hex(id)}";
+  expectStr(q.view(), "1234.50  beef", "interpolated send list");
+  var r = String();
+  r <- $"{hex(-1i8)} {oct(64)} {bin(10)} {signed(7)} {sci(1234.5, 2)} {digits(1234.5, 6)} {fixed(0.125, 2)} {fixed(2.5, 0)}";
+  expectStr(r.view(), "ff 100 1010 +7 1.23e+03 1234.50 0.12 2", "interpolated every wrapper");
+  // As a String value anywhere else, and mixed with plain pieces and braces
+  let st: String = $"[{{{fixed(0.5, 1)}}}] {price}";
+  expectStr(st.view(), "[{0.5}] 1234.5", "interpolated as a String");
+  // Through a type's own toText, into a TextOut
+  var o2 = String();
+  o2 <- "<", Line(1234.5, 48879u32), ">";
+  expectStr(o2.view(), "<1234.50  beef>", "interpolated in a TextOut");
   return done();
 }
