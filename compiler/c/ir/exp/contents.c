@@ -160,6 +160,7 @@ static FnCallNode *contentsAppend(VarDclNode *recv, INode *value) {
     deref->vtexp = contentsVarUse(recv, value);
     FnCallNode *append = newFnCallOpnameLower(value, (INode*)deref, lessDashName, 2);
     append->flags |= FlagOpAssgn | FlagLvalOp;
+    append->methfld->flags |= FlagTextLowered;
     nodesAdd(&append->args, value);
     return append;
 }
@@ -998,6 +999,10 @@ static enum TextKind textKindOf(INode *base) {
     return TextNone;
 }
 
+// A receiver of any kind that declares 'wants(self: &) bool' is asked first, ahead of
+// all of the above (textGuardLower): the pieces of a send to a receiver that declines
+// are not evaluated.
+
 // The TextOut type a method of this name answers
 static INode *textOutOf(INode *base, const char *name) {
     INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName(name));
@@ -1040,8 +1045,140 @@ static Name *textWriterName() {
 static INode *textSend(INode *lex, INode *recv, INode *piece) {
     FnCallNode *send = newFnCallOpnameLower(lex, recv, lessDashName, 2);
     send->flags |= FlagOpAssgn | FlagLvalOp;
+    send->methfld->flags |= FlagTextLowered;
     nodesAdd(&send->args, piece);
     return (INode*)send;
+}
+
+// The `wants` guard: a text send to a receiver with `wants(self: &) bool` is
+//   { [var -g = receiver]; if -g.wants() { -g <- pieces } }
+// so a receiver that declines runs none of the pieces. The receiver is evaluated
+// once: a name, or fields of one, is read again for the test (a read harms
+// nothing); anything else is held first in a variable.
+
+// A method of this name that answers bool and takes only self, as declared
+static int textWantsOf(INode *base) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("wants"));
+    if (found == NULL || found->tag != FnDclTag)
+        return 0;
+    INode *sig = ((FnDclNode*)found)->vtype;
+    return sig != NULL && sig->tag == FnSigTag && ((FnSigNode*)sig)->parms->used == 1
+        && ((FnSigNode*)sig)->rettype != NULL && itypeGetTypeDcl(((FnSigNode*)sig)->rettype) == (INode*)boolType;
+}
+
+// A name of a variable, or a field read off one: reading it twice is the same as once
+static int textIsPlain(INode *node) {
+    if (node->tag == NameUseTag)
+        return nameUseNames(node, VarDclTag);
+    if (node->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)node;
+        return call->methfld != NULL && isNameUseNode(call->methfld) && call->args == NULL
+            && !(call->flags & (FlagIndex | FlagOperator)) && textIsPlain(call->objfn);
+    }
+    return 0;
+}
+
+// The first thing in a checked expression that changes state: an assignment, a
+// swap, a change in place or send, a borrow that is '&mut' or '&uni'. What a call does behind
+// its own body is not seen.
+static INode *textChangesState(INode *node) {
+    if (node == NULL)
+        return NULL;
+    INode *found;
+    switch (node->tag) {
+    case AssignTag:
+        return node;
+    case SwapTag:
+        return node;
+    case FnCallTag:
+        if (node->flags & FlagOpAssgn)
+            return node;
+        // fall through
+    case TypeLitTag: case FldAccessTag: case ArrIndexTag: {
+        FnCallNode *call = (FnCallNode*)node;
+        if ((found = textChangesState(call->objfn)) != NULL)
+            return found;
+        if (call->args) {
+            uint32_t cnt;
+            INode **argp;
+            for (nodesFor(call->args, cnt, argp))
+                if ((found = textChangesState(*argp)) != NULL)
+                    return found;
+        }
+        return NULL;
+    }
+    case BorrowTag: case ArrayBorrowTag: {
+        RefNode *ref = (RefNode*)node;
+        INode *perm = ref->perm ? itypeGetTypeDcl(ref->perm) : NULL;
+        if (perm == (INode*)mutPerm || perm == (INode*)uniPerm)
+            return node;
+        return textChangesState(ref->vtexp);
+    }
+    case DerefTag:
+        return textChangesState(((StarNode*)node)->vtexp);
+    case CastTag:
+        return textChangesState(((CastNode*)node)->exp);
+    case VarDclTag:
+        return textChangesState(((VarDclNode*)node)->value);
+    case TempTag:
+        return textChangesState(((TempNode*)node)->exp);
+    case NamedValTag:
+        return textChangesState(((NamedValNode*)node)->val);
+    case VTupleTag: case BlockTag: case IfTag: {
+        Nodes *list = node->tag == VTupleTag ? ((TupleNode*)node)->elems
+            : node->tag == BlockTag ? ((BlockNode*)node)->stmts : ((IfNode*)node)->condblk;
+        uint32_t cnt;
+        INode **p;
+        for (nodesFor(list, cnt, p))
+            if ((found = textChangesState(*p)) != NULL)
+                return found;
+        return NULL;
+    }
+    case OrLogicTag: case AndLogicTag:
+        if ((found = textChangesState(((LogicNode*)node)->lexp)) != NULL)
+            return found;
+        return textChangesState(((LogicNode*)node)->rexp);
+    case NotLogicTag:
+        return textChangesState(((LogicNode*)node)->lexp);
+    default:
+        return NULL;
+    }
+}
+
+static INode *textTrial(TypeCheckState *pstate, INode *node);
+
+// Warn of each piece that changes state, for it may not run
+static void textWarnEffects(TypeCheckState *pstate, FnCallNode *node) {
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        if (isEntryNode(piece)) {
+            EntryNode *entry = (EntryNode*)piece;
+            // 'n of x', 'k: v': the values written in it
+            INode *parts[2] = { entry->first, entry->val };
+            for (int p = 0; p < 2; ++p) {
+                INode *probe = parts[p] && isExpNode(parts[p]) ? textTrial(pstate, parts[p]) : NULL;
+                INode *bad = probe ? textChangesState(probe) : NULL;
+                if (bad)
+                    errorMsgNode(parts[p], WarnTextEffect, "This changes state, and the receiver has `wants`: when it says no, this does not run. Do it in a statement before the send.");
+            }
+            continue;
+        }
+        if (litIsLiteral(piece))
+            continue;
+        INode *probe = textTrial(pstate, piece);
+        if (probe && textChangesState(probe))
+            errorMsgNode(piece, WarnTextEffect, "This changes state, and the receiver has `wants`: when it says no, this does not run. Do it in a statement before the send.");
+    }
+}
+
+// Name only the guard writes, for the receiver it holds once
+static Name *textGuardName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-g", 2);
+    return name;
 }
 
 // 'recv.method()'
@@ -1138,6 +1275,57 @@ static int textListLower(TypeCheckState *pstate, FnCallNode **nodep, enum TextKi
     return 1;
 }
 
+// The send wrapped in the receiver's 'wants'. Answers 1 when it replaced the send
+static int textGuardLower(TypeCheckState *pstate, FnCallNode **nodep, INode *recvcopy, INode *otype) {
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+    INode *asked;
+    if (textIsPlain(node->objfn)) {
+        CloneState cstate;
+        uint32_t dclpos = cloneDclPush();
+        clonePushState(&cstate, NULL, NULL, pstate->scope, NULL, NULL);
+        asked = cloneNode(&cstate, node->objfn);
+        clonePopState();
+        cloneDclPop(dclpos);
+    }
+    else {
+        // Evaluated once, lent once to a variable (as a writer reached some other way is)
+        INode *held = node->objfn;
+        if (otype->tag != RefTag) {
+            if (!iexpIsLval(recvcopy)) {
+                errorMsgNode(held, ErrorNoText, "A send into a writer needs the writer in a variable or a place, or lent as '&uni'.");
+                *nodep = (FnCallNode*)newErrorNode(lex);
+                return 1;
+            }
+            borrowMutRef(&held, otype, newPermUseNode(uniPerm));
+        }
+        VarDclNode *g = contentsVar(textGuardName(), unknownType, immPerm, held, scope, lex);
+        nodesAdd(&blk->stmts, (INode*)g);
+        node->objfn = contentsVarUse(g, lex);
+        asked = contentsVarUse(g, lex);
+    }
+    node->methfld->flags |= FlagTextLowered;
+    IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, lex);
+    nodesAdd(&ifnode->condblk, (INode*)textAsk(lex, asked, "wants"));
+    BlockNode *then = newBlockNode();
+    inodeLexCopy((INode*)then, lex);
+    nodesAdd(&then->stmts, (INode*)node);
+    nodesAdd(&ifnode->condblk, (INode*)then);
+    nodesAdd(&blk->stmts, (INode*)ifnode);
+    // The statement has no value: the guard's 'if' has no 'else' to give one
+    INode *nothing = (INode*)newNilLitNode();
+    inodeLexCopy(nothing, lex);
+    nodesAdd(&blk->stmts, nothing);
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
 // A '<-' sending a list to a text receiver is lowered here (see the comment
 // above), before its pieces are looked at. Answers 1 when it replaced the send,
 // 0 when the send is not a text list's
@@ -1148,9 +1336,11 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
         || node->args == NULL || node->args->used != 1 || node->objfn == NULL)
         return 0;
     INode *arg = nodesGet(node->args, 0);
+    int guarded = isNameUseNode(node->methfld) && (node->methfld->flags & FlagTextLowered);
+    int single = arg->tag != VTupleTag && !isEntryNode(arg);
     // A single plain value is the ordinary send, whose failing to find a '<-' that
-    // takes it comes to textSendFallback
-    if (arg->tag != VTupleTag && !isEntryNode(arg))
+    // takes it comes to textSendFallback (unless the receiver has 'wants')
+    if (single && guarded)
         return 0;
     if (contentsIsConstruction(node->objfn))
         return 0;
@@ -1161,6 +1351,14 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
     INode *base = textReceiverBase(otype);
     enum TextKind kind = base ? textKindOf(base) : TextNone;
     if (kind == TextNone)
+        return 0;
+    // A receiver with 'wants' decides first, for the single piece and the list alike
+    if (!guarded && textWantsOf(base)) {
+        textWarnEffects(pstate, node);
+        if (textGuardLower(pstate, nodep, recvcopy, otype))
+            return 1;
+    }
+    if (single)
         return 0;
     // A list sent to a sink is the general list's, one application each against
     // one borrow of the sink, with each piece's writer finished before the next

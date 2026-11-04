@@ -567,7 +567,11 @@ struct Delay {
 		result is a <span class="pre">Result[T, Abandoned]</span>: its value, or <span class="pre">Err</span> where the
 		behaviour owing it ended without answering. In a set that is an error the caller sees, not the panic a plain
 		<span class="pre">await</span> on an abandoned future gives.</p>
-	<p><b>Wait for all.</b> <span class="pre">await set</span> waits until every member has arrived. It gives a
+	<p>There are three ways to wait: <span class="pre">await set</span> for every result, whatever each is;
+		<span class="pre">actors.allOk</span> for all or nothing, stopping at the first error (below); and
+		<span class="pre">await set.next()</span> to handle each result as it comes.</p>
+	<p><b>Wait for all.</b> <span class="pre">await set</span> waits until every member has arrived, never sooner, even
+		when a member is a <span class="pre">Result</span> that failed. It gives a
 		<span class="pre">List[Result[T, Abandoned]]</span> of the results not yet taken by <span class="pre">next()</span>
 		(below), in the order the members were added. Like awaiting a future of a move type, it uses the set up:</p>
 <pre>
@@ -659,6 +663,106 @@ actor Race {
 		when the losers should stop. Two waits on one set at once (a <span class="pre">next()</span> still waiting when
 		another begins) stop the program with a message, for now.</p>
 
+	<p><b>All or nothing.</b> For a set of <span class="pre">Result[V, E]</span>s,
+		<span class="pre">await actors.allOk(set)</span> is the call that stops at the first error. It gives
+		<span class="pre">Ok</span> of a <span class="pre">List[V]</span>, the values in the order added, once every member
+		has arrived <span class="pre">Ok</span>. The moment one member arrives as an <span class="pre">Err</span> (or
+		abandoned) it gives that error and cancels the rest, as dropping the set does: what was sent by
+		<span class="pre">start</span> sees the cancel, and the replies that come late are dropped. Like
+		<span class="pre">await set</span> it uses the set up, and an empty set gives an empty list. The error is a
+		<span class="pre">SetError[E]</span>: <span class="pre">MemberFailed(e)</span> holds the member's own error, and
+		<span class="pre">MemberGone(abandoned)</span> a member whose behaviour ended without answering, since an
+		<span class="pre">E</span> of the caller's has no place for that. The names are in the
+		<span class="pre">actors</span> module, and
+		<span class="pre">import actors use SetError;</span> brings the two into a pattern:</p>
+<pre>
+actor Shop {
+  // an item's price, or Err(item) for item 0, which is not for sale
+  pub async fn price(self, item: u64) Result[u64, u64] {
+    if item == 0u64 {Err[u64, u64](item)} else {Ok[u64, u64](item * 3u64)}
+  }
+}
+
+actor Cart {
+  shop: Shop;
+
+  // the cost of two items; 1000 plus the item if one cannot be priced
+  pub async fn cost(self, second: u64) u64 {
+    var set = actors.FutureSet[Result[u64, u64]].make();
+    set.start(fn() actors.Future[Result[u64, u64]] {shop.price(4u64)});
+    set &lt;- shop.price(second);
+    match await actors.allOk(set) {
+      case let Ok(prices) {
+        var sum = 0u64;
+        var i = 0usize;
+        while i &lt; prices.len() {
+          sum = sum + prices[i];
+          i = i + 1usize;
+        }
+        sum
+      }
+      case let Err(e) {
+        match e {
+          case let MemberFailed(item) {1000u64 + item}
+          case let MemberGone(a) {2000u64}
+        }
+      }
+    }
+  }
+}
+</pre>
+	<p><span class="pre">await cart.cost(5u64)</span> is 27 (12 and 15), and <span class="pre">await cart.cost(0u64)</span>
+		is 1000, the second item unpriced. <span class="pre">actors.nextOk(&amp;mut set)</span> is
+		<span class="pre">set.next()</span> with a failure and an abandoned member both on the
+		<span class="pre">Err</span> side as a <span class="pre">SetError[E]</span>.</p>
+	<p><b>Trying again.</b> A set takes <span class="pre">add</span> (or <span class="pre">&lt;-</span>) while it is being
+		drained, and the members already in it keep running. A loop on <span class="pre">next()</span> can add a fresh
+		request to the same set for each member that failed:</p>
+<pre>
+actor Flaky {
+  // fails with the number of the attempt until the third
+  pub async fn fetch(self, attempt: u64) Result[u64, u64] {
+    if attempt &lt; 2u64 {Err[u64, u64](attempt)} else {Ok[u64, u64](100u64)}
+  }
+}
+
+actor Retrier {
+  flaky: Flaky;
+  shop: Shop;
+
+  // every member's value, a failed fetch tried again (up to 3 times) while the others go on
+  pub async fn gather(self) u64 {
+    var set = actors.FutureSet[Result[u64, u64]].make();
+    set &lt;- flaky.fetch(0u64);
+    set &lt;- shop.price(5u64);
+    var sum = 0u64;
+    while true {
+      match await actors.nextOk(&amp;mut set) {
+        case let Some(p) {
+          match p.1 {
+            case let Ok(n) {sum = sum + n;}
+            case let Err(e) {
+              match e {
+                case let MemberFailed(attempt) {
+                  if attempt &lt; 3u64 {
+                    set &lt;- flaky.fetch(attempt + 1u64);
+                  }
+                }
+                case let MemberGone(a) {}
+              }
+            }
+          }
+        }
+        case is None {break;}
+      }
+    }
+    sum
+  }
+}
+</pre>
+	<p><span class="pre">await retrier.gather()</span> is 115: the fetch fails with 0 and then 1, is added again each
+		time, and gives 100 on its third try, beside the shop's 15.</p>
+
 	<h2 id="await-nothing">A behaviour that returns nothing</h2>
 	<p>Whether an answer is sent is the behaviour's declaration to say, never its caller's: one with no return type sends
 		none, so there is nothing to await, and an <span class="pre">await</span> on it is refused. A caller that needs to
@@ -748,10 +852,6 @@ actor Sizes {
 		nothing else holds its actor (<a href="conc-ioloop.html#io-thread">The I/O thread, and the program's end</a>); a
 		behaviour whose answer was owed by one abandoned so is abandoned with it, and a future it owed is abandoned
 		(<a href="#future">Futures</a>).</li>
-	<li><b>Stopping a set at the first error.</b> <span class="pre">await set</span> always waits for every member, even
-		in a <span class="pre">FutureSet</span> of <span class="pre">Result</span>s. A function
-		<span class="pre">allOk</span> will be the call that stops at the first <span class="pre">Err</span> and cancels
-		the rest.</li>
 	<li><b>Looking at a future without opening it.</b> An <span class="pre">await</span> opens the future and panics if
 		its value never arrives. There is no way yet to ask whether it arrived, or to handle an abandoned one, without the
 		panic.</li>

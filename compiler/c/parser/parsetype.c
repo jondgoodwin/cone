@@ -959,7 +959,7 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
                 "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
             continue;
         }
-        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken)) {
+        if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
             parseMetaStray(parse);
             continue;
         }
@@ -1316,7 +1316,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle attributes
     int mustuse = 0;
+    int reflect = 0;
     while (1) {
+        if (lex->toktype == ReflectToken) {
+            // Reflection ('#fields') lists this type's private fields to code outside its module (fields.h)
+            reflect = 1;
+            lexNextToken();
+            continue;
+        }
         if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
             lexNextToken();
@@ -1373,6 +1380,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     strnode->tag = tag;
     strnode->flags |= strflags;
     strnode->mustuse = (uint8_t)mustuse;
+    strnode->reflect = (uint8_t)reflect;
     parse->typenode = (INsTypeNode *)strnode;
     if (named)
         lexNextToken();
@@ -1955,6 +1963,7 @@ INode* parseType(ParseState *parse) {
 int parseIsTypeStart() {
     switch (lex->toktype) {
     case IdentToken:    // type identifier (or generic)
+    case MetaVarToken:  // a meta variable standing for a type ('#each #T in (i32, f64)')
     case VoidToken:     // void
     case QuesToken:     // Optional type sugar
     case LBracketToken: // Array

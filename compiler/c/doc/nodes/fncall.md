@@ -1118,6 +1118,55 @@ function a piece calls that prints writes its own record first
 (`module_text_nesting`). Pinned by `module_text_overloads`,
 `module_text_nesting` and `module_text_refuse`.
 
+**The `wants` guard.** A text receiver (any of the three kinds) that declares
+`wants(self: &) bool` is asked first (`textSendLower`, ahead of the single-piece
+early return, so a single piece, a list and a construction's contents meet it in one
+place; `textGuardLower`): the send becomes
+`{ [var -g = receiver]; if -g.wants() { -g <- pieces }; nil }`. **Arguments after
+`<-` to a receiver that declines are not evaluated**; the guard is the outermost
+statement, so nothing a piece or a list's `await` makes first runs either. The
+receiver is evaluated once: a name or fields of one (`textIsPlain`) is read again
+for the test, and any other is lent once to `-g` as a writer reached some other way
+is. The `<-` the guard wraps, and each one the list lowering makes
+(`contentsAppend`, `textSend`), has `FlagTextLowered` on its `methfld`, so the guard
+is decided once and not again for the pieces. A piece that moves is moved on one
+branch of the `if`, and flow's rule for a conditional move applies unchanged: the
+variable is finalized once either way, and a later use is the ordinary moved-out
+refusal. `WarnTextEffect` (3008, never gating) is raised by `textWarnEffects` on a
+trial-checked copy of each piece (`textChangesState`): an assignment, swap, a change
+in place or send (`FlagOpAssgn`), a `&mut` or `&uni` borrow (which a call's receiver
+and arguments are lent as). A call whose body changes state, or one reached through
+a `&` or a global, is not seen. Pinned by `module_text_wants` and its `_move`,
+`_move_use`, `_warn`, `_await` and `_ir` scenarios.
+
+**An interpolated string** `$"moved {n} files to {dir}"` and the send list
+`"moved ", n, " files to ", dir` are one thing in two spellings, made so by the
+parser, before any of the above sees it. The lexer reads `$"..."` as one
+`InterpToken` holding its parts (`InterpLit`): text parts as a plain literal's
+text is read (escapes, the multi-line margin, `{{` and `}}` for a brace), and for
+each brace the source of its expression, which the parser reads with a lexer of
+its own set over that source (`parseInterpPieces`: the ordinary
+`parseSimpleExpr`, so an error in it points at its real line and column). Where
+the string is a whole entry of a `<-` list (`parseEntries`: `,` `;` `)` `}` or
+the end follows it) its pieces become entries of that list, text parts string
+literals and each expression a value, so `sink <- $"..."` and `sink <- a, $"...", b`
+are the same lists the lowering above takes: one record, an `await` among the
+pieces made first, each expression run once, left to right. Anywhere else
+(`parseInterpString`) it is `String() <- pieces`, the `String` a name use flagged
+`FlagInterpString`, so that with no `String` in scope the diagnostic says what to
+import (collections) rather than naming an unknown. Nothing is held: there is no
+node for an interpolated string after parsing, so a generic body's include file
+prints the send list and reads back the same pieces (`meta_text_interp_include`
+compiles a package's include file and has a program expand its generic bodies
+from it). **A shadowing `String` wins where the `$"..."` is written**: the name is
+looked up there, so a `String` the module declares or imports is the one built,
+accepted for now. When that type has no matching init or `<-`, the errors are the
+ordinary ones on a type literal and a missing `<-` at the string, and none says
+the string stands for `String`: this lead is open until an error names it.
+Pinned by
+`module_text_interp` and its `_threads`, `_await`, `_refuse*`, `_unclosed` and
+`_nocollections` scenarios.
+
 ### Construction
 
 A construction by a declared init stays an `FnCallTag` flagged `FlagNew`: its

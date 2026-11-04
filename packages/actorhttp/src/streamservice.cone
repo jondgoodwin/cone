@@ -26,7 +26,7 @@ struct StreamRec {
   readReply: Option[actors.Reply]; // an actor awaiting the next piece
   gone: bool;                      // its handle has gone
   sink: Option[ChunkSink];         // the body goes to this sink (Client.streamTo), not to a reader
-  lent: usize;                     // ...bytes sent to it and not yet given back
+  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent
 }
 
 // A stream opening for reply, its fetch not yet sent
@@ -34,7 +34,7 @@ fn openingStream(id: u64, asEvents: bool, rp: actors.Reply) StreamRec {
   StreamRec(used: true, id: id, asEvents: asEvents, fetch: httpclient.FetchId.none(),
     openReply: Some[actors.Reply](rp), status: 0u16, reader: sse.Reader.make(), events: Deque[sse.Event](),
     chunks: Deque[String](), owed: 0usize, ended: false, outcome: httpclient.EventKind.Done, failure: None,
-    limited: false, readReply: None, gone: false, sink: None, lent: 0usize)
+    limited: false, readReply: None, gone: false, sink: None, lent: Dict[usize, usize]())
 }
 
 // A reply kept in a stream's record answered in place, and let go
@@ -215,7 +215,9 @@ fn onSinkEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: u
     let buf, kind = e.(buf, kind);
     let n = buf.len();
     if n == 0usize {return;}
-    s.lent = s.lent + n;
+    let at = buf.base() as usize;
+    let before = s.lent.getCopy(&at) || 0usize;
+    s.lent.insert(at, before + n);
     match &s.sink {
       case let &Some(sk) {sk.accept(buf);}
       else {}
@@ -350,12 +352,15 @@ struct StreamToJob {
   }
 }
 
-// A buffer given back to a body source: its bytes are released to the client
+// A buffer given back to a body source: the bytes the record says were lent in
+// it are released to the client. The buffer is known by its address, which a
+// sink that trims it (setLen) leaves as it was; a buffer the record does not
+// hold (given back twice, or not this fetch's) releases nothing
 struct StreamReleaseJob {
   pub client: u64;
   pub slot: u32;
   pub id: u64;
-  pub n: usize;
+  pub at: usize;
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
@@ -364,8 +369,7 @@ struct StreamReleaseJob {
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
-    let m = if n < st.lent {n} else {st.lent};
-    st.lent = st.lent - m;
+    let m = st.lent.remove(&at) || 0usize;
     if m > 0usize {rec.client.release(st.fetch, m);}
   }
 }
