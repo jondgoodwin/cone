@@ -72,3 +72,42 @@ pub struct EventStream is Move {
     post[StreamDropJob](StreamDropJob(client, slot, id));
   }
 }
+
+// The head of a response whose body is going to a sink (Client.streamTo): what
+// BodyStream carries besides the handle. The body is not here: it goes to the
+// sink as chunks, and ends there
+pub struct BodyHead is Move {
+  pub status: u16;
+  pub version: Version;     // the protocol that carried it: Http11, or Http2
+  pub headers: Headers;
+  pub url: String;          // the URL that answered, after any redirects
+
+  // Whether the status is a 2xx
+  pub fn isOk(self: &) bool {status >= 200u16 && status < 300u16}
+}
+
+// The source end of a body sent to a sink (Client.streamTo): what the sink
+// gives its buffers back to. The credit is the fetch's own window and no other:
+// a buffer coming back releases its bytes to the client ('release', on the
+// service thread), which is what lets the connection read on. The chunks
+// themselves are sent from the service thread as the body arrives
+// (streamservice.cone, onSinkEvent). A buffer given back in a cancelled group
+// ends the fetch, so a consumer that quits stops the download
+actor BodySource is ChunkSource {
+  client: u64;
+  slot: u32;
+  id: u64;
+
+  pub fn init(self: &new, client: u64, slot: u32, id: u64) {
+    *self = Self(client: client, slot: slot, id: id);
+  }
+
+  // A chunk is finished with. Its length is what was sent: the bytes the fetch
+  // gets back
+  pub async fn giveBack(self, b: IoBuf) {
+    if actors.isCancelled() {
+      post[StreamCancelJob](StreamCancelJob(client, slot, id));
+    }
+    post[StreamReleaseJob](StreamReleaseJob(client, slot, id, b.len()));
+  }
+}
