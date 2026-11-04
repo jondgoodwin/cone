@@ -1,0 +1,397 @@
+// The format package: options for one number in a text, as small typed values
+// that are themselves writable. None of them is visible without an import
+// (they are words people want for their own names); each is used as
+// 'format.fixed(price, 2)' or brought in by name with 'import format use fixed'.
+//
+//   mod report;
+//   import collections use String;
+//   import format;
+//
+//   fn main() {
+//     var s = String();
+//     s <- "total ", format.fixed(19.99, 1), "  id ", format.hex(255u8);
+//     // 'total 20.0  id ff'
+//   }
+//
+// A wrapper is a value of a few bytes: the number and the option. Nothing is
+// computed, nor any memory taken, until a writer writes it, and a program that
+// never calls these carries none of this. Each wrapper has a 'toText' and a
+// 'toDebug', which write the same text, so a debug sink keeps the option asked
+// for (as 'toText(x)' and 'toDebug(x)' do, core's wrappers of the two forms).
+//
+//   INTEGERS (of any integer type)
+//     hex(x)  oct(x)  bin(x)   the digits of x in base 16, 8 or 2, lower case, no prefix
+//                              and no padding. A negative x writes its two's
+//                              complement at its type's width: hex(-1i8) is "ff",
+//                              hex(-1i32) is "ffffffff". Zero is "0".
+//     signed(x)                x in decimal with its sign always shown: "+5", "-5", "+0"
+//
+//   FLOATS (an f32 is widened to the f64 of the same value, which is exact)
+//     fixed(x, n)    n places after the mark: fixed(2.5, 0) "2", fixed(3.14159, 2) "3.14"
+//     digits(x, n)   n significant digits (at least 1), in the fixed form when
+//                    the decimal exponent X of the first digit is from -4 to n-1,
+//                    else in the exponent form: digits(1234.5, 6) "1234.50",
+//                    digits(1234.5, 2) "1.2e+03". C's '%g' with its zeros kept
+//     sci(x, n)      the exponent form with n places after the mark: sci(1234.5, 2)
+//                    "1.23e+03", sci(x, 0) "1e+03". The exponent has a sign and at
+//                    least two digits, as core's default float form writes it
+//
+//   THE RULE. The value written is the float's exact decimal value rounded to
+//   the places asked for, round-half-even: an exact tie (fixed(0.125, 2),
+//   fixed(2.5, 0)) goes to the even last digit, anything else to the nearer.
+//   It is done on the exact decimal digits of the float (a float is a whole
+//   number over a power of two, so its decimal expansion is finite), never by
+//   scaling in floating point, so it is right at any n. That is why
+//   fixed(1.005, 2) is "1.00": the f64 nearest 1.005 is 1.00499999999999989...
+//   The sign of a negative number is kept, a negative zero too, and a negative
+//   that rounds to zero ("-0.00"), as C's printf does. NaN is "nan", and an
+//   infinity "inf" or "-inf", as the default form writes them, whatever the option.
+
+mod format;
+
+// A whole number of 32-bit limbs, little-endian, for the exact digits. The
+// largest is a subnormal's m * 5^1074, 2547 bits (80 limbs)
+struct Wide {
+  n: usize;
+  limb: Array[u32, 96];
+
+  fn ofU64(v: u64) Wide {
+    var w = Wide(0usize, Array[u32, 96]() <- fill 0u32);
+    w.limb[0usize] = u32.from(v & 0xFFFFFFFFu64);
+    w.limb[1usize] = u32.from(v >> 32u64);
+    w.n = if w.limb[1usize] != 0u32 {2usize} else {1usize};
+    w
+  }
+
+  fn mulSmall(self: &mut, k: u32) {
+    var carry = 0u64;
+    var i = 0usize;
+    while i < n {
+      let t = u64.from(limb[i]) * u64.from(k) + carry;
+      limb[i] = u32.from(t & 0xFFFFFFFFu64);
+      carry = t >> 32u64;
+      i = i + 1usize;
+    }
+    if carry != 0u64 {
+      limb[n] = u32.from(carry);
+      n = n + 1usize;
+    }
+  }
+
+  // Divide by k in place, answering the remainder
+  fn divSmall(self: &mut, k: u32) u32 {
+    var rem = 0u64;
+    var i = n;
+    while i > 0usize {
+      i = i - 1usize;
+      let t = (rem << 32u64) | u64.from(limb[i]);
+      limb[i] = u32.from(t / u64.from(k));
+      rem = t % u64.from(k);
+    }
+    while n > 0usize && limb[n - 1usize] == 0u32 {
+      n = n - 1usize;
+    }
+    u32.from(rem)
+  }
+}
+
+// The exact decimal digits of a positive finite float: digit i of 'len' is
+// buf[start + i] (a value 0 to 9, the first not 0), and the value is
+// 0.d0d1d2... * 10^point. There is a spare slot before 'start' for a carry
+struct Dec {
+  start: usize;
+  len: usize;
+  point: i64;
+  buf: Array[u8, 800];
+
+  fn at(self: &, i: i64) u8 {
+    if i < 0i64 || i >= i64.from(len) {return 0u8;}
+    buf[start + usize.from(i)]
+  }
+
+  // x is positive and finite
+  fn of(x: f64) Dec {
+    var d = Dec(800usize, 0usize, 0i64, Array[u8, 800]() <- fill 0u8);
+    var v = x;
+    let bits = *(&mut v as *u64);
+    let biased = (bits >> 52u64) & 0x7FFu64;
+    var m = bits & 0xFFFFFFFFFFFFFu64;
+    var e = 0i64 - 1074i64;
+    if biased != 0u64 {
+      m = m | 0x10000000000000u64;
+      e = i64.from(biased) - 1075i64;
+    }
+    // A float is m * 2^e. Take out common twos so a short value stays short
+    while e < 0i64 && (m & 1u64) == 0u64 {
+      m = m >> 1u64;
+      e = e + 1i64;
+    }
+    var w = Wide.ofU64(m);
+    var k = 0i64;
+    if e >= 0i64 {
+      // An integer
+      var left = e;
+      while left >= 31i64 {
+        w.mulSmall(0x80000000u32);
+        left = left - 31i64;
+      }
+      if left > 0i64 {w.mulSmall(1u32 << u32.from(left));}
+    }
+    else {
+      // m / 2^j is m * 5^j / 10^j: the digits of m * 5^j, the mark j from the right
+      k = 0i64 - e;
+      var left = k;
+      while left >= 13i64 {
+        w.mulSmall(1220703125u32);
+        left = left - 13i64;
+      }
+      var p = 1u32;
+      while left > 0i64 {
+        p = p * 5u32;
+        left = left - 1i64;
+      }
+      if p > 1u32 {w.mulSmall(p);}
+    }
+    // To decimal, nine digits at a time from the low end
+    var pos = 800usize;
+    while w.n > 0usize {
+      var r = w.divSmall(1000000000u32);
+      var j = 0usize;
+      while j < 9usize {
+        pos = pos - 1usize;
+        d.buf[pos] = u8.from(r % 10u32);
+        r = r / 10u32;
+        j = j + 1usize;
+      }
+    }
+    while pos < 800usize && d.buf[pos] == 0u8 {
+      pos = pos + 1usize;
+    }
+    d.start = pos;
+    d.len = 800usize - pos;
+    d.point = i64.from(d.len) - k;
+    d
+  }
+
+  // Keep the digits before index 'cut' and round the rest away, half to even
+  // on what is exactly there. Digits from 'cut' on are then to be read as zeros.
+  fn roundAt(self: &mut, cut: i64) {
+    if cut >= i64.from(len) {return;}
+    if cut < 0i64 {
+      // Everything is dropped, and it is less than half of the last place kept
+      len = 0usize;
+      return;
+    }
+    let first = self.at(cut);
+    var up = false;
+    if first > 5u8 {up = true;}
+    else if first == 5u8 {
+      var rest = false;
+      var i = cut + 1i64;
+      while i < i64.from(len) {
+        if self.at(i) != 0u8 {rest = true;}
+        i = i + 1i64;
+      }
+      // A tie goes to the even last digit kept (none kept is zero, even)
+      up = rest || (cut > 0i64 && (self.at(cut - 1i64) & 1u8) == 1u8);
+    }
+    len = usize.from(cut);
+    if up {
+      var i = cut - 1i64;
+      var carried = true;
+      while i >= 0i64 && carried {
+        let at = start + usize.from(i);
+        if buf[at] == 9u8 {
+          buf[at] = 0u8;
+          i = i - 1i64;
+        }
+        else {
+          buf[at] = buf[at] + 1u8;
+          carried = false;
+        }
+      }
+      if carried {
+        // 99.9 became 100: one more digit before the others
+        start = start - 1usize;
+        buf[start] = 1u8;
+        len = len + 1usize;
+        point = point + 1i64;
+      }
+    }
+  }
+}
+
+// The sign, then the exact value rounded to n places after the mark
+fn putFixed(out: &uni TextOut, d: &Dec, n: usize) {
+  if d.point <= 0i64 || d.len == 0usize {
+    out.putByte('0');
+  }
+  else {
+    var i = 0i64;
+    while i < d.point {
+      out.putByte(d.at(i) + '0');
+      i = i + 1i64;
+    }
+  }
+  if n > 0usize {
+    out.putByte('.');
+    var j = 0usize;
+    while j < n {
+      out.putByte(d.at(d.point + i64.from(j)) + '0');
+      j = j + 1usize;
+    }
+  }
+}
+
+// d.ddd e+XX with n places after the mark
+fn putSci(out: &uni TextOut, d: &Dec, n: usize) {
+  out.putByte(d.at(0i64) + '0');
+  if n > 0usize {
+    out.putByte('.');
+    var j = 0usize;
+    while j < n {
+      out.putByte(d.at(1i64 + i64.from(j)) + '0');
+      j = j + 1usize;
+    }
+  }
+  var x = if d.len == 0usize {0i64} else {d.point - 1i64};
+  out.putByte('e');
+  if x < 0i64 {
+    out.putByte('-');
+    x = 0i64 - x;
+  }
+  else {
+    out.putByte('+');
+  }
+  if x < 10i64 {out.putByte('0');}
+  out.putU64(u64.from(x));
+}
+
+// What a float wrapper does: 0 fixed, 1 digits, 2 sci
+pub struct FloatFormat {
+  x: f64;
+  kind: u32;
+  n: usize;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    var v = x;
+    let bits = *(&mut v as *u64);
+    if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 {
+      if (bits & 0xFFFFFFFFFFFFFu64) != 0u64 {
+        out.writeStr("nan");
+      }
+      else if (bits >> 63u64) != 0u64 {
+        out.writeStr("-inf");
+      }
+      else {
+        out.writeStr("inf");
+      }
+      return;
+    }
+    if (bits >> 63u64) != 0u64 {out.putByte('-');}
+    // |x|, whose digits are exact; a zero has none
+    var a = Dec(800usize, 0usize, 0i64, Array[u8, 800]() <- fill 0u8);
+    if (bits & 0x7FFFFFFFFFFFFFFFu64) != 0u64 {
+      var ax = bits & 0x7FFFFFFFFFFFFFFFu64;
+      a = Dec.of(*(&mut ax as *f64));
+    }
+    if kind == 0u32 {
+      a.roundAt(a.point + i64.from(n));
+      putFixed(out, &a, n);
+    }
+    else if kind == 2u32 {
+      a.roundAt(i64.from(n) + 1i64);
+      putSci(out, &a, n);
+    }
+    else {
+      let sig = if n < 1usize {1usize} else {n};
+      a.roundAt(i64.from(sig));
+      let ex = if a.len == 0usize {0i64} else {a.point - 1i64};
+      if ex < 0i64 - 4i64 || ex >= i64.from(sig) {
+        putSci(out, &a, sig - 1usize);
+      }
+      else {
+        putFixed(out, &a, usize.from(i64.from(sig) - 1i64 - ex));
+      }
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+// x with n places after the mark (an n below 0 is 0)
+pub fn fixed[N: Integer](x: f64, n: N) FloatFormat {
+  FloatFormat(x, 0u32, placesOf(n))
+}
+
+// x with n significant digits
+pub fn digits[N: Integer](x: f64, n: N) FloatFormat {
+  FloatFormat(x, 1u32, placesOf(n))
+}
+
+// x in the exponent form with n places after the mark
+pub fn sci[N: Integer](x: f64, n: N) FloatFormat {
+  FloatFormat(x, 2u32, placesOf(n))
+}
+
+fn placesOf[N: Integer](n: N) usize {
+  if (N.from(0) - N.from(1)) < N.from(0) && n < N.from(0) {
+    0usize
+  }
+  else {
+    usize.from(n)
+  }
+}
+
+// An integer's digits in base 2, 8 or 16 (shift 1, 3, 4)
+pub struct RadixText {
+  bits: u64;
+  shift: u32;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    if bits == 0u64 {
+      out.putByte('0');
+      return;
+    }
+    let width = 64u32 - bits.leadingZeros();
+    var i = (width + shift - 1u32) / shift;
+    let mask = (1u64 << u64.from(shift)) - 1u64;
+    while i > 0u32 {
+      i = i - 1u32;
+      let d = u8.from((bits >> u64.from(i * shift)) & mask);
+      out.putByte(if d < 10u8 {d + '0'} else {d - 10u8 + 'a'});
+    }
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+// x's bits at its own width: a negative x as its two's complement
+fn bitsOf[T: Integer](x: T) u64 {
+  let width = u64.from(mem.sizeof[T]()) * 8u64;
+  let all = u64.from(x);
+  if width >= 64u64 {all} else {all & ((1u64 << width) - 1u64)}
+}
+
+pub fn hex[T: Integer](x: T) RadixText {RadixText(bitsOf(x), 4u32)}
+pub fn oct[T: Integer](x: T) RadixText {RadixText(bitsOf(x), 3u32)}
+pub fn bin[T: Integer](x: T) RadixText {RadixText(bitsOf(x), 1u32)}
+
+// An integer in decimal with its sign always shown
+pub struct SignedText {
+  mag: u64;
+  neg: bool;
+
+  pub fn toText(self: &, out: &uni TextOut) {
+    out.putByte(if neg {'-'} else {'+'});
+    out.putU64(mag);
+  }
+  pub fn toDebug(self: &, out: &uni TextOut) {self.toText(out);}
+}
+
+pub fn signed[T: Integer](x: T) SignedText {
+  if (T.from(0) - T.from(1)) < T.from(0) && x < T.from(0) {
+    SignedText(0u64 - u64.from(i64.from(x)), true)
+  }
+  else {
+    SignedText(u64.from(x), false)
+  }
+}
