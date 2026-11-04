@@ -875,7 +875,7 @@ A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
-(`actors.answerNow`); sent with no `await`, its value is dropped. It has a
+(`actors.answerNow`); sent with no `await`, its value is dropped (the unasked arm writes `_ = self.f(...)`, so a `Result` there is not warned as thrown away). It has a
 third send method too (`fetch'future`), which makes an `actors.Future` of the
 returned type, written as the behaviour's return type was (its text recorded
 by `parseFnSig`), sends the request awaited with the future's producer's
