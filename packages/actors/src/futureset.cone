@@ -11,6 +11,8 @@
 //     }
 //   }
 //   let rest = await set;                    // or: every member, in the order added
+//   await actors.allOk(set)                  // or, for a set of Results: all Ok in the order added, or the
+//                                            // first error with the rest cancelled (SetError; nextOk is next())
 //
 // A set belongs to the actor that makes it and stays in it (it is not
 // Sendable: its queue has no lock, because every arrival is appended by that
@@ -72,6 +74,8 @@ struct SetCore[T] {
   pub parked: Option[Reply];           // the envelope of the 'next()' or 'await set' waiting
   pub parkedAll: bool;                 // ... and which it is
   pub dead: bool;                      // the handle is gone: late arrivals are dropped
+  pub hook: &fn(c: *u8);               // what an arrival does while 'allOk' or 'nextOk' is parked
+  pub hooked: bool;
 }
 
 pub struct FutureSet[T] is Move {
@@ -84,7 +88,7 @@ pub struct FutureSet[T] is Move {
       die("actors: out of memory for a future set");
     }
     mem.writeRaw[SetCore[T]](core, SetCore[T](1usize, null, currentGroup().child(), 0u64, 0u64,
-      Deque[SetArrival[T]](), None[Reply], false, false));
+      Deque[SetArrival[T]](), None[Reply], false, false, &noHook, false));
     FutureSet[T](core as *u8)
   }
 
@@ -176,6 +180,7 @@ pub struct FutureSet[T] is Move {
 }
 
 fn nextDrop(ctx: *u8) {}
+fn noHook(c: *u8) {}
 
 // The actor the set lives in: that of the first member added; a set used from
 // another is a program error
@@ -235,6 +240,12 @@ fn setPush[T](core: *SetCore[T], key: u64, res: Result[T, Abandoned]) {
 // An arrival may be what a parked 'next()' or 'await set' waits for
 fn setWake[T](core: *SetCore[T]) {
   if !(*core).parked.isTrue() {
+    return;
+  }
+  if (*core).hooked {
+    (*core).hooked = false;
+    let f = (*core).hook;
+    f(core as *u8);
     return;
   }
   if (*core).parkedAll {
@@ -386,4 +397,188 @@ fn futureJoin(fut: *u8, h: *Header, run: *u8, id: u64) bool {
   }
   libc.free(w as *u8);
   false
+}
+
+// ---------------------------------------------------------------------------
+// allOk and nextOk: a set of Results
+// ---------------------------------------------------------------------------
+
+// Why a member of a set of Results is not a value: its request failed with the
+// member's own error, or ended without an answer (Abandoned). A generic error
+// type cannot be assumed to have a place for the second, so it has its own
+pub use SetError;
+pub enum SetError[E] {
+  MemberFailed(E);
+  MemberGone(Abandoned);
+}
+
+// 'await allOk(set)': every member's value, in the order added, as soon as all
+// have arrived Ok; or, the moment one arrives as an Err (or abandoned), that
+// error, the set dropped as its handle would be: what still runs in the set's
+// group is cancelled and the replies to come are dropped. A member given to
+// 'add' rather than 'start' was sent in another group, so allOk cannot cancel
+// it, only drop its late reply: the same rule as dropping the set. The set is used up
+pub fn allOk[V, E](set: FutureSet[Result[V, E]]) Awaitable[Result[List[V], SetError[E]]] {
+  var me = set;
+  let core = me.core;
+  me.core = null;
+  Awaitable[Result[List[V], SetError[E]]].of(core, &allOkRun[V, E], &allDrop[Result[V, E]])
+}
+
+// 'await nextOk(&mut set)': what 'set.next()' gives, with a member's failure
+// and an abandoned one both on the Err side, as a SetError[E]
+pub fn nextOk[V, E](set: &mut FutureSet[Result[V, E]]) Awaitable[Option[(SetKey, Result[V, SetError[E]])]] {
+  Awaitable[Option[(SetKey, Result[V, SetError[E]])]].of(set.core, &nextOkRun[V, E], &nextDrop)
+}
+
+// An arrival that holds a value goes back to the queue's end; one that does not
+// is the error it comes out as
+fn okVet[V, E](core: *SetCore[Result[V, E]], a: SetArrival[Result[V, E]]) Option[SetError[E]] {
+  let key = a.key;
+  match a.res {
+    case let Ok(inner) {
+      match inner {
+        case let Ok(v) {
+          (*core).queue.push(SetArrival[Result[V, E]](key, Ok[Result[V, E], Abandoned](Ok[V, E](v))));
+          None[SetError[E]]
+        }
+        case let Err(e) {Some[SetError[E]](MemberFailed[E](e))}
+      }
+    }
+    case let Err(ab) {Some[SetError[E]](MemberGone[E](ab))}
+  }
+}
+
+// The queue's arrivals vetted, oldest first (all of them, or only the newest, which
+// is all an arrival while parked needs): the first failure, if any
+fn okScan[V, E](core: *SetCore[Result[V, E]], last: bool) Option[SetError[E]] {
+  if last {
+    match (*core).queue.pop() {
+      case let Some(a) {return okVet[V, E](core, a);}
+      case is None {return None[SetError[E]];}
+    }
+  }
+  var n = (*core).queue.len();
+  while n > 0usize {
+    match (*core).queue.popFront() {
+      case let Some(a) {
+        match okVet[V, E](core, a) {
+          case let Some(err) {return Some[SetError[E]](err);}
+          case is None {}
+        }
+      }
+      case is None {break;}
+    }
+    n = n - 1usize;
+  }
+  None[SetError[E]]
+}
+
+// Every value in the queue, by key (all have arrived Ok)
+fn okCollect[V, E](core: *SetCore[Result[V, E]]) List[V] {
+  var items = List[SetArrival[Result[V, E]]]();
+  while true {
+    match (*core).queue.popFront() {
+      case let Some(a) {items.push(a);}
+      case is None {break;}
+    }
+  }
+  items.sortBy(&setOrder[Result[V, E]]);
+  var out = List[V]();
+  while true {
+    match items.pop() {
+      case let Some(a) {
+        match a.res {
+          case let Ok(inner) {
+            match inner {
+              case let Ok(v) {out.push(v);}
+              case let Err(e) {die("actors: allOk collected a failure");}
+            }
+          }
+          case let Err(ab) {die("actors: allOk collected an abandoned member");}
+        }
+      }
+      case is None {break;}
+    }
+  }
+  out
+}
+
+// The envelope rp is answered if the arrivals decide it; else it waits for the next
+fn allOkStep[V, E](core: *SetCore[Result[V, E]], rp: Reply, last: bool) {
+  match okScan[V, E](core, last) {
+    case let Some(err) {
+      answerNow[Result[List[V], SetError[E]]](rp, Err[List[V], SetError[E]](err));
+      setClose[Result[V, E]](core);
+      return;
+    }
+    case is None {}
+  }
+  if (*core).arrived == (*core).added {
+    answerNow[Result[List[V], SetError[E]]](rp, Ok[List[V], SetError[E]](okCollect[V, E](core)));
+    setRelease[Result[V, E]](core);
+    return;
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).hook = &allOkHook[V, E];
+  (*core).hooked = true;
+}
+
+fn allOkHook[V, E](c: *u8) {
+  let core = c as *SetCore[Result[V, E]];
+  match (*core).parked.take() {
+    case let Some(rp) {allOkStep[V, E](core, rp, true);}
+    case is None {}
+  }
+}
+
+fn allOkRun[V, E](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[Result[V, E]];
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  allOkStep[V, E](core, rp, false);
+}
+
+fn okTake[V, E](core: *SetCore[Result[V, E]]) Option[(SetKey, Result[V, SetError[E]])] {
+  match (*core).queue.popFront() {
+    case let Some(a) {
+      let key = SetKey(a.key);
+      match a.res {
+        case let Ok(inner) {
+          match inner {
+            case let Ok(v) {Some[(SetKey, Result[V, SetError[E]])]((key, Ok[V, SetError[E]](v)))}
+            case let Err(e) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberFailed[E](e))))}
+          }
+        }
+        case let Err(ab) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberGone[E](ab))))}
+      }
+    }
+    case is None {None[(SetKey, Result[V, SetError[E]])]}
+  }
+}
+
+fn nextOkHook[V, E](c: *u8) {
+  let core = c as *SetCore[Result[V, E]];
+  match (*core).parked.take() {
+    case let Some(rp) {
+      answerNow[Option[(SetKey, Result[V, SetError[E]])]](rp, okTake[V, E](core));
+    }
+    case is None {}
+  }
+}
+
+fn nextOkRun[V, E](ctx: *u8, rp: Reply) {
+  let core = ctx as *SetCore[Result[V, E]];
+  if !(*core).queue.isEmpty() || (*core).arrived == (*core).added {
+    answerNow[Option[(SetKey, Result[V, SetError[E]])]](rp, okTake[V, E](core));
+    return;
+  }
+  if (*core).parked.isTrue() {
+    die("actors: a FutureSet is waited on twice at once: reentrancy lets a second behaviour run while the first is parked on it, so wait on a set from one behaviour at a time");
+  }
+  (*core).parked = Some[Reply](rp);
+  (*core).parkedAll = false;
+  (*core).hook = &nextOkHook[V, E];
+  (*core).hooked = true;
 }

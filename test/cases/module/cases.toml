@@ -4111,3 +4111,45 @@ tags = ["typecheck"]
 category = "reject"
 description = "An error inside the braces of an interpolated string is reported at its real line and column, on a later line of a multi-line literal too"
 tags = ["typecheck"]
+
+# -------- the 'wants' guard on text sends --------
+# A receiver with 'wants(self: &) bool' decides first: declined, the pieces are not evaluated.
+[scenario.module_text_wants]
+category = "run"
+description = "A text send to a receiver with 'wants' (a text sink, a record maker, a global, a send that builds its receiver) makes none of its pieces when it says no, for a single piece, a list and a '$\"...\"'; the receiver is evaluated once either way, and with it on the output is what it is with no 'wants'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_text_wants_move]
+category = "run"
+description = "A piece that moves, given to a sink's own '<-' behind 'wants': skipped, the variable is finalized once at the scope's end; sent, the callee finalizes it once"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_move_use]
+category = "reject"
+description = "A piece moved into a send behind 'wants' is maybe-moved, and reading it afterward is the ordinary moved-out refusal"
+tags = ["flow"]
+
+[scenario.module_text_wants_warn]
+category = "warn"
+description = "WarnTextEffect: an expression sent to a receiver with 'wants' that changes state (a block assigning or changing in place, a '&mut' call, a send, inside a '$\"...\"') is warned of; a read-only call, and a receiver with no 'wants', are not; the compile succeeds"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.module_text_wants_await]
+category = "run"
+description = "An 'await' among the pieces of a send behind 'wants': declined, none runs; accepted, the awaited pieces are made first and the record is whole"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.module_text_wants_ir]
+category = "compile"
+description = "A guarded send with constant pieces, optimized, is a load of the flag, a compare and a branch around the record, which is built only on the branch taken"
+tags = ["genllvm"]
+
+[[scenario.module_text_wants_ir.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.module_text_wants_ir.check]]
+name = "the-flag-is-loaded-and-the-record-is-behind-the-branch"
+target = "llvmir"
+contains = ["load i1, ptr %0", "br i1 %1, label %ifblk, label %endif", "ifblk:"]
