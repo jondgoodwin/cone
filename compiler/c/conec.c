@@ -215,9 +215,17 @@ int main(int argc, char **argv) {
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);
-        if (errors == 0 && coneopt.report_trust)
+        if (errors == 0 && coneopt.report_trust) {
             trustReport((INode*)pgmnode);
-        else if (errors == 0) {
+            // A library's include file is still written, so that what imports it can be
+            // reported against it (tools/trustmap.py); nothing else is generated
+            if (desc && desc->library) {
+                size_t inclen = 0;
+                char *inctext = incFileGenerate(pgmnode, &inclen);
+                if (inctext && errors == 0)
+                    writeIncludeFile(&coneopt, pgmnode, desc, includeFilePath(&coneopt, pgmnode), inctext, inclen);
+            }
+        } else if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);
