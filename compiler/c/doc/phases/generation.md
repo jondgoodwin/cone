@@ -2630,6 +2630,7 @@ variables.
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpls`, `genlVtableImpl` | vtable type and the virtref fat pointer; then, once no type is being generated, the per-struct constants (the implementer's type record last) and their list |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
+| | `genlVtableInlineFn` | the function filling a slot an `inline` method satisfies: the method's expansion over the slot's parameters (an inline method has no symbol; only an enum's has a slot, `structMakeVtable`) |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
 | | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |
