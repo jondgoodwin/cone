@@ -390,6 +390,8 @@ INode *parseMetaMemberCond(void);
 INode *parseHashIfExpr(ParseState *parse);
 // A '#elif' or '#else' met where no chain is waiting for it: reported and read past
 void parseMetaStray(ParseState *parse);
+// '#size(T)' or '#align(T)' in expression position, with the lexer on the word
+INode *parseMetaLayout(ParseState *parse);
 // '#os', '#arch', '#debug', '#defined' or '#define' met outside a '#if' condition: reported and passed
 void parseMetaFactStray(void);
 

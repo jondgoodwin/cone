@@ -266,7 +266,9 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
                     || ((ULitNode*)val)->vtype == (INode*)usizeType || litIsUntypedNumber(val)))
                     *nodesp = (INode*)newULitNode(((ULitNode*)val)->uintlit, (INode*)u64Type);
             }
-            if ((*nodesp)->tag != ULitTag)
+            if (sizeofConstRefused(*nodesp, "an array length"))
+                ;
+            else if ((*nodesp)->tag != ULitTag)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size must be an integer literal");
             else if (((*nodesp)->flags & FlagLitNeg) && ((ULitNode*)*nodesp)->uintlit != 0)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size may not be negative");

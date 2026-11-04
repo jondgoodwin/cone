@@ -928,6 +928,17 @@ void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *order
     }
 }
 
+// Core's marker trait DebugText: a text sink that declares it takes its values in the
+// debug form (contents.c, textSendDebug)
+int coreIsDebugText(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "DebugText") == 0
+        && strnode->genericinfo == NULL && (strnode->flags & TraitType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 // Core's TextOut, the writer a value's text is written into, known by its name
 // and its package as the Hasher is (contents.c, the text sends)
 int coreIsTextOut(INode *dcl) {

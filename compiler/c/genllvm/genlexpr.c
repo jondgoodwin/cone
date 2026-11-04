@@ -3772,7 +3772,16 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return tupleval;
     }
     case SizeofTag:
-        return genlSizeof(gen, ((SizeofNode*)termnode)->type);
+    {
+        SizeofNode *node = (SizeofNode*)termnode;
+        if (node->what == SizeofAlign)
+            return genlAlignof(gen, node->type);
+        if (node->what == SizeofOffset) {
+            unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, genlType(gen, node->type), node->field->index);
+            return LLVMConstInt(genlType(gen, (INode*)usizeType), offset, 0);
+        }
+        return genlSizeof(gen, node->type);
+    }
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
