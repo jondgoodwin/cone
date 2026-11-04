@@ -18,6 +18,8 @@ BlockNode *newBlockNode() {
     blk->elseblk = NULL;
     blk->breaks = NULL;
     blk->flowmark = 0;
+    blk->eachpass = NULL;
+    blk->fieldeach = NULL;
     return blk;
 }
 
@@ -31,6 +33,8 @@ BlockNode *newLoopBlockNode() {
 
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
+    if (node->fieldeach)
+        return cloneFieldEach(cstate, node);
     uint32_t dclpos = cloneDclPush();
     BlockNode *newnode;
     newnode = memAllocBlk(sizeof(BlockNode));
@@ -137,7 +141,19 @@ static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
+static void blockNameResIn(NameResState *pstate, BlockNode *blk);
+
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
+    EachPass *svpass = errorEachPass;
+    if (blk->eachpass)
+        errorEachPass = blk->eachpass;
+    if (blk->fieldeach)
+        fieldEachNameRes(pstate, blk);
+    blockNameResIn(pstate, blk);
+    errorEachPass = svpass;
+}
+
+static void blockNameResIn(NameResState *pstate, BlockNode *blk) {
     // Set up for break and continue nodes that do not specify a labeled block
     // By default we want to resolve them to inner-most loop block
     BlockNode *svloopblock = pstate->loopblock;
@@ -282,7 +298,17 @@ static void blockHoist(BlockNode *blk, Nodes *hoists) {
     }
 }
 
+static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType);
+
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
+    EachPass *svpass = errorEachPass;
+    if (blk->eachpass)
+        errorEachPass = blk->eachpass;
+    blockTypeCheckIn(pstate, blk, expectType);
+    errorEachPass = svpass;
+}
+
+static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     INode *inferredType = unknownType;
     TypeCompare match = EqMatch;
     INode **laststmtp = NULL;
@@ -577,7 +603,17 @@ static int blockDiscards(FlowState *fstate, BlockNode *blk) {
     return vtype == NULL || vtype == unknownType || itypeGetTypeDcl(vtype)->tag == VoidTag;
 }
 
+static void blockFlowIn(FlowState *fstate, BlockNode **blknode);
+
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
+    EachPass *svpass = errorEachPass;
+    if ((*blknode)->eachpass)
+        errorEachPass = (*blknode)->eachpass;
+    blockFlowIn(fstate, blknode);
+    errorEachPass = svpass;
+}
+
+static void blockFlowIn(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
     // Record where this block's scope starts, so a break or continue naming it

@@ -27,6 +27,17 @@ import deflate;
 import zstd;
 import cryptohash;
 
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN(x: &mut deflate.Deflater, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
+
 fn words(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
   var d = List[u8]();
@@ -248,19 +259,19 @@ fn virtualStage() {
 }
 
 fn oneStatus() {
-  // The old pull into a List answers the same Status the trait's does
+  // A pull into an exact-room buffer, copied into a List, answers the same Status the trait's does
   let data = words(3000usize);
   var d = deflate.Deflater.make(deflate.Format.Raw, 2);
   d.feed(data.view());
   d.finish();
   var out = List[u8]();
-  let a: Status = d.pull(&mut out, 100usize);
+  let a: Status = pullN(&mut d, &mut out, 100usize);
   let b: deflate.Status = a;
   let c: zstd.Status = b;
   expect(c == Status.MoreOutput, "deflate.Status and zstd.Status are streams.Status");
   var st = a;
-  while st == Status.MoreOutput { st = d.pull(&mut out, 100usize); }
-  expect(st == Status.Done, "the List pull still reaches Done");
+  while st == Status.MoreOutput { st = pullN(&mut d, &mut out, 100usize); }
+  expect(st == Status.Done, "the exact-room pull still reaches Done");
   expect(out.view() == deflate.rawDeflate(data.view(), 2).view(), "and gives the one-shot's bytes");
 }
 

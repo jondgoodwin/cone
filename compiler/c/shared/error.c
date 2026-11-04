@@ -190,12 +190,25 @@ static void errorMsgFrame(INode *node, int code, const char *msg, ...) {
     va_end(argptr);
 }
 
+EachPass *errorEachPass = NULL;
+
+// Say which pass of which '#each' an error was in, innermost first. Only an error
+// is placed so: the notes and warnings a pass makes are not
+static void errorEachNote(int code) {
+    if (code == Uncounted || code >= WarnCode)
+        return;
+    for (EachPass *pass = errorEachPass; pass; pass = pass->outer)
+        errorMsgFrame(pass->loop, Uncounted, "... in pass %u of %u of this '#each', where %s is %s",
+            pass->pass, pass->npasses, pass->var, pass->item);
+}
+
 // Send an error message to stderr
 void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
     errorOutNode(node, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 
     // Name what instantiated this node, and what instantiated that, outward
     uint32_t shown = 0;
@@ -223,6 +236,7 @@ void errorMsgLexAfter(int code, const char *msg, ...) {
     else
         errorOutCode(lex->prevend, lex->prevlinenbr, lex->prevlinep, lex->url, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 }
 
 // Send an error message to stderr
@@ -234,6 +248,7 @@ void errorMsgLex(int code, const char *msg, ...) {
     else
         errorOutCode(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
     va_end(argptr);
+    errorEachNote(code);
 }
 
 // Send an error message to stderr

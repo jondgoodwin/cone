@@ -1,0 +1,398 @@
+// The console's owner (the package's header, THE CONSOLE'S OWNER).
+//
+// When the runtime starts, it installs the owner in the console's engine slot
+// (conestd's stdio.cone): after that, a record a behaviour (or any thread)
+// finishes is MOVED to the owner and the sender is done. The owner is one
+// thread of its own, not a worker and not an actor on one: its writes can
+// block on a slow terminal or a pipe nobody reads, and a shared worker must
+// not. (The aio package could write for it asynchronously, but it imports this
+// package; and an actor's mailbox would cost a message a record and take a
+// worker for each batch of writes.) It alone makes the console's system calls
+// once installed.
+//
+// A RECORD arrives as the writer that made it: its bytes in the writer's own
+// inline store (which dies with the writer, so those few bytes are copied into
+// a node) and the blocks it chained on after them (which MOVE: the node takes
+// the chain, the writer lets go of it). A node is one allocation, a header and
+// the inline bytes. A single text sent alone (print <- "x") is a node whose bytes
+// were copied in. Blocks and nodes come from and go back to the raw blocks
+// layer, as the lock engine's chains do: neither bufpool (whose smallest block
+// is 4 KiB, for I/O) nor iobuf (it imports this package) suits a line of ten
+// bytes.
+//
+// THE QUEUE. Nodes are appended to a list under one lock, held only for the
+// append; the owner takes the whole list at once and writes it without the lock.
+// 'queued' counts the bytes of records not yet written and freed. Past
+// 'limit' (64 MB) a sender WAITS (a plain thread blocks; a behaviour blocks its
+// worker, since a record is delivered by a finalizer, and a finalizer cannot
+// pause): the one place a print waits, and only when the destination has
+// stalled for good measure. Nothing is dropped.
+//
+// THE WRITE. The owner combines what it took into few calls: the bytes of small
+// records are copied into a buffer of its own (16 KiB, the lock engine's size)
+// and written when it fills, when standard error is to write (first, so the
+// two stay in order), or when the list taken is done; a record bigger than the
+// buffer is written from its blocks in one gathered call (writev on POSIX; one
+// after another on Windows, which has none for a console or a pipe). A terminal
+// gets each list as it is taken, so a prompt is visible at once; a file or a pipe
+// gets whatever queued while the last write ran, so a fast sender and a slow
+// destination batch themselves.
+//
+// FLUSH waits until every record pushed before the call has been written. The
+// program's end flushes before the workers stop, and again after the parked
+// records are dropped (their finalizers print); the owner then stays up to the
+// end of the process, so a print from a later module's finalizer still goes
+// through it, and conestd's atexit flush waits for it. A panic's flush is best
+// effort: it waits a moment for the owner to finish what it holds, then goes
+// on and writes its message itself.
+
+const consoleBufCap = 16384usize;
+const consoleLimit = 67108864usize;
+
+// A record in the queue; its inline bytes follow the header
+struct ConsoleNode {
+  next: *ConsoleNode;
+  chain: *TextChunk;     // the blocks after the inline bytes, in order, each with its 'len' set
+  size: usize;           // all the bytes
+  inlen: usize;          // those after this header
+  fd: i32;               // 1 or 2
+}
+
+let coLock: sync.Mutex;
+let coWake: sync.Condvar;      // the owner sleeps here while nothing is queued
+let coRoom: sync.Condvar;      // senders wait here at the limit
+let coDone: sync.Condvar;      // flushers wait here
+let coHold: Atomic[u32];       // 1 while a test holds the destination stalled
+// Everything below is touched only under coLock
+var coHead: usize = 0usize;
+var coTail: usize = 0usize;
+var coQueued: usize = 0usize;       // bytes queued or being written
+var coPushed: u64 = 0u64;           // records ever queued
+var coWritten: u64 = 0u64;          // records ever written and freed
+var coAsleep: bool = false;
+var coBusy: bool = false;           // the owner holds a list it has not finished
+var coRoomWaiters: u32 = 0u32;
+var coDoneWaiters: u32 = 0u32;
+var coLimit: usize = consoleLimit;
+var coStarted: bool = false;
+// The owner's own: used by its thread alone
+var coBuf: usize = 0usize;          // its write buffer
+var coBufLen: usize = 0usize;
+var coTty: bool = false;
+
+struct OwnerArg is Sendable {
+  pub unused: usize;
+}
+
+extern {
+  fn @c cone_consoleInstall(take: usize, bytes: usize, control: usize);
+  fn @c cone_consoleWrite(fd: i32, p: *u8, n: usize);
+  fn @c cone_consoleWriteParts(fd: i32, parts: *usize, count: usize);
+  fn @c cone_consoleIsTty(fd: i32) i32;
+}
+
+// The bytes of a node
+fn nodeBytes(n: *ConsoleNode) *u8 {
+  (n as *u8) + mem.sizeof[ConsoleNode]()
+}
+
+// Queue a node, waiting while the queue is at its limit
+fn consolePush(n: *ConsoleNode) {
+  let cost = (*n).size + mem.sizeof[ConsoleNode]();
+  coLock.lock();
+  while coQueued >= coLimit && coQueued != 0usize {
+    coRoomWaiters = coRoomWaiters + 1u32;
+    coRoom.condWait(&coLock);
+    coRoomWaiters = coRoomWaiters - 1u32;
+  }
+  (*n).next = null;
+  if coTail == 0usize {
+    coHead = n as usize;
+  }
+  else {
+    (*(coTail as *ConsoleNode)).next = n;
+  }
+  coTail = n as usize;
+  coQueued = coQueued + cost;
+  coPushed = coPushed + 1u64;
+  let wake = coAsleep;
+  coLock.unlock();
+  if wake {
+    coWake.notifyOne();
+  }
+}
+
+// A node with room for 'inlen' bytes, or null
+fn consoleNode(fd: i32, inlen: usize) *ConsoleNode {
+  let raw = RawBlocks.alloc(mem.sizeof[ConsoleNode]() + inlen, 16usize);
+  if raw == null {
+    return null;
+  }
+  let n = raw as *ConsoleNode;
+  (*n).next = null;
+  (*n).chain = null;
+  (*n).size = inlen;
+  (*n).inlen = inlen;
+  (*n).fd = fd;
+  n
+}
+
+// The engine's function for a finished record (stdio's ConsoleEngine): its
+// store's bytes are copied into a node and its blocks move to it
+fn consoleTake(w: &uni TextOut) {
+  var inl = w.len;
+  var total = w.len;
+  var chain: *TextChunk = null;
+  if w.last != null {
+    (*w.last).len = w.len;
+    inl = w.inlen;
+    chain = w.first;
+    total = w.inlen;
+    var c = w.first;
+    while c != null {
+      total = total + (*c).len;
+      c = (*c).next;
+    }
+  }
+  if total == 0usize {
+    return;
+  }
+  let n = consoleNode(i32.from(w.tagOf()), inl);
+  if n == null {
+    return;
+  }
+  if inl > 0usize {
+    mem.moveRaw[u8](nodeBytes(n), &w.store as *u8, inl);
+  }
+  (*n).chain = chain;
+  (*n).size = total;
+  // The writer lets go of the blocks: its death must not free them
+  w.first = null;
+  w.last = null;
+  consolePush(n);
+}
+
+// The engine's function for one text sent alone
+fn consoleTakeBytes(fd: i32, p: *u8, len: usize) {
+  if len == 0usize {
+    return;
+  }
+  let n = consoleNode(fd, len);
+  if n == null {
+    return;
+  }
+  mem.moveRaw[u8](nodeBytes(n), p, len);
+  consolePush(n);
+}
+
+// ---- the owner's side ----
+
+// What the buffer holds is written
+fn ownerFlushBuf() {
+  if coBufLen > 0usize {
+    cone_consoleWrite(1i32, coBuf as *u8, coBufLen);
+    coBufLen = 0usize;
+  }
+}
+
+// A gathered write of a node's parts to stream fd: the inline bytes, then each block
+fn ownerWriteNode(fd: i32, n: *ConsoleNode) {
+  var parts = Array[usize, 64]() <- fill 0usize;
+  var count = 0usize;
+  if (*n).inlen > 0usize {
+    parts[0usize] = nodeBytes(n) as usize;
+    parts[1usize] = (*n).inlen;
+    count = 1usize;
+  }
+  let header = mem.sizeof[TextChunk]();
+  var c = (*n).chain;
+  while c != null {
+    if (*c).len > 0usize {
+      if count == 32usize {
+        cone_consoleWriteParts(fd, &mut parts[0usize] as *usize, count);
+        count = 0usize;
+      }
+      parts[count * 2usize] = ((c as *u8) + header) as usize;
+      parts[count * 2usize + 1usize] = (*c).len;
+      count = count + 1usize;
+    }
+    c = (*c).next;
+  }
+  if count > 0usize {
+    cone_consoleWriteParts(fd, &mut parts[0usize] as *usize, count);
+  }
+}
+
+// Copy a node's bytes into the buffer, which has room for them
+fn ownerBuffer(n: *ConsoleNode) {
+  let dst = (coBuf as *u8) + coBufLen;
+  if (*n).inlen > 0usize {
+    mem.moveRaw[u8](dst, nodeBytes(n), (*n).inlen);
+  }
+  var at = (*n).inlen;
+  let header = mem.sizeof[TextChunk]();
+  var c = (*n).chain;
+  while c != null {
+    if (*c).len > 0usize {
+      mem.moveRaw[u8](dst + at, (c as *u8) + header, (*c).len);
+      at = at + (*c).len;
+    }
+    c = (*c).next;
+  }
+  coBufLen = coBufLen + at;
+}
+
+// One record, written or held for the next write, in order
+fn ownerWrite(n: *ConsoleNode) {
+  if (*n).fd == 2i32 {
+    ownerFlushBuf();
+    ownerWriteNode(2i32, n);
+  }
+  else if coTty {
+    ownerWriteNode(1i32, n);
+  }
+  else if (*n).size < consoleBufCap {
+    if (*n).size > consoleBufCap - coBufLen {
+      ownerFlushBuf();
+    }
+    ownerBuffer(n);
+  }
+  else {
+    ownerFlushBuf();
+    ownerWriteNode(1i32, n);
+  }
+}
+
+// Give a node's blocks and the node back
+fn ownerFree(n: *ConsoleNode) {
+  var c = (*n).chain;
+  while c != null {
+    let following = (*c).next;
+    RawBlocks.release(c as *u8);
+    c = following;
+  }
+  RawBlocks.release(n as *u8);
+}
+
+fn ownerMain(arg: OwnerArg) u32 {
+  coTty = cone_consoleIsTty(1i32) != 0i32;
+  coBuf = libc.malloc(consoleBufCap) as usize;
+  if coBuf == 0usize {
+    die("actors: out of memory for the console's buffer");
+  }
+  while true {
+    coLock.lock();
+    while coHead == 0usize {
+      coAsleep = true;
+      coWake.condWait(&coLock);
+      coAsleep = false;
+    }
+    var n = coHead as *ConsoleNode;
+    coHead = 0usize;
+    coTail = 0usize;
+    coBusy = true;
+    coLock.unlock();
+
+    // A test's stalled destination (holdConsole)
+    while coHold.load() != 0u32 {
+      thread.sleep(time.Duration.fromMillis(1i64));
+    }
+    var count = 0u64;
+    var cost = 0usize;
+    while n != null {
+      let following = (*n).next;
+      cost = cost + (*n).size + mem.sizeof[ConsoleNode]();
+      ownerWrite(n);
+      ownerFree(n);
+      count = count + 1u64;
+      n = following;
+    }
+    ownerFlushBuf();
+
+    coLock.lock();
+    coQueued = coQueued - cost;
+    coWritten = coWritten + count;
+    coBusy = false;
+    let room = coRoomWaiters != 0u32;
+    let done = coDoneWaiters != 0u32;
+    coLock.unlock();
+    if room {
+      coRoom.notifyAll();
+    }
+    if done {
+      coDone.notifyAll();
+    }
+  }
+  0u32
+}
+
+// Everything pushed so far has been written (op 0), or a moment is given to
+// that (op 1, for a panic: it takes no lock it might wait on and gives up)
+fn consoleControl(op: u32) {
+  if op == 1u32 {
+    var tries = 0u32;
+    while tries < 200u32 {
+      if coLock.tryLock() {
+        let idle = coHead == 0usize && !coBusy;
+        coLock.unlock();
+        if idle {
+          return;
+        }
+      }
+      thread.sleep(time.Duration.fromMillis(1i64));
+      tries = tries + 1u32;
+    }
+    return;
+  }
+  coLock.lock();
+  let target = coPushed;
+  while coWritten < target {
+    coDoneWaiters = coDoneWaiters + 1u32;
+    coDone.condWait(&coLock);
+    coDoneWaiters = coDoneWaiters - 1u32;
+  }
+  coLock.unlock();
+}
+
+// Wait until the owner has written what it was sent: the end of the program's
+// and a flush (this package's stopWorkers; stdio's print.flush() reaches the
+// same through the console)
+fn consoleDrain() {
+  if coStarted {
+    consoleControl(0u32);
+  }
+}
+
+// Start the owner and install it: the console writes out what it holds, under its
+// lock, and switches
+fn consoleOwnerStart() {
+  coStarted = true;
+  let t = thread.startWith(thread.Options(name: "console owner"), OwnerArg(0usize), &ownerMain);
+  t.detach();
+  cone_consoleInstall(&consoleTake as usize, &consoleTakeBytes as usize, &consoleControl as usize);
+}
+
+// For a test: the bytes the queue may hold before a sender waits
+pub fn setConsoleLimit(bytes: usize) {
+  coLock.lock();
+  coLimit = bytes;
+  coLock.unlock();
+}
+
+// For a test: the destination stalls (the owner writes nothing) until
+// releaseConsole
+pub fn holdConsole() {
+  coHold.store(1u32);
+}
+
+pub fn releaseConsole() {
+  coHold.store(0u32);
+}
+
+// For a test: the bytes queued or being written now
+pub fn consoleQueued() usize {
+  coLock.lock();
+  let q = coQueued;
+  coLock.unlock();
+  q
+}

@@ -18,6 +18,18 @@ import time use Instant;
 import streams use Status;
 import deflate;
 import cryptohash;
+import iobuf use IoBuf;
+
+// Pulls into a list through a buffer of exactly 'max' bytes of room (IoBuf(n) may give a larger
+// pool block, so setLen calls the front of it filled)
+fn pullN(x: &mut deflate.Inflater, out: &mut List[u8], max: usize) Status {
+  var buf = IoBuf(max);
+  let pre = buf.capacity() - max;
+  buf.setLen(pre);
+  let s = x.pull(&mut buf);
+  out.appendSlice(&buf.view()[pre ..< buf.len()]);
+  s
+}
 
 fn corpus(n: usize) List[u8] {
   let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
@@ -71,7 +83,7 @@ fn main(argc: i32, argv: **u8) i32 {
     at = at + n;
     var more = true;
     while more {
-      let st = inf.pull(&mut out, 65536usize);
+      let st = pullN(&mut inf, &mut out, 65536usize);
       if st != Status.MoreOutput { more = false; }
     }
   }

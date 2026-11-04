@@ -67,6 +67,10 @@ NameUseNode *newMemberUseNode(Name *namesym) {
 
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
+    // The splice 'val.#f' of a '#each #f in #fields(T)' being expanded: the field's name
+    INode *spliced = fieldEachSplice(node);
+    if (spliced)
+        return spliced;
     NameUseNode *newnode;
     newnode = memAllocBlk(sizeof(NameUseNode));
     memcpy(newnode, node, sizeof(NameUseNode));
@@ -327,8 +331,12 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             return;
         // An import with 'as' binds its module under the new name only
         ImportNode *renaming = pstate->mod ? importRenaming(pstate->mod, name->namesym) : NULL;
+        // An interpolated string met as a value is a String, which collections declares
+        if (name->flags & FlagInterpString)
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "An interpolated string $\"...\" met anywhere but a send is a String, and no String is in scope here: import it with 'import collections use String;'. Sent directly ('out <- $\"...\"') it needs no String.");
         // A closure naming the variable it is the value of: it cannot call itself
-        if (pstate->closure && name->namesym == pstate->declaring)
+        else if (pstate->closure && name->namesym == pstate->declaring)
             errorMsgNode((INode*)name, ErrorClosureSelf,
                 "A closure cannot call itself: %s is not yet a name inside the closure that is its value. For recursion, write a named function.",
                 &name->namesym->namestr);
