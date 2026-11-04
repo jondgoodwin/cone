@@ -17,6 +17,16 @@ mod anyerror;
 import testing use *;
 import collections use *;
 
+// An error's report as a String: written into a window onto it
+fn reportOf[E: Error](e: &E) String {
+  var s = String();
+  {
+    var w = s.textOut();
+    e.report(&uni w);
+  }
+  s
+}
+
 var @threadlocal leafDeaths = 0i64;
 var @threadlocal midDeaths = 0i64;
 var @threadlocal topDeaths = 0i64;
@@ -73,7 +83,7 @@ fn conversions() {
   expectInt(i64.from(typedToAny(false).unwrap()), 2, "an Ok passes through ? into an AnyError");
   let e1 = typedToAny(true).error().unwrap();
   expectStr(e1.message().view(), "leaf failed", "a typed error's message through AnyError");
-  expectStr(e1.report().view(), "leaf failed", "a lone error's report is its message");
+  expectStr(reportOf(&e1).view(), "leaf failed", "a lone error's report is its message");
   expectBool(e1.source() is None, true, "and it has no source");
 
   let e2 = anyToAny(true).error().unwrap();
@@ -89,26 +99,26 @@ fn chains() {
   // Three deep, typed: the default report walks source()
   let top = Top(Mid(Leaf(2i32)));
   expectStr(top.message().view(), "top failed", "message is this error alone");
-  expectStr(top.report().view(),
+  expectStr(reportOf(&top).view(),
     "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of a three-deep typed chain");
 
   // The same chain inside an AnyError
   let deep = deepChain().error().unwrap();
   expectStr(deep.message().view(), "top failed", "an AnyError's message is the outermost line");
-  expectStr(deep.report().view(),
+  expectStr(reportOf(&deep).view(),
     "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of the chain inside an AnyError");
 }
 
 fn contexts() {
   let e = deepChain().error().unwrap().addContext("reading the config").addContext("starting up");
   expectStr(e.message().view(), "starting up", "the latest context is the message");
-  expectStr(e.report().view(),
+  expectStr(reportOf(&e).view(),
     "starting up\n  caused by: reading the config\n  caused by: top failed\n  caused by: mid failed\n  caused by: leaf failed",
     "contexts over a three-deep chain");
 
   // context on an AnyError that was converted by ?
   let f = typedToAny(true).error().unwrap().addContext("opening");
-  expectStr(f.report().view(), "opening\n  caused by: leaf failed", "addContext on a converted error");
+  expectStr(reportOf(&f).view(), "opening\n  caused by: leaf failed", "addContext on a converted error");
 
   // The lazy form builds its line only when it is called
   let before = lazyCalls;
@@ -117,12 +127,12 @@ fn contexts() {
     String.from("lazily")
   });
   expectInt(lazyCalls - before, 1, "withContext called its closure once");
-  expectStr(g.report().view(), "lazily\n  caused by: leaf failed", "withContext puts its line over the error");
+  expectStr(reportOf(&g).view(), "lazily\n  caused by: leaf failed", "withContext puts its line over the error");
   let ok = typedToAny(false);
   expectInt(lazyCalls - before, 1, "an Ok never reaches it");
 
   let m = AnyError.msg("plain text").addContext("while testing");
-  expectStr(m.report().view(), "while testing\n  caused by: plain text", "AnyError.msg and a context over it");
+  expectStr(reportOf(&m).view(), "while testing\n  caused by: plain text", "AnyError.msg and a context over it");
 }
 
 // Chains built and dropped many times: every Leaf, Mid and Top finalized once
@@ -136,7 +146,7 @@ fn drops() {
   while i < rounds {
     {
       let e = AnyError.from(Top(Mid(Leaf(i32.from(i))))).addContext("a").addContext("b").addContext("c");
-      lines = lines + e.report().len();
+      lines = lines + reportOf(&e).len();
     }
     // an AnyError built by ? and dropped unread
     {
@@ -180,7 +190,7 @@ fn downcasts() {
     case let Some(busy) { expectInt(i64.from(busy.tries), 42, "downcastMut wrote through, under two contexts"); }
     else { expectBool(false, true, "downcastRef found no Busy"); }
   }
-  expectStr(c.report().view(), "starting up\n  caused by: reading\n  caused by: busy",
+  expectStr(reportOf(&c).view(), "starting up\n  caused by: reading\n  caused by: busy",
     "the AnyError is whole after its error was lent");
 
   // A plain line of text holds no typed error
