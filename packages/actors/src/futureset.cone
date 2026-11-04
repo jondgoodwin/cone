@@ -408,14 +408,16 @@ fn futureJoin(fut: *u8, h: *Header, run: *u8, id: u64) bool {
 // type cannot be assumed to have a place for the second, so it has its own
 pub use SetError;
 pub enum SetError[E] {
-  Failed(E);
-  Gone(Abandoned);
+  MemberFailed(E);
+  MemberGone(Abandoned);
 }
 
 // 'await allOk(set)': every member's value, in the order added, as soon as all
 // have arrived Ok; or, the moment one arrives as an Err (or abandoned), that
 // error, the set dropped as its handle would be: what still runs in the set's
-// group is cancelled and the replies to come are dropped. The set is used up
+// group is cancelled and the replies to come are dropped. A member given to
+// 'add' rather than 'start' was sent in another group, so allOk cannot cancel
+// it, only drop its late reply: the same rule as dropping the set. The set is used up
 pub fn allOk[V, E](set: FutureSet[Result[V, E]]) Awaitable[Result[List[V], SetError[E]]] {
   var me = set;
   let core = me.core;
@@ -440,10 +442,10 @@ fn okVet[V, E](core: *SetCore[Result[V, E]], a: SetArrival[Result[V, E]]) Option
           (*core).queue.push(SetArrival[Result[V, E]](key, Ok[Result[V, E], Abandoned](Ok[V, E](v))));
           None[SetError[E]]
         }
-        case let Err(e) {Some[SetError[E]](Failed[E](e))}
+        case let Err(e) {Some[SetError[E]](MemberFailed[E](e))}
       }
     }
-    case let Err(ab) {Some[SetError[E]](Gone[E](ab))}
+    case let Err(ab) {Some[SetError[E]](MemberGone[E](ab))}
   }
 }
 
@@ -546,10 +548,10 @@ fn okTake[V, E](core: *SetCore[Result[V, E]]) Option[(SetKey, Result[V, SetError
         case let Ok(inner) {
           match inner {
             case let Ok(v) {Some[(SetKey, Result[V, SetError[E]])]((key, Ok[V, SetError[E]](v)))}
-            case let Err(e) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](Failed[E](e))))}
+            case let Err(e) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberFailed[E](e))))}
           }
         }
-        case let Err(ab) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](Gone[E](ab))))}
+        case let Err(ab) {Some[(SetKey, Result[V, SetError[E]])]((key, Err[V, SetError[E]](MemberGone[E](ab))))}
       }
     }
     case is None {None[(SetKey, Result[V, SetError[E]])]}

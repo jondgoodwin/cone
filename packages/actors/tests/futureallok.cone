@@ -8,7 +8,7 @@
 //   held: allOk gives that Err, the others (sent in the set's group) are
 //   cancelled and see it when they run, and the held member's late reply is
 //   dropped;
-// - gone: a member whose actor died while it waited comes out as Gone;
+// - gone: a member whose actor died while it waited comes out as MemberGone;
 // - empty: allOk of a set with nothing in it is an empty list;
 // - nextOk: values and a failure, one at a time;
 // - retry: a failed member is added again to the same set while the others run.
@@ -77,8 +77,8 @@ actor Cart {
       }
       case let Err(e) {
         match e {
-          case let Failed(item) {1000u64 + item}
-          case let Gone(a) {2000u64}
+          case let MemberFailed(item) {1000u64 + item}
+          case let MemberGone(a) {2000u64}
         }
       }
     }
@@ -111,12 +111,12 @@ actor Retrier {
             case let Ok(n) {sum = sum + n;}
             case let Err(e) {
               match e {
-                case let Failed(attempt) {
+                case let MemberFailed(attempt) {
                   if attempt < 3u64 {
                     set <- flaky.fetch(attempt + 1u64);
                   }
                 }
-                case let Gone(a) {}
+                case let MemberGone(a) {}
               }
             }
           }
@@ -185,8 +185,8 @@ actor Asker {
         case let Ok(vals) {sums.early.store(1u64);}
         case let Err(e) {
           match e {
-            case let Failed(code) {sums.early.store(code);}
-            case let Gone(a) {sums.early.store(2u64);}
+            case let MemberFailed(code) {sums.early.store(code);}
+            case let MemberGone(a) {sums.early.store(2u64);}
           }
         }
       }
@@ -202,8 +202,8 @@ actor Asker {
         case let Ok(vals) {sums.gone.store(2u64);}
         case let Err(e) {
           match e {
-            case let Failed(code) {sums.gone.store(3u64);}
-            case let Gone(a) {sums.gone.store(1u64);}
+            case let MemberFailed(code) {sums.gone.store(3u64);}
+            case let MemberGone(a) {sums.gone.store(1u64);}
           }
         }
       }
@@ -229,8 +229,8 @@ actor Asker {
               case let Ok(n) {sums.nextSum.add(n);}
               case let Err(e) {
                 match e {
-                  case let Failed(code) {sums.nextFail.add(code);}
-                  case let Gone(a) {}
+                  case let MemberFailed(code) {sums.nextFail.add(code);}
+                  case let MemberGone(a) {}
                 }
               }
             }
@@ -258,10 +258,10 @@ fn main() i32 {
   expectUInt(sums.all.load(), 121518u64, "allOk gives the values in the order added");
   expectUInt(sums.early.load(), 7u64, "the first Err is what allOk gives");
   expectUInt(sums.cancelled.load(), 11u64, "allOk cancels the members sent in the set's group");
-  expectUInt(sums.gone.load(), 1u64, "an abandoned member is Gone");
+  expectUInt(sums.gone.load(), 1u64, "an abandoned member is MemberGone");
   expectUInt(sums.empty.load(), 1u64, "allOk of an empty set is an empty list");
   expectUInt(sums.nextSum.load(), 12u64, "nextOk gives the values");
-  expectUInt(sums.nextFail.load(), 40u64, "nextOk gives a failure as Failed");
+  expectUInt(sums.nextFail.load(), 40u64, "nextOk gives a failure as MemberFailed");
   expectUInt(sums.retry.load(), 115u64, "a failed member added again while the others run");
   expectUInt(sums.retries.load(), 270000u64 + 1000u64, "cost: both priced; one unpriced");
   expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
