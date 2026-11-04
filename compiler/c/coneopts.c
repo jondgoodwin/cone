@@ -53,6 +53,7 @@ enum
     OPT_VERIFY,
     OPT_FILENAMES,
     OPT_CHECKTREE,
+    OPT_REPORT_TRUST,
     OPT_SPANS,
     OPT_EXTFUN,
     OPT_SIMPLEBUILTIN,
@@ -104,6 +105,7 @@ static opt_arg_t args[] =
     { "verify", '\0', OPT_ARG_NONE, OPT_VERIFY },
     { "files", '\0', OPT_ARG_NONE, OPT_FILENAMES },
     { "checktree", '\0', OPT_ARG_NONE, OPT_CHECKTREE },
+    { "report-trust", '\0', OPT_ARG_NONE, OPT_REPORT_TRUST },
     { "spans", '\0', OPT_ARG_NONE, OPT_SPANS },
     { "extfun", '\0', OPT_ARG_NONE, OPT_EXTFUN },
     { "simplebuiltin", '\0', OPT_ARG_NONE, OPT_SIMPLEBUILTIN },
@@ -186,6 +188,7 @@ static void usage()
         "    =columns      Defaults to the terminal width.\n"
         "  --immerr        Report errors immediately rather than deferring.\n"
         "  --checktree     Verify IR well-formedness.\n"
+        "  --report-trust  After type checking, list the unconstrained operations; generates no code.\n"
         "  --spans         Print where each of the root module's declarations\n"
         "                  and each of its types' members starts and ends.\n"
         "  --verify        Verify LLVM IR.\n"
@@ -439,6 +442,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_SIMPLEBUILTIN: opt->simple_builtin = 1; break;
         case OPT_FILENAMES: opt->print_filenames = 1; break;
         case OPT_CHECKTREE: opt->check_tree = 1; break;
+        case OPT_REPORT_TRUST: opt->report_trust = 1; break;
         case OPT_SPANS: opt->print_spans = 1; break;
         case OPT_EMIT_INCLUDE: opt->emit_include = 1; break;
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;

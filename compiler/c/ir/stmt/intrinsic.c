@@ -225,6 +225,13 @@ static IntrinsicSpec *intrinsicFindKind(int16_t intrinsicFn) {
     return NULL;
 }
 
+char *intrinsicTrustName(FnDclNode *fndcl) {
+    if (fndcl->value == NULL || fndcl->value->tag != IntrinsicTag)
+        return NULL;
+    IntrinsicSpec *spec = intrinsicFindKind(((IntrinsicNode *)fndcl->value)->intrinsicFn);
+    return spec && spec->trust ? spec->name : NULL;
+}
+
 // Serialize an intrinsic node
 void intrinsicPrint(IntrinsicNode *node) {
     IntrinsicSpec *spec = intrinsicFindKind(node->intrinsicFn);

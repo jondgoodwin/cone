@@ -1320,6 +1320,7 @@ INode *parseCast(ParseState *parse) {
         if (!lexIsToken(AsToken))
             return lhnode;
         CastNode *node = newRecastNode(lhnode, unknownType);
+        node->flags |= FlagWrittenAs;
         lexNextToken();
         node->typ = parseTypeReq(parse, "'as'");
         lhnode = (INode*)node;

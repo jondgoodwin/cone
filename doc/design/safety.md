@@ -109,6 +109,19 @@ for the intrinsics whose misuse breaks memory safety (`finalize`, the slice
 constructors, `readRaw`, `writeRaw`, `moveRaw`, `moveRawInto`, the atomic operations): the compiler's registry marks
 each as needing `trust`, and nothing yet asks for it (`safe-intrinsics.html`).
 
+What the guard would cover can be listed. `conec --report-trust` type checks the
+program, prints one line per site and generates no code: `deref` (a dereference
+or index through a raw pointer, not through a reference), `ref-from-ptr` (a
+reference or slice made from a pointer by `as`, `&*p` or `sliceFromParts*`),
+`intrinsic` (a call of an intrinsic the registry marks `trust`), `extern` (a call
+of an extern function), `reinterpret` (a written `as` that keeps the bits) and
+`sendable` (a struct declaring `is Sendable` that holds a raw pointer, directly
+or through a field). Making, storing, passing and comparing a pointer, its
+arithmetic and casts between pointer types are not sites; the report counts them
+by file. A generic is read from its instances and each site is kept once, so a
+generic never instantiated is not listed. `tools/trustmap.py` runs it over every
+package (`compiler/c/ir/trustreport.c` is the walk).
+
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior
 that may actually be safe, but which the compiler does not have the insight to

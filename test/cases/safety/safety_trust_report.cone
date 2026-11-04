@@ -1,0 +1,83 @@
+// What 'conec --report-trust' lists: one line per site where the program does
+// what the compiler cannot check, after type checking. cases.toml pins each
+// kind by the function it sits in, and that the functions named 'ok*' (a
+// reference's '*r', an init's '*self', and what is done with a pointer without
+// reaching memory) are not listed.
+
+mod safety_trust_report;
+
+extern fn trust_elsewhere(n: i32);
+
+struct Cell {
+  pub n: i32;
+
+  pub fn init(self: &new, n: i32) { *self = Cell(n: n); }
+}
+
+struct Handle is Sendable {
+  pub p: *i32;
+}
+
+struct Wrapped is Sendable {
+  pub h: Handle;
+}
+
+struct Plain is Sendable {
+  pub n: i32;
+}
+
+fn kindDeref(p: *i32) i32 {
+  *p
+}
+
+fn kindIndex(p: *i32) i32 {
+  p[1usize]
+}
+
+fn kindRefFromPtrAs(p: *i32) i32 {
+  let r = p as &i32;
+  *r
+}
+
+fn kindRefFromPtrBorrow(p: *i32) i32 {
+  let r = &*p;
+  *r
+}
+
+fn kindRefFromParts(p: *i32) usize {
+  let s = mem.sliceFromParts[i32](p, 2usize);
+  s.len()
+}
+
+fn kindIntrinsic(p: *i32) {
+  mem.writeRaw[i32](p, 5);
+}
+
+fn kindExtern() {
+  trust_elsewhere(3);
+}
+
+fn kindReinterpret(x: u32) i32 {
+  x as i32
+}
+
+fn okReference(r: &i32) i32 {
+  *r
+}
+
+fn okReferenceMut(r: &mut i32) {
+  *r = *r + 1;
+}
+
+fn okPointerHandling(p: *i32) *i32 {
+  let q = p + 1usize;
+  let same = q == p;
+  let other = p as *u8;
+  q
+}
+
+fn main() {
+  let c = Cell(1);
+  var x = 7;
+  let sum = kindDeref(&x as *i32) + okReference(&x);
+}

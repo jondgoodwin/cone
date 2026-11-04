@@ -70,6 +70,7 @@ typedef struct ConeOptions {
     int print_asm;        // Print out assembly file
     int print_llvmir;    // Print out LLVM IR
     int check_tree;        // Verify IR well-formedness
+    int report_trust;      // List the unconstrained operations after type checking, generating nothing
     int print_spans;       // Print the root module's declaration spans after parse
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
