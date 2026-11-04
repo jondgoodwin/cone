@@ -101,6 +101,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/literal.h"
 #include "exp/namedval.h"
 #include "exp/contents.h"
+#include "exp/debugfn.h"
 #include "exp/each.h"
 #include "exp/pareach.h"
 #include "exp/propagate.h"

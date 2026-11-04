@@ -273,6 +273,8 @@ extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
 // Core's TextOut, the writer a text send writes into (contents.c), known the same way
 int coreIsTextOut(INode *dcl);
+// Core's marker trait DebugText, which makes a text sink take its values in the debug form
+int coreIsDebugText(INode *dcl);
 // Core's Erased struct, '{p *u8, rec: *TypeRecord}': a value known only by its type
 // record, which a trace of it calls (genlTraceErased). Known by its name, its two
 // fields and its package.
