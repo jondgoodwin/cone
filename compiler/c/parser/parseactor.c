@@ -1862,6 +1862,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, GenEnvelope);
                 genPuts(&g, "), ");
             }
+            else if (returns)
+                genPuts(&g, "_ = "); // sent unasked: nobody waits for the value, and dropping it is meant
             genPuts(&g, dself);
             genPuts(&g, ".");
             genName(&g, fn->namesym);
