@@ -41,14 +41,6 @@ static size_t debugCount = 0;
 static size_t debugCap = 0;
 static unsigned debugSerial = 0;
 
-// Is this a function the compiler wrote here? It stands in its type's scope: it reads
-// the private fields the type's own methods read (structSeesPrivate)
-int debugFnIsGenerated(INode *fn) {
-    for (size_t i = 0; i < debugCount; ++i)
-        if ((INode*)debugCache[i].fn == fn)
-            return 1;
-    return 0;
-}
 
 static Name *debugMethodName(const char *name) {
     return nametblFind((char*)name, strlen(name));
@@ -283,6 +275,7 @@ static FnDclNode *debugMake(TypeCheckState *pstate, INode *valtype, INode *lex) 
 
     FnDclNode *fn = newFnDclNode(nametblFind(buf, strlen(buf)), 0, (INode*)sig, (INode*)body);
     inodeLexCopy((INode*)fn, lex);
+    fn->generatedFor = valtype;     // part of the type: it sees what the type's own code sees
     nodesAdd(&mod->nodes, (INode*)fn);
     dclInfoJoin((INode*)fn, (INode*)mod);
     if (debugCount == debugCap) {

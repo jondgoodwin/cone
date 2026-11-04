@@ -2430,9 +2430,13 @@ int structSeesPrivate(TypeCheckState *pstate, INode *type) {
     INode *site = pstate->fn ? (INode*)pstate->fn : pstate->typenode;
     if (site == NULL)
         return 0;
-    // A debug form the compiler wrote for a type is in that type's scope (debugfn.c)
-    if (pstate->fn && debugFnIsGenerated(site))
-        return 1;
+    // Code the compiler generates for a type is part of that type: it sees what the
+    // type's own code sees (a variant counting as its enum), and no other type's
+    INode *formof = pstate->fn ? pstate->fn->generatedFor : NULL;
+    if (formof != NULL) {
+        StructNode *formenum = structPrivacyEnum(formof);
+        return formof == type || (formenum != NULL && formenum == structPrivacyEnum(type));
+    }
     ModuleNode *typemod = dclInfoGetModule(type);
     if (typemod != NULL && typemod == dclInfoGetModule(site))
         return 1;

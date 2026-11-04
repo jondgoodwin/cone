@@ -1102,7 +1102,7 @@ appended to a generating module's `nodes` (the module of the call, or the first
 generating module of the program, `debugSetProgram`), checked at once. A struct
 or variant body opens with `if out.enter() {...; out.leave()}`
 (`TextOut.depth`; at 128 `enter` writes `...`). The generated function reads
-private fields (`structSeesPrivate` asks `debugFnIsGenerated`). A sink whose type
+private fields (`FnDclNode.generatedFor`: code the compiler generates for a type is part of that type, so `structSeesPrivate` lets it see what the type's own code sees, a variant counting as its enum, and no other type's). A sink whose type
 declares core's `DebugText` (`coreIsDebugText`, matched by name and package) takes
 each non-literal piece of a `<-` as `piece.toDebug(&uni W)`: `textSendDebug`, run in
 `fnCallLowerMethodOn` before the candidates, so a `&str` or String value is

@@ -27,6 +27,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->where = NULL;
     node->compute[0] = node->compute[1] = node->compute[2] = 0;
     node->closure = NULL;
+    node->generatedFor = NULL;
     return node;
 }
 

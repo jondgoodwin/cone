@@ -21,9 +21,6 @@ int fnCallDebugLower(TypeCheckState *pstate, FnCallNode **nodep, int argschecked
 // that declares none)?
 int debugWillGenerate(INode *piece);
 
-// Is this function one the compiler wrote for a type's debug form? It reads the
-// type's private fields, as the type's own methods do.
-int debugFnIsGenerated(INode *fn);
 
 // The program being type checked, whose generating module holds the functions
 // written for a call that stands in a module this compile does not generate
