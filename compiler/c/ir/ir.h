@@ -122,6 +122,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "meta/genvardcl.h"
 #include "meta/macro.h"
 #include "meta/generic.h"
+#include "meta/fields.h"
 
 #include "stmt/program.h"
 
