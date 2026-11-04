@@ -1,0 +1,138 @@
+// A float's encoding is read and built with methods, so that no 'as' is needed:
+// 'x.bits()' (a u32 for f32, a u64 for f64), 'f32.fromBits(b)' and
+// 'f64.fromBits(b)', 'x.exponent()' (an i32: the stored exponent field less the
+// bias, 127 or 1023), 'x.mantissa()' (the stored fraction bits, a u32 or u64)
+// and 'x.signBit()' (the sign bit alone: true for -0.0 and for a NaN with it set).
+// The fields are answered as stored, with no adjustment: zero and a subnormal
+// answer the field 0, so an exponent of -bias; an infinity and a NaN the field
+// all ones, so bias + 1; the implied leading 1 is not in the mantissa.
+//
+// Asked of both widths: 0.0, -0.0, the smallest subnormal, the largest finite,
+// both infinities, two NaNs (one with the sign bit set), and 1.0, 0.5 and -2.5.
+// Each row is the value's bits, its sign bit, exponent and mantissa, whether
+// fromBits(bits) gives the same bits back, and whether the sign, the exponent
+// plus the bias, and the mantissa put back together make the bits again. Every
+// value also comes through 'opaque', a function the optimizer cannot see
+// into, so the methods run as the program runs; the .out is the same in a
+// release and a debug build.
+
+mod core_float_bits;
+
+import stdio use *;
+
+extern {
+  fn @c opaque(n: u64) u64;
+}
+
+fn hexDigit(n: u64) {
+  if n == 0u64 {printStr("0");}
+  else if n == 1u64 {printStr("1");}
+  else if n == 2u64 {printStr("2");}
+  else if n == 3u64 {printStr("3");}
+  else if n == 4u64 {printStr("4");}
+  else if n == 5u64 {printStr("5");}
+  else if n == 6u64 {printStr("6");}
+  else if n == 7u64 {printStr("7");}
+  else if n == 8u64 {printStr("8");}
+  else if n == 9u64 {printStr("9");}
+  else if n == 10u64 {printStr("a");}
+  else if n == 11u64 {printStr("b");}
+  else if n == 12u64 {printStr("c");}
+  else if n == 13u64 {printStr("d");}
+  else if n == 14u64 {printStr("e");}
+  else {printStr("f");}
+}
+
+// n as 'digits' hex digits
+fn hex(n: u64, digits: u64) {
+  printStr("0x");
+  var i = digits;
+  while i > 0u64 {
+    i = i - 1u64;
+    hexDigit((n >> (i * 4u64)) & 15u64);
+  }
+}
+
+fn yes(v: bool) {
+  if v {printStr("yes");} else {printStr("no");}
+}
+
+fn row32(name: &str, x: f32) {
+  let bits = x.bits();
+  let sign = x.signBit();
+  let exp = x.exponent();
+  let mant = x.mantissa();
+  printStr(name);
+  printStr(": bits "); hex(u64.from(bits), 8u64);
+  printStr(" sign "); yes(sign);
+  printStr(" exp "); printInt(i64.from(exp));
+  printStr(" mant "); hex(u64.from(mant), 6u64);
+  printStr(" roundtrip "); yes(f32.fromBits(bits).bits() == bits);
+  var signbits = 0u32;
+  if sign {signbits = 1u32;}
+  let rebuilt = (signbits << 31u32) | (u32.from(exp + 127i32) << 23u32) | mant;
+  printStr(" rebuilt "); yes(rebuilt == bits);
+  printStr("\n");
+}
+
+fn row64(name: &str, x: f64) {
+  let bits = x.bits();
+  let sign = x.signBit();
+  let exp = x.exponent();
+  let mant = x.mantissa();
+  printStr(name);
+  printStr(": bits "); hex(bits, 16u64);
+  printStr(" sign "); yes(sign);
+  printStr(" exp "); printInt(i64.from(exp));
+  printStr(" mant "); hex(mant, 13u64);
+  printStr(" roundtrip "); yes(f64.fromBits(bits).bits() == bits);
+  var signbits = 0u64;
+  if sign {signbits = 1u64;}
+  let rebuilt = (signbits << 63u64) | (u64.from(exp + 1023i32) << 52u64) | mant;
+  printStr(" rebuilt "); yes(rebuilt == bits);
+  printStr("\n");
+}
+
+fn main() {
+  printStr("f32\n");
+  row32("0.0", f32.fromBits(u32.from(opaque(0u64))));
+  row32("-0.0", f32.fromBits(u32.from(opaque(0x80000000u64))));
+  row32("smallest subnormal", f32.fromBits(u32.from(opaque(1u64))));
+  row32("largest finite", f32.fromBits(u32.from(opaque(0x7F7FFFFFu64))));
+  row32("inf", f32.fromBits(u32.from(opaque(0x7F800000u64))));
+  row32("-inf", f32.fromBits(u32.from(opaque(0xFF800000u64))));
+  row32("nan", f32.fromBits(u32.from(opaque(0x7FC00000u64))));
+  row32("-nan", f32.fromBits(u32.from(opaque(0xFFC00001u64))));
+  row32("1.0", f32.fromBits(u32.from(opaque(0x3F800000u64))));
+  row32("0.5", f32.fromBits(u32.from(opaque(0x3F000000u64))));
+  row32("-2.5", f32.fromBits(u32.from(opaque(0xC0200000u64))));
+
+  printStr("f32 literals\n");
+  row32("0.0", 0.0f32);
+  row32("-0.0", -0.0f32);
+  row32("1.0e-45", 1.0e-45f32);
+  row32("3.4028235e38", 3.4028235e38f32);
+  row32("1.0", 1.0f32);
+  row32("-2.5", -2.5f32);
+
+  printStr("f64\n");
+  row64("0.0", f64.fromBits(opaque(0u64)));
+  row64("-0.0", f64.fromBits(opaque(0x8000000000000000u64)));
+  row64("smallest subnormal", f64.fromBits(opaque(1u64)));
+  row64("largest finite", f64.fromBits(opaque(0x7FEFFFFFFFFFFFFFu64)));
+  row64("inf", f64.fromBits(opaque(0x7FF0000000000000u64)));
+  row64("-inf", f64.fromBits(opaque(0xFFF0000000000000u64)));
+  row64("nan", f64.fromBits(opaque(0x7FF8000000000000u64)));
+  row64("-nan", f64.fromBits(opaque(0xFFF8000000000001u64)));
+  row64("1.0", f64.fromBits(opaque(0x3FF0000000000000u64)));
+  row64("0.5", f64.fromBits(opaque(0x3FE0000000000000u64)));
+  row64("-2.5", f64.fromBits(opaque(0xC004000000000000u64)));
+
+  printStr("f64 literals\n");
+  row64("0.0", 0.0);
+  row64("-0.0", -0.0);
+  row64("5.0e-324", 5.0e-324);
+  row64("1.7976931348623157e308", 1.7976931348623157e308);
+  row64("1.0", 1.0);
+  row64("-2.5", -2.5);
+}

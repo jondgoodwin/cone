@@ -19,6 +19,7 @@ typedef enum {
     FieldPropRegion,
     FieldPropPerm,
     FieldPropPub,
+    FieldPropOffset,    // The field's byte offset in T: a layout fact, a usize the code generator reads
     FieldPropCount
 } FieldProp;
 

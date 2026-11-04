@@ -1243,6 +1243,25 @@ fn main() {
 			reference: <span class="pre">#f.region[#f.perm, i32](5)</span> is a value of the field's own region and
 			permission.
 		<span class="pre">#f.attrs</span> waits for the attributes it would describe.</p>
+	<p id="metalayout"><b>Layout facts.</b> <span class="pre">#size(T)</span> and <span class="pre">#align(T)</span> are
+		the byte size and alignment of a type (a <span class="pre">usize</span>, the same numbers
+		<span class="pre">mem.sizeof[T]()</span> and <span class="pre">mem.alignof[T]()</span> give), and
+		<span class="pre">#f.offset</span> is the byte offset of a field in the type
+		<span class="pre">#fields</span> describes, padding included. Inside a <span class="pre">#each</span> over
+		<span class="pre">#fields(T)</span>, <span class="pre">#if #f.type is Copy</span> and
+		<span class="pre">#if #f.type is Move</span> pick the branch that exists for each field, so the other branch is
+		never checked for it. These facts exist once layout settles. Asked of a type whose layout is still being
+		made, they are refused rather than answered by the order the declarations happen to be laid out in; the
+		error names the by-value cycle where there is one, type by type: <span class="pre">Top contains Mid contains
+			Top by value</span>. A chain of by-value fields is answered like any other once it has settled: if A holds B
+			and B holds C, <span class="pre">#size(A)</span> includes B's padded size, and the offset of
+			<span class="pre">A</span>'s field of type B is rounded up to B's alignment.</p>
+	<p>These facts are the code generator's constants. The front end does not yet work layouts out, so a use
+		that needs the number while the program is still being read is refused with an error that says so:
+		<span class="pre">#if #size(T) > 16</span>, an array length (<span class="pre">Array[u8, #size(T)]</span>),
+		and the initializer of a <span class="pre">const</span>. Ask in an expression the program runs
+		(<span class="pre">if #size(T) > 16 { ... }</span>) instead, where the code generator folds the number into the
+		code; or write the number. This waits for the front end to compute layouts.</p>
 	<p>Reflection sees what the code reflecting could name. A generic written in the module that declares the type (a
 		function, or a method of the type or of a generic type), and a trait default taken into the type, is listed
 		every field, private ones too. Written in any other module, a type with a private field is refused, naming the
