@@ -1068,8 +1068,10 @@ description misused where it is read or name-resolved: a header without `(T)`, a
 the generic it stands in, a bare `#f` (a description is asked `#f.name`/`.type`/`.region`/`.perm`/`.pub` or
 spliced `value.#f`), a property that is none, `#f.attrs` (field attributes are not built). `ErrorMetaFieldsType`
 is the clone for an instance: `T` is no struct (a number, a reference, an enum, a trait), or `#f.perm` /
-`#f.region` is asked of a field with none written. It is pointed at the loop, with the call that made the
-instance after it.
+`#f.region` is asked of a field with none written. `ErrorMetaFieldsPrivate` is a type with a private field the
+reflecting code cannot see and no `@reflect`: refused, naming the type, the field and the opt-in, because a list
+without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
+loop, with the call that made the instance after it.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

@@ -48,9 +48,12 @@ void fieldEachNameRes(NameResState *pstate, BlockNode *blk) {
     FieldEach *fe = blk->fieldeach;
     inodeNameRes(pstate, &fe->subject);
     INode *dcl = isNameUseNode(fe->subject) ? ((NameUseNode*)fe->subject)->dclnode : NULL;
-    if (dcl && dcl->tag != GenVarDclTag)
+    // 'Self' in a trait's default is the type the default is taken into, known when it is taken in
+    int traitself = dcl && ((NameUseNode*)fe->subject)->namesym == selfTypeName
+        && dcl->tag == StructTag && (dcl->flags & TraitType);
+    if (dcl && dcl->tag != GenVarDclTag && !traitself)
         errorMsgNode(fe->subject, ErrorMetaFields,
-            "'#fields(%s)' describes the fields of a generic's type parameter, which is known when the generic is cloned for its arguments. '%s' is not one.",
+            "'#fields(%s)' describes the fields of a generic's type parameter, or of 'Self' in a trait's default, which is known when the generic is cloned for its arguments. '%s' is not one.",
             &((NameUseNode*)fe->subject)->namesym->namestr, &((NameUseNode*)fe->subject)->namesym->namestr);
 }
 
@@ -159,8 +162,15 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
         if (field->tag != FieldDclTag || field->hop || field->via)
             continue;
-        if (!sees && inodeIsPrivate((INode*)field))
-            continue;
+        if (!sees && inodeIsPrivate((INode*)field)) {
+            // Leaving it out would give a serializer or an 'equals' a wrong answer with no warning
+            errorMsgNode((INode*)node, ErrorMetaFieldsPrivate,
+                "'#fields(%s)' cannot describe the private field '%s' of '%s', which this code cannot see. The module that declares '%s' can open it to reflection by writing 'struct @reflect %s'.",
+                &((NameUseNode*)fe->subject)->namesym->namestr, &field->namesym->namestr, &st->namesym->namestr,
+                &st->namesym->namestr, &st->namesym->namestr);
+            cloneDclPop(dclpos);
+            return (INode*)result;
+        }
         nodesAdd(&fields, (INode*)field);
     }
 
