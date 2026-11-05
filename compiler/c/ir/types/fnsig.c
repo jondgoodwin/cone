@@ -159,7 +159,7 @@ static int fnSigEqualC(FnSigNode *node1, FnSigNode *node2, int checkc) {
             return 0;
         nodes2p++;
     }
-    return lifeSigsAgree(node1, node2);
+    return lifeSigsAgree(node1, node2, 0);
 }
 
 // Compare two function signatures to see if they are equivalent
@@ -269,7 +269,7 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
     }
     // A call through the requirement is checked against its lifetimes, so the
     // implementation must promise at least as much (lifeSigMeets)
-    return lifeSigMeets(node1, node2);
+    return lifeSigMeets(node1, node2, 1);
 }
 
 // Does a requirement's type name 'Self' outright, or through the references and
@@ -459,9 +459,9 @@ static FnSigMeet fnSigMeetKind(FnSigNode *impl, FnSigNode *req, INode *selftype,
     }
     if (receiver == ReceiverImpl)
         return recast ? FnSigMeetRecast : FnSigMeetSame;
-    if (!lifeSigMeets(impl, req))
+    if (!lifeSigMeets(impl, req, receiver == ReceiverBoth))
         return FnSigMeetNo;
-    return recast || !lifeSigsAgree(impl, req) ? FnSigMeetRecast : FnSigMeetSame;
+    return recast || !lifeSigsAgree(impl, req, receiver == ReceiverBoth) ? FnSigMeetRecast : FnSigMeetSame;
 }
 
 static int fnSigMeetsC(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver, int checkc) {
