@@ -219,7 +219,7 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
             char *why = isExpNode(retnode->exp) ? fnSigConvRefusal(((IExpNode*)retnode->exp)->vtype, fnsig->rettype, &whycode) : NULL;
             char privwhy[400];
             if (why)
-                errorMsgNode((INode*)retnode, whycode, "%s", why);
+                fnSigRefusalMsg((INode*)retnode, whycode, why);
             else if (isExpNode(retnode->exp)
                 && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)retnode->exp)->vtype, fnsig->rettype))
                 errorMsgNode((INode*)retnode, ErrorPrivateMatch,

@@ -31,9 +31,13 @@ const daysInWeek = 7;
 // A global, declared with its type and given its value at start-up
 let days: i32;
 
+// A global that every thread may reach, which changes only through atomic operations
+var count: Atomic[u32];
+
 // The module's initializer runs before main
 fn @initpure init() {
   days = 52 * daysInWeek;
+  count = Atomic[u32].of(0u32);
 }
 
 // The module's finalizer runs after main returns
@@ -41,11 +45,9 @@ fn final() {
   print &lt;- "closing the visitor book\n";
 }
 
-fn visit() i32 {
-  // A static variable: one copy, kept from call to call
-  static var count = 0;
-  count += 1;
-  count
+fn visit() u32 {
+  count.add(1u32);
+  count.load()
 }
 
 fn main() {
@@ -177,7 +179,7 @@ primes[n]          // an element, by a constant or run-time index
 	<p>A variable declared inside a function is ordinarily created afresh on every call and released when the
 		call ends. One declared <span class="pre">static</span> is one copy instead, shared by every call of the
 		function, initialized once before the program starts running, and kept across calls, like
-		<span class="pre">count</span> in <span class="pre">visit</span> above:</p>
+		<span class="pre">calls</span> here:</p>
 <pre>
 fn tick() i32 {
   static var calls = 0;
@@ -317,7 +319,8 @@ fn @initpure init() {
 	<p>Where a module's globals hold values whose type has a <a href="rec-methods.html#finalizer">finalizer</a>,
 		or owning references, the compiler gives the module a finalizer that runs the module's own
 		<span class="pre">final</span>, if it declares one, and then finalizes each such global, releasing an
-		owner as a local's end would, in the order they are declared: the way a type's
+		owner as a local's end would, in the reverse of the order they are set (a global given its value where it is declared is set first, the others in the order <span class="pre">init</span> first assigns them),
+		while the module's own <span class="pre">final</span> runs before them all, as a type's
 		<span class="pre">final</span> runs before its fields are finalized. Such a module may not declare a
 		function named <span class="pre">drop</span>, which is the name the compiler gives it.</p>
 
