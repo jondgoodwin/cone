@@ -2416,6 +2416,54 @@ void lifeCanonBrands(Nodes *args) {
     }
 }
 
+// Where a type argument is inferred from a value and a declared type says the
+// same, brands apart: may the declared type's brands stand for the value's?
+// Only a brand a call minted is taken as the declared one, as an explicit type
+// argument would bind it ('Some[&'=a mut Node['=a]](ar.alloc(..))'); any other
+// brand that differs is a different brand, and the types stay different.
+int lifeBrandsAdopt(INode *inferred, INode *declared) {    if (!lifeInvariantSeen || !isTypeNode(inferred) || !isTypeNode(declared))
+        return 0;
+    LifeBrands bi, bd;
+    lifeBrandsInit(&bi);
+    lifeBrandsInit(&bd);
+    lifeBrandsOf(inferred, &bi, 0);
+    lifeBrandsOf(declared, &bd, 0);
+    if (bi.cnt == 0 || bi.cnt != bd.cnt)
+        return 0;
+    LifeBind bind;
+    lifeBindInit(&bind);
+    int differs = 0;
+    for (uint32_t i = 0; i < bi.cnt; ++i) {
+        Name *from = bi.names[i];
+        Name *to = bd.names[i];
+        if (from == NULL || to == NULL) {
+            if (from != to)
+                return 0;
+            continue;
+        }
+        Name *bound = lifePairFind(bind.from, bind.to, bind.cnt, from);
+        if (bound && bound != to)
+            return 0;
+        if (from != to) {
+            if (lifeMintOf(lifeBrandResolve(from)) == NULL)
+                return 0;
+            // A declared name the function has already bound to another brand
+            // is that brand's: two brands bound apart never match, and this
+            // adopts nothing for them (the binding is lifeBrandAgree's, once)
+            Name *tobound = lifeBrandResolve(to);
+            if (tobound != to && tobound != lifeBrandResolve(from))
+                return 0;
+            differs = 1;
+        }
+        if (bound == NULL)
+            lifePairAdd(&bind.from, &bind.to, &bind.cnt, &bind.cap, from, to);
+    }
+    if (!differs)
+        return 0;
+    INode *subst = lifeBrandSubstAt(inferred, &bind, NULL, 0);
+    return subst && itypeIsSame(subst, declared);
+}
+
 int lifeBrandsEqual(INode *a, INode *b) {
     if (!lifeInvariantSeen)
         return 1;
