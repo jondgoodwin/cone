@@ -178,6 +178,101 @@ static int itypeCarriesWritableBorrow(INode *type) {
     return itypeCarriesAt(type, CarriesWritableBorrow);
 }
 
+int itypeIsArena(INode *type) {
+    INode *dcl = type ? itypeGetTypeDcl(type) : NULL;
+    return dcl && dcl->tag == StructTag && ((StructNode *)dcl)->lends == LendsNoLoanMut;
+}
+
+// Is it certain that no value of this type can hold a borrowed reference, of
+// any lifetime, anywhere a store can reach? Stricter than !itypeCarriesBorrow:
+// a type it cannot see all of answers no -- a type parameter, an open trait
+// (whose implementers may hold anything), an opaque struct, a closure, a
+// virtual reference -- and so does any borrowed reference. A number, and a
+// struct, tuple, array, enum, pointer or owning reference made only of such
+// types, answers yes. Asked only of a call that may store through one of its
+// arguments, so the answer is not remembered.
+#define NoBorrowMaxDepth 16
+static INode *noBorrowAsking[NoBorrowMaxDepth];
+static int noBorrowDepth = 0;
+
+int itypeHoldsNoBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsNoBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeHoldsNoBorrow(((AliasDclNode *)type)->target);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
+            return 0;
+        return itypeHoldsNoBorrow(((RefNode *)type)->vtexp);
+    case PtrTag:
+        return itypeHoldsNoBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return itypeHoldsNoBorrow(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (!itypeHoldsNoBorrow(*nodesp))
+                return 0;
+        }
+        return 1;
+    }
+    case StructTag:
+    {
+        StructNode *st = (StructNode *)type;
+        // An arena ('NoLoanMut') holds what is stored in it through raw memory
+        // its fields do not show (Bug 51)
+        if (st->lends == LendsNoLoanMut)
+            return 0;
+        // An open trait or an opaque struct holds what its implementers or
+        // its hidden fields do, which is not known here
+        if (((st->flags & TraitType) && !(st->flags & EnumType)) || (st->flags & (DeclaredOpaque | OpaqueType)))
+            return 0;
+        if (!(st->flags & TypeChecked) || itypeCarriesBorrow(type))
+            return 0;
+        // Reached again round a cycle: what it holds is found where it was
+        // first asked
+        for (int i = 0; i < noBorrowDepth; ++i) {
+            if (noBorrowAsking[i] == type)
+                return 1;
+        }
+        if (noBorrowDepth == NoBorrowMaxDepth)
+            return 0;
+        noBorrowAsking[noBorrowDepth++] = type;
+        int none = 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (!itypeHoldsNoBorrow(((IExpNode *)*nodesp)->vtype)) {
+                none = 0;
+                break;
+            }
+        }
+        if (none && st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (!itypeHoldsNoBorrow(*nodesp)) {
+                    none = 0;
+                    break;
+                }
+            }
+        }
+        --noBorrowDepth;
+        return none;
+    }
+    default:
+        return 0;
+    }
+}
+
 // Can a borrowed reference whose referent is 'want' be stored somewhere in a
 // value of type 'type': does it hold, anywhere a store can reach (a field, a
 // variant, an element, through an owning reference or a pointer), a borrowed
@@ -365,10 +460,14 @@ static int itypeStructDropReadsBorrow(StructNode *type) {
     // what a raw pointer reaches -- a collection's elements -- it finalizes
     INode *final = namespaceFind(&type->namespace, finalName);
     int hasfinal = final && final->tag == FnDclTag;
-    int reads = 0;
+    // An arena ('NoLoanMut') finalizes every value stored in it, and those may
+    // read the borrows they hold, through memory its fields do not show
+    int reads = type->lends == LendsNoLoanMut;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if (reads)
+            break;
         INode *ftype = ((IExpNode *)*nodesp)->vtype;
         INode *fdcl = ftype && isTypeNode(ftype) ? itypeGetTypeDcl(ftype) : NULL;
         if (fdcl && fdcl->tag == PtrTag)
