@@ -104,7 +104,7 @@
 
 	<h3 id="url-errors">Refusals</h3>
 	<p>A URL that cannot be read gives a <span class="pre">UrlError</span>: <span class="pre">at</span>, the byte
-		where it was found, <span class="pre">why</span>, and <span class="pre">message()</span>, which joins them.
+		where it was found, <span class="pre">why</span>, and <span class="pre">toText</span>, which joins them.
 		A scheme that is not a letter followed by letters, digits, <span class="pre">+ - .</span>, a port that is
 		not decimal or is past 65535, a host with a character no host may hold, a control character, an http or
 		https URL with no host, and an IPv6 address that is not one are refused. Refused by name, because they are not read
@@ -151,21 +151,21 @@ fn main() {
       // Resolve a reference against it
       match u.resolve("../d?y") {
         case let Ok(t) {show("resolved ", t.text().view());}
-        case let Err(e) {show("error    ", e.message().view());}
+        case let Err(e) {show("error    ", (String() <- e).view());}
       }
       match u.resolve("//other.example/x") {
         case let Ok(t) {show("resolved ", t.text().view());}
-        case let Err(e) {show("error    ", e.message().view());}
+        case let Err(e) {show("error    ", (String() <- e).view());}
       }
     }
-    case let Err(e) {show("error    ", e.message().view());}
+    case let Err(e) {show("error    ", (String() <- e).view());}
   }
 
   // A refusal says where and why
   match Url.parse("http://example.com:99999/") {
     case let Ok(u) {show("text     ", u.text().view());}
     case let Err(e) {
-      show("error    ", e.message().view());
+      show("error    ", (String() <- e).view());
       printStr("at byte  ");
       printUInt(u64.from(e.at));
       printStr("\n");
@@ -295,7 +295,7 @@ decoded   a b&amp;c=d/é
 		<span class="pre">Closed</span> (the connection ended mid-message) or <span class="pre">TimedOut</span>
 		&mdash; the <span class="pre">status</span> a server would answer it with (0 for none),
 		<span class="pre">noResponse</span> (no byte of a response had arrived: with an idempotent method, the
-		time a client may retry), and <span class="pre">detail</span>, one line. <span class="pre">message()</span>
+		time a client may retry), and <span class="pre">detail</span>, one line. <span class="pre">toText</span>
 		joins the kind and the detail.</p>
 <pre>
 mod msgs;
@@ -369,7 +369,7 @@ fn main() {
   printStr(if body.isSized() &amp;&amp; !body.isUnsized() {"sized\n"} else {"?\n"});
 
   let err = HttpError.make(ErrorKind.Malformed, 400u16, "a header field's name has a space before its colon");
-  printStr(err.message().view());
+  print <- err;
   printStr("\n");
 }
 </pre>
@@ -459,7 +459,7 @@ fn events(c: &amp;mut Connection) {
       case is End {printStr("event End\n");}
       case var Failed(f) {
         printStr("event Failed ");
-        printStr(f.error.message().view());
+        print <- f.error;
         printStr("\n");
       }
       case is Closed {
@@ -709,7 +709,7 @@ fn main() {
         case let Err(e) {}
       }
     }
-    case let Err(e) {printStr(e.message().view());}
+    case let Err(e) {print <- e;}
   }
 
   // A client on the same loop asks it three things
@@ -902,7 +902,7 @@ if e.kind == EventKind.End {
 		<span class="pre">HttpError</span> (its kind, detail and <span class="pre">noResponse</span>); and
 		<span class="pre">unsent</span>, no byte of the request reached the socket. A request may be tried again
 		on another connection when it is unsent, or when it is idempotent and has
-		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">message()</span>
+		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">toText</span>
 		joins them as <span class="pre">connect: closed: ... (connection refused, OS error 10061: ...)</span>: the kind,
 		the system's number and its words (a <span class="pre">Tls</span> stage's words already hold the verifier's).</p>
 
@@ -1057,7 +1057,7 @@ fn main() {
   let bad = client.fetchWhole(&amp;mut lp, Request.get("ftp://127.0.0.1/"), 65536usize);
   show("GET ftp://", &amp;bad);
   printStr("  ");
-  printStr(bad.failure.message().view());
+  print <- bad.failure;
   printStr("\n");
 
   // A GET is repeated on a fresh connection when the first is reset under it; two repeats, then it fails
@@ -1251,7 +1251,7 @@ fn main() {
 		<span class="pre">Closed</span>, <span class="pre">Limit</span> or <span class="pre">Redirect</span>), the Windows
 		<span class="pre">code</span> when there is one, an <span class="pre">HttpError</span>,
 		<span class="pre">unsent</span>, and <span class="pre">attempts</span>, how many requests were made.
-		<span class="pre">message()</span> joins them, and a stage's and
+		<span class="pre">toText</span> joins them, and a stage's and
 		an intent's <span class="pre">toText</span> name the enums, and <span class="pre">toDebug</span> an event's kind.
 		<span class="pre">Config.make()</span> gives <span class="pre">conn</span> (an
 		<span class="pre">httpconn.Config</span>, its driver's), <span class="pre">tlsConfig</span> (a
@@ -1314,7 +1314,7 @@ match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
       ...
     }
   }
-  case let Err(e) {printStr(e.message().view());}
+  case let Err(e) {print <- e;}
 }
 </pre>
 	<p>Nothing else about the server changes: its requests are the same events, answered the same way. A client
@@ -1354,7 +1354,7 @@ fn main() {
   printStr("asking the OS: ");
   print <- toDebug(&amp;refused.outcome);
   printStr(", ");
-  printStr(refused.failure.message().view());
+  print <- refused.failure;
   printStr("\n");
 
   client.abortAll(&amp;mut lp);
@@ -1528,17 +1528,17 @@ fn main() {
           var s2 = srv.session();
           pump(&amp;mut c2, &amp;mut s2, &amp;mut cin, &amp;mut sin);
           if c2.isFailed() {
-            let why = c2.error().message();
+            let why = String() <- c2.error();
             printStr(why.view());
           } else {
             printStr("no failure");
           }
           printStr("\n");
         }
-        case let Err(e) {printStr(e.message().view());}
+        case let Err(e) {print <- e;}
       }
     }
-    case let Err(e) {printStr(e.message().view());}
+    case let Err(e) {print <- e;}
   }
 }
 </pre>
@@ -1572,7 +1572,7 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		(the system's own number when it gave the reason: its certificate verifier's, Windows' error on Windows and
 		OpenSSL's verify result on Linux, each as it is), and <span class="pre">detail</span>, the system's words with
 		its number among them.
-		<span class="pre">message()</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
+		<span class="pre">toText</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
 		<span class="pre">toText(&amp;kind)</span> names a kind. What a program matches on is the kind;
 		<span class="pre">certErrorKind(osError)</span> reads a bare number kept elsewhere (an httpconn
 		<span class="pre">Failure</span>'s <span class="pre">code</span>, a <span class="pre">QuicError</span>'s

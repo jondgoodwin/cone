@@ -22,7 +22,7 @@
 //       imm r = await chat.complete(req);                 // a whole reply
 //       match r {
 //         case imm ok Ok {...ok.content...  ok.finishReason...  ok.usage...}
-//         case imm e Err {...e.message()...  e.isRetryable()...}
+//         case imm e Err {...String() <- e...  e.isRetryable()...}
 //       }
 //
 //       imm opened = await chat.stream(req);              // or its chunks as they come
@@ -59,7 +59,7 @@
 //   cs.next()    the next Delta, Ok(None) at the end      Result[Option[Delta], ChatError]   (STREAMS)
 //   cs.collect() the rest gathered into a ChatReply        Result[ChatReply, ChatError]
 //   Delta: id model role content finishReason usage
-//   ChatError: e.kind e.status e.detail e.errorType e.code  e.message()                (ERRORS)
+//   ChatError: e.kind e.status e.detail e.errorType e.code  String() <- e                (ERRORS)
 //     e.isCancelled() e.isTimedOut() e.isRetryable();  ChatErrorKind (toText(&k))
 //   For a program that drives the pieces itself (sans IO, and for a synchronous program):
 //   httpRequest(ep, req, stream)    the httpclient.Request that posts req        Result[httpclient.Request, ChatError]
@@ -231,20 +231,16 @@ pub struct ChatError is Error {
   }
 
   // One line: 'api: 401 invalid_api_key: Incorrect API key provided'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String() <- kind;
-    out.append(": ");
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- kind, ": ";
     if kind == ChatErrorKind.Api {
-      out.appendUInt(u64.from(status));
+      out <- status;
       if code.len() > 0usize {
-        out.append(" ");
-        out.append(code.view());
+        out <- " ", code.view();
       }
-      out.append(": ");
+      out <- ": ";
     }
-    out.append(detail.view());
-    out
+    out <- detail.view();
   }
 }
 
