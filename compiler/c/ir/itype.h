@@ -73,6 +73,16 @@ int itypeCarriesEndingBorrow(INode *type);
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
 
+// Is it certain no value of this type holds a borrowed reference anywhere?
+// Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
+// type parameter, closure, virtual reference) answers no.
+int itypeHoldsNoBorrow(INode *type);
+
+// Is it a struct declaring 'NoLoanMut', an arena? It holds what is stored in it
+// through raw memory its fields do not show, so it is a place a borrow is stored
+// in though its type carries none (Bug 51).
+int itypeIsArena(INode *type);
+
 // How many writable borrows deep can a store into a value of this type reach,
 // to store a borrow there, up to 'most'? A callee handed a '&mut H', 'H'
 // holding a '&mut &R', may store through both: 2. 0 when it holds no writable

@@ -1,0 +1,66 @@
+// A debug form that follows two Rc edges round a cycle ends: the depth limit alone bounds
+// depth and not work, and two edges would cost about 2^64 bodies. The writer also counts
+// the bodies it has entered, and past 65,536 a body writes '...' and enters nothing. The
+// count starts again when the value is done, so a long list of separate values is not cut.
+// Each Node or Some body writes one '{' or one '(' (None writes neither), so the count of
+// those characters is the count of bodies entered: exactly the limit.
+
+mod module_debug_work;
+
+import stdio use *;
+import collections use *;
+
+struct Node {
+  pub var n: i32;
+  pub var a: Option[Rc[mut, Node]];
+  pub var b: Option[Rc[mut, Node]];
+}
+
+// How many bodies the text opened
+fn opened(s: &String) usize {
+  var count = 0usize;
+  var i = 0usize;
+  while i < s.len() {
+    let c = s[i];
+    if c == '{' || c == '(' {count = count + 1usize;}
+    i = i + 1usize;
+  }
+  count
+}
+
+fn main() {
+  // x and y point at each other through both fields
+  let x = Rc[mut, Node](Node(1, None, None));
+  let y = Rc[mut, Node](Node(2, Some[Rc[mut, Node]](x), Some[Rc[mut, Node]](x)));
+  x.a = Some[Rc[mut, Node]](y);
+  x.b = Some[Rc[mut, Node]](y);
+  var s = String();
+  s <- toDebug(&x);
+  print <- s.sub(0usize, 60usize), "\n";
+  print <- "bodies ", opened(&s), "\n";
+
+  // A tree whose children point back to their parent, and a second value after it
+  let root = Rc[mut, Node](Node(10, None, None));
+  let kid = Rc[mut, Node](Node(11, None, None));
+  let kid2 = Rc[mut, Node](Node(12, None, None));
+  root.a = Some[Rc[mut, Node]](kid);
+  root.b = Some[Rc[mut, Node]](kid2);
+  kid.a = Some[Rc[mut, Node]](root);
+  kid.b = Some[Rc[mut, Node]](root);
+  kid2.a = Some[Rc[mut, Node]](root);
+  kid2.b = Some[Rc[mut, Node]](root);
+  var t = String();
+  t <- toDebug(&root);
+  print <- "bodies ", opened(&t), "\n";
+
+  // 70000 separate values in one record are each written whole: the count starts again
+  var many = List[Node]();
+  var k = 0;
+  while k < 70000 {
+    many.push(Node(k, None, None));
+    k = k + 1;
+  }
+  var m = String();
+  m <- toDebug(&many);
+  print <- "bodies ", opened(&m), "\n";
+}

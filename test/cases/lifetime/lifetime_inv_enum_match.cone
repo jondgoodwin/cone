@@ -1,0 +1,68 @@
+// A variable a pattern binds out of an enum keeps the invariant lifetime the matched value
+// carries: the bare variant name takes the enum's own lifetimes (and a generic enum's type
+// arguments), so a key taken from it is of the same brand as the value it came from.
+//
+// Verdict: accepted; prints 6, 3, 3.
+// Cause (Bug 47): castPatternBindName narrowed to the variant with no lifetime use, so the
+// fields read as of 'a brand not known here', and a generic variant's as of the instance's
+// canonical ''=1', ''=2'.
+
+mod lifetime_inv_enum_match;
+
+import stdio use *;
+import arena use *;
+
+struct Tok['=a] { pub v: i64; }
+enum E['=a] {
+  T(Tok['=a]);
+  Z;
+}
+fn same(x: Tok['=a], y: Tok['=a]) i64 { x.v + y.v }
+fn usee(e: E['=a], t: Tok['=a]) i64 {
+  match e {
+    case let T(k) { same(k, t) }
+    else { 0 }
+  }
+}
+fn mint() Tok['=a] { Tok(3) }
+
+struct Num { pub v: i64; }
+struct Bin { pub p: i64; pub q: i64; }
+enum Expr['=a] {
+  N(&'=a mut Num);
+  B(&'=a mut Bin);
+}
+fn eval(ar: &DynArena['=a], e: Expr['=a]) i64 {
+  match e {
+    case let N(n) { ar[n].v }
+    case let B(b) { ar[b].p + ar[b].q }
+  }
+}
+fn run(ar: &mut DynArena['=a]) i64 {
+  let a = ar.alloc(Num(3));
+  eval(ar, Expr.N(a))
+}
+
+enum Wrap[A] {
+  L(A);
+  Z;
+}
+fn evalg(ar: &DynArena['=a], e: Wrap[&'=a mut Num]) i64 {
+  match e {
+    case let L(n) { ar[n].v }
+    else { 0 }
+  }
+}
+fn rung(ar: &mut DynArena['=a]) i64 {
+  let a = ar.alloc(Num(3));
+  evalg(ar, Wrap.L(a))
+}
+
+fn main() {
+  let t = mint();
+  print <- usee(E.T(t), t), "\n";
+  var ar = DynArena.empty();
+  print <- run(&mut ar), "\n";
+  var ar2 = DynArena.empty();
+  print <- rung(&mut ar2), "\n";
+}

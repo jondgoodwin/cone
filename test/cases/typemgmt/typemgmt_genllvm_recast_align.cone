@@ -1,19 +1,25 @@
 // A reinterpretation goes through a stack slot, stored as the source's type and
-// loaded as the target's (genlRecast). The load is aligned as the target is, so the
-// slot must be aligned for the target as well as the source: eight bytes that are
-// an array of u8 (alignment 1) read as a struct holding a u64 (alignment 8) sit in
-// a slot of alignment 8. A slot aligned for the source alone made a load that
-// is misaligned for the vector payload of an enum (vector_success's Shape), where
-// the hardware faults on it; with no vector in it, the slot's alignment in the IR
-// is what shows the difference.
+// loaded as the target's (genlRecast), and the slot must be aligned for the target
+// as well as the source. The one struct recast 'as' makes is a variant as its enum
+// (typemgmt_typecheck_as_struct_struct holds the refusals), here a variant holding
+// only a u8 read as an enum whose other variant holds a u64. A variant is laid out
+// with its enum's alignment, so the slot is aligned 8 for both. This once guarded
+// an array of eight u8 read as a struct holding a u64, a recast 'as' no longer
+// makes (it returns under 'trust'); a slot aligned for the source alone made a load
+// that is misaligned for the vector payload of an enum (vector_success's Shape),
+// where the hardware faults on it. The slot's alignment in the IR is what shows it.
 
 mod typemgmt_genllvm_recast_align;
 
-struct Word {
-  pub x: u64;
+enum Slot {
+  struct Small {
+    pub a: u8;
+  }
+  struct Wide {
+    pub x: u64;
+  }
 }
 
-pub fn asWord(a: Array[u8, 8]) u64 {
-  let w = a as Word;
-  w.x
+pub fn asSlot(s: Slot.Small) Slot {
+  s as Slot
 }

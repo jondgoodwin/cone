@@ -974,6 +974,20 @@ static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode) {
                 if (size > 0)
                     LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
                         LLVMGetEnumAttributeKindForName("dereferenceable", 15), size));
+                // The pointee's ABI alignment too: LLVM hoists a load past a
+                // conditional exit only if it is safe to speculate, which needs
+                // the alignment as well as the size (measured 5 Nov 2026: a
+                // matmul over '&imm, &imm, &uni List' 2.8 s without, 0.87 s with)
+                unsigned abialign = LLVMABIAlignmentOfType(gen->datalayout, pointee);
+                // Capped at 16, the alignment the heap gives (core's RawBlocks
+                // does not yet act on a request past 16), so a type aligned
+                // past that, such as Vector[f32, 8], does not claim what a
+                // block holding it may not have
+                if (abialign > 16)
+                    abialign = 16;
+                if (size > 0 && abialign > 0)
+                    LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
+                        LLVMGetEnumAttributeKindForName("align", 5), abialign));
             }
         }
         ++idx;
@@ -2489,15 +2503,16 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     }
 
     // Optimize the generated LLVM IR, through LLVM's new pass manager. A
-    // release build runs LLVM's standard O2 pipeline (what clang's -O2 runs:
+    // release build runs LLVM's standard O3 pipeline (what clang's -O3 runs:
     // inlining, SROA, instcombine, LICM, unrolling, the loop and SLP
     // vectorizers), given the target machine, so that every cost model is the
-    // CPU's that --cpu and --features name. O3 was measured against it and
-    // compiled slower for no run time worth having. Generation marks no float
-    // operation fast or contractable, so nothing reorders a float sum. A debug
+    // CPU's that --cpu and --features name. O3 costs about 6% more compile time
+    // and exe size than O2, for what generation.md's section 2 measures.
+    // Generation marks no float operation fast or contractable, so nothing
+    // reorders a float sum. A debug
     // build first drops what no live symbol reaches (globaldce: a definition
     // with internal, private or linkonce linkage that nothing refers to, and
-    // then what only it referred to, which a release build's O2 does too),
+    // then what only it referred to, which a release build's O3 does too),
     // then only promotes allocas to registers, reassociates, eliminates
     // common subexpressions and simplifies the control flow graph, each
     // function in turn, with no target machine. So a helper holding the
@@ -2547,7 +2562,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             ? "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
             : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
-        ? "default<O2>"
+        ? "default<O3>"
         : "globaldce,function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,

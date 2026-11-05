@@ -1,0 +1,19 @@
+// Bug 48 item 4: a P holding a closure that returns a '&mut Node' can reach a Node, so its loan is carried by the
+// result of 'pick(p, ar)'; storing that result into the arena stores P's loan, here of a local. Refuse.
+mod lifetime_arena_refuse_result_closure;
+import stdio use *;
+import arena use *;
+struct Node { pub val: i64; pub l: Option[&mut Node]; }
+struct W { pub n: &mut Node; }
+struct P[F: fn() &mut Node] { pub f: F; }
+fn pick[F: fn() &mut Node](p: &mut P[F], ar: &mut Arena) &mut Node { (p.f)() }
+fn go(ar: &mut Arena) i64 {
+  var q = Node(1, None[&mut Node]);
+  var p = P(fn() &mut Node { &mut q });
+  let w = ar.alloc(W(pick(&mut p, ar)));  //~ ErrorCallEscape
+  w.n.val
+}
+fn main() {
+  var a = Arena();
+  print <- go(&mut a), "\n";
+}

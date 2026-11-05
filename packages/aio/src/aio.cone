@@ -338,7 +338,7 @@
 // job, any thread, and wakes the thread; J has 'run(self, lp &mut Loop, s &mut
 // S)'. 'h.awaitable[J, R](job)' is the same job as an Awaitable[R]:
 // the 'await' writes the reply beside the job when it queues it, and J's
-// 'run(self, lp &mut Loop, s &mut S, rp actors.Reply)' answers it (the job is
+// 'run(self, lp &mut Loop, s &mut S, rp actors.ReplyOf[R])' answers it (the job is
 // made whole, with no reply in it; nothing is allocated but the job's block;
 // dropped unawaited, the job is dropped). 'h.end()' ends the service now and waits
 // until it has (below). A job for a service that has ended, or queued once the
@@ -904,12 +904,12 @@ struct AwaitJob[J] {
 
 // An awaited job's block for the hosted service S at 'host', its body moved
 // in, its reply still to come
-fn newHostAwaitJob[S, J](host: *HostHead, body: J) *u8 {
+fn newHostAwaitJob[S, J, R](host: *HostHead, body: J) *u8 {
   let p = libc.malloc(mem.sizeof[AwaitJob[J]]()) as *AwaitJob[J];
   if p as usize == 0usize {
     die("aio: out of memory for an operation");
   }
-  (*p).head = JobHead(nullJob(), &runHostAwaitJob[S, J], &dropAwaitJob[J], host);
+  (*p).head = JobHead(nullJob(), &runHostAwaitJob[S, J, R],&dropAwaitJob[J], host);
   mem.writeRaw[J](&(*p).body as *J, body);
   p as *u8
 }
@@ -925,13 +925,13 @@ fn startHostJob[J](ctx: *u8, rp: actors.Reply) {
 
 // On the I/O thread: an awaited hosted job, its body and reply moved out, its
 // block freed, run with the service and the reply
-fn runHostAwaitJob[S, J](job: *u8, lp: &mut Loop, at: *u8) {
+fn runHostAwaitJob[S, J, R](job: *u8, lp: &mut Loop, at: *u8) {
   let p = job as *AwaitJob[J];
   var body = mem.readRaw[J](&(*p).body as *J);
   let rp = mem.readRaw[actors.Reply](&(*p).reply as *actors.Reply);
   libc.free(job);
   let b = at as *HostBlock[S];
-  body.run(lp, &mut (*b).svc, rp);
+  body.run(lp, &mut (*b).svc, actors.ReplyOf[R].of(rp));
 }
 
 // An awaited job dropped before its 'await' started it: its body (it has no
@@ -1326,10 +1326,12 @@ pub trait HostJob[S] {
   pub fn run(self: &mut, lp: &mut Loop, s: &mut S);
 }
 
-// The same for a job an actor awaits (Host.awaitable): it answers through 'rp',
-// the reply the 'await' wrote beside the job when it queued it
-pub trait HostReplyJob[S] {
-  pub fn run(self: &mut, lp: &mut Loop, s: &mut S, rp: actors.Reply);
+// The same for a job an actor awaits (Host.awaitable): it answers an R through
+// 'rp', the envelope of the reply the 'await' wrote beside the job when it
+// queued it, so that a job whose 'run' takes the envelope of another type than
+// the Awaitable's R is refused where it is awaited (Bug 46)
+pub trait HostReplyJob[S, R] {
+  pub fn run(self: &mut, lp: &mut Loop, s: &mut S, rp: actors.ReplyOf[R]);
 }
 
 // Where a hosted service is in its life: its block's 'state', under ioLock
@@ -1389,12 +1391,12 @@ pub struct Host[S: Hosted] {
 
   // A job for the service that an actor awaits: the 'await' writes the reply
   // beside the job as it queues it, and J's 'run(self, lp &mut Loop, s &mut S,
-  // rp actors.Reply)' answers it with an R. Nothing is allocated but the
+  // rp actors.ReplyOf[R])' answers it with an R. Nothing is allocated but the
   // job's block; dropped unawaited, the job is dropped; dropped once started,
   // unrun, its reply with it. A J whose 'run' takes another service than S
   // does not compile
-  pub fn awaitable[J: HostReplyJob[S], R](self: &, body: J) actors.Awaitable[R] {
-    actors.Awaitable[R].of(newHostAwaitJob[S, J](at as *HostHead, body), &startHostJob[J], &dropJobAt)
+  pub fn awaitable[J: HostReplyJob[S, R], R](self: &, body: J) actors.Awaitable[R] {
+    actors.Awaitable[R].of(newHostAwaitJob[S, J, R](at as *HostHead, body), &startHostJob[J], &dropJobAt)
   }
 
   // The service ended now, on its thread, and this waits until it has: the

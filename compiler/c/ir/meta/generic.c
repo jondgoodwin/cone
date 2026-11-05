@@ -74,6 +74,12 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
                 break;
             if (*genargp == NULL)
                 *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
+            // Where the declared type is read for an argument a value said
+            // already, its brands stand for the ones a call minted: the type
+            // is the same but for them, and an argument named so is the one
+            // an explicit 'Some[&'=a mut Node['=a]](..)' would be
+            else if (genericAdoptMode() && lifeBrandsAdopt(*genargp, argtype))
+                *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
             else if (!itypeIsSame(*genargp, argtype))
                 return 0;
             break;
@@ -208,6 +214,16 @@ static int genericReported = 0;
 // matched, and the call's own check reports the disagreement.
 static int genericExpectMode = 0;
 
+// The type a typed 'let' or an assignment's target states, for the call checked
+// as its value (genericExpectStated, set by fnCallTypeCheck from
+// genericStatedType). The brands in it are ones this body names. A callee's
+// parameter type, also an expectation, is the callee's own, its names not
+// bound here: only a stated type is adopted for brands a call minted
+// (genericAdoptMode).
+int genericExpectStated = 0;
+INode *genericStatedType = NULL;
+static int genericAdoptMode() { return genericExpectMode && genericExpectStated; }
+
 // A value parameter's number, found in an argument's type (an array's size)
 // while inferring: its argument, if none yet, otherwise agreeing with it.
 // Returns 0, reported, where it does not.
@@ -337,8 +353,16 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         return 1;
     if (nameUseNames(parmtype, GenVarDclTag))
         return genericCaptureType(inferredgencall, genparms, parmtype, argtype);
-    if (isNameUseNode(argtype))
+    // The type arguments a use wrote, for the brands they name: the instance
+    // holds them numbered (lifeCanonBrands). Read only for a type wanted of a
+    // value (genericExpectMode), whose brands an inferred argument may take.
+    Nodes *usedargs = NULL;
+    if (isNameUseNode(argtype)) {
+        LifeUse *lifeuse = ((NameUseNode *)argtype)->lifeuse;
+        if (genericAdoptMode() && lifeuse)
+            usedargs = lifeuse->typeargs;
         argtype = itypeGetTypeDcl(argtype);
+    }
     switch (parmtype->tag) {
     case PtrTag:
     case DerefTag:
@@ -460,6 +484,8 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
             if (instcall->args->used != parmcall->args->used)
                 return 1;
             INode **instargp = &nodesGet(instcall->args, 0);
+            if (usedargs && usedargs->used == instcall->args->used)
+                instargp = &nodesGet(usedargs, 0);
             INode **parmargp;
             uint32_t parmcnt;
             for (nodesFor(parmcall->args, parmcnt, parmargp)) {
@@ -582,7 +608,9 @@ static void genericInferFromExpected(Nodes *genparms, INode *result, INode *expe
         if (*argsp == NULL)
             unsaid = 1;
     }
-    if (!unsaid)
+    // Said already, an argument still takes the declared type's brands for ones
+    // a call minted (genericCaptureType)
+    if (!unsaid && !(lifeInvariantSeen && genericExpectStated))
         return;
     if (itypeGetTypeDcl(expect)->tag == VoidTag)
         return;
@@ -2334,6 +2362,8 @@ static void genericAskerLeave(GenericAsker *asker) {
 // decided only where its subject is one of 'parms': a clause over a parameter
 // bound already was decided then. Inside a '||' or a '&&', a subject the
 // clone substituted is asked as it stands, since the whole is decided here.
+static int genericHashAsking = 0;    // Set while a type-fact '#if' is decided (genericHashCondHolds)
+
 static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, int nested) {
     // '!' (a type-fact '#if' has it, and the chain's '#else' is the negation of the
     // conditions before it): what is decided is reversed, what is not stays so
@@ -2396,6 +2426,10 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
         return WhereUnknown;
     if (trait && genericLayoutUnasked)
         return WhereLate;
+    // Whether a type moves is a layout fact: asked of one still being laid out, a '#if' is refused
+    if (trait && genericHashAsking && (trait == moveTrait || trait == copyTrait)
+        && sizeofLayoutRefused(cond, type, trait == moveTrait ? "is Move" : "is Copy"))
+        return WhereFalse;
     if (trait)
         return genericTypeIsHow(type, trait, genericStaticHow(trait, parm)) ? WhereTrue : WhereFalse;
     // A type is met by itself alone, but for an actor trait's handle, which an
@@ -2419,7 +2453,10 @@ static WhereValue genericEntryValue(INode *generic, INode *cond, Nodes *parms, N
 // asked as the generic's own code would ask it. Every clause is asked of its
 // subject as it stands, since the clone substituted it.
 int genericHashCondHolds(INode *cond) {
+    int svasking = genericHashAsking;
+    genericHashAsking = 1;
     WhereValue value = genericConditionValue(cond, NULL, NULL, 1);
+    genericHashAsking = svasking;
     return value == WhereTrue ? 1 : value == WhereFalse ? 0 : -1;
 }
 

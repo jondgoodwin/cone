@@ -515,6 +515,14 @@ int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
     return iexpCheckedCoerceIn(pstate, totype, from);
 }
 
+int iexpTypeCheckCoerceStated(TypeCheckState *pstate, INode *totype, INode **from) {
+    INode *saved = genericStatedType;
+    genericStatedType = totype;
+    int ok = iexpTypeCheckCoerce(pstate, totype, from);
+    genericStatedType = saved;
+    return ok;
+}
+
 // iexpCoerce where the type check state is at hand. A string literal wanted as
 // a read-only borrow of a type that declares 'fromLiteral' is lent as a
 // temporary of it (slitBorrowCoerce), and that is made only in a function's
@@ -644,7 +652,7 @@ void iexpMismatchMsg(INode *node, INode *totype, int code, const char *msg) {
     char *why = isExpNode(node) ? fnSigConvRefusal(((IExpNode*)node)->vtype, totype, &whycode) : NULL;
     char privwhy[400];
     if (why)
-        errorMsgNode(node, whycode, "%s", why);
+        fnSigRefusalMsg(node, whycode, why);
     else if (isExpNode(node) && structPrivateRefWhy(privwhy, sizeof(privwhy), ((IExpNode*)node)->vtype, totype))
         errorMsgNode(node, ErrorPrivateMatch, "%s.%s", msg, privwhy);
     else

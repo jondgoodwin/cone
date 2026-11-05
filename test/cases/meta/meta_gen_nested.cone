@@ -1,0 +1,67 @@
+// A generic struct's loop over #fields(T), reached through other generics: a struct that holds
+// Cols[U] makes Cols for its own U when it is itself made, so the loop sees a decided type each
+// time. (A loop kept undecided is meta_gen_undecided's.)
+//
+// The printed values were checked by hand against the source:
+//   holder  Holder[Body] holds Cols[Body] and n 5: mass has 2 pushed, id has 1, and a method of
+//           Holder[U] reads n: holder 2 1 5
+//   deep    Deep[Body] holds Holder[Body], two generics above the loop: mass has 1 pushed, n 9
+//   made    make[U]() names Cols[U] inside a generic function: Cols[Body] made empty: made 0 0
+//   point   Holder[Point] is the same template with another U, so its columns are x and y:
+//           x has 1 pushed, n 3
+
+mod meta_gen_nested;
+
+import stdio use *;
+import collections use *;
+
+struct Body {
+  pub mass: i64;
+  pub id: i32;
+}
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Cols[T] {
+  #each #f in #fields(T) {
+    pub #f: List[#f.type];
+  }
+}
+
+struct Holder[U] {
+  pub cols: Cols[U];
+  pub n: i32;
+  pub fn size(self: &) i32 {
+    self.n
+  }
+}
+
+struct Deep[V] {
+  pub inner: Holder[V];
+}
+
+fn make[U](cols: Cols[U]) Holder[U] {
+  Holder[U](cols, 0i32)
+}
+
+fn main() {
+  var h = Holder[Body](Cols[Body](List[i64](), List[i32]()), 5i32);
+  h.cols.mass.push(1i64);
+  h.cols.mass.push(2i64);
+  h.cols.id.push(3i32);
+  print <- "holder ", h.cols.mass.len(), " ", h.cols.id.len(), " ", h.size(), "\n";
+
+  var d = Deep[Body](Holder[Body](Cols[Body](List[i64](), List[i32]()), 9i32));
+  d.inner.cols.mass.push(4i64);
+  print <- "deep ", d.inner.cols.mass.len(), " ", d.inner.size(), "\n";
+
+  let m = make[Body](Cols[Body](List[i64](), List[i32]()));
+  print <- "made ", m.cols.mass.len(), " ", m.size(), "\n";
+
+  var p = Holder[Point](Cols[Point](List[i32](), List[i32]()), 3i32);
+  p.cols.x.push(6i32);
+  print <- "point ", p.cols.x.len(), " ", p.size(), "\n";
+}

@@ -1,0 +1,33 @@
+// Bug 49. A borrow copied out of a list of borrows ('*(&mut b.kids[i])') is the node the slot
+// points at, not a borrow into the list's block: pushing to another list (or this one's
+// sibling) and then using the copy is sound. The copy carries what the list holds, as a read
+// through a named reference does. The refusals are collection_flow_slot_read_refuse.
+
+mod collection_flow_slot_read_success;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+struct Scope { pub decls: List[&mut Node]; }
+struct Node { pub val: i64; pub kids: List[&mut Node]; }
+
+fn declareAll(b: &mut Node, sc: &mut Scope) {
+  var i = 0usize;
+  while i < b.kids.len() {
+    let s = *(&mut b.kids[i]);
+    sc.decls.push(s);
+    s.val += 1;
+    i += 1usize;
+  }
+}
+
+fn main() {
+  var a = Arena();
+  let root = a.alloc(Node(0, List[&mut Node]()));
+  let c = a.alloc(Node(5, List[&mut Node]()));
+  root.kids.push(c);
+  let sc = a.alloc(Scope(List[&mut Node]()));
+  declareAll(root, sc);
+  print <- c.val, "\n";
+}

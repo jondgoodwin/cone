@@ -1,0 +1,20 @@
+// Bug 51: a local's reference in the caller's arena, read by the node's finalizer after the local is gone. Refuse.
+mod lifetime_arena_refuse_local_final;
+import stdio use *;
+import arena use *;
+// a local's reference left in the caller's arena, read by the node's finalizer when the arena dies: MUST be refused
+struct T { pub v: i64; }
+struct H {
+  pub p: &mut T;
+  fn final(self: &uni) { print <- "final reads ", p.v, "\n"; }
+}
+fn stash(a: &mut Arena) i64 {
+  var t = T(77);
+  let h = a.alloc(H(&mut t));  //~ ErrorCallEscape
+  h.p.v
+}
+fn clobber(n: i64) i64 { var b = Array[i64, 64]() <- fill n; b[3usize] + 1 }
+fn main() {
+  var a = Arena();
+  print <- stash(&mut a), " ", clobber(5), "\n";
+}

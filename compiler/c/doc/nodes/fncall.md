@@ -299,6 +299,24 @@ becomes the call of the access `t.profile` (`fnCallFieldCall`), unless the field
 type cannot be called, which is `ErrorFldArgs`. Then generic substitution, which
 may finish the node entirely.
 
+**`parse` and `tryFrom` on a number type** (`fnCallNumberConvert`, beside
+`fnCallNumberFrom`, T5) are not lowered but rewritten: `i32.parse(s)` and
+`u8.tryFrom(x)` become the path `NumberConv[i32].parse(s)` and
+`NumberConv[u8].tryFrom(x)`, a generic struct in core (found through
+`strTypeDcl`'s module) whose static functions are ordinary Cone and carry nothing for a
+program that never calls them. A struct, not six generic functions, because the
+source type `S` of `tryFrom[S](x: S)` must be inferred from the argument by the
+ordinary generic call, which checks the argument once (pre-checking it and
+re-checking corrupted a method-call argument), and a partial explicit type
+argument list does not exist. A call through a type parameter bound to a number
+is the same rewrite once the receiver is a number type in the instance. A
+struct's own static `parse` is untouched. `parse` or `tryFrom` with the wrong
+number of values, or `parse` named without a call, is `ErrorNbrParse` (1597)
+or `ErrorNbrTryFrom` (1598); a wrong argument type is the ordinary
+`ErrorInvType` (parse) or `ErrorWhereUnmet` (tryFrom). The float reader behind
+`f64.parse` and `f32.parse` is conestd's `cone_parseF64` and `cone_parseF32`
+(floatfmt.cone), the exact decimal method, with no C library.
+
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
 skips the ordinary name-use check, which leaves `nameUseTypeCheck` free to
@@ -1087,6 +1105,33 @@ stays one and a text goes in as it did. Then, by the shape of the right side:
   as receiver and the value converted to the type the method takes; core's
   `TextOut` lacking the method is `ErrorNoMbr`. A text receiver's `<-` candidates do not
   propose an expected type for the piece (`fnCallArgAgreed`).
+
+**The debug form** (`ir/exp/debugfn.c`). `x.toDebug(out)` where `x`'s type
+declares no `toDebug` is rewritten by `fnCallDebugLower`, run in
+`fnCallTypeCheckNode` right after `fnCallCloneCopy`, before the receiver's
+members are looked at. A number or bool becomes its `toText`; a char
+`out.putDebugChar(x)`; a raw pointer, a function, a closure, a trait object and an actor's handle
+(`actorOfHandle`: its state is not the caller's to read, so it is written as the actor's own name, `<Counter>`;
+an actor trait's handle, as a trait, is written as the trait's name)
+`out.writeStr("<mark>")`; an array, a List or a Dict a call of the generic free
+function `debugArray`, `debugList` or `debugDict` (core and collections; free
+functions, not methods, because a method of `Array[T]` is checked for every
+instance, asked for or not); any other struct, enum, variant or tuple a call of
+`toDebug#N(self: &T, out: &uni TextOut)`, built once per (type, module) and
+appended to a generating module's `nodes` (the module of the call, or the first
+generating module of the program, `debugSetProgram`), checked at once. A struct
+or variant body opens with `if out.debugEnter() {...; out.debugLeave()}`
+(`TextOut.depth` and `TextOut.work`; at 128 open bodies, or 65,536 entered since
+depth was last 0, `debugEnter` writes `...` and answers false). The generated function reads
+private fields (`FnDclNode.generatedFor`: code the compiler generates for a type is part of that type, so `structSeesPrivate` lets it see what the type's own code sees, a variant counting as its enum, and no other type's). A sink whose type
+declares core's `DebugText` (`coreIsDebugText`, matched by name and package) takes
+each non-literal piece of a `<-` as `piece.toDebug(&uni W)`: `textSendDebug`, run in
+`fnCallLowerMethodOn` before the candidates, so a `&str` or String value is
+quoted although a `<-` would have taken it. When the piece's `toDebug` is
+generated, the writer is left unchecked and checked once with the generated call
+(a checked `recv.textOut()` temporary cannot be checked again). Pinned by
+`module_debug_basic`, `module_debug_more`, `module_debug_sink`,
+`module_debug_sink_refuse` and `module_debug_cycle`.
 
 Parenthesized and nested sends are statements or values where they stand: a
 `(String() <- ...)` piece is a String made before the outer record is finished, a
