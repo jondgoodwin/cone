@@ -1,0 +1,319 @@
+// A number type reads text and converts checked: 'i32.parse(text)' and
+// 'u8.tryFrom(x)', each a Result whose error is the type's own NumberConvError.
+// The compiler rewrites each call to a generic function of core's, so every
+// type is covered at the limits and one past each, signs, leading zeros, empty
+// and junk text, floats at their hard cases, tryFrom across the pairs of
+// number types, a call through a type parameter, and the text a number writes
+// read back.
+// Each printed line was worked out by hand from the source; a line saying FAIL
+// is a check that did not hold.
+
+mod typemgmt_nbr_parse;
+
+import stdio use *;
+import collections use *;
+
+fn p[T](label: &str, r: Result[T, NumberConvError[T]]) where T is Numeric {
+  match r {
+    case let Ok(v) { print <- label, ": ok ", v, "\n"; }
+    case let Err(e) { print <- label, ": err ", e, "\n"; }
+  }
+}
+
+fn chk(label: &str, cond: bool) {
+  if cond { print <- label, ": ok\n"; } else { print <- label, ": FAIL\n"; }
+}
+
+// 'parse' through a type parameter, and tryFrom through two
+fn viaParse[T: Numeric](s: &str) Result[T, NumberConvError[T]] { T.parse(s) }
+fn viaTry[T: Numeric, S: Numeric](x: S) Result[T, NumberConvError[T]] { T.tryFrom(x) }
+
+// A type with its own 'parse' keeps it
+struct Own {
+  pub fn parse(s: &str) i32 { 7 }
+}
+
+fn integers() {
+  // i8, with a leading '+', zeros, and a fraction left of the digits
+  p("i8 127", i8.parse("127"));
+  p("i8 128", i8.parse("128"));
+  p("i8 -128", i8.parse("-128"));
+  p("i8 -129", i8.parse("-129"));
+  p("i8 +5", i8.parse("+5"));
+  p("i8 -0", i8.parse("-0"));
+  p("i8 007", i8.parse("007"));
+  p("i8 000000000000000000000000127", i8.parse("000000000000000000000000127"));
+  p("i8 empty", i8.parse(""));
+  p("i8 -", i8.parse("-"));
+  p("i8 +", i8.parse("+"));
+  p("i8 12a", i8.parse("12a"));
+  p("i8 space", i8.parse(" 1"));
+  p("i8 1.0", i8.parse("1.0"));
+  p("i8 --1", i8.parse("--1"));
+  // The others at both ends and one past
+  p("u8 255", u8.parse("255"));
+  p("u8 256", u8.parse("256"));
+  p("u8 -1", u8.parse("-1"));
+  p("u8 0", u8.parse("0"));
+  p("i16 32767", i16.parse("32767"));
+  p("i16 32768", i16.parse("32768"));
+  p("i16 -32768", i16.parse("-32768"));
+  p("i16 -32769", i16.parse("-32769"));
+  p("u16 65535", u16.parse("65535"));
+  p("u16 65536", u16.parse("65536"));
+  p("i32 2147483647", i32.parse("2147483647"));
+  p("i32 2147483648", i32.parse("2147483648"));
+  p("i32 -2147483648", i32.parse("-2147483648"));
+  p("i32 -2147483649", i32.parse("-2147483649"));
+  p("u32 4294967295", u32.parse("4294967295"));
+  p("u32 4294967296", u32.parse("4294967296"));
+  p("i64 max", i64.parse("9223372036854775807"));
+  p("i64 max+1", i64.parse("9223372036854775808"));
+  p("i64 min", i64.parse("-9223372036854775808"));
+  p("i64 min-1", i64.parse("-9223372036854775809"));
+  p("u64 max", u64.parse("18446744073709551615"));
+  p("u64 max+1", u64.parse("18446744073709551616"));
+  p("u64 many digits", u64.parse("99999999999999999999999999"));
+  p("i64 many digits", i64.parse("-99999999999999999999999999"));
+  p("isize max", isize.parse("9223372036854775807"));
+  p("isize max+1", isize.parse("9223372036854775808"));
+  p("usize max", usize.parse("18446744073709551615"));
+  p("usize max+1", usize.parse("18446744073709551616"));
+}
+
+fn floats() {
+  p("f64 empty", f64.parse(""));
+  p("f64 2.5e1", f64.parse("2.5e1"));
+  p("f64 .5", f64.parse(".5"));
+  p("f64 5.", f64.parse("5."));
+  p("f64 -7", f64.parse("-7"));
+  p("f64 +1e2", f64.parse("+1e2"));
+  p("f64 .", f64.parse("."));
+  p("f64 e5", f64.parse("e5"));
+  p("f64 1e", f64.parse("1e"));
+  p("f64 1e+", f64.parse("1e+"));
+  p("f64 0x10", f64.parse("0x10"));
+  p("f64 1_0", f64.parse("1_0"));
+  p("f64 1.5.2", f64.parse("1.5.2"));
+  p("f64 space", f64.parse("1 "));
+  p("f64 1e999", f64.parse("1e999"));
+  p("f64 -1e999", f64.parse("-1e999"));
+  p("f32 1e39", f32.parse("1e39"));
+  p("f32 0.1", f32.parse("0.1"));
+  // The ends of the range and the denormals, by bit pattern
+  chk("f64 max", (f64.parse("1.7976931348623157e308") || 9.0).bits() == 0x7FEFFFFFFFFFFFFFu64);
+  chk("f64 past max", match f64.parse("1.7976931348623159e308") { case is Ok { false } case is Err { true } });
+  chk("f64 min normal", (f64.parse("2.2250738585072014e-308") || 9.0).bits() == 0x0010000000000000u64);
+  chk("f64 min denormal", (f64.parse("5e-324") || 9.0).bits() == 1u64);
+  chk("f64 4.9e-324", (f64.parse("4.9e-324") || 9.0).bits() == 1u64);
+  chk("f64 under denormal", (f64.parse("2e-324") || 9.0).bits() == 0u64);
+  chk("f64 -0", (f64.parse("-0") || 9.0).bits() == 0x8000000000000000u64);
+  chk("f64 0.1", (f64.parse("0.1") || 9.0) == 0.1);
+  chk("f64 halfway tie to even", (f64.parse("9007199254740993") || 9.0).bits() == (9007199254740992.0).bits());
+  chk("f64 halfway tie up", (f64.parse("9007199254740995") || 9.0).bits() == (9007199254740996.0).bits());
+  chk("f64 inf", (f64.parse("inf") || 9.0).bits() == 0x7FF0000000000000u64);
+  chk("f64 -Infinity", (f64.parse("-Infinity") || 9.0).bits() == 0xFFF0000000000000u64);
+  chk("f64 +INF", (f64.parse("+INF") || 9.0).bits() == 0x7FF0000000000000u64);
+  chk("f64 nan", { let x = f64.parse("nan") || 9.0; x != x });
+  chk("f64 NaN", { let x = f64.parse("NaN") || 9.0; x != x });
+  chk("f64 infx is junk", match f64.parse("infx") { case is Ok { false } case is Err { true } });
+  // 0.1 with 400 zeros after it is still 0.1
+  var long = String.from("0.1");
+  var k = 0;
+  while k < 400 { long <- "0"; k = k + 1; }
+  chk("f64 400 digits", (f64.parse(long.view()) || 9.0) == 0.1);
+  // Hard cases: a tie broken by a 1 far out (the C library's strtod gets the
+  // 700 and 900 digit ones wrong), and the true tie, to the even one
+  var tie = String.from("9007199254740993.");
+  k = 0;
+  while k < 700 { tie <- "0"; k = k + 1; }
+  tie <- "1";
+  chk("f64 tie broken 700 digits out", (f64.parse(tie.view()) || 9.0).bits() == 0x4340000000000001u64);
+  var tie9 = String.from("9007199254740993.");
+  k = 0;
+  while k < 900 { tie9 <- "0"; k = k + 1; }
+  tie9 <- "1";
+  chk("f64 tie broken 900 digits out", (f64.parse(tie9.view()) || 9.0).bits() == 0x4340000000000001u64);
+  var tieEven = String.from("9007199254740993.");
+  k = 0;
+  while k < 900 { tieEven <- "0"; k = k + 1; }
+  chk("f64 true tie with 900 zeros goes to even", (f64.parse(tieEven.view()) || 9.0).bits() == 0x4340000000000000u64);
+  var tie32 = String.from("16777217.");
+  k = 0;
+  while k < 700 { tie32 <- "0"; k = k + 1; }
+  chk("f32 true tie with 700 zeros goes to even", (f32.parse(tie32.view()) || 9.0f32).bits() == 0x4B800000u32);
+  tie32 <- "1";
+  chk("f32 tie broken 700 digits out", (f32.parse(tie32.view()) || 9.0f32).bits() == 0x4B800001u32);
+  chk("f64 least denormal", (f64.parse("4.9406564584124654e-324") || 9.0).bits() == 1u64);
+  chk("f64 just under half the least denormal", (f64.parse("2.4703282292062327208e-324") || 9.0).bits() == 0u64);
+  chk("f64 just over half the least denormal", (f64.parse("2.4703282292062328e-324") || 9.0).bits() == 1u64);
+  chk("f64 max", (f64.parse("1.7976931348623157e308") || 9.0).bits() == 0x7FEFFFFFFFFFFFFFu64);
+  chk("f64 past max", match f64.parse("1.7976931348623159e308") { case is Ok { false } case is Err { true } });
+  // f32 reads the nearest f32 directly, not an f64 rounded again
+  chk("f32 max", (f32.parse("3.4028235e38") || 9.0f32).bits() == 0x7F7FFFFFu32);
+  // halfway between the greatest f32 and 2 to the 128th is 3.40282356779...e38
+  chk("f32 just under that halfway is the max", (f32.parse("3.4028235677e38") || 9.0f32).bits() == 0x7F7FFFFFu32);
+  chk("f32 past that halfway is too large", match f32.parse("3.4028236e38") { case is Ok { false } case is Err { true } });
+  chk("f32 past max", match f32.parse("3.4028358e38") { case is Ok { false } case is Err { true } });
+  chk("f32 min denormal", (f32.parse("1.4e-45") || 9.0f32).bits() == 1u32);
+  chk("f32 just under a tie", (f32.parse("1.00000017881393432617187499") || 9.0f32).bits() == 0x3F800001u32);
+  chk("f32 a tie goes to even", (f32.parse("1.0000001788139343261718750") || 9.0f32).bits() == 0x3F800002u32);
+  chk("f32 inf", (f32.parse("inf") || 9.0f32).bits() == 0x7F800000u32);
+}
+
+// What a number writes as text, from `<-`
+fn txt[T](x: T) String where T is Numeric {
+  var s = String();
+  s <- x;
+  s
+}
+
+fn backF64(x: f64) u64 {
+  let s = txt(x);
+  (f64.parse(s.view()) || 9.0).bits()
+}
+
+fn backF32(x: f32) u32 {
+  let s = txt(x);
+  (f32.parse(s.view()) || 9.0f32).bits()
+}
+
+fn backInt[T: Integer](x: T) bool {
+  let s = txt(x);
+  (T.parse(s.view()) || T.from(0i32)) == x
+}
+
+// The shortest text of each number, read back, is the same number
+fn roundTrips() {
+  var bad = 0;
+  var seed = 0x9E3779B97F4A7C15u64;
+  var i = 0;
+  while i < 300 {
+    seed = seed ^ (seed << 13u64);
+    seed = seed ^ (seed >> 7u64);
+    seed = seed ^ (seed << 17u64);
+    let x = f64.fromBits(seed);
+    if x == x && x - x == 0.0 {
+      if backF64(x) != x.bits() { bad = bad + 1; }
+    }
+    let y = f32.fromBits(u32.from(seed >> 32u64));
+    if y == y && y - y == 0.0f32 {
+      if backF32(y) != y.bits() { bad = bad + 1; }
+    }
+    i = i + 1;
+  }
+  chk("random f64 and f32 round trip", bad == 0);
+  chk("-0.0 round trip", backF64(-0.0) == 0x8000000000000000u64);
+  chk("subnormal round trip", backF64(f64.fromBits(1u64)) == 1u64);
+  chk("f64 max round trip", backF64(f64.fromBits(0x7FEFFFFFFFFFFFFFu64)) == 0x7FEFFFFFFFFFFFFFu64);
+  chk("inf round trip", backF64(f64.fromBits(0x7FF0000000000000u64)) == 0x7FF0000000000000u64);
+  chk("f32 denormal round trip", backF32(f32.fromBits(1u32)) == 1u32);
+  // every integer type's greatest and least, written and read
+  chk("i8 round trip", backInt(127i8) && backInt(-128i8));
+  chk("u8 round trip", backInt(255u8) && backInt(0u8));
+  chk("i16 round trip", backInt(32767i16) && backInt(-32768i16));
+  chk("u16 round trip", backInt(65535u16));
+  chk("i32 round trip", backInt(2147483647i32) && backInt(-2147483648i32));
+  chk("u32 round trip", backInt(4294967295u32));
+  chk("i64 round trip", backInt(9223372036854775807i64) && backInt(-9223372036854775808i64));
+  chk("u64 round trip", backInt(18446744073709551615u64));
+  chk("isize round trip", backInt(-9223372036854775808isize));
+  chk("usize round trip", backInt(18446744073709551615usize));
+}
+
+fn conversions() {
+  // integer to integer
+  p("u8<-255i32", u8.tryFrom(255i32));
+  p("u8<-256i32", u8.tryFrom(256i32));
+  p("u8<--1i32", u8.tryFrom(-1i32));
+  p("u8<-300i64", u8.tryFrom(300i64));
+  p("i8<-127u8", i8.tryFrom(127u8));
+  p("i8<-128u8", i8.tryFrom(128u8));
+  p("i8<--128i32", i8.tryFrom(-128i32));
+  p("i8<--129i32", i8.tryFrom(-129i32));
+  p("u64<--1i64", u64.tryFrom(-1i64));
+  p("u64<-0i8", u64.tryFrom(0i8));
+  p("i64<-u64 max", i64.tryFrom(18446744073709551615u64));
+  p("i64<-i64 max as u64", i64.tryFrom(9223372036854775807u64));
+  p("u32<-i64 min", u32.tryFrom(-9223372036854775808i64));
+  p("i64<-i8", i64.tryFrom(-5i8));
+  p("usize<-i32", usize.tryFrom(5i32));
+  p("usize<--i32", usize.tryFrom(-5i32));
+  p("isize<-u64 max", isize.tryFrom(18446744073709551615u64));
+  p("i32<-i32 min", i32.tryFrom(-2147483648i32));
+  // float to integer: whole, and in range
+  p("i32<-2147483647.0", i32.tryFrom(2147483647.0));
+  p("i32<-2147483648.0", i32.tryFrom(2147483648.0));
+  p("i32<--2147483648.0", i32.tryFrom(-2147483648.0));
+  p("i32<--2147483649.0", i32.tryFrom(-2147483649.0));
+  p("u8<-255.0", u8.tryFrom(255.0));
+  p("u8<-256.0", u8.tryFrom(256.0));
+  p("u8<--1.0", u8.tryFrom(-1.0));
+  p("u8<--0.0", u8.tryFrom(-0.0));
+  p("u8<-0.5", u8.tryFrom(0.5));
+  p("i8<--0.5", i8.tryFrom(-0.5));
+  p("u8<-nan", u8.tryFrom(f64.parse("nan") || 0.0));
+  p("u8<-inf", u8.tryFrom(f64.parse("inf") || 0.0));
+  p("u8<--inf", u8.tryFrom(f64.parse("-inf") || 0.0));
+  p("u64<-2^64", u64.tryFrom(18446744073709551616.0));
+  p("u64<-2^63", u64.tryFrom(9223372036854775808.0));
+  p("i64<--2^63", i64.tryFrom(-9223372036854775808.0));
+  p("i64<-2^63", i64.tryFrom(9223372036854775808.0));
+  p("i32<-f32 2^24", i32.tryFrom(16777216.0f32));
+  p("i32<-f32 2^31", i32.tryFrom(2147483648.0f32));
+  // integer to float: held exactly
+  p("f32<-2^24", f32.tryFrom(16777216i32));
+  p("f32<-2^24+1", f32.tryFrom(16777217i32));
+  p("f32<--2^24", f32.tryFrom(-16777216i32));
+  p("f32<--2^24-1", f32.tryFrom(-16777217i32));
+  p("f32<-u8", f32.tryFrom(255u8));
+  p("f64<-2^53", f64.tryFrom(9007199254740992i64));
+  p("f64<-2^53+1", f64.tryFrom(9007199254740993i64));
+  p("f64<-i32 min", f64.tryFrom(-2147483648i32));
+  p("f64<-u64 max", f64.tryFrom(18446744073709551615u64));
+  p("f64<-0", f64.tryFrom(0u8));
+  // the float holds the value exactly when its significant bits fit the mantissa
+  p("f32<-2^24+2", f32.tryFrom(16777218i32));
+  p("f32<-2^60", f32.tryFrom(1152921504606846976i64));
+  p("f32<-2^60+2^37", f32.tryFrom(1152921642045800448i64));
+  p("f32<-2^60+2^36", f32.tryFrom(1152921573326323712i64));
+  p("f32<-i64 min", f32.tryFrom((-9223372036854775807i64) - 1i64));
+  p("f32<-i64 max", f32.tryFrom(9223372036854775807i64));
+  p("f32<-u64 max", f32.tryFrom(18446744073709551615u64));
+  p("f32<--2^60", f32.tryFrom(-1152921504606846976i64));
+  p("f64<-2^53+2", f64.tryFrom(9007199254740994i64));
+  p("f64<--2^53-1", f64.tryFrom(-9007199254740993i64));
+  p("f64<-2^60", f64.tryFrom(1152921504606846976i64));
+  p("f64<-2^60+1", f64.tryFrom(1152921504606846977i64));
+  p("f64<--2^60", f64.tryFrom(-1152921504606846976i64));
+  p("f64<-i64 min", f64.tryFrom((-9223372036854775807i64) - 1i64));
+  p("f64<-i64 max", f64.tryFrom(9223372036854775807i64));
+  p("f64<-u64 2^63", f64.tryFrom(9223372036854775808u64));
+  p("f64<-u64 max-2047", f64.tryFrom(18446744073709549568u64));
+  // float to float: held exactly
+  p("f32<-0.5", f32.tryFrom(0.5));
+  p("f32<-0.1", f32.tryFrom(0.1));
+  p("f32<-1e300", f32.tryFrom(1e300));
+  p("f64<-0.5f32", f64.tryFrom(0.5f32));
+  chk("f64<-0.1f32", (f64.tryFrom(0.1f32) || 9.0) == f64.from(0.1f32));
+  chk("f32<-nan", match f32.tryFrom(f64.parse("nan") || 0.0) { case let Ok(v) { v != v } case is Err { false } });
+}
+
+fn throughParameters() {
+  p("viaParse i16", viaParse[i16]("-32768"));
+  p("viaParse u16", viaParse[u16]("-1"));
+  p("viaParse f64", viaParse[f64]("0.25"));
+  p("viaTry u8<-i32 77", viaTry[u8, i32](77i32));
+  p("viaTry u8<-i32 777", viaTry[u8, i32](777i32));
+  p("viaTry f32<-f64", viaTry[f32, f64](0.5));
+  p("viaTry i16<-f32", viaTry[i16, f32](2.5f32));
+  print <- Own.parse("x"), "\n";
+}
+
+fn main() {
+  integers();
+  floats();
+  roundTrips();
+  conversions();
+  throughParameters();
+}

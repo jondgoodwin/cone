@@ -1,0 +1,37 @@
+// A generic whose arguments are related takes two different invariant lifetimes as one only
+// where they are one: an instance is made at the pattern of equal brands its uses have, and a
+// brand still equals only itself.
+//
+// Verdict: refuse, ErrorBrand where the instance's body needs the one brand it was given two of:
+// a generic struct and a generic function whose second argument is bound by the first.
+// Before the numbering by first occurrence these were refused too, but for no reason of theirs
+// (every use was refused, the equal ones as well); lifetime_inv_brand_pattern runs the equal uses.
+
+mod lifetime_inv_brand_pattern_refused;
+
+import stdio use *;
+import collections use *;
+
+struct Tok['=a] { pub v: i64; }
+
+// The cursor's item is T: T and I are related
+struct Walk[T, I: Iterator[T]] {
+  pub it: I;
+  pub fn first(self: &mut) Option[T] { it.next() }   //~ ErrorBrand
+}
+
+fn firstOf[T, I: Iterator[T]](it: &mut I) Option[T] { it.next() }   //~ ErrorBrand
+
+// Directly: the instance's two arguments carry '=a and '=b
+fn direct(l: &List[Tok['=b]], t: Tok['=a]) {
+  var w = Walk[&Tok['=a], ListIter[Tok['=b]]](l.iter());
+  let r = w.first();
+}
+
+// Through the bound: T is '=a, but the cursor gives '=b tokens
+fn viaBound(l: &List[Tok['=b]], t: Tok['=a]) {
+  var it = l.iter();
+  let r = firstOf[&Tok['=a], ListIter[Tok['=b]]](&mut it);
+}
+
+fn main() {}

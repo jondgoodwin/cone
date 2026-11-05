@@ -8,11 +8,30 @@
 #ifndef sizeof_h
 #define sizeof_h
 
+// What a layout node answers of a type: '#size(T)', '#align(T)', or '#f.offset', a field's byte offset
+typedef enum {
+    SizeofSize,
+    SizeofAlign,
+    SizeofOffset
+} SizeofWhat;
+
 // Get size of a type
 typedef struct SizeofNode {
     IExpNodeHdr;
     INode *type;
+    SizeofWhat what;
+    FieldDclNode *field;    // SizeofOffset: the field of 'type' whose offset this is
 } SizeofNode;
+
+// A layout fact ('#size(T)', '#f.type is Copy', ...) asked of 'type' as 'what' words it. Answered once the layout
+// has settled; while it is in flight the answer would be the order the declarations are laid out in, so
+// it is refused (ErrorMetaLayout), naming the cycle where there is one. Returns 1 if refused.
+int sizeofLayoutRefused(INode *errnode, INode *type, const char *what);
+
+// A '#size', '#align' or '#f.offset' met where the front end needs the number now ('where' says where: "an
+// array length", "a 'const' initializer"). They are the code generator's constants, so the use is refused
+// (ErrorMetaLayoutConst) until the front end computes layouts. Returns 1 if 'node' is one and was refused.
+int sizeofConstRefused(INode *node, const char *where);
 
 SizeofNode *newSizeofNode();
 

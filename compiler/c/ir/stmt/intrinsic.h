@@ -96,6 +96,16 @@ enum IntrinsicFn {
     SinIntrinsic,
     CosIntrinsic,
 
+    // A float's encoding, built in C beside the float type's other methods
+    // (corenumber.c): no Cone declaration, since the integer type of the bits
+    // follows the float's width. 'x.bits()', 'f32.fromBits(b)', 'x.exponent()',
+    // 'x.mantissa()' and 'x.signBit()'. Each is one bit operation
+    FloatBitsIntrinsic,
+    FloatFromBitsIntrinsic,
+    FloatExponentIntrinsic,
+    FloatMantissaIntrinsic,
+    FloatSignBitIntrinsic,
+
     // A vector's reductions and mask tests, over its lanes: built in C beside the
     // number types' (Vector[T, N] has no Cone declaration, being a type of the
     // compiler's own), and decided by the LLVM vector type of the argument.
@@ -273,6 +283,8 @@ extern INode *coreIteratorTrait;
 int coreIsHasher(INode *dcl);
 // Core's TextOut, the writer a text send writes into (contents.c), known the same way
 int coreIsTextOut(INode *dcl);
+// Core's marker trait DebugText, which makes a text sink take its values in the debug form
+int coreIsDebugText(INode *dcl);
 // Core's Erased struct, '{p *u8, rec: *TypeRecord}': a value known only by its type
 // record, which a trace of it calls (genlTraceErased). Known by its name, its two
 // fields and its package.

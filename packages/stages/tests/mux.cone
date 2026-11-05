@@ -8,7 +8,16 @@
 //             1 is entirely done. A gate is the only way out, so if the stalled
 //             stream held up the other, stream 1 would never finish and the
 //             stall would run out its 5 s limit (counted as a time-out);
-//   stream 1: 300 chunks of 4 KiB, handled at once, with no wait.
+//   stream 1: 300 chunks of 4 KiB, handled at once, with no wait. Its end is
+//             not handled until the Mux has seen a second chunk of stream 0
+//             arrive (one in hand, one queued behind it), so the checks below
+//             that stream 0 held chunks meanwhile assume no schedule: they do
+//             not depend on stream 0's producer running before stream 1 is
+//             done. The wait is on stream 0's arrivals alone and lets neither
+//             stream through: stream 0 stays stalled until the gate. If stream
+//             0's chunks could not arrive while stream 1 ran (a real hold-up),
+//             the wait runs out its 5 s limit, is counted, and fails the test;
+//             it does not deadlock it.
 //
 // Checked: stream 1 is wholly handled, its end included, while stream 0's first
 // chunk is still in hand and none of stream 0's is finished; stream 0 then
@@ -27,6 +36,7 @@ import iobuf use IoBuf;
 import actors;
 import aio;
 import stages use *;
+import stdio;
 
 fn chunkBytes() usize { 4096usize }
 fn windowBytes() usize { 65536usize }
@@ -52,6 +62,7 @@ let seen0: Seen;
 let seen1: Seen;
 let gate: Atomic[u64];              // 1 once stream 1 is done: lets the stalled chunk go
 let timedOut: Atomic[u64];          // stalls that ran out of time
+let waitTimedOut: Atomic[u64];      // waits for stream 0's second chunk that ran out of time
 let zeroFinishedAtGate: Atomic[u64];  // stream 0's finished chunks, when stream 1's end was handled
 let zeroHeldAtGate: Atomic[u64];      // chunks of stream 0 that had arrived, when it was
 
@@ -60,6 +71,7 @@ fn @initpure init() {
   seen1 = newSeen();
   gate = Atomic[u64].of(0u64);
   timedOut = Atomic[u64].of(0u64);
+  waitTimedOut = Atomic[u64].of(0u64);
   zeroFinishedAtGate = Atomic[u64].of(999u64);
   zeroHeldAtGate = Atomic[u64].of(999u64);
 }
@@ -111,6 +123,15 @@ actor Mux {
           turn = boxes[at].finished(b);
         }
         case let End(how) {
+          if k == 1u32 {
+            // stream 1's end waits for stream 0's producer to have sent a second chunk
+            var w = 0u32;
+            while arrived0 < 2u64 && w < 5000u32 {
+              let r = await aio.sleep(Duration.fromMillis(1i64));
+              w = w + 1u32;
+            }
+            if arrived0 < 2u64 { waitTimedOut.add(1u64); }
+          }
           self.over(k, how);
           turn = Turn.Wait;
           more = false;
@@ -123,7 +144,18 @@ actor Mux {
 
   pub async fn fin(self, k: u32, how: Ending) {
     match boxes[usize.from(k)].arriveEnd(how) {
-      case let End(h) { self.over(k, h); }
+      case let End(h) {
+        if k == 1u32 {
+          // stream 1's end waits for stream 0's producer to have sent a second chunk
+          var w = 0u32;
+          while arrived0 < 2u64 && w < 5000u32 {
+            let r = await aio.sleep(Duration.fromMillis(1i64));
+            w = w + 1u32;
+          }
+          if arrived0 < 2u64 { waitTimedOut.add(1u64); }
+        }
+        self.over(k, h);
+      }
       else {}
     }
   }
@@ -218,12 +250,13 @@ fn main() i32 {
   expectUInt(b.outOfOrder.load(), 0u64, "stream 1: in order");
   expectUInt(b.finishedAtEnd.load(), 300u64, "stream 1: its end handled after the last");
   expectUInt(zeroFinishedAtGate.load(), 0u64, "stream 1 was done while stream 0 had finished nothing (S4)");
-  expect(zeroHeldAtGate.load() >= 1u64 && zeroHeldAtGate.load() <= 16u64, "stream 0 held up to its window's 16 chunks meanwhile");
+  expectUInt(waitTimedOut.load(), 0u64, "stream 0's producer sent its second chunk, the wait did not run out of time");
+  let heldOk = expect(zeroHeldAtGate.load() >= 1u64 && zeroHeldAtGate.load() <= 16u64, "stream 0 held up to its window's 16 chunks meanwhile");
   expectUInt(a.handled.load(), 50u64, "stream 0: all 50 chunks handled after the stall");
   expectUInt(a.outOfOrder.load(), 0u64, "stream 0: in order");
   expectUInt(a.endHandled.load(), 1u64, "stream 0: its end handled once");
   expectUInt(a.finishedAtEnd.load(), 50u64, "stream 0: after the last chunk");
-  expect(a.peakQueued.load() > 0u64, "stream 0: chunks queued in its Inbox behind the stalled one");
+  let queuedOk = expect(a.peakQueued.load() > 0u64, "stream 0: chunks queued in its Inbox behind the stalled one");
   expect(a.sourcePeak.load() <= 16u64, "stream 0: its producer was held to its 64 KiB window");
   expectUInt(a.sourceOut.load(), 0u64, "stream 0: every buffer is back");
   expectUInt(b.sourceOut.load(), 0u64, "stream 1: every buffer is back");
@@ -231,5 +264,13 @@ fn main() i32 {
   expectUInt(pool.floored(), 0u64, "and never had to lend past it");
   expectUInt(u64.from(pool.lent()), 0u64, "the shared pool has nothing lent at the end");
   expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in the buffer pool");
+  if !(heldOk && queuedOk) {
+    // the values behind the two schedule-sensitive checks, printed only on failure
+    stdio.printStr("zeroHeldAtGate ");
+    stdio.printUInt(zeroHeldAtGate.load());
+    stdio.printStr(", peakQueued ");
+    stdio.printUInt(a.peakQueued.load());
+    stdio.printStr("\n");
+  }
   done()
 }

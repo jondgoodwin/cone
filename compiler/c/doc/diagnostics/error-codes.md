@@ -567,7 +567,10 @@ whichever operation produced it — an integer operation past its range, a float
 one past its finite range, a float converted to an integer that cannot hold it
 or to an `f32` past its range — since the remedy is the same: a wider type or
 smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
-`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+`ErrorConstShift` a shift by the width or more. `ErrorConstChar` (1600) is a
+constant converted to a `char` that is no code point (the run time gives
+U+FFFD); `T.from(constant)` is refused so in any expression, a float into an
+integer included (`fnCallNumberFrom`). None is `ErrorLitRange`, which
 is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
@@ -690,6 +693,13 @@ permissions and says the cast needs `trust`, which is not built yet ([cast](../n
 (`bytes as &str`, `p as Uni[str]`), is let through for now; the same permission written out
 (`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
 made a pointer, are not asked.
+
+An `as` onto a struct, an enum or a `char` from anything that is not a coercion to it
+(a type as itself and a variant as its enum are the coercions) is `ErrorAsTarget` (type check,
+`castRecastTargetCheck` in `cast.c`): these values are more than their bits. The message names the
+fix, `char.from(x)` for a `char`, a pattern for an enum read as a variant, a constructor or a method
+otherwise, and says the cast needs `trust`, which is not built yet. A generic `x as T` is refused at
+the instance where `T` is one of these ([cast](../nodes/cast.md), "`castTypeCheck`").
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
@@ -1076,7 +1086,41 @@ is the clone for an instance: `T` is no struct (a number, a reference, an enum, 
 `#f.region` is asked of a field with none written. `ErrorMetaFieldsPrivate` is a type with a private field the
 reflecting code cannot see and no `@reflect`: refused, naming the type, the field and the opt-in, because a list
 without the field would give a serializer or an `equals` a wrong answer with no warning. Both are pointed at the
-loop, with the call that made the instance after it.
+loop, with the call that made the instance after it. `ErrorMetaLayout` is a layout fact (`#size(T)`, `#align(T)`,
+`#f.offset`, `#f.type is Copy` or `is Move`) asked of a type whose layout is still in flight; it names the
+by-value cycle where there is one, type by type from the asked type back to it. A `#size` or `#align` without its `(T)` is
+`ErrorMetaFields`. `ErrorMetaLayoutConst` is a `#size`, `#align` or `#f.offset` where the front end needs the number
+itself, which only the code generator has: the condition of a `#if` (`metaCond`), an array length
+(`arrayTypeCheck`) or a `const` initializer (`constDclTypeCheck`); each is refused at that place (`sizeofConstRefused`)
+rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
+(`#size(T) * 2`) still falls to `ErrorNotLit`.
+
+`ErrorMetaEachArg` and `ErrorMetaEachArgName` are a `#each #f in #fields(T)` among a call's arguments
+(`parseHashEachArg`), read at parse: `ErrorMetaEachArg` is a block that is not exactly one `#f: value` (nothing
+named, `#f` alone, a second argument, a value that did not read); `ErrorMetaEachArgName` is an argument named by a
+written name, which every pass would give. A list loop there is `ErrorMetaEachPlace`. What the loop makes is
+checked as written arguments are; a failed expansion marks the call (`FlagEachFailed`) so its missing arguments
+are not a second error.
+
+`ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
+include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
+or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
+the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
+(`module_generic_pkguse_unspelled`.)
+`ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
+a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
+the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
+named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+
+`ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
+method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
+(`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
+(reached from `fnSigConvRefusal`, so at an argument, an initializer, a `return` and any other refused coercion) names
+the method and says `self: &` makes the variants comply. The rule of what complies is unchanged; only the message is. A requirement with no slot (a private one, or a
+default `structMakeVtable` passes by) is met by a whole-enum method, so it is skipped, and a conversion refused for
+another reason keeps that reason's message. `fnSigRefusalMsg` reports it at the user's own line, where the outermost
+instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not the library body's.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

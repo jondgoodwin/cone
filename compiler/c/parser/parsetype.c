@@ -872,9 +872,15 @@ typedef struct StructItems {
     uint16_t fieldnbr;          // The index the next field takes
     StructNode *priortag;       // The variant the next unpinned one numbers on from
     int hasEnumFld;             // An enum has placed its discriminant
+    int inloop;                 // The items are the body of a '#each #f in #fields(T)' (parsemeta.c)
 } StructItems;
 
 static void parseStructItems(ParseState *parse, StructItems *it);
+
+// The members of a '#each #f in #fields(T)' in a generic type's braces, read through its '}'
+static void parseStructLoopItems(ParseState *parse, void *ctx) {
+    parseStructItems(parse, (StructItems*)ctx);
+}
 
 // A branch of a '#if' in a type's braces. A taken one joins the type; one the
 // build does not take is read into a stand-in of the same kind, which is dropped
@@ -951,12 +957,23 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
         if (lexIsToken(HashIfToken)) {
             // A question about a type parameter is held by a generic struct's fields and methods
             const char *nodefer = NULL;
-            if (strnode->genericinfo == NULL)
+            if (it->inloop)
+                nodefer = "A '#if' that asks what a type parameter is is not built inside a '#each #f in #fields(T)' in a type's braces: a member made for each field would need a condition per field.";
+            else if (strnode->genericinfo == NULL)
                 nodefer = "A '#if' that asks what a type parameter is stands in the body of a generic type or function: this type has no type parameters.";
             else if (isenum || (strnode->flags & TraitType))
                 nodefer = "A '#if' that asks what a type parameter is is not built in the body of an enum or a trait: a generic struct's fields and methods are conditioned by it.";
             parseHashIf(parse, parseStructBranch, it, nodefer, nodefer ? NULL :
                 "A '#if' chain in a generic type's braces asks either about the build or about a type, not both: the include file keeps the chain whole and an importer reads the build's facts again for its own build, so a field or method could exist in the package's object and not in its importer, or the reverse. Put the build's fact in a '#if' of its own, around or inside the chain.");
+            continue;
+        }
+        // '#each #f in #fields(T) { ... }' makes the members it holds once for each field of a type
+        // parameter, in a generic struct's braces
+        if (lexIsToken(HashEachToken) && !it->inloop && strnode->genericinfo && !isenum && !(strnode->flags & TraitType)) {
+            StructItems loop = *it;
+            loop.inloop = 1;
+            parseHashEachMembers(parse, strnode, parseStructLoopItems, &loop);
+            it->fieldnbr = loop.fieldnbr;
             continue;
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
@@ -1143,11 +1160,13 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
             }
             parseSpan(parse, &strnode->spans, (INode*)alias, mstart, mkw, SpanMember);
         }
-        else if (lexIsDclStart() || lexIsToken(IdentToken)) {
+        else if (lexIsDclStart() || lexIsToken(IdentToken) || parseMetaIsGenName()) {
             int hadperm = lexIsDclStart();
             INode *perm = parseDclPerm(mutPerm);
             parseStorageAttr(0);
-            if (!lexIsToken(IdentToken)) {
+            // A field of a '#each #f in #fields(T)' is named '#f' or '#name("get", #f)' (parsemeta.c)
+            int isgen = parseMetaIsGenName();
+            if (!isgen && !lexIsToken(IdentToken)) {
                 errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
                 parseSkipToNextStmt();
                 continue;
@@ -1155,8 +1174,19 @@ static void parseStructItems(ParseState *parse, StructItems *it) {
             // Built while the lexer is still on the name, so that a
             // diagnostic about this member points at the name rather than at
             // whatever follows it
-            FieldDclNode *field = newFieldDclNode(lex->val.ident, perm);
-            lexNextToken();
+            FieldDclNode *field = newFieldDclNode(isgen ? anonName : lex->val.ident, perm);
+            if (isgen) {
+                Name *genname = it->inloop ? parseMetaGenName(parse, &field->gen) : NULL;
+                if (!it->inloop)
+                    errorMsgLex(ErrorMetaGenName, "A generated name, '#f' or '#name(...)', names a member inside a '#each #f in #fields(T)' in a generic type's braces.");
+                if (genname == NULL) {
+                    parseSkipToNextStmt();
+                    continue;
+                }
+                field->namesym = genname;
+            }
+            else
+                lexNextToken();
 
             // In an enum, a bare name is an empty struct variant -- which is
             // what makes one construct serve both the payload-carrying form

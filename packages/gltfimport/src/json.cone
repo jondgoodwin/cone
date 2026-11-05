@@ -32,14 +32,8 @@ pub struct JsonError is Error {
   pub column: u32;
   pub reason: String;
 
-  pub fn message(self: &) String {
-    var s = String.from("json: line ");
-    s.appendUInt(u64.from(line));
-    s.append(", column ");
-    s.appendUInt(u64.from(column));
-    s.append(": ");
-    s.append(reason.view());
-    s
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "json: line ", line, ", column ", column, ": ", reason.view();
   }
 }
 
@@ -152,65 +146,32 @@ fn newNode(doc: &mut Json, kind: JsonKind) u32 {
 
 fn isDigitByte(c: u8) bool { c >= '0' && c <= '9' }
 
-// 10 to the e, for e from 0 to 22, which are exact in a double
-let pow10tab: Array[f64, 23] = [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0, 1000000000.0,
-  10000000000.0, 100000000000.0, 1000000000000.0, 10000000000000.0, 100000000000000.0, 1000000000000000.0,
-  10000000000000000.0, 100000000000000000.0, 1000000000000000000.0, 10000000000000000000.0,
-  100000000000000000000.0, 1000000000000000000000.0, 10000000000000000000000.0];
-
-fn scalePow10(v: f64, e: i32) f64 {
-  var x = v;
-  var k = e;
-  while k > 22i32 { x = x * 10000000000000000000000.0; k -= 22i32; }
-  while k < -22i32 { x = x / 10000000000000000000000.0; k += 22i32; }
-  if k >= 0i32 { return x * pow10tab[usize.from(k)]; }
-  x / pow10tab[usize.from(-k)]
-}
-
+// A JSON number: the grammar is checked here (messages for what is wrong), the value is f64.parse's
 fn parseNumber(t: &Array[u8], p: &mut JParser) f64 {
-  var neg = false;
-  if p.pos < t.len && t[p.pos] == '-' { neg = true; p.pos += 1usize; }
+  let start = p.pos;
+  if p.pos < t.len && t[p.pos] == '-' { p.pos += 1usize; }
   if p.pos >= t.len || !isDigitByte(t[p.pos]) { jsonFail(p, "a number needs digits"); return 0.; }
   if t[p.pos] == '0' && p.pos + 1usize < t.len && isDigitByte(t[p.pos + 1usize]) {
     p.pos += 1usize;
     jsonFail(p, "a number cannot have a leading zero");
     return 0.;
   }
-  var mant = 0u64;
-  var digits = 0i32;
-  var exp10 = 0i32;
-  while p.pos < t.len && isDigitByte(t[p.pos]) {
-    if digits < 19i32 { mant = mant * 10u64 + u64.from(t[p.pos] - '0'); if mant > 0u64 { digits += 1i32; } }
-    else { exp10 += 1i32; }
-    p.pos += 1usize;
-  }
+  while p.pos < t.len && isDigitByte(t[p.pos]) { p.pos += 1usize; }
   if p.pos < t.len && t[p.pos] == '.' {
     p.pos += 1usize;
     if p.pos >= t.len || !isDigitByte(t[p.pos]) { jsonFail(p, "a fraction needs digits"); return 0.; }
-    while p.pos < t.len && isDigitByte(t[p.pos]) {
-      if digits < 19i32 {
-        mant = mant * 10u64 + u64.from(t[p.pos] - '0');
-        if mant > 0u64 { digits += 1i32; }
-        exp10 -= 1i32;
-      }
-      p.pos += 1usize;
-    }
+    while p.pos < t.len && isDigitByte(t[p.pos]) { p.pos += 1usize; }
   }
   if p.pos < t.len && (t[p.pos] == 'e' || t[p.pos] == 'E') {
     p.pos += 1usize;
-    var eneg = false;
-    if p.pos < t.len && (t[p.pos] == '+' || t[p.pos] == '-') { eneg = t[p.pos] == '-'; p.pos += 1usize; }
+    if p.pos < t.len && (t[p.pos] == '+' || t[p.pos] == '-') { p.pos += 1usize; }
     if p.pos >= t.len || !isDigitByte(t[p.pos]) { jsonFail(p, "an exponent needs digits"); return 0.; }
-    var e = 0i32;
-    while p.pos < t.len && isDigitByte(t[p.pos]) {
-      if e < 10000i32 { e = e * 10i32 + i32.from(t[p.pos] - '0'); }
-      p.pos += 1usize;
-    }
-    exp10 += if eneg {-e} else {e};
+    while p.pos < t.len && isDigitByte(t[p.pos]) { p.pos += 1usize; }
   }
-  let v = scalePow10(f64.from(mant), exp10);
-  if neg { return -v; }
-  v
+  match f64.parse(&t[start ..< p.pos] as &str) {
+    case let Ok(v) { return v; }
+    case is Err { jsonFail(p, "a number is outside the range of a double"); return 0.; }
+  }
 }
 
 fn hexVal(c: u8) i32 {

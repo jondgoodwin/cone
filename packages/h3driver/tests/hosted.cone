@@ -315,9 +315,9 @@ fn newClient() Client {
 
 // A failure's stage and kind: 'tls: refused'
 fn headOf(f: &Failure) String {
-  var s = String.from(stageName(f.stage));
+  var s = String() <- f.stage;
   s.append(": ");
-  s.append(kindName(f.error.kind));
+  s <- f.error.kind;
   s
 }
 
@@ -566,8 +566,8 @@ struct Svc {
   sv: Server;
   cl: Client;
   conn: ConnId;
-  waitAll: Option[actors.Reply];      // answered when every request has its answer
-  waitClosed: Option[actors.Reply];   // answered when both ends have told Closed
+  waitAll: Option[actors.ReplyOf[u64]];      // answered when every request has its answer
+  waitClosed: Option[actors.ReplyOf[u64]];   // answered when both ends have told Closed
 
   pub fn make() Svc {
     Svc(Driver.make(clientConfig(0i64)), Driver.make(Config.make()),
@@ -594,18 +594,20 @@ struct Svc {
         }
         k = k + 1usize;
       }
-      match &mut waitAll {
-        case var &mut Some(r) {actors.answerNowIn[u64](r, right);}
+      var taken: Option[actors.ReplyOf[u64]] = None;
+      taken <-> waitAll;
+      match taken {
+        case let Some(r) {r.answer(right);}
         else {}
       }
-      waitAll = None;
     }
     if cl.closed > 0u64 && sv.closed > 0u64 {
-      match &mut waitClosed {
-        case var &mut Some(r) {actors.answerNowIn[u64](r, cl.clean * 10u64 + sv.clean);}
+      var taken: Option[actors.ReplyOf[u64]] = None;
+      taken <-> waitClosed;
+      match taken {
+        case let Some(r) {r.answer(cl.clean * 10u64 + sv.clean);}
         else {}
       }
-      waitClosed = None;
     }
   }
 
@@ -629,7 +631,7 @@ struct Svc {
 // Listen, connect, and make the requests: answered with how many were done
 // and right, once all have their answers
 struct RunJob {
-  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u64]) {
     var port = 0u16;
     match s.srv.listen(lp, SocketAddr.localhost(0u16), serverCtx(100u64, 0i64), 1u64) {
       case let Ok(l) {
@@ -653,15 +655,15 @@ struct RunJob {
       if i % 2usize == 0usize {post(&mut s.cli, lp, s.conn, &mut s.cl, sizes[i % 4usize] / 3u64, 0u64);}
       i = i + 1usize;
     }
-    s.waitAll = Some[actors.Reply](rp);
+    s.waitAll = Some[actors.ReplyOf[u64]](rp);
   }
 }
 
 // Close the connection gracefully: answered once both ends have told Closed
 struct CloseJob {
-  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u64]) {
     s.cli.close(lp, s.conn);
-    s.waitClosed = Some[actors.Reply](rp);
+    s.waitClosed = Some[actors.ReplyOf[u64]](rp);
   }
 }
 

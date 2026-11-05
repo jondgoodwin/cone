@@ -1415,7 +1415,9 @@ static void parseExternItems(ParseState *parse, uint16_t extflag, DclSpans **ite
 }
 
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
+    uint32_t metamark = parseMetaScope();   // The meta constants this file declares are its own
     parseGlobalStmtsIn(parse, mod, atmodstart, NULL);
+    parseMetaScopeEnd(metamark);
 }
 
 static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstart, int *pastp) {
@@ -1462,6 +1464,16 @@ static void parseGlobalStmtsIn(ParseState *parse, ModuleNode *mod, int atmodstar
         }
         if (lexIsToken(HashElifToken) || lexIsToken(HashElseToken) || lexIsToken(HashEachToken)) {
             parseMetaStray(parse);
+            continue;
+        }
+        // 'let #sizes = [8, 16];' at a module's level: a meta constant the file's functions and
+        // generics read; held by the parser to the file's end, and gone from the code
+        if ((lexIsToken(LetToken) || lexIsToken(VarToken)) && parseMetaIsDecl()) {
+            if (lexIsToken(VarToken))
+                errorMsgLex(ErrorMetaVar, "A meta variable at a module's level is fixed: write 'let #n = 3;'. A 'var' counts passes of a '#each' inside one function body.");
+            pastheader = 1;
+            parseMetaDecl(parse);
+            parseSpan(parse, &mod->spans, NULL, stmtat.srcp, stmtat.srcp, SpanOther);
             continue;
         }
         uint16_t pubflag = parsePub();

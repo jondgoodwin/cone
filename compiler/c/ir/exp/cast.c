@@ -131,6 +131,24 @@ static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
     return NULL;
 }
 
+// A variant narrowed to by a bare name keeps the lifetimes the matched value's enum is
+// written with ('E['=a]'): the variant's fields are the enum's, so a key it holds is of the
+// brand the value carries, not of a brand not known. A generic's type arguments come with
+// the instance (the variant is already its own).
+static void castPatternAdoptLifetimes(NameUseNode *name, INode *exp) {
+    if (!lifeInvariantSeen || name->lifeuse != NULL)
+        return;
+    INode *type = ((IExpNode*)exp)->vtype;
+    while (type && (type->tag == RefTag || type->tag == VirtRefTag))
+        type = ((RefNode*)type)->vtexp;
+    while (type && type->tag == AliasDclTag)
+        type = ((AliasDclNode*)type)->target;
+    if (type == NULL || type->tag != NameUseTag || ((NameUseNode*)type)->lifeuse == NULL
+        || (((NameUseNode*)type)->lifeuse->names == NULL && ((NameUseNode*)type)->lifeuse->typeargs == NULL))
+        return;
+    name->lifeuse = ((NameUseNode*)type)->lifeuse;
+}
+
 // Bind a pattern's bare root name against the value being matched. A variant of
 // that value's enum is what the name means, whatever it means lexically, so
 // 'Red' on a 'Lamp' is the Lamp's 'Red' while a 'use' of another enum with a 'Red'
@@ -157,8 +175,10 @@ static int castPatternBindName(CastNode *node, int report) {
         name->flags &= 0xFFFF - FlagPattern;
         StructNode *enumdcl = castMatchedEnum(node->exp);
         INode *variant = castEnumVariant(enumdcl, name->namesym);
-        if (variant && !hasargs)
+        if (variant && !hasargs) {
             name->dclnode = variant;
+            castPatternAdoptLifetimes(name, node->exp);
+        }
         else if (name->dclnode == NULL) {
             if (report && variant)
                 errorMsgNode((INode*)name, ErrorPatArgs,
@@ -529,6 +549,37 @@ static int castRefPermCheck(CastNode *node, INode *fromtype, INode *totype) {
     return 1;
 }
 
+// A struct, an enum or a char made by 'as' from something that is not a coercion
+// to it is refused. Their values are more than their bits: a struct has private
+// fields and may hold a reference, an enum has a tag that names its variant, a
+// char is a code point. Only a coercion that changes just the type is safe (a
+// variant as its enum, or a type as itself); anything else is for 'trust', which
+// is not built yet. Returns whether it reported.
+static int castRecastTargetCheck(CastNode *node, INode *fromtype, INode *totype) {
+    int ischar = totype == (INode*)charType;
+    if (totype->tag != StructTag && !ischar)
+        return 0;
+    INode *srctype = ((IExpNode*)node->exp)->vtype;
+    TypeCompare result = itypeMatches(node->typ, srctype, Coercion);
+    if (result == EqMatch || result == CastSubtype)
+        return 0;
+    char *tonm = itypeName(node->typ);
+    char *fromnm = itypeName(srctype);
+    if (ischar)
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make a char from %s: a char is a code point, and `as` only recasts, as a coercion does. Convert with `char.from(x)`; any other reinterpretation needs `trust`, which is not built yet.",
+            fromnm);
+    else if (fromtype->tag == StructTag && (fromtype->flags & EnumType) && !(totype->flags & EnumType))
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make %s from the enum %s: nothing checks that the value is that variant. Match the enum with a pattern (`case let`) to reach a variant; any other reinterpretation needs `trust`, which is not built yet.",
+            tonm, fromnm);
+    else
+        errorMsgNode(node->exp, ErrorAsTarget,
+            "`as` may not make %s from %s: only a coercion that changes just the type, such as a variant as its enum, is a recast. Make the value with a constructor or a method; any other reinterpretation needs `trust`, which is not built yet.",
+            tonm, fromnm);
+    return 1;
+}
+
 #define ptrsize 10000
 // Give a rough idea of comparable type size for use with type checking reinterpretation casts
 uint32_t castBitsize(INode *type) {
@@ -873,6 +924,7 @@ int castBindProject(TypeCheckState *pstate, VarDclNode *var) {
 
 // Type check cast node:
 // - reinterpret cast types must be same size
+// - a struct, an enum or a char target takes only a coercion (castRecastTargetCheck)
 // - a bound pattern's conversion narrows a reference, or a value of a sum type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     // A bound pattern's conversion castBindProject has checked
@@ -914,6 +966,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
     // Handle reinterpret casts, which must be same size
     if (!(node->flags & FlagConvert)) {
+        if (castRecastTargetCheck(node, fromtype, totype))
+            return;
         if (castRefPermCheck(node, fromtype, totype))
             return;
         // usize and isize are as wide as a pointer, which a fixed-width number

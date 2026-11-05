@@ -1,4 +1,4 @@
-// floatfmt: a float as text, in Cone: the shortest text that reads back as the
+// floatfmt: a float as text (and, at the end, read from text), in Cone: the shortest text that reads back as the
 // same float (core's FloatText, below), which core's TextOut writes for every
 // f64 and f32 sent as text, to a String, the console, a trace message.
 //
@@ -339,4 +339,461 @@ pub fn cone_floatShortest32(buf: *u8, x: f32) usize {
   let bits = u64.from(*(&mut v as *u32));
   shortestOf(buf, (bits >> 31u64) != 0u64, (bits >> 23u64) & 0xFFu64,
     bits & 0x7FFFFFu64, 23u64, 0xFFu64, 150i64)
+}
+
+// ---------------------------------------------------------------------------
+// A float read from text
+// ---------------------------------------------------------------------------
+//
+// core's 'f64.parse' and 'f32.parse' check the text's grammar, then call
+// these to find the nearest float (the even one on a tie). No C library reads
+// it: the C library's 'strtod' is wrong on a very long near-tie (a 400-digit
+// value a hair above the midpoint of two floats), and 'strtof' has the same
+// weakness. So these use the exact decimal of Go's 'strconv' (its 'decimal'
+// type, written afresh): the digits of the value held exactly in a fixed
+// buffer, moved by powers of two without losing a digit, then rounded. It is
+// slow and right for every input. The quick cases never come to it: up to 15
+// digits (f64), or 7 (f32), with a power of ten the type holds exactly, are one
+// multiply or one divide, each correctly rounded.
+//
+// The decimal holds at most 800 digits. That is more than the 767 significant
+// digits any f64 can need, and a digit dropped past it sets 'trunc', which only
+// breaks the tie of a value exactly halfway between two floats.
+//
+// Each reader answers false when the value is past the range of the type, and
+// writes the float, with the text's sign, to 'out'. The words 'inf' and 'nan'
+// (the grammar was checked) are answered without the decimal.
+
+const decMaxDigits = 800usize;
+// The most bits one shift moves: n * 10 + carry stays inside a u64
+const decMaxShift = 60i32;
+
+// The value 0.d1d2d3... times 10^dp: digits 0 to 9, most significant first,
+// with no trailing zero (zero is no digits). 'd' holds 800 digits and 't' is
+// the room a shift works in.
+struct Dec {
+  pub d: *u8;
+  pub t: *u8;
+  pub nd: usize;
+  pub dp: i32;
+  // Nonzero digits beyond the 800 were dropped
+  pub trunc: bool;
+}
+
+fn decNew() Dec {
+  Dec(libc.malloc(decMaxDigits), libc.malloc(decMaxDigits + 32usize), 0usize, 0i32, false)
+}
+
+fn decFree(a: &mut Dec) {
+  libc.free(a.d);
+  libc.free(a.t);
+}
+
+fn decDigit(a: &Dec, i: usize) u8 inline { *(a.d + i) }
+
+// Trailing zeros off; an empty Dec is zero, and its point is at 0
+fn decTrim(a: &mut Dec) {
+  while a.nd > 0usize && *(a.d + (a.nd - 1usize)) == 0u8 { a.nd = a.nd - 1usize; }
+  if a.nd == 0usize { a.dp = 0i32; }
+}
+
+// Divide by 2^k, k from 1 to decMaxShift
+fn decRightShift(a: &mut Dec, k: i32) {
+  let kk = u64.from(k);
+  let nd = a.nd;
+  var r = 0usize;
+  var n = 0u64;
+  // Pick up enough leading digits to cover the first shift
+  while (n >> kk) == 0u64 {
+    if r >= nd {
+      if n == 0u64 {
+        a.nd = 0usize;
+        a.dp = 0i32;
+        return;
+      }
+      while (n >> kk) == 0u64 {
+        n = n * 10u64;
+        r = r + 1usize;
+      }
+      break;
+    }
+    n = n * 10u64 + u64.from(*(a.d + r));
+    r = r + 1usize;
+  }
+  a.dp = a.dp - (i32.from(r) - 1i32);
+  let mask = (1u64 << kk) - 1u64;
+  var w = 0usize;
+  // Pick up a digit, put down a digit
+  while r < nd {
+    let dig = n >> kk;
+    n = n & mask;
+    *(a.t + w) = u8.from(dig);
+    w = w + 1usize;
+    n = n * 10u64 + u64.from(*(a.d + r));
+    r = r + 1usize;
+  }
+  // Put down the extra digits
+  while n > 0u64 {
+    let dig = n >> kk;
+    n = n & mask;
+    if w < decMaxDigits {
+      *(a.t + w) = u8.from(dig);
+      w = w + 1usize;
+    }
+    else if dig > 0u64 { a.trunc = true; }
+    n = n * 10u64;
+  }
+  var i = 0usize;
+  while i < w {
+    *(a.d + i) = *(a.t + i);
+    i = i + 1usize;
+  }
+  a.nd = w;
+  decTrim(a);
+}
+
+// Multiply by 2^k, k from 1 to decMaxShift
+fn decLeftShift(a: &mut Dec, k: i32) {
+  let kk = u64.from(k);
+  // The product's digits, least significant first, in 't'
+  var total = 0usize;
+  var n = 0u64;
+  var r = a.nd;
+  while r > 0usize {
+    r = r - 1usize;
+    n = n + (u64.from(*(a.d + r)) << kk);
+    let quo = n / 10u64;
+    *(a.t + total) = u8.from(n - 10u64 * quo);
+    total = total + 1usize;
+    n = quo;
+  }
+  while n > 0u64 {
+    let quo = n / 10u64;
+    *(a.t + total) = u8.from(n - 10u64 * quo);
+    total = total + 1usize;
+    n = quo;
+  }
+  a.dp = a.dp + i32.from(total) - i32.from(a.nd);
+  var w = 0usize;
+  var i = total;
+  while i > 0usize {
+    i = i - 1usize;
+    let c = *(a.t + i);
+    if w < decMaxDigits {
+      *(a.d + w) = c;
+      w = w + 1usize;
+    }
+    else if c != 0u8 { a.trunc = true; }
+  }
+  a.nd = w;
+  decTrim(a);
+}
+
+// Multiply by 2^k, k any sign
+fn decShift(a: &mut Dec, k: i32) {
+  if a.nd == 0usize { return; }
+  var left = k;
+  if left > 0i32 {
+    while left > decMaxShift {
+      decLeftShift(a, decMaxShift);
+      left = left - decMaxShift;
+    }
+    decLeftShift(a, left);
+  }
+  else if left < 0i32 {
+    while left < -decMaxShift {
+      decRightShift(a, decMaxShift);
+      left = left + decMaxShift;
+    }
+    decRightShift(a, -left);
+  }
+}
+
+// Whether rounding to nd digits goes up
+fn decShouldRoundUp(a: &Dec, nd: i32) bool {
+  if nd < 0i32 || usize.from(nd) >= a.nd { return false; }
+  let at = usize.from(nd);
+  let digit = decDigit(a, at);
+  // Exactly halfway: to even, unless digits were dropped, which makes it a
+  // little more than halfway
+  if digit == 5u8 && at + 1usize == a.nd {
+    if a.trunc { return true; }
+    return at > 0usize && (decDigit(a, at - 1usize) % 2u8) != 0u8;
+  }
+  digit >= 5u8
+}
+
+// The integer part, rounded to nearest-even; beyond a u64, all ones
+fn decRoundedInteger(a: &Dec) u64 {
+  if a.dp > 20i32 { return 0xFFFFFFFFFFFFFFFFu64; }
+  let point = if a.dp > 0i32 {usize.from(a.dp)} else {0usize};
+  var i = 0usize;
+  var n = 0u64;
+  while i < point && i < a.nd {
+    n = n * 10u64 + u64.from(decDigit(a, i));
+    i = i + 1usize;
+  }
+  while i < point {
+    n = n * 10u64;
+    i = i + 1usize;
+  }
+  if decShouldRoundUp(a, a.dp) { n = n + 1u64; }
+  n
+}
+
+// How far the point is moved to get below 1, by how many places it is out
+fn decPowTab(i: i32) i32 {
+  if i == 0i32 { return 1i32; }
+  if i == 1i32 { return 3i32; }
+  if i == 2i32 { return 6i32; }
+  if i == 3i32 { return 9i32; }
+  if i == 4i32 { return 13i32; }
+  if i == 5i32 { return 16i32; }
+  if i == 6i32 { return 19i32; }
+  if i == 7i32 { return 23i32; }
+  26i32
+}
+
+// The bits of the float nearest the Dec, the even one on a tie, for a float
+// of 'mb' mantissa bits, exponent bias 'bias' and all-ones exponent field
+// 'maxBiased'. False when the value is too large for the type. 'dpHigh' and
+// 'dpLow' are decimal points beyond which the value is certainly an overflow
+// or a zero. The Dec is used up.
+fn decToBits(a: &mut Dec, mb: u64, bias: i32, maxBiased: i32, dpHigh: i32, dpLow: i32, out: &mut u64) bool {
+  *out = 0u64;
+  if a.nd == 0usize { return true; }
+  if a.dp > dpHigh { return false; }
+  if a.dp < dpLow { return true; }
+  // Scale by powers of two to [0.5, 1)
+  var exp = 0i32;
+  while a.dp > 0i32 {
+    let n = if a.dp >= 9i32 {27i32} else {decPowTab(a.dp)};
+    decShift(a, -n);
+    exp = exp + n;
+  }
+  while a.dp < 0i32 || (a.dp == 0i32 && a.nd > 0usize && decDigit(a, 0usize) < 5u8) {
+    let n = if -a.dp >= 9i32 {27i32} else {decPowTab(-a.dp)};
+    decShift(a, n);
+    exp = exp - n;
+  }
+  // The range of a float is [1, 2), not [0.5, 1)
+  exp = exp - 1i32;
+  // The smallest exponent is 1 - bias: a smaller value is denormal
+  let least = 1i32 - bias;
+  if exp < least {
+    let n = least - exp;
+    decShift(a, -n);
+    exp = exp + n;
+  }
+  if exp + bias >= maxBiased { return false; }
+  // mb + 1 bits
+  decShift(a, i32.from(mb) + 1i32);
+  var mant = decRoundedInteger(a);
+  // Rounding may have carried into one bit more
+  if mant == (2u64 << mb) {
+    mant = mant >> 1u64;
+    exp = exp + 1i32;
+    if exp + bias >= maxBiased { return false; }
+  }
+  // Below 2^mb the value is denormal, and its exponent field zero
+  var biased = 0u64;
+  if (mant & (1u64 << mb)) != 0u64 { biased = u64.from(exp + bias); }
+  *out = (mant & ((1u64 << mb) - 1u64)) | (biased << mb);
+  true
+}
+
+// 10^k as an f64, k from 0 to 22, which is exact
+fn pow10Exact(k: i32) f64 {
+  var x = 1.0;
+  var i = k;
+  while i > 0i32 {
+    x = x * 10.0;
+    i = i - 1i32;
+  }
+  x
+}
+
+// 10^k as an f32, k from 0 to 10, which is exact
+fn pow10Exact32(k: i32) f32 {
+  var x = 1.0f32;
+  var i = k;
+  while i > 0i32 {
+    x = x * 10.0f32;
+    i = i - 1i32;
+  }
+  x
+}
+
+// The text's digits as a Dec; 'from' is past the sign. The exponent is held
+// at what no float needs more than, so a huge one is only called too large or
+// too small.
+fn decOfText(text: *u8, len: usize, from: usize, a: &mut Dec) {
+  var i = from;
+  a.nd = 0usize;
+  a.trunc = false;
+  // 'seen' counts every digit after the leading zeros, kept or not
+  var seen = 0i32;
+  var hasPoint = false;
+  var pointAt = 0i32;
+  var lead = 0i32;
+  while i < len && *(text + i) != 'e' && *(text + i) != 'E' {
+    let c = *(text + i);
+    if c == '.' {
+      hasPoint = true;
+      pointAt = seen;
+    }
+    else if c == '0' && seen == 0i32 {
+      // A zero before the first digit; after the point it moves the point back
+      if hasPoint { lead = lead + 1i32; }
+    }
+    else {
+      seen = seen + 1i32;
+      if a.nd < decMaxDigits {
+        *(a.d + a.nd) = c - '0';
+        a.nd = a.nd + 1usize;
+      }
+      else if c != '0' { a.trunc = true; }
+    }
+    i = i + 1usize;
+  }
+  if hasPoint { a.dp = pointAt - lead; } else { a.dp = seen; }
+  if i < len {
+    i = i + 1usize;
+    var eneg = false;
+    if *(text + i) == '+' || *(text + i) == '-' {
+      eneg = *(text + i) == '-';
+      i = i + 1usize;
+    }
+    var e = 0i32;
+    while i < len {
+      if e < 100000i32 { e = e * 10i32 + i32.from(*(text + i) - '0'); }
+      i = i + 1usize;
+    }
+    if eneg { a.dp = a.dp - e; } else { a.dp = a.dp + e; }
+  }
+  decTrim(a);
+}
+
+// 0: finite text, 1: 'inf' or 'infinity', 2: 'nan'; 'from' is past the sign
+fn wordKind(text: *u8, len: usize, from: usize) i32 {
+  if from >= len { return 0i32; }
+  let c = *(text + from) | 32u8;
+  if c == 'i' { return 1i32; }
+  if c == 'n' { return 2i32; }
+  0i32
+}
+
+// The digits of the Dec as a whole number (at most 19 of them)
+fn decLeading(a: &Dec) u64 {
+  var m = 0u64;
+  var i = 0usize;
+  while i < a.nd {
+    m = m * 10u64 + u64.from(decDigit(a, i));
+    i = i + 1usize;
+  }
+  m
+}
+
+pub fn cone_parseF64(text: *u8, len: usize, out: *f64) bool {
+  var neg = false;
+  var from = 0usize;
+  if len > 0usize && *text == '-' { neg = true; from = 1usize; }
+  else if len > 0usize && *text == '+' { from = 1usize; }
+  let word = wordKind(text, len, from);
+  if word == 1i32 {
+    let inf = f64.fromBits(0x7FF0000000000000u64);
+    *out = if neg { -inf } else { inf };
+    return true;
+  }
+  if word == 2i32 {
+    *out = f64.fromBits(0x7FF8000000000000u64);
+    return true;
+  }
+  var a = decNew();
+  decOfText(text, len, from, &mut a);
+  var v = 0.0;
+  var ok = true;
+  if a.nd > 0usize {
+    var done = false;
+    // Up to 15 digits are exact in an f64, and so is 10^k up to 22: one
+    // multiply or divide, each correctly rounded, is the right answer
+    if !a.trunc && a.nd <= 15usize {
+      let m = decLeading(&a);
+      let e = a.dp - i32.from(a.nd);
+      if e == 0i32 {
+        v = f64.from(m);
+        done = true;
+      }
+      else if e < 0i32 && e >= -22i32 {
+        v = f64.from(m) / pow10Exact(-e);
+        done = true;
+      }
+      else if e > 0i32 && e <= 22i32 {
+        v = f64.from(m) * pow10Exact(e);
+        done = true;
+      }
+      else if e > 22i32 && e - 22i32 <= 15i32 - i32.from(a.nd) {
+        // The digits scaled up to 15 are still exact
+        v = f64.from(m * u64.from(pow10Exact(e - 22i32))) * pow10Exact(22i32);
+        done = true;
+      }
+    }
+    if !done {
+      var bits = 0u64;
+      ok = decToBits(&mut a, 52u64, 1023i32, 2047i32, 310i32, -330i32, &mut bits);
+      v = f64.fromBits(bits);
+    }
+  }
+  decFree(&mut a);
+  *out = if neg { -v } else { v };
+  ok
+}
+
+pub fn cone_parseF32(text: *u8, len: usize, out: *f32) bool {
+  var neg = false;
+  var from = 0usize;
+  if len > 0usize && *text == '-' { neg = true; from = 1usize; }
+  else if len > 0usize && *text == '+' { from = 1usize; }
+  let word = wordKind(text, len, from);
+  if word == 1i32 {
+    let inf = f32.fromBits(0x7F800000u32);
+    *out = if neg { -inf } else { inf };
+    return true;
+  }
+  if word == 2i32 {
+    *out = f32.fromBits(0x7FC00000u32);
+    return true;
+  }
+  var a = decNew();
+  decOfText(text, len, from, &mut a);
+  var v = 0.0f32;
+  var ok = true;
+  if a.nd > 0usize {
+    var done = false;
+    // Up to 7 digits are exact in an f32, and so is 10^k up to 10
+    if !a.trunc && a.nd <= 7usize {
+      let m = f32.from(decLeading(&a));
+      let e = a.dp - i32.from(a.nd);
+      if e == 0i32 {
+        v = m;
+        done = true;
+      }
+      else if e < 0i32 && e >= -10i32 {
+        v = m / pow10Exact32(-e);
+        done = true;
+      }
+      else if e > 0i32 && e <= 10i32 {
+        v = m * pow10Exact32(e);
+        done = true;
+      }
+    }
+    if !done {
+      var bits = 0u64;
+      ok = decToBits(&mut a, 23u64, 127i32, 255i32, 40i32, -50i32, &mut bits);
+      v = f32.fromBits(u32.from(bits));
+    }
+  }
+  decFree(&mut a);
+  *out = if neg { -v } else { v };
+  ok
 }

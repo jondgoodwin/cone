@@ -100,7 +100,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     if (iexpIsLvalError(lval) == 0) {
         return;
     }
-    if (iexpTypeCheckCoerce(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
+    if (iexpTypeCheckCoerceStated(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
         iexpMismatchMsg(*rval, ((IExpNode*)lval)->vtype, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
@@ -487,6 +487,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         // its place.
         VarDclNode *var = (VarDclNode*)lvalvar;
         uint16_t flowflags = var->flowtempflags;
+        modInitNoteSet(var);
         // A match's binding by value names the matched value's own storage
         // (flowMatchInPlace), so a store over it releases the value it
         // replaces, and the matched value's variable releases the new one. A

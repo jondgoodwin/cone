@@ -37,6 +37,7 @@ typedef struct ModuleNode {
     INode *traitname;        // 'mod A is T': T as written, a NameUseNode bound to the module trait once modTraitConform finds it; else NULL
     struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
+    Nodes *setorder;         // The globals its 'init' assigns, in the order the flow pass first met an assignment to each (modInitNoteSet); NULL where none
     struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
     struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
     GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
@@ -153,7 +154,12 @@ ModuleNode *modInitOf(FnDclNode *fnnode);
 // once -- a 'let' one included -- and may not read it before it does. After the
 // pass, each one it never saw assigned is ErrorGlobalUninit, and every global
 // holds a value again for every other function. 'saved' carries their flags
-uint16_t *modInitFlowBegin(ModuleNode *mod);
+uint16_t *modInitFlowBegin(ModuleNode *mod, struct FnDclNode *initfn);
+// A call 'init' makes: where it is to one of the module's own functions, what that
+// function reads of the module's globals, and what the module's functions it calls
+// read in turn, counts as read at this call, so one 'init' has not yet set is refused
+void modInitCall(struct FlowState *fstate, struct FnCallNode *call);
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
+void modInitNoteSet(struct VarDclNode *var);
 
 #endif

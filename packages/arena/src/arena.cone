@@ -490,8 +490,14 @@ pub struct DynArena['=a] is NoLoanMut {
 
   // Move value into the arena, and a key to it there: good for as long as
   // the arena lives, wherever it goes, and only through this arena
+  //
+  // TRUSTED (Bug 51): the inner arena is reached through a raw pointer, so the
+  // checker does not see the store of 'value' into it. The promise: a value
+  // holding a borrow never reaches here, because every route into 'alloc' meets
+  // the key rule (ErrorKeyBorrow, lifetime_inv_key_holds_borrow) at the call.
   pub fn alloc[T](self: &mut, value: T) &'=a mut T inline {
-    (ar.alloc(value) as *T) as &'=a mut T
+    let inner = (&mut ar as *Arena) as &mut Arena;
+    (inner.alloc(value) as *T) as &'=a mut T
   }
 
   // 'ar[key]': the value a key of this arena names, read
