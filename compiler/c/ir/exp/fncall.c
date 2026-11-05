@@ -1046,7 +1046,7 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 char *why = fnSigCallRefusal(argtype, parmtype, &whycode);
                 char privwhy[400];
                 if (why)
-                    errorMsgNode(*argsp, whycode, "%s", why);
+                    fnSigRefusalMsg(*argsp, whycode, why);
                 else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
                     errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
                 else

@@ -1,0 +1,54 @@
+// The text of tls's enums, every variant: a verifier kind's lower-case name, an error
+// kind's words, each from the function another package still calls and from the
+// kind's toText. Pinned so the text cannot drift when the way it is asked for changes.
+
+mod names;
+
+import testing use *;
+import collections use String;
+import tls use *;
+import time use Duration;
+
+fn info(alpn: &str, resumed: bool, kind: VerifyKind, verify: i64) TlsInfo {
+  TlsInfo(version: TlsVersion.Tls13, versionName: String.from("TLSv1.3"),
+    cipher: String.from("TLS_AES_256_GCM_SHA384"), alpn: String.from(alpn), resumed: resumed,
+    verifiedBy: kind, handshakeTime: Duration.fromMicros(41200i64),
+    verifyTime: Duration.fromMicros(verify), closeNotify: false, truncated: false)
+}
+
+fn infoText(i: TlsInfo, want: &str, label: &str) {
+  expectStr((String() <- toText(&i)).view(), want, label);
+}
+
+fn verify(k: VerifyKind, want: &str, label: &str) {
+  expectStr(verifyKindName(k), want, label);
+  expectStr((String() <- toText(&k)).view(), want, label);
+}
+
+fn kind(k: TlsErrorKind, want: &str, label: &str) {
+  expectStr(k.name(), want, label);
+  expectStr((String() <- toText(&k)).view(), want, label);
+}
+
+fn main() i32 {
+  verify(VerifyKind.Platform, "platform", "Platform");
+  verify(VerifyKind.Roots, "roots", "Roots");
+  verify(VerifyKind.Pinned, "pinned", "Pinned");
+  verify(VerifyKind.Insecure, "insecure", "Insecure");
+  kind(TlsErrorKind.CertExpired, "certificate expired", "CertExpired");
+  kind(TlsErrorKind.CertNameMismatch, "certificate name mismatch", "CertNameMismatch");
+  kind(TlsErrorKind.CertUntrusted, "certificate untrusted", "CertUntrusted");
+  kind(TlsErrorKind.CertRevoked, "certificate revoked", "CertRevoked");
+  kind(TlsErrorKind.CertOther, "certificate refused", "CertOther");
+  kind(TlsErrorKind.ProtocolVersion, "protocol version", "ProtocolVersion");
+  kind(TlsErrorKind.NoAlpnMatch, "no application protocol", "NoAlpnMatch");
+  kind(TlsErrorKind.Alert, "alert", "Alert");
+  kind(TlsErrorKind.Protocol, "protocol error", "Protocol");
+  kind(TlsErrorKind.Config, "configuration", "Config");
+  kind(TlsErrorKind.Backend, "back end", "Backend");
+  infoText(info("http/1.1", true, VerifyKind.Platform, 9800i64),
+    "TLSv1.3 TLS_AES_256_GCM_SHA384, ALPN http/1.1, handshake 41.2 ms (the OS's verifier 9.8 ms), resumed", "info, platform");
+  infoText(info("", false, VerifyKind.Roots, 9800i64),
+    "TLSv1.3 TLS_AES_256_GCM_SHA384, ALPN none, handshake 41.2 ms", "info, roots, no alpn");
+  done()
+}
