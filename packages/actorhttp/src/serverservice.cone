@@ -507,7 +507,8 @@ struct ListenJob {
   pub addr: SocketAddr;
   pub cfg: ServerConfig;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[Server, ServerError]]) {
+    let rp = rpo.raw();
     let addr, cfg = self.(addr, cfg);
     let conn, maxBody, maxPending, tcfg, http2, http3 = cfg.(conn, maxBody, maxPending, tlsConfig, http2, http3);
     var h3on = false;
@@ -623,7 +624,8 @@ struct SrvCloseJob {
 struct ClosedJob {
   pub id: u64;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[bool]) {
+    let rp = rpo.raw();
     let k = sv.findSrv(self.id);
     if k >= sv.srvs.bound() {
       actors.answerNow[bool](rp, true);
@@ -642,13 +644,13 @@ struct ClosedJob {
 struct WaitingJob {
   pub id: u64;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[u64]) {
     let k = sv.findSrv(self.id);
     var n = 0u64;
     if k < sv.srvs.bound() {
       n = u64.from((sv.srvAt(k) as &SrvRec).ready.len());
     }
-    actors.answerNow[u64](rp, n);
+    rp.answer(n);
   }
 }
 
@@ -656,7 +658,8 @@ struct WaitingJob {
 struct NextJob {
   pub id: u64;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[Exchange, ServerError]]) {
+    let rp = rpo.raw();
     let id = self.(id);
     let k = sv.findSrv(id);
     if k >= sv.srvs.bound() {
@@ -767,7 +770,8 @@ struct WriteJob {
   pub id: u64;
   pub data: String;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[usize, ServerError]]) {
+    let rp = rpo.raw();
     let srv, slot, id, data = self.(srv, slot, id, data);
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {
@@ -796,7 +800,8 @@ struct FinishJob {
   pub slot: u32;
   pub id: u64;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[u64, ServerError]]) {
+    let rp = rpo.raw();
     let srv, slot, id = self.(srv, slot, id);
     let loc = locate(sv, srv, slot, id);
     if loc.ex as usize == 0usize {

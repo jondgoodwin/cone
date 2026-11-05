@@ -247,12 +247,16 @@ fn onSinkEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: u
 
 // A fetch whose response an actor reads as it comes: the request, and whether
 // as events; the head's arrival answers the reply the 'await' gives
-struct StreamOpenJob {
+//
+// R is the stream's Result (BodyStream or EventStream), which 'asEvents' says:
+// the raw reply is kept in the record, and answered there by that flag
+struct StreamOpenJob[R] {
   pub id: u64;
   pub req: httpclient.Request;
   pub asEvents: bool;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[R]) {
+    let rp = rpo.raw();
     let id, req, asEvents = self.(id, req, asEvents);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
@@ -272,13 +276,17 @@ struct StreamOpenJob {
 }
 
 // The next piece of a stream, for the reply the 'await' gives
-struct StreamReadJob {
+//
+// R is the read's Result (a String's or an Event's), which 'asEvents' says, as
+// StreamOpenJob's
+struct StreamReadJob[R] {
   pub client: u64;
   pub slot: u32;
   pub id: u64;
   pub asEvents: bool;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[R]) {
+    let rp = rpo.raw();
     let client, slot, id, asEvents = self.(client, slot, id, asEvents);
     let k = sv.findClient(client);
     var s = null as *StreamRec;
@@ -335,7 +343,8 @@ struct StreamToJob {
   pub req: httpclient.Request;
   pub sink: ChunkSink;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[BodyHead, FetchError]]) {
+    let rp = rpo.raw();
     let id, req, sink = self.(id, req, sink);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
