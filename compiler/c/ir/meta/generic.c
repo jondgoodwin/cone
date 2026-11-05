@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <assert.h>
 
+static int genericAdoptMode();
+
 // Hook every parameter, then resolve what follows each: a bound may name a
 // parameter declared after it, '[S Stack[T], T]'
 void genericParmsNameRes(NameResState *pstate, Nodes *parms) {
