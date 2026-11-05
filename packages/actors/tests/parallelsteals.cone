@@ -1,0 +1,62 @@
+// stats().taskSteals is the number of loop pieces stolen, counted per worker
+// and summed (stealTask, parallel.cone). A count with no timing in it: two
+// workers; an actor's behaviour (so on a worker) runs a loop of two items with
+// a grain of 1, 200 times. The loop splits at once: the upper item goes on the
+// worker's deque, the lower runs on the worker, and that body waits until the
+// upper item has run. The worker is busy waiting, so the upper item can only
+// be taken by the other worker, by stealTask: exactly one steal a loop. After
+// the stop, which makes the totals the run's, stats().taskSteals is exactly 200.
+
+mod parallelsteals;
+
+import testing use *;
+import thread;
+import actors;
+
+const loops = 200u64;
+
+struct Probe {
+  pub flag: Atomic[u64];          // 1 once the upper item has run
+  pub upperRan: Atomic[u64];
+  pub lowerRan: Atomic[u64];
+  pub finished: Atomic[u64];
+}
+
+let probe: Probe;
+
+fn @initpure init() {
+  probe = Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Looper {
+  pub async fn run(self) {
+    var k = 0u64;
+    while k < loops {
+      probe.flag.store(0u64);
+      actors.parallelRange(0usize, 2usize, 1usize, fn(lo: usize, hi: usize) {
+        if lo == 0usize {
+          probe.lowerRan.add(1u64);
+          while probe.flag.load() == 0u64 {thread.yieldNow();}
+        } else {
+          probe.upperRan.add(1u64);
+          probe.flag.store(1u64);
+        }
+      });
+      k = k + 1u64;
+    }
+    probe.finished.store(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 2u32));
+  let l = Looper();
+  l.run();
+  while probe.finished.load() == 0u64 {thread.yieldNow();}
+  finalAll();
+  expectUInt(probe.lowerRan.load(), loops, "every loop's lower item ran");
+  expectUInt(probe.upperRan.load(), loops, "every loop's upper item ran");
+  expectUInt(actors.stats().taskSteals, loops, "one steal a loop, counted exactly");
+  done()
+}

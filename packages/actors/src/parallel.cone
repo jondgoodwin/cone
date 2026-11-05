@@ -255,27 +255,51 @@ fn curDeque(s: *Sched) *TaskDeque {
 
 // Take the oldest task of another worker's deque, or of the shared one: into
 // *out, false if there is none. w is the thief if it is a worker, so that it
-// does not look in its own deque; its look begins at a worker that moves on
-// at every steal.
+// does not look in its own deque. Where its look begins (stealRot) is the
+// thief's own, a worker's in its stats slot and a plain thread's in a thread
+// local, so that no steal writes a line other threads write; each begins at a
+// different worker and moves on one at every call, and every call looks at
+// every deque. A steal is counted the same way (taskSteals): in the worker's
+// slot, or for a plain thread in taskStealsTotal; stats() sums them.
 fn stealTask(s: *Sched, w: *Worker, out: *Task) bool {
   let n = (*s).nworkers;
-  let r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed);
+  var slot = 0usize as *StatSlot;
+  var r = 0u32;
+  if w as usize != 0usize {
+    slot = (*w).stat;
+    r = (*slot).stealRot;
+    (*slot).stealRot = r + 1u32;
+  } else {
+    r = extRot;
+    extRot = r + 1u32;
+  }
   var i = 0u32;
   while i < n {
     let v = workerAt(s, (r + i) % n);
     if v as usize != w as usize {
       if dequeTakeOldest(tasksOf(v), out) {
-        taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
+        countTaskSteal(slot);
         return true;
       }
     }
     i = i + 1u32;
   }
   if dequeTakeOldest(extDeque(s), out) {
-    taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
+    countTaskSteal(slot);
     return true;
   }
   false
+}
+
+// Count one piece stolen: into the thief's own slot (only it writes the count;
+// stats() reads it meanwhile), or, for a thread that is no worker (no slot), into
+// the one atomic those threads share
+fn countTaskSteal(slot: *StatSlot) {
+  if slot as usize != 0usize {
+    tally(&(*slot).taskSteals as *u64, 1u64);
+  } else {
+    taskStealsTotal.addOrdered(1u64, MemOrder.Relaxed);
+  }
 }
 
 // Run task t: split it while it is longer than the loop's grain, putting the

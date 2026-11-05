@@ -4097,7 +4097,6 @@ struct Sched {
   pub workers: *Worker;
   pub threads: *thread.Thread[u32];
   pub extTasks: TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
-  pub stealRot: u32;            // where the next steal of a piece starts looking (atomic)
   pub liveScheduled: u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
@@ -4109,6 +4108,9 @@ let running: Atomic[usize];
 
 // The worker this thread is, or 0
 var @threadlocal me: usize = 0usize;
+
+// Where a thread that is no worker begins its next look for a piece to steal
+var @threadlocal extRot: u32 = 0u32;
 
 fn workerAt(s: *Sched, i: u32) *Worker {
   (*s).workers + usize.from(i)
@@ -4822,12 +4824,14 @@ struct StatSlot {
   pub parks: u64;               // sleeps on the park word
   pub reparks: u64;             // returns from the wait unchosen, slept again at once
   pub marksSpent: u64;          // parks left with work seen after a notify had marked the worker
-  pub gap: Array[u8, 48];       // a slot is two cache lines, so that no two workers' slots share one
+  pub taskSteals: u64;          // loop pieces this worker took by stealTask (stats() adds these to taskStealsTotal)
+  pub stealRot: u32;            // where this worker's next steal of a piece starts looking: its own, no atomic (parallel.cone)
+  pub gap: Array[u8, 36];       // a slot is two cache lines, so that no two workers' slots share one
 }
 
 let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
 let statWorkers: Atomic[u32];   // how many slots; 0 before the workers have started
-let taskStealsTotal: Atomic[u64];   // pieces stealTask took (Relaxed): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
+let taskStealsTotal: Atomic[u64];   // pieces stealTask took for threads that are no worker (Relaxed; a worker counts in its slot): the oldest of another worker's deque, or of the shared one when a worker idle of actors or a thread waiting on a loop looks there; not what a worker takes from the shared deque ahead of its actors
 
 fn @initpure init() {
   segAllocs = Atomic[u64].of(0u64);
@@ -4933,6 +4937,7 @@ fn startWorkers() {
   while i < n {
     let w = workerAt(s, i);
     (*w).stat = (slots + usize.from(i) * slotBytes) as *StatSlot;
+    (*(*w).stat).stealRot = i + 1u32;
     (*w).sched = s;
     (*w).index = i;
     (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
@@ -5128,6 +5133,7 @@ pub fn stats() Stats {
     st.parks = st.parks + mem.atomicLoad[u64](&(*slot).parks as *u64, MemOrder.Relaxed);
     st.reparks = st.reparks + mem.atomicLoad[u64](&(*slot).reparks as *u64, MemOrder.Relaxed);
     st.marksSpent = st.marksSpent + mem.atomicLoad[u64](&(*slot).marksSpent as *u64, MemOrder.Relaxed);
+    st.taskSteals = st.taskSteals + mem.atomicLoad[u64](&(*slot).taskSteals as *u64, MemOrder.Relaxed);
     i = i + 1u32;
   }
   st
