@@ -1134,7 +1134,7 @@ excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
 [scenario.module_final_globals]
 category = "run"
-description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
+description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in the reverse of declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
 tags = ["genllvm", "runtime"]
 
 [scenario.module_init_link]
@@ -1507,6 +1507,46 @@ contains = [
   "global internal thread_local holder[i64].inner.hits comdat nodeduplicate",
 ]
 excludes = ["holder.inner", "inner[i64]"]
+
+# A generic instance only a package uses: q uses g[i64] and the program never
+# names it. q's include file records the instance, so the program's compile
+# builds it and the stitched init and final place it, once, before q's init and
+# after q's final. g[i64].inits reads 1: the program's object and q's both hold
+# the instance's 'init', shared, and the stitched init calls it once.
+[scenario.module_generic_pkguse]
+category = "run"
+description = "A generic instance only a package uses, named nowhere in the program: its init runs once before the package's and its final once after it"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+# The program's object defines the instance q's include file records, from g's
+# include file, though no line of the program names it
+[[scenario.module_generic_pkguse.check]]
+name = "the-program-defines-the-instance-only-q-uses"
+target = "symbols"
+contains = ["define linkonce_odr g[i64].init comdat any"]
+
+# Once only: q and q2 both use g[i64], and the program names it too. The
+# instance is one, built in four objects and merged at link, and its init and
+# final run once each (g init, q init, q2 init; the finals reversed).
+[scenario.module_generic_pkguseonce]
+category = "run"
+description = "A generic instance used by two packages and named by the program too: its init and final each run once"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild", "q2/q2.conebuild"]
+include = ["include/g.cone", "include/q.cone", "include/q2.cone"]
+
+# A generic struct's statics, in an instance only a package uses. A static takes
+# a literal (ErrorNotLit otherwise), so it has no run-time init and nothing to
+# finalize: the instance only q uses has nothing for the stitched init to miss.
+# Pinned: the program's read of the static and q's calls meet in one copy.
+[scenario.module_generic_struct_static]
+category = "run"
+description = "A generic struct's static, in an instance only a package uses: one shared copy, and nothing to init or finalize"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
 
 # Every kind across packages, as module_generic_link carries the flat case: g
 # declares an enum, a generic type, a generic function, a trait and a type
@@ -3880,6 +3920,21 @@ description = "A library global whose inferred type is another package's submodu
 tags = ["genllvm"]
 diagnostics = 1
 
+# A generic instance the include file cannot record: g[bool] has no spelling in
+# '__uses', and g declares an 'init', so the package's include file is refused
+# rather than leaving g[bool]'s init to be missed unseen.
+[scenario.module_generic_pkguse_unspelled]
+category = "reject"
+description = "A package using an instance of a generic module with an 'init' that its include file cannot spell (a non-number argument) is refused, since the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
+[scenario.module_generic_pkguse_submodule]
+category = "reject"
+description = "A package's submodule using an instance of a generic module with an 'init' is refused, since the root's include file cannot record it and the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
 [scenario.module_gpu_unavailable]
 category = "reject"
 description = "In GPU code a reference to a function, a virtual reference made from a reference, and an allocation are refused where they are written; a call by name, a generic over a signature or a trait, and a struct built as a value are not"
@@ -4127,6 +4182,21 @@ diagnostics = 1
   contains = ["define"]
   excludes = ["toDebug", "debugArray"]
 
+[scenario.module_text_noformat]
+  category = "compile"
+  description = "A program that never imports the format package, optimized, holds none of its symbols: the number wrappers cost nothing to a program that does not use them"
+  tags = ["genllvm"]
+
+  [[scenario.module_text_noformat.run]]
+  name = "library"
+  options = ["--library"]
+
+  [[scenario.module_text_noformat.check]]
+  name = "no-format-code"
+  target = "llvmir"
+  contains = ["define"]
+  excludes = ["FloatFormat", "RadixText", "SignedText"]
+
 [scenario.module_debug_private]
 category = "run"
 description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
@@ -4207,7 +4277,7 @@ options = ["--library"]
 [[scenario.module_text_wants_ir.check]]
 name = "the-flag-is-loaded-and-the-record-is-behind-the-branch"
 target = "llvmir"
-contains = ["load i1, ptr %0", "br i1 %1, label %ifblk, label %endif", "ifblk:"]
+contains = ["load i1, ptr %0", ", label %ifblk, label %endif", "ifblk:"]
 
 [scenario.module_trace_wants_ir]
 category = "compile"
@@ -4248,3 +4318,19 @@ tags = ["runtime"]
 category = "run"
 description = "A struct holding a concrete actor's handle has a generated toDebug, and writes the handle as the actor's own name, and an actor-trait handle as the trait's name"
 tags = ["typecheck", "runtime"]
+
+[scenario.module_final_setup_order]
+category = "run"
+description = "A module's globals are finalized in the reverse of the order they are set, which is the order 'init' first assigns each, not the order declared: a global 'init' never sets is set first; a branch whose arms set the same globals in different orders takes the first order written; an earlier-declared global set from a later one is finalized before it"
+tags = ["genllvm", "runtime"]
+
+[scenario.module_init_reach]
+category = "run"
+description = "A module's 'init' calls its own functions that read its globals once those are set: a read counts at the call through two levels of helpers, a cycle of helpers ends, a global set after the calls and not read by them is not counted, a method and a generic function of the module are read after the set, and a call through a function reference or a virtual call, which cannot be followed, passes (a known gap that 'trust' closes)"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_init_reach_reject]
+category = "reject"
+description = "A call 'init' makes reads a global of its module that 'init' has not set yet, through a helper, through two levels of helpers, round a cycle of helpers, through a method of a type the module declares, a generic function, a generic method, and a method of a generic type's instance; a helper that sets a global and then reads it, called before 'init' sets it, is refused (its assignment is not init's); the same calls after the set are accepted"
+tags = ["typecheck"]
+diagnostics = 8

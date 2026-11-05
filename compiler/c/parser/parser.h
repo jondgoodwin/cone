@@ -390,6 +390,8 @@ INode *parseMetaMemberCond(void);
 INode *parseHashIfExpr(ParseState *parse);
 // A '#elif' or '#else' met where no chain is waiting for it: reported and read past
 void parseMetaStray(ParseState *parse);
+// '#size(T)' or '#align(T)' in expression position, with the lexer on the word
+INode *parseMetaLayout(ParseState *parse);
 // '#os', '#arch', '#debug', '#defined' or '#define' met outside a '#if' condition: reported and passed
 void parseMetaFactStray(void);
 
@@ -409,6 +411,16 @@ void parseMetaAssign(ParseState *parse);
 INode *parseMetaTerm(ParseState *parse);
 // Is a meta variable the '#f' of a '#each #f in #fields(T)' being read? 'x.#f' splices its field
 int parseMetaIsFieldVar(Name *name);
+// '#each #f in #fields(T) { members }' in a generic struct's braces, the lexer on the '#each': 'items'
+// reads the members through the '}', and each is marked as the loop's (made once per field of T)
+typedef void (*MetaMembersFn)(ParseState *parse, void *ctx);
+INode *parseHashEachArg(ParseState *parse);
+INode *parseArgValue(ParseState *parse);
+void parseHashEachMembers(ParseState *parse, StructNode *strnode, MetaMembersFn items, void *ctx);
+// Does a generated member's name begin here ('#f' of a loop, or '#name(...)'), and reading it:
+// the name the template holds it under, and what the instance joins to a field's name
+int parseMetaIsGenName(void);
+Name *parseMetaGenName(ParseState *parse, GenName **out);
 // A block of statements keeps the meta variables it declares to itself: the mark taken as it
 // begins is given back as it ends
 uint32_t parseMetaScope(void);

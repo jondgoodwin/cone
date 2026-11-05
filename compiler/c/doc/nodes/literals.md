@@ -679,8 +679,12 @@ leaves an out-of-range literal) so nothing folded from it reports again:
   exact result the integer type cannot hold, the smallest value divided by or
   taken the remainder of by -1 (LLVM's `sdiv` and `srem` both have no value
   there), a float result past the type's finite range, a float converted to an
-  integer that cannot hold its truncated value (`fptosi`/`fptoui` poison), and
-  an `f64` converted to an `f32` past its range. The bitwise operators cannot
+  integer that cannot hold its truncated value (the run time saturates it, but a
+  constant is refused rather than folded to that; `fnCallNumberFrom` folds a
+  float-to-integer or number-to-`char` conversion of constants in any
+  expression, not only where a constant is required), and
+  an `f64` converted to an `f32` past its range. `ErrorConstChar` (1600) is the
+  same for a number converted to a `char` that is no code point. The bitwise operators cannot
   overflow, and `-` on an unsigned constant is negation in its own width, as on
   an unsigned literal;
 - `ErrorConstDivZero`: a division or remainder by zero, integer or float;

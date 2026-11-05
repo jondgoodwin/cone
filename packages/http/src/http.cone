@@ -38,7 +38,7 @@
 //   HttpError: e.kind  e.status  e.noResponse  e.detail  e.message()     (ERRORS)
 //     e.code  e.scope  e.isRetrySafe()  HttpError.coded(kind, code, scope, detail)
 //   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset
-//   ErrorScope: Stream Connection  kindName(k)
+//   ErrorScope: Stream Connection
 //
 // METHODS. A method is a token, compared case-sensitively ('get' is not
 // GET). The nine RFC 9110 and RFC 5789 define are variants of Method; any
@@ -114,7 +114,7 @@
 
 mod http;
 
-import collections use List, String, Error;
+import collections use List, String;
 
 // ---------------------------------------------------------------------------
 // Methods
@@ -275,18 +275,19 @@ pub struct BodyLength is Default {
 
 // What kind of failure (see the package's header, ERRORS)
 pub enum ErrorKind {
-  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset
-}
+  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset;
 
-// The name of an error's kind, in lower case
-pub fn kindName(k: ErrorKind) &str {
-  if k == ErrorKind.Malformed {"malformed"}
-  else if k == ErrorKind.TooLarge {"too large"}
-  else if k == ErrorKind.Unsupported {"unsupported"}
-  else if k == ErrorKind.Closed {"closed"}
-  else if k == ErrorKind.TimedOut {"timed out"}
-  else if k == ErrorKind.Refused {"refused"}
-  else {"reset"}
+  // The kind's name, in lower case: 'too large'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let k = *self;
+    out <- if k == ErrorKind.Malformed {"malformed"}
+      else if k == ErrorKind.TooLarge {"too large"}
+      else if k == ErrorKind.Unsupported {"unsupported"}
+      else if k == ErrorKind.Closed {"closed"}
+      else if k == ErrorKind.TimedOut {"timed out"}
+      else if k == ErrorKind.Refused {"refused"}
+      else {"reset"};
+  }
 }
 
 // What a failure ended: one stream of a multiplexed connection (HTTP/2,
@@ -324,8 +325,9 @@ pub struct HttpError is Default, Error {
   pub fn isRetrySafe(self: &) bool {kind == ErrorKind.Refused}
 
   // 'malformed: a header field's name has a space before its colon'
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
   pub fn message(self: &) String {
-    var out = String.from(kindName(kind));
+    var out = String() <- kind;
     out.append(": ");
     out.append(detail.view());
     out

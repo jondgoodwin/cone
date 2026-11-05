@@ -12,24 +12,17 @@ import testing use *;
 import collections use *;
 import binarytext;
 
-fn kindName(k: &binarytext.DecodeErrorKind) &str {
-  match k {
-    case is BadCharacter { "BadCharacter" }
-    case is BadPadding { "BadPadding" }
-    case is BadLength { "BadLength" }
-    case is NonCanonical { "NonCanonical" }
-  }
-}
+fn kindName(k: &binarytext.DecodeErrorKind) String { String() <- toDebug(k) }
 
 // The result is the named fault, at that offset, at that byte (0: at the end)
 fn isRefusal(res: Result[List[u8], binarytext.DecodeError], kind: &str, offset: usize, byte: u8, label: &str) {
   match res {
     case is Ok { expectStr("<decoded>", kind, label); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), kind, label);
+      expectStr(kindName(&e.kind).view(),kind, label);
       expectUInt(u64.from(e.offset), u64.from(offset), label);
       expectUInt(u64.from(e.byte), u64.from(byte), label);
-      let m = e.message();
+      let m = String() <- e;
       expect(m.view().startsWith("binarytext: "), label);
       var at = String.from(" at offset ");
       at.appendUInt(u64.from(offset));
@@ -42,7 +35,7 @@ fn isBytes(res: Result[List[u8], binarytext.DecodeError], want: &str, label: &st
   match res {
     case let Ok(bytes) { expectStr(bytes.view(), want, label); }
     case let Err(e) {
-      let m = e.message();
+      let m = String() <- e;
       expectStr(m.view(), "<decoded>", label);
     }
   }
@@ -56,7 +49,7 @@ fn isHex(res: Result[List[u8], binarytext.DecodeError], wantHex: &str, label: &s
       expectStr(h.view(), wantHex, label);
     }
     case let Err(e) {
-      let m = e.message();
+      let m = String() <- e;
       expectStr(m.view(), "<decoded>", label);
     }
   }
@@ -192,7 +185,7 @@ fn main() i32 {
   match dec.update("F!", &mut out) {
     case is Ok { expect(false, "a bad byte in the second chunk was accepted"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "BadCharacter", "second chunk");
+      expectStr(kindName(&e.kind).view(),"BadCharacter", "second chunk");
       expectUInt(u64.from(e.offset), 7u64, "offset 7 of the stream, 1 of the chunk");
       expectUInt(u64.from(e.byte), 33u64, "the byte");
     }
@@ -202,7 +195,7 @@ fn main() i32 {
   match dec.update("Zm9v", &mut out) {
     case is Ok { expect(false, "a failed decoder went on"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "BadCharacter", "same fault again");
+      expectStr(kindName(&e.kind).view(),"BadCharacter", "same fault again");
       expectUInt(u64.from(e.offset), 7u64, "same offset again");
     }
   }
@@ -225,7 +218,7 @@ fn main() i32 {
   match dec.update("=Z", &mut out) {
     case is Ok { expect(false, "a digit after the padding was accepted"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "BadPadding", "after the padding, across chunks");
+      expectStr(kindName(&e.kind).view(),"BadPadding", "after the padding, across chunks");
       expectUInt(u64.from(e.offset), 4u64, "offset 4");
     }
   }
@@ -237,7 +230,7 @@ fn main() i32 {
   match hd.finish(&mut out) {
     case is Ok { expect(false, "a half pair at the end was accepted"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "BadLength", "hex end");
+      expectStr(kindName(&e.kind).view(),"BadLength", "hex end");
       expectUInt(u64.from(e.offset), 3u64, "hex end offset");
     }
   }

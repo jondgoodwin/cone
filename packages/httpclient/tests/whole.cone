@@ -93,7 +93,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   }
 }
 
-fn number(s: &str) u64 { collections.parseUInt(s) || 0u64 }
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv: &mut Srv, j: usize) {
@@ -341,8 +341,8 @@ fn seen() Seen {
 }
 
 fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
-  let n = eventName(e.kind);
-  s.kinds.appendByte(n[0usize]);
+  let n = String() <- toDebug(&e.kind);
+  s.kinds.appendByte(n.view()[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.clone();
@@ -428,14 +428,17 @@ fn serveThread(a: ServerArgs) u64 {
 
 fn main() i32 {
   // Names and URLs are text, a '&str'
-  let stageText: &str = stageName(Stage.Url);
-  let intentText: &str = intentName(Intent.Urgent);
-  let eventText: &str = eventName(EventKind.Done);
+  let urlStage = Stage.Url;
+  let stageText = String() <- toText(&urlStage);
+  let urgent = Intent.Urgent;
+  let finished = EventKind.Done;
+  let intentText = String() <- toText(&urgent);
+  let eventText = String() <- toDebug(&finished);
   let sample = Request.get("http://127.0.0.1/");
   let methodText: &str = sample.methodName();
   let failure = Failure.make(Stage.Url, 0u32, ErrorKind.Malformed, "text");
   let failText: &str = failure.error.detail.view();
-  assert(stageText == "url" && intentText == "urgent" && eventText == "Done" && methodText == "GET" && failText == "text");
+  assert(stageText.view() == "url" && intentText.view() == "urgent" && eventText.view() == "Done" && methodText == "GET" && failText == "text");
   var portTx: Sender[u16];
   var portRx: Receiver[u16];
   portTx, portRx = Channel[u16].make();
@@ -497,7 +500,7 @@ fn main() i32 {
     while k < out.len() {
       let e = &mut out[k];
       if e.id == other {
-        kinds.appendByte(eventName(e.kind)[0usize]);
+        kinds.appendByte((String() <- toDebug(&e.kind)).view()[0usize]);
         if e.kind == EventKind.Data {
           body.appendBytes(e.buf.view());
           cl.release(e.id, e.buf.len());

@@ -51,11 +51,11 @@
 //   readAltSvc(value, host): AltSvc.H3(port, maxAge) Clear Nothing
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
-//   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
+//   Intent: Urgent Visible Prefetch Background;  toText(i)               (INTENTS)
 //   Sink.Here(token)  Sink.Chan(token, tx)                              (SINKS)
 //   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
 //     e.trailers e.failure e.timing;  e.isTerminal()
-//   EventKind: Response Data End Done Failed Cancelled TimedOut;  eventName(k)
+//   EventKind: Response Data End Done Failed Cancelled TimedOut;  toDebug(k)
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
 //   Failure: f.stage f.code f.error f.unsent f.attempts f.message();  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
@@ -325,7 +325,7 @@ mod httpclient;
 
 import libc;
 import slots use SlotTable;
-import collections use List, String, Error;
+import collections use List, String;
 import time use Instant, Duration;
 import sync use Sender;
 import iobuf use IoBuf;
@@ -346,15 +346,16 @@ pub enum Intent {
   Urgent,        // the frame is waiting on it
   Visible,       // in view now: the default
   Prefetch,      // likely soon
-  Background    // speculative
-}
+  Background;    // speculative
 
-// The name of an intent
-pub fn intentName(i: Intent) &str {
-  if i == Intent.Urgent {"urgent"}
-  else if i == Intent.Visible {"visible"}
-  else if i == Intent.Prefetch {"prefetch"}
-  else {"background"}
+  // The intent's name, in lower case: 'urgent'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let i = *self;
+    out <- if i == Intent.Urgent {"urgent"}
+      else if i == Intent.Visible {"visible"}
+      else if i == Intent.Prefetch {"prefetch"}
+      else {"background"};
+  }
 }
 
 // Its place in the order: 0 first
@@ -481,22 +482,23 @@ pub enum Stage {
   Tls,           // TLS failed: the handshake, the certificate, a record
   Closed,        // its connection closed before the exchange ended
   Limit,         // a bound refused it (fetchWhole's limit; a pool's buffers)
-  Redirect      // too many redirects, or a Location that cannot be followed
-}
+  Redirect;      // too many redirects, or a Location that cannot be followed
 
-// The name of a stage, in lower case
-pub fn stageName(s: Stage) &str {
-  if s == Stage.Url {"url"}
-  else if s == Stage.Queue {"queue"}
-  else if s == Stage.Resolve {"resolve"}
-  else if s == Stage.Connect {"connect"}
-  else if s == Stage.Read {"read"}
-  else if s == Stage.Write {"write"}
-  else if s == Stage.Http {"http"}
-  else if s == Stage.Tls {"tls"}
-  else if s == Stage.Closed {"closed"}
-  else if s == Stage.Limit {"limit"}
-  else {"redirect"}
+  // The stage's name, in lower case: 'connect'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let s = *self;
+    out <- if s == Stage.Url {"url"}
+      else if s == Stage.Queue {"queue"}
+      else if s == Stage.Resolve {"resolve"}
+      else if s == Stage.Connect {"connect"}
+      else if s == Stage.Read {"read"}
+      else if s == Stage.Write {"write"}
+      else if s == Stage.Http {"http"}
+      else if s == Stage.Tls {"tls"}
+      else if s == Stage.Closed {"closed"}
+      else if s == Stage.Limit {"limit"}
+      else {"redirect"};
+  }
 }
 
 // Why a fetch failed (see the package's header, FAILURES)
@@ -541,8 +543,9 @@ pub struct Failure is Error {
   // failure's words, and the system's failure (its kind, number and text)
   // when there is one. A Tls stage's number is its certificate verifier's,
   // whose words already hold the OS's text and number
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
   pub fn message(self: &) String {
-    var out = String.from(stageName(stage));
+    var out = String() <- stage;
     out.append(": ");
     out.append(error.message().view());
     if code != 0u32 && stage != Stage.Tls {
@@ -590,17 +593,6 @@ pub enum EventKind {
   Failed,        // FINAL: failure, timing
   Cancelled,     // FINAL
   TimedOut      // FINAL
-}
-
-// The name of an event's kind
-pub fn eventName(k: EventKind) &str {
-  if k == EventKind.Response {"Response"}
-  else if k == EventKind.Data {"Data"}
-  else if k == EventKind.End {"End"}
-  else if k == EventKind.Done {"Done"}
-  else if k == EventKind.Failed {"Failed"}
-  else if k == EventKind.Cancelled {"Cancelled"}
-  else {"TimedOut"}
 }
 
 // What happened to a fetch: its kind, and the fields that kind fills (the

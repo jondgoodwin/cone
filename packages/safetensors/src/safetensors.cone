@@ -23,7 +23,7 @@
 
 mod safetensors;
 
-import collections use Error, List, String;
+import collections use List, String;
 import path use Path;
 import fs;
 import json use Json;
@@ -40,17 +40,17 @@ pub fn halfBitsToF32(h: u16) f32 {
   let e = u32.from((h >> 10u16) & 0x1Fu16);
   let m = u32.from(h & 0x3FFu16);
   if e == 0u32 {
-    if m == 0u32 { return sign as f32; }
+    if m == 0u32 { return f32.fromBits(sign); }
     let p = 31u32 - m.leadingZeros();
     let frac = (m << (23u32 - p)) & 0x7FFFFFu32;
-    return (sign | ((p + 103u32) << 23u32) | frac) as f32;
+    return f32.fromBits(sign | ((p + 103u32) << 23u32) | frac);
   }
-  if e == 31u32 { return (sign | 0x7F800000u32 | (m << 13u32)) as f32; }
-  (sign | ((e + 112u32) << 23u32) | (m << 13u32)) as f32
+  if e == 31u32 { return f32.fromBits(sign | 0x7F800000u32 | (m << 13u32)); }
+  f32.fromBits(sign | ((e + 112u32) << 23u32) | (m << 13u32))
 }
 
 // The f32 a bfloat16's 16 bits stand for (exact: the top half of an f32)
-pub fn bfloat16BitsToF32(h: u16) f32 { (u32.from(h) << 16u32) as f32 }
+pub fn bfloat16BitsToF32(h: u16) f32 { f32.fromBits(u32.from(h) << 16u32) }
 
 pub struct TensorInfo {
   pub name: String;
@@ -112,7 +112,7 @@ pub struct Safetensors {
           while i < t.elements() {
             let w = u32.from(b[4usize * i]) | (u32.from(b[4usize * i + 1usize]) << 8u32)
               | (u32.from(b[4usize * i + 2usize]) << 16u32) | (u32.from(b[4usize * i + 3usize]) << 24u32);
-            out.push(w as f32);
+            out.push(f32.fromBits(w));
             i = i + 1usize;
           }
         } else {
@@ -139,7 +139,7 @@ pub struct Safetensors {
         while i < t.elements() {
           let w = u32.from(b[4usize * i]) | (u32.from(b[4usize * i + 1usize]) << 8u32)
             | (u32.from(b[4usize * i + 2usize]) << 16u32) | (u32.from(b[4usize * i + 3usize]) << 24u32);
-          out.push(w as i32);
+          out.push(i32.from(w));
           i = i + 1usize;
         }
         Some[List[i32]](out)
@@ -163,17 +163,21 @@ pub struct Safetensors {
 pub struct SafetensorsError is Error, Sendable {
   pub reason: String;
 
-  pub fn message(self: &) String { reason.clone() }
+  pub fn toText(self: &, out: &uni TextOut) { out <- reason.view(); }
+  // Kept until its callers outside this package move to 'String() <- e'
+  pub fn message(self: &) String { String() <- self }
 
   // What '?' makes of a file that could not be mapped, or of a header that is not JSON
   pub fn fromFs overload from(e: fs.FsError) SafetensorsError {
     var m = String.from("safetensors: ");
-    m <- e.message().view();
+    let why = String() <- e;
+    m <- why.view();
     SafetensorsError(m)
   }
   pub fn fromJson overload from(e: json.JsonError) SafetensorsError {
     var m = String.from("safetensors: the header is not JSON: ");
-    m <- e.message().view();
+    let why = String() <- e;
+    m <- why.view();
     SafetensorsError(m)
   }
 }

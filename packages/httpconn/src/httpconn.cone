@@ -60,7 +60,7 @@
 //   Event: e.kind e.token e.conn e.req e.stream, and per kind e.peer e.clean e.failure  (EVENTS)
 //     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
-//     Writable Done Failed Cancelled TimedOut;  eventName(k)
+//     Writable Done Failed Cancelled TimedOut;  toDebug(k)
 //   Failure: f.stage f.code f.error f.unsent f.message()               (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
 //   Layer, Plain, plainLayer(), LayerMaker, PlainMaker                 (LAYERS)
@@ -325,7 +325,7 @@
 mod httpconn;
 
 import libc;
-import collections use List, Deque, Dict, String, Error;
+import collections use List, Deque, Dict, String;
 import time use Instant, Duration;
 import sync use Sender, Mutex;
 import iobuf use IoBuf, Chain;
@@ -481,19 +481,20 @@ pub enum Stage {
   Http,          // the core refused what came, or one of its deadlines passed
   Tls,           // the connection's layer failed: a TLS handshake refused, a record broken
   Closed,        // the connection closed, or was reset, before the request could finish
-  Limit         // a bound refused it
-}
+  Limit;         // a bound refused it
 
-// The name of a stage, in lower case
-pub fn stageName(s: Stage) &str {
-  if s == Stage.Resolve {"resolve"}
-  else if s == Stage.Connect {"connect"}
-  else if s == Stage.Read {"read"}
-  else if s == Stage.Write {"write"}
-  else if s == Stage.Http {"http"}
-  else if s == Stage.Tls {"tls"}
-  else if s == Stage.Closed {"closed"}
-  else {"limit"}
+  // The stage's name, in lower case: 'connect'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let s = *self;
+    out <- if s == Stage.Resolve {"resolve"}
+      else if s == Stage.Connect {"connect"}
+      else if s == Stage.Read {"read"}
+      else if s == Stage.Write {"write"}
+      else if s == Stage.Http {"http"}
+      else if s == Stage.Tls {"tls"}
+      else if s == Stage.Closed {"closed"}
+      else {"limit"};
+  }
 }
 
 // Why a request or a connection failed (see the package's header, FAILURES)
@@ -522,8 +523,9 @@ pub struct Failure is Error {
   // OS error 10061: No connection could be made ...)'. A Tls stage's
   // number is its certificate verifier's, whose words (the OS's text and
   // number) the layer's failureText holds already
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
   pub fn message(self: &) String {
-    var out = String.from(stageName(stage));
+    var out = String() <- stage;
     out.append(": ");
     out.append(error.message().view());
     if code != 0u32 && stage != Stage.Tls {
@@ -593,23 +595,6 @@ pub enum EventKind {
   Failed,        // FINAL: failure
   Cancelled,     // FINAL
   TimedOut      // FINAL
-}
-
-// The name of an event's kind
-pub fn eventName(k: EventKind) &str {
-  if k == EventKind.Connected {"Connected"}
-  else if k == EventKind.Accepted {"Accepted"}
-  else if k == EventKind.Closed {"Closed"}
-  else if k == EventKind.Request {"Request"}
-  else if k == EventKind.Response {"Response"}
-  else if k == EventKind.Interim {"Interim"}
-  else if k == EventKind.Data {"Data"}
-  else if k == EventKind.End {"End"}
-  else if k == EventKind.Writable {"Writable"}
-  else if k == EventKind.Done {"Done"}
-  else if k == EventKind.Failed {"Failed"}
-  else if k == EventKind.Cancelled {"Cancelled"}
-  else {"TimedOut"}
 }
 
 // What happened: its kind, and the fields that kind fills (the rest are

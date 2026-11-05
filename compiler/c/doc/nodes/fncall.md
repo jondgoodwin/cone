@@ -299,6 +299,24 @@ becomes the call of the access `t.profile` (`fnCallFieldCall`), unless the field
 type cannot be called, which is `ErrorFldArgs`. Then generic substitution, which
 may finish the node entirely.
 
+**`parse` and `tryFrom` on a number type** (`fnCallNumberConvert`, beside
+`fnCallNumberFrom`, T5) are not lowered but rewritten: `i32.parse(s)` and
+`u8.tryFrom(x)` become the path `NumberConv[i32].parse(s)` and
+`NumberConv[u8].tryFrom(x)`, a generic struct in core (found through
+`strTypeDcl`'s module) whose static functions are ordinary Cone and carry nothing for a
+program that never calls them. A struct, not six generic functions, because the
+source type `S` of `tryFrom[S](x: S)` must be inferred from the argument by the
+ordinary generic call, which checks the argument once (pre-checking it and
+re-checking corrupted a method-call argument), and a partial explicit type
+argument list does not exist. A call through a type parameter bound to a number
+is the same rewrite once the receiver is a number type in the instance. A
+struct's own static `parse` is untouched. `parse` or `tryFrom` with the wrong
+number of values, or `parse` named without a call, is `ErrorNbrParse` (1597)
+or `ErrorNbrTryFrom` (1598); a wrong argument type is the ordinary
+`ErrorInvType` (parse) or `ErrorWhereUnmet` (tryFrom). The float reader behind
+`f64.parse` and `f32.parse` is conestd's `cone_parseF64` and `cone_parseF32`
+(floatfmt.cone), the exact decimal method, with no C library.
+
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
 skips the ordinary name-use check, which leaves `nameUseTypeCheck` free to

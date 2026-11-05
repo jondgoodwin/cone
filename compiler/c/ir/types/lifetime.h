@@ -223,7 +223,11 @@ void lifeSigCheck(struct FnSigNode *sig);
 // or in neither: those are all a call is checked against. Where their
 // parameters lend different parts (a trait's 'Self' and a struct's declaring
 // lifetimes), each parameter is compared whole.
-int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
+//
+// 'recv' says the first parameter of each is the receiver, and 'b''s is the
+// implementor 'a''s is: a trait spells it as the trait, naming none of the
+// implementor's brands, so 'b''s receiver is read as 'a''s.
+int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b, int recv);
 
 // Does the implementation 'impl' promise at least what the requirement 'req'
 // does, so that a call checked against 'req' is safe with 'impl'? Each part
@@ -231,7 +235,7 @@ int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 // where it may in 'req'; a parameter is ''static' only where 'req''s is; a
 // struct's slots are named apart wherever they are in 'req'. As
 // lifeSigsAgree, a parameter lending different parts in each is compared whole.
-int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req);
+int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req, int recv);
 
 // Spell what a signature promises about lifetimes into a type's symbol name
 // (nameType), where it differs from what the signature promises unannotated:
@@ -432,6 +436,11 @@ void lifeCanonBrands(Nodes *args);
 
 // Do two types carry the very same brands, name for name?
 int lifeBrandsEqual(INode *a, INode *b);
+
+// An argument inferred from a value, and the declared type's for the same
+// place, differing only in brands a call minted: do the declared one's brands,
+// put in the value's, make the types the same?
+int lifeBrandsAdopt(INode *inferred, INode *declared);
 
 // Is every invariant lifetime a body's type writes one the function's
 // signature names? Reports at 'at' those it does not, and answers 0.

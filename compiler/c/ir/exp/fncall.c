@@ -85,8 +85,12 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
         && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
         newnode->flags |= FlagSelfRecv;
     newnode->objfn = cloneNode(cstate, node->objfn);
-    if (node->args)
-        newnode->args = cloneNodes(cstate, node->args);
+    if (node->args) {
+        int errs = errors;
+        newnode->args = cloneFieldEachArgs(cstate, node->args);
+        if (errors != errs)
+            newnode->flags |= FlagEachFailed;
+    }
     newnode->methfld = cloneNode(cstate, node->methfld);
 
     // Inside a generic type's braces its bare name is the instance being cloned,
@@ -1042,7 +1046,7 @@ void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node) {
                 char *why = fnSigCallRefusal(argtype, parmtype, &whycode);
                 char privwhy[400];
                 if (why)
-                    errorMsgNode(*argsp, whycode, "%s", why);
+                    fnSigRefusalMsg(*argsp, whycode, why);
                 else if (structPrivateRefWhy(privwhy, sizeof(privwhy), argtype, parmtype))
                     errorMsgNode(*argsp, ErrorPrivateMatch, "Expression's type does not match declared parameter.%s", privwhy);
                 else
@@ -3477,7 +3481,111 @@ static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
 
     node->methfld = NULL;
     node->tag = TypeLitTag;
-    typeLitNbrFromCheck(node, nbrtype);
+    if (!typeLitNbrFromCheck(node, nbrtype))
+        return 1;
+    // A float into an integer, or a number into a char, takes a value for every
+    // input at run time (saturating; U+FFFD). A constant with no such value is
+    // refused here, in any expression, as a 'const' is, rather than left to the
+    // run time's answer (Bug 43). One that has a value stays what it is.
+    INode *srctype = itypeGetTypeDcl(((IExpNode*)nodesGet(node->args, 0))->vtype);
+    if ((nbrtype == (INode*)charType && srctype != (INode*)charType)
+        || (srctype->tag == FloatNbrTag && nbrtype != (INode*)boolType && (nbrtype->tag == IntNbrTag || nbrtype->tag == UintNbrTag)))
+        litFoldConst((INode**)nodep);
+    return 1;
+}
+
+// Core's struct of this name, or NULL. Core's module is reached through its
+// 'str', which the compiler adopts from it.
+static INode *fnCallCoreStruct(char *name) {
+    ModuleNode *mod = dclInfoGetModule((INode*)strTypeDcl);
+    if (mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    INode *found = namespaceFind(&mod->namespace, nametblFind(name, strlen(name)));
+    return found && found->tag == StructTag ? found : NULL;
+}
+
+// Is this a number type that reads text and converts checked: any of them but
+// bool and char, which are no quantities?
+static int fnCallIsQuantity(INode *type) {
+    return (type->tag == IntNbrTag || type->tag == FloatNbrTag
+        || (type->tag == UintNbrTag && type != (INode*)boolType && type != (INode*)charType));
+}
+
+// 'i32.parse(text)' and 'u8.tryFrom(x)': a number type's reading of text and its
+// checked conversion. A number type's methods are built in and hold no body
+// written in Cone, so the call is rewritten, once the receiver is known to be a
+// number type -- named directly, through an alias, or as the argument a type
+// parameter has in an instance -- to the same static function of core's
+// 'NumberConv[T]': 'NumberConv[i32].parse(text)', 'NumberConv[u8].tryFrom(x)'.
+// That is an ordinary path through an instance of a generic struct, and the
+// source type of a tryFrom is inferred by the call from its argument as any
+// generic function's type parameter is. The argument is not checked here, so it
+// is checked once. Returns 1 when the node was handled, lowered or refused, so
+// the caller stops.
+static int fnCallNumberConvert(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!isTypeNode(node->objfn) || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return 0;
+    Name *method = ((NameUseNode*)node->methfld)->namesym;
+    int isparse = method == parseName;
+    if (!isparse && method != tryFromName)
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (!fnCallIsQuantity(nbrtype))
+        return 0;
+    Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : ((NbrNode*)nbrtype)->namesym;
+    // Whatever goes wrong below, the expression has no type to give
+    node->vtype = errorType;
+
+    if (node->args == NULL || node->args->used != 1) {
+        errorMsgNode(node->args == NULL ? node->methfld : (INode*)node,
+            isparse ? ErrorNbrParse : ErrorNbrTryFrom,
+            isparse ? "%s.parse reads one text: %s.parse(text)" : "%s.tryFrom converts one number: %s.tryFrom(value)",
+            &written->namestr, &written->namestr);
+        return 1;
+    }
+    if (namedValRefuseArgs(node->args, "a call"))
+        return 1;
+    INode *target = fnCallCoreStruct("NumberConv");
+    if (target == NULL) {
+        errorMsgNode((INode*)node, ErrorNoMbr,
+            "core has no `NumberConv`, which a number's `%s` is made through.", &method->namestr);
+        return 1;
+    }
+
+    // 'NumberConv[i32]': the generic struct given the number type
+    NameUseNode *structuse = newNameUseNode(((StructNode*)target)->namesym);
+    inodeLexCopy((INode*)structuse, node->objfn);
+    structuse->dclnode = target;
+    FnCallNode *inst = newFnCallNode((INode*)structuse, 1);
+    inodeLexCopy((INode*)inst, node->objfn);
+    inst->flags |= FlagIndex;
+    nodesAdd(&inst->args, nbrtype);
+    node->objfn = (INode*)inst;
+    node->vtype = unknownType;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
+// 'f32.fromBits(b)': a static function the compiler declares on a number type
+// other than 'from'. The path is collapsed to the function as one through a
+// struct is (fnCallNameResPath), and the call goes on as any call of a function.
+// A name the type does not declare as a static function is left as it was, and
+// diagnosed as a path this does not collapse. Returns 1 when collapsed.
+static int fnCallNumberStatic(FnCallNode *node) {
+    if (!isTypeNode(node->objfn))
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)nbrtype, member->namesym);
+    if (found == NULL || found->tag != FnDclTag || (found->flags & FlagMethFld))
+        return 0;
+    member->dclnode = found;
+    member->flags |= FlagQualified;
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
     return 1;
 }
 
@@ -4489,11 +4597,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     INode *savedtype = fnCallExpectType;
     fnCallExpectNode = *nodep;
     fnCallExpectType = expectType;
+    int savedstated = genericExpectStated;
+    genericExpectStated = expectType != NULL && expectType == genericStatedType;
     int plainindex = ((*nodep)->flags & FlagIndex) && (*nodep)->methfld == NULL
         && !((*nodep)->flags & (FlagBorrow | FlagRange));
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    genericExpectStated = savedstated;
     if (plainindex)
         fnCallIndexPlace((INode**)nodep);
     // A call may store another variant over an enum reached through a reference others
@@ -4867,6 +4978,13 @@ static int fnCallCloneCopy(FnCallNode **nodep) {
 static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INode *expectType) {
     FnCallNode *node = *nodep;
 
+    // A '#each' among the arguments failed in the clone and said why; the arguments it would have
+    // made are missing, which is not another error to report
+    if (node->flags & FlagEachFailed) {
+        *nodep = (FnCallNode*)newErrorNode((INode*)node);
+        return;
+    }
+
     // 'C.Cursor' in an instance: the type C's argument says its bound's
     // associated type is, which stands in its place (genericAssocPathNameRes)
     if (genericAssocPathTypeCheck(pstate, (INode**)nodep))
@@ -5082,6 +5200,14 @@ static void fnCallTypeCheckNode(TypeCheckState *pstate, FnCallNode **nodep, INod
         // 'u64.from(count)': a number type's conversion
         else if (fnCallNumberFrom(pstate, nodep))
             return;
+        // 'i32.parse(text)', 'u8.tryFrom(x)': made through core's generic functions
+        else if (fnCallNumberConvert(pstate, nodep))
+            return;
+        // 'f32.fromBits(b)': a static function of a number type
+        else if (fnCallNumberStatic(node)) {
+            objfnChecked = 0;
+            calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+        }
         else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
@@ -5863,6 +5989,9 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
+    // Where this walk is a module's 'init', what a function of the module it
+    // calls reads counts as read here
+    modInitCall(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value
     // global, which no type of it shows: what it carries is the loan walk's
     // to check (pwStaticArgs)

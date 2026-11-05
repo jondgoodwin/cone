@@ -1013,6 +1013,16 @@ borrow is a reborrow of it, which lasts no longer than the outer borrow (Rust's
 reborrow through `&'a mut &'b mut`, `'a`), and keeps every loan, both near and
 far.
 
+A borrow copied out of what a call lent (`*(&mut b.kids[i])`, `*l.at(i)`, a
+deref of the call's result or of a reborrow of it, the value read being a
+borrow itself) carries what the call's receiver holds, not the loans the call
+made of the receiver or of the references it was lent (`pwSlotRead`, with
+`pwOwnCall` and `pwOwnLoans` recording them as `pwCall` ends). The copy points
+at what the slot holds, not into the list's block, so a later push does not
+move it. A call's result is unsure (near and far), so `pathSetThrough` could not
+tell this loan from the receiver's. Only a deref of the call's own result is
+read so; the reference to the slot and a name holding it keep the loan.
+
 **Slots.** A struct declaring lifetimes keeps its loans by lifetime, each
 lifetime a *slot*: an entry of a loan set may carry a slot's tag (bits beside
 `LoanFar`, `flowloan.h`), relative to the struct the holder's own type is, or,
@@ -1210,7 +1220,37 @@ or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
 `&mut a` may live at once and `a.alloc(Spawner(2, &mut a))` is one call. The
-third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
+arena holds what is stored in it through raw memory its fields do not show,
+so a by-value argument to a method of a `NoLoanMut` receiver is a *store into
+the arena*, wherever the receiver was reached (a local, a `&mut` parameter, a
+struct's field, a closure's capture, `new a[T](...)`): `pwCallStores`, with the
+receiver as the only place (`arenaplace`). A body may store into an arena only
+what outlives it: a global, what the arena already owns, and, for an arena
+local to the body, locals declared before it (the arena variable is a holder,
+and its death reads what it holds, `itypeDropReadsBorrow`, so a local declared
+after it is `ErrorFrozen`). Reached through a reference, it takes of the
+caller's loans only the reference's own parameter's (`loanArenaApart`: Bug 48's
+exception, the stored loan and the place are one parameter that points at a
+`NoLoanMut` container); a borrow from another parameter, a second arena's
+node included, is `ErrorCallEscape`, even under one lifetime name. Checked
+at the store, in the body, so a caller trusts the signature: a free function
+handed a `&mut Arena` is no store at its caller. A function whose result goes
+back into the arena names which parameter the result comes from (`ar: &'a mut
+Arena` and `&'a mut Node['a]`, the node type naming `'a` too: unnamed, a
+result's held part may come from an unnamed parameter and the store is
+refused, the message saying to name which parameter). Only a reference to the
+arena made by a cast from a raw pointer is trusted: it carries no loan but
+what was stored through it (`loanArenaChecked`), so its stores are unseen, and
+the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
+tests). Any other reference whose origin the walk cannot place (an arena
+reached through a method's result) may point anywhere, so no local's borrow is
+stored in it. A value and the receiver reached by one path (`home.alloc(Chain(
+n + 1, home))`: `pwStoredOnlyBy`, the same field path, nothing between that
+assigns or calls) stays in its arena; a copy of the path in another variable,
+or a second arena's path, is not exempt. A type that holds no
+borrow anywhere (`itypeHoldsNoBorrow`) is no place a borrow lands in
+(`loanStoredApart`). The third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
 called from `pwCall`): see "What is not held". A type need not declare it: the
 compiler finds a type shape-changing from its methods (`shapeinfer.c`, "Which

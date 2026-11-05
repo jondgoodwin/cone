@@ -1346,6 +1346,31 @@ declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.
 
+**The generic-module instances the package uses are recorded at the file's end**
+(`incInstanceUses`): a program that never names `g[i64]`, which only a package
+uses, would never build it, so the instance's `init` and `final` would have no
+place in the stitched pair. The file ends with a private `fn __uses() { g[i64]; }`
+(a module is no type to `alias`, and only a body names an instance); the
+program's compile checks it, builds the instance from the generic's include file
+and places it (`pgmInstanceOrder`), and nothing calls the function. Recorded:
+each instance of a generic module the package does not hold, whose call the
+package's own root text wrote (not one made inside another instance's body, nor
+by a file the package imports), when the generic is named by a bare name and each
+type argument is a number type. **An instance with any other spelling is not
+recorded**, and where its generic module declares an `init` or `final` that is a
+compile error when the include file is generated (`ErrorInstanceUnrecorded`,
+pointed at the instance), since its setup would never run in a program that does
+not name it (`module_generic_pkguse_unspelled`). Where the generic declares
+neither, nothing is lost and the file says so in a comment
+(`// Not recorded, ...`). **The same for an instance made in a submodule's
+file** (its call sits in a submodule's spans, not the root's): the root cannot
+spell it, so it is refused where its generic has setup
+(`module_generic_pkguse_submodule`), and passed over where not. An instance made inside another instance's body, or by included text, is
+in no submodule's file and stays unrecorded and unrefused: the program makes it
+with the instance. No run-time guard: the
+instance's `init` is still `linkonce` in the package's object, merged at link,
+and the stitched init calls it once, from the program's `initorder`.
+
 **A type the compiler found shape-changing carries the finding**
 (`incRecordShape`, `shapeRecordable`): `ShapeChanging` is appended to the `is`
 list of each non-generic type of the package that its methods show to change
@@ -2021,7 +2046,12 @@ list or `but` naming one is `ErrorBadFold`.
 module's `init` may call, as `init` itself is. The parser records it
 (`DclInitPure`, kept by `dclInfoJoin`) and **nothing checks it**: the rule that
 such a function call only `pure` or `initpure` functions needs `pure`, which is
-not built.
+not built. Only `modLifecycleFn` reads it, and only on `init`, as its required
+spelling. It marks no *helper*: a helper's safety is read from its body (below),
+so no Cone function of the module carries it; it stays on the `extern` functions
+`init` reaches (libc's `malloc`, Winsock, `LoadLibraryA`, `dlopen`), where it is
+only a record of the author's promise — the compiler does not read an extern's
+body — until `trust` is built.
 
 **Every global without an initial value must be assigned by its module's
 `init`** (mod-namespaces.html). The check is `init`'s own data flow pass
@@ -2045,6 +2075,44 @@ where the module's `init` is malformed, only that is reported. Assigning such a
 global in any other function does not count, and a `let` one may not be
 assigned there at all.
 
+**A call `init` makes counts as a read of what the callee reads** (`modInitCall`,
+asked at the end of `fnCallFlow` while `init`'s own flow pass is the one walking:
+the pass records the function in `modInitFnCur`, so a callee checked on demand in
+the middle of it asks nothing). Where the call is statically resolved to one of
+the module's own functions — an `FnDclNode` the module declares (`modDeclares`:
+owned by the module, or a method of a type the module declares), with a Cone
+body, not `extern` — `modReadsFollow` reads its body with `siVisit`
+(shapeinfer's tree walk) and looks for a name use of a global that is still
+unassigned *at that point of the walk* (`modGlobalUninit`, `VarInitialized`
+clear): the position is `init`'s flow state, so a global assigned before the call
+passes, and one assigned after it is refused only if the callee reads it. A call
+met in the body to another such function is followed the same way, to any depth,
+and each function is entered once per query (`ModReadCtx.seen`), which ends a
+cycle. The target of an assignment is not a read; any other mention is, a field
+assignment or a borrow included. The refusal is `ErrorMove` at the call, naming
+the global and the function that reads it. A method call is lowered before flow
+to a call whose `objfn` names the selected method, so it reaches `modInitCall`
+the way a function call does. A generic's call is substituted by type check to a
+use of its *instance* (`genericInstanceUse`), a clone of the template that keeps
+its owner and is type checked when made; `modReadsFollow` walks that instance's
+body, whose names are resolved, and refuses to follow a `FnDclNode` still
+carrying `genericinfo` (a template, which no substituted call names). A method of
+a generic type's instance is an ordinary method of that instance, owned by it.
+**Not followed, and so passing:** a call that is not statically resolved — a
+virtual call (`FlagVDisp`), a closure, a call through a function reference or any
+variable — and a call to an `extern` function; a closure literal's body is not
+entered. These pass until `trust` is built, a known gap it closes.
+`conec --report-trust` already lists the extern kind, as its `extern` lines
+(`extern <file>:<line> <function> [<callee>]`, whole-program: those in a module's
+`init` and its helpers are this module's unfollowed externs); it lists no virtual
+call, function-reference call or closure, which `trust` will have to take over
+with the rest. **Another module's function needs no following:** that module
+cannot read this module's globals without importing it, which would be a cycle of
+modules, and that is refused. A helper's own assignment to a global does not
+count as `init` setting it (the target of an assignment is not a read, and only
+`init`'s flow records a set), so a helper that sets a global and then reads it,
+called before `init` sets it, is refused.
+
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
 Where any global the module declares has anything to do as it dies
 (`modGlobalFinalized`: `itypeNeedsFinal`, the question a local's death asks),
@@ -2052,7 +2120,15 @@ Where any global the module declares has anything to do as it dies
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
 the module's own `final`, if it has one, and then finalizing each such global
-**in declaration order**, as a type drops its fields. The globals are its
+**in the reverse of the order they are set** (rule 6). The setup order is
+built in `modGiveDrop`: first the globals `init` never assigns, in declaration
+order (the place PR 6's ordered setups will go), then those `init` assigns, in
+the order the flow pass first met an assignment to each (`modInitNoteSet`,
+called from `assignlvalrtype` while `init` is walked; kept in `mod->setorder`).
+Flow walks text order, so a branch whose arms set the same globals in different
+orders takes the first written, and a global's direct reads were assigned
+earlier in the text. A global with a value that `init` also assigns is one
+`init` sets. The globals are its
 return's release list, built as flow builds a scope's for its locals
 (`flowVarRelease`): a struct or an enum listed as a call to its drop function
 over `&uni` the global, anything else — an owning reference, plain or virtual,
@@ -2142,15 +2218,19 @@ calls them without naming them (`module_init_link` drops a `lib.Handle`).
 its place in the order ("The module order"). Across separately compiled
 packages each object's copy of an instance's `init` is the one merged function,
 and the program's stitched init calls it once, where the program names that
-instance itself (`module_generic_link`). ⚠ **An instance only a package uses is
-invisible to the program**: the package's include file says nothing of it, so
-the program's stitched pair makes no call to its `init` or finalizer, and a
-global it would assign keeps the zero it was stored with. Measured at run time
-through Congo, 25 Sep 2026: package `q` uses `g[i64]` and the program imports
-`q` alone; `q`'s `init` runs and `g[i64]`'s does not, its count of inits read
-back as 0, and neither does its `final`. Where the program names `g[i64]`
-itself, it runs once. By the rule above it leaks rather than misbehaves; what
-closes it is open (`Backlog\init-and-final.md`).
+instance itself (`module_generic_link`). **An instance only a package uses is
+recorded by the package's include file** ("Generating the include file",
+`incInstanceUses`), so the program's compile builds it and `pgmInstanceOrder`
+places it: its `init` runs once, before the package's, and its `final` once,
+after. Measured through Congo, 25 Sep 2026, before the record: package `q` uses
+`g[i64]` and the program imports `q` alone; `q`'s `init` ran and `g[i64]`'s did
+not, its count of inits read back as 0, and neither did its `final`. Now it
+reads 1, and where the program, or a second package, names the instance too, it
+still runs once (`module_generic_pkguse`, `module_generic_pkguseonce`). Only an
+instance spelled by a bare generic name and number-type arguments is recorded;
+any other, or one made in a submodule's file, is refused (`ErrorInstanceUnrecorded`)
+where its generic declares an `init` or `final`, else left a comment in the file. A generic struct's statics need none of this: a static takes a literal, so
+nothing runs for it (`module_generic_struct_static`).
 
 ## Principles — the model, as decided
 
@@ -2977,9 +3057,10 @@ a reference names is a type, and that is what is built.
   nothing saying which won.
 - **Module `init` and `final` and the program's entry are built; purity is not** ("Init
   and final"). What `mod-namespaces.html` specifies and nothing checks is the
-  `initpure` rule that such a function call only `pure` or `initpure` functions,
-  and that one other than `init` read no uninitialized global of its module:
-  `pure` itself is unbuilt. The entry the compiler builds runs the stitched init
+  `initpure` rule that such a function call only `pure` or `initpure` functions:
+  `pure` itself is unbuilt. (That a helper `init` calls reads no global `init` has
+  not yet set is built, by reading the helper's body: "A call `init` makes counts
+  as a read".) The entry the compiler builds runs the stitched init
   and final round `main`. **A package the
   program reaches only through other packages has its `init` and `final` run**:
   an include file imports, and the package lines list the whole closure ("A
@@ -2993,8 +3074,11 @@ a reference names is a type, and that is what is built.
   `test_an_indirect_package_runs_its_init_once`). An include file that does not
   declare an `init` leaves it unrun, as for a direct import. Jon's chaining
   idea (`WI\first-congo-milestone.md`) stays open for the entry-trait
-  conversation; nothing now needs it for a package. ⚠ **A generic instance
-  only a package uses is still not run** ("Init and final").
+  conversation; nothing now needs it for a package. **A generic instance
+  only a package uses is run too**, because the package's include file records
+  it ("Generating the include file": the `__uses` function), so the program's
+  compile builds the instance and `pgmInstanceOrder` places it
+  (`module_generic_pkguse`, `module_generic_pkguseonce`).
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole
@@ -3020,9 +3104,11 @@ a reference names is a type, and that is what is built.
   `init` (`ErrorDupName`). Written private, as the scenarios write them, neither
   leaves its module.
 - **An `init`'s globals are cleared only round its own flow pass.** A function
-  `init` calls reads the module's globals as holding values, whatever `init` has
-  assigned by then: that is the unbuilt `initpure` rule, and reading one early
-  that way reads zeroed storage.
+  `init` calls is itself checked with the module's globals holding values; what
+  it reads is judged at the call in `init` (`modInitCall`), through the module's
+  own functions and methods. A call that cannot be followed (an extern, a
+  function reference, a virtual call, a closure) is not, and reading a global early that way reads
+  zeroed storage.
 - **Where a module's defaults are taken decides who sees them.** A copy made at
   the end of the module's fold pass is read by every module folding from it;
   one the fallback in `pgmNameRes` makes, after the fold passes, is not — no

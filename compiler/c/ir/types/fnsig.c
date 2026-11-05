@@ -159,7 +159,7 @@ static int fnSigEqualC(FnSigNode *node1, FnSigNode *node2, int checkc) {
             return 0;
         nodes2p++;
     }
-    return lifeSigsAgree(node1, node2);
+    return lifeSigsAgree(node1, node2, 0);
 }
 
 // Compare two function signatures to see if they are equivalent
@@ -269,7 +269,7 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
     }
     // A call through the requirement is checked against its lifetimes, so the
     // implementation must promise at least as much (lifeSigMeets)
-    return lifeSigMeets(node1, node2);
+    return lifeSigMeets(node1, node2, 1);
 }
 
 // Does a requirement's type name 'Self' outright, or through the references and
@@ -459,9 +459,9 @@ static FnSigMeet fnSigMeetKind(FnSigNode *impl, FnSigNode *req, INode *selftype,
     }
     if (receiver == ReceiverImpl)
         return recast ? FnSigMeetRecast : FnSigMeetSame;
-    if (!lifeSigMeets(impl, req))
+    if (!lifeSigMeets(impl, req, receiver == ReceiverBoth))
         return FnSigMeetNo;
-    return recast || !lifeSigsAgree(impl, req) ? FnSigMeetRecast : FnSigMeetSame;
+    return recast || !lifeSigsAgree(impl, req, receiver == ReceiverBoth) ? FnSigMeetRecast : FnSigMeetSame;
 }
 
 static int fnSigMeetsC(FnSigNode *impl, FnSigNode *req, INode *selftype, FnSigReceiver receiver, int checkc) {
@@ -587,11 +587,31 @@ static char *fnSigByValueRefusal(FnSigNode *tosig, FnSigNode *fromsig, int calla
     return msg;
 }
 
+// Why a reference 'from' is refused where the virtual reference 'to' is wanted, when
+// the enum it refers to writes a method the trait requires over the whole enum
+// (fnSigVrefWholeEnumRefusal); NULL when it is not that
+static char *fnSigConvWholeEnumRefusal(INode *from, INode *to) {
+    INode *fromdcl = itypeGetTypeDcl(from);
+    if (fromdcl->tag != RefTag)
+        return NULL;
+    INode *todcl = itypeGetTypeDcl(to);
+    if (todcl->tag != VirtRefTag)
+        return NULL;
+    return fnSigVrefWholeEnumRefusal((StructNode*)itypeGetTypeDcl(((RefNode*)todcl)->vtexp),
+        (StructNode*)itypeGetTypeDcl(((RefNode*)fromdcl)->vtexp));
+}
+
 // Why a value of type 'from' is refused where the type 'to' is wanted, when the
 // two are function references that differ only in the calling convention they
 // are marked for, or in a parameter or result held by value that is not one
-// layout (fnSigByValueRefusal); NULL when it is not that
+// layout (fnSigByValueRefusal), or when a whole-enum method keeps a variant from
+// being viewed as a trait; NULL when it is not that
 char *fnSigConvRefusal(INode *from, INode *to, int *code) {
+    char *enumwhy = fnSigConvWholeEnumRefusal(from, to);
+    if (enumwhy) {
+        *code = ErrorWholeEnumMeth;
+        return enumwhy;
+    }
     FnSigNode *fromsig = fnSigRefTarget(from);
     if (fromsig == NULL)
         return NULL;
@@ -1022,6 +1042,49 @@ static char *fnSigVrefLayoutRefusal(StructNode *trait, StructNode *impl) {
         return msg;
     }
     return NULL;
+}
+
+// Why a variant (or an enum) cannot be viewed as the trait 'trait' behind a virtual
+// reference when the enum writes a method the trait requires over the whole enum
+// ('self: &Two'): that method is one function no variant has a copy of, so it makes
+// no variant comply. NULL when it is not that.
+char *fnSigVrefWholeEnumRefusal(StructNode *trait, StructNode *impl) {
+    if (trait->tag != StructTag || impl->tag != StructTag || trait->callsig || !(trait->flags & TraitType))
+        return NULL;
+    StructNode *en = (impl->flags & EnumType) ? impl : structVariantEnum((INode*)impl);
+    if (en == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *meth = (FnDclNode*)*nodesp;
+        // A requirement with no slot (structMakeVtable) is met by a whole-enum method,
+        // so it is not why this conversion failed
+        if (inodeIsPrivate((INode*)meth) || (meth->value && (meth->genericinfo || meth->where || (meth->flags & FlagInline))))
+            continue;
+        INode *binding = namespaceFind(&en->namespace, meth->namesym);
+        if (binding == NULL || binding->tag != FnDclTag || !structIsWholeEnumMethod(binding))
+            continue;
+        static char msg[700];
+        snprintf(msg, sizeof(msg),
+            "%s's `%s` is written over the whole enum (`self: &%s`), so no variant has it and none can be viewed as %s. Write `self: &`, which gives each variant its own copy.",
+            &en->namesym->namestr, &meth->namesym->namestr, &en->namesym->namestr, &trait->namesym->namestr);
+        return msg;
+    }
+    return NULL;
+}
+
+// Report at 'node' the refusal fnSigConvRefusal or fnSigCallRefusal gave. A whole-enum
+// method refused inside a generic's instance (AnyError.from, '?') is the caller's to fix,
+// not the library body's: it is reported at the user's own line, where the outermost
+// instantiation began
+void fnSigRefusalMsg(INode *node, int code, char *why) {
+    if (code == ErrorWholeEnumMeth)
+        while (node->instnode)
+            node = node->instnode;
+    errorMsgNode(node, code, "%s", why);
 }
 
 // Why a value of type 'from' is refused where the callable type 'to' is wanted,

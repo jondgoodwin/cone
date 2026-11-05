@@ -78,8 +78,8 @@ int lifeParmsDeclare(LifeParms *parms, Name *name, INode *at) {
 
 // An invariant lifetime is not erased: a key stays a key in the instance, and
 // which brands are one and which apart is part of what it is instanced at.
-// lifeCanonBrands then names them by their order, so that one instance serves
-// every use whose brands fall alike.
+// lifeCanonBrands then names them by first occurrence, so that one instance
+// serves every use whose pattern of equal brands falls alike.
 static Name *lifeErasedName(Name *name) {
     return lifeIsInvariant(name) ? name : NULL;
 }
@@ -733,7 +733,7 @@ static int lifeArgsHoldBorrow(Nodes *args) {
 }
 
 // Does one of a generic instance's arguments carry a brand, an invariant
-// lifetime the instance keeps, named by its place (lifeCanonBrands)?
+// lifetime the instance keeps, named by its first occurrence (lifeCanonBrands)?
 static int lifeArgsHoldBrand(Nodes *args) {
     INode **nodesp;
     uint32_t cnt;
@@ -1387,10 +1387,10 @@ static char *lifeSigShape(FnSigNode *sig) {
 // declaring lifetimes that implements it -- they are compared whole parameter
 // by whole parameter: a call through the one lending fewer parts carries an
 // argument whole wherever the other carries any part of it, the cautious side.
-static int lifeSigBrandsAgree(FnSigNode *a, FnSigNode *b);
+static int lifeSigBrandsAgree(FnSigNode *a, FnSigNode *b, int recv);
 
-int lifeSigsAgree(FnSigNode *a, FnSigNode *b) {
-    if (!lifeSigBrandsAgree(a, b))
+int lifeSigsAgree(FnSigNode *a, FnSigNode *b, int recv) {
+    if (!lifeSigBrandsAgree(a, b, recv))
         return 0;
     if (!a->lifenamed && !b->lifenamed)
         return 1;
@@ -1408,10 +1408,10 @@ int lifeSigsAgree(FnSigNode *a, FnSigNode *b) {
 // only where 'req''s is, so it takes any argument 'req''s takes (a shorter
 // one than 'req' requires, too); one is stored through where 'req''s is; and
 // the slots of a struct one points at are named apart wherever 'req''s are.
-int lifeSigMeets(FnSigNode *impl, FnSigNode *req) {
+int lifeSigMeets(FnSigNode *impl, FnSigNode *req, int recv) {
     // Brands are identities: an implementation promises exactly the
     // requirement's, neither more nor less
-    if (!lifeSigBrandsAgree(impl, req))
+    if (!lifeSigBrandsAgree(impl, req, recv))
         return 0;
     if (!impl->lifenamed && !req->lifenamed)
         return 1;
@@ -1647,7 +1647,7 @@ static void lifeSigBrandPattern(FnSigNode *sig, LifeBrands *brands, uint32_t *pa
 // Do two signatures say the same of their brands: which of their places carry
 // one brand, and which a brand only the result names (minted by a call)? A
 // call through the one is checked by what the other promises.
-static int lifeSigBrandsAgree(FnSigNode *a, FnSigNode *b) {
+static int lifeSigBrandsAgree(FnSigNode *a, FnSigNode *b, int recv) {
     if (!lifeInvariantSeen)
         return 1;
     LifeBrands ba, bb;
@@ -1659,8 +1659,16 @@ static int lifeSigBrandsAgree(FnSigNode *a, FnSigNode *b) {
         lifeBrandsOf(((IExpNode *)*nodesp)->vtype, &ba, 0);
     uint32_t aparms = ba.cnt;
     lifeBrandsOf(a->rettype, &ba, 0);
-    for (nodesFor(b->parms, cnt, nodesp))
-        lifeBrandsOf(((IExpNode *)*nodesp)->vtype, &bb, 0);
+    for (nodesFor(b->parms, cnt, nodesp)) {
+        // A requirement's receiver is the implementor, whatever type the trait
+        // spells it as: it carries the implementor's brands, which a trait names
+        // none of, so what the requirement's other places name is compared
+        // against them
+        if (recv && cnt == b->parms->used && a->parms->used > 0)
+            lifeBrandsOf(((IExpNode *)nodesGet(a->parms, 0))->vtype, &bb, 0);
+        else
+            lifeBrandsOf(((IExpNode *)*nodesp)->vtype, &bb, 0);
+    }
     uint32_t bparms = bb.cnt;
     lifeBrandsOf(b->rettype, &bb, 0);
     if (ba.cnt == 0 && bb.cnt == 0)
@@ -1805,7 +1813,8 @@ struct LifeBind {
     uint32_t cnt;
     uint32_t cap;
     uint32_t seq;       // positional: how many brands named so far
-    uint8_t positional; // each brand met is named afresh, by its place (lifeCanonBrands)
+    uint32_t useq;      // positional: how many unresolved names met so far
+    uint8_t positional; // each brand met is named by its first occurrence (lifeCanonBrands)
     LifeBind *outer;
 };
 
@@ -1814,6 +1823,7 @@ static void lifeBindInit(LifeBind *bind) {
     bind->from = bind->to = NULL;
     bind->cnt = bind->cap = 0;
     bind->seq = 0;
+    bind->useq = 0;
     bind->positional = 0;
     bind->outer = NULL;
 }
@@ -2134,8 +2144,25 @@ static Name *lifeCanonName(uint32_t n);
 static Name *lifeBrandMap(LifeBind *bind, Name *name, INode *mintat) {
     if (!lifeIsInvariant(name))
         return name;
-    if (bind->positional)
-        return lifeCanonName(++bind->seq);
+    if (bind->positional) {
+        // A name only the current function's result writes, not yet bound, is
+        // unresolved: it is no brand of its own, so it claims no number of the
+        // brands'. It is told apart from another unresolved name by a count of
+        // its own, so 'Atlas['=t, '=r]' keeps its two names two; brand
+        // agreement then binds it, once, to the brand it meets
+        Name *canon = lifePairFind(bind->from, bind->to, bind->cnt, name);
+        if (canon)
+            return canon;
+        if (lifeBrandFnBindable(name)) {
+            canon = lifeCanonName(++bind->useq);
+            lifePairAdd(&bind->from, &bind->to, &bind->cnt, &bind->cap, name, canon);
+            return canon;
+        }
+        // Named by first occurrence: a brand met again has the name it was given
+        canon = lifeCanonName(++bind->seq);
+        lifePairAdd(&bind->from, &bind->to, &bind->cnt, &bind->cap, name, canon);
+        return canon;
+    }
     Name *to = lifePairFind(bind->from, bind->to, bind->cnt, name);
     if (to)
         return to;
@@ -2372,11 +2399,15 @@ static Name *lifeCanonName(uint32_t n) {
     return nametblFind(buf, (size_t)len);
 }
 
-// Each brand an argument carries is named by its place alone, the first
-// ''=1', the next ''=2', whether or not two places carry one brand: the
-// instance is then the same for every use of its shape, and assumes no two
-// places alike; a call binds each place afresh, and a use whose places carry
-// one brand binds them to it (lifeBindBegin), so nothing is lost by that.
+// Each brand the arguments carry is named by its first occurrence, in the
+// order the arguments are read: the first brand met ''=1', the next different
+// one ''=2', and a brand met again keeps the name it was given. An instance
+// is then made at the pattern of equal brands its use has, and is the same
+// for every use of that pattern: its places that carry one brand are one in
+// it, so a generic whose arguments are related ('IterIndexed[T, I:
+// Iterator[T]]') is checked at that relation, not as if each place were
+// apart. A brand still equals only itself: two different brands are two
+// names, and a use whose pattern differs is another instance.
 void lifeCanonBrands(Nodes *args) {
     if (!lifeInvariantSeen || args == NULL)
         return;
@@ -2389,6 +2420,54 @@ void lifeCanonBrands(Nodes *args) {
         if (isTypeNode(*nodesp))
             *nodesp = lifeBrandSubstAt(*nodesp, &map, NULL, 0);
     }
+}
+
+// Where a type argument is inferred from a value and a declared type says the
+// same, brands apart: may the declared type's brands stand for the value's?
+// Only a brand a call minted is taken as the declared one, as an explicit type
+// argument would bind it ('Some[&'=a mut Node['=a]](ar.alloc(..))'); any other
+// brand that differs is a different brand, and the types stay different.
+int lifeBrandsAdopt(INode *inferred, INode *declared) {    if (!lifeInvariantSeen || !isTypeNode(inferred) || !isTypeNode(declared))
+        return 0;
+    LifeBrands bi, bd;
+    lifeBrandsInit(&bi);
+    lifeBrandsInit(&bd);
+    lifeBrandsOf(inferred, &bi, 0);
+    lifeBrandsOf(declared, &bd, 0);
+    if (bi.cnt == 0 || bi.cnt != bd.cnt)
+        return 0;
+    LifeBind bind;
+    lifeBindInit(&bind);
+    int differs = 0;
+    for (uint32_t i = 0; i < bi.cnt; ++i) {
+        Name *from = bi.names[i];
+        Name *to = bd.names[i];
+        if (from == NULL || to == NULL) {
+            if (from != to)
+                return 0;
+            continue;
+        }
+        Name *bound = lifePairFind(bind.from, bind.to, bind.cnt, from);
+        if (bound && bound != to)
+            return 0;
+        if (from != to) {
+            if (lifeMintOf(lifeBrandResolve(from)) == NULL)
+                return 0;
+            // A declared name the function has already bound to another brand
+            // is that brand's: two brands bound apart never match, and this
+            // adopts nothing for them (the binding is lifeBrandAgree's, once)
+            Name *tobound = lifeBrandResolve(to);
+            if (tobound != to && tobound != lifeBrandResolve(from))
+                return 0;
+            differs = 1;
+        }
+        if (bound == NULL)
+            lifePairAdd(&bind.from, &bind.to, &bind.cnt, &bind.cap, from, to);
+    }
+    if (!differs)
+        return 0;
+    INode *subst = lifeBrandSubstAt(inferred, &bind, NULL, 0);
+    return subst && itypeIsSame(subst, declared);
 }
 
 int lifeBrandsEqual(INode *a, INode *b) {

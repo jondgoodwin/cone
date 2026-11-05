@@ -625,7 +625,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         }
         else
-            matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
+            matches = iexpTypeCheckCoerceStated(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
@@ -634,7 +634,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype, &whycode) : NULL;
             char privwhy[400];
             if (why)
-                errorMsgNode(name->value, whycode, "%s", why);
+                fnSigRefusalMsg(name->value, whycode, why);
             // A macro's plain argument, bound to its parameter: said of the parameter
             else if (name->flags & FlagMacroBind)
                 macroArgTypeRefused(name->value, name->namesym, 0, name->vtype);

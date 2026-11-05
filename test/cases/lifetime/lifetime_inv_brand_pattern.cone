@@ -1,0 +1,85 @@
+// A generic whose arguments are related is instanced at the pattern of equal brands its uses
+// have: 'each' over a list of brand-carrying values, a struct declaring a brand that implements a
+// trait, and a user generic used at two patterns.
+//
+// Hand-worked, in the order printed: total over keys 3 and 4 reads 3+4 = 7; the token walk adds the
+// first token to the one passed, 3+3 = 6; Foo(5).get() is 5; Walk's first token 4 added to 4 is 8;
+// Pair at one brand gives 4+4 = 8, and at two brands 1+2 = 3.
+
+mod lifetime_inv_brand_pattern;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+struct Pt { pub x: i64; }
+
+// 'each' over keys: IterIndexed[T, I: Iterator[T]]'s arguments carry one brand
+fn total(ar: &DynArena['=a], keys: &List[&'=a mut Pt]) i64 {
+  var s = 0i64;
+  each k in keys.iter() { s += ar[*k].x; }
+  s
+}
+fn run(ar: &mut DynArena['=a]) i64 {
+  var keys = List[&'=a mut Pt]();
+  keys.push(ar.alloc(Pt(3)));
+  keys.push(ar.alloc(Pt(4)));
+  total(ar, &keys)
+}
+
+struct Tok['=a] { pub v: i64; }
+fn sameTok(x: Tok['=a], y: Tok['=a]) i64 { x.v + y.v }
+fn walkTotal(ts: &List[Tok['=a]], t: Tok['=a]) i64 {
+  var s = 0i64;
+  var it = ts.iter();
+  let m = it.next();
+  match m { case let Some(k) { s += sameTok(*k, t); } else { } }
+  s
+}
+fn walkRun(t: Tok['=a]) i64 {
+  var ts = List[Tok['=a]]();
+  ts.push(t);
+  walkTotal(&ts, t)
+}
+fn mint() Tok['=a] { Tok(3) }
+
+// A struct declaring a brand implements a trait
+trait Gets { fn get(self: &) i64; }
+struct Foo['=a] is Gets {
+  pub v: i64;
+  pub fn get(self: &) i64 { v }
+}
+fn getOf(f: Foo['=a]) i64 { f.get() }
+
+// A core adapter whose arguments are related, over the one brand
+fn firstTok(l: &List[Tok['=a]], t: Tok['=a]) i64 {
+  var w = l.iter().take(2usize);
+  match w.next() { case let Some(k) { sameTok(*k, t) } else { 0 } }
+}
+
+fn firstRun(t: Tok['=a]) i64 {
+  var l = List[Tok['=a]]();
+  l.push(t);
+  firstTok(&l, t)
+}
+
+// A generic whose arguments are not related, at both patterns of its brands
+struct Pair[A, B] { pub a: A; pub b: B; }
+fn sameOf(x: Tok['=a]) i64 {
+  let p = Pair[Tok['=a], Tok['=a]](x, x);
+  p.a.v + p.b.v
+}
+fn apartOf(x: Tok['=a], y: Tok['=b]) i64 {
+  let p = Pair[Tok['=a], Tok['=b]](x, y);
+  p.a.v + p.b.v
+}
+
+fn main() {
+  var ar = DynArena.empty();
+  print <- run(&mut ar), "\n";
+  print <- walkRun(mint()), "\n";
+  print <- getOf(Foo(5)), "\n";
+  print <- firstRun(Tok(4)), "\n";
+  print <- sameOf(Tok(4)), "\n";
+  print <- apartOf(Tok(1), Tok(2)), "\n";
+}
