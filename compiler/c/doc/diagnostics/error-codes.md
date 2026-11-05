@@ -397,7 +397,8 @@ value no thread changes buys nothing; the remedy is `var`, or no attribute.
 module's `init` would assign on its own thread alone; the remedy is a literal
 value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
 nothing yet finalizes a thread's copy as its thread ends. An initial value that
-is not a literal wears `ErrorNotLit`, as on any global.
+is not a literal wears `ErrorNotLit`, as on any global (a `let` global of a Cone-named module is the exception: its
+other values are setups, `ErrorSetupCycle`).
 
 A `@workgroup` global takes four codes on the same plan. `ErrorWorkgroupPlace`
 is `@workgroup` anywhere `@threadlocal` would be misplaced, and also beside
@@ -1112,6 +1113,13 @@ a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` 
 the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
 named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
 the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+
+`ErrorSetupCycle` (1605) and `ErrorSetupReadsInit` (1606) refuse a module's setups (a `let` global given a value that is
+not a constant; `module.md`, "Setups"). The first is setups that read one another round a cycle, directly or through the
+module's own functions, reported at the global the round comes back to, with the round spelled out; the second is a
+setup that reads a global the module's `init` sets, which holds nothing when the setups run, reported at the setup's
+global naming the global read and the function that reads it. `modSetupOrder` reports every one it finds before it
+gives up, and the setups' function is built only when none is found.
 
 `ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
 method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant

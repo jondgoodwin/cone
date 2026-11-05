@@ -4334,3 +4334,37 @@ category = "reject"
 description = "A call 'init' makes reads a global of its module that 'init' has not set yet, through a helper, through two levels of helpers, round a cycle of helpers, through a method of a type the module declares, a generic function, a generic method, and a method of a generic type's instance; a helper that sets a global and then reads it, called before 'init' sets it, is refused (its assignment is not init's); the same calls after the set are accepted"
 tags = ["typecheck"]
 diagnostics = 8
+
+[scenario.module_setup_order]
+category = "run"
+description = "A 'let' global given a value that is not a constant is a setup the module runs before its 'init': ordered by what each reads whatever order they are written in, one reading another directly and one through a function of the module; finalized in the exact reverse of the order set (a constant value first, the setups in the order they ran, then what 'init' sets)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_modules]
+category = "run"
+description = "Setups across modules: a module with a setup and no 'init' is given one that runs it; the imported module's setups run before the importer's, whose setup reads the imported module's global through a call into it; finals run in the exact reverse across the two modules"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_reject]
+category = "reject"
+description = "Setups with no order or no value yet are refused: two setups reading each other, one reaching the other through a function, and one reading itself (a cycle); a setup reading a global 'init' sets, directly and through a function of the module. A 'var' global and a static are still refused a value that is not a constant"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.module_setup_panic]
+category = "run"
+description = "A setup that fails panics at start-up, before the module's 'init' and the program's 'main'; the setup before it has run"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.module_setup_generic]
+category = "run"
+description = "A generic module's setup: each instance is a module of its own with its own global and its own setup, run once with that instance's type, in the module order before the root's 'init'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_link]
+category = "run"
+description = "A package compiled on its own, whose module has setups and no 'init': the library compile gives it an 'init' that runs them and exports it, its include file declares that 'init', and the program's stitched init calls it before the program's own setup, which reads the package's setups; the package's finalizer, linked, runs them in the reverse"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]

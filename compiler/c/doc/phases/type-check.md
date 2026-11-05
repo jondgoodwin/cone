@@ -839,7 +839,8 @@ elsewhere, whichever walk arrived at it.
    declared, **the type becomes the initializer's**; a declared borrowed-reference
    type is replaced by a copy carrying the initializer's lifetime. For this shape, steps 1 and
    3 are the same step, which is what section 7 is about.
-4. A global or parameter requires a literal initializer; so does a field default.
+4. A global or parameter requires a literal initializer; so does a field default. A `let` global's
+   other value is a setup its module runs before its `init` (`modAddSetup`).
 5. The type must have a size — rule 4's report site.
 
 ### 10.5 Module and program
