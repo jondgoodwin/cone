@@ -1985,7 +1985,8 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args) {
             continue;
         RefNode *argtype = (RefNode *)flowGateTypeDcl(type);
         if (argtype->tag == RefTag && itypeGetTypeDcl(argtype->region) == borrowRef
-            && (permGetFlags(argtype->perm) & MayWrite) && itypeCarriesBorrow(argtype->vtexp)) {
+            && (permGetFlags(argtype->perm) & MayWrite)
+            && (itypeCarriesBorrow(argtype->vtexp) || itypeIsArena(argtype->vtexp))) {
             storer = *argsp;
             break;
         }

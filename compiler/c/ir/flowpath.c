@@ -463,6 +463,13 @@ static int pwCarries(INode *type) {
     return type && !flowGateCarriesNone(type) && itypeCarriesBorrow(type);
 }
 
+// Does this type declare 'NoLoanMut', an arena? It holds what is stored in it
+// through raw memory its fields do not show (Bug 51), so a variable of it is a
+// holder though its type carries no borrow
+static int pwIsNoLoanMut(INode *type) {
+    return itypeIsArena(type);
+}
+
 // The walk's index for a variable, registering it the first time
 static uint32_t pathVar(VarDclNode *var) {
     if (var->flowindex)
@@ -490,7 +497,7 @@ static uint32_t pathVar(VarDclNode *var) {
     // borrows it through ('x += 1', 'v <- (a, b)') is the operator's own, as
     // a method's receiver is: 'k += k' reads 'k' while it is borrowed.
     pv->holder = var->scope > 0 && !(var->flags & FlagStatic) && var->namesym != tempName
-        && pwCarries(var->vtype);
+        && (pwCarries(var->vtype) || pwIsNoLoanMut(var->vtype));
     pv->temp = 0;
     pv->initing = 0;
     pv->hascand = 0;
@@ -1345,6 +1352,17 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+// Is the method's parameter 'i', as declared, a borrow? Such an argument is
+// not stored in an arena by a call ('ar.get(&key)'); one declared by value
+// ('value: T') is, whatever T is
+static int pwParmBorrowed(FnDclNode *meth, uint32_t i) {
+    Nodes *parms = ((FnSigNode *)meth->vtype)->parms;
+    if (i >= parms->used)
+        return 0;
+    INode *ptype = ((IExpNode *)nodesGet(parms, i))->vtype;
+    return ptype && (ptype->tag == RefTag || ptype->tag == ArrayRefTag || ptype->tag == VirtRefTag);
+}
+
 // Does a receiver's borrow with this access change it, so that it is
 // two-phase: reserved while the arguments are walked, activated at the call?
 static int pwTwoPhase(int access) {
@@ -1944,32 +1962,163 @@ static INode *pwLendSite(INode *arg) {
 // as a store's are, and their holders hold those loans from here on.
 // 'argsets' is what each argument carries; 'recvpl' the place of a receiver
 // taken by reference, or NULL.
+// The same path, written the same way: a variable, or a field or dereference
+// of one, with a reborrow ('&mut *r') or a plain cast no different from what
+// it is made of. A path is a name for a place, and what a name holds is the
+// same wherever it is read inside one expression that assigns nothing, which
+// is all pwStoredOnlyBy admits; a local copy of it is another path, which may
+// hold what the path held before it was assigned.
+static INode *pwPathCore(INode *n) {
+    while (1) {
+        if (n->tag == CastTag && !(n->flags & FlagConvert))
+            n = ((CastNode *)n)->exp;
+        else if (n->tag == BorrowTag && ((RefNode *)n)->vtexp->tag == DerefTag)
+            n = ((RefNode *)n)->vtexp;
+        else if (n->tag == DerefTag && pwIsBorrowed(iexpGetTypeDcl(((StarNode *)n)->vtexp)))
+            n = ((StarNode *)n)->vtexp;
+        else
+            return n;
+    }
+}
+
+static int pwPurePath(INode *n) {
+    n = pwPathCore(n);
+    if (pwNamedVar(n))
+        return 1;
+    if (n->tag == FldAccessTag)
+        return pwPurePath(((FnCallNode *)n)->objfn);
+    return n->tag == DerefTag && pwPurePath(((StarNode *)n)->vtexp);
+}
+
+static int pwSamePath(INode *a, INode *b) {
+    a = pwPathCore(a);
+    b = pwPathCore(b);
+    VarDclNode *va = pwNamedVar(a);
+    if (va)
+        return va == pwNamedVar(b);
+    if (a->tag != b->tag || a->tag != FldAccessTag)
+        return 0;
+    FnCallNode *fa = (FnCallNode *)a, *fb = (FnCallNode *)b;
+    if (fa->methfld->tag != fb->methfld->tag)
+        return 0;
+    if (fa->methfld->tag == ULitTag) {
+        if (((ULitNode *)fa->methfld)->uintlit != ((ULitNode *)fb->methfld)->uintlit)
+            return 0;
+    }
+    else if (fa->methfld->tag != NameUseTag
+            || ((NameUseNode *)fa->methfld)->namesym != ((NameUseNode *)fb->methfld)->namesym)
+        return 0;
+    return pwSamePath(fa->objfn, fb->objfn);
+}
+
+// Is every borrow a value carries the one 'recv' is reached by, that same
+// path? What is read as a whole path, or built from such by a struct
+// literal, with nothing between that assigns or calls, holds what the path
+// held when the receiver was taken, so it belongs to the arena the receiver
+// points at: a reference to the arena stored in it (Bug 48's exception
+// where a path names the arena, as 'home' does in an arena's own values'
+// finalizers). A copy kept in another variable, a call's result, a block, any
+// other arena's path is none of these.
+static int pwStoredOnlyBy(INode *val, INode *recv) {
+    val = pwPathCore(val);
+    if (pwSamePath(val, recv))
+        return 1;
+    INode *type = iexpGetTypeDcl(val);
+    switch (val->tag) {
+    case ULitTag:
+    case FLitTag:
+    case NullLitTag:
+        return 1;
+    case TypeLitTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        if (((FnCallNode *)val)->args == NULL)
+            return 1;
+        for (nodesFor(((FnCallNode *)val)->args, cnt, nodesp)) {
+            INode *elem = (*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp;
+            if (!pwStoredOnlyBy(elem, recv))
+                return 0;
+        }
+        return 1;
+    }
+    case FnCallTag:
+    {
+        // an operator of a number: pure, and no borrow in it
+        if (itypeCarriesBorrow(type))
+            return 0;
+        FnCallNode *fc = (FnCallNode *)val;
+        INode *fn = isNameUseNode(fc->objfn) ? ((NameUseNode *)fc->objfn)->dclnode : NULL;
+        if (fn == NULL || fn->tag != FnDclTag || ((FnDclNode *)fn)->value == NULL
+                || ((FnDclNode *)fn)->value->tag != IntrinsicTag)
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(fc->args, cnt, nodesp)) {
+            if (!pwStoredOnlyBy(*nodesp, recv))
+                return 0;
+        }
+        return 1;
+    }
+    default:
+        // a variable or a field read that holds no borrow
+        return !itypeCarriesBorrow(type) && pwPurePath(val);
+    }
+}
+
 static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
         return;
     FnSigNode *sig = pwNamedSig(call);
+    // A method of an arena ('NoLoanMut'): what it is handed by value is stored
+    // in the arena wherever the arena was reached; a free function handed a
+    // '&mut Arena' is checked in its own body (Bug 51)
+    FnDclNode *arenameth = pwMethod(call);
+    // ...and then the arena is the only place the call stores into: the values
+    // it is handed are what is stored, not places for the receiver's loans
+    int arenacall = 0;
+    if (arenameth) {
+        INode *rt = iexpGetTypeDcl(nodesGet(call->args, 0));
+        arenacall = pwIsBorrowed(rt) && rt->tag == RefTag && (permGetFlags(((RefNode *)rt)->perm) & MayWrite)
+            && pwIsNoLoanMut(((RefNode *)rt)->vtexp);
+    }
     uint32_t nargs = call->args->used;
     for (uint32_t at = 0; at < nargs; ++at) {
+        if (arenacall && at > 0)
+            break;
         INode *arg = nodesGet(call->args, at);
         INode *argtype = iexpGetTypeDcl(arg);
         // How many borrows past the argument the callee may store, from what
         // a writable borrow points at or from a value's own borrows: past
         // three, every place reached is as far as the walk tells apart
         int depth = itypeWritableBorrowDepth(argtype, 3);
-        if (depth == 0)
-            continue;
         int isref = pwIsBorrowed(argtype);
         INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
+        // An arena ('NoLoanMut') holds borrows through raw memory its type does
+        // not show, so a writable borrow of one is a place a borrow is stored
+        // in, whatever its fields (Bug 51). This is the one condition that
+        // decides it, and where Bug 48's exception for a store whose loan and
+        // place come from one parameter would be admitted (see 'arenaplace'
+        // below).
+        int arenaplace = at == 0 && arenameth && isref && argtype->tag == RefTag
+            && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite) && pwIsNoLoanMut(storedin);
+        if (arenaplace && depth == 0)
+            depth = 1;
+        if (depth == 0)
+            continue;
         INode *pointee = sig && at < sig->parms->used
             ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
         // What a writable borrow points at, where it holds no borrow but
         // ''static' ones and no writable borrow leads further, takes only a
         // global's loans: the callee may store nothing else there
         // (loanStoredStatic)
-        int globalonly = isref && depth == 1 && !itypeCarriesEndingBorrow(storedin);
+        int globalonly = isref && depth == 1 && !arenaplace && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
-            if (i == at || argsets[i] == NULL)
+            if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
+                continue;
+            // A value made only of the receiver's own path stays in its arena
+            if (arenaplace && pwStoredOnlyBy(nodesGet(call->args, i), nodesGet(call->args, 0)))
                 continue;
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of what it borrows: the
@@ -1978,7 +2127,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             PathSet *carried = argsets[i];
             INode *site = pwLendSite(nodesGet(call->args, i));
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
+            if (own && !arenaplace && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
@@ -2000,6 +2149,23 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             // Nowhere the walk follows: the argument's own loans are all
             // there is to go by, where its borrows point and further on
             int beyond = depth > 1;
+            if (arenaplace) {
+                // An arena reached by a route the walk does not follow (a
+                // reference made from a raw pointer, which is how DynArena
+                // reaches its inner arena: that store is trusted, see its
+                // 'alloc'): only the loans the reference carries are known.
+                // A reference carrying any other loan has an origin the walk
+                // cannot place (a method's result): it may be anywhere, so
+                // no local's borrow may be stored in it
+                VarDclNode *through;
+                int known = argsets[at] && (argsets[at] == &pathSetAll || argsets[at]->cnt);
+                if (known && local && loanArenaChecked(others, argsets[at]))
+                    loanEscape((INode *)call, local, LoanEscapeCall);
+                uint32_t apart = known ? loanArenaApart(others, argsets[at], &through) : 0;
+                if (apart)
+                    loanApart((INode *)call, apart, through, LoanEscapeCall);
+                continue;
+            }
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape((INode *)call, local, LoanEscapeCall);
             else
@@ -2023,10 +2189,20 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         if (local && pwPlaceOutlives(&reach))
             loanEscape((INode *)call, local, LoanEscapeCall);
         else if (reach.deref) {
-            uint32_t own = pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
+            // What belongs to the arena itself is no self-store (Bug 48's exception)
+            uint32_t own = !arenaplace && pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
             if (own)
                 loanSelfStore((INode *)call, own, &target, LoanEscapeCall);
-            pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
+            if (arenaplace) {
+                // An arena reached through a reference takes of the caller's
+                // loans only its own: those of the parameter it was reached by
+                VarDclNode *through;
+                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, &through);
+                if (apart)
+                    loanApart((INode *)call, apart, through, LoanEscapeCall);
+            }
+            else
+                pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }

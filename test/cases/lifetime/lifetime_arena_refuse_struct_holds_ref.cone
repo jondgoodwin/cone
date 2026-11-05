@@ -1,0 +1,22 @@
+// Bug 48: H holds a borrow of some lifetime other than 'a, passed with the arena; a node holding what H keeps could be stored. Refuse.
+mod lifetime_arena_refuse_struct_holds_ref;
+import arena use *;
+
+struct Node { pub val: i64; pub l: Option[&mut Node]; }
+// H holds a borrow of some lifetime other than 'a
+struct H { pub pos: i64; pub keep: Option[&mut Node]; }
+
+fn leaf(h: &mut H, ar: &'a mut Arena) &'a mut Node {
+  h.pos += 1;
+  ar.alloc(Node(h.pos, None[&mut Node]))
+}
+fn twice(h: &mut H, ar: &'a mut Arena) &'a mut Node {
+  let a = leaf(h, ar);
+  let b = ar.alloc(Node(0, Some(a)));  //~ ErrorCallEscape
+  b
+}
+fn main() {
+  var ar = Arena();
+  var h = H(0, None[&mut Node]);
+  let n = twice(&mut h, &mut ar);
+}
