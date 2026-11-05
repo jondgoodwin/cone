@@ -62,4 +62,35 @@ fn awaitUntyped() actors.Awaitable[u64] {
   h.awaitable[TakesUntyped, u64](TakesUntyped())   //~ ErrorWhereUnmet:4 "TakesUntyped is not HostReplyJob[Svc, u64]"
 }
 
+// Parked in a record as a ReplyOf[u64], answered a Pair later: the compiler
+// checks the parked answer as it checks the immediate one
+struct Parked {
+  r: Option[actors.ReplyOf[u64]];
+}
+
+struct ParksThenAnswersWrong {
+  pub fn run(self, lp: &mut Loop, s: &mut Svc, rp: actors.ReplyOf[u64]) {
+    var p = Parked(Some[actors.ReplyOf[u64]](rp));
+    match p.r {
+      case let Some(r) {r.answer(Pair(1u64, 2u64));}   //~ ErrorNoCandidate "No method declared by `answer`"
+      else {}
+    }
+  }
+}
+
+// No way back from the envelope to the untyped Reply, by any name. This is
+// Bug 38's lie (an Awaitable[Pair] answering a u64 through the raw Reply),
+// which a public 'raw' reopened in #962; a later way back fails here
+fn bug38Lie() actors.Awaitable[Pair] {
+  actors.Awaitable[Pair].make(fn(rp: actors.ReplyOf[Pair]) {
+    actors.answerNow[u64](rp.raw(), 1u64);   //~ ErrorNoMbr "Method or field `raw` not found"
+    //~^ ErrorInvType
+  })
+}
+
+// ...nor by reading the envelope's field from outside the actors package
+fn readsField(rp: actors.ReplyOf[u64]) {
+  let r = rp.reply;   //~ ErrorNotPublic "May not access the private method/field `reply`"
+}
+
 fn main() {}

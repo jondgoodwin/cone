@@ -11,7 +11,7 @@
 // whole when the exchange starts, and taken out of its table whole when the
 // exchange ends, its reply answered with its response
 struct Wait {
-  reply: actors.Reply;
+  reply: actors.ReplyOf[Result[httpclient.Response, FetchError]];
   resp: httpclient.Response;
   tooBig: bool;                  // the body passed the limit, and the exchange was cancelled for it
   limit: usize;                  // the most body bytes it takes
@@ -24,7 +24,7 @@ struct Wait {
 }
 
 // A wait for reply, its response not begun, taking at most limit body bytes
-fn waitFor(rp: actors.Reply, limit: usize) Wait {
+fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: usize) Wait {
   Wait(reply: rp, resp: httpclient.Response.blank(), tooBig: false, limit: limit,
     fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String(), sent: 0usize,
     conn: 0usize, bodyDone: false)
@@ -55,7 +55,7 @@ struct ConnRec {
   closed: bool;
   dropped: bool;                 // its Conn handle has gone
   busy: u32;                     // exchanges in flight on it
-  reply: actors.Reply;
+  reply: Option[actors.ReplyOf[Result[Conn, FetchError]]];
 }
 
 
@@ -339,7 +339,7 @@ struct Service {
           } else if tooBig {
             v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
           }
-          actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
+          reply.answer(v);
         }
         else {}
       }
@@ -377,7 +377,12 @@ const sendChunk = 16384usize;
 // A connect's reply carries v back to the actor awaiting it, answered in
 // place: the reply is spent after, as the connection lives on
 fn answerConn(c: &mut ConnRec, v: Result[Conn, FetchError]) {
-  actors.answerNowIn[Result[Conn, FetchError]](&mut c.reply, v);
+  var taken: Option[actors.ReplyOf[Result[Conn, FetchError]]] = None;
+  taken <-> c.reply;
+  match taken {
+    case let Some(r) {r.answer(v);}
+    else {}
+  }
 }
 
 // The failure of an exchange that went over its body limit
@@ -445,7 +450,7 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
         } else if tooBig {
           v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
         }
-        actors.answerNow[Result[httpclient.Response, FetchError]](reply, v);
+        reply.answer(v);
       }
       else {}
     }
@@ -492,12 +497,11 @@ struct FetchJob {
   pub id: u64;
   pub req: httpclient.Request;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
-    let rp = rpo.raw();
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
     let id, req = self.(id, req);
     let k = sv.findClient(id);
     if k >= sv.clients.bound() {
-      actors.answerNow[Result[httpclient.Response, FetchError]](rp,
+      rp.answer(
         Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
     }
@@ -519,11 +523,10 @@ struct ConnectJob {
   pub secure: bool;
   pub cfg: tls.ClientConfig;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[Conn, FetchError]]) {
-    let rp = rpo.raw();
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[Conn, FetchError]]) {
     let host, port, secure, cfg = self.(host, port, secure, cfg);
     let slot = usize.from(sv.conns.add(ConnRec(used: true, id: newId(), conn: httpconn.ConnId.none(),
-      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: rp)).index);
+      connecting: true, open: false, closed: false, dropped: false, busy: 0u32, reply: Some[actors.ReplyOf[Result[Conn, FetchError]]](rp))).index);
     let c = sv.conns.at(u32.from(slot)) as &mut ConnRec;
     let sink = httpconn.Sink.Here(connBit | u64.from(slot));
     // The driver is handed a copy of the host: it holds Strings, and nothing
@@ -556,12 +559,11 @@ struct ExchangeJob {
   pub group: Option[CancelGroup];
   pub deadline: Instant;
 
-  pub fn run(self, lp: &mut Loop, sv: &mut Service, rpo: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
-    let rp = rpo.raw();
+  pub fn run(self, lp: &mut Loop, sv: &mut Service, rp: actors.ReplyOf[Result[httpclient.Response, FetchError]]) {
     let id, head, body, group, deadline = self.(id, head, body, group, deadline);
     let k = sv.findConn(id);
     if k >= sv.conns.bound() {
-      actors.answerNow[Result[httpclient.Response, FetchError]](rp, Err[httpclient.Response, FetchError](FetchError.failed(
+      rp.answer(Err[httpclient.Response, FetchError](FetchError.failed(
         httpclient.Failure.make(httpclient.Stage.Closed, 0u32, ErrorKind.Closed, "the connection names nothing"))));
       return;
     }
