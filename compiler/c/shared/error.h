@@ -406,7 +406,9 @@ enum ErrorCode {
 
     // A number's conversion, 'u64.from(count)' (ir/exp/fncall.c, ir/exp/typelit.c)
     ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
-    ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
+    ErrorNbrParse = 1597,       // A number type's 'parse' given other than one value, or named without a call: 'i32.parse(text)' reads one text
+    ErrorNbrTryFrom = 1598,     // A number type's 'tryFrom' given other than one value or a value that is not a number: 'u8.tryFrom(x)' converts one number
+    ErrorNbrFrom = 1208,       // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
 
     // Construction, 'Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
     ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'Point(1, 2)'; an enum's variant likewise, 'Some(5)' (ErrorVariantBracket)
