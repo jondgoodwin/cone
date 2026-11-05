@@ -142,7 +142,12 @@ fn blockFree[T](r: *MemRegion, block: *T, n: usize) inline {
 // and control bytes share one block, so the room beyond it is not theirs to use.)
 fn blockRoom[T](r: *MemRegion, n: usize) usize inline {
   let size = mem.sizeof[T]();
-  if size == 0usize {n} else {(r as &MemRegion).sizeFor(n * size, mem.alignof[T]()) / size}
+  if size == 0usize {n} else {
+    // The floor is written out because the answer comes from an indirect call, and
+    // the optimizer needs this fact to drop bounds checks.
+    let room = (r as &MemRegion).sizeFor(n * size, mem.alignof[T]()) / size;
+    if room > n {room} else {n}
+  }
 }
 
 // Whether a region is the heap's, whose blocks the raw blocks layer gives back
