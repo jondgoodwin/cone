@@ -35,7 +35,7 @@
 //     }
 //     // or, in one call, the whole body up to a limit:
 //     imm r = client.fetchWhole(&mut lp, Request.get("https://example.com/"), 1048576usize);
-//     if r.isOk() { ... r.status ... r.body.view() ... } else { ... r.failure.message() ... }
+//     if r.isOk() { ... r.status ... r.body.view() ... } else { ... String() <- r.failure ... }
 //   }
 //
 //   Client.make(config)  getWhole(url, limit)                   (THE CLIENT)
@@ -57,7 +57,7 @@
 //     e.trailers e.failure e.timing;  e.isTerminal()
 //   EventKind: Response Data End Done Failed Cancelled TimedOut;  toDebug(k)
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
-//   Failure: f.stage f.code f.error f.unsent f.attempts f.message();  Stage  (FAILURES)
+//   Failure: f.stage f.code f.error f.unsent f.attempts String() <- f;  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
 //
 // THE CLIENT. One per Loop, driven by the loop's thread, as httpconn's
@@ -543,17 +543,11 @@ pub struct Failure is Error {
   // failure's words, and the system's failure (its kind, number and text)
   // when there is one. A Tls stage's number is its certificate verifier's,
   // whose words already hold the OS's text and number
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String() <- stage;
-    out.append(": ");
-    out.append(error.message().view());
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- stage, ": ", error;
     if code != 0u32 && stage != Stage.Tls {
-      out.append(" (");
-      out.append(IoError(code).describe().view());
-      out.append(")");
+      out <- " (", IoError(code).describe().view(), ")";
     }
-    out
   }
 }
 

@@ -23,7 +23,7 @@
 //       imm r = await client.get(url.view());      // pauses until the whole response is in
 //       match r {
 //         case imm ok Ok {...ok.status...  ok.body.view()...}
-//         case imm e Err {...e.isTimedOut()  e.isCancelled()  e.failure.message()...}
+//         case imm e Err {...e.isTimedOut()  e.isCancelled()  String() <- e.failure...}
 //       }
 //     }
 //   }
@@ -76,7 +76,7 @@
 //                                                               Result[Response, FetchError]
 //   Conn.none()  conn.isNone()
 //   FetchError: e.kind() (FetchErrorKind: Failed, Cancelled, TimedOut)  e.isCancelled()  e.isTimedOut()
-//     e.failure (Failed: httpclient.Failure: its stage, code, HTTP error)  e.message()
+//     e.failure (Failed: httpclient.Failure: its stage, code, HTTP error)  String() <- e
 //   defaultMaxBody                the most body bytes a client takes unless made with another limit
 //   c.stream(request)  c.streamIn(request, lim)     a response read as it arrives, in chunks   (STREAMS)
 //                                                               Result[BodyStream, FetchError]
@@ -98,7 +98,7 @@
 //   ex.start(head, length)  ex.startEvents()  ex.startEventsWith(head)   a streamed one (not awaited)
 //   ex.write(bytes)  ex.sendEvent(event)  ex.sendComment(text)     Result[usize, ServerError]
 //   ex.finish()                                                    Result[u64, ServerError]
-//   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  e.message()
+//   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  String() <- e
 //   defaultMaxRequestBody         the most request body bytes a server takes unless configured
 //
 // Each of the first four and the two of a connection makes an OPERATION, an
@@ -427,11 +427,10 @@ pub struct FetchError is Error {
 
   // 'connect: closed: the connection could not be made (...)', or 'cancelled',
   // or 'deadline passed'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    if cause == FetchErrorKind.Cancelled {return String.from("cancelled");}
-    if cause == FetchErrorKind.TimedOut {return String.from("deadline passed");}
-    failure.message()
+  pub fn toText(self: &, out: &uni TextOut) {
+    if cause == FetchErrorKind.Cancelled {out <- "cancelled";}
+    else if cause == FetchErrorKind.TimedOut {out <- "deadline passed";}
+    else {out <- failure;}
   }
 }
 

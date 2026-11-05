@@ -50,7 +50,7 @@
 //     e.clean e.failure e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
 //     Writable Done Failed Cancelled TimedOut;  toDebug(&k)
-//   Failure: f.stage f.code f.error f.unsent f.message()  Stage  toText(&s)  (FAILURES)
+//   Failure: f.stage f.code f.error f.unsent String() <- f  Stage  toText(&s)  (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
 //   ConnId ReqId ListenerId  Config  DriverStats
 //
@@ -427,7 +427,7 @@ pub struct Failure is Error {
   // TLS stage, the verifier's number if it refused the certificate, and QUIC's
   // words; no byte of a request reached it
   pub fn quicFailure overload from(e: quic.QuicError) Failure {
-    var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, e.message().view());
+    var f = Failure.make(Stage.Tls, e.osError, ErrorKind.Closed, (String() <- e).view());
     f.unsent = true;
     f
   }
@@ -441,17 +441,11 @@ pub struct Failure is Error {
   }
 
   // 'closed: refused: the connection closed before the request was sent'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String() <- stage;
-    out.append(": ");
-    out.append(error.message().view());
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- stage, ": ", error;
     if code != 0u32 {
-      out.append(" (OS error ");
-      out.appendUInt(u64.from(code));
-      out.append(")");
+      out <- " (OS error ", code, ")";
     }
-    out
   }
 }
 
