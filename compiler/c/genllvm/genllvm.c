@@ -974,6 +974,20 @@ static void genlBorrowDeref(GenState *gen, FnDclNode *fnnode) {
                 if (size > 0)
                     LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
                         LLVMGetEnumAttributeKindForName("dereferenceable", 15), size));
+                // The pointee's ABI alignment too: LLVM hoists a load past a
+                // conditional exit only if it is safe to speculate, which needs
+                // the alignment as well as the size (measured 5 Nov 2026: a
+                // matmul over '&imm, &imm, &uni List' 2.8 s without, 0.87 s with)
+                unsigned abialign = LLVMABIAlignmentOfType(gen->datalayout, pointee);
+                // Capped at 16, the alignment the heap gives (core's RawBlocks
+                // does not yet act on a request past 16), so a type aligned
+                // past that, such as Vector[f32, 8], does not claim what a
+                // block holding it may not have
+                if (abialign > 16)
+                    abialign = 16;
+                if (size > 0 && abialign > 0)
+                    LLVMAddAttributeAtIndex(fnnode->llvmvar, idx, LLVMCreateEnumAttribute(gen->context,
+                        LLVMGetEnumAttributeKindForName("align", 5), abialign));
             }
         }
         ++idx;
