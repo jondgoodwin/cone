@@ -199,6 +199,38 @@ info fetcher request ends #3
 		directive that is none of these (an unknown level, an empty or too long target, a thirty-third target) is
 		skipped, and <span class="pre">filter</span> answers how many were.</p>
 
+	<h2 id="logging">Logging a line</h2>
+	<p>A log is declared once, like a kind, and then written to with <span class="pre">&lt;-</span>:</p>
+<pre>
+let log: Log;
+fn @initpure init() { log = Log.make("fetcher", Level.Info); }
+
+log &lt;- $"user {user.id} logged in";
+log &lt;- "took ", ms, " ms";
+</pre>
+	<p>Each <span class="pre">&lt;-</span> is one structured event. The compiler gives every call site a kind of its
+		own, made from the site's text the first time an event of it is on, with no lock on the later path: the
+		kind's name is the fixed text with each value as <span class="pre">{name}</span>, and the fields are named from the
+		braces' source text (<span class="pre">user.id</span>), or numbered (<span class="pre">0</span>, <span class="pre">1</span>)
+		in a plain list. A number, bool, text, <span class="pre">Nanos</span> or <span class="pre">Ticks</span> stays a
+		typed <span class="pre">Value</span>; anything else is kept as its debug text. A site keeps at most four fields
+		(<span class="pre">maxFields</span>); the rest are in the message only. A sink that wants only text gets
+		<span class="pre">Event.message</span>, the text with the values in it, so existing sinks work unchanged. A bare
+		integer literal in a piece (<span class="pre">{1}</span>) is refused as ambiguous between the signed and unsigned
+		overloads, as it is in a <span class="pre">Message</span>: write a typed value.</p>
+	<p><b>When the level is off the line is skipped whole</b>: the <span class="pre">Log</span> declares
+		<span class="pre">wants</span>, so no piece is evaluated and the cost is a relaxed load and a compare. A
+		<span class="pre">Log</span> is on when its level is wanted and any sink is installed; the site's kind is asked of
+		each sink's <span class="pre">enabled</span> once, at its first event that is on. A level or filter changed at run
+		time reaches every site's kind, as it does a declared one. A log send is refused in an
+		<span class="pre">inline</span> function (the site's storage is a <span class="pre">static</span>, which an inline body
+		would copy into each caller).</p>
+	<p><b>Private values.</b> <span class="pre">private(&amp;x)</span> in a piece shows <span class="pre">&lt;private&gt;</span>
+		in the message and as the field's text, unless the sink declares <span class="pre">allowsPrivate</span> (off by
+		default); the check is made where the event is made, so the value is never in the bytes a sink not allowed it
+		receives. <b><span class="pre">private(x)</span> protects only a value wrapped at the call</b>: a struct logged
+		whole goes out as its debug text, private fields included.</p>
+
 	<h2 id="cost">What it costs</h2>
 	<p>A kind keeps, in one byte, which sinks want it, worked out when it is first emitted and whenever a level,
 		the filter or the sinks change. An event of a kind that is off costs a relaxed load of that byte and a

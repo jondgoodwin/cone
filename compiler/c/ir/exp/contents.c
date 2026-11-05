@@ -23,6 +23,7 @@
 #include "../ir.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 // Create an entry node: 'n of x', 'fill x', 'k: v', an each or a yield, its value filled in after
@@ -958,7 +959,11 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
 // checked as a trial, so that what is not text's is checked once, as written.
 // ---------------------------------------------------------------------------
 
-enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink };
+enum TextKind { TextNone = 0, TextWriter, TextRecord, TextSink, TextSite };
+
+static int textOpensSite(INode *base);
+static Name *textSiteWriterName();
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base);
 
 static Name *textName(const char *name) {
     return nametblFind((char*)name, strlen(name));
@@ -996,6 +1001,8 @@ static enum TextKind textKindOf(INode *base) {
         return TextRecord;
     if (textAnswersWriter(base, "textOut"))
         return TextSink;
+    if (textOpensSite(base))
+        return TextSite;
     return TextNone;
 }
 
@@ -1326,6 +1333,194 @@ static int textGuardLower(TypeCheckState *pstate, FnCallNode **nodep, INode *rec
     return 1;
 }
 
+// A log receiver (a type whose 'open(self: &, site: &mut S, spec: &str, file: &str,
+// line: u32)' answers a record): one call site of a '<-' to it is one kind of event.
+//   { static var -siteN: S; var -lw = log.open(&mut -siteN, spec, file, line);
+//     -lw.text("fixed"); { -lw.value(n) }; { -lw.value(other) }; ...; -lw.finish() }
+// The compiler makes the site's storage (zeroed, one per call site, filled on the
+// first event) and the 'spec' text: the fixed text with each value as '{name}', then
+// each name after a \x01. A name is the brace's own source text (the lexer of an
+// interpolated string's brace remembers it), or the value's number in a plain send
+// list. A value goes to the record's overloaded 'value(x)', which keeps it typed; one
+// no overload takes goes by '<-' (textValueFallback), which a record declaring
+// DebugText takes as the value's debug text. Answers 1 when it replaced the send.
+static Name *textSiteWriterName() {
+    static Name *name = NULL;
+    if (name == NULL)
+        name = nametblFind("-lw", 3);
+    return name;
+}
+
+// The type of the parameter at this index of a signature, as declared
+static INode *textParmType(FnSigNode *sig, uint32_t index) {
+    return itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, index))->vtype);
+}
+
+// Is this type '&str'?
+static int textIsStrRef(INode *type) {
+    return type != NULL && type->tag == RefTag
+        && itypeGetTypeDcl(((RefNode*)type)->vtexp) == (INode*)strTypeDcl;
+}
+
+// A type that has a method of this name
+static int textHasMethod(INode *type, const char *name) {
+    if (type == NULL || !isMethodType(type))
+        return 0;
+    // An overloaded name ('value') is found as its set of methods, not as one
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, textName(name));
+    return found != NULL && (found->tag == FnDclTag || found->tag == FnOverloadDclTag);
+}
+
+// A method 'open(self, site: &mut S, spec: &str, file: &str, line: u32)' that
+// answers a type with 'text', 'value' and 'finish', all as declared
+static int textOpensSite(INode *base) {
+    INode *found = iNsTypeFindFnField((INsTypeNode*)base, textName("open"));
+    // A method (it takes self), not a function that happens to be named 'open'
+    if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld))
+        return 0;
+    INode *vtype = ((FnDclNode*)found)->vtype;
+    if (vtype == NULL || vtype->tag != FnSigTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode*)vtype;
+    if (sig->parms->used != 5 || sig->rettype == NULL)
+        return 0;
+    INode *site = textParmType(sig, 1);
+    if (site == NULL || site->tag != RefTag || ((RefNode*)site)->perm == NULL
+        || itypeGetTypeDcl(((RefNode*)site)->perm) != (INode*)mutPerm)
+        return 0;
+    if (!textIsStrRef(textParmType(sig, 2)) || !textIsStrRef(textParmType(sig, 3))
+        || textParmType(sig, 4) != (INode*)u32Type)
+        return 0;
+    INode *rec = itypeGetTypeDcl(sig->rettype);
+    return textHasMethod(rec, "text") && textHasMethod(rec, "value") && textHasMethod(rec, "finish");
+}
+
+// A brace's source text, trimmed, as a field name; NULL when the piece is not from a brace
+static int textBraceName(INode *piece, char *out, size_t size) {
+    if (piece->lexer == NULL || piece->lexer->interpend == NULL)
+        return 0;
+    char *from = piece->lexer->interpstart;
+    char *to = piece->lexer->interpend;
+    while (from < to && (*from == ' ' || *from == '\t' || *from == '\r' || *from == '\n'))
+        ++from;
+    while (to > from && (to[-1] == ' ' || to[-1] == '\t' || to[-1] == '\r' || to[-1] == '\n'))
+        --to;
+    size_t n = 0;
+    for (; from < to && n + 1 < size; ++from)
+        out[n++] = (unsigned char)*from < 0x20 ? ' ' : *from;
+    out[n] = '\0';
+    return n > 0;
+}
+
+static int textSiteLower(TypeCheckState *pstate, FnCallNode **nodep, INode *base) {
+    static unsigned serial = 0;
+    FnCallNode *node = *nodep;
+    INode *lex = (INode*)node;
+    uint32_t npieces;
+    INode **piecep = contentsEntries(node, &npieces);
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (isEntryNode(piecep[i]))
+            return 0;
+    // The call site's kind is a static: an inline function's body is copied to each caller, so it would
+    // be one kind per caller of the function, not one for the call site written
+    if (pstate->fn && (pstate->fn->flags & FlagInline)) {
+        errorMsgNode(lex, ErrorBadStatic, "A log send in an inline function would make one kind per caller, not one for this call site. Log from a function that is not inline, or take the logging out of this one.");
+        node->vtype = errorType;
+        return 1;
+    }
+    FnSigNode *sig = (FnSigNode*)((FnDclNode*)iNsTypeFindFnField((INsTypeNode*)base, textName("open")))->vtype;
+    INode *sref = itypeGetTypeDcl(((VarDclNode*)nodesGet(sig->parms, 1))->vtype);
+    if (sref == NULL || sref->tag != RefTag)
+        return 0;
+    INode *sitetype = itypeGetTypeDcl(((RefNode*)sref)->vtexp);
+
+    // What each piece is: fixed text, a typed value, or a value kept as debug text
+    size_t cap = 64;
+    for (uint32_t i = 0; i < npieces; ++i)
+        cap += (piecep[i]->tag == StringLitTag ? ((SLitNode*)piecep[i])->strlen : 0) + 200;
+    char *spec = (char*)memAllocBlk(cap);
+    char *names = (char*)memAllocBlk(cap);
+    size_t slen = 0, nlen = 0;
+    uint32_t fields = 0;
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        if (piece->tag == StringLitTag) {
+            memcpy(spec + slen, ((SLitNode*)piece)->strlit, ((SLitNode*)piece)->strlen);
+            slen += ((SLitNode*)piece)->strlen;
+            continue;
+        }
+        char name[80];
+        if (!textBraceName(piece, name, sizeof(name)))
+            snprintf(name, sizeof(name), "%u", fields);
+        ++fields;
+        slen += (size_t)snprintf(spec + slen, 100, "{%s}", name);
+        nlen += (size_t)snprintf(names + nlen, 100, "\x01%s", name);
+    }
+    memcpy(spec + slen, names, nlen);
+    slen += nlen;
+
+    uint16_t scope = (uint16_t)(pstate->scope + 1);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, lex);
+    blk->flags |= FlagKeepTemps;
+    uint32_t lastawait = 0;
+    for (uint32_t i = 0; i < npieces; ++i)
+        if (awaitWithin(piecep[i]))
+            lastawait = i + 1;
+    for (uint32_t i = 0; i < lastawait; ++i) {
+        if (litIsLiteral(piecep[i]))
+            continue;
+        VarDclNode *part = contentsVar(tempLocalName, unknownType, immPerm, piecep[i], scope, piecep[i]);
+        nodesAdd(&blk->stmts, (INode*)part);
+        piecep[i] = contentsVarUse(part, (INode*)part);
+    }
+
+    char sname[32];
+    snprintf(sname, sizeof(sname), "-site%u", ++serial);
+    VarDclNode *site = contentsVar(nametblFind(sname, strlen(sname)), sitetype, mutPerm, NULL, scope, lex);
+    site->flags |= FlagStatic;
+    site->flowtempflags |= VarInitialized;      // zeroed storage, a value to borrow
+    nodesAdd(&blk->stmts, (INode*)site);
+
+    FnCallNode *open = textAsk(lex, node->objfn, "open");
+    INode *siteref = contentsVarUse(site, lex);
+    borrowMutRef(&siteref, sitetype, newPermUseNode(mutPerm));
+    nodesAdd(&open->args, siteref);
+    SLitNode *speclit = newSLitNode(memAllocStr(spec, (uint32_t)slen), (uint32_t)slen);
+    inodeLexCopy((INode*)speclit, lex);
+    nodesAdd(&open->args, (INode*)speclit);
+    const char *url = node->lexer && node->lexer->url ? node->lexer->url : "";
+    SLitNode *filelit = newSLitNode(memAllocStr((char*)url, (uint32_t)strlen(url)), (uint32_t)strlen(url));
+    inodeLexCopy((INode*)filelit, lex);
+    nodesAdd(&open->args, (INode*)filelit);
+    ULitNode *linelit = newULitNodeTC(node->linenbr, (INode*)u32Type);
+    inodeLexCopy((INode*)linelit, lex);
+    nodesAdd(&open->args, (INode*)linelit);
+    VarDclNode *w = contentsVar(textSiteWriterName(), unknownType, mutPerm, (INode*)open, scope, lex);
+    nodesAdd(&blk->stmts, (INode*)w);
+
+    for (uint32_t i = 0; i < npieces; ++i) {
+        INode *piece = piecep[i];
+        FnCallNode *call = textAsk(piece, contentsVarUse(w, lex), piece->tag == StringLitTag ? "text" : "value");
+        nodesAdd(&call->args, piece);
+        if (piece->tag == StringLitTag)
+            nodesAdd(&blk->stmts, (INode*)call);
+        else {
+            // No overload of 'value' taking it: its debug text (textValueFallback)
+            call->methfld->flags |= FlagTextLowered;
+            // A block of its own: a debug-text writer the piece makes dies here, with its piece written
+            BlockNode *one = newBlockNode();
+            inodeLexCopy((INode*)one, piece);
+            nodesAdd(&one->stmts, (INode*)call);
+            nodesAdd(&blk->stmts, (INode*)one);
+        }
+    }
+    nodesAdd(&blk->stmts, (INode*)textAsk(lex, contentsVarUse(w, lex), "finish"));
+    *((INode**)nodep) = (INode*)blk;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+    return 1;
+}
+
 // A '<-' sending a list to a text receiver is lowered here (see the comment
 // above), before its pieces are looked at. Answers 1 when it replaced the send,
 // 0 when the send is not a text list's
@@ -1340,7 +1535,8 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
     int single = arg->tag != VTupleTag && !isEntryNode(arg);
     // A single plain value is the ordinary send, whose failing to find a '<-' that
     // takes it comes to textSendFallback (unless the receiver has 'wants')
-    if (single && guarded)
+    // (the pieces a log receiver's lowering sends to its record are its own: textSiteLower)
+    if (single && guarded && isNameUseNode(node->objfn) && ((NameUseNode*)node->objfn)->namesym == textSiteWriterName())
         return 0;
     if (contentsIsConstruction(node->objfn))
         return 0;
@@ -1357,6 +1553,11 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep) {
         textWarnEffects(pstate, node);
         if (textGuardLower(pstate, nodep, recvcopy, otype))
             return 1;
+    }
+    if (kind == TextSite) {
+        if (textSiteLower(pstate, nodep, base))
+            return 1;
+        return 0;
     }
     if (single)
         return 0;
@@ -1451,6 +1652,21 @@ static int textSendPiece(TypeCheckState *pstate, FnCallNode *callnode, INode *re
         callnode->flags |= FlagVDisp;
     if (debug)
         callnode->flags &= ~FlagOperator;
+    return 1;
+}
+
+// A log record's 'value(x)' that no overload takes is the debug text of x, sent as '<-'
+int textValueFallback(TypeCheckState *pstate, FnCallNode *callnode) {
+    (void)pstate;
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld) || !(callnode->methfld->flags & FlagTextLowered)
+        || ((NameUseNode*)callnode->methfld)->namesym != textName("value")
+        || callnode->args == NULL || callnode->args->used != 1)
+        return 0;
+    NameUseNode *meth = newMemberUseNode(lessDashName);
+    inodeLexCopy((INode*)meth, (INode*)callnode);
+    meth->flags |= FlagTextLowered;
+    callnode->methfld = (INode*)meth;
+    callnode->flags |= FlagOpAssgn | FlagLvalOp;
     return 1;
 }
 
