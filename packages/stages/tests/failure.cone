@@ -131,7 +131,7 @@ actor Probe is ChunkSink {
       case is Finished { s.finished.add(1u64); }
       case let Failed(e) {
         s.failed.add(1u64);
-        if e.message().view() == wantMessage.view() { s.messageOk.add(1u64); }
+        if (String() <- e).view() == wantMessage.view() { s.messageOk.add(1u64); }
         if typed == deflateTyped {
           if e.holds[deflate.DeflateError]() { s.typedOk.add(1u64); }
           match e.downcastRef[deflate.DeflateError]() {
@@ -171,7 +171,7 @@ actor Checker is DigestSink[Array[u8, 32]] {
       case let Ok(d) { s.digests.add(1u64); }
       case let Err(e) {
         s.errs.add(1u64);
-        if e.message().view() == wantMessage.view() { s.errMessageOk.add(1u64); }
+        if (String() <- e).view() == wantMessage.view() { s.errMessageOk.add(1u64); }
       }
     }
   }
@@ -242,7 +242,7 @@ fn directMessage[T: Transform](t: &mut T, input: &Array[u8]) String {
     st = t.pull(&mut buf);
   }
   match t.failure() {
-    case let Some(e) { e.message() }
+    case let Some(e) { (String() <- e) }
     case is None { String.from("") }
   }
 }
@@ -259,7 +259,7 @@ fn main() i32 {
   let msg0 = directMessage(&mut inf0, badCrc.view());
   expect(msg0.len() > 0usize, "direct: the inflater fails on the corrupt CRC");
   match deflate.gzipDecompress(badCrc.view(), 0usize) {
-    case let Err(e) { expectStr(e.message().view(), msg0.view(), "direct: the one-shot helper says the same"); }
+    case let Err(e) { expectStr((String() <- e).view(), msg0.view(), "direct: the one-shot helper says the same"); }
     case is Ok { expect(false, "direct: the one-shot helper fails too"); }
   }
 

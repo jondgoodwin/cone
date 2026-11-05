@@ -19,7 +19,7 @@
 //         if o.exitCode != 0u32 { ... o.stderr.view() ... }
 //       }
 //       case imm e Err {
-//         imm m = e.message();                   // 'run conec: The system cannot find the file specified'
+//         imm m = String() <- e;                 // 'run conec: The system cannot find the file specified'
 //         ...
 //       }
 //     }
@@ -33,7 +33,7 @@
 //   process.runLine(line, opts, dir)  run a command line written out by hand
 //   process.Options               timeout, inherit, crashReport; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
-//   process.ProcessError          op, program, dir, code, message(), notFound()
+//   process.ProcessError          op, program, dir, code, String() <- e, notFound()
 //   process.commandLine(args)     the line 'run' hands Windows for args
 //   process.args()                this program's arguments, in UTF-8
 //   process.currentExe()          this program's executable, a Path
@@ -159,7 +159,7 @@
 //
 // **Failure.** An Err holds a ProcessError: what was being done ('op'),
 // the program, the folder it was to start in, and the system's error number
-// ('code': on Windows GetLastError's, on POSIX errno's). Its 'message()' is
+// ('code': on Windows GetLastError's, on POSIX errno's). Its text ('String() <- e') is
 // one line for a person, in the system's own words (on Windows in English
 // where it has them): 'run nosuch: The system cannot find the file
 // specified', 'run conec in build/x: The directory name is invalid'; on POSIX
@@ -421,30 +421,20 @@ pub struct ProcessError is Error {
 
   // One line for a person: 'run nosuch: The system cannot find the file
   // specified', or 'run conec in build/x: The directory name is invalid'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from(op.view());
-    if !program.isEmpty() {
-      out.append(" ");
-      out.append(program.view());
-    }
-    if !dir.isEmpty() {
-      out.append(" in ");
-      out.append(dir.view());
-    }
-    out.append(": ");
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- op.view();
+    if !program.isEmpty() { out <- " ", program.view(); }
+    if !dir.isEmpty() { out <- " in ", dir.view(); }
+    out <- ": ";
     let text = systemText(code);
     // A number the system has no text for: the kind and the number, in the
     // words iocore's IoError.describe() gives ('other, OS error 12345')
     if text.isEmpty() {
       let kindOfCode = osKind(code);
-      out <- kindOfCode;
-      out.append(", OS error ");
-      out.appendUInt(u64.from(code));
+      out <- kindOfCode, ", OS error ", code;
     } else {
-      out.append(text.view());
+      out <- text.view();
     }
-    out
   }
 
   // Whether it failed because there is no such program (or no folder on its

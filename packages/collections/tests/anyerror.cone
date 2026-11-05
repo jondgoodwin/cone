@@ -1,4 +1,4 @@
-// The Error trait and AnyError. A typed error meets Error with a message() (one
+// The Error trait and AnyError. A typed error meets Error with a toText (one
 // line, this error alone) and, when it has a cause, a source(); the trait's
 // report() joins the message and each cause under it, which is what 'main' prints.
 // '?' turns any Error that is Sendable into an AnyError by AnyError's generic
@@ -35,23 +35,20 @@ var @threadlocal lazyCalls = 0i64;
 // A three-deep chain: Top, caused by Mid, caused by Leaf
 struct Leaf is Error, Sendable {
   code: i32;
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String { String.from("leaf failed") }
+  pub fn toText(self: &, out: &uni TextOut) { out <- "leaf failed"; }
   fn final(self: &uni) { leafDeaths = leafDeaths + 1; }
 }
 
 struct Mid is Error, Sendable {
   cause: Leaf;
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String { String.from("mid failed") }
+  pub fn toText(self: &, out: &uni TextOut) { out <- "mid failed"; }
   pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
   fn final(self: &uni) { midDeaths = midDeaths + 1; }
 }
 
 struct Top is Error, Sendable {
   cause: Mid;
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String { String.from("top failed") }
+  pub fn toText(self: &, out: &uni TextOut) { out <- "top failed"; }
   pub fn source(self: &) Option[&<Error] { Some[&<Error](&cause) }
   fn final(self: &uni) { topDeaths = topDeaths + 1; }
 }
@@ -82,36 +79,36 @@ fn sendableAs[T: Sendable]() bool { true }
 fn conversions() {
   expectInt(i64.from(typedToAny(false).unwrap()), 2, "an Ok passes through ? into an AnyError");
   let e1 = typedToAny(true).error().unwrap();
-  expectStr(e1.message().view(), "leaf failed", "a typed error's message through AnyError");
+  expectStr((String() <- e1).view(), "leaf failed", "a typed error's message through AnyError");
   expectStr(reportOf(&e1).view(), "leaf failed", "a lone error's report is its message");
   expectBool(e1.source() is None, true, "and it has no source");
 
   let e2 = anyToAny(true).error().unwrap();
-  expectStr(e2.message().view(), "leaf failed", "AnyError into AnyError by ? keeps the error");
+  expectStr((String() <- e2).view(), "leaf failed", "AnyError into AnyError by ? keeps the error");
   expectInt(i64.from(anyToAny(false).unwrap()), 3, "and the Ok");
 
   let e3 = AnyError.from(Leaf(1i32));
-  expectStr(e3.message().view(), "leaf failed", "AnyError.from, called");
+  expectStr((String() <- e3).view(), "leaf failed", "AnyError.from, called");
   expectBool(sendableAs[AnyError](), true, "an AnyError is Sendable");
 }
 
 fn chains() {
   // Three deep, typed: the default report walks source()
   let top = Top(Mid(Leaf(2i32)));
-  expectStr(top.message().view(), "top failed", "message is this error alone");
+  expectStr((String() <- top).view(), "top failed", "message is this error alone");
   expectStr(reportOf(&top).view(),
     "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of a three-deep typed chain");
 
   // The same chain inside an AnyError
   let deep = deepChain().error().unwrap();
-  expectStr(deep.message().view(), "top failed", "an AnyError's message is the outermost line");
+  expectStr((String() <- deep).view(), "top failed", "an AnyError's message is the outermost line");
   expectStr(reportOf(&deep).view(),
     "top failed\n  caused by: mid failed\n  caused by: leaf failed", "report of the chain inside an AnyError");
 }
 
 fn contexts() {
   let e = deepChain().error().unwrap().addContext("reading the config").addContext("starting up");
-  expectStr(e.message().view(), "starting up", "the latest context is the message");
+  expectStr((String() <- e).view(), "starting up", "the latest context is the message");
   expectStr(reportOf(&e).view(),
     "starting up\n  caused by: reading the config\n  caused by: top failed\n  caused by: mid failed\n  caused by: leaf failed",
     "contexts over a three-deep chain");
@@ -164,8 +161,7 @@ fn drops() {
 // A second typed error, so that each downcast says no as well as yes
 struct Busy is Error, Sendable {
   pub tries: i32;
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String { String.from("busy") }
+  pub fn toText(self: &, out: &uni TextOut) { out <- "busy"; }
 }
 
 fn downcasts() {
