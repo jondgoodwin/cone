@@ -368,15 +368,18 @@ and SRoA can undo it.
 `genpgm` then settles the blocks no path reaches and checks every block's
 terminator (section 6, "A jump ends the path"), optionally verifies, dumps `.preir`, runs LLVM's new pass manager
 through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
-standard pipeline, `default<O2>`**, handed the target machine, so that the
+standard pipeline, `default<O3>`**, handed the target machine, so that the
 inliner's, the vectorizers' and the unroller's costs are the target's: the
 `--cpu` and `--features` the machine was made with, `generic` by default (on
-x86-64, SSE2 and no more). That is the pipeline clang's `-O2` runs: SROA,
+x86-64, SSE2 and no more). That is the pipeline clang's `-O3` runs: SROA,
 instcombine, inlining, LICM, unrolling, dead global elimination (so an
 internal definition nothing reaches is gone from `.ir`), and the loop and SLP
-vectorizers. Measured against `default<O3>` (3 Oct 2026, LLVM 23), O3 ran no
-faster on any benchmark but one matrix product (9%), compiled 5 to 11% slower
-and made larger code. **No float is ever reordered**: generation marks no
+vectorizers. Measured against `default<O2>` (5 Nov 2026, LLVM 23), O3 ran
+`nbody` 13 to 14% faster wherever its code was placed and matrix products an
+uncertain 2 to 8% faster, for about 6% more compile time and exe size; a few
+rows ran 2 to 4% slower. A loop's position alone can move a row by more than
+that (`fannkuch` by 13% at either level), so a comparison of the two levels
+needs its loops at matched positions. **No float is ever reordered**: generation marks no
 operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
@@ -388,7 +391,7 @@ GPU target's pipeline is its own, at every level (section 7). **There is no
 
 **Only what live code reaches is emitted**, in a debug build as in a release
 one. `.preir` is what generation wrote, every function included; the `globaldce`
-that opens the debug pipeline (it is in `default<O2>` already) deletes each
+that opens the debug pipeline (it is in `default<O3>` already) deletes each
 definition with internal, private or `linkonce` linkage that nothing refers to,
 and then whatever only it referred to, before anything else runs, so `.ir`
 and the object have only what live code reaches. The roots are the symbols the

@@ -190,10 +190,10 @@ For anything finer, instrument and compile the corpus:
   Accepted in exchange for not maintaining an include graph.
 - **The compiler keeps no pass list of its own** — it is not trying to
   out-optimize LLVM, only to hand it IR it can optimize. A release build runs
-  LLVM's standard `default<O2>` pipeline (`phases/generation.md`, section 2),
+  LLVM's standard `default<O3>` pipeline (`phases/generation.md`, section 2),
   which is most of a large package's release compile: `sculpt`, 12,900 lines,
   compiled in 5.1 s, 2.8 s of it optimizing and 2.3 s generating code (3 Oct
-  2026; 2.7 s in all under the short list it replaced). A `--debug` build runs
+  2026, at O2; 2.7 s in all under the short list it replaced). A `--debug` build runs
   four passes.
 
 ## Hazards
