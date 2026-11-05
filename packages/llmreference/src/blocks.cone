@@ -56,7 +56,7 @@ pub fn f16ToF32(h: u16) f32 {
   let mantissa = bits & 1023u32;
   var out = 0u32;
   if exponent == 0u32 {
-    if mantissa == 0u32 { return (sign << 31u32) as f32; }
+    if mantissa == 0u32 { return f32.fromBits(sign << 31u32); }
     // subnormal: mantissa * 2^-24, exact in an f32
     let v = f32.from(mantissa) * (1.0 / 16777216.0);
     if sign == 1u32 { return 0.0 - v; }
@@ -67,13 +67,13 @@ pub fn f16ToF32(h: u16) f32 {
   } else {
     out = (sign << 31u32) | ((exponent + 112u32) << 23u32) | (mantissa << 13u32);
   }
-  out as f32
+  f32.fromBits(out)
 }
 
 // The half-precision value nearest to this f32 (ties to even): overflow to infinity, tiny values to a
 // subnormal half or zero, NaN kept a NaN
 pub fn f32ToF16(f: f32) u16 {
-  let bits = f as u32;
+  let bits = f.bits();
   let sign = (bits >> 16u32) & 0x8000u32;
   let e = i32.from((bits >> 23u32) & 255u32);
   let m = bits & 0x7fffffu32;
@@ -131,7 +131,7 @@ fn pushHalf(out: &mut List[u8], h: u16) {
 }
 
 fn pushF32(out: &mut List[u8], f: f32) {
-  let bits = f as u32;
+  let bits = f.bits();
   out.push(u8.from(bits & 255u32));
   out.push(u8.from((bits >> 8u32) & 255u32));
   out.push(u8.from((bits >> 16u32) & 255u32));
@@ -208,8 +208,8 @@ pub fn dequantizeRow(qtype: u32, bytes: &Array[u8], at: usize, cols: usize, out:
   if qtype == QTYPE_F32 {
     var i = 0usize;
     while i < cols {
-      out[i] = (byteAt(bytes, at + 4usize * i) | (byteAt(bytes, at + 4usize * i + 1usize) << 8u32)
-        | (byteAt(bytes, at + 4usize * i + 2usize) << 16u32) | (byteAt(bytes, at + 4usize * i + 3usize) << 24u32)) as f32;
+      out[i] = f32.fromBits((byteAt(bytes, at + 4usize * i) | (byteAt(bytes, at + 4usize * i + 1usize) << 8u32)
+        | (byteAt(bytes, at + 4usize * i + 2usize) << 16u32) | (byteAt(bytes, at + 4usize * i + 3usize) << 24u32)));
       i = i + 1usize;
     }
     return true;

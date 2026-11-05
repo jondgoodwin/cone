@@ -13,6 +13,7 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
+#include <math.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -404,6 +405,41 @@ static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, L
     }
     default:
         errorExit(ExitGen, "Internal error: no generation for bit intrinsic %d", (int)kind);
+        return NULL;
+    }
+}
+
+// A float's encoding (corenumber.c, nbrFloatBitMethods): the value's bits as an
+// integer of its width, or an integer's as the float, are a bitcast, and the
+// rest one shift or mask of those bits. 'exponent' is the stored field less the
+// bias and 'mantissa' the stored fraction, as they lie, with no adjustment for
+// zero, a subnormal, an infinity or a NaN; 'signBit' is the sign bit alone, so
+// true for -0.0 and for a NaN that has it set
+static LLVMValueRef genlFloatBits(GenState *gen, int16_t kind, LLVMValueRef arg, LLVMTypeRef rettype) {
+    if (kind == FloatFromBitsIntrinsic)
+        return LLVMBuildBitCast(gen->builder, arg, rettype, "frombits");
+    int is32 = LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMFloatTypeKind;
+    unsigned mantbits = is32 ? 23 : 52;
+    LLVMTypeRef inttype = LLVMIntTypeInContext(gen->context, is32 ? 32 : 64);
+    LLVMValueRef bits = LLVMBuildBitCast(gen->builder, arg, inttype, "bits");
+    switch (kind) {
+    case FloatBitsIntrinsic:
+        return bits;
+    case FloatSignBitIntrinsic:
+        return LLVMBuildICmp(gen->builder, LLVMIntSLT, bits, LLVMConstNull(inttype), "signbit");
+    case FloatMantissaIntrinsic:
+        return LLVMBuildAnd(gen->builder, bits, LLVMConstInt(inttype, (1ULL << mantbits) - 1, 0), "mantissa");
+    case FloatExponentIntrinsic: {
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+        LLVMValueRef field = LLVMBuildAnd(gen->builder,
+            LLVMBuildLShr(gen->builder, bits, LLVMConstInt(inttype, mantbits, 0), ""),
+            LLVMConstInt(inttype, is32 ? 0xFF : 0x7FF, 0), "");
+        if (!is32)
+            field = LLVMBuildTrunc(gen->builder, field, i32, "");
+        return LLVMBuildSub(gen->builder, field, LLVMConstInt(i32, is32 ? 127 : 1023, 0), "exponent");
+    }
+    default:
+        errorExit(ExitGen, "Internal error: no generation for float encoding intrinsic %d", (int)kind);
         return NULL;
     }
 }
@@ -852,6 +888,14 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         // intrinsic's type argument, since no argument is one
         if (stitched == VecLoadIntrinsic) {
             fncallret = genlVectorLoad(gen, objfn, ((IntrinsicNode *)fndcl->value)->typearg, fnargs);
+            break;
+        }
+
+        // A float's encoding: the bit operation on the one argument, whose
+        // result type is the signature's
+        if (stitched >= FloatBitsIntrinsic && stitched <= FloatSignBitIntrinsic) {
+            fncallret = genlFloatBits(gen, stitched, fnargs[0],
+                genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype));
             break;
         }
 
@@ -1646,6 +1690,86 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs, selftype);
 }
 
+// A float converted to an integer type saturates (Bug 43): a value too large
+// gives the type's top, one too small its bottom (0 for an unsigned type), a
+// NaN 0, so no value is poison. val may be a scalar or a vector. On a CPU that
+// is LLVM's fptosi.sat / fptoui.sat. A Vulkan shader cannot have those (they
+// lower to SPIR-V's SaturatedConversion, an OpenCL Kernel capability), so a GPU
+// gets the same answers from compares and selects around a plain conversion
+// that sees only in-range values. The compares are against the float value of
+// each bound, never a clamp to it (i32's top is not an f32). The bounds are
+// powers of two, so exact in any float wide enough to hold them; one it cannot
+// (f16 against 2^16) becomes infinity, and the value is never past it.
+LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned) {
+    LLVMTypeRef valtype = LLVMTypeOf(val);
+    if (!gen->opt->gpu) {
+        char *name = issigned ? "llvm.fptosi.sat" : "llvm.fptoui.sat";
+        LLVMTypeRef types[2] = {to, valtype};
+        unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+        LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, types, 2);
+        return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, types, 2), fn, &val, 1, "");
+    }
+    LLVMBuilderRef bld = gen->builder;
+    int isvec = LLVMGetTypeKind(valtype) == LLVMVectorTypeKind;
+    unsigned lanes = isvec ? LLVMGetVectorSize(valtype) : 0;
+    LLVMTypeRef ftype = isvec ? LLVMGetElementType(valtype) : valtype;
+    LLVMTypeRef itype = isvec ? LLVMGetElementType(to) : to;
+    unsigned bits = LLVMGetIntTypeWidth(itype);
+    // Float constants and int constants, splatted over a vector
+    double top = ldexp(1.0, issigned ? bits - 1 : bits);
+    double bottom = issigned ? -top : 0.0;
+    LLVMValueRef fhi = LLVMConstReal(ftype, top), flo = LLVMConstReal(ftype, bottom), fzero = LLVMConstReal(ftype, 0.0);
+    LLVMValueRef imax = LLVMConstInt(itype, issigned ? (bits == 64 ? 0x7FFFFFFFFFFFFFFFULL : (1ULL << (bits - 1)) - 1)
+        : (bits == 64 ? ~0ULL : (1ULL << bits) - 1), 0);
+    LLVMValueRef imin = LLVMConstInt(itype, issigned ? (1ULL << (bits - 1)) : 0, 0);
+    if (isvec) {
+        LLVMValueRef *cs = (LLVMValueRef*)malloc(lanes * sizeof(LLVMValueRef));
+        LLVMValueRef *all[6] = {&fhi, &flo, &fzero, &imax, &imin, NULL};
+        for (int k = 0; all[k]; ++k) {
+            for (unsigned i = 0; i < lanes; ++i)
+                cs[i] = *all[k];
+            *all[k] = LLVMConstVector(cs, lanes);
+        }
+        free(cs);
+    }
+    LLVMValueRef big = LLVMBuildFCmp(bld, LLVMRealOGE, val, fhi, "satbig");
+    LLVMValueRef small = LLVMBuildFCmp(bld, LLVMRealOLT, val, flo, "satsmall");
+    LLVMValueRef inrange = LLVMBuildAnd(bld, LLVMBuildFCmp(bld, LLVMRealOGE, val, flo, ""),
+        LLVMBuildFCmp(bld, LLVMRealOLT, val, fhi, ""), "satin");
+    LLVMValueRef safe = LLVMBuildSelect(bld, inrange, val, fzero, "satsafe");
+    LLVMValueRef conv = issigned ? LLVMBuildFPToSI(bld, safe, to, "") : LLVMBuildFPToUI(bld, safe, to, "");
+    conv = LLVMBuildSelect(bld, big, imax, conv, "");
+    return LLVMBuildSelect(bld, small, imin, conv, "sat");
+}
+
+// A number converted to a char: the number if it is a code point, otherwise
+// U+FFFD, the replacement character. A code point is at most 0x10FFFF and not a
+// surrogate (0xD800 to 0xDFFF). A signed number is widened by sign, so a
+// negative one is past the top; a float is converted as an integer is
+// (saturating), and a NaN is no code point. A u8 or bool is always one.
+static LLVMValueRef genlNumberToChar(GenState *gen, LLVMValueRef val, INode *fromtype, LLVMTypeRef to) {
+    LLVMBuilderRef bld = gen->builder;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+    LLVMValueRef nan = NULL;
+    if (fromtype->tag == FloatNbrTag) {
+        nan = LLVMBuildFCmp(bld, LLVMRealUNO, val, val, "isnan");
+        val = genlFloatToInt(gen, val, i64, 1);
+    }
+    else if (fromtype->tag == UintNbrTag && ((NbrNode*)fromtype)->bits <= 8)
+        return LLVMBuildZExt(bld, val, to, "");
+    else if (fromtype->tag == IntNbrTag)
+        val = LLVMBuildSExt(bld, val, i64, "");
+    else if (((NbrNode*)fromtype)->bits < 64)
+        val = LLVMBuildZExt(bld, val, i64, "");
+    LLVMValueRef intop = LLVMBuildICmp(bld, LLVMIntULE, val, LLVMConstInt(i64, 0x10FFFF, 0), "");
+    LLVMValueRef nosurrogate = LLVMBuildICmp(bld, LLVMIntUGE,
+        LLVMBuildSub(bld, val, LLVMConstInt(i64, 0xD800, 0), ""), LLVMConstInt(i64, 0x800, 0), "");
+    LLVMValueRef valid = LLVMBuildAnd(bld, intop, nosurrogate, "");
+    if (nan)
+        valid = LLVMBuildAnd(bld, valid, LLVMBuildNot(bld, nan, ""), "");
+    return LLVMBuildSelect(bld, valid, LLVMBuildTrunc(bld, val, to, ""), LLVMConstInt(to, 0xFFFD, 0), "codepoint");
+}
+
 // Generate a value converted to another type
 // - Numbers to another number (extending or truncating)
 // - Number or ref/ptr to true/false
@@ -1673,8 +1797,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
     switch (totype->tag) {
 
     case UintNbrTag:
+        if (totype == (INode*)charType && fromtype != (INode*)charType)
+            return genlNumberToChar(gen, genexp, fromtype, genlType(gen, totype));
         if (fromtype->tag == FloatNbrTag)
-            return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
+            return genlFloatToInt(gen, genexp, genlType(gen, totype), 0);
         else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
             return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
         else /* if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */
@@ -1682,7 +1808,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to, int partial) {
 
     case IntNbrTag:
         if (fromtype->tag == FloatNbrTag)
-            return LLVMBuildFPToSI(gen->builder, genexp, genlType(gen, totype), "");
+            return genlFloatToInt(gen, genexp, genlType(gen, totype), 1);
         else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
             return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
         else /*if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */ {
@@ -1900,6 +2026,10 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         // the real size. Without it the store/load below allocated the source's
         // bytes and loaded the target's, reading past the allocation whenever
         // the target was larger.
+        // A guard now: castTypeCheck refuses (ErrorAsTarget) every 'as' onto a
+        // struct or enum but a coercion, a variant as its enum, which is always
+        // the same size, so no user path reaches the error below until 'trust'
+        // allows other struct recasts, when this same-size check matters again.
         LLVMTypeRef fromllvm = genlType(gen, ((IExpNode*)exp)->vtype);
         LLVMTypeRef tollvm = genlType(gen, totype);
         unsigned long long fromsize = LLVMABISizeOfType(gen->datalayout, fromllvm);

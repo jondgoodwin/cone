@@ -1,0 +1,32 @@
+// What a '#each #f in #fields(T)' in a type's braces refuses while the file is read: a generated
+// name outside a loop, a member whose name is not made of '#f', a '#name' malformed, a static in
+// the loop, a '#each' inside it, and a loop in a type that is not a generic struct.
+
+mod meta_gen_reject_parse;
+
+struct Plain {
+  n: i32;
+  #each #f in #fields(T) {                       //~ ErrorMetaEachPlace:3 "generating declarations waits for generated names"
+    m: i32;
+  }
+}
+
+struct Loop[T] {
+  #each #f in #fields(T) {
+    pub kept: i32;                               //~ ErrorMetaGenName:9 "is made once for each field"
+    pub #name(#f): i32;                          //~ ErrorMetaGenName:17 "separated by a comma"
+    pub #name("a", "b"): i32;                    //~ ErrorMetaGenName:20 "one string literal and the loop's variable"
+    pub #name("a" #f): i32;                      //~ ErrorMetaGenName:19 "separated by a comma"
+    pub #name("a", #f;                           //~ ErrorMetaGenName:22 "ends after its two parts"
+    static counter: i32 = 0;                     //~ ErrorMetaGenName:12 "a static, a macro or an alias"
+    #each #g in #fields(T) {                     //~ ErrorMetaEachPlace:5 "generating declarations waits for generated names"
+      pub #g: i32;
+    }
+  }
+  pub #name("x", y): i32;                        //~ ErrorMetaGenName:7 "names a member inside a '#each #f in #fields(T)'"
+  #each #g in [1, 2] {                           //~ ErrorMetaEachPlace:15 "goes through the fields of a type parameter"
+    pub z: i32;
+  }
+}
+
+fn main() {}

@@ -567,7 +567,10 @@ whichever operation produced it — an integer operation past its range, a float
 one past its finite range, a float converted to an integer that cannot hold it
 or to an `f32` past its range — since the remedy is the same: a wider type or
 smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
-`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+`ErrorConstShift` a shift by the width or more. `ErrorConstChar` (1600) is a
+constant converted to a `char` that is no code point (the run time gives
+U+FFFD); `T.from(constant)` is refused so in any expression, a float into an
+integer included (`fnCallNumberFrom`). None is `ErrorLitRange`, which
 is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
@@ -690,6 +693,13 @@ permissions and says the cast needs `trust`, which is not built yet ([cast](../n
 (`bytes as &str`, `p as Uni[str]`), is let through for now; the same permission written out
 (`as &imm P`, `bytes as &imm str`) is refused. A raw pointer made a reference, and a reference
 made a pointer, are not asked.
+
+An `as` onto a struct, an enum or a `char` from anything that is not a coercion to it
+(a type as itself and a variant as its enum are the coercions) is `ErrorAsTarget` (type check,
+`castRecastTargetCheck` in `cast.c`): these values are more than their bits. The message names the
+fix, `char.from(x)` for a `char`, a pattern for an enum read as a variant, a constructor or a method
+otherwise, and says the cast needs `trust`, which is not built yet. A generic `x as T` is refused at
+the instance where `T` is one of these ([cast](../nodes/cast.md), "`castTypeCheck`").
 
 A trait named as a pattern ([cast](../nodes/cast.md), "Trait patterns") has three codes. On an enum, a
 trait that no variant complies with matches nothing: `ErrorPatTraitNone` (a method over the whole enum
@@ -1084,6 +1094,17 @@ itself, which only the code generator has: the condition of a `#if` (`metaCond`)
 (`arrayTypeCheck`) or a `const` initializer (`constDclTypeCheck`); each is refused at that place (`sizeofConstRefused`)
 rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
 (`#size(T) * 2`) still falls to `ErrorNotLit`.
+
+`ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
+include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
+or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
+the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
+(`module_generic_pkguse_unspelled`.)
+`ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
+a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
+the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
+named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

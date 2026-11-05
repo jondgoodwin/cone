@@ -733,15 +733,24 @@ static INode *propagateTextMethod(INode *edcl, Name *name, int *form, INode **gi
 
 // How the error's text is had as '&str', and by which method: 0 refused
 // (reported), else 1 the method gives it, 2 it gives a String, whose 'view()' is
-// lent. The method is the error's 'report()' where it has one that answers text
-// (the Error trait's default: the message and each cause under it), else its
-// 'message()'. Both are found by name. (What the Error trait's report() prints
-// is INTERIM until the display design lands.)
+// lent, 3 the error prints itself: it meets core's Error trait, and
+// core's 'Error.reportFailure' writes 'Error: ', its 'report()' and a newline to standard
+// error. Otherwise the method is the error's 'report()' where it has one that
+// answers text, else its 'message()'. All are found by name. (What the Error
+// trait's report() prints is INTERIM until the display design lands.)
 static int propagateMainMessage(INode *errtype, INode *errnode, Name **method) {
     char ename[200];
     INode *edcl = itypeGetTypeDcl(errtype);
     int form;
     INode *gives;
+    // An error that meets core's Error trait writes itself: it has the trait's
+    // 'report(self, out)', and core's 'Error.reportFailure' prints the whole line
+    INode *rm = isMethodType(edcl) ? iNsTypeFindFnField((INsTypeNode*)edcl, reportName) : NULL;
+    if (rm != NULL && rm->tag == FnDclTag && (rm->flags & FlagMethFld)
+        && ((FnDclNode*)rm)->vtype->tag == FnSigTag && ((FnSigNode*)((FnDclNode*)rm)->vtype)->parms->used == 2) {
+        *method = reportName;
+        return 3;
+    }
     if (propagateTextMethod(edcl, reportName, &form, &gives) != NULL && form != 0) {
         *method = reportName;
         return form;
@@ -856,15 +865,33 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     inodeLexCopy((INode*)arm, lexnode);
     VarDclNode *err = propagateVar("-err", (INode*)failbind, 3, lexnode);
     nodesAdd(&arm->stmts, (INode*)err);
-    VarDclNode *msg = propagateVar("-msg", (INode*)propagateMethodCall(propagateUse(err, lexnode), textmethod, lexnode), 3, lexnode);
-    nodesAdd(&arm->stmts, (INode*)msg);
-    INode *text = propagateUse(msg, lexnode);
-    if (msgform == 2)
-        text = (INode*)propagateMethodCall(text, nametblFind("view", 4), lexnode);
-    FnCallNode *report = newFnCallNode(newNameUseFromDclNode((INode*)errfn, lexnode), 1);
-    inodeLexCopy((INode*)report, lexnode);
-    nodesAdd(&report->args, text);
-    nodesAdd(&arm->stmts, (INode*)report);
+    if (msgform == 3) {
+        // the static 'Error.reportFailure(e: &<Error)' of core's Error trait
+        ModuleNode *coremod = dclInfoGetModule(retdcl);
+        INode *errtrait = coremod ? namespaceFind(&coremod->namespace, nametblFind("Error", 5)) : NULL;
+        INode *reportfn = errtrait && isMethodType(errtrait)
+            ? iNsTypeFindFnField((INsTypeNode*)errtrait, nametblFind("reportFailure", 13)) : NULL;
+        if (reportfn == NULL || reportfn->tag != FnDclTag) {
+            errorMsgNode(lexnode, ErrorMainResult, "core's Error declares no 'reportFailure', which a 'main' returning an Error prints its failure through.");
+            return;
+        }
+        FnCallNode *rep = newFnCallNode(newNameUseFromDclNode(reportfn, lexnode), 1);
+        inodeLexCopy((INode*)rep, lexnode);
+        // ('&-err', which coerces to the '&<Error' the function takes)
+        INode *errval = propagateUse(err, lexnode);
+        nodesAdd(&rep->args, (INode*)newRefNodeFull(BorrowTag, lexnode, (INode*)borrowRef, newPermUseNode(roPerm), errval));
+        nodesAdd(&arm->stmts, (INode*)rep);
+    } else {
+        VarDclNode *msg = propagateVar("-msg", (INode*)propagateMethodCall(propagateUse(err, lexnode), textmethod, lexnode), 3, lexnode);
+        nodesAdd(&arm->stmts, (INode*)msg);
+        INode *text = propagateUse(msg, lexnode);
+        if (msgform == 2)
+            text = (INode*)propagateMethodCall(text, nametblFind("view", 4), lexnode);
+        FnCallNode *report = newFnCallNode(newNameUseFromDclNode((INode*)errfn, lexnode), 1);
+        inodeLexCopy((INode*)report, lexnode);
+        nodesAdd(&report->args, text);
+        nodesAdd(&arm->stmts, (INode*)report);
+    }
     BreakRetNode *fail = newReturnNodeExp((INode*)newULitNodeTC(1, (INode*)i32Type));
     inodeLexCopy((INode*)fail, lexnode);
     inodeLexCopy(fail->exp, lexnode);

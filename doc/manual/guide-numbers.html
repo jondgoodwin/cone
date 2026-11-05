@@ -237,6 +237,46 @@ let right = i64.from(million) * i64.from(million); // 1000000000000
 		<a href="safe-types.html#from">Conversion: from</a> gives every case, among them
 		<span class="pre">bool.from(n)</span> and a number's conversion to and from a <span class="pre">char</span>.</p>
 
+	<h2 id="parsing"><span id="tryfrom"></span>Reading a number from text, and converting without loss: parse and tryFrom</h2>
+	<p><span class="pre">from</span> never refuses. Two other methods on every number type answer a
+		<span class="pre">Result</span> instead. <span class="pre">T.parse(text)</span> reads a number from a
+		<span class="pre">&amp;str</span>, and <span class="pre">T.tryFrom(x)</span> converts another number type's value
+		only when the result is the same number:</p>
+<pre>
+i32.parse("42")        // Ok(42)
+i32.parse("12x")       // Err(Invalid)
+u8.tryFrom(300i64)     // Err(TooLarge): from(300) would have wrapped to 44
+u8.tryFrom(200i64)     // Ok(200)
+i32.tryFrom(2.5)       // Err(NotWhole)
+f64.parse("0.1")       // Ok(0.1): the nearest f64, whatever the length of the text
+</pre>
+	<p>Both answer <span class="pre">Result[T, NumberConvError[T]]</span>, one error for every number type, which is an
+		<span class="pre">Error</span> (so <span class="pre">?</span> carries it into an <span class="pre">AnyError</span>).
+		Its cases: <span class="pre">Empty</span> (no text), <span class="pre">Invalid</span> (a character that does not
+		belong), <span class="pre">TooLarge</span> and <span class="pre">TooSmall</span> (past the type's range),
+		<span class="pre">NotWhole</span> (a float with a fraction, asked for as an integer),
+		<span class="pre">Inexact</span> (a value the float type cannot hold exactly) and
+		<span class="pre">NotANumber</span> (a NaN, asked for as an integer).</p>
+	<p><b>The text.</b> An integer is an optional <span class="pre">+</span> or <span class="pre">-</span> (a
+		<span class="pre">-</span> is <span class="pre">Invalid</span> for an unsigned type, though
+		<span class="pre">-0</span> is 0 for a signed one) and one or more digits, with no spaces. A float is an optional
+		sign, digits with an optional <span class="pre">.</span> (either side may be empty, but not both), and an optional
+		exponent, or <span class="pre">inf</span>, <span class="pre">infinity</span> or <span class="pre">nan</span> in any
+		case. A float past the type's range is <span class="pre">TooLarge</span> or <span class="pre">TooSmall</span>, not an
+		infinity. A float's text is read exactly: the nearest value, the even one when two are equally near, however many
+		digits it has.</p>
+	<p><b>The conversion.</b> Between integers the value must fit. A float becomes an integer only if it is whole and in
+		range. An integer becomes a float only if the float holds it exactly, otherwise
+		<span class="pre">Inexact</span>: its digits in binary, from the first 1 to the last, must fit in 24 bits for an
+		<span class="pre">f32</span> or 53 for an <span class="pre">f64</span>. So every integer up to 2<sup>24</sup> (or
+		2<sup>53</sup>) is held, and so is 2<sup>60</sup> or the least <span class="pre">i64</span>, but 2<sup>24</sup> + 1
+		is not an <span class="pre">f32</span>, nor the greatest <span class="pre">i64</span> or <span class="pre">u64</span>
+		an <span class="pre">f64</span>. A float becomes a narrower float
+		only if no digit is lost; a NaN or infinity passes. A <span class="pre">bool</span> and a <span class="pre">char</span>
+		have neither method.</p>
+	<p>Both work through a type parameter: <span class="pre">T.parse(text)</span> in a function generic over
+		<span class="pre">T: Numeric</span> reads the type the caller chose.</p>
+
 	<h2 id="methods">Methods on numbers: sqrt, sin, abs, min and more</h2>
 	<p>Floats have <span class="pre">sqrt</span>, <span class="pre">sin</span> and <span class="pre">cos</span>,
 		called like any method; <span class="pre">sin</span> and <span class="pre">cos</span> take an angle in
@@ -267,6 +307,37 @@ t.abs()                    // 7
 		more exact than <span class="pre">x * y + z</span>, which rounds twice. The same names, as <span class="pre">mem.abs(x)</span> and
 		the rest, are <a href="safe-intrinsics.html#numbers">core's intrinsics</a>, and a
 		<a href="guide-vectors.html#math">vector</a> has them lane by lane.</p>
+
+	<h3 id="floatbits">A float's encoding: bits, fromBits, exponent, mantissa and signBit</h3>
+	<p>A float is stored as a sign bit, an exponent field and a fraction. Reading them needs no
+		<span class="pre">as</span>: an <span class="pre">f32</span> has them in a <span class="pre">u32</span>
+		(1 sign bit, 8 exponent bits, 23 fraction bits) and an <span class="pre">f64</span> in a
+		<span class="pre">u64</span> (1, 11 and 52):</p>
+<pre>
+let x = -2.5f32;
+x.bits()                      // 0xC0200000u32: the whole encoding
+f32.fromBits(0xC0200000u32)   // -2.5: the float with that encoding
+x.signBit()                   // true: the sign bit is set
+x.exponent()                  // 1: the stored exponent field (128) less the bias (127)
+x.mantissa()                  // 0x200000u32: the stored fraction, a quarter of its range
+</pre>
+	<p><span class="pre">bits</span> and <span class="pre">mantissa</span> answer a <span class="pre">u32</span>
+		for an <span class="pre">f32</span> and a <span class="pre">u64</span> for an <span class="pre">f64</span>;
+		<span class="pre">exponent</span> is an <span class="pre">i32</span> for both, and
+		<span class="pre">signBit</span> a <span class="pre">bool</span>. <span class="pre">f32.fromBits(b)</span>
+		and <span class="pre">f64.fromBits(b)</span> take that integer, every value of which is some float. Each is the
+		one bit operation and nothing more.</p>
+	<p>The fields are answered as stored. <span class="pre">exponent</span> is the stored field less the bias, 127 for an
+		<span class="pre">f32</span> and 1023 for an <span class="pre">f64</span>, and <span class="pre">mantissa</span>
+		is the stored fraction bits without the leading 1 a normal number implies. Nothing is adjusted for the special
+		values: zero and a subnormal have the field 0, so their <span class="pre">exponent</span> is -127 (-1023); an
+		infinity and a NaN have the field all ones, so theirs is 128 (1024). Zero and an infinity have the
+		<span class="pre">mantissa</span> 0, a subnormal its fraction, and a NaN a nonzero one, whose top bit says
+		whether it is a quiet NaN. <span class="pre">signBit</span> is the sign bit alone, so it is true for
+		<span class="pre">-0.0</span> and for a NaN whose sign bit is set, and false for <span class="pre">0.0</span>;
+		it is not <span class="pre">x &lt; 0.0</span>. A normal number is rebuilt from its parts as
+		<span class="pre">(sign &lt;&lt; 31) | (u32.from(exponent + 127) &lt;&lt; 23) | mantissa</span>, and
+		<span class="pre">f32.fromBits(x.bits())</span> gives back the same bits, a NaN's included.</p>
 
 	<h2 id="vectors">Many numbers at once: vectors</h2>
 	<p>A <span class="pre">Vector[f32, 4]</span> holds four numbers in one value, and an operator on two of them works
