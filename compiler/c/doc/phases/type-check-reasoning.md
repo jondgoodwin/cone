@@ -297,7 +297,7 @@ with every lifetime erased from them (`lifeErased`), a function type's
 promises excepted, and every band an argument inferred from a borrow carries
 (`RefNode.scope`), and the instance's use keeps the arguments as written for
 the lifetimes they name (`NameUseNode.lifeuse`). An invariant lifetime is the
-exception, kept and named by its place ("Invariant lifetimes: brands").
+exception, kept and named by its first occurrence ("Invariant lifetimes: brands").
 
 ## 6. Unifying branches
 
@@ -603,10 +603,16 @@ demand its target") — and at a call's result in `lifeKeyBorrow`).
 
 **Generics.** An instance is made with ordinary lifetimes erased, but an
 invariant one kept (`lifeErased`), then every brand its arguments carry
-renamed by its place (`lifeCanonBrands`): `List[&'=a Node['=a]]` is
-`List[&'=1 Node['=2]]`, one instance per shape, assuming no two places alike,
-and the memo compares those names too (`lifeBrandsEqual`). A call through it
-binds each place afresh. A generic's type arguments carrying brands are kept
+renamed by its first occurrence (`lifeCanonBrands`): `List[&'=a Node['=a]]` is
+`List[&'=1 Node['=1]]` and `List[&'=a Node['=b]]` is `List[&'=1 Node['=2]]`,
+one instance per pattern of equal brands (not per brand), and the memo
+compares those names too (`lifeBrandsEqual`). A call through it binds each
+place afresh. A trait method's requirement is met by an instance at that
+pattern: its receiver is the implementor, whatever the trait spells it as,
+so `lifeSigBrandsAgree` reads the requirement's first parameter as the
+implementation's when the two are a method and its requirement
+(`lifeSigMeets`, `lifeSigsAgree` given `recv`); a struct declaring a brand, or
+holding brand-carrying arguments, can then declare `is Trait`. A generic's type arguments carrying brands are kept
 on the instance's use (`lifeUseInstance`), a function's as well as a type's.
 
 **Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,

@@ -128,10 +128,18 @@ generic type's brackets or `where` clause.
 
 **An invariant lifetime is the exception.** A key stays a key in the
 instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
-renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
-`List[&'=a Node['=a]]` and `List[&'=b Node['=c]]` are one instance,
-`List[&'=1 Node['=2]]`, which assumes no two places one brand; the memo
-compares those names (`lifeBrandsEqual`) as well as the types. A function's
+renames every brand the arguments carry by its first occurrence, `'=1`, `'=2`,
+a brand met again keeping the name it was given. An instance is made at the
+pattern of equal brands its use has, and what it is instanced at is that
+pattern as well as the types: `List[&'=a Node['=a]]` and
+`List[&'=b Node['=b]]` are one instance, `List[&'=1 Node['=1]]`, while
+`List[&'=a Node['=b]]` is another, `List[&'=1 Node['=2]]`. One instance per
+pattern of equal brands, not per brand, and where no invariant lifetime appears
+nothing changes. Two different brands stay two names: a brand equals only
+itself. The memo compares those names (`lifeBrandsEqual`) as well as the
+types. A struct whose arguments are related (`IterIndexed[T, I:
+Iterator[T]]`) is therefore checked, and conforms to its trait, at the
+relation its use has. A function's
 instance use keeps its arguments as written too, where they carry brands,
 for a call to bind the places to ([Type Check
 Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
