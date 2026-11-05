@@ -1635,11 +1635,14 @@ a `RegionRef`:
 - `&imm T`, where `T` holds no atomic inline (`itypeHoldsAtomic`) and the
   permission is not a lock's: `noalias nonnull readonly`. An atomic is written
   through an immutable borrow by design, as Rust's `UnsafeCell` is.
-- `align <ABI alignment of T>` beside it: LLVM may hoist a load past a
+- `align <ABI alignment of T, capped at 16>` beside it: LLVM may hoist a load past a
   conditional exit only if it is safe to speculate, which needs the alignment as
   well as the size (a matmul over `&imm, &imm, &uni List`, 2.8 s without, 0.87 s
-  with). A cast from a pointer or integer to a reference is not checked for
-  alignment (`castRefPermCheck`), so the attribute trusts such casts to be aligned.
+  with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
+  borrow's address meets the pointee's alignment up to 16, as a read through that
+  borrow already assumes its ABI alignment. A cast from a pointer or integer to a
+  reference is not checked for it (`castRefPermCheck`); whether that changes
+  belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
 - `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
   the body is generated, because a pointee's layout is not known when the
   signature is (the pointee of a reference is generated later,
