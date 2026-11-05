@@ -57,7 +57,7 @@
 //   TlsErrorKind; k.name()
 //   certErrorKind(code)  certErrorText(code)  genericFailure()   the verifier's own number
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
-//     handshakeTime verifyTime closeNotify truncated; i.text()
+//     handshakeTime verifyTime closeNotify truncated; String() <- i
 //   stats(): TlsStats; backendVersion(); verifyKindName(k)
 //
 // SESSIONS. A Session is one TLS connection's state, in either role, made
@@ -161,7 +161,7 @@
 // close_notify sent and received, and streams that ended without one.
 // 'info()' gives a session's version, cipher, ALPN, whether it resumed, who
 // verified it, how long its handshake took and the OS's verifier in it;
-// 'text()' says it in a line, which is what a Stream's 'describe' gives
+// 'String() <- info' says it in a line, which is what a Stream's 'describe' gives
 // httpconn's 'layerInfo'.
 //
 // WINDOWS AND LINUX. The OS's verifier is crypt32's on Windows (SecTrust on
@@ -254,7 +254,11 @@ pub enum Backend {
 // Who decides that the server is who it claims to be (see the package's
 // header, VERIFIERS)
 pub enum VerifyKind {
-  Platform, Roots, Pinned, Insecure
+  Platform, Roots, Pinned, Insecure;
+
+  // The kind's name, in lower case: 'platform' (verifyKindName, which another
+  // package still calls, gives the same as a '&str')
+  pub fn toText(self: &, out: &uni TextOut) { out <- verifyKindName(*self); }
 }
 
 // The name of a verifier's kind
@@ -378,7 +382,9 @@ pub enum TlsErrorKind {
   Config,             // a configuration could not be loaded
   Backend;           // the back end failed
 
-  // The name of the kind: 'certificate untrusted', 'protocol error'
+  // The name of the kind: 'certificate untrusted', 'protocol error'. Another
+  // package still calls 'name'; 'toText' writes the same
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.name(); }
   pub fn name(self: TlsErrorKind) &str {
     match self {
       case CertExpired {"certificate expired"}
@@ -440,7 +446,7 @@ pub struct TlsInfo {
 
   // 'TLSv1.3 TLS_AES_256_GCM_SHA384, ALPN http/1.1, handshake 41.2 ms
   // (the OS's verifier 9.8 ms)', and ', resumed' when it was
-  pub fn text(self: &) String {
+  pub fn toText(self: &, w: &uni TextOut) {
     var out = versionName.clone();
     out.append(" ");
     out.append(cipher.view());
@@ -454,7 +460,7 @@ pub struct TlsInfo {
       out.append(")");
     }
     if resumed {out.append(", resumed");}
-    out
+    w <- out.view();
   }
 }
 
