@@ -279,7 +279,11 @@ let log = openLog();
 		them itself or reaches them through a function of the module it calls, however deep, and not before.
 		Setups that need no order run in the order they are written. Two setups that read each other, round any
 		number of others, have no order, and that is an error. A setup may call a function of another module,
-		whose globals are ready, since that module's setups and initializer ran earlier. A setup may not read a
+		whose globals are ready, since that module's setups and initializer ran earlier, though an instance of
+			another module's generic, given this module's type, may call back into this module, and is followed as
+			the module's own functions are. A setup's value is stored as <span class="pre">init</span>'s would be, so a
+			setup may hold a borrow of another global, but not a borrow of a temporary (<span class="pre">let r: &amp;P = &amp;make();</span>),
+			which would end with the setup and leave a dangling reference. A setup may not read a
 		global that the module's <span class="pre">init</span> assigns: all the module's setups have run by the
 		time <span class="pre">init</span> begins, so the global would hold nothing yet.</p>
 	<p>The module's setups run first among its own, and then its <span class="pre">init</span> if it has one;
@@ -320,10 +324,11 @@ fn @initpure init() {
 	<p>What a function that <span class="pre">init</span> calls reads counts as <span class="pre">init</span>
 		reading it, at the call. The compiler follows the call into the module's own functions and methods, and
 		into the instance of a generic function or method the call names, and then into what those call in turn,
-		to any depth: a helper that reads a global the call comes before is refused, as the read would be in
+		to any depth. An instance of another module's generic, given this module's type, is followed too, since it
+			can call that type's method, which reads this module's globals. A helper that reads a global the call comes before is refused, as the read would be in
 		<span class="pre">init</span> itself. A helper's own assignment to a global does not count as
 		<span class="pre">init</span> setting it, so a helper that sets a global and then reads it is refused too,
-		when it is called before <span class="pre">init</span> sets it. A function of another module needs no
+		when it is called before <span class="pre">init</span> sets it. A plain function of another module needs no
 		following, since that module cannot read this one's globals without a cycle of modules, which is refused.
 		It goes by position, as
 		<span class="pre">init</span>'s own reads do: after <span class="pre">init</span> has assigned the global,

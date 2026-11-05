@@ -1541,34 +1541,35 @@ static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
     INode *owner = fn->dclinfo.owner;
     if (owner == (INode*)mod)
         return 1;
-    // Within a submodule of the module is within the module: the method of a
-    // type a submodule declares, as that submodule's own functions. No source
-    // reaches this yet, since a submodule cannot name its parent's globals
-    // (1019) or import its parent (1113); following it is what would keep the
-    // check right if one came to
-    if ((fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag)
-        owner = inodeGetOwner(owner);
-    for (uint32_t depth = 0; owner != NULL && owner->tag == ModuleTag && depth < 64; ++depth) {
-        if (owner == (INode*)mod)
-            return 1;
-        owner = ((ModuleNode*)owner)->dclinfo.owner;
-    }
-    return 0;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && inodeGetOwner(owner) == (INode*)mod;
+}
+
+// Is this function an instance of a generic, or a method of an instantiated
+// generic type? What instantiated it is recorded on the instance (a generic
+// function's) or on its type's (a method's, cloned with the type)
+static int modIsInstance(FnDclNode *fn) {
+    if (fn->instnode != NULL)
+        return 1;
+    INode *owner = fn->dclinfo.owner;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && owner->instnode != NULL;
 }
 
 // The body of one of the module's own functions, followed wherever the call to
 // it is statically resolved: a function, or a method of a type the module
 // declares, with a body written in Cone, and an instance of a generic of either
-// (the instance's body, whose names are resolved, never the template's). Not
-// followed: an extern, a generic still uninstantiated, a function of another
-// module (it cannot read this module's globals without a cycle, which is
-// refused), and what is not statically resolved -- a virtual call, a closure, a
-// function reference -- which passes until 'trust'
+// (the instance's body, whose names are resolved, never the template's). An
+// instance of a generic of another module is followed too, including a method
+// of an instantiated generic type: given this module's type, it can call that
+// type's method, which reads this module's globals (a clone carries its
+// 'instnode'). Not followed: an extern, a generic still uninstantiated, a plain
+// function of another module (it cannot read this module's globals without a
+// cycle, which is refused), and what is not statically resolved -- a virtual
+// call, a closure, a function reference -- which passes until 'trust'
 static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
     if (dcl == NULL || dcl->tag != FnDclTag)
         return 0;
     FnDclNode *fn = (FnDclNode*)dcl;
-    if (!modDeclares(ctx->mod, fn) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
+    if (!(modDeclares(ctx->mod, fn) || modIsInstance(fn)) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
     INode **seenp;
@@ -1927,6 +1928,15 @@ static FnDclNode *modSetupBuild(ModuleNode *mod, FnDclNode *initfn) {
     flowStateInit(&fstate, sig);
     blockFlow(&fstate, &block);
     flowCurrent = NULL;
+    // A borrow held in a way only a walk following each path can judge -- a
+    // temporary's, stored into a global -- is walked as any function's is
+    // (fnDclFlow), so a setup's store is judged as the same store in 'init' is
+    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry) {
+        int loans = fstate.gate != 0;
+        if (loans)
+            shapeWalkReady(setupfn, 0);
+        flowPathWalk(setupfn, loans, fstate.dropgate != 0, 0);
+    }
     pos = 0;
     for (nodesFor(ordered, cnt, nodesp))
         modSetupVar(*nodesp)->flowtempflags = saved[pos++];
