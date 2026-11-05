@@ -512,6 +512,51 @@ uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDcl
     return 0;
 }
 
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
+    if (stored == NULL)
+        return 0;
+    uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
+    // A reference holding no loan but what was stored through it was made by
+    // a route the walk does not follow (from a raw pointer, as DynArena's
+    // 'alloc' reaches its inner arena): where the arena is, is not known, and
+    // the store is trusted there, as every such cast is
+    if (stored != &pathSetAll) {
+        int origin = arenaholds == &pathSetAll;
+        for (uint32_t i = 0; arenaholds && !origin && i < arenaholds->cnt; ++i) {
+            uint32_t hid = loanOf(arenaholds->ids[i]);
+            if (!pathSetHasLoan(stored, hid)
+                || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+                origin = 1;
+        }
+        if (!origin)
+            return 0;
+    }
+    for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
+        uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
+        if (loans[sid].kind != LoanCaller)
+            continue;
+        // Bug 48's exception: what the parameter the arena was reached by
+        // lent the caller belongs to that arena
+        int owned = 0;
+        if (arenaholds != NULL && arenaholds != &pathSetAll) {
+            for (uint32_t i = 0; i < arenaholds->cnt; ++i) {
+                uint32_t hid = loanOf(arenaholds->ids[i]);
+                if (loans[hid].kind == LoanCaller && loanParm(hid) == loanParm(sid)
+                        && itypeIsArena(lifePointee(loanParm(hid)->vtype))) {
+                    owned = 1;
+                    break;
+                }
+            }
+        }
+        if (!owned) {
+            *through = arenaholds && arenaholds != &pathSetAll && arenaholds->cnt
+                ? loanParm(loanOf(arenaholds->ids[0])) : loanParm(sid);
+            return sid;
+        }
+    }
+    return 0;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
@@ -542,11 +587,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 continue;
             VarDclNode *sparm = loanParm(sid);
             uint32_t spart = loans[sid].part;
-            // What belongs to the arena a parameter points at may be stored in
-            // it: the stored loan and the place come from the same parameter,
-            // which points at a 'NoLoanMut' container (Bug 48). The one
-            // condition admitting that case; a borrow from another parameter,
-            // a second arena's included, still goes through the order below.
+            // What belongs to the arena a parameter points at is no foreign
+            // borrow to it: the stored loan and the place come from the same
+            // parameter, which points at a 'NoLoanMut' container (Bug 48's
+            // exception). A borrow from another parameter, a second arena's
+            // included, still goes through the order below.
             if (sparm == parm && itypeIsArena(place))
                 continue;
             int flows;

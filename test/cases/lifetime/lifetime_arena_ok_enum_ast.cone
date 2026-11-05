@@ -1,0 +1,27 @@
+// Bug 48/51: must compile and run (arena lab jn_a1).
+mod lifetime_arena_ok_enum_ast;
+import stdio use *;
+import arena use *;
+// scratch Arena: an AST enum, one variant per node kind, each a reference to its own struct
+struct Num { pub v: i64; }
+struct Bin { pub l: Expr; pub r: Expr; pub pad: i64; }
+enum Expr {
+  N(&mut Num);
+  B(&mut Bin);
+}
+fn eval(e: &Expr) i64 {
+  match e {
+    case let N(n) { n.v }
+    case let B(b) { eval(&b.l) + eval(&b.r) }
+  }
+}
+fn mk(ar: &mut Arena, x: i64, y: i64) Expr {
+  let a = ar.alloc(Num(x));
+  let b = ar.alloc(Num(y));
+  Expr.B(ar.alloc(Bin(Expr.N(a), Expr.N(b), 0)))
+}
+fn main() {
+  var ar = Arena();
+  let e = mk(&mut ar, 3, 4);
+  print <- eval(&e), "\n";
+}

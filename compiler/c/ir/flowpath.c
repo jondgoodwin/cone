@@ -1318,6 +1318,17 @@ static FnDclNode *pwMethod(FnCallNode *call) {
     return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
 }
 
+// Is the method's parameter 'i', as declared, a borrow? Such an argument is
+// not stored in an arena by a call ('ar.get(&key)'); one declared by value
+// ('value: T') is, whatever T is
+static int pwParmBorrowed(FnDclNode *meth, uint32_t i) {
+    Nodes *parms = ((FnSigNode *)meth->vtype)->parms;
+    if (i >= parms->used)
+        return 0;
+    INode *ptype = ((IExpNode *)nodesGet(parms, i))->vtype;
+    return ptype && (ptype->tag == RefTag || ptype->tag == ArrayRefTag || ptype->tag == VirtRefTag);
+}
+
 // Does a receiver's borrow with this access change it, so that it is
 // two-phase: reserved while the arguments are walked, activated at the call?
 static int pwTwoPhase(int access) {
@@ -1921,8 +1932,22 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
         return;
     FnSigNode *sig = pwNamedSig(call);
+    // A method of an arena ('NoLoanMut'): what it is handed by value is stored
+    // in the arena wherever the arena was reached; a free function handed a
+    // '&mut Arena' is checked in its own body (Bug 51)
+    FnDclNode *arenameth = pwMethod(call);
+    // ...and then the arena is the only place the call stores into: the values
+    // it is handed are what is stored, not places for the receiver's loans
+    int arenacall = 0;
+    if (arenameth) {
+        INode *rt = iexpGetTypeDcl(nodesGet(call->args, 0));
+        arenacall = pwIsBorrowed(rt) && rt->tag == RefTag && (permGetFlags(((RefNode *)rt)->perm) & MayWrite)
+            && pwIsNoLoanMut(((RefNode *)rt)->vtexp);
+    }
     uint32_t nargs = call->args->used;
     for (uint32_t at = 0; at < nargs; ++at) {
+        if (arenacall && at > 0)
+            break;
         INode *arg = nodesGet(call->args, at);
         INode *argtype = iexpGetTypeDcl(arg);
         // How many borrows past the argument the callee may store, from what
@@ -1937,8 +1962,8 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         // decides it, and where Bug 48's exception for a store whose loan and
         // place come from one parameter would be admitted (see 'arenaplace'
         // below).
-        int arenaplace = isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
-            && pwIsNoLoanMut(storedin);
+        int arenaplace = at == 0 && arenameth && isref && argtype->tag == RefTag
+            && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite) && pwIsNoLoanMut(storedin);
         if (arenaplace && depth == 0)
             depth = 1;
         if (depth == 0)
@@ -1952,7 +1977,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         int globalonly = isref && depth == 1 && !arenaplace && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
-            if (i == at || argsets[i] == NULL)
+            if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
                 continue;
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of what it borrows: the
@@ -1983,6 +2008,18 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             // Nowhere the walk follows: the argument's own loans are all
             // there is to go by, where its borrows point and further on
             int beyond = depth > 1;
+            if (arenaplace) {
+                // An arena reached by a route the walk does not follow (a
+                // reference made from a raw pointer, which is how DynArena
+                // reaches its inner arena: that store is trusted, see its
+                // 'alloc'): only the loans the reference carries are known
+                VarDclNode *through;
+                uint32_t apart = argsets[at] && argsets[at] != &pathSetAll && argsets[at]->cnt
+                    ? loanArenaApart(others, argsets[at], &through) : 0;
+                if (apart)
+                    loanApart((INode *)call, apart, through, LoanEscapeCall);
+                continue;
+            }
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape((INode *)call, local, LoanEscapeCall);
             else
@@ -2006,10 +2043,20 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         if (local && pwPlaceOutlives(&reach))
             loanEscape((INode *)call, local, LoanEscapeCall);
         else if (reach.deref) {
-            uint32_t own = pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
+            // What belongs to the arena itself is no self-store (Bug 48's exception)
+            uint32_t own = !arenaplace && pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
             if (own)
                 loanSelfStore((INode *)call, own, &target, LoanEscapeCall);
-            pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
+            if (arenaplace) {
+                // An arena reached through a reference takes of the caller's
+                // loans only its own: those of the parameter it was reached by
+                VarDclNode *through;
+                uint32_t apart = loanArenaApart(others, pathVars[target.var].holds, &through);
+                if (apart)
+                    loanApart((INode *)call, apart, through, LoanEscapeCall);
+            }
+            else
+                pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }

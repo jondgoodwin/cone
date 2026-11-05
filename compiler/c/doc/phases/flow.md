@@ -1210,7 +1210,27 @@ or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
 `&mut a` may live at once and `a.alloc(Spawner(2, &mut a))` is one call. The
-third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
+arena holds what is stored in it through raw memory its fields do not show,
+so a by-value argument to a method of a `NoLoanMut` receiver is a *store into
+the arena*, wherever the receiver was reached (a local, a `&mut` parameter, a
+struct's field, a closure's capture, `new a[T](...)`): `pwCallStores`, with the
+receiver as the only place (`arenaplace`). A body may store into an arena only
+what outlives it: a global, what the arena already owns, and, for an arena
+local to the body, locals declared before it (the arena variable is a holder,
+and its death reads what it holds, `itypeDropReadsBorrow`, so a local declared
+after it is `ErrorFrozen`). Reached through a reference, it takes of the
+caller's loans only the reference's own parameter's (`loanArenaApart`: Bug 48's
+exception, the stored loan and the place are one parameter that points at a
+`NoLoanMut` container); a borrow from another parameter, a second arena's
+node included, is `ErrorCallEscape`, even under one lifetime name. Checked
+at the store, in the body, so a caller trusts the signature: a free function
+handed a `&mut Arena` is no store at its caller. A function whose result goes
+back into the arena names which parameter the result comes from (`ar: &'a mut
+Arena` and `&'a mut Node['a]`). A reference to the arena made from a raw
+pointer carries no loan, so its stores are unseen: the one such site is
+`DynArena.alloc`, trusted on the key rule (`WI/trust.md`). A type that holds no
+borrow anywhere (`itypeHoldsNoBorrow`) is no place a borrow lands in
+(`loanStoredApart`). The third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
 called from `pwCall`): see "What is not held". A type need not declare it: the
 compiler finds a type shape-changing from its methods (`shapeinfer.c`, "Which
