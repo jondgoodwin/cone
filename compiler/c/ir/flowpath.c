@@ -463,6 +463,13 @@ static int pwCarries(INode *type) {
     return type && !flowGateCarriesNone(type) && itypeCarriesBorrow(type);
 }
 
+// Does this type declare 'NoLoanMut', an arena? It holds what is stored in it
+// through raw memory its fields do not show (Bug 51), so a variable of it is a
+// holder though its type carries no borrow
+static int pwIsNoLoanMut(INode *type) {
+    return itypeIsArena(type);
+}
+
 // The walk's index for a variable, registering it the first time
 static uint32_t pathVar(VarDclNode *var) {
     if (var->flowindex)
@@ -490,7 +497,7 @@ static uint32_t pathVar(VarDclNode *var) {
     // borrows it through ('x += 1', 'v <- (a, b)') is the operator's own, as
     // a method's receiver is: 'k += k' reads 'k' while it is borrowed.
     pv->holder = var->scope > 0 && !(var->flags & FlagStatic) && var->namesym != tempName
-        && pwCarries(var->vtype);
+        && (pwCarries(var->vtype) || pwIsNoLoanMut(var->vtype));
     pv->temp = 0;
     pv->initing = 0;
     pv->hascand = 0;
@@ -1922,17 +1929,27 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         // a writable borrow points at or from a value's own borrows: past
         // three, every place reached is as far as the walk tells apart
         int depth = itypeWritableBorrowDepth(argtype, 3);
-        if (depth == 0)
-            continue;
         int isref = pwIsBorrowed(argtype);
         INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
+        // An arena ('NoLoanMut') holds borrows through raw memory its type does
+        // not show, so a writable borrow of one is a place a borrow is stored
+        // in, whatever its fields (Bug 51). This is the one condition that
+        // decides it, and where Bug 48's exception for a store whose loan and
+        // place come from one parameter would be admitted (see 'arenaplace'
+        // below).
+        int arenaplace = isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
+            && pwIsNoLoanMut(storedin);
+        if (arenaplace && depth == 0)
+            depth = 1;
+        if (depth == 0)
+            continue;
         INode *pointee = sig && at < sig->parms->used
             ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
         // What a writable borrow points at, where it holds no borrow but
         // ''static' ones and no writable borrow leads further, takes only a
         // global's loans: the callee may store nothing else there
         // (loanStoredStatic)
-        int globalonly = isref && depth == 1 && !itypeCarriesEndingBorrow(storedin);
+        int globalonly = isref && depth == 1 && !arenaplace && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL)
@@ -1944,7 +1961,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             PathSet *carried = argsets[i];
             INode *site = pwLendSite(nodesGet(call->args, i));
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
+            if (own && !arenaplace && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));

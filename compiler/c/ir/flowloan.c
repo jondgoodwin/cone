@@ -527,6 +527,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
             continue;
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
+        // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
+        // takes none, so nothing stored can land in it; as loanStoredStatic
+        // skips one holding no borrow
+        if (itypeHoldsNoBorrow(place))
+            continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
         // parameter's own reference points at
@@ -537,6 +542,13 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 continue;
             VarDclNode *sparm = loanParm(sid);
             uint32_t spart = loans[sid].part;
+            // What belongs to the arena a parameter points at may be stored in
+            // it: the stored loan and the place come from the same parameter,
+            // which points at a 'NoLoanMut' container (Bug 48). The one
+            // condition admitting that case; a borrow from another parameter,
+            // a second arena's included, still goes through the order below.
+            if (sparm == parm && itypeIsArena(place))
+                continue;
             int flows;
             if (slotted && slots)
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, slots, 0);
