@@ -649,6 +649,11 @@ static PathDelta *pathDeltaPush(PathDelta *list, PathDelta *delta) {
 // The walk
 // *********************
 
+// The last call walked, and the loans it made itself of its receiver and the references it was lent
+static FnCallNode *pwOwnCall = NULL;
+static uint32_t pwOwnLoans[9];
+static uint32_t pwOwnCnt = 0;
+
 static PathSet *pwValue(INode **nodep, int move);
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
@@ -1191,6 +1196,32 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     return 0;
 }
 
+// A borrow copied out of what a call lent ('*(&mut b.kids[i])', '*list.at(i)'): the value is what
+// the place the call lent holds, so it carries what the call's receiver holds, not the loans the
+// call made of the receiver itself. A read through a named reference drops them the same way
+// (pathSetThrough). The reference to the slot itself, not read through, keeps its loan.
+static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
+    INode *e = deref->vtexp;
+    while (e->tag == BorrowTag || e->tag == DerefTag)
+        e = e->tag == BorrowTag ? ((RefNode *)e)->vtexp : ((StarNode *)e)->vtexp;
+    if (e->tag != FnCallTag || (FnCallNode *)e != pwOwnCall || pwOwnCnt == 0)
+        return base;
+    // Only where the value read is itself a borrow
+    if (!pwIsBorrowed(iexpGetTypeDcl((INode *)deref)))
+        return base;
+    for (uint32_t k = 0; k < pwOwnCnt; ++k) {
+        for (uint32_t i = 0; base && base != &pathSetAll && i < base->cnt; ) {
+            if (loanOf(base->ids[i]) == pwOwnLoans[k]) {
+                base = pathSetWithout(base, base->ids[i]);
+                i = 0;
+            }
+            else
+                ++i;
+        }
+    }
+    return base;
+}
+
 // A place read, or moved when 'move' says the value goes to a new holder
 static PathSet *pwPlaceValue(INode **nodep, int move) {
     Place pl;
@@ -1200,8 +1231,11 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     int found = pwPlace(nodep, &pl, &base);
     int moved = pwMoved;
     pwMoved = svmoved;
-    if (!found)
+    if (!found) {
+        if (base && base != &pathSetAll && (*nodep)->tag == DerefTag)
+            base = pwSlotRead((StarNode *)*nodep, base);
         return base && pwCarries(((IExpNode *)*nodep)->vtype) ? base : NULL;
+    }
     if (!moved)
         pwDropUse(&pl, *nodep, 0);
     // A candidate for its variable's last use is walked as the move it would be;
@@ -2808,6 +2842,16 @@ static PathSet *pwCall(FnCallNode *call) {
         if (lentloan[i] && argsets[i] != &pathSetAll
                 && pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i]))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
+    }
+    // The loans this call made of its own receiver and lent arguments, for a read through its
+    // result (pwSlotRead)
+    pwOwnCall = call;
+    pwOwnCnt = 0;
+    if (recvloan)
+        pwOwnLoans[pwOwnCnt++] = recvloan;
+    for (uint32_t i = 0; i < nargs && i < 8; ++i) {
+        if (lentloan[i])
+            pwOwnLoans[pwOwnCnt++] = lentloan[i];
     }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
