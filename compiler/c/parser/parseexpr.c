@@ -160,6 +160,8 @@ static Nodes *parseInterpPieces(ParseState *parse) {
         sub->srcp = sub->tokp = sub->prevend = part->exprp;
         sub->linep = sub->prevlinep = part->linep;
         sub->linenbr = sub->prevlinenbr = part->linenbr;
+        sub->interpstart = part->exprp;
+        sub->interpend = part->exprend;
         int errs = errors;
         lexPush(sub);
         INode *piece = parseSimpleExpr(parse);

@@ -54,6 +54,7 @@ int textSendLower(TypeCheckState *pstate, FnCallNode **nodep);
 // rewritten in place to 'piece.toText(&uni writer)', the writer the receiver is,
 // lends or makes. 1 when it rewrote the call (or reported that the piece has no
 // toText), 0 when the receiver is not a text receiver
+int textValueFallback(TypeCheckState *pstate, FnCallNode *callnode);
 int textSendFallback(TypeCheckState *pstate, FnCallNode *callnode, INode *recv);
 
 // The same for a receiver whose type declares core's DebugText and a piece that is

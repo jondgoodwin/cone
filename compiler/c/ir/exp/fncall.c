@@ -2236,9 +2236,13 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
         if (callnode->vtype == errorType)
             return -1;
         // A toDebug the compiler writes is made now (debugfn.c), the call checked once with it
-        if (debugsend == 2) {
+        // A built-in scalar's (number, bool, char: all Nbr types) is made by the hook; a
+        // piece no overload of 'value' takes, such as a borrow of one, comes here as debugsend 1
+        INode *dbgval = debugsend == 1 && callnode->objfn && isExpNode(callnode->objfn)
+            ? iexpGetDerefTypeDcl(callnode->objfn) : NULL;
+        if (debugsend == 2 || (dbgval && isNbr(dbgval))) {
             FnCallNode *dbg = callnode;
-            if (fnCallDebugLower(pstate, &dbg, 0)) {
+            if (fnCallDebugLower(pstate, &dbg, debugsend == 1)) {
                 if (dbg != callnode)
                     *callnode = *dbg;
                 return callnode->vtype == errorType ? -1 : 1;
@@ -2380,6 +2384,9 @@ static int fnCallLowerMethodOn(TypeCheckState *pstate, FnCallNode *callnode, INo
             }
         }
     }
+
+    if (selected == NULL && status == OverloadNone && textValueFallback(pstate, callnode))
+        return fnCallLowerMethodOn(pstate, callnode, NULL);
 
     if (selected == NULL) {
         // A text receiver's '<-' that no candidate took (a writer, a String, the
