@@ -437,6 +437,11 @@ void lifeCanonBrands(Nodes *args);
 // Do two types carry the very same brands, name for name?
 int lifeBrandsEqual(INode *a, INode *b);
 
+// An argument inferred from a value, and the declared type's for the same
+// place, differing only in brands a call minted: do the declared one's brands,
+// put in the value's, make the types the same?
+int lifeBrandsAdopt(INode *inferred, INode *declared);
+
 // Is every invariant lifetime a body's type writes one the function's
 // signature names? Reports at 'at' those it does not, and answers 0.
 int lifeBrandKnown(INode *type, INode *at);

@@ -60,6 +60,7 @@ void genericInfoPrint(GenericInfo *info) {
 // as the declaration its branches agree on (iexpMultiInfer) -- and a declaration
 // held as an argument would be cloned into the instance as a second copy of the
 // type, methods and all, instead of named by it.
+static int genericExpectMode;
 int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, INode *argtype) {
     INode **genvarp;
     uint32_t genvarcnt;
@@ -73,6 +74,12 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
             if (((GenVarDclNode *)(*genvarp))->valtype)
                 break;
             if (*genargp == NULL)
+                *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
+            // Where the declared type is read for an argument a value said
+            // already, its brands stand for the ones a call minted: the type
+            // is the same but for them, and an argument named so is the one
+            // an explicit 'Some[&'=a mut Node['=a]](..)' would be
+            else if (genericExpectMode && lifeBrandsAdopt(*genargp, argtype))
                 *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
             else if (!itypeIsSame(*genargp, argtype))
                 return 0;
@@ -337,8 +344,16 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         return 1;
     if (nameUseNames(parmtype, GenVarDclTag))
         return genericCaptureType(inferredgencall, genparms, parmtype, argtype);
-    if (isNameUseNode(argtype))
+    // The type arguments a use wrote, for the brands they name: the instance
+    // holds them numbered (lifeCanonBrands). Read only for a type wanted of a
+    // value (genericExpectMode), whose brands an inferred argument may take.
+    Nodes *usedargs = NULL;
+    if (isNameUseNode(argtype)) {
+        LifeUse *lifeuse = ((NameUseNode *)argtype)->lifeuse;
+        if (genericExpectMode && lifeuse)
+            usedargs = lifeuse->typeargs;
         argtype = itypeGetTypeDcl(argtype);
+    }
     switch (parmtype->tag) {
     case PtrTag:
     case DerefTag:
@@ -460,6 +475,8 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
             if (instcall->args->used != parmcall->args->used)
                 return 1;
             INode **instargp = &nodesGet(instcall->args, 0);
+            if (usedargs && usedargs->used == instcall->args->used)
+                instargp = &nodesGet(usedargs, 0);
             INode **parmargp;
             uint32_t parmcnt;
             for (nodesFor(parmcall->args, parmcnt, parmargp)) {
@@ -582,7 +599,9 @@ static void genericInferFromExpected(Nodes *genparms, INode *result, INode *expe
         if (*argsp == NULL)
             unsaid = 1;
     }
-    if (!unsaid)
+    // Said already, an argument still takes the declared type's brands for ones
+    // a call minted (genericCaptureType)
+    if (!unsaid && !lifeInvariantSeen)
         return;
     if (itypeGetTypeDcl(expect)->tag == VoidTag)
         return;
