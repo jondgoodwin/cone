@@ -54,11 +54,11 @@
 //     failureCode failureText wantsCall takeCall callDone describe alpn);
 //     Stream.make(session)  st.session()
 //   TlsError: e.kind e.code e.osError e.detail e.message()             (ERRORS)
-//   TlsErrorKind; k.name()
+//   TlsErrorKind; toText(&k)
 //   certErrorKind(code)  certErrorText(code)  genericFailure()   the verifier's own number
 //   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
 //     handshakeTime verifyTime closeNotify truncated; String() <- i
-//   stats(): TlsStats; backendVersion(); verifyKindName(k)
+//   stats(): TlsStats; backendVersion(); VerifyKind: toText(&k)
 //
 // SESSIONS. A Session is one TLS connection's state, in either role, made
 // from a Client or a Server. Ciphertext that arrived goes in by 'feed' (all
@@ -256,17 +256,14 @@ pub enum Backend {
 pub enum VerifyKind {
   Platform, Roots, Pinned, Insecure;
 
-  // The kind's name, in lower case: 'platform' (verifyKindName, which another
-  // package still calls, gives the same as a '&str')
-  pub fn toText(self: &, out: &uni TextOut) { out <- verifyKindName(*self); }
-}
-
-// The name of a verifier's kind
-pub fn verifyKindName(k: VerifyKind) &str {
-  if k == VerifyKind.Platform {"platform"}
-  else if k == VerifyKind.Roots {"roots"}
-  else if k == VerifyKind.Pinned {"pinned"}
-  else {"insecure"}
+  // The kind's name, in lower case: 'platform'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let k = *self;
+    out <- if k == VerifyKind.Platform {"platform"}
+      else if k == VerifyKind.Roots {"roots"}
+      else if k == VerifyKind.Pinned {"pinned"}
+      else {"insecure"};
+  }
 }
 
 // A verifier: its kind and what it holds
@@ -382,11 +379,10 @@ pub enum TlsErrorKind {
   Config,             // a configuration could not be loaded
   Backend;           // the back end failed
 
-  // The name of the kind: 'certificate untrusted', 'protocol error'. Another
-  // package still calls 'name'; 'toText' writes the same
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.name(); }
-  pub fn name(self: TlsErrorKind) &str {
-    match self {
+  // The name of the kind: 'certificate untrusted', 'protocol error'
+  pub fn toText(self: &, out: &uni TextOut) { out <- TlsErrorKind.words(*self); }
+  fn words(k: TlsErrorKind) &str {
+    match k {
       case CertExpired {"certificate expired"}
       case CertNameMismatch {"certificate name mismatch"}
       case CertUntrusted {"certificate untrusted"}
@@ -424,7 +420,7 @@ pub struct TlsError is Error {
   pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
   pub fn message(self: &) String {
     var out = String.from("tls: ");
-    out.append(kind.name());
+    out <- kind;
     out.append(": ");
     out.append(detail.view());
     out

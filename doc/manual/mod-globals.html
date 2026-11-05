@@ -283,25 +283,38 @@ fn @initpure init() {
 		does: <span class="pre">init</span> may assign it once, even when it is <span class="pre">let</span>, and
 		may not read it before it does. Every other function sees it holding the value
 		<span class="pre">init</span> gave it.</p>
+	<p>What a function that <span class="pre">init</span> calls reads counts as <span class="pre">init</span>
+		reading it, at the call. The compiler follows the call into the module's own functions and methods, and
+		into the instance of a generic function or method the call names, and then into what those call in turn,
+		to any depth: a helper that reads a global the call comes before is refused, as the read would be in
+		<span class="pre">init</span> itself. A helper's own assignment to a global does not count as
+		<span class="pre">init</span> setting it, so a helper that sets a global and then reads it is refused too,
+		when it is called before <span class="pre">init</span> sets it. A function of another module needs no
+		following, since that module cannot read this one's globals without a cycle of modules, which is refused.
+		It goes by position, as
+		<span class="pre">init</span>'s own reads do: after <span class="pre">init</span> has assigned the global,
+		the same call is accepted, and a global assigned later that the calls do not read is not counted. Helpers
+		that call one another in a cycle are followed once round. A call the compiler cannot follow, such as a
+		function written in C, a virtual call, a closure, or a call reached through a function reference, is not
+		checked for now: such a call relies on its author.</p>
 	<p>The initializer is declared <span class="pre">initpure</span>, a less constrained version of
-		<a href="safe-purity.html#pure"><span class="pre">pure</span></a>. A function marked
-		<span class="pre">initpure</span> may not read any uninitialized global of its module, and may call only
-		functions marked <span class="pre">pure</span> or <span class="pre">initpure</span>. That marks it as safe to
-		call while initialization runs, because it relies on no state that is not ready yet: no uninitialized
-		global of its module, and the modules it depends on are initialized first. It does not forbid input and
-		output. Set-up an initializer needs, such as loading a library, opening a device or reading the
-		environment, is done through functions marked <span class="pre">initpure</span>, kept to what the module's
-		own state needs.</p>
+		<a href="safe-purity.html#pure"><span class="pre">pure</span></a>. That marks it as safe to call while
+		initialization runs, because it relies on no state that is not ready yet: no uninitialized global of its
+		module, and the modules it depends on are initialized first. It does not forbid input and output. Set-up
+		an initializer needs, such as loading a library, opening a device or reading the environment, is done
+		through functions the module declares <span class="pre">extern</span>, marked
+		<span class="pre">initpure</span> to say they are safe to call there. A helper written in Cone needs no
+		mark, since the compiler reads what it does.</p>
 	<p>To make initialization safe and complete, the compiler:</p>
 	<ul>
 		<li>verifies that every global declared without a value is assigned one somewhere in its module's
-			<span class="pre">init</span>;</li>
-		<li>verifies that <span class="pre">pure</span> and <span class="pre">initpure</span> functions keep their
-			constraints;</li>
+			<span class="pre">init</span>, and that nothing <span class="pre">init</span> calls in the module reads
+			it before it does;</li>
 		<li>runs the initializers of the modules a module depends on before its own.</li>
 	</ul>
-	<p><i>The first and last are implemented. The second is not: a function marked
-		<span class="pre">@initpure</span> is accepted, and nothing yet checks what it calls, since
+	<p><i>The mark on an extern function is accepted and nothing checks it: it records what the author
+		promises, until the compiler can check the call. The rule that a marked function may call only
+		<span class="pre">pure</span> or <span class="pre">initpure</span> functions is not built, since
 		<span class="pre">pure</span> functions are not implemented.</i></p>
 
 	<h3 id="final">The module's finalizer</h3>
