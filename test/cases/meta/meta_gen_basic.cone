@@ -1,0 +1,82 @@
+// Members made from a type's fields (mod-generativity.html#meta): in a generic struct's braces,
+// '#each #f in #fields(T) { ... }' holds fields and methods written once, and each instance has one
+// of them for every field of T, named from it. '#f' names a member as the field is named,
+// '#name("get_", #f)' joins a fixed word before it (or '#name(#f, "_next")' after it).
+//
+// The printed values were checked by hand against the source:
+//   body            Body has pos, mass, id; Twin[Body] holds pos, old_pos, mass, old_mass, id, old_id
+//                   in that order, the loop's members once per field. Twin[Body](Point(1, 2),
+//                   Point(3, 4), 5, 6, 7, 8) reads back: pos.x 1, old_pos.y 4, mass 5, old_mass 6,
+//                   id 7, old_id 8
+//   point           Twin[Point] has x, old_x, y, old_y: 10 20 30 40 read as 10 + 20 + 30 + 40 = 100
+//   sizes           Twin[Point] holds four i32, 16 bytes; Twin[Body] holds two Point (8 each),
+//                   two f64 and two u8 laid out by the compiler, 8 + 8 + 8 + 8 + 1 + 1 padded to 8: 40
+//   accessors       get_mass reads 5; set_mass(9) then get_mass reads 9. The methods are made only for
+//                   Body's own fields (pos, mass, id), so there is no get_old_mass. The three getters
+//                   read mass 9, id 7 and pos.y 2: 9 + 7 + 2 = 18
+//   column borrows  &uni of mass and &imm of id held together: mass 9 + 1 = 10, id 7: 10 + 7 = 17
+
+mod meta_gen_basic;
+
+import stdio use *;
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Body {
+  pub pos: Point;
+  pub mass: f64;
+  pub id: u8;
+}
+
+struct Twin[T] {
+  #each #f in #fields(T) {
+    pub #f: #f.type;
+    pub #name("old_", #f): #f.type;
+    pub fn #name("get_", #f)(self: &) #f.type {
+      self.#f
+    }
+    pub fn #name("set_", #f)(self: &mut, v: #f.type) {
+      self.#f = v;
+    }
+  }
+}
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn borrows(t: &uni Twin[Body]) i64 {
+  let m = &uni t.mass;
+  let i = &imm t.id;
+  *m = *m + 1.0;
+  i64.from(*m) + i64.from(*i)
+}
+
+fn main() {
+  var b = Twin[Body](Point(1, 2), Point(3, 4), 5.0, 6.0, 7u8, 8u8);
+  show("pos.x", i64.from(b.pos.x));
+  show("old_pos.y", i64.from(b.old_pos.y));
+  show("mass", i64.from(b.mass));
+  show("old_mass", i64.from(b.old_mass));
+  show("id", i64.from(b.id));
+  show("old_id", i64.from(b.old_id));
+
+  let p = Twin[Point](10, 20, 30, 40);
+  show("point", i64.from(p.x) + i64.from(p.old_x) + i64.from(p.y) + i64.from(p.old_y));
+
+  show("size Twin[Point]", i64.from(#size(Twin[Point])));
+  show("size Twin[Body]", i64.from(#size(Twin[Body])));
+
+  show("get_mass", i64.from(b.get_mass()));
+  b.set_mass(9.0);
+  show("get_mass after set", i64.from(b.get_mass()));
+  show("accessors", i64.from(b.get_mass()) + i64.from(b.get_id()) + i64.from(b.get_pos().y));
+
+  show("borrows", borrows(&uni b));
+}

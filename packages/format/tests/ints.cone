@@ -1,0 +1,96 @@
+// Integer options: hex, oct, bin and signed, every integer type at both of its
+// limits. Each text is worked out by hand: a negative value is its two's
+// complement at the type's own width (-1i8 is "ff", -1i32 "ffffffff"), zero is
+// "0", there is no prefix and no padding, and the digits are lower case.
+
+mod ints;
+
+import testing use *;
+import collections use String;
+import format use hex, oct, bin, signed, RadixText;
+
+fn chk(w: RadixText, want: &Array[u8], label: &Array[u8]) {
+  var s = String();
+  s <- w;
+  expectStr(s.view(), want, label);
+}
+
+// Ones, n of them: the base-2 text of an all-ones value
+fn ones(n: usize) String {
+  var s = String();
+  var i = 0usize;
+  while i < n { s <- "1"; i = i + 1usize; }
+  s
+}
+
+// A 1 and then n zeros
+fn top(n: usize) String {
+  var s = String();
+  s <- "1";
+  var i = 0usize;
+  while i < n { s <- "0"; i = i + 1usize; }
+  s
+}
+
+fn main() i32 {
+  // u8, i8
+  chk(hex(0u8), "0", "u8 0"); chk(oct(0u8), "0", "u8 0 oct"); chk(bin(0u8), "0", "u8 0 bin");
+  chk(hex(255u8), "ff", "u8 max"); chk(oct(255u8), "377", "u8 max oct");
+  chk(bin(255u8), "11111111", "u8 max bin");
+  chk(hex(-128i8), "80", "i8 min"); chk(oct(-128i8), "200", "i8 min oct"); chk(bin(-128i8), "10000000", "i8 min bin");
+  chk(hex(127i8), "7f", "i8 max"); chk(oct(127i8), "177", "i8 max oct"); chk(bin(127i8), "1111111", "i8 max bin");
+  chk(hex(-1i8), "ff", "i8 -1");
+  // u16, i16
+  chk(hex(65535u16), "ffff", "u16 max"); chk(oct(65535u16), "177777", "u16 max oct");
+  chk(hex(-32768i16), "8000", "i16 min"); chk(oct(-32768i16), "100000", "i16 min oct");
+  chk(bin(-32768i16), "1000000000000000", "i16 min bin");
+  chk(hex(32767i16), "7fff", "i16 max"); chk(oct(32767i16), "77777", "i16 max oct");
+  // u32, i32
+  chk(hex(4294967295u32), "ffffffff", "u32 max"); chk(oct(4294967295u32), "37777777777", "u32 max oct");
+  chk(hex(-2147483648i32), "80000000", "i32 min"); chk(oct(-2147483648i32), "20000000000", "i32 min oct");
+  chk(hex(2147483647i32), "7fffffff", "i32 max"); chk(oct(2147483647i32), "17777777777", "i32 max oct");
+  chk(hex(-1i32), "ffffffff", "i32 -1");
+  chk(hex(255), "ff", "an untyped literal");
+  // u64, i64, usize, isize
+  chk(hex(18446744073709551615u64), "ffffffffffffffff", "u64 max");
+  chk(oct(18446744073709551615u64), "1777777777777777777777", "u64 max oct");
+  chk(hex(-9223372036854775807i64 - 1i64), "8000000000000000", "i64 min");
+  chk(oct(-9223372036854775807i64 - 1i64), "1000000000000000000000", "i64 min oct");
+  chk(hex(9223372036854775807i64), "7fffffffffffffff", "i64 max");
+  chk(oct(9223372036854775807i64), "777777777777777777777", "i64 max oct");
+  chk(hex(-1i64), "ffffffffffffffff", "i64 -1");
+  chk(hex(18446744073709551615usize), "ffffffffffffffff", "usize max");
+  chk(hex(-1isize), "ffffffffffffffff", "isize -1");
+  chk(hex(0usize), "0", "usize 0");
+  // Base 2 at 64 bits
+  var b = String();
+  b <- bin(18446744073709551615u64);
+  expectStr(b.view(), ones(64usize).view(), "u64 max bin");
+  var c = String();
+  c <- bin(-9223372036854775807i64 - 1i64);
+  expectStr(c.view(), top(63usize).view(), "i64 min bin");
+  var e = String();
+  e <- bin(-1i32);
+  expectStr(e.view(), ones(32usize).view(), "i32 -1 bin");
+  // Other values
+  chk(hex(3735928559u32), "deadbeef", "lower case");
+  chk(oct(8), "10", "oct 8");
+  chk(bin(5), "101", "bin 5");
+
+  // signed: the sign always shown
+  var t = String();
+  t <- signed(5), " ", signed(-5), " ", signed(0), " ", signed(-128i8), " ", signed(127i8);
+  expectStr(t.view(), "+5 -5 +0 -128 +127", "signed");
+  var u = String();
+  u <- signed(18446744073709551615u64), " ", signed(-9223372036854775807i64 - 1i64), " ", signed(255u8);
+  expectStr(u.view(), "+18446744073709551615 -9223372036854775808 +255", "signed limits");
+
+  // In a send list with other pieces, and the debug form
+  var d = String();
+  let h = hex(255u8);
+  let n2 = bin(2);
+  d <- "id ", h, " ", oct(8), " ", toDebug(&h), " ", toText(&n2);
+  expectStr(d.view(), "id ff 10 ff 10", "send list");
+
+  return done();
+}

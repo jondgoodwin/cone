@@ -1,0 +1,46 @@
+// Columns: '#each #f in #fields(T) { pub #f: List[#f.type]; }' gives a generic struct one List
+// per field of T, of that field's type, as SoaList[T] holds them. A method from the same loop
+// reads its own column.
+//
+// The printed values were checked by hand against the source:
+//   lengths   mass has 2 pushed, id has 1: 2 1
+//   methods   count_mass and count_id read their own columns: 2 1
+//   elements  mass[1] is the second pushed, 4; id[0] is the one pushed, 7
+//   borrows   &uni of mass and &imm of id held together: mass[0] is 2, 2 + 1 = 3, id[0] 7: 3 7
+
+mod meta_gen_list;
+
+import stdio use *;
+import collections use *;
+
+struct Body {
+  pub mass: i64;
+  pub id: i32;
+}
+
+struct Cols[T] {
+  #each #f in #fields(T) {
+    pub #f: List[#f.type];
+    pub fn #name("count_", #f)(self: &) usize {
+      self.#f.len()
+    }
+  }
+}
+
+fn both(c: &uni Cols[Body]) {
+  let m = &uni c.mass;
+  let i = &imm c.id;
+  m[0usize] = m[0usize] + 1i64;
+  print <- m[0usize], " ", i[0usize], "\n";
+}
+
+fn main() {
+  var c = Cols[Body](List[i64](), List[i32]());
+  c.mass.push(2i64);
+  c.mass.push(4i64);
+  c.id.push(7i32);
+  print <- c.mass.len(), " ", c.id.len(), "\n";
+  print <- c.count_mass(), " ", c.count_id(), "\n";
+  print <- c.mass[1usize], " ", c.id[0usize], "\n";
+  both(&uni c);
+}

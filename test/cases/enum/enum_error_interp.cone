@@ -1,0 +1,35 @@
+// An interpolated string holding an error, $"{e}", is the error's one line (its
+// toText), the outermost of a chain and not the causes: a struct that meets core's
+// Error, and a '&<Error' reached through source(). Worked out by hand: Short's
+// text is "short " and its code, Wrapped's is "wrapped".
+
+mod enum_error_interp;
+
+import stdio use *;
+import collections use String;
+
+struct Short is Error, Sendable {
+  pub code: i32;
+  pub fn toText(self: &, out: &uni TextOut) { out <- "short ", code; }
+}
+
+struct Wrapped is Error, Sendable {
+  pub inner: Short;
+  pub fn toText(self: &, out: &uni TextOut) { out <- "wrapped"; }
+  pub fn source(self: &) Option[&<Error] { Some[&<Error](&inner) }
+}
+
+fn main() i32 {
+  let w = Wrapped(Short(9i32));
+  // sent directly: "[wrapped]"
+  print <- $"[{w}]\n";
+  // a String: "short 9" is 7 bytes, so "<short 9>" is 9
+  let s = $"<{w.inner}>";
+  print <- s, " ", s.len(), "\n";
+  // through a '&<Error'
+  match w.source() {
+    case let Some(c) { print <- $"cause {c}\n"; }
+    case is None { print <- "none\n"; }
+  }
+  0
+}

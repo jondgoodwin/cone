@@ -185,9 +185,19 @@ call, so a value alone reports exactly what `case ==value` would.
 Check both children, set `vtype` from `typ`, then split on `FlagConvert`.
 
 **Reinterpret** (`as`) requires **identical bit size** via `castBitsize` — except
-to a struct, which is not checked here at all, because `castBitsize` knows
-nothing of field layout, padding or alignment. That check is deferred to
-generation, where the data layout exists.
+to a struct, which this size test skips, because `castBitsize` knows nothing of
+field layout, padding or alignment. A struct, an enum (a struct carrying
+`EnumType`) or `char` target is first held to `castRecastTargetCheck`: the
+source must be a recast, as coercion defines it: `itypeMatches(typ, source, Coercion)`
+answering `EqMatch` or `CastSubtype`, which today is a type as itself or a variant
+as its enum. The relation is the definition, not a list of those two, so the two
+cannot drift apart; a converting coercion is out, and whatever passes could be
+written by assignment with no `as`. Anything else is `ErrorAsTarget` (1594), whose message names the fix (`char.from`
+for a `char`, a pattern for an enum read as a variant, a constructor or method
+otherwise) and says `trust` is not built. A generic `x as T` is checked in the
+instance, where `T` is known. So the size check in generation (`genlRecast`,
+`ErrorRecastSize`) is a guard that only a variant as its enum reaches, always at
+one size, until `trust` allows other struct recasts.
 
 **Between two references, `as` may only be a legal coercion of the permission**
 (`castRefPermCheck`, before the size test; any kind of reference counts: a
@@ -460,12 +470,17 @@ which is lowered to a type literal, [literals](literals.md)):
   truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
   poison), a pointer truncated.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
-  `fptrunc`/`fpext`. A float whose truncated value the integer type cannot hold
-  (a negative float to an unsigned type, 300.0 to a `u8`) is LLVM's poison: the
-  value differs between an optimized and an unoptimized build (`u32` from
-  -3.7 printed 4294967293 unoptimized and a value past `u32`'s range
-  optimized). The checked and saturating conversions that would define it are
-  not built.
+  `fptrunc`/`fpext`, except that a float into an integer is
+  `llvm.fptosi.sat`/`llvm.fptoui.sat` (`genlFloatToInt`): a value the integer
+  type cannot hold gives its top or bottom (0 for an unsigned type), NaN 0, and
+  nothing is poison (Bug 43; the plain `fptoui`/`fptosi` were, and the
+  optimizer deleted a bounds check on such an index when the float was a
+  constant). A number into a `char` is `genlNumberToChar`: the number if it is
+  a code point, else U+FFFD (a float through the saturating conversion to
+  `i64`, a NaN none; a `u8` and `bool` need no check). A constant with no such
+  value, a float the integer cannot hold or a number that is no code point, is
+  refused when `fnCallNumberFrom` type checks it, in any expression
+  (`litFoldConst`, `ErrorConstOverflow`, `ErrorConstChar`).
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
   alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
   a loop is a fresh frame slot per iteration, which mem2reg does not promote, and
@@ -510,8 +525,9 @@ a trait pattern's test (`variants` set) is that test for each variant that compl
   bound to nothing (`castPatternBind` reported it) is never type checked, so a
   pattern written with arguments is still the unchecked call node: ask
   `isTypeNode` before unwrapping one.
-- **A struct reinterpret is checked in generation, not type check.** A size
-  mismatch surfaces late, as `ErrorRecastSize`.
+- **A struct's size is checked in generation, not type check.** Only a variant
+  as its enum gets there (`ErrorAsTarget` refuses the rest), so `ErrorRecastSize`
+  is a guard no program reaches.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and
   exit.** Reaching either means a conversion was built, by a pattern or a
   coercion, that generation has no arm for.

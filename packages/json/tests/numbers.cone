@@ -63,7 +63,7 @@ fn uint(text: &str, want: &str) {
 // The f64 the text reads as, its bits
 fn bitsOf(text: &str) u64 {
   match json.numberF64(text) {
-    case let Ok(x) { x as u64 }
+    case let Ok(x) { x.bits() }
     case is Err { 0xDEADBEEFDEADBEEFu64 }
   }
 }
@@ -96,7 +96,7 @@ fn shortest(x: f64, want: &str) {
 }
 
 fn shortestBits(bits: u64, want: &str) {
-  shortest(bits as f64, want);
+  shortest(f64.fromBits(bits), want);
 }
 
 // A repeatable generator: splitmix64, its state passed in and out
@@ -110,13 +110,13 @@ fn next(state: &mut u64) u64 {
 
 fn strtodBits(text: &str) u64 {
   let s = String.from(text);
-  strtod(s.cstr(), null) as u64
+  strtod(s.cstr(), null).bits()
 }
 
 // The text read by this package and by strtod must be the same f64
 fn agree(text: &str, label: &str) bool {
   match json.numberF64(text) {
-    case let Ok(x) { return expectUInt(x as u64, strtodBits(text), label); }
+    case let Ok(x) { return expectUInt(x.bits(), strtodBits(text), label); }
     case is Err { return expect(false, label); }
   }
   false
@@ -230,7 +230,7 @@ fn main() i32 {
   float("3.141592653589793", 0x400921FB54442D18u64);
   float("1e22", 0x4480F0CF064DD592u64);
   float("1e23", 0x44B52D02C7E14AF6u64);
-  float("123456789", 123456789.0 as u64);
+  float("123456789", 123456789.0.bits());
   // 2^53 + 1 is halfway between two f64s: to the even one, 2^53
   float("9007199254740993", 0x4340000000000000u64);
   // 2^53 + 3 is halfway: to the even one, 2^53 + 4
@@ -254,7 +254,7 @@ fn main() i32 {
   outOfRange(huge.view());
   // 308 zeros is 1e308, which is in range
   huge.truncate(309usize);
-  float(huge.view(), 1e308 as u64);
+  float(huge.view(), 1e308.bits());
   float("2.2250738585072014e-308", 0x0010000000000000u64);
   // The denormals: the largest, the one that once hung a famous program, the smallest
   float("2.2250738585072011e-308", 0x000FFFFFFFFFFFFFu64);
@@ -267,8 +267,8 @@ fn main() i32 {
   float("-1e-400", 0x8000000000000000u64);
   float("1e-100000000000", 0x0000000000000000u64);
   // Many digits, a long way from the exponent
-  float("0.0000000000000000000000000000000000000000000001", 1e-46 as u64);
-  float("12345678901234567890123456789012345678901234567890e-30", 12345678901234567890.0 as u64);
+  float("0.0000000000000000000000000000000000000000000001", 1e-46.bits());
+  float("12345678901234567890123456789012345678901234567890e-30", 12345678901234567890.0.bits());
 
   // 400-digit numbers are kept whole
   var big = String.from("1");
@@ -305,7 +305,7 @@ fn main() i32 {
     big300.appendByte('0');
     z = z + 1usize;
   }
-  float(big300.view(), 1e300 as u64);
+  float(big300.view(), 1e300.bits());
   agree(big300.view(), "300 digits against strtod");
   // A long fraction: 1000 digits after the point, still the nearest f64
   var longFraction = String.from("0.");
@@ -384,7 +384,7 @@ fn main() i32 {
     // read the same text with strtod
     var bits = next(&mut state);
     if ((bits >> 52u64) & 0x7FFu64) == 0x7FFu64 { bits = bits & 0x800FFFFFFFFFFFFFu64; }
-    let x = bits as f64;
+    let x = f64.fromBits(bits);
     match json.formatF64(x) {
       case let Some(t) {
         if bitsOf(t.view()) != bits {
@@ -427,14 +427,14 @@ fn main() i32 {
     }
     match json.numberF64(s.view()) {
       case let Ok(x) {
-        if (x as u64) != strtodBits(s.view()) {
+        if x.bits() != strtodBits(s.view()) {
           disagree = disagree + 1usize;
           expectStr(s.view(), "<same as strtod>", "decimal against strtod");
         }
       }
       case is Err {
         // strtod makes infinity of what is too large
-        let c = strtod(s.cstr(), null) as u64;
+        let c = strtod(s.cstr(), null).bits();
         if ((c >> 52u64) & 0x7FFu64) != 0x7FFu64 {
           disagree = disagree + 1usize;
           expectStr(s.view(), "<in range>", "decimal refused though strtod finds it finite");

@@ -44,8 +44,7 @@ INode *fieldEachProp(FieldEach *fe, FieldProp prop, INode *lexnode) {
     return (INode*)use;
 }
 
-void fieldEachNameRes(NameResState *pstate, BlockNode *blk) {
-    FieldEach *fe = blk->fieldeach;
+void fieldEachSubjectNameRes(NameResState *pstate, FieldEach *fe) {
     inodeNameRes(pstate, &fe->subject);
     INode *dcl = isNameUseNode(fe->subject) ? ((NameUseNode*)fe->subject)->dclnode : NULL;
     // 'Self' in a trait's default is the type the default is taken into, known when it is taken in
@@ -55,6 +54,10 @@ void fieldEachNameRes(NameResState *pstate, BlockNode *blk) {
         errorMsgNode(fe->subject, ErrorMetaFields,
             "'#fields(%s)' describes the fields of a generic's type parameter, or of 'Self' in a trait's default, which is known when the generic is cloned for its arguments. '%s' is not one.",
             &((NameUseNode*)fe->subject)->namesym->namestr, &((NameUseNode*)fe->subject)->namesym->namestr);
+}
+
+void fieldEachNameRes(NameResState *pstate, BlockNode *blk) {
+    fieldEachSubjectNameRes(pstate, blk->fieldeach);
 }
 
 INode *fieldEachSplice(NameUseNode *node) {
@@ -69,7 +72,13 @@ INode *fieldEachSplice(NameUseNode *node) {
     return (INode*)member;
 }
 
-static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, BlockNode *at, int ispub, INode *subj) {
+Name *genNameFor(GenName *gen, FieldDclNode *field) {
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s%s%s", gen->prefix ? gen->prefix : "", &field->namesym->namestr, gen->suffix ? gen->suffix : "");
+    return nametblFind(buf, strlen(buf));
+}
+
+static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, INode *at, int ispub, INode *subj) {
     switch (prop) {
     case FieldPropOffset: {
         // Only once T's layout has settled: asked inside it, the answer would depend on the order of declaration
@@ -113,48 +122,44 @@ static INode *fieldPropAnswer(FieldEach *fe, int prop, FieldDclNode *field, Bloc
     }
 }
 
-INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
-    FieldEach *fe = node->fieldeach;
-    INode *subj = cloneNode(cstate, fe->subject);
-    uint32_t dclpos = cloneDclPush();
-    INode *oldhook[FieldPropCount];
-    INode *oldvar = fe->var->node;
+void fieldEachKeepBegin(FieldEachRun *run) {
     for (int p = 0; p < FieldPropCount; ++p)
-        oldhook[p] = fe->propnames[p]->node;
+        run->fe->propnames[p]->node = (INode*)run->fe->props[p];
+}
 
-    int undecided = subj == NULL
-        || (isNameUseNode(subj) && ((NameUseNode*)subj)->dclnode && ((NameUseNode*)subj)->dclnode->tag == GenVarDclTag);
-    if (undecided) {
-        // Still the parameter of an enclosing generic: copied whole, to be decided for its instances
-        for (int p = 0; p < FieldPropCount; ++p)
-            fe->propnames[p]->node = (INode*)fe->props[p];
-        BlockNode *copy = memAllocBlk(sizeof(BlockNode));
-        memcpy(copy, node, sizeof(BlockNode));
-        cloneDclSetMap((INode*)node, (INode*)copy);
-        FieldEach *nfe = memAllocBlk(sizeof(FieldEach));
-        memcpy(nfe, fe, sizeof(FieldEach));
-        nfe->subject = subj ? subj : fe->subject;
-        copy->fieldeach = nfe;
-        copy->stmts = cloneNodes(cstate, node->stmts);
-        for (int p = 0; p < FieldPropCount; ++p)
-            fe->propnames[p]->node = oldhook[p];
-        cloneDclPop(dclpos);
-        return (INode*)copy;
+GenName *fieldEachKeptGen(FieldEachRun *run, GenName *gen) {
+    if (run->kept == NULL) {
+        run->kept = (FieldEach*)memAllocBlk(sizeof(FieldEach));
+        memcpy(run->kept, run->fe, sizeof(FieldEach));
+        run->kept->subject = run->subj ? run->subj : run->fe->subject;
     }
+    GenName *copy = (GenName*)memAllocBlk(sizeof(GenName));
+    memcpy(copy, gen, sizeof(GenName));
+    copy->fe = run->kept;
+    return copy;
+}
 
-    BlockNode *result = memAllocBlk(sizeof(BlockNode));
-    memcpy(result, node, sizeof(BlockNode));
-    result->fieldeach = NULL;
-    result->stmts = newNodes(4);
-    cloneDclSetMap((INode*)node, (INode*)result);
+FieldEachRun *fieldEachOpen(CloneState *cstate, FieldEach *fe, INode *errnode) {
+    FieldEachRun *run = (FieldEachRun*)memAllocBlk(sizeof(FieldEachRun));
+    memset(run, 0, sizeof(FieldEachRun));
+    run->fe = fe;
+    run->oldvar = fe->var->node;
+    for (int p = 0; p < FieldPropCount; ++p)
+        run->oldhook[p] = fe->propnames[p]->node;
+    INode *subj = cloneNode(cstate, fe->subject);
+    run->subj = subj;
+    run->undecided = subj == NULL
+        || (isNameUseNode(subj) && ((NameUseNode*)subj)->dclnode && ((NameUseNode*)subj)->dclnode->tag == GenVarDclTag);
+    if (run->undecided)
+        return run;
 
     INode *dcl = isTypeNode(subj) ? itypeGetTypeDcl(subj) : NULL;
     if (dcl == NULL || dcl->tag != StructTag || (dcl->flags & (TraitType | EnumType))) {
-        errorMsgNode((INode*)node, ErrorMetaFieldsType,
+        errorMsgNode(errnode, ErrorMetaFieldsType,
             "'#fields(%s)' describes the fields of a struct. This '%s' is not one: it is a primitive, a reference, an enum, a trait or another kind of type.",
             &((NameUseNode*)fe->subject)->namesym->namestr, &((NameUseNode*)fe->subject)->namesym->namestr);
-        cloneDclPop(dclpos);
-        return (INode*)result;
+        run->failed = 1;
+        return run;
     }
     StructNode *st = (StructNode*)dcl;
 
@@ -164,7 +169,7 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
     int sees = st->reflect || fe->mod == dclInfoGetModule(dcl)
         || (cstate->selftype && isTypeNode(cstate->selftype) && itypeGetTypeDcl(cstate->selftype) == dcl);
 
-    Nodes *fields = newNodes(8);
+    run->fields = newNodes(8);
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&st->fields, cnt, nodesp)) {
@@ -173,53 +178,132 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
             continue;
         if (!sees && inodeIsPrivate((INode*)field)) {
             // Leaving it out would give a serializer or an 'equals' a wrong answer with no warning
-            errorMsgNode((INode*)node, ErrorMetaFieldsPrivate,
+            errorMsgNode(errnode, ErrorMetaFieldsPrivate,
                 "'#fields(%s)' cannot describe the private field '%s' of '%s', which this code cannot see. The module that declares '%s' can open it to reflection by writing 'struct @reflect %s'.",
                 &((NameUseNode*)fe->subject)->namesym->namestr, &field->namesym->namestr, &st->namesym->namestr,
                 &st->namesym->namestr, &st->namesym->namestr);
-            cloneDclPop(dclpos);
-            return (INode*)result;
+            run->failed = 1;
+            return run;
         }
-        nodesAdd(&fields, (INode*)field);
+        nodesAdd(&run->fields, (INode*)field);
+    }
+    return run;
+}
+
+int fieldEachPassBegin(FieldEachRun *run, uint32_t i, INode *at) {
+    FieldEach *fe = run->fe;
+    FieldDclNode *field = (FieldDclNode*)nodesGet(run->fields, i);
+    // Only what the body asks is looked for: a field with no region is no error unless '.region' is
+    // written, and the placeholder carries which were written
+    for (int p = 0; p < FieldPropCount; ++p)
+        fe->propnames[p]->node = (INode*)fe->props[p];     // Own, until set below
+    int errs = errors;
+    for (int p = 0; p < FieldPropCount; ++p) {
+        if (!fe->used[p])
+            continue;
+        if (p == FieldPropOffset && sizeofLayoutRefused(at, run->subj, "#f.offset"))
+            break;
+        INode *answer = fieldPropAnswer(fe, p, field, at, !inodeIsPrivate((INode*)field), run->subj);
+        fe->propnames[p]->node = answer ? answer : (INode*)fe->props[p];
+    }
+    fe->var->node = (INode*)newMemberUseNode(field->namesym);
+    return errors == errs;
+}
+
+void fieldEachPassEnd(FieldEachRun *run) {
+    for (int p = 0; p < FieldPropCount; ++p)
+        run->fe->propnames[p]->node = run->oldhook[p];
+    run->fe->var->node = run->oldvar;
+}
+
+EachPass *fieldEachPassFor(FieldEachRun *run, uint32_t i, INode *loop) {
+    FieldDclNode *field = (FieldDclNode*)nodesGet(run->fields, i);
+    EachPass *ep = (EachPass*)memAllocBlk(sizeof(EachPass));
+    ep->outer = errorEachPass;
+    ep->loop = loop;
+    ep->pass = i + 1;
+    ep->npasses = run->fields->used;
+    ep->var = &run->fe->var->namestr;
+    ep->item = &field->namesym->namestr;
+    return ep;
+}
+
+// Both forms of a loop: a statement's (argout NULL: the result is one block of the passes) and a
+// call's argument list (the passes' named arguments, and an undecided loop's copy, are added to *argout)
+static INode *fieldEachClone(CloneState *cstate, BlockNode *node, Nodes **argout) {
+    FieldEach *fe = node->fieldeach;
+    uint32_t dclpos = cloneDclPush();
+    FieldEachRun *run = fieldEachOpen(cstate, fe, (INode*)node);
+
+    if (run->undecided) {
+        // Still the parameter of an enclosing generic: copied whole, to be decided for its instances
+        for (int p = 0; p < FieldPropCount; ++p)
+            fe->propnames[p]->node = (INode*)fe->props[p];
+        BlockNode *copy = memAllocBlk(sizeof(BlockNode));
+        memcpy(copy, node, sizeof(BlockNode));
+        cloneDclSetMap((INode*)node, (INode*)copy);
+        FieldEach *nfe = memAllocBlk(sizeof(FieldEach));
+        memcpy(nfe, fe, sizeof(FieldEach));
+        nfe->subject = run->subj ? run->subj : fe->subject;
+        copy->fieldeach = nfe;
+        copy->stmts = cloneNodes(cstate, node->stmts);
+        fieldEachPassEnd(run);
+        cloneDclPop(dclpos);
+        if (argout) {
+            nodesAdd(argout, (INode*)copy);
+            return NULL;
+        }
+        return (INode*)copy;
     }
 
-    Name *name = fe->var;
-    for (uint32_t i = 0; i < fields->used; ++i) {
-        FieldDclNode *field = (FieldDclNode*)nodesGet(fields, i);
-        int errs = errors;
-        for (int p = 0; p < FieldPropCount; ++p) {
-            // Only what the body asks is looked for: a field with no region is no error unless '.region' is
-            // written, and the placeholder carries which were written
-            fe->propnames[p]->node = (INode*)fe->props[p];     // Own, until set below
-        }
-        for (int p = 0; p < FieldPropCount; ++p) {
-            if (!fe->used[p])
-                continue;
-            if (p == FieldPropOffset && sizeofLayoutRefused((INode*)node, subj, "#f.offset"))
-                break;
-            INode *answer = fieldPropAnswer(fe, p, field, node, !inodeIsPrivate((INode*)field), subj);
-            fe->propnames[p]->node = answer ? answer : (INode*)fe->props[p];
-        }
-        NameUseNode *member = newMemberUseNode(field->namesym);
-        fe->var->node = (INode*)member;
-        if (errors != errs)
+    BlockNode *result = memAllocBlk(sizeof(BlockNode));
+    memcpy(result, node, sizeof(BlockNode));
+    result->fieldeach = NULL;
+    result->stmts = newNodes(4);
+    cloneDclSetMap((INode*)node, (INode*)result);
+    if (run->failed) {
+        cloneDclPop(dclpos);
+        return (INode*)result;
+    }
+
+    for (uint32_t i = 0; i < run->fields->used; ++i) {
+        if (!fieldEachPassBegin(run, i, (INode*)node))
             break;
-        EachPass *ep = (EachPass*)memAllocBlk(sizeof(EachPass));
-        ep->outer = errorEachPass;
-        ep->loop = (INode*)node;
-        ep->pass = i + 1;
-        ep->npasses = fields->used;
-        ep->var = &name->namestr;
-        ep->item = &field->namesym->namestr;
+        EachPass *ep = fieldEachPassFor(run, i, (INode*)node);
+        if (argout) {
+            // One named argument per pass, the field's name given by '#f' in the template
+            EachPass *svpass = errorEachPass;
+            errorEachPass = ep;
+            INode *arg = cloneNode(cstate, nodesGet(node->stmts, 0));
+            errorEachPass = svpass;
+            if (arg)
+                nodesAdd(argout, arg);
+            continue;
+        }
         INode *pass = cloneNode(cstate, nodesGet(node->stmts, 0));
         if (pass && pass->tag == BlockTag) {
             ((BlockNode*)pass)->eachpass = ep;
             nodesAdd(&result->stmts, pass);
         }
     }
-    for (int p = 0; p < FieldPropCount; ++p)
-        fe->propnames[p]->node = oldhook[p];
-    fe->var->node = oldvar;
+    fieldEachPassEnd(run);
     cloneDclPop(dclpos);
-    return (INode*)result;
+    return argout ? NULL : (INode*)result;
+}
+
+INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
+    return fieldEachClone(cstate, node, NULL);
+}
+
+Nodes *cloneFieldEachArgs(CloneState *cstate, Nodes *args) {
+    Nodes *out = newNodes(args->avail);
+    INode **argp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argp)) {
+        if ((*argp)->tag == BlockTag && ((BlockNode*)*argp)->fieldeach)
+            fieldEachClone(cstate, (BlockNode*)*argp, &out);
+        else
+            nodesAdd(&out, cloneNode(cstate, *argp));
+    }
+    return out;
 }

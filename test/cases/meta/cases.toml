@@ -349,3 +349,89 @@ category = "reject"
 description = "A '#if' in a generic function decided by '#size(T)' of its type parameter is refused where it is written, with ErrorMetaLayoutConst"
 tags = ["parse", "typecheck"]
 diagnostics = 1
+
+# Step 5: '#each #f in #fields(T)' in a generic struct's braces makes fields and methods for each field of T
+[scenario.meta_gen_basic]
+category = "run"
+description = "'#each #f in #fields(T)' in a generic struct's braces: each instance holds the loop's fields and methods once per field of T, named '#f' or '#name(\"old_\", #f)', in the loop's order; the methods read and write the field of the same pass; two columns of one value are borrowed together, one &uni and one &imm"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_list]
+category = "run"
+description = "'pub #f: List[#f.type]' in a generic struct's braces: one List column per field of T, of that field's type, pushed to, read by a method of the same loop, indexed, and borrowed together"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_nested]
+category = "run"
+description = "a generic struct's loop reached through other generics: Cols[U] held by a generic struct, two generics up, passed through a generic function, and made for two different types"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_undecided]
+category = "run"
+description = "a loop kept undecided: a generic type in a generic module, its loop over its own still-open parameter, copied by the module's instance and decided by each instance of the copy, fields and methods; a loop over the module's parameter is decided by the module's instance"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_gen_reject_parse]
+category = "reject"
+description = "A generated member refused while the file is read: a loop in a type that is no generic struct, a member of the loop whose name is not made of '#f', '#name' malformed (one part, two strings, no comma, no ')'), a static in the loop, a '#each' inside it, '#name' outside any loop, and a '#each' over a list in a type's braces"
+tags = ["parse"]
+
+[scenario.meta_gen_reject_check]
+category = "reject"
+description = "An instance with generated members refused: a generated field named as a written one, two generated names that join to one word, a generated method named as a written one, and a type parameter that is no struct"
+tags = ["typecheck"]
+
+# A package's generic struct holding a '#each #f in #fields(T)': the include file keeps the loop whole
+# (and the file-level meta constant a body reads), and the program that imports it makes the members
+[scenario.meta_gen_include]
+category = "run"
+description = "A package's generic struct with fields and a method made for each field of T, and a method reading a module-level 'let #bumps', compiled into its include file; a program imports it, clones the struct for its own type, links and runs"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+[scenario.meta_each_module]
+category = "run"
+description = "'let #n' and 'let #xs' at a module's level: held to the end of the file, read by the functions and generics below as by one declared in its own body"
+tags = ["parse", "runtime"]
+
+[scenario.meta_each_reject_module]
+category = "reject"
+description = "A meta 'var' at a module's level, and a meta 'let' at a module's level whose value is no number or list"
+tags = ["parse"]
+
+[scenario.meta_each_arg_basic]
+category = "run"
+description = "'#each #f in #fields(T) { #f: value }' as a call's arguments: T built from another value's fields, by a generic function for two structs, from a narrower source, with a computed value, and with a field that moves (no double finalize)"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_undecided]
+category = "run"
+description = "a loop among a call's arguments kept undecided: a generic type and a generic function in a generic module, their loops over their own still-open parameter, copied by the module's instance and decided by each instance of the copy"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_private]
+category = "run"
+description = "a loop among a call's arguments written in the module that declares the type: it describes and names the private field, so the value is built whole"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.meta_each_arg_reject_private]
+category = "reject"
+description = "a loop among a call's arguments, written in another module than the type's, over a type with a private field and no '@reflect': refused at the loop, as a loop of statements is; and for a type that opted in, a private field is described but not given a value from outside (the constructor's own rule, twice)"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.meta_each_arg_reject_parse]
+category = "reject"
+description = "A '#each' among a call's arguments whose block is not one named argument '#f: value' (not named, '#f' alone, two arguments, no value), one named by a written name, and a '#each' over a list there or in any other expression position: each refused where it stands"
+tags = ["parse"]
+
+[scenario.meta_each_arg_reject_check]
+category = "reject"
+description = "A loop among a call's arguments is checked as the written-out arguments are, in the instance that has them: named arguments to a function are refused, and a value that does not suit its field is the construction's own error, both naming the pass"
+tags = ["typecheck"]
+
+[scenario.meta_each_arg_reject_type]
+category = "reject"
+description = "A loop among a call's arguments whose value does not suit a field: the construction's own error, in the instance that has it"
+tags = ["typecheck"]
