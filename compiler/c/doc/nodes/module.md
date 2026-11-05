@@ -2078,9 +2078,10 @@ assigned there at all.
 **A call `init` makes counts as a read of what the callee reads** (`modInitCall`,
 asked at the end of `fnCallFlow` while `init`'s own flow pass is the one walking:
 the pass records the function in `modInitFnCur`, so a callee checked on demand in
-the middle of it asks nothing). Where the call names one of the module's own
-functions — a plain `FnDclNode` owned by the module, with a Cone body, neither
-generic, `extern` nor a method — `modReadsFollow` reads its body with `siVisit`
+the middle of it asks nothing). Where the call is statically resolved to one of
+the module's own functions — an `FnDclNode` the module declares (`modDeclares`:
+owned by the module, or a method of a type the module declares), with a Cone
+body, not `extern` — `modReadsFollow` reads its body with `siVisit`
 (shapeinfer's tree walk) and looks for a name use of a global that is still
 unassigned *at that point of the walk* (`modGlobalUninit`, `VarInitialized`
 clear): the position is `init`'s flow state, so a global assigned before the call
@@ -2089,14 +2090,28 @@ met in the body to another such function is followed the same way, to any depth,
 and each function is entered once per query (`ModReadCtx.seen`), which ends a
 cycle. The target of an assignment is not a read; any other mention is, a field
 assignment or a borrow included. The refusal is `ErrorMove` at the call, naming
-the global and the function that reads it. **Not followed, and so passing:** a
-call to an `extern` function, to a method, to another module's function, to a
-generic function, through a function reference or any variable, or by a closure
-(a closure literal's body is not entered). `conec --report-trust` already lists
-the first kind, as its `extern` lines (`extern <file>:<line> <function>
-[<callee>]`, whole-program: those in a module's `init` and its helpers are this
-module's unfollowed externs); it lists no call through a function reference or a
-closure, which `trust` will have to take over with the rest.
+the global and the function that reads it. A method call is lowered before flow
+to a call whose `objfn` names the selected method, so it reaches `modInitCall`
+the way a function call does. A generic's call is substituted by type check to a
+use of its *instance* (`genericInstanceUse`), a clone of the template that keeps
+its owner and is type checked when made; `modReadsFollow` walks that instance's
+body, whose names are resolved, and refuses to follow a `FnDclNode` still
+carrying `genericinfo` (a template, which no substituted call names). A method of
+a generic type's instance is an ordinary method of that instance, owned by it.
+**Not followed, and so passing:** a call that is not statically resolved — a
+virtual call (`FlagVDisp`), a closure, a call through a function reference or any
+variable — and a call to an `extern` function; a closure literal's body is not
+entered. These pass until `trust` is built, a known gap it closes.
+`conec --report-trust` already lists the extern kind, as its `extern` lines
+(`extern <file>:<line> <function> [<callee>]`, whole-program: those in a module's
+`init` and its helpers are this module's unfollowed externs); it lists no virtual
+call, function-reference call or closure, which `trust` will have to take over
+with the rest. **Another module's function needs no following:** that module
+cannot read this module's globals without importing it, which would be a cycle of
+modules, and that is refused. A helper's own assignment to a global does not
+count as `init` setting it (the target of an assignment is not a read, and only
+`init`'s flow records a set), so a helper that sets a global and then reads it,
+called before `init` sets it, is refused.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
 Where any global the module declares has anything to do as it dies
@@ -3091,8 +3106,8 @@ a reference names is a type, and that is what is built.
 - **An `init`'s globals are cleared only round its own flow pass.** A function
   `init` calls is itself checked with the module's globals holding values; what
   it reads is judged at the call in `init` (`modInitCall`), through the module's
-  own functions. A call that cannot be followed (an extern, a function
-  reference, a method) is not, and reading a global early that way reads
+  own functions and methods. A call that cannot be followed (an extern, a
+  function reference, a virtual call, a closure) is not, and reading a global early that way reads
   zeroed storage.
 - **Where a module's defaults are taken decides who sees them.** A copy made at
   the end of the module's fold pass is read by every module folding from it;

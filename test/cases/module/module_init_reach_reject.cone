@@ -3,12 +3,24 @@
 // is refused where 'init' calls the helper before it has set the global. The
 // test is positional, as 'init''s own reads are: after the set the same call is
 // fine, and a cycle of helpers is followed once round and ends.
+//
+// A call that resolves statically is followed, whatever it calls: a method of a
+// type the module declares, a generic function and a generic method of the
+// module (the instance's body is read, not the template's), and a method of a
+// generic type's instance. A helper's own assignment does not count as 'init'
+// setting the global, so a helper that sets a global and then reads it, called
+// before 'init' sets it, is refused too.
 
 mod module_init_reach_reject;
 
 let direct: i64;
 let deep: i64;
 let cyc: i64;
+let meth: i64;
+let gen: i64;
+let genm: i64;
+let inst: i64;
+var sets: i64;
 
 // A helper that reads a global itself
 fn readDirect() i64 { direct }
@@ -24,6 +36,28 @@ fn ping(n: i64) i64 {
 }
 fn pong(n: i64) i64 { ping(n) }
 
+// A method of a type the module declares
+struct Counter {
+  pub n: i64;
+  pub fn readMeth(self: &) i64 { meth + n }
+  pub fn readGenm[T](self: &, x: T) i64 { genm + n }
+}
+
+// A generic function of the module
+fn readGen[T](x: T) i64 { gen }
+
+// A generic type's method, reached through an instance
+struct Cell[T] {
+  pub v: T;
+  pub fn readInst(self: &) i64 { inst }
+}
+
+// A helper that sets a global and then reads it: its assignment is not 'init''s
+fn setThenRead() i64 {
+  sets = 7i64;
+  sets
+}
+
 fn @initpure init() {
   let a = readDirect();       //~ ErrorMove:21 "has not been initialized"
   direct = 1i64;
@@ -34,4 +68,20 @@ fn @initpure init() {
   let e = ping(3i64);         //~ ErrorMove:15 "has not been initialized"
   cyc = 4i64;
   let f = ping(3i64);
+  let k = Counter(1i64);
+  let g = k.readMeth();       //~ ErrorMove:12 "has not been initialized"
+  meth = 5i64;
+  let h = k.readMeth();
+  let i = readGen(3i64);      //~ ErrorMove:18 "has not been initialized"
+  gen = 6i64;
+  let j = readGen(3i64);
+  let l = k.readGenm(2i64);   //~ ErrorMove:12 "has not been initialized"
+  genm = 8i64;
+  let m = k.readGenm(2i64);
+  let cell = Cell[i64](1i64);
+  let o = cell.readInst();    //~ ErrorMove:15 "has not been initialized"
+  inst = 9i64;
+  let p = cell.readInst();
+  let q = setThenRead();      //~ ErrorMove:22 "has not been initialized"
+  sets = 10i64;
 }

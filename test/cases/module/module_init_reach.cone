@@ -2,9 +2,14 @@
 // once those are set: a read counts at the call, through every function of the
 // module the callee calls in turn, and is judged by position. 'last' is set
 // after the calls that are made before it, none of which reads it, so it is not
-// counted against them. A call the compiler cannot follow (a function reference)
-// passes; the function it reaches here reads 'late' before 'init' has set it, and
-// reads the zeroed storage a global holds until then.
+// counted against them. A method of a type the module declares and a generic
+// function of the module are followed the same way, and read after the set.
+//
+// A call the compiler does not follow passes: a function reference, and a
+// virtual call. This is a known gap that 'trust' closes. Here the function
+// reached through the reference reads 'late', and the method reached virtually
+// reads 'lateV', before 'init' has set them: each reads the zeroed storage a
+// global holds until then, and 0 is printed.
 
 mod module_init_reach;
 
@@ -13,10 +18,13 @@ import stdio use *;
 let table: i64;
 let last: i64;
 let late: i64;
+let lateV: i64;
 let outA: i64;
 let outB: i64;
 let outC: i64;
 let outD: i64;
+let outE: i64;
+let outF: i64;
 
 fn lookup() i64 { table * 10i64 }
 fn viaOne() i64 { lookup() + 1i64 }
@@ -33,11 +41,31 @@ fn readLast() i64 { last }
 fn readsLate() i64 { late }
 fn callThrough(f: &fn() i64) i64 { f() }
 
+// A method and a generic function that read 'table', called after the set
+struct Probe {
+  pub k: i64;
+  pub fn scaled(self: &) i64 { table * k }
+}
+fn tableOf[T](x: T) i64 { table }
+
+// A virtual call is not followed: the method it reaches reads 'lateV'
+trait Source { pub fn fetch(self: &) i64; }
+struct Lazy is Source {
+  pub n: i64;
+  pub fn fetch(self: &) i64 { lateV }
+}
+fn fetchVia(s: &<Source) i64 { s.fetch() }
+
 fn @initpure init() {
   table = 4i64;
   outA = viaTwo();
   outB = ping(3i64);
   outD = callThrough(&readsLate);
+  let p = Probe(3i64);
+  outE = p.scaled() + tableOf(7i64);
+  let lz = Lazy(1i64);
+  outF = fetchVia(&lz);
+  lateV = 6i64;
   last = 9i64;
   late = 5i64;
   outC = readLast() + readsLate();
@@ -48,6 +76,8 @@ fn main() i32 {
   printInt(outA); printStr(" ");
   printInt(outB); printStr(" ");
   printInt(outC); printStr(" ");
-  printInt(outD); printStr("\n");
+  printInt(outD); printStr(" ");
+  printInt(outE); printStr(" ");
+  printInt(outF); printStr("\n");
   0i32
 }

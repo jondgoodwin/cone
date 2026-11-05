@@ -1530,14 +1530,29 @@ typedef struct {
 
 static int modReadsVisit(INode *node, void *vctx);
 
-// The body of one of the module's own functions: a function with a body written
-// in Cone, owned by the module. A call to anything else (an extern, a method, a
-// function of another module, a function reference) is not followed
+// Does the module declare this function: as one of its own, or as a method of a
+// type it declares? An instance of a generic function or method it declares is
+// owned the same way, being a clone of it
+static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
+    INode *owner = fn->dclinfo.owner;
+    if (owner == (INode*)mod)
+        return 1;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && inodeGetOwner(owner) == (INode*)mod;
+}
+
+// The body of one of the module's own functions, followed wherever the call to
+// it is statically resolved: a function, or a method of a type the module
+// declares, with a body written in Cone, and an instance of a generic of either
+// (the instance's body, whose names are resolved, never the template's). Not
+// followed: an extern, a generic still uninstantiated, a function of another
+// module (it cannot read this module's globals without a cycle, which is
+// refused), and what is not statically resolved -- a virtual call, a closure, a
+// function reference -- which passes until 'trust'
 static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
     if (dcl == NULL || dcl->tag != FnDclTag)
         return 0;
     FnDclNode *fn = (FnDclNode*)dcl;
-    if (fn->dclinfo.owner != (INode*)ctx->mod || fn->genericinfo != NULL || (fn->flags & (FlagExtern | FlagMethFld))
+    if (!modDeclares(ctx->mod, fn) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
     INode **seenp;
@@ -1574,7 +1589,7 @@ static int modReadsVisit(INode *node, void *vctx) {
     }
     case FnCallTag: {
         INode *objfn = ((FnCallNode*)node)->objfn;
-        if (objfn != NULL && isNameUseNode(objfn))
+        if (objfn != NULL && isNameUseNode(objfn) && !(((FnCallNode*)node)->flags & FlagVDisp))
             return modReadsFollow(ctx, ((NameUseNode*)objfn)->dclnode);
         return 0;
     }
@@ -1591,7 +1606,7 @@ static int modReadsVisit(INode *node, void *vctx) {
 void modInitCall(FlowState *fstate, FnCallNode *call) {
     if (modInitCur == NULL || modInitFnCur == NULL || fstate->fnsig != (FnSigNode*)modInitFnCur->vtype)
         return;
-    if (call->objfn == NULL || !isNameUseNode(call->objfn))
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || (call->flags & FlagVDisp))
         return;
     ModReadCtx ctx = { modInitCur, newNodes(8), NULL, NULL, NULL, NULL };
     if (!modReadsFollow(&ctx, ((NameUseNode*)call->objfn)->dclnode))
