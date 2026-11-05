@@ -3,7 +3,7 @@
 // - the columns are named as T's fields are and are Lists, so 'ps.x[i]' reads and writes one
 //   element of the field, and a column grows 4, 8, 16, 32 as a List does;
 // - 'len' is the length of the columns, 'push' adds one value to each, 'get(i)' builds the row
-//   from each column's value at i (T is Copy);
+//   from each column's value at i and answers it as an Option (T is Copy), None past the end;
 // - a type with a field that moves (a String, a finalizer) is built and read by column.
 
 mod soalist;
@@ -76,7 +76,7 @@ fn rows() {
   expectInt(i64.from(ps.x[1usize]), 7, "x written");             // 11
 
   // A whole row: row 1 is (7, 20, false, at 2,3)
-  let r = ps.get(1usize);
+  let r = ps.get(1usize).unwrap();
   expectInt(i64.from(r.x), 7, "row 1 x");                        // 12
   expectInt(r.y, 20, "row 1 y");                                 // 13
   expectBool(r.live, false, "row 1 live");                       // 14
@@ -106,10 +106,10 @@ fn grows() {
   var k = 0usize;
   while k < ps.len() { sum = sum + ps.y[k]; k = k + 1usize; }
   expectInt(sum, 2470, "sum of squares");                        // 23
-  expectInt(ps.get(13usize).y, 169, "row 13 y");                 // 24
-  expectBool(ps.get(13usize).live, false, "row 13 odd");         // 25
-  expectBool(ps.get(18usize).live, true, "row 18 even");         // 26
-  expectInt(i64.from(ps.get(19usize).at.y), 19, "row 19 at.y");  // 27
+  expectInt(ps.get(13usize).unwrap().y, 169, "row 13 y");        // 24
+  expectBool(ps.get(13usize).unwrap().live, false, "row 13 odd"); // 25
+  expectBool(ps.get(18usize).unwrap().live, true, "row 18 even"); // 26
+  expectInt(i64.from(ps.get(19usize).unwrap().at.y), 19, "row 19 at.y"); // 27
 }
 
 // A move type's row is built and read by column
@@ -140,8 +140,26 @@ fn dies() {
   expectInt(log, 123, "death finalizes first to last");          // 33
 }
 
+// 'get' is the checked read: None past the end, and the last row at len - 1. Two rows (4, 40), (5, 50)
+fn getPast() {
+  var ps = SoaList[Pt]();
+  expectBool(ps.get(0usize) is None, true, "get on empty is None");       // 34
+  ps.push(Pt(4, 40));
+  ps.push(Pt(5, 50));
+  expectBool(ps.get(2usize) is None, true, "get at len is None");         // 35
+  expectBool(ps.get(100usize) is None, true, "get far past is None");     // 36
+  match ps.get(1usize) {
+    case let Some(p) {
+      expectInt(i64.from(p.x), 5, "last row x");                          // 37
+      expectInt(i64.from(p.y), 50, "last row y");                         // 38
+    }
+    case is None { expect(false, "the last row is there"); }              // (not reached)
+  }
+}
+
 fn main() i32 {
   rows();
+  getPast();
   grows();
   moves();
   dies();

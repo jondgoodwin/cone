@@ -1,8 +1,8 @@
 // The collections package: a growable list, an owned string, a dictionary of
 // any keys that are Hash (and an ordered one, which visits in insertion order),
 // a set, a double-ended queue, and a list held as one column per field of its element
-// ('SoaList'), each holding its elements in one block of memory
-// that it gets, grows and gives back through a region it points to (core's
+// ('SoaList'), each holding its elements in one block of memory (a 'SoaList', one block for
+// each column) that it gets, grows and gives back through a region it points to (core's
 // 'MemRegion'; the heap's, which calls the C allocator, unless it is made in
 // another). Built as Congo needs them, and no further.
 //
@@ -714,10 +714,13 @@ pub struct ListDrain['a, T] is Iterator[T] {
 // The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
 // must be a struct, and its fields public, or all of them visible to this module (a type from
 // another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty' or 'get'
-// clashes with the method of that name and is refused (1596).
+// clashes with the method of that name and is refused (ErrorDupName, 1011, with ErrorFldArgs
+// after it at this file's own uses of 'self.len'; not the 1596 of two generated members).
 //
 // A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
 // taken apart field by field, and a field of an owned value that moves cannot be moved out of it.
+// 'get(i)' is the checked read, as a List's is, but it answers an 'Option[T]' holding a value, not
+// a reference, since no contiguous row exists to point at: 'None' past the end.
 // A column is a List, so 'ps.pos[i]' reads and writes that element of the field, 'ps.pos.push(v)'
 // grows that column alone, and a move type's rows are built and read by column ('ps.name.push(s)',
 // 'ps.name[i]'); whoever pushes to columns one at a time keeps them the same length ('len' reads
@@ -747,10 +750,10 @@ pub struct SoaList[T] is Default {
     }
   }
 
-  // The row at index, built from each column's value there. An index out of range is a panic,
-  // as a column's own is
-  pub fn get(self: &, index: usize) T where T is Copy {
-    T(#each #f in #fields(T) { #f: self.#f[index] })
+  // The row at index, built from each column's value there, or None when index is past the end
+  pub fn get(self: &, index: usize) Option[T] where T is Copy {
+    if index >= self.len() { return None; }
+    Some[T](T(#each #f in #fields(T) { #f: self.#f[index] }))
   }
 }
 

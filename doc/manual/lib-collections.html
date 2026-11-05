@@ -425,7 +425,9 @@ fn main() i32 {
 		A loop that touches one field reads one packed column, and two columns may be borrowed together, each with its own
 		permission, as two fields of a struct are. It is written in Cone, over the compile-time walk of
 		<span class="pre">T</span>'s fields (<a href="mod-generativity.html#metagen">Members made from a type's fields</a>),
-		so <span class="pre">T</span> must be a struct whose fields are public.</p>
+		so <span class="pre">T</span> must be a struct whose fields are public, or all visible to the module that makes
+		the <span class="pre">SoaList</span> (a type from another module opts in with
+		<span class="pre">@reflect</span>).</p>
 <pre>
 struct Particle { pub x: i32; pub y: i64; }
 
@@ -434,13 +436,15 @@ fn main() {
   ps.push(Particle(1, 10i64));
   ps.push(Particle(2, 20i64));
   ps.x[1usize] = 7;                    // a column is a List: index it, write it
-  let p = ps.get(1usize);              // a whole row, built from each column: Particle(7, 20)
+  let p = ps.get(1usize).unwrap();     // a whole row, built from each column: Particle(7, 20)
   print &lt;- ps.len(), " ", ps.y[0usize], " ", p.x, "\n";   // 2 10 7
 }
 </pre>
 	<p><span class="pre">push(row)</span> and <span class="pre">get(i)</span> exist where <span class="pre">T</span> is
 		<span class="pre">Copy</span>, because a row is taken apart field by field and a field of an owned value that
-		moves cannot be moved out of it. A <span class="pre">T</span> with a field that moves (a
+		moves cannot be moved out of it. <span class="pre">get(i)</span> is the checked read, as a list's is: it answers
+		an <span class="pre">Option[T]</span>, <span class="pre">None</span> past the end. It holds the row by value, not
+		a reference, since no contiguous row exists to point at. A <span class="pre">T</span> with a field that moves (a
 		<span class="pre">String</span>, a type with a <span class="pre">final</span>) is built and read by column,
 		<span class="pre">ps.name.push(s)</span> and <span class="pre">ps.name[i]</span>, and whoever pushes to columns
 		one at a time keeps them the same length; its death finalizes every column's values. <span class="pre">len</span>
