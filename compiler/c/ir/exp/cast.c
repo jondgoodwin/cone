@@ -135,7 +135,7 @@ static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
 // written with ('E['=a]'): the variant's fields are the enum's, so a key it holds is of the
 // brand the value carries, not of a brand not known. A generic's type arguments come with
 // the instance (the variant is already its own).
-static void castPatternAdoptLifetimes(NameUseNode *name, INode *exp, StructNode *enumdcl) {
+static void castPatternAdoptLifetimes(NameUseNode *name, INode *exp) {
     if (!lifeInvariantSeen || name->lifeuse != NULL)
         return;
     INode *type = ((IExpNode*)exp)->vtype;
@@ -177,7 +177,7 @@ static int castPatternBindName(CastNode *node, int report) {
         INode *variant = castEnumVariant(enumdcl, name->namesym);
         if (variant && !hasargs) {
             name->dclnode = variant;
-            castPatternAdoptLifetimes(name, node->exp, enumdcl);
+            castPatternAdoptLifetimes(name, node->exp);
         }
         else if (name->dclnode == NULL) {
             if (report && variant)
