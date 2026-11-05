@@ -5596,8 +5596,12 @@ void structMakeVtable(StructNode *node) {
         // the trait unusable behind a reference. Nor has a default that exists only
         // where a condition holds (`where T is Integer`): a type that lacks it, as the
         // item type decides, would leave the slot unfilled. Nor has an `inline` one:
-        // it has no symbol for a slot to point at
-        if (meth->value && (meth->genericinfo || meth->where || (meth->flags & FlagInline)))
+        // it has no symbol for a slot to point at. (An enum's own 'inline' method has
+        // one: a call on a value of the enum goes through the vtable by its tag, so
+        // the slot is there, each variant's copy filled by a function that expands it:
+        // genlVtableInlineFn)
+        if (meth->value && (meth->genericinfo || meth->where
+            || ((meth->flags & FlagInline) && !(node->flags & EnumType))))
             continue;
         if (!inodeIsPrivate((INode*)meth)) {
             // A vtable slot holds one machine signature and a generic method has
