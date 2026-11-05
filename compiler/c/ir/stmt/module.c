@@ -1513,8 +1513,112 @@ void modInitNoteSet(VarDclNode *var) {
     nodesAdd(&modInitCur->setorder, (INode*)var);
 }
 
-uint16_t *modInitFlowBegin(ModuleNode *mod) {
+// The 'init' function itself, so that only its own flow walk checks its calls
+static FnDclNode *modInitFnCur = NULL;
+
+// What reading a callee's body (and, through it, the bodies of the module's own
+// functions it calls) has to answer: does it read a global of the module that
+// 'init' has not yet set at the call being walked?
+typedef struct {
+    ModuleNode *mod;
+    Nodes *seen;            // The module's functions whose bodies were entered: a cycle among them ends here
+    INode *skip;            // The name an assignment stores to, which is not a read
+    VarDclNode *hit;        // The first global found that 'init' has not set yet, or NULL
+    FnDclNode *hitfn;       // The function whose body reads it
+    FnDclNode *cur;         // The function whose body is being read
+} ModReadCtx;
+
+static int modReadsVisit(INode *node, void *vctx);
+
+// Does the module declare this function: as one of its own, or as a method of a
+// type it declares? An instance of a generic function or method it declares is
+// owned the same way, being a clone of it
+static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
+    INode *owner = fn->dclinfo.owner;
+    if (owner == (INode*)mod)
+        return 1;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && inodeGetOwner(owner) == (INode*)mod;
+}
+
+// The body of one of the module's own functions, followed wherever the call to
+// it is statically resolved: a function, or a method of a type the module
+// declares, with a body written in Cone, and an instance of a generic of either
+// (the instance's body, whose names are resolved, never the template's). Not
+// followed: an extern, a generic still uninstantiated, a function of another
+// module (it cannot read this module's globals without a cycle, which is
+// refused), and what is not statically resolved -- a virtual call, a closure, a
+// function reference -- which passes until 'trust'
+static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)dcl;
+    if (!modDeclares(ctx->mod, fn) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
+        || fn->value == NULL || fn->value->tag != BlockTag)
+        return 0;
+    INode **seenp;
+    uint32_t cnt;
+    for (nodesFor(ctx->seen, cnt, seenp)) {
+        if (*seenp == dcl)
+            return 0;
+    }
+    nodesAdd(&ctx->seen, dcl);
+    FnDclNode *svcur = ctx->cur;
+    ctx->cur = fn;
+    int found = siVisit(fn->value, modReadsVisit, ctx);
+    ctx->cur = svcur;
+    return found;
+}
+
+static int modReadsVisit(INode *node, void *vctx) {
+    ModReadCtx *ctx = (ModReadCtx*)vctx;
+    switch (node->tag) {
+    case AssignTag:
+        // 'g = v' stores to g, as 'init' itself may; its other operands are read
+        ctx->skip = ((AssignNode*)node)->lval;
+        return 0;
+    case NameUseTag: {
+        INode *dcl = ((NameUseNode*)node)->dclnode;
+        if (node == ctx->skip || dcl == NULL || dcl->tag != VarDclTag)
+            return 0;
+        VarDclNode *var = (VarDclNode*)dcl;
+        if (var->dclinfo.owner != (INode*)ctx->mod || !modGlobalUninit(dcl) || (var->flowtempflags & VarInitialized))
+            return 0;
+        ctx->hit = var;
+        ctx->hitfn = ctx->cur;
+        return 1;
+    }
+    case FnCallTag: {
+        INode *objfn = ((FnCallNode*)node)->objfn;
+        if (objfn != NULL && isNameUseNode(objfn) && !(((FnCallNode*)node)->flags & FlagVDisp))
+            return modReadsFollow(ctx, ((NameUseNode*)objfn)->dclnode);
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A call 'init' makes is walked by flow: where it calls one of the module's own
+// functions, what that function reads counts as 'init' reading it at this point,
+// through every function of the module it calls in turn. Positional, as 'init''s
+// own reads are: only a global not yet set where the call stands is refused, and
+// a cycle of helpers ends where it comes back to one already entered
+void modInitCall(FlowState *fstate, FnCallNode *call) {
+    if (modInitCur == NULL || modInitFnCur == NULL || fstate->fnsig != (FnSigNode*)modInitFnCur->vtype)
+        return;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || (call->flags & FlagVDisp))
+        return;
+    ModReadCtx ctx = { modInitCur, newNodes(8), NULL, NULL, NULL, NULL };
+    if (!modReadsFollow(&ctx, ((NameUseNode*)call->objfn)->dclnode))
+        return;
+    errorMsgNode((INode*)call, ErrorMove,
+        "This call reads global %s, in %s, which has not been initialized: 'init' has not set it by this point, so there is no value to use.",
+        &ctx.hit->namesym->namestr, &ctx.hitfn->namesym->namestr);
+}
+
+uint16_t *modInitFlowBegin(ModuleNode *mod, FnDclNode *initfn) {
     modInitCur = mod;
+    modInitFnCur = initfn;
     mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
@@ -1533,6 +1637,7 @@ uint16_t *modInitFlowBegin(ModuleNode *mod) {
 
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
     modInitCur = NULL;
+    modInitFnCur = NULL;
     INode **nodesp;
     uint32_t cnt;
     uint32_t pos = 0;
