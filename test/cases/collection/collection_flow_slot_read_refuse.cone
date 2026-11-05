@@ -1,0 +1,34 @@
+// Bug 49. What the copy of a borrow out of a list's slot (collection_flow_slot_read_success) must
+// not loosen: a reference to the slot itself, '&mut b.kids[i]', held across a push to the list, and
+// a reference into a value a list holds by value, held across a push, are still refused (1339).
+
+mod collection_flow_slot_read_refuse;
+
+import collections use *;
+
+struct Node { pub val: i64; pub kids: List[&mut Node]; }
+struct Cell { pub val: i64; }
+struct Holder { pub cells: List[Cell]; }
+
+// A reference to the slot itself
+fn slot(b: &mut Node, c: &mut Node) {
+  let s = &mut b.kids[0usize];
+  b.kids.push(c);   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  *s = c;
+}
+
+// A reference into a value stored by value in the list
+fn byValue(h: &mut Holder) {
+  let r = &mut h.cells[0usize];
+  h.cells.push(Cell(1));   //~ ErrorShapeReshape "could change the shape of a 'List'"
+  r.val = 2;
+}
+
+// The slot reference held in a name and read through there (not in one expression) is as it was,
+// refused where the copy is handed to the push
+fn slotKept(b: &mut Node, sc: &mut Node) {
+  let slot = &mut b.kids[0usize];
+  let s = *slot;
+  b.kids.push(s);   //~ ErrorSelfStore "may not keep a borrow of its own storage"
+  *slot = s;
+}
