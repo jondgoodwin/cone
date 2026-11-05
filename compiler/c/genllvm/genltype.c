@@ -104,6 +104,85 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
     return fn;
 }
 
+// The function that fills a slot with an 'inline' method. An inline method has no
+// symbol of its own, since each caller expands its body, but a slot holds an
+// address. So the slot gets a function of its own whose body is that expansion:
+// it takes the slot's parameters, expands the method over them as a call
+// would, and returns what the expansion gives. Like a thunk, it is a function
+// in everything but name, and generated as one nested in whatever is being
+// generated, so the generator's state for that is set aside around it.
+static LLVMValueRef genlVtableInlineFn(GenState *gen, Vtable *vtable, VtableImpl *impl, unsigned int pos,
+        FnDclNode *meth) {
+    char symbol[2048];
+    FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, pos);
+    LLVMTypeRef fntype = genlVtableSlotFnType(gen, slot);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, nameVtableThunk(symbol, impl->structdcl, vtable->trait, slot->namesym), fntype);
+    genlLinkage(fn, NULL, GenlDefined);
+    genlComdat(gen, fn);
+
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    INode *svfnblock = gen->fnblock;
+    FnDclNode *svfndcl = gen->fndcl;
+    int svexitzero = gen->exitzero;
+    uint32_t svtempbase = gen->tempbase;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
+    Nodes *svseams = gen->seams;
+    gen->seams = NULL;
+    gen->tempbase = gen->tempcnt;
+    gen->fn = fn;
+    // Not the method's own block: its returns are breaks out of the expansion
+    gen->fnblock = NULL;
+    gen->fndcl = meth;
+    gen->exitzero = 0;
+
+    if (gen->opt->debuginfo) {
+        LLVMMetadataRef difile = genlDiFile(gen, (INode*)meth);
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, difile,
+            symbol, strlen(symbol), symbol, strlen(symbol), difile, meth->linenbr, sptype, 1, 1, meth->linenbr, 0, 0);
+        LLVMSetSubprogram(fn, sp);
+    }
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    if (gen->opt->debuginfo) {
+        unsigned col = meth->srcp && meth->linep ? (unsigned)(meth->srcp - meth->linep) : 0;
+        LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, meth->linenbr, col, LLVMGetSubprogram(fn), NULL);
+        LLVMSetCurrentDebugLocation2(gen->builder, loc);
+    }
+    gen->allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+
+    unsigned int argcnt = LLVMCountParams(fn);
+    LLVMValueRef *args = (LLVMValueRef *)memAllocBlk((argcnt ? argcnt : 1) * sizeof(LLVMValueRef));
+    for (unsigned int argi = 0; argi < argcnt; ++argi)
+        args[argi] = LLVMGetParam(fn, argi);
+    LLVMValueRef ret = genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, argcnt, args, NULL);
+    if (LLVMGetTypeKind(LLVMGetReturnType(fntype)) == LLVMVoidTypeKind)
+        LLVMBuildRetVoid(gen->builder);
+    else if (ret == NULL)
+        LLVMBuildRet(gen->builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
+    else
+        LLVMBuildRet(gen->builder, ret);
+    genlRootFrame(gen);
+
+    if (LLVMGetInstructionParent(gen->allocaPoint))
+        LLVMInstructionEraseFromParent(gen->allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->fnblock = svfnblock;
+    gen->fndcl = svfndcl;
+    gen->exitzero = svexitzero;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    gen->seams = svseams;
+    genlRootsRestore(gen, &svroots);
+    return fn;
+}
+
 // Generate a specific vtable value for some struct
 static void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef vtableRef) {
     if (impl->llvmvtablep)
@@ -140,7 +219,7 @@ static void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVM
             // implementer declared later in the file has no symbol yet. Asking
             // is idempotent, so a method already declared is untouched.
             FnDclNode *meth = (FnDclNode *)*nodesp;
-            if (meth->llvmvar == NULL)
+            if (meth->llvmvar == NULL && !(meth->flags & FlagInline))
                 genlGloFnName(gen, meth);
             LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
             // A slot a folded method fills holds a thunk that shifts the
@@ -148,6 +227,8 @@ static void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVM
             Nodes *path = impl->foldpaths ? (Nodes*)nodesGet(impl->foldpaths, pos) : NULL;
             if (path)
                 val = genlVtableThunk(gen, vtable, impl, pos, meth, path);
+            else if (meth->flags & FlagInline)
+                val = genlVtableInlineFn(gen, vtable, impl, pos, meth);
             else
                 val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
         }
