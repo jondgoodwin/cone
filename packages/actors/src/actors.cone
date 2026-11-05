@@ -4822,7 +4822,7 @@ struct StatSlot {
   pub parks: u64;               // sleeps on the park word
   pub reparks: u64;             // returns from the wait unchosen, slept again at once
   pub marksSpent: u64;          // parks left with work seen after a notify had marked the worker
-  pub gap: Array[u8, 48];       // a slot is two cache lines, so that no two workers' slots share one
+  pub gap: Array[u8, 56];       // a slot is two cache lines, so that no two workers' slots share one (startWorkers checks)
 }
 
 let statSlots: Atomic[usize];   // the address of the first slot, or 0 before the workers have started
@@ -4898,13 +4898,17 @@ fn startWorkers() {
   if mem.sizeof[CancelGroup]() > 16usize || mem.alignof[CancelGroup]() > 8usize {
     die("actors: a CancelGroup no longer fits a slot's smallest payload");
   }
+  // A stats slot's gap is sized by hand, so a new count must shrink it
+  if mem.sizeof[StatSlot]() != 128usize {
+    die("actors: a stats slot is no longer two cache lines");
+  }
   let chosenN = chosenWorkers.load();
   let n = if chosenN == 0u32 {thread.parallelism()} else {chosenN};
   let s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
   let ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
   let ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
-  // The stats slots, zeroed, a cache line each (the block is 16-aligned, so
-  // one more line is allocated and the first slot is rounded up to a line).
+  // The stats slots, zeroed, two cache lines each (the block is 16-aligned, so
+  // one more slot is allocated and the first is rounded up to a slot's size).
   // Never freed: stats() reads them after the stop has freed the rest.
   let slotBytes = mem.sizeof[StatSlot]();
   let block = libc.calloc(usize.from(n) + 1usize, slotBytes) as usize;
