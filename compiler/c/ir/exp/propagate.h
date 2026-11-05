@@ -96,7 +96,7 @@ INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk);
 // 'Error: ', E's 'report(out)' (the text and each cause under it: INTERIM until
 // the display design) and a newline to stderr, through conestd's
 // 'cone_mainErrorRecord'. An E that does not meet Error is printed by
-//     let -msg = -err.report() (or message()); -mainError(-msg.view())
+//     let -msg = -err.report(); -mainError(-msg.view())
 // where '-mainError' is conestd's 'cone_mainError(msg: &str)', declared here,
 // which writes 'Error: <text>' to stderr; the method gives a String (its view is
 // lent) or a '&str' (passed as it is). E is asked by name; one with neither is

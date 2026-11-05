@@ -91,7 +91,7 @@
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
 //     addr.text()  addr.toText(out)     the written form, as a String / sent to a '$"..."' or a print
 //   IoError: e.kind() (the ioerror package's IoErrorKind: NotFound, ConnectionRefused, ...,
-//     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), e.message(),
+//     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), String() <- e,
 //     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
 //     IoError(code)  IoError.cancelled()  IoError.timedOut()  IoError.truncated()  IoError.aborted()
 //     IoError.ofKind(kind)  e.describe()
@@ -803,22 +803,17 @@ pub struct IoError is Error, Sendable {
   // C library's (strerror, gai_strerror) on Linux; a cancel's and a
   // deadline's error says so; a number the system has no text for, its
   // 'describe'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    if origin == ErrorSource.Cancel {
-      var s = String();
-      s.append("cancelled");
-      return s;
-    }
-    if origin == ErrorSource.Deadline {
-      var s = String();
-      s.append("deadline passed");
-      return s;
-    }
-    if origin == ErrorSource.Made {return String() <- made;}
+  pub fn toText(self: &, out: &uni TextOut) {
+    if origin == ErrorSource.Cancel { out <- "cancelled"; return; }
+    if origin == ErrorSource.Deadline { out <- "deadline passed"; return; }
+    if origin == ErrorSource.Made { out <- made; return; }
     let text = systemText(code);
-    if text.isEmpty() {return self.describe();}
-    text
+    if text.isEmpty() {
+      let words = self.describe();
+      out <- words.view();
+      return;
+    }
+    out <- text.view();
   }
 
   // The kind in words, then the system's number and its text when it gave
