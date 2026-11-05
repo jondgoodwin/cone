@@ -5979,6 +5979,9 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
+    // Where this walk is a module's 'init', what a function of the module it
+    // calls reads counts as read here
+    modInitCall(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value
     // global, which no type of it shows: what it carries is the loan walk's
     // to check (pwStaticArgs)

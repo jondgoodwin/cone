@@ -89,6 +89,7 @@
 //     c.outcome() c.isDone() c.count() c.bufLen() c.chainBack() c.record()   (ANSWERS)
 //   Outcome.Done(n)  Outcome.Failed(code)  Outcome.Cancelled  Outcome.TimedOut
 //   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
+//     addr.text()  addr.toText(out)     the written form, as a String / sent to a '$"..."' or a print
 //   IoError: e.kind() (the ioerror package's IoErrorKind: NotFound, ConnectionRefused, ...,
 //     Cancelled, TimedOut, Truncated, Other), e.code (the system's own number), e.message(),
 //     e.isCancelled() e.isTimedOut() e.isTruncated()                       (ERRORS)
@@ -814,7 +815,7 @@ pub struct IoError is Error, Sendable {
       s.append("deadline passed");
       return s;
     }
-    if origin == ErrorSource.Made {return String.from(made.name());}
+    if origin == ErrorSource.Made {return String() <- made;}
     let text = systemText(code);
     if text.isEmpty() {return self.describe();}
     text
@@ -828,7 +829,8 @@ pub struct IoError is Error, Sendable {
   // says its kind alone, and one the system has no text for says its number
   // alone: 'other, OS error 12345'
   pub fn describe(self: &) String {
-    var out = String.from(self.kind().name());
+    let kindNow = self.kind();
+    var out = String() <- kindNow;
     if code == 0u32 {return out;}
     out.append(", OS error ");
     if (#if #os != .windows {code >= gaiFloor} #else {false}) {out.appendInt(i64.from(gaiOf(code)));} else {out.appendUInt(u64.from(code));}
@@ -952,7 +954,9 @@ pub struct SocketAddr {
   }
 
   // As text: '127.0.0.1:8080', '[2001:db8:0:0:0:0:0:1]:8080' (each group
-  // in hexadecimal without leading zeros; no '::' shortening)
+  // in hexadecimal without leading zeros; no '::' shortening). 'toText' sends
+  // the same text, so '$"{addr}"' and 'print <- addr' take the address
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.text().view(); }
   pub fn text(self: &) String {
     var out = String();
     if self.isV6() {
