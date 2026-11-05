@@ -78,6 +78,10 @@ uint16_t iexpNarrowerScope(uint16_t scope, INode *exp);
 // Return 1 if type "matches", 0 otherwise
 int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
 
+// iexpTypeCheckCoerce for a type a body states ('let x: T = ..', an assignment's
+// target): a generic call whose value is wanted as it may take its brands
+int iexpTypeCheckCoerceStated(TypeCheckState *pstate, INode *to, INode **from);
+
 // iexpTypeCheckCoerce for a node already type checked
 int iexpCheckedCoerce(INode *to, INode **from);
 int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *to, INode **from);

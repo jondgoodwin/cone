@@ -625,7 +625,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         }
         else
-            matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
+            matches = iexpTypeCheckCoerceStated(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);

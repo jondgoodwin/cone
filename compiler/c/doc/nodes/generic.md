@@ -151,7 +151,21 @@ matches. A value of one unresolved name does not reach the other's place
 (`lifetime_inv_two_result_names_refused`); an unresolved name's number and a
 minted brand's may coincide, and only the pattern is named so: agreement, not
 the instance, decides whether they are one brand. The memo compares those names (`lifeBrandsEqual`) as well as the
-types. A struct whose arguments are related (`IterIndexed[T, I:
+types. **A typed `let` or an assignment's target adopts brands a call minted**
+(Bug 50): `let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a)` has `A`
+from the value, `&'=m1 mut Num`, `m1` minted by `ar.alloc`, and `B` from the
+declared type. `iexpTypeCheckCoerceStated` puts the stated type in
+`genericStatedType` while the value is checked, `fnCallTypeCheck` sets
+`genericExpectStated` for the one call whose `expectType` is that very node,
+and only then (`genericAdoptMode`, with `genericExpectMode`) does
+`genericCaptureType` let the declared argument stand for the inferred one
+where they differ only in minted brands (`lifeBrandsAdopt`: the substitution
+binds each from-brand once, a brand not minted by a call never changes, the
+substituted type must be the declared one), and `genericInferType` reads the
+declared use's written arguments (`lifeuse->typeargs`, the instance holds them
+numbered). A callee's parameter type is also an expectation, and its `'=a` is
+the callee's to bind, not a brand in scope (`usee(Some(t), t)`): it is never
+the stated type, so it adopts nothing. A struct whose arguments are related (`IterIndexed[T, I:
 Iterator[T]]`) is therefore checked, and conforms to its trait, at the
 relation its use has. A function's
 instance use keeps its arguments as written too, where they carry brands,

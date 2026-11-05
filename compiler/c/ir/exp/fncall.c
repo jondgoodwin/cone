@@ -4590,11 +4590,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, INode *expectTy
     INode *savedtype = fnCallExpectType;
     fnCallExpectNode = *nodep;
     fnCallExpectType = expectType;
+    int savedstated = genericExpectStated;
+    genericExpectStated = expectType != NULL && expectType == genericStatedType;
     int plainindex = ((*nodep)->flags & FlagIndex) && (*nodep)->methfld == NULL
         && !((*nodep)->flags & (FlagBorrow | FlagRange));
     fnCallTypeCheckNode(pstate, nodep, expectType);
     fnCallExpectNode = savednode;
     fnCallExpectType = savedtype;
+    genericExpectStated = savedstated;
     if (plainindex)
         fnCallIndexPlace((INode**)nodep);
     // A call may store another variant over an enum reached through a reference others
