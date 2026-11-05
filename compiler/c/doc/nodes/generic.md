@@ -138,11 +138,19 @@ pattern of equal brands, not per brand, and where no invariant lifetime appears
 nothing changes. Two different brands stay two names: a brand equals only
 itself. One name is no brand yet: while a function is checked, a name only its
 result writes and nothing has bound (`lifeBrandFnBindable`) is unresolved, so
-it takes the name `'=1` and claims no number of its own. `Option[&'=m1
-Node['=a]]` (inferred from `Some(ar.alloc(..))`, `m1` the local arena's minted
-brand) and the declared `Option[&'=a Node['=a]]` are then one instance, and
-brand agreement binds `a` to `m1`, once; a name already bound to another brand
-never matches. The memo compares those names (`lifeBrandsEqual`) as well as the
+it claims no number of the brands' (`seq`). Each unresolved name has a count of
+its own (`useq`), so the first is `'=1`, the second `'=2`: `Atlas['=t, '=r]`
+keeps its two names two, and `List[&'=r mut Road['=t]]` in `empty()` is the
+field's instance, `List[&'=1 Road['=2]]` (counting every unresolved name as
+`'=1` refused `packages/arena/examples/atlas.cone` with 1588, found by the batch
+gate). `Option[&'=m1 Node['=a]]` (inferred from `Some(ar.alloc(..))`, `m1` the
+local arena's minted brand) and the declared `Option[&'=a Node['=a]]` are still
+one instance, `'=1` for the brand and for the one unresolved name, and brand
+agreement binds `a` to `m1`, once; a name already bound to another brand never
+matches. A value of one unresolved name does not reach the other's place
+(`lifetime_inv_two_result_names_refused`); an unresolved name's number and a
+minted brand's may coincide, and only the pattern is named so: agreement, not
+the instance, decides whether they are one brand. The memo compares those names (`lifeBrandsEqual`) as well as the
 types. **A typed `let` or an assignment's target adopts brands a call minted**
 (Bug 50): `let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a)` has `A`
 from the value, `&'=m1 mut Num`, `m1` minted by `ar.alloc`, and `B` from the
