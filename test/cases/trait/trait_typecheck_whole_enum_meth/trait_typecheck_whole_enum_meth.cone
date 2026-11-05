@@ -1,0 +1,56 @@
+// A method whose receiver names the enum ('self: &Two') is written over the whole
+// enum: one function, no copy in any variant, so no variant has it (mod-substitution).
+// Where a trait requires it publicly, viewing a variant as the trait is refused
+// (ErrorWholeEnumMeth), saying which method and that 'self: &' makes the variants
+// comply, at the user's own line: a direct '&<T', a conversion to AnyError, '?' on an
+// error of another module's enum, and a returned value. A private requirement has no slot, so a
+// conversion refused for another reason does not get this message.
+// (trait_whole_enum_meth_ok shows the 'self: &' form and a private requirement compile.)
+
+mod trait_typecheck_whole_enum_meth;
+
+import collections use *;
+
+trait T {
+  pub fn g(self: &) i32;
+}
+
+enum Two is T {
+  A, B;
+  fn g(self: &Two) i32 { 1 }
+}
+
+fn direct() {
+  let x = Two.A;
+  let r: &<T = &x;                  //~ ErrorWholeEnumMeth:16 "Two's `g` is written over the whole enum (`self: &Two`)"
+}
+
+fn viaAnyError() AnyError {
+  AnyError.from(badenum.Bad.X)      //~ ErrorWholeEnumMeth:11 "Bad's `toText` is written over the whole enum (`self: &Bad`)"
+}
+
+fn viaQuestion() Result[i32, AnyError] {
+  let v = badenum.fails()?;         //~ ErrorWholeEnumMeth:26 "Bad's `toText` is written over the whole enum (`self: &Bad`)"
+  Ok(v)
+}
+
+fn viaReturn(p: Two) Uni[T] {       //~ ErrorInvType
+  Uni[Two](p)                       //~ ErrorWholeEnumMeth:3 "Two's `g` is written over the whole enum (`self: &Two`)"
+}
+
+trait Q {
+  fn h(self: &) i32;
+  pub fn k(self: &) i32;
+}
+
+enum W {
+  A, B;
+  fn h(self: &W) i32 { 5 }
+}
+
+fn otherReason() {
+  let w = W.A;
+  let r: &<Q = &w;                  //~ ErrorInvType
+}
+
+fn main() i32 { 0 }

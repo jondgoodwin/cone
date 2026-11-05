@@ -1358,6 +1358,19 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   is kept as written (`undecided`), as `cloneFieldEach` does. Indices of fields are renumbered by the
   instance's type check as for any struct. The include file copies the struct's text as written, loop and
   all (every member of a generic type travels), and the importer expands it.
+- **`#each #f in #fields(T) { #f: value }` among a call's arguments** (`parseHashEachArg`, called from
+  `parseArgs` for a parenthesised list only; an index's brackets get `ErrorMetaEachPlace` from `parseMetaStray`)
+  makes one named argument per field. The body is read by `metaArgBodyRead`, not as a block: it is exactly
+  `#f: value` (`ErrorMetaEachArg`; a written name is `ErrorMetaEachArgName`), held as a `NamedValNode` whose name
+  is a use of `#f` that `fieldEachSplice` turns into the field's name when cloned. The loop is a `BlockNode`
+  with `fieldeach` among the call's arguments, name-resolved as any block. `cloneFnCallNode` clones the
+  arguments with `cloneFieldEachArgs`, which expands such a block in place (`fieldEachClone` with an argument
+  list to add to: one cloned `NamedValNode` per pass, `errorEachPass` set so an error names its pass) and
+  keeps an undecided one as written, as a statement loop is, to be decided per instance. A loop may stand
+  beside other arguments; the parser cannot tell a construction from a call, so the loop is accepted in any
+  parenthesised list and a call of a function is refused later by the ordinary named-argument rule
+  (`namedValRefuseArgs`). A clone that reported an error leaves `FlagEachFailed` on the call, which type check
+  replaces by an error node rather than report the missing arguments (`ErrorBadArray`).
 - **Layout facts.** `#size(T)` and `#align(T)` (`parseMetaLayout`, `HashSizeToken`/`HashAlignToken`) are a
   `SizeofNode` with `what` set; `#f.offset` is a `SizeofNode` of kind `SizeofOffset`, made by the clone
   (`fieldPropAnswer`) with the instance's type and field. None is folded by the front end: the code

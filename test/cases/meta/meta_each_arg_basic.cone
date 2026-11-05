@@ -1,0 +1,73 @@
+// '#each #f in #fields(T) { #f: value }' among a call's arguments (mod-generativity.html#meta): the
+// call, cloned for an instance, gets one named argument per field of T, named by the field, so
+// 'T(...)' builds a T from values that follow its fields. The printed values were checked by hand:
+//   copy    copyOf(Point(3, 4)) builds Point(3, 4): 3 4
+//   copy2   the same generic for Wide(5, 6, 7), another struct with other fields: 5 6 7
+//   narrow  narrow[Wide, Point]: a Point from a Wide's x and y: 5 6
+//   scaled  Point(3, 4) with each field doubled, 6 8; the same loop for Wide(5, 6, 7): 10 12 14
+//   moved   fromN[Holder](77): both fields are Tok, which has a finalizer, so each is a value that
+//           moves into the struct; two Toks are made and none has died while h lives: 77 77 0, then
+//           exactly two finalizers run (F77 F77) when the block ends, so 'after 2'
+
+mod meta_each_arg_basic;
+
+import stdio use *;
+
+struct Point {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Wide {
+  pub x: i32;
+  pub y: i32;
+  pub z: i32;
+}
+
+fn copyOf[T](src: &T) T {
+  T(#each #f in #fields(T) { #f: src.#f })
+}
+
+fn narrow[A, B](a: &A) B {
+  B(#each #f in #fields(B) { #f: a.#f })
+}
+
+fn scaled[T](src: &T) T {
+  T(#each #f in #fields(T) { #f: src.#f * 2 })
+}
+
+var @threadlocal deaths = 0i64;
+
+struct Tok {
+  pub n: i64;
+  fn final(self: &uni) { deaths = deaths + 1i64; printStr("F"); printInt(n); printStr(" "); }
+}
+
+// Two values that move: each is made in its argument from '#f.type', so the argument is a
+// temporary that moves into the struct
+struct Holder {
+  pub a: Tok;
+  pub b: Tok;
+}
+
+fn fromN[T](n: i64) T {
+  T(#each #f in #fields(T) { #f: #f.type(n) })
+}
+
+fn main() {
+  let p = copyOf(&Point(3, 4));
+  print <- "copy ", p.x, " ", p.y, "\n";
+  let w = copyOf(&Wide(5, 6, 7));
+  print <- "copy2 ", w.x, " ", w.y, " ", w.z, "\n";
+  let n = narrow[Wide, Point](&w);
+  print <- "narrow ", n.x, " ", n.y, "\n";
+  let s = scaled(&p);
+  print <- "scaled ", s.x, " ", s.y, "\n";
+  let s3 = scaled(&w);
+  print <- "scaled ", s3.x, " ", s3.y, " ", s3.z, "\n";
+  {
+    let h = fromN[Holder](77i64);
+    print <- "moved ", h.a.n, " ", h.b.n, " ", deaths, "\n";
+  }
+  print <- "after ", deaths, "\n";
+}

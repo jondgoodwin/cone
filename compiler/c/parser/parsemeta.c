@@ -668,7 +668,7 @@ void parseMetaStray(ParseState *parse) {
     // A '#each' where a function's statements are not: at a module's level, in a type's braces, in an
     // 'extern' block, or inside an expression
     if (lexIsToken(HashEachToken)) {
-        errorMsgLex(ErrorMetaEachPlace, "A '#each' repeats the statements of a function's body. It is not built at a module's level, in a type's braces (other than a generic struct's, where only '#each #f in #fields(T) { ... }' makes members), in an 'extern' block or inside an expression: generating declarations waits for generated names.");
+        errorMsgLex(ErrorMetaEachPlace, "A '#each' repeats the statements of a function's body. It is not built at a module's level, in a type's braces (other than a generic struct's, where only '#each #f in #fields(T) { ... }' makes members), in an 'extern' block or inside an expression other than a call's argument list, where '#each #f in #fields(T) { #f: value }' makes named arguments: generating declarations waits for generated names.");
         metaEachSkip();
         return;
     }
@@ -1558,11 +1558,65 @@ Name *parseMetaGenName(ParseState *parse, GenName **out) {
     return nametblFind(buf, strlen(buf));
 }
 
+// The body of a '#each #f in #fields(T)' written among a call's arguments, the lexer on its '{': one
+// named argument, '#f: value', which each pass makes with the field's own name. Read through the '}'.
+// The result is the NamedValNode, or NULL after an error
+static INode *metaArgBodyRead(ParseState *parse, Name *var, INode *loop) {
+    int ok = 0;
+    NamedValNode *named = NULL;
+    lexNextToken();
+    if (lexIsToken(MetaVarToken) && lex->val.ident == var) {
+        NameUseNode *name = newNameUseNode(var);
+        inodeLexCopy((INode*)name, loop);
+        lexNextToken();
+        if (lexIsToken(ColonToken)) {
+            lexNextToken();
+            named = newNamedValNode((INode*)name);
+            named->val = parseArgValue(parse);
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+            ok = lexIsToken(RCurlyToken) && named->val != NULL;
+        }
+        if (!ok)
+            errorMsgLex(ErrorMetaEachArg, "A '#each' in a call's arguments makes one named argument for each field, so its block holds exactly that: '#each %s in #fields(T) { %s: value }'.",
+                &var->namestr, &var->namestr);
+    }
+    else if (lexIsToken(IdentToken)) {
+        Name *written = lex->val.ident;
+        lexNextToken();
+        if (lexIsToken(ColonToken))
+            errorMsgLex(ErrorMetaEachArgName, "A '#each' in a call's arguments makes one named argument for each field, named by the loop's variable. '%s' would be given to every field: write '%s: value'.",
+                &written->namestr, &var->namestr);
+        else
+            errorMsgLex(ErrorMetaEachArg, "A '#each' in a call's arguments makes one named argument for each field, so its block holds exactly that: '#each %s in #fields(T) { %s: value }'.",
+                &var->namestr, &var->namestr);
+    }
+    else
+        errorMsgLex(ErrorMetaEachArg, "A '#each' in a call's arguments makes one named argument for each field, so its block holds exactly that: '#each %s in #fields(T) { %s: value }'.",
+            &var->namestr, &var->namestr);
+    if (!lexIsToken(RCurlyToken) || !ok) {
+        ++metaSkipping;
+        int depth = 1;
+        while (depth > 0 && !lexIsToken(EofToken)) {
+            if (lexIsToken(LCurlyToken))
+                ++depth;
+            else if (lexIsToken(RCurlyToken))
+                --depth;
+            if (depth > 0)
+                lexNextToken();
+        }
+        --metaSkipping;
+    }
+    if (lexIsToken(RCurlyToken))
+        lexNextToken();
+    return ok ? (INode*)named : NULL;
+}
+
 // '#fields(T) { body }' after '#each #f in', the lexer on the '#fields': the body is read once, with
 // '#f' standing for a field of T, as a block (the loop) that holds it; cloning that for an instance of
 // T makes the passes (fields.h). T is a type parameter of the function or type this is written in
 static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name *var,
-        StructNode *strnode, MetaMembersFn items, void *ctx) {
+        StructNode *strnode, MetaMembersFn items, void *ctx, INode **argout) {
     lexNextToken();
     if (!lexIsToken(LParenToken)) {
         errorMsgLex(ErrorMetaFields, "'#fields' names the type whose fields it describes: '#each #f in #fields(T) { ... }'.");
@@ -1610,8 +1664,18 @@ static void parseHashFields(ParseState *parse, BlockNode *blk, INode *loop, Name
             metaGenMark(strnode->nodelist.nodes[i], fe);
         return;
     }
-    INode *body = parseExprBlock(parse, 0);
+    INode *body = argout ? metaArgBodyRead(parse, var, loop) : parseExprBlock(parse, 0);
     metaEnvUsed = scope;
+    if (argout) {
+        if (body == NULL)
+            return;
+        BlockNode *wrap = newBlockNode();
+        inodeLexCopy((INode*)wrap, loop);
+        nodesAdd(&wrap->stmts, body);
+        wrap->fieldeach = fe;
+        *argout = (INode*)wrap;
+        return;
+    }
     if (body == NULL || body->tag != BlockTag)
         return;
     BlockNode *wrap = newBlockNode();
@@ -1641,7 +1705,7 @@ void parseHashEach(ParseState *parse, BlockNode *blk) {
     }
     lexNextToken();
     if (lexIsToken(HashFieldsToken)) {
-        parseHashFields(parse, blk, loop, var, NULL, NULL, NULL);
+        parseHashFields(parse, blk, loop, var, NULL, NULL, NULL, NULL);
         return;
     }
     if (!lexIsToken(LBracketToken) && !lexIsToken(LParenToken) && !lexIsToken(MetaVarToken)) {
@@ -1752,6 +1816,36 @@ void parseHashEachMembers(ParseState *parse, StructNode *strnode, MetaMembersFn 
         metaEachSkip();
         return;
     }
-    parseHashFields(parse, NULL, loop, var, strnode, items, ctx);
+    parseHashFields(parse, NULL, loop, var, strnode, items, ctx, NULL);
+}
+
+// '#each #f in #fields(T) { #f: value }' among a call's arguments, the lexer on the '#each'. The
+// result is the loop, a block with 'fieldeach' whose one statement is the named argument; the call's
+// clone makes one named argument per field (cloneFieldEachArgs). NULL after an error
+INode *parseHashEachArg(ParseState *parse) {
+    INode *loop = (INode*)newNilLitNode();
+    lexMetaDecl = 1;
+    lexNextToken();
+    if (!lexIsToken(MetaVarToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' binds the item of each pass to a '#' name of its own: '#each #f in #fields(T) { #f: value }'.");
+        metaEachSkip();
+        return NULL;
+    }
+    Name *var = lex->val.ident;
+    lexNextToken();
+    if (!lexIsToken(InToken)) {
+        errorMsgLex(ErrorMetaEach, "A '#each' names its list after 'in': '#each #f in #fields(T) { #f: value }'.");
+        metaEachSkip();
+        return NULL;
+    }
+    lexNextToken();
+    if (!lexIsToken(HashFieldsToken)) {
+        errorMsgLex(ErrorMetaEachPlace, "In a call's arguments a '#each' goes through the fields of a type parameter: '#each #f in #fields(T) { #f: value }'.");
+        metaEachSkip();
+        return NULL;
+    }
+    INode *out = NULL;
+    parseHashFields(parse, NULL, loop, var, NULL, NULL, NULL, &out);
+    return out;
 }
 

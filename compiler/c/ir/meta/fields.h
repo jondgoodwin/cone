@@ -55,6 +55,11 @@ void fieldEachNameRes(NameResState *pstate, BlockNode *blk);
 // Clone the loop's block for an instance: one block of the body for each field
 INode *cloneFieldEach(CloneState *cstate, BlockNode *blk);
 
+// A call's argument list cloned for an instance: a '#each #f in #fields(T) { #f: value }' among the
+// arguments (a BlockNode with 'fieldeach', its one statement the NamedValNode) becomes one named
+// argument per field; an undecided one is kept as written. Other arguments are cloned as they are.
+Nodes *cloneFieldEachArgs(CloneState *cstate, Nodes *args);
+
 // A loop being expanded for one instance: T's fields as the reflecting code may see them, and the
 // names a pass hooks while its copy is made (see fieldEachPassBegin)
 typedef struct FieldEachRun {
