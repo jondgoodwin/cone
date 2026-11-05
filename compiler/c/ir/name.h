@@ -119,7 +119,9 @@ extern Name *refIndexName; // "&[]"
 
 extern Name *optionName;   // "Option"
 
-extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
+extern Name *parseName;    // "parse", a number type's reading of text: 'i32.parse(s)'
+extern Name *tryFromName;  // "tryFrom", a number type's checked conversion: 'u8.tryFrom(x)'
+extern Name *fromName;    // "from", a number type's conversion: 'u64.from(count)'
 extern Name *selectName;   // "select", a mask's choice between two vectors: 'm.select(a, b)'
 extern Name *joinName;     // "join", two vectors laid end to end: 'a.join(b)'
 extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
