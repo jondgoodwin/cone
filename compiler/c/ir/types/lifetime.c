@@ -1813,6 +1813,7 @@ struct LifeBind {
     uint32_t cnt;
     uint32_t cap;
     uint32_t seq;       // positional: how many brands named so far
+    uint32_t useq;      // positional: how many unresolved names met so far
     uint8_t positional; // each brand met is named by its first occurrence (lifeCanonBrands)
     LifeBind *outer;
 };
@@ -1822,6 +1823,7 @@ static void lifeBindInit(LifeBind *bind) {
     bind->from = bind->to = NULL;
     bind->cnt = bind->cap = 0;
     bind->seq = 0;
+    bind->useq = 0;
     bind->positional = 0;
     bind->outer = NULL;
 }
@@ -2144,15 +2146,19 @@ static Name *lifeBrandMap(LifeBind *bind, Name *name, INode *mintat) {
         return name;
     if (bind->positional) {
         // A name only the current function's result writes, not yet bound, is
-        // unresolved: it is no brand of its own, so it takes the first name
-        // and claims none; brand agreement then binds it, once, to the brand
-        // it meets
-        if (lifeBrandFnBindable(name))
-            return lifeCanonName(1);
-        // Named by first occurrence: a brand met again has the name it was given
+        // unresolved: it is no brand of its own, so it claims no number of the
+        // brands'. It is told apart from another unresolved name by a count of
+        // its own, so 'Atlas['=t, '=r]' keeps its two names two; brand
+        // agreement then binds it, once, to the brand it meets
         Name *canon = lifePairFind(bind->from, bind->to, bind->cnt, name);
         if (canon)
             return canon;
+        if (lifeBrandFnBindable(name)) {
+            canon = lifeCanonName(++bind->useq);
+            lifePairAdd(&bind->from, &bind->to, &bind->cnt, &bind->cap, name, canon);
+            return canon;
+        }
+        // Named by first occurrence: a brand met again has the name it was given
         canon = lifeCanonName(++bind->seq);
         lifePairAdd(&bind->from, &bind->to, &bind->cnt, &bind->cap, name, canon);
         return canon;
