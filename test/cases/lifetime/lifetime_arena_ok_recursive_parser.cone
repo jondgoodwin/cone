@@ -1,19 +1,18 @@
-// XFAIL, brought to design chat: the result of leafB(p, ar) is stored back into the arena; with Node holding an unnamed 'Option[&mut Node]' the unnamed borrow in the result's pointee shares p's unnamed lifetime, so p's loan is taken as carried. Named slots ('Node['a]') compile (lifetime_arena_ok_named_parser).
 mod lifetime_arena_ok_recursive_parser;
 import stdio use *;
 import arena use *;
 
-struct Node { pub val: i64; pub l: Option[&mut Node]; pub r: Option[&mut Node]; }
+struct Node['a] { pub val: i64; pub l: Option[&'a mut Node['a]]; pub r: Option[&'a mut Node['a]]; }
 struct P { pub pos: i64; pub depth: i64; }
 
 // A recursive parser over a plain parser struct; the node results are stored into other nodes.
 // Form A: methods of P, results named with the arena's lifetime.
 // Form B: free functions with the parser as an ordinary parameter.
-fn leafB(p: &mut P, ar: &'a mut Arena) &'a mut Node {
+fn leafB(p: &mut P, ar: &'a mut Arena) &'a mut Node['a] {
   p.pos += 1;
-  ar.alloc(Node(p.pos, None[&mut Node], None[&mut Node]))
+  ar.alloc(Node(p.pos, None, None))
 }
-fn exprB(p: &mut P, ar: &'a mut Arena) &'a mut Node {
+fn exprB(p: &mut P, ar: &'a mut Arena) &'a mut Node['a] {
   var l = leafB(p, ar);
   p.depth += 1;
   if p.depth < 4 {
@@ -28,11 +27,11 @@ fn exprB(p: &mut P, ar: &'a mut Arena) &'a mut Node {
 struct Q {
   pub pos: i64;
   pub depth: i64;
-  fn leaf(self: &mut, ar: &'a mut Arena) &'a mut Node {
+  fn leaf(self: &mut, ar: &'a mut Arena) &'a mut Node['a] {
     pos += 1;
-    ar.alloc(Node(pos, None[&mut Node], None[&mut Node]))
+    ar.alloc(Node(pos, None, None))
   }
-  fn expr(self: &mut, ar: &'a mut Arena) &'a mut Node {
+  fn expr(self: &mut, ar: &'a mut Arena) &'a mut Node['a] {
     var l = self.leaf(ar);
     depth += 1;
     if depth < 4 {

@@ -145,6 +145,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
 // with the parameter it was stored through as 'through'.
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through);
 
+// Whether the arena reference holding 'arenaholds' is checked at all: not
+// where it holds no loan but what was stored through it (made from a raw
+// pointer, the one trusted route).
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds);
+
 // The same for a function naming no lifetimes: a caller loan among 'stored'
 // going where a reference holding 'refholds' points, at what a parameter lent
 // that holds no borrow but ''static' ones (itypeCarriesEndingBorrow), which

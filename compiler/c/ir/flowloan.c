@@ -512,25 +512,29 @@ uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDcl
     return 0;
 }
 
+// Whether the loans an arena reference holds are to be checked. One holding no
+// loan but what was stored through it was made by a route the walk does not
+// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena):
+// that, and only that, is trusted, as every such cast is. Any other is
+// checked, whether the walk can place it or not.
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
+    if (stored == &pathSetAll || arenaholds == &pathSetAll)
+        return 1;
+    for (uint32_t i = 0; arenaholds && i < arenaholds->cnt; ++i) {
+        uint32_t hid = loanOf(arenaholds->ids[i]);
+        if (!pathSetHasLoan(stored, hid)
+            || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+            return 1;
+    }
+    return 0;
+}
+
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
     if (stored == NULL)
         return 0;
     uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
-    // A reference holding no loan but what was stored through it was made by
-    // a route the walk does not follow (from a raw pointer, as DynArena's
-    // 'alloc' reaches its inner arena): where the arena is, is not known, and
-    // the store is trusted there, as every such cast is
-    if (stored != &pathSetAll) {
-        int origin = arenaholds == &pathSetAll;
-        for (uint32_t i = 0; arenaholds && !origin && i < arenaholds->cnt; ++i) {
-            uint32_t hid = loanOf(arenaholds->ids[i]);
-            if (!pathSetHasLoan(stored, hid)
-                || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
-                origin = 1;
-        }
-        if (!origin)
-            return 0;
-    }
+    if (!loanArenaChecked(stored, arenaholds))
+        return 0;
     for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
         uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
         if (loans[sid].kind != LoanCaller)
@@ -1183,8 +1187,8 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
-            lent, &through->namesym->namestr);
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated. If the value is a call's result, name which parameter it comes from: the same lifetime on that parameter and on the result.",
+            lent,&through->namesym->namestr);
         break;
     }
 }

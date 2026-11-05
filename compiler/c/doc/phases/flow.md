@@ -1226,9 +1226,19 @@ node included, is `ErrorCallEscape`, even under one lifetime name. Checked
 at the store, in the body, so a caller trusts the signature: a free function
 handed a `&mut Arena` is no store at its caller. A function whose result goes
 back into the arena names which parameter the result comes from (`ar: &'a mut
-Arena` and `&'a mut Node['a]`). A reference to the arena made from a raw
-pointer carries no loan, so its stores are unseen: the one such site is
-`DynArena.alloc`, trusted on the key rule (`WI/trust.md`). A type that holds no
+Arena` and `&'a mut Node['a]`, the node type naming `'a` too: unnamed, a
+result's held part may come from an unnamed parameter and the store is
+refused, the message saying to name which parameter). Only a reference to the
+arena made by a cast from a raw pointer is trusted: it carries no loan but
+what was stored through it (`loanArenaChecked`), so its stores are unseen, and
+the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
+tests). Any other reference whose origin the walk cannot place (an arena
+reached through a method's result) may point anywhere, so no local's borrow is
+stored in it. A value and the receiver reached by one path (`home.alloc(Chain(
+n + 1, home))`: `pwStoredOnlyBy`, the same field path, nothing between that
+assigns or calls) stays in its arena; a copy of the path in another variable,
+or a second arena's path, is not exempt. A type that holds no
 borrow anywhere (`itypeHoldsNoBorrow`) is no place a borrow lands in
 (`loanStoredApart`). The third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
