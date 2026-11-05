@@ -3579,6 +3579,11 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         INode *littype = itypeGetTypeDcl(lit->vtype);
         uint32_t size = lit->args->used;
         if (littype->tag == StructTag) {
+            // The type decides whether it is a nullable pointer (NullablePtr)
+            // when it is first laid out (genlSetupTaggedTrait), which a literal
+            // may be the first to ask for: a discarded 'ar.alloc(None[&mut T])'
+            // read the flag before it was set and built a tag into a pointer
+            genlType(gen, lit->vtype);
             if (littype->flags & NullablePtr) {
                 // Special optimized logic for creating nullable ref/ptr value
                 StructNode *strnode = (StructNode *)littype;
