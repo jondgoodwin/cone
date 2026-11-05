@@ -1,0 +1,74 @@
+// An enum whose 'self: &' toText is 'inline' and calls a helper written over the whole
+// enum fills a slot of Error for each of its variants, so it is written as text through
+// an '&<Error' and through an AnyError. (An inline method has no symbol: the slot holds
+// a function of its own that expands it.) A plain struct with an inline toText does too.
+// Each line below is worked out by hand from the source.
+
+mod enum_selfref_error_virtual;
+
+import stdio use *;
+import collections use *;
+
+enum Bad is Error, Sendable {
+  One;
+  Two;
+  Three(i32);
+  pub fn toText(self: &, out: &uni TextOut) inline { self.write(out); }
+  fn write(self: &Bad, out: &uni TextOut) inline {
+    match self {
+      case is One { out <- "one"; }
+      case is Two { out <- "two"; }
+      case let Three(n) { out <- "three:", n; }
+    }
+  }
+}
+
+enum Gen[T] is Error, Sendable {
+  Up;
+  Down;
+  pub fn toText(self: &, out: &uni TextOut) inline { self.write(out); }
+  fn write(self: &Gen[T], out: &uni TextOut) inline {
+    match self {
+      case is Up { out <- "up"; }
+      case is Down { out <- "down"; }
+    }
+  }
+}
+
+struct Plain is Error, Sendable {
+  pub code: i32;
+  pub fn toText(self: &, out: &uni TextOut) inline {
+    if code < 0 { return; }
+    out <- "plain ", code;
+  }
+}
+
+fn show(e: &<Error) { print <- e, "\n"; }
+
+fn viaAny[E: Error + Sendable](e: E) AnyError { AnyError.from(e) }
+
+fn fail(which: i32) Result[i32, AnyError] {
+  if which == 0 { Err[i32, Bad](Bad.Two)?; }
+  Ok[i32, AnyError](which)
+}
+
+fn main() i32 {
+  let a = Bad.One;
+  let b = Bad.Two;
+  let c = Bad.Three(5i32);
+  show(&a);
+  show(&b);
+  show(&c);
+  let u = Gen.Up[i32];
+  let d = Gen.Down[i64];
+  show(&u);
+  show(&d);
+  let p = Plain(7i32);
+  let q = Plain(-1i32);
+  show(&p);
+  show(&q);
+  print <- viaAny(c).message().view(), "\n";
+  print <- viaAny(d).message().view(), "\n";
+  print <- fail(0).error().unwrap().message().view(), "\n";
+  0
+}
