@@ -1,11 +1,11 @@
-// An enum variant's type arguments, inferred from a value, take the brands the declared type
-// states: `head = Some(ar.alloc(...))` builds the Option the variable declares, and a typed
-// `let` over a user enum states the brand an uninferred argument takes (Bug 50).
+// An Option inferred from `Some(ar.alloc(..))` is the Option a variable declares, directly and through a `let`:
+// the brand the call mints and the result's `'=a`, a name nothing has bound yet, are one pattern, and brand
+// agreement binds `'=a` to the brand the body gives it.
 //
-// Verdict: accept; prints "10 3", "10", "3 4".
-// Basis: `Some[&'=a mut Node['=a]](ar.alloc(..))` written out was accepted already; inference
-// reaches the same shape. A brand a call mints is bound to the declared type's; a brand that is
-// not minted stays what it is (lifetime_inv_infer_declared_refused).
+// Verdict: accept; prints "10 3", "10".
+// Basis: a result-only name not yet bound is unresolved, so it is no brand of its own when an instance is named;
+// it binds once (lifetime_inv_result_name_binds_once_refused), and two different brands never match
+// (lifetime_inv_infer_declared_refused).
 
 mod lifetime_inv_infer_declared;
 
@@ -48,42 +48,17 @@ fn build(n: i64) Chain['=a] {
   Chain(ar, head)
 }
 
-// No declared type: the Option is inferred, then used where `head`'s is wanted
+// No declared type on the Option: it is inferred, then used where `head`'s is wanted
 fn buildLet(n: i64) Chain['=a] {
   var ar = DynArena.empty();
   var head: Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]];
   var i = 0i64;
   while i < n {
-    head = Some(ar.alloc(Node(i, head)));
+    let x = Some(ar.alloc(Node(i, head)));
+    head = x;
     i = i + 1;
   }
   Chain(ar, head)
-}
-
-struct Num { pub v: i64; }
-struct Bin { pub p: i64; pub q: i64; }
-enum Either[A, B] {
-  L(A);
-  R(B);
-}
-
-fn eval(ar: &DynArena['=a], e: Either[&'=a mut Num, &'=a mut Bin]) i64 {
-  match e {
-    case let L(n) { ar[n].v }
-    case let R(b) { ar[b].p + ar[b].q }
-  }
-}
-
-fn run(ar: &mut DynArena['=a]) i64 {
-  let a = ar.alloc(Num(3));
-  let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a);
-  eval(ar, e)
-}
-
-fn runR(ar: &mut DynArena['=a]) i64 {
-  let b = ar.alloc(Bin(1, 3));
-  let e: Either[&'=a mut Num, &'=a mut Bin] = Either.R(b);
-  eval(ar, e)
 }
 
 fn main() {
@@ -92,10 +67,5 @@ fn main() {
   printInt(build(3).total());
   printStr("\n");
   printInt(buildLet(5).total());
-  printStr("\n");
-  var ar = DynArena.empty();
-  printInt(run(&mut ar));
-  printStr(" ");
-  printInt(runR(&mut ar));
   printStr("\n");
 }

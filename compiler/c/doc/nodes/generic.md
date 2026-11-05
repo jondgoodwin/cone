@@ -136,7 +136,13 @@ pattern as well as the types: `List[&'=a Node['=a]]` and
 `List[&'=a Node['=b]]` is another, `List[&'=1 Node['=2]]`. One instance per
 pattern of equal brands, not per brand, and where no invariant lifetime appears
 nothing changes. Two different brands stay two names: a brand equals only
-itself. The memo compares those names (`lifeBrandsEqual`) as well as the
+itself. One name is no brand yet: while a function is checked, a name only its
+result writes and nothing has bound (`lifeBrandFnBindable`) is unresolved, so
+it takes the name `'=1` and claims no number of its own. `Option[&'=m1
+Node['=a]]` (inferred from `Some(ar.alloc(..))`, `m1` the local arena's minted
+brand) and the declared `Option[&'=a Node['=a]]` are then one instance, and
+brand agreement binds `a` to `m1`, once; a name already bound to another brand
+never matches. The memo compares those names (`lifeBrandsEqual`) as well as the
 types. A struct whose arguments are related (`IterIndexed[T, I:
 Iterator[T]]`) is therefore checked, and conforms to its trait, at the
 relation its use has. A function's
