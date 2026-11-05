@@ -1071,7 +1071,8 @@ struct Cells {
 		statements of a function's body, with meta variables that are numbers and lists, and, over
 		<span class="pre">#fields(T)</span>, in the braces of a generic struct, where it makes fields and methods. Not
 		built: a meta variable the compiler sets, one holding a value of another kind, <span class="pre">#each</span>
-		over anything but a constant list, and <span class="pre">#each</span> at a module's level or in an expression.
+		over anything but a constant list, and <span class="pre">#each</span> at a module's level or in an expression
+		(other than as the named arguments of a call, over <span class="pre">#fields(T)</span>).
 		The compiler reports any
 		other word beginning with <span class="pre">#</span> and ignores the rest of its line.</i></p>
 	<p>Metaprogramming gives fine-grained control over what program logic gets compiled: including or leaving
@@ -1299,6 +1300,26 @@ fn main() {
 		<span class="pre">#fields</span> hold: private fields of <span class="pre">T</span> are described only to code
 		that could name them. Generic structs only; a loop holds fields and methods, not statics, macros or
 		aliases; a loop does not hold another, nor a <span class="pre">#if</span> that asks about a type.</p>
+	<p id="metaargs"><b>A value built from a type's fields.</b> The one place <span class="pre">#each</span> stands in an
+		expression is a call's argument list, over <span class="pre">#fields(T)</span>, where it makes one named
+		argument for every field:</p>
+<pre class="cone">fn copyOf[T](src: &amp;T) T {
+  T(#each #f in #fields(T) { #f: src.#f })
+}</pre>
+	<p>The block holds exactly that, <span class="pre">#f: value</span>: each pass gives the field's own name the
+		value, which may use <span class="pre">#f.name</span>, <span class="pre">#f.type</span>, <span class="pre">src.#f</span>
+		and the other descriptions. A block of anything else, or an argument named by a written name (it
+		would be given to every field), is refused. The call is then checked as if its arguments were written out
+		for that <span class="pre">T</span>: only a struct's construction takes arguments by name, so in a call of a
+		function the loop is refused as named arguments are, and a value that does not suit its field is that
+		construction's error. A value that moves is a temporary moved into the new struct once, as a written argument
+		would be (<span class="pre">#f: #f.type(n)</span>); a field of <span class="pre">src</span> that cannot be copied
+		is not moved out of it, by the rule that already forbids moving a field out of its struct. The rules
+		of <span class="pre">#fields</span> hold, and so do the rules of a constructor: code that cannot name a
+		private field sees it refused at the loop, and even where the type opts in with <span class="pre">@reflect</span>,
+		a module that does not declare the type may not give a value to its private field. Where
+		<span class="pre">T</span> is still a parameter of an enclosing generic the loop is kept as written and
+		decided for each instance. Every other expression position, and a loop over a list there, is refused.</p>
 	<p><b>A meta constant at a module's level.</b> <span class="pre">let #sizes = [8, 16, 32];</span> between a file's
 		declarations is read by every function and generic below it in that file, and is gone from the code. It
 		is fixed (<span class="pre">let</span>, never <span class="pre">var</span>), and belongs to its file.</p>

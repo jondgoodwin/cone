@@ -568,6 +568,11 @@ INode *parseTerm(ParseState *parse) {
     }
 }
 
+// The value of a named argument, as parseArg reads it
+INode *parseArgValue(ParseState *parse) {
+    return parseContentsAfter(parse, parseSimpleExpr(parse));
+}
+
 // Parse a function/method call argument
 INode *parseArg(ParseState *parse) {
     INode *arg = parseContentsAfter(parse, parseSimpleExpr(parse));
@@ -596,11 +601,21 @@ Nodes *parseArgs(ParseState *parse) {
     Nodes *args = newNodes(8);
     int svinlist = parse->inlist;
     parse->inlist = 1;
+    // A '#each' among a call's arguments (not an index's) makes named arguments, one for each field
+    // of a type parameter; the call's clone expands it (cloneFieldEachArgs)
+    int paren = closetok == RParenToken;
     if (!lexIsToken(closetok)) {
-        nodesAdd(&args, parseArg(parse));
-        while (lexIsToken(CommaToken)) {
+        while (1) {
+            if (paren && lexIsToken(HashEachToken)) {
+                INode *loop = parseHashEachArg(parse);
+                if (loop)
+                    nodesAdd(&args, loop);
+            }
+            else
+                nodesAdd(&args, parseArg(parse));
+            if (!lexIsToken(CommaToken))
+                break;
             lexNextToken();
-            nodesAdd(&args, parseArg(parse));
         }
     }
     parse->inlist = svinlist;

@@ -1095,6 +1095,13 @@ itself, which only the code generator has: the condition of a `#if` (`metaCond`)
 rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
 (`#size(T) * 2`) still falls to `ErrorNotLit`.
 
+`ErrorMetaEachArg` and `ErrorMetaEachArgName` are a `#each #f in #fields(T)` among a call's arguments
+(`parseHashEachArg`), read at parse: `ErrorMetaEachArg` is a block that is not exactly one `#f: value` (nothing
+named, `#f` alone, a second argument, a value that did not read); `ErrorMetaEachArgName` is an argument named by a
+written name, which every pass would give. A list loop there is `ErrorMetaEachPlace`. What the loop makes is
+checked as written arguments are; a failed expansion marks the call (`FlagEachFailed`) so its missing arguments
+are not a second error.
+
 `ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
 include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
 or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at

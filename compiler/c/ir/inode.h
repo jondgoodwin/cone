@@ -300,6 +300,7 @@ enum NodeTags {
 // private member exactly where the method it stands in for could. Set only by
 // cloneFnCallNode, during a macro method's expansion.
 #define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
+#define FlagEachFailed 0x8000       // FnCall: a '#each #f in #fields(T)' among its arguments failed when the call was cloned (and said why); the call is not checked further
 // An index whose argument is a range, 'x[a..<b]', which a borrow makes a slice of
 // part of an array. Its arguments are the start and, unless the range runs to
 // the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '..=',

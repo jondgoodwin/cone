@@ -228,7 +228,9 @@ EachPass *fieldEachPassFor(FieldEachRun *run, uint32_t i, INode *loop) {
     return ep;
 }
 
-INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
+// Both forms of a loop: a statement's (argout NULL: the result is one block of the passes) and a
+// call's argument list (the passes' named arguments, and an undecided loop's copy, are added to *argout)
+static INode *fieldEachClone(CloneState *cstate, BlockNode *node, Nodes **argout) {
     FieldEach *fe = node->fieldeach;
     uint32_t dclpos = cloneDclPush();
     FieldEachRun *run = fieldEachOpen(cstate, fe, (INode*)node);
@@ -247,6 +249,10 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
         copy->stmts = cloneNodes(cstate, node->stmts);
         fieldEachPassEnd(run);
         cloneDclPop(dclpos);
+        if (argout) {
+            nodesAdd(argout, (INode*)copy);
+            return NULL;
+        }
         return (INode*)copy;
     }
 
@@ -264,6 +270,16 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
         if (!fieldEachPassBegin(run, i, (INode*)node))
             break;
         EachPass *ep = fieldEachPassFor(run, i, (INode*)node);
+        if (argout) {
+            // One named argument per pass, the field's name given by '#f' in the template
+            EachPass *svpass = errorEachPass;
+            errorEachPass = ep;
+            INode *arg = cloneNode(cstate, nodesGet(node->stmts, 0));
+            errorEachPass = svpass;
+            if (arg)
+                nodesAdd(argout, arg);
+            continue;
+        }
         INode *pass = cloneNode(cstate, nodesGet(node->stmts, 0));
         if (pass && pass->tag == BlockTag) {
             ((BlockNode*)pass)->eachpass = ep;
@@ -272,5 +288,22 @@ INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
     }
     fieldEachPassEnd(run);
     cloneDclPop(dclpos);
-    return (INode*)result;
+    return argout ? NULL : (INode*)result;
+}
+
+INode *cloneFieldEach(CloneState *cstate, BlockNode *node) {
+    return fieldEachClone(cstate, node, NULL);
+}
+
+Nodes *cloneFieldEachArgs(CloneState *cstate, Nodes *args) {
+    Nodes *out = newNodes(args->avail);
+    INode **argp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argp)) {
+        if ((*argp)->tag == BlockTag && ((BlockNode*)*argp)->fieldeach)
+            fieldEachClone(cstate, (BlockNode*)*argp, &out);
+        else
+            nodesAdd(&out, cloneNode(cstate, *argp));
+    }
+    return out;
 }
