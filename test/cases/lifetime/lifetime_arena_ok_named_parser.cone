@@ -1,0 +1,27 @@
+// Bug 48/51: the lab's recursive parser (jn_g1) with the result's lifetime named: it comes from the arena, not from the
+// parser state p, so the nodes may be stored back into the arena. The node type names the lifetime of what it holds.
+mod lifetime_arena_ok_named_parser;
+import stdio use *;
+import arena use *;
+struct Node['a] { pub val: i64; pub l: Option[&'a mut Node['a]]; pub r: Option[&'a mut Node['a]]; }
+struct P { pub pos: i64; pub depth: i64; }
+fn leafB(p: &mut P, ar: &'a mut Arena) &'a mut Node['a] {
+  p.pos += 1;
+  ar.alloc(Node(p.pos, None, None))
+}
+fn exprB(p: &mut P, ar: &'a mut Arena) &'a mut Node['a] {
+  var l = leafB(p, ar);
+  p.depth += 1;
+  if p.depth < 4 {
+    let r = exprB(p, ar);
+    let b = ar.alloc(Node(0, Some(l), Some(r)));
+    p.pos += 1;
+    l = b;
+  }
+  l
+}
+fn main() {
+  var a = Arena();
+  var p = P(0, 0);
+  print <- exprB(&mut p, &mut a).val, "\n";
+}

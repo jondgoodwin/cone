@@ -1,0 +1,38 @@
+// Bug 48/51: the lab parser with a cycle and a type written back into a node (jn_a5), lifetimes named. Its "owner" field, a parameter stored in the arena, is gone: a body may store into the arena only what the arena owns (lifetime_arena_refuse_second_param pins that refusal).
+// every result comes from the arena, whose lifetime the node types carry.
+mod lifetime_arena_ok_named_cycle;
+import stdio use *;
+import arena use *;
+struct Ty { pub size: i64; }
+struct Num['a] { pub v: i64; pub ty: Option[&'a mut Ty]; }
+struct Bin['a] { pub l: Expr['a]; pub r: Expr['a]; pub ty: Option[&'a mut Ty]; }
+struct Fun['a] { pub body: Option[Expr['a]]; pub calls: i64; }
+enum Expr['a] {
+  N(&'a mut Num['a]);
+  B(&'a mut Bin['a]);
+}
+struct P { pub pos: usize; pub n: usize; }
+fn term(p: &mut P, ar: &'a mut Arena) Expr['a] {
+  p.pos = p.pos + 1usize;
+  Expr.N(ar.alloc(Num(1, None)))
+}
+fn expr(p: &mut P, ar: &'a mut Arena) Expr['a] {
+  let l = term(p, ar);
+  if p.pos >= p.n { return l; }
+  let r = expr(p, ar);
+  Expr.B(ar.alloc(Bin(l, r, None)))
+}
+fn check(e: &mut Expr['a], t: &'a mut Ty) i64 {
+  match e {
+    case let N(n) { n.ty = Some(t); n.v }
+    case let B(b) { b.ty = Some(t); check(&mut b.l, t) + check(&mut b.r, t) }
+  }
+}
+fn main() {
+  var ar = Arena();
+  let f = ar.alloc(Fun(None, 0));
+  let t = ar.alloc(Ty(8));
+  var p = P(0usize, 5usize);
+  var e = expr(&mut p, &mut ar);
+  print <- check(&mut e, t), "\n";
+}
