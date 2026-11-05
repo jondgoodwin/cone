@@ -1346,6 +1346,31 @@ declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.
 
+**The generic-module instances the package uses are recorded at the file's end**
+(`incInstanceUses`): a program that never names `g[i64]`, which only a package
+uses, would never build it, so the instance's `init` and `final` would have no
+place in the stitched pair. The file ends with a private `fn __uses() { g[i64]; }`
+(a module is no type to `alias`, and only a body names an instance); the
+program's compile checks it, builds the instance from the generic's include file
+and places it (`pgmInstanceOrder`), and nothing calls the function. Recorded:
+each instance of a generic module the package does not hold, whose call the
+package's own root text wrote (not one made inside another instance's body, nor
+by a file the package imports), when the generic is named by a bare name and each
+type argument is a number type. **An instance with any other spelling is not
+recorded**, and where its generic module declares an `init` or `final` that is a
+compile error when the include file is generated (`ErrorInstanceUnrecorded`,
+pointed at the instance), since its setup would never run in a program that does
+not name it (`module_generic_pkguse_unspelled`). Where the generic declares
+neither, nothing is lost and the file says so in a comment
+(`// Not recorded, ...`). **The same for an instance made in a submodule's
+file** (its call sits in a submodule's spans, not the root's): the root cannot
+spell it, so it is refused where its generic has setup
+(`module_generic_pkguse_submodule`), and passed over where not. An instance made inside another instance's body, or by included text, is
+in no submodule's file and stays unrecorded and unrefused: the program makes it
+with the instance. No run-time guard: the
+instance's `init` is still `linkonce` in the package's object, merged at link,
+and the stitched init calls it once, from the program's `initorder`.
+
 **A type the compiler found shape-changing carries the finding**
 (`incRecordShape`, `shapeRecordable`): `ShapeChanging` is appended to the `is`
 list of each non-generic type of the package that its methods show to change
@@ -2142,15 +2167,19 @@ calls them without naming them (`module_init_link` drops a `lib.Handle`).
 its place in the order ("The module order"). Across separately compiled
 packages each object's copy of an instance's `init` is the one merged function,
 and the program's stitched init calls it once, where the program names that
-instance itself (`module_generic_link`). ⚠ **An instance only a package uses is
-invisible to the program**: the package's include file says nothing of it, so
-the program's stitched pair makes no call to its `init` or finalizer, and a
-global it would assign keeps the zero it was stored with. Measured at run time
-through Congo, 25 Sep 2026: package `q` uses `g[i64]` and the program imports
-`q` alone; `q`'s `init` runs and `g[i64]`'s does not, its count of inits read
-back as 0, and neither does its `final`. Where the program names `g[i64]`
-itself, it runs once. By the rule above it leaks rather than misbehaves; what
-closes it is open (`Backlog\init-and-final.md`).
+instance itself (`module_generic_link`). **An instance only a package uses is
+recorded by the package's include file** ("Generating the include file",
+`incInstanceUses`), so the program's compile builds it and `pgmInstanceOrder`
+places it: its `init` runs once, before the package's, and its `final` once,
+after. Measured through Congo, 25 Sep 2026, before the record: package `q` uses
+`g[i64]` and the program imports `q` alone; `q`'s `init` ran and `g[i64]`'s did
+not, its count of inits read back as 0, and neither did its `final`. Now it
+reads 1, and where the program, or a second package, names the instance too, it
+still runs once (`module_generic_pkguse`, `module_generic_pkguseonce`). Only an
+instance spelled by a bare generic name and number-type arguments is recorded;
+any other, or one made in a submodule's file, is refused (`ErrorInstanceUnrecorded`)
+where its generic declares an `init` or `final`, else left a comment in the file. A generic struct's statics need none of this: a static takes a literal, so
+nothing runs for it (`module_generic_struct_static`).
 
 ## Principles — the model, as decided
 
@@ -2993,8 +3022,11 @@ a reference names is a type, and that is what is built.
   `test_an_indirect_package_runs_its_init_once`). An include file that does not
   declare an `init` leaves it unrun, as for a direct import. Jon's chaining
   idea (`WI\first-congo-milestone.md`) stays open for the entry-trait
-  conversation; nothing now needs it for a package. ⚠ **A generic instance
-  only a package uses is still not run** ("Init and final").
+  conversation; nothing now needs it for a package. **A generic instance
+  only a package uses is run too**, because the package's include file records
+  it ("Generating the include file": the `__uses` function), so the program's
+  compile builds the instance and `pgmInstanceOrder` places it
+  (`module_generic_pkguse`, `module_generic_pkguseonce`).
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole
