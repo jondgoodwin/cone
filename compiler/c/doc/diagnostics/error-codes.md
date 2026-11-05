@@ -944,8 +944,8 @@ make. The `from` that converts is an `overload from` or a plain method named `fr
 generic one too), and `ErrorQuesConvert` says so, except where the destination has a `from`
 and the error is bound to its thread: then it says the error is not Sendable, and why
 (AnyError's `from` takes only Sendable errors). A `main` returning a Result prints its
-error with the error type's `report()` where that gives text, else its `message()`; a type
-with neither giving text is `ErrorMainResult`, at the return type (`propagateMainResult`).
+error through core's `Error` where the type meets it, else with its `report()` where that
+gives text; a type with neither is `ErrorMainResult`, at the return type (`propagateMainResult`).
 
 A `try` block adds two (`propagateTryFinish`, `propagateTrySite`): one wanted as no Result
 or Option whose type cannot be read off it, its `?`s failing with different error types
