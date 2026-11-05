@@ -1,0 +1,58 @@
+// A module's globals are finalized in the reverse of the order they were set,
+// and 'init' sets them in the order its text first assigns each -- which is not
+// always the order declared. 'a' is declared before 'b', but 'init' sets 'b'
+// first and then 'a' from it, so 'a' is finalized first and its 'final' still
+// reads a live 'b'. ('b' zeroes itself as it dies: a 'b' finalized first would
+// show 0 here.)
+//
+// 'c' and 'd' are set in an 'if', whose arms set them in different orders; the
+// first order written wins ('d', then 'c'), so 'c' is finalized, then 'd'. 'e'
+// has a constant value and 'init' never sets it, so it is set before them all
+// (declaration order puts it among the first) and finalized last.
+
+mod module_final_setup_order;
+
+import stdio use *;
+
+struct B {
+  pub n: i64;
+  fn final(self: &uni) { printStr("B"); printInt(n); printStr(" "); n = 0; }
+}
+
+struct A {
+  pub n: i64;
+  fn final(self: &uni) { printStr("A"); printInt(n); printStr(" reads b="); printInt(b.n); printStr(" "); }
+}
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+var a: A;
+var b: B;
+var c: Fin;
+var d: Fin;
+var e = Fin(3);
+
+fn which() bool { true }
+
+fn @initpure init() {
+  b = B(42);
+  a = A(b.n + 1);
+  if which() {
+    d = Fin(2);
+    c = Fin(1);
+  } else {
+    c = Fin(1);
+    d = Fin(2);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  printStr("finalAll: ");
+  finalAll();
+  printStr("\n");
+  0i32
+}
