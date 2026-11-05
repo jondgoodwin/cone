@@ -1542,8 +1542,10 @@ static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
     if (owner == (INode*)mod)
         return 1;
     // Within a submodule of the module is within the module: the method of a
-    // type a submodule declares, as that submodule's own functions, which read
-    // the module's globals by name
+    // type a submodule declares, as that submodule's own functions. No source
+    // reaches this yet, since a submodule cannot name its parent's globals
+    // (1019) or import its parent (1113); following it is what would keep the
+    // check right if one came to
     if ((fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag)
         owner = inodeGetOwner(owner);
     for (uint32_t depth = 0; owner != NULL && owner->tag == ModuleTag && depth < 64; ++depth) {
