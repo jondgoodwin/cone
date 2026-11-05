@@ -445,6 +445,9 @@ void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value);
 // Whether a function is core's 'panic' (conestd's 'cone_panic'); and a call to
 // it on a GPU target, given its arguments
 int genlIsConePanic(FnDclNode *fndcl);
+
+// A float (scalar or vector) converted to an integer type, saturating (genlexpr.c)
+LLVMValueRef genlFloatToInt(GenState *gen, LLVMValueRef val, LLVMTypeRef to, int issigned);
 LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
 // A call to a C library math function on a GPU target, as its LLVM intrinsic
 // (GLSL.std.450's instruction), or NULL when the function is no such one
