@@ -567,7 +567,10 @@ whichever operation produced it — an integer operation past its range, a float
 one past its finite range, a float converted to an integer that cannot hold it
 or to an `f32` past its range — since the remedy is the same: a wider type or
 smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
-`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+`ErrorConstShift` a shift by the width or more. `ErrorConstChar` (1600) is a
+constant converted to a `char` that is no code point (the run time gives
+U+FFFD); `T.from(constant)` is refused so in any expression, a float into an
+integer included (`fnCallNumberFrom`). None is `ErrorLitRange`, which
 is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
@@ -1092,6 +1095,11 @@ itself, which only the code generator has: the condition of a `#if` (`metaCond`)
 rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
 (`#size(T) * 2`) still falls to `ErrorNotLit`.
 
+`ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
+include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
+or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
+the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
+(`module_generic_pkguse_unspelled`.)
 `ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
 a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
 the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
