@@ -1513,8 +1513,97 @@ void modInitNoteSet(VarDclNode *var) {
     nodesAdd(&modInitCur->setorder, (INode*)var);
 }
 
-uint16_t *modInitFlowBegin(ModuleNode *mod) {
+// The 'init' function itself, so that only its own flow walk checks its calls
+static FnDclNode *modInitFnCur = NULL;
+
+// What reading a callee's body (and, through it, the bodies of the module's own
+// functions it calls) has to answer: does it read a global of the module that
+// 'init' has not yet set at the call being walked?
+typedef struct {
+    ModuleNode *mod;
+    Nodes *seen;            // The module's functions whose bodies were entered: a cycle among them ends here
+    INode *skip;            // The name an assignment stores to, which is not a read
+    VarDclNode *hit;        // The first global found that 'init' has not set yet, or NULL
+    FnDclNode *hitfn;       // The function whose body reads it
+    FnDclNode *cur;         // The function whose body is being read
+} ModReadCtx;
+
+static int modReadsVisit(INode *node, void *vctx);
+
+// The body of one of the module's own functions: a function with a body written
+// in Cone, owned by the module. A call to anything else (an extern, a method, a
+// function of another module, a function reference) is not followed
+static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)dcl;
+    if (fn->dclinfo.owner != (INode*)ctx->mod || fn->genericinfo != NULL || (fn->flags & (FlagExtern | FlagMethFld))
+        || fn->value == NULL || fn->value->tag != BlockTag)
+        return 0;
+    INode **seenp;
+    uint32_t cnt;
+    for (nodesFor(ctx->seen, cnt, seenp)) {
+        if (*seenp == dcl)
+            return 0;
+    }
+    nodesAdd(&ctx->seen, dcl);
+    FnDclNode *svcur = ctx->cur;
+    ctx->cur = fn;
+    int found = siVisit(fn->value, modReadsVisit, ctx);
+    ctx->cur = svcur;
+    return found;
+}
+
+static int modReadsVisit(INode *node, void *vctx) {
+    ModReadCtx *ctx = (ModReadCtx*)vctx;
+    switch (node->tag) {
+    case AssignTag:
+        // 'g = v' stores to g, as 'init' itself may; its other operands are read
+        ctx->skip = ((AssignNode*)node)->lval;
+        return 0;
+    case NameUseTag: {
+        INode *dcl = ((NameUseNode*)node)->dclnode;
+        if (node == ctx->skip || dcl == NULL || dcl->tag != VarDclTag)
+            return 0;
+        VarDclNode *var = (VarDclNode*)dcl;
+        if (var->dclinfo.owner != (INode*)ctx->mod || !modGlobalUninit(dcl) || (var->flowtempflags & VarInitialized))
+            return 0;
+        ctx->hit = var;
+        ctx->hitfn = ctx->cur;
+        return 1;
+    }
+    case FnCallTag: {
+        INode *objfn = ((FnCallNode*)node)->objfn;
+        if (objfn != NULL && isNameUseNode(objfn))
+            return modReadsFollow(ctx, ((NameUseNode*)objfn)->dclnode);
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A call 'init' makes is walked by flow: where it calls one of the module's own
+// functions, what that function reads counts as 'init' reading it at this point,
+// through every function of the module it calls in turn. Positional, as 'init''s
+// own reads are: only a global not yet set where the call stands is refused, and
+// a cycle of helpers ends where it comes back to one already entered
+void modInitCall(FlowState *fstate, FnCallNode *call) {
+    if (modInitCur == NULL || modInitFnCur == NULL || fstate->fnsig != (FnSigNode*)modInitFnCur->vtype)
+        return;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn))
+        return;
+    ModReadCtx ctx = { modInitCur, newNodes(8), NULL, NULL, NULL, NULL };
+    if (!modReadsFollow(&ctx, ((NameUseNode*)call->objfn)->dclnode))
+        return;
+    errorMsgNode((INode*)call, ErrorMove,
+        "This call reads global %s, in %s, which has not been initialized: 'init' has not set it by this point, so there is no value to use.",
+        &ctx.hit->namesym->namestr, &ctx.hitfn->namesym->namestr);
+}
+
+uint16_t *modInitFlowBegin(ModuleNode *mod, FnDclNode *initfn) {
     modInitCur = mod;
+    modInitFnCur = initfn;
     mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
@@ -1533,6 +1622,7 @@ uint16_t *modInitFlowBegin(ModuleNode *mod) {
 
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
     modInitCur = NULL;
+    modInitFnCur = NULL;
     INode **nodesp;
     uint32_t cnt;
     uint32_t pos = 0;

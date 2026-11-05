@@ -154,7 +154,11 @@ ModuleNode *modInitOf(FnDclNode *fnnode);
 // once -- a 'let' one included -- and may not read it before it does. After the
 // pass, each one it never saw assigned is ErrorGlobalUninit, and every global
 // holds a value again for every other function. 'saved' carries their flags
-uint16_t *modInitFlowBegin(ModuleNode *mod);
+uint16_t *modInitFlowBegin(ModuleNode *mod, struct FnDclNode *initfn);
+// A call 'init' makes: where it is to one of the module's own functions, what that
+// function reads of the module's globals, and what the module's functions it calls
+// read in turn, counts as read at this call, so one 'init' has not yet set is refused
+void modInitCall(struct FlowState *fstate, struct FnCallNode *call);
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
 void modInitNoteSet(struct VarDclNode *var);
 

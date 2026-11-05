@@ -1,0 +1,53 @@
+// A module's 'init' may call the module's own functions that read its globals,
+// once those are set: a read counts at the call, through every function of the
+// module the callee calls in turn, and is judged by position. 'last' is set
+// after the calls that are made before it, none of which reads it, so it is not
+// counted against them. A call the compiler cannot follow (a function reference)
+// passes; the function it reaches here reads 'late' before 'init' has set it, and
+// reads the zeroed storage a global holds until then.
+
+mod module_init_reach;
+
+import stdio use *;
+
+let table: i64;
+let last: i64;
+let late: i64;
+let outA: i64;
+let outB: i64;
+let outC: i64;
+let outD: i64;
+
+fn lookup() i64 { table * 10i64 }
+fn viaOne() i64 { lookup() + 1i64 }
+fn viaTwo() i64 { viaOne() + 1i64 }
+
+// A cycle of helpers, one of which reads 'table'
+fn ping(n: i64) i64 {
+  if n <= 0i64 { return table; }
+  pong(n - 1i64)
+}
+fn pong(n: i64) i64 { ping(n) }
+
+fn readLast() i64 { last }
+fn readsLate() i64 { late }
+fn callThrough(f: &fn() i64) i64 { f() }
+
+fn @initpure init() {
+  table = 4i64;
+  outA = viaTwo();
+  outB = ping(3i64);
+  outD = callThrough(&readsLate);
+  last = 9i64;
+  late = 5i64;
+  outC = readLast() + readsLate();
+}
+
+fn main() i32 {
+  initAll();
+  printInt(outA); printStr(" ");
+  printInt(outB); printStr(" ");
+  printInt(outC); printStr(" ");
+  printInt(outD); printStr("\n");
+  0i32
+}

@@ -1,0 +1,37 @@
+// What a module's 'init' reads of its own globals counts through the module's
+// own functions it calls, to any depth: a helper's read is its caller's, so it
+// is refused where 'init' calls the helper before it has set the global. The
+// test is positional, as 'init''s own reads are: after the set the same call is
+// fine, and a cycle of helpers is followed once round and ends.
+
+mod module_init_reach_reject;
+
+let direct: i64;
+let deep: i64;
+let cyc: i64;
+
+// A helper that reads a global itself
+fn readDirect() i64 { direct }
+
+// Two levels: 'middle' reads nothing itself, 'readDeep' reads 'deep'
+fn middle() i64 { readDeep() + 1i64 }
+fn readDeep() i64 { deep }
+
+// A cycle of helpers, one of which reads 'cyc'
+fn ping(n: i64) i64 {
+  if n <= 0i64 { return cyc; }
+  pong(n - 1i64)
+}
+fn pong(n: i64) i64 { ping(n) }
+
+fn @initpure init() {
+  let a = readDirect();       //~ ErrorMove:21 "has not been initialized"
+  direct = 1i64;
+  let b = readDirect();
+  let c = middle();           //~ ErrorMove:17 "has not been initialized"
+  deep = 2i64;
+  let d = middle();
+  let e = ping(3i64);         //~ ErrorMove:15 "has not been initialized"
+  cyc = 4i64;
+  let f = ping(3i64);
+}
