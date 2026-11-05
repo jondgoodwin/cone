@@ -99,6 +99,11 @@ builds `newMatchValueNode`: an `is` node flagged `FlagMatchValue`, the value in
 must become a borrow. Name resolution walks `typ` as it would any `is` test's,
 which resolves a value just as well.
 
+**A bare variant name keeps the matched value's lifetimes.** When the name binds to a
+variant and an invariant lifetime has been seen, `castPatternAdoptLifetimes` gives it the
+lifetime names and type arguments of the value's own type, so a field read through the
+pattern carries the brand the value carries (`E['=a]`), never a brand not known here.
+
 **The same word declares nominal conformance**, in `parseStruct`: `struct Gauge is
 Meter` asserts of a type what `p is Mobile` asks of a value. The two cannot be
 confused. Here `is` is **infix** — `parseCmp` only looks for it once a left
