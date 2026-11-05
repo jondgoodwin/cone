@@ -1,0 +1,149 @@
+// SoaList[T]: rows held as one List per field of T. Every expected value is worked out by hand
+// from the pushes made:
+// - the columns are named as T's fields are and are Lists, so 'ps.x[i]' reads and writes one
+//   element of the field, and a column grows 4, 8, 16, 32 as a List does;
+// - 'len' is the length of the columns, 'push' adds one value to each, 'get(i)' builds the row
+//   from each column's value at i (T is Copy);
+// - a type with a field that moves (a String, a finalizer) is built and read by column.
+
+mod soalist;
+
+import testing use *;
+import collections use *;
+
+struct Pt {
+  pub x: i32;
+  pub y: i32;
+}
+
+struct Particle {
+  pub x: i32;
+  pub y: i64;
+  pub live: bool;
+  pub at: Pt;
+}
+
+struct Tagged {
+  pub name: String;
+  pub id: i32;
+}
+
+var @threadlocal log = 0i64;
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { log = log * 10i64 + n; }
+}
+
+struct Held {
+  pub f: Fin;
+  pub k: i32;
+}
+
+// Two columns borrowed together, one written and one read: x[i] grows by y[i] / 10
+fn bump(ps: &uni SoaList[Particle]) {
+  let xs = &uni ps.x;
+  let ys = &imm ps.y;
+  var i = 0usize;
+  while i < xs.len() {
+    xs[i] = xs[i] + i32.from(ys[i] / 10i64);
+    i = i + 1usize;
+  }
+}
+
+fn rows() {
+  var ps = SoaList[Particle]();
+  expectUInt(u64.from(ps.len()), 0, "empty length");            // 1
+  expectBool(ps.isEmpty(), true, "empty is empty");              // 2
+
+  // Rows (1, 10, true, at 1,2), (2, 20, false, at 2,3), (3, 30, true, at 3,4)
+  ps.push(Particle(1, 10i64, true, Pt(1, 2)));
+  ps.push(Particle(2, 20i64, false, Pt(2, 3)));
+  ps.push(Particle(3, 30i64, true, Pt(3, 4)));
+  expectUInt(u64.from(ps.len()), 3, "three pushed");              // 3
+  expectBool(ps.isEmpty(), false, "not empty");                  // 4
+
+  // Indexing a column: field x of row 0, y of row 2, live of row 1, at.y of row 2
+  expectInt(i64.from(ps.x[0usize]), 1, "x of row 0");            // 5
+  expectInt(ps.y[2usize], 30, "y of row 2");                     // 6
+  expectBool(ps.live[1usize], false, "live of row 1");           // 7
+  expectInt(i64.from(ps.at[2usize].y), 4, "at.y of row 2");      // 8
+  expectUInt(u64.from(ps.x.len()), 3, "x column length");         // 9
+  expectUInt(u64.from(ps.y.len()), 3, "y column length");         // 10
+
+  // Writing through a column changes that row's field: x of row 1 becomes 7
+  ps.x[1usize] = 7;
+  expectInt(i64.from(ps.x[1usize]), 7, "x written");             // 11
+
+  // A whole row: row 1 is (7, 20, false, at 2,3)
+  let r = ps.get(1usize);
+  expectInt(i64.from(r.x), 7, "row 1 x");                        // 12
+  expectInt(r.y, 20, "row 1 y");                                 // 13
+  expectBool(r.live, false, "row 1 live");                       // 14
+  expectInt(i64.from(r.at.x), 2, "row 1 at.x");                  // 15
+  expectInt(i64.from(r.at.y), 3, "row 1 at.y");                  // 16
+
+  // x is now 1, 7, 3 and y is 10, 20, 30: bump adds y / 10 to x, giving 2, 9, 6
+  bump(&uni ps);
+  expectInt(i64.from(ps.x[0usize]), 2, "bumped row 0");          // 17
+  expectInt(i64.from(ps.x[1usize]), 9, "bumped row 1");          // 18
+  expectInt(i64.from(ps.x[2usize]), 6, "bumped row 2");          // 19
+  expectInt(ps.y[1usize], 20, "y read only");                    // 20
+}
+
+// 20 rows, crossing the columns' growth at 4, 8 and 16: row i is (i, i * i, i is even)
+fn grows() {
+  var ps = SoaList[Particle]();
+  var i = 0i32;
+  while i < 20i32 {
+    ps.push(Particle(i, i64.from(i) * i64.from(i), i % 2i32 == 0i32, Pt(i, i)));
+    i = i + 1i32;
+  }
+  expectUInt(u64.from(ps.len()), 20, "twenty rows");             // 21
+  expectUInt(u64.from(ps.y.capacity()), 32, "column grew to 32"); // 22
+  // 0 + 1 + 4 + ... + 361 = 19 * 20 * 39 / 6 = 2470
+  var sum = 0i64;
+  var k = 0usize;
+  while k < ps.len() { sum = sum + ps.y[k]; k = k + 1usize; }
+  expectInt(sum, 2470, "sum of squares");                        // 23
+  expectInt(ps.get(13usize).y, 169, "row 13 y");                 // 24
+  expectBool(ps.get(13usize).live, false, "row 13 odd");         // 25
+  expectBool(ps.get(18usize).live, true, "row 18 even");         // 26
+  expectInt(i64.from(ps.get(19usize).at.y), 19, "row 19 at.y");  // 27
+}
+
+// A move type's row is built and read by column
+fn moves() {
+  var ts = SoaList[Tagged]();
+  ts.name.push(String.from("ann"));
+  ts.id.push(1);
+  ts.name.push(String.from("bob"));
+  ts.id.push(2);
+  expectUInt(u64.from(ts.len()), 2, "two tagged");               // 28
+  expectStr(ts.name[1usize].view(), "bob", "name of row 1");     // 29
+  expectInt(i64.from(ts.id[0usize]) + i64.from(ts.id[1usize]), 3, "ids"); // 30
+}
+
+// A list's death finalizes the values of the column it holds, first to last
+fn dies() {
+  {
+    var h = SoaList[Held]();
+    h.f.push(Fin(1));
+    h.k.push(10);
+    h.f.push(Fin(2));
+    h.k.push(20);
+    h.f.push(Fin(3));
+    h.k.push(30);
+    expectInt(log, 0, "pushes finalize nothing");                // 31
+    expectInt(i64.from(h.k[2usize]), 30, "k of row 2");          // 32
+  }
+  expectInt(log, 123, "death finalizes first to last");          // 33
+}
+
+fn main() i32 {
+  rows();
+  grows();
+  moves();
+  dies();
+  done()
+}

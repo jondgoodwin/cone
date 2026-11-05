@@ -1,6 +1,7 @@
 // The collections package: a growable list, an owned string, a dictionary of
 // any keys that are Hash (and an ordered one, which visits in insertion order),
-// a set, and a double-ended queue, each holding its elements in one block of memory
+// a set, a double-ended queue, and a list held as one column per field of its element
+// ('SoaList'), each holding its elements in one block of memory
 // that it gets, grows and gives back through a region it points to (core's
 // 'MemRegion'; the heap's, which calls the C allocator, unless it is made in
 // another). Built as Congo needs them, and no further.
@@ -699,6 +700,57 @@ pub struct ListDrain['a, T] is Iterator[T] {
       var i = pos;
       while i < end { mem.finalize(ptr + i); i = i + 1usize; }
     }
+  }
+}
+
+// -------- SoaList --------
+
+// A growable list of rows of T held as columns, struct of arrays: one 'List' for each field of
+// T, of that field's type, named as the field is, all the same length. 'SoaList[Body]()' for a
+// 'Body' with 'pos' and 'mass' has the columns 'pos: List[Vec3]' and 'mass: List[f64]'. A loop
+// that touches one field reads one packed column, and two columns may be borrowed with their own
+// permissions at once ('&uni ps.pos' beside '&imm ps.mass', as two fields of a struct are).
+//
+// The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
+// must be a struct, and its fields public, or all of them visible to this module (a type from
+// another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty' or 'get'
+// clashes with the method of that name and is refused (1596).
+//
+// A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
+// taken apart field by field, and a field of an owned value that moves cannot be moved out of it.
+// A column is a List, so 'ps.pos[i]' reads and writes that element of the field, 'ps.pos.push(v)'
+// grows that column alone, and a move type's rows are built and read by column ('ps.name.push(s)',
+// 'ps.name[i]'); whoever pushes to columns one at a time keeps them the same length ('len' reads
+// the last column). A push can move the blocks, as a List's does, so a column borrowed before
+// it is stale after.
+// Not yet: 'ps[i].pos' as a place, a layout marker, and 'remove'.
+pub struct SoaList[T] is Default {
+  #each #f in #fields(T) {
+    pub #f: List[#f.type];
+  }
+
+  // How many rows it holds: the length of its columns (0 for a T with no fields)
+  pub fn len(self: &) usize {
+    var n = 0usize;
+    #each #f in #fields(T) {
+      n = self.#f.len();
+    }
+    n
+  }
+
+  pub fn isEmpty(self: &) bool { self.len() == 0usize }
+
+  // Add a row at the end, one value to each column
+  pub fn push(self: &mut, row: T) where T is Copy {
+    #each #f in #fields(T) {
+      self.#f.push(row.#f);
+    }
+  }
+
+  // The row at index, built from each column's value there. An index out of range is a panic,
+  // as a column's own is
+  pub fn get(self: &, index: usize) T where T is Copy {
+    T(#each #f in #fields(T) { #f: self.#f[index] })
   }
 }
 
