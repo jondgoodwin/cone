@@ -1,0 +1,60 @@
+// Bug 38. The closure an Awaitable[R] is made from answers through an
+// actors.ReplyOf[R], whose one 'answer' takes an R: an answer of another type
+// than the Awaitable promises is refused at the 'answer' call. Before, the
+// closure was handed an untyped Reply, and an Awaitable[Uni[Pair]] whose
+// closure called answerNow[u64] compiled and crashed at the 'await'. The
+// truthful twins are in concurrency_await_replyof.
+
+mod concurrency_await_replyof_refused;
+
+import actors;
+
+struct Pair {
+  pub a: u64;
+  pub b: u64;
+}
+
+// The demonstrated case: a Uni[Pair] promised, a u64 answered
+fn lies() actors.Awaitable[Uni[Pair]] {
+  actors.Awaitable[Uni[Pair]].make(fn(rp: actors.ReplyOf[Uni[Pair]]) {
+    rp.answer(1u64);   //~ ErrorNoCandidate "No method declared by `answer`"
+  })
+}
+
+// A value promised, another value answered
+fn lies2() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    rp.answer(Pair(1u64, 2u64));   //~ ErrorNoCandidate "No method declared by `answer`"
+  })
+}
+
+// A closure that takes an envelope of another type than the Awaitable's
+fn wrongEnvelope() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u32]) {   //~ ErrorWhereUnmet "make requires F is fn(rp: ReplyOf[R])"
+    rp.answer(1u32);
+  })
+}
+
+actor Helper {
+  pub async fn answerWith(self, rp: actors.ReplyOf[u64], v: u64) {
+    rp.answer(v);
+  }
+}
+
+// The envelope handed to another actor is gone from the closure: it cannot be
+// answered there as well
+fn twice() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    let h = Helper();
+    h.answerWith(rp, 1u64);
+    rp.answer(2u64);   //~ ErrorMove "moved out"
+  })
+}
+
+// The envelope answered twice: 'answer' spends it, so the second is refused
+fn answeredTwice() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) {
+    rp.answer(1u64);
+    rp.answer(2u64);   //~ ErrorMove "moved out"
+  })
+}
