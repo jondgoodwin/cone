@@ -2046,7 +2046,12 @@ list or `but` naming one is `ErrorBadFold`.
 module's `init` may call, as `init` itself is. The parser records it
 (`DclInitPure`, kept by `dclInfoJoin`) and **nothing checks it**: the rule that
 such a function call only `pure` or `initpure` functions needs `pure`, which is
-not built.
+not built. Only `modLifecycleFn` reads it, and only on `init`, as its required
+spelling. It marks no *helper*: a helper's safety is read from its body (below),
+so no Cone function of the module carries it; it stays on the `extern` functions
+`init` reaches (libc's `malloc`, Winsock, `LoadLibraryA`, `dlopen`), where it is
+only a record of the author's promise — the compiler does not read an extern's
+body — until `trust` is built.
 
 **Every global without an initial value must be assigned by its module's
 `init`** (mod-namespaces.html). The check is `init`'s own data flow pass
@@ -2069,6 +2074,44 @@ declares no `init` is `ErrorGlobalUninit` too, reported by `modLifecycle`;
 where the module's `init` is malformed, only that is reported. Assigning such a
 global in any other function does not count, and a `let` one may not be
 assigned there at all.
+
+**A call `init` makes counts as a read of what the callee reads** (`modInitCall`,
+asked at the end of `fnCallFlow` while `init`'s own flow pass is the one walking:
+the pass records the function in `modInitFnCur`, so a callee checked on demand in
+the middle of it asks nothing). Where the call is statically resolved to one of
+the module's own functions — an `FnDclNode` the module declares (`modDeclares`:
+owned by the module, or a method of a type the module declares), with a Cone
+body, not `extern` — `modReadsFollow` reads its body with `siVisit`
+(shapeinfer's tree walk) and looks for a name use of a global that is still
+unassigned *at that point of the walk* (`modGlobalUninit`, `VarInitialized`
+clear): the position is `init`'s flow state, so a global assigned before the call
+passes, and one assigned after it is refused only if the callee reads it. A call
+met in the body to another such function is followed the same way, to any depth,
+and each function is entered once per query (`ModReadCtx.seen`), which ends a
+cycle. The target of an assignment is not a read; any other mention is, a field
+assignment or a borrow included. The refusal is `ErrorMove` at the call, naming
+the global and the function that reads it. A method call is lowered before flow
+to a call whose `objfn` names the selected method, so it reaches `modInitCall`
+the way a function call does. A generic's call is substituted by type check to a
+use of its *instance* (`genericInstanceUse`), a clone of the template that keeps
+its owner and is type checked when made; `modReadsFollow` walks that instance's
+body, whose names are resolved, and refuses to follow a `FnDclNode` still
+carrying `genericinfo` (a template, which no substituted call names). A method of
+a generic type's instance is an ordinary method of that instance, owned by it.
+**Not followed, and so passing:** a call that is not statically resolved — a
+virtual call (`FlagVDisp`), a closure, a call through a function reference or any
+variable — and a call to an `extern` function; a closure literal's body is not
+entered. These pass until `trust` is built, a known gap it closes.
+`conec --report-trust` already lists the extern kind, as its `extern` lines
+(`extern <file>:<line> <function> [<callee>]`, whole-program: those in a module's
+`init` and its helpers are this module's unfollowed externs); it lists no virtual
+call, function-reference call or closure, which `trust` will have to take over
+with the rest. **Another module's function needs no following:** that module
+cannot read this module's globals without importing it, which would be a cycle of
+modules, and that is refused. A helper's own assignment to a global does not
+count as `init` setting it (the target of an assignment is not a read, and only
+`init`'s flow records a set), so a helper that sets a global and then reads it,
+called before `init` sets it, is refused.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
 Where any global the module declares has anything to do as it dies
@@ -3014,9 +3057,10 @@ a reference names is a type, and that is what is built.
   nothing saying which won.
 - **Module `init` and `final` and the program's entry are built; purity is not** ("Init
   and final"). What `mod-namespaces.html` specifies and nothing checks is the
-  `initpure` rule that such a function call only `pure` or `initpure` functions,
-  and that one other than `init` read no uninitialized global of its module:
-  `pure` itself is unbuilt. The entry the compiler builds runs the stitched init
+  `initpure` rule that such a function call only `pure` or `initpure` functions:
+  `pure` itself is unbuilt. (That a helper `init` calls reads no global `init` has
+  not yet set is built, by reading the helper's body: "A call `init` makes counts
+  as a read".) The entry the compiler builds runs the stitched init
   and final round `main`. **A package the
   program reaches only through other packages has its `init` and `final` run**:
   an include file imports, and the package lines list the whole closure ("A
@@ -3060,9 +3104,11 @@ a reference names is a type, and that is what is built.
   `init` (`ErrorDupName`). Written private, as the scenarios write them, neither
   leaves its module.
 - **An `init`'s globals are cleared only round its own flow pass.** A function
-  `init` calls reads the module's globals as holding values, whatever `init` has
-  assigned by then: that is the unbuilt `initpure` rule, and reading one early
-  that way reads zeroed storage.
+  `init` calls is itself checked with the module's globals holding values; what
+  it reads is judged at the call in `init` (`modInitCall`), through the module's
+  own functions and methods. A call that cannot be followed (an extern, a
+  function reference, a virtual call, a closure) is not, and reading a global early that way reads
+  zeroed storage.
 - **Where a module's defaults are taken decides who sees them.** A copy made at
   the end of the module's fold pass is read by every module folding from it;
   one the fallback in `pgmNameRes` makes, after the fold passes, is not — no
