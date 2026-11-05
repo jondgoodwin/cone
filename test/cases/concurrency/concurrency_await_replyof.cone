@@ -1,0 +1,88 @@
+// The typed envelope of Awaitable.make (Bug 38): the closure is handed an
+// actors.ReplyOf[R], and answers an R through it. This is the truthful twin of
+// concurrency_await_replyof_refused, and what the envelope still allows:
+//
+// - a plain value answered (a u64), and a Uni answered (a Uni[Pair]), each
+//   awaited and read;
+// - a closure that hands the envelope on, to another actor, which answers; the
+//   closure has gone by then, the answer comes from the helper;
+// - an operation made and never awaited dies unstarted, and its closure with
+//   what it holds (a Fin) is finalized once; the envelope in it was never made.
+
+mod concurrency_await_replyof;
+
+import stdio use *;
+import actors;
+
+fn say(s: &str, n: u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Fin {
+  pub n: u64;
+  fn final(self: &uni) {say("  drop", n);}
+}
+
+struct Pair {
+  pub a: u64;
+  pub b: u64;
+}
+
+fn plain(v: u64) actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(var rp: actors.ReplyOf[u64]) [v] {
+    rp.answer(v);
+  })
+}
+
+fn parcel(a: u64, b: u64) actors.Awaitable[Uni[Pair]] {
+  actors.Awaitable[Uni[Pair]].make(fn(var rp: actors.ReplyOf[Uni[Pair]]) [a, b] {
+    rp.answer(Uni[Pair](Pair(a, b)));
+  })
+}
+
+// Answers whatever envelope it is given, from an actor of its own
+actor Helper {
+  pub async fn answerWith(self, var rp: actors.ReplyOf[u64], v: u64) {
+    say("helper answers", v);
+    rp.answer(v);
+  }
+}
+
+fn handedOn(v: u64) actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(rp: actors.ReplyOf[u64]) [v] {
+    let h = Helper();
+    h.answerWith(rp, v);
+  })
+}
+
+fn unawaited() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(fn(var rp: actors.ReplyOf[u64]) [tag = Fin(5u64)] {
+    say("  unawaited started", 0u64);
+    rp.answer(0u64);
+  })
+}
+
+actor Prober {
+  // One after another, so that the helper's line is in its place
+  pub async fn go(self) {
+    let v = await plain(7u64);
+    say("value", v);
+    let p = await parcel(3u64, 4u64);
+    say("uni a", p.a);
+    say("uni b", p.b);
+    let w = await handedOn(9u64);
+    say("handed on", w);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    let op = unawaited();
+    say("unawaited", 0u64);
+  }
+  {
+    let p = Prober();
+    p.go();
+  }
+  finalAll();
+  say("end", 0u64);
+}

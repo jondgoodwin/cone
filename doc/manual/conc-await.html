@@ -538,16 +538,21 @@ struct Delay {
 
   pub fn await(self) actors.Awaitable[u64] {
     let v = n;
-    actors.Awaitable[u64].make(fn(rp: actors.Reply) [v] {
-      actors.answerNow[u64](rp, v + 1u64);
+    actors.Awaitable[u64].make(fn(var rp: actors.ReplyOf[u64]) [v] {
+      rp.answer(v + 1u64);
     })
   }
 }
 
 // in a behaviour:  let v = await Delay(4u64);    // v is 5
 </pre>
-	<p>The contract is the operation's: <span class="pre">Awaitable.make</span> and <span class="pre">Awaitable.of</span>
-		hand the closure the reply's envelope, which it answers exactly once. A method that takes more than
+	<p>The contract is the operation's: <span class="pre">Awaitable[R].make</span> hands the closure the reply's
+		envelope, an <span class="pre">actors.ReplyOf[R]</span>, which it answers exactly once with an
+		<span class="pre">R</span> through <span class="pre">answer</span>. The envelope's type is what ties the answer to
+		the <span class="pre">Awaitable</span>: an answer of another type, or a closure taking an envelope of another
+		type, is refused when the program is compiled. (<span class="pre">Awaitable.of</span>, and
+		<span class="pre">answerNow</span> with the untyped <span class="pre">actors.Reply</span> it hands on, are the
+		raw forms the I/O packages are built on; they leave the type to their author.) A method that takes more than
 		<span class="pre">self</span>, or gives neither type, is refused, and so is a type whose <span class="pre">await</span>
 		is overloaded (the error says so, rather than that the method is missing). A behaviour's call is taken as a
 		behaviour's call first: <span class="pre">await peer.count()</span> is sent awaited whatever type the behaviour
@@ -555,7 +560,9 @@ struct Delay {
 		to a value, such as a future's <span class="pre">T</span> held in a variable, not to a call's reply.</p>
 
 	<p>The contract is exactly once, and the maker keeps it: the closure given to <span class="pre">Awaitable.make</span>
-		must answer the envelope once and no more. If it drops the envelope unanswered, the awaiter is abandoned, as for a
+		must answer the envelope once and no more (an envelope is a <span class="pre">Move</span> and
+		<span class="pre">Sendable</span> value, so the closure may hand it to another actor, which answers; a second answer
+		is a program error, a panic). If it drops the envelope unanswered, the awaiter is abandoned, as for a
 		behaviour that ended without answering (<a href="#future">Futures</a>).</p>
 
 	<h2 id="futureset">Waiting on several futures</h2>

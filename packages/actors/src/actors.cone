@@ -318,9 +318,11 @@
 // finishes the operation, on whatever thread, to write the R into it as
 // answerNow does; the reply then resumes the behaviour as any reply does. The
 // 'await''s value is the R as the operation declared it. An operation is made
-// from a closure (Awaitable.make: the closure is a block of its own) or from a
-// context word and two plain functions (Awaitable.of: nothing is allocated);
-// and an answer too large for a slot need not be boxed if the operation keeps
+// from a closure (Awaitable.make: the closure is a block of its own, and is
+// handed a ReplyOf[R], an envelope that answers an R and nothing else) or from
+// a context word and two plain functions (Awaitable.of: nothing is allocated;
+// these raw forms, with answerNow and the rest that name a Reply, belong to
+// 'trust': the compiler does not tie their answer to the R); and an answer too large for a slot need not be boxed if the operation keeps
 // a place of its own for it: answerLent (LENT ANSWERS, below), which is how the
 // aio package answers a socket's read with no allocation at all. An operation
 // that keeps the envelope itself, in a record of its own, answers it there
@@ -3116,7 +3118,10 @@ fn post(r: &mut Reply) {
 }
 
 // A message that returns a value, and holds no 'await', answering its
-// request: the value goes back in the reply
+// request: the value goes back in the reply. The R is the caller's word: no
+// type is tied to the Reply, so this and the raw forms that follow (answerNowIn,
+// answerLent, answerLentIn) belong to 'trust'. An Awaitable's closure answers
+// through its ReplyOf[R] instead
 pub fn answerNow[R](rp: Reply, v: R) {
   var r = rp;
   answerNowIn[R](&mut r, v);
@@ -3894,11 +3899,29 @@ pub fn parkBlocks() ParkBlocks {
     keepsMade.loadOrdered(MemOrder.Acquire), keepsFreed.loadOrdered(MemOrder.Acquire))
 }
 
+// The envelope of a reply that is to be answered with an R, and nothing else:
+// what Awaitable.make hands its closure, so that the closure cannot answer
+// another type than the Awaitable promises (the compiler refuses it at the
+// 'answer' call). It wraps a Reply, which stays untyped inside the runtime, and
+// is Move and Sendable as the Reply is: the closure may hand it to another
+// actor, which answers. 'answer' spends it, and writes the value as answerNow
+// does; one never answered is let go as a Reply is (the awaiting behaviour is
+// abandoned). R is in no field, as Awaitable's is not
+pub struct ReplyOf[R] is Sendable {
+  reply: Reply;
+
+  // Answer with v, as answerNow does, and spend the envelope
+  pub fn answer(self: &mut, v: R) {
+    answerNowIn[R](&mut reply, v);
+  }
+}
+
 // What an 'await' in a behaviour may wait for besides another actor's reply:
 // an operation started at the seam, an I/O operation above all (the aio
 // package), whose one answer is an R. Its maker erases its type: the operation
-// is a closure the maker wrote, an owner of a 'fn(rp: Reply)' holding what the
-// operation needs. The seam calls it, once, with the envelope of the reply the
+// is a closure the maker wrote, an owner of a 'fn(rp: ReplyOf[R])' holding what the
+// operation needs, wrapped in one of 'fn(rp: Reply)', so that every Awaitable
+// is laid out alike. The seam calls it, once, with the envelope of the reply the
 // answer goes back in, written as answerNow writes a behaviour's value; and an
 // Awaitable that dies unawaited finalizes the closure and what it holds, which
 // is how the maker learns that nothing will start it. A closure that has handed
@@ -3912,16 +3935,23 @@ pub struct Awaitable[R] is Move {
   drop: &fn(ctx: *u8);
 
   // An operation from the closure that starts it (a closure literal, or any
-  // callable of that signature). The closure is a block of its own
-  pub fn make[F: fn(rp: Reply)](start: F) Awaitable[R] {
-    Awaitable[R](Some[Uni[fn(rp: Reply)]](Uni[fn(rp: Reply)](start)), null, &noRun, &noDrop)
+  // callable of that signature). The closure is a block of its own, and is
+  // handed the envelope of an R, which is how its answer is held to the type
+  // the Awaitable promises. The closure kept is a 'fn(rp: Reply)' that wraps
+  // it, so that every Awaitable[R] is laid out alike (startAwait)
+  pub fn make[F: fn(rp: ReplyOf[R])](start: F) Awaitable[R] {
+    Awaitable[R](Some[Uni[fn(rp: Reply)]](Uni[fn(rp: Reply)](fn(rp: Reply) [start] {
+      start(ReplyOf[R](rp));
+    })), null, &noRun, &noDrop)
   }
 
   // An operation that allocates nothing to be an Awaitable: a context word and
   // two plain functions. 'run(ctx, rp)' starts it, once, as the closure of
   // 'make' would be called; 'drop(ctx)' is called instead if the Awaitable dies
   // unawaited, so that whatever the context names is let go. A null 'ctx' is
-  // not accepted (it would say the operation had been started)
+  // not accepted (it would say the operation had been started). This form
+  // belongs to 'trust': 'run' is given the untyped Reply, and nothing but the
+  // author ties its answer to R (the aio package and FutureSet are its users)
   pub fn of(ctx: *u8, run: &fn(ctx: *u8, rp: Reply), drop: &fn(ctx: *u8)) Awaitable[R] {
     if ctx as usize == 0usize {
       die("actors: Awaitable.of given a null context");
