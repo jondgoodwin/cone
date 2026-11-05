@@ -1013,6 +1013,16 @@ borrow is a reborrow of it, which lasts no longer than the outer borrow (Rust's
 reborrow through `&'a mut &'b mut`, `'a`), and keeps every loan, both near and
 far.
 
+A borrow copied out of what a call lent (`*(&mut b.kids[i])`, `*l.at(i)`, a
+deref of the call's result or of a reborrow of it, the value read being a
+borrow itself) carries what the call's receiver holds, not the loans the call
+made of the receiver or of the references it was lent (`pwSlotRead`, with
+`pwOwnCall` and `pwOwnLoans` recording them as `pwCall` ends). The copy points
+at what the slot holds, not into the list's block, so a later push does not
+move it. A call's result is unsure (near and far), so `pathSetThrough` could not
+tell this loan from the receiver's. Only a deref of the call's own result is
+read so; the reference to the slot and a name holding it keep the loan.
+
 **Slots.** A struct declaring lifetimes keeps its loans by lifetime, each
 lifetime a *slot*: an entry of a loan set may carry a slot's tag (bits beside
 `LoanFar`, `flowloan.h`), relative to the struct the holder's own type is, or,
