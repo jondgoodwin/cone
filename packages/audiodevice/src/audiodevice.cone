@@ -20,7 +20,7 @@
 // Which device: `Device.start` opens the default one. `Device.startOn` takes a
 // list of substrings and opens the first playback device (in SDL's order)
 // whose name contains any of them, ignoring case, and falls back to the
-// default when none does; `Started.deviceName` says which opened (empty for
+// default when none does, or when the one that did would not open; `Started.deviceName` says which opened (empty for
 // the default, which is not looked up). `playbackNames` lists the names, and
 // `nameMatches` is the matching on its own. The choice is made on the
 // calling thread and the feeder is handed the device id.
@@ -220,12 +220,30 @@ pub struct Device {
   // 'wants' (case-insensitive); with none matching (or none listed) it opens the
   // default, and the Started's 'deviceName' is empty.
   pub fn startOn(wants: &List[String], rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {
+    // Device ids belong to the audio subsystem's run: SDL numbers them afresh each time it starts, so an
+    // id listed under one run is "Invalid audio device instance ID" under the next. This call holds its
+    // own reference across the listing and the open (the feeder takes its own inside 'open'), so the
+    // subsystem does not stop between them; the hold is let go once 'open' has returned.
+    let held = sdl.InitSubSystem(sdl.INIT_AUDIO);
     var ids = List[u32]();
     var names = List[String]();
     playbackDevices(&mut ids, &mut names);
     let k = firstMatch(&names, wants);
-    if k < names.len() { return Device.open(ids[k], names[k].clone(), rate, voices, aheadMs); }
-    Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, String(), rate, voices, aheadMs)
+    var answer: Result[Started, DeviceError] = Err[Started, DeviceError](DeviceError(2i32));
+    var needDefault = true;
+    if k < names.len() {
+      answer = Device.open(ids[k], names[k].clone(), rate, voices, aheadMs);
+      match answer {
+        case is Ok { needDefault = false; }
+        case is Err {}
+      }
+    }
+    // no match, or the matched device would not open: the default, unnamed
+    if needDefault {
+      answer = Device.open(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, String(), rate, voices, aheadMs);
+    }
+    if held { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
+    answer
   }
 
   fn open(devid: u32, name: String, rate: u32, voices: u32, aheadMs: u32) Result[Started, DeviceError] {

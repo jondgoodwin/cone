@@ -1,0 +1,56 @@
+// Diagnostic: is a playback device's id still good after the audio subsystem was quit and started again?
+// Lists, finds the first device matching argv-less "Oculus", quits the subsystem, re-inits and opens the id
+// (silent: nothing is queued). Prints SDL's error. Pass hold=1 to keep the subsystem across the open.
+mod openprobe;
+
+import collections use *;
+import stdio use *;
+import libc;
+import sdl;
+import audiodevice use *;
+
+fn tryOpen(id: u32, label: &String) {
+  let spec = sdl.AudioSpec(sdl.AUDIO_F32, 2i32, 48000i32);
+  let stream = sdl.OpenAudioDeviceStream(id, &spec, null, null);
+  print <- "  "; printStr(label.view()); print <- ": stream "; 
+  if stream as usize == 0usize {
+    print <- "NULL, SDL_GetError \""; printStr(String.fromCStr(sdl.GetError()).view()); print <- "\"\n";
+  } else {
+    print <- "ok\n";
+    sdl.DestroyAudioStream(stream);
+  }
+}
+
+fn pickOculus(held: bool) u32 {
+  if !sdl.InitSubSystem(sdl.INIT_AUDIO) { return 0u32; }
+  var count = 0i32;
+  let arr = sdl.GetAudioPlaybackDevices(&mut count);
+  var found = 0u32;
+  var k = 0i32;
+  while k < count {
+    let id = *(arr + usize.from(k));
+    let raw = sdl.GetAudioDeviceName(id);
+    let nm = String.fromCStr(cstr.fromPtr(raw));
+    print <- "  device "; print <- u64.from(id); print <- " \""; printStr(nm.view()); print <- "\"\n";
+    var wants = List[String]();
+    wants.push(String.from("Oculus"));
+    if found == 0u32 && nameMatches(&nm, &wants) { found = id; }
+    k = k + 1i32;
+  }
+  sdl.free(arr as *u8);
+  if !held { sdl.QuitSubSystem(sdl.INIT_AUDIO); }
+  found
+}
+
+fn main() i32 {
+  print <- "A: list, quit subsystem (as playbackDevices does), re-init, open the id\n";
+  let id = pickOculus(false);
+  sdl.InitSubSystem(sdl.INIT_AUDIO);
+  tryOpen(id, &String.from("open after quit+init"));
+  sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  print <- "B: list and open without quitting between\n";
+  let id2 = pickOculus(true);
+  tryOpen(id2, &String.from("open while held"));
+  sdl.QuitSubSystem(sdl.INIT_AUDIO);
+  0i32
+}
