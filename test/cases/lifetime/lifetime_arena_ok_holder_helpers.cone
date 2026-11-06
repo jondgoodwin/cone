@@ -1,0 +1,46 @@
+// Bug 55: helpers handed a struct holding a '&mut Arena' and another borrow, naming no lifetime, store none of
+// that borrow in the arena (one reads it, one allocates a number from it): the caller may pass a local. Compile
+// and run.
+mod lifetime_arena_ok_holder_helpers;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct N { pub v: i64; }
+struct Hd { pub ar: &mut Arena; }
+struct HR['a] { pub ar: &'a mut Arena; }
+fn use1(ar: &mut Arena, x: &mut T) i64 {
+  let n = ar.alloc(N(5));
+  x.v += n.v;
+  x.v
+}
+fn use2(h: &mut Hd, x: &mut T) i64 { x.v }
+fn use3(h: &mut Hd, x: &mut T) i64 {
+  let n = h.ar.alloc(N(x.v));
+  n.v
+}
+fn use4(h: &'a mut HR['a], x: &mut T) i64 {
+  let n = h.ar.alloc(N(x.v));
+  x.v + n.v
+}
+fn use5(ar: &mut Arena, x: &T) i64 {
+  let n = ar.alloc(N(x.v));
+  n.v
+}
+fn scope(a: &mut Arena) i64 {
+  var t = T(7);
+  var h = Hd(a);
+  var r = use1(a, &mut t);
+  r += use2(&mut h, &mut t);
+  r += use3(&mut h, &mut t);
+  r += use5(a, &t);
+  r
+}
+fn scope2(a: &mut Arena) i64 {
+  var t = T(7);
+  var h = HR(a);
+  use4(&mut h, &mut t)
+}
+fn main() {
+  var a = Arena();
+  print <- scope(&mut a), " ", scope2(&mut a), "\n";
+}

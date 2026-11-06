@@ -1632,6 +1632,17 @@ static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
 // loans (pwCallStores).
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how) {
     VarDclNode *through;
+    // A node of an arena a caller keeps takes no other parameter's borrow where
+    // the function names no lifetime (every borrow in its signature would share
+    // one) or the arena was reached through a struct's field, whatever it
+    // names: the arena's finalizers may read it after the caller's value is
+    // gone. Only what the arena itself was lent is checked here.
+    if (loanArenaNodeBarred(refholds, pwSig->lifenamed)) {
+        uint32_t foreign = loanArenaApart(stored, refholds, &through);
+        if (foreign)
+            loanApart(node, foreign, through, how);
+        return;
+    }
     uint32_t apart = pwSig->lifenamed ? loanStoredApart(pwSig, stored, refholds, beyond, landing, &through)
         : loanStoredStatic(stored, refholds, beyond, &through);
     if (apart)
