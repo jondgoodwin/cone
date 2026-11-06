@@ -91,7 +91,6 @@ const endTimedOut = 3u32;
 const recsPerBlock = 64u32;
 const lingerSize = 4096usize;        // a closing connection's receive, read and dropped
 const resolveSize = 4096usize;       // a lookup's buffer: room for 128 addresses
-const heldRetryNs = 1000000i64;      // events held for a full channel are tried again after this
 
 fn nextGen(g: u32) u32 {if g >= genMask {1u32} else {g + 1u32}}
 
@@ -135,7 +134,6 @@ struct Conn {
   failure: Option[Failure];  // why it failed, once it has
   openBy: Instant;           // its layer's handshake ends by then (handshakeTimeout), or the connection does
   dirty: bool;
-  held: u32;                 // its events held for a full channel
   inAtStart: u64;            // the core's bytes received when the current request started
   sendSeq: u64;              // sends submitted
   sentSeq: u64;              // ...and done
@@ -172,7 +170,6 @@ struct Req {
   txAt: u64;                 // its connection's sends submitted when it started
   marked: bool;              // a server's, answered and read whole: 'flushAt' known
   flushAt: u64;              // ...done once that many of its connection's sends are
-  held: u32;                 // its events held for a full channel (ordered by request)
 }
 
 // A client's request waiting its turn on a connection: its record, and the
@@ -180,35 +177,6 @@ struct Req {
 struct Waiting {
   req: u32;
   head: RequestHead;
-}
-
-// Where an event's order and credit belong: its connection and that
-// connection's generation (noEntry for none); on an HTTP/2 connection, a
-// request's events keep their order by the request (its record, generation
-// and stream), so one slow channel holds back only its own
-struct Route {
-  conn: u32;
-  gen: u32;
-  req: u32;
-  rgen: u32;
-  stream: u32;
-}
-
-fn connRoute(conn: u32, gen: u32) Route {Route(conn, gen, noEntry, 0u32, 0u32)}
-
-// Body bytes a channel took, to go back to their route as credit
-struct Credit {
-  route: Route;
-  n: usize;
-}
-
-// An event held for a full channel: where it goes, its route, and the body
-// bytes it releases once taken
-struct Held {
-  e: Event;
-  sink: Sink;
-  route: Route;
-  credit: usize;
 }
 
 // A listening socket
@@ -239,7 +207,6 @@ pub struct Driver {
   dirty: List[u32];
   work: List[u32];
   ready: List[Event];        // events for this thread, until pump hands them over
-  heldEvents: List[Held];    // events held for full channels, in order
   comps: List[Completion];
   st: DriverStats;
 
@@ -251,7 +218,7 @@ pub struct Driver {
       reqBlocks: List[*Req](), reqCount: 0u32, freeReq: noEntry,
       listeners: List[Lst](), acceptsOut: 0u32, rearm: false,
       dirty: List[u32](), work: List[u32](), ready: List[Event](),
-      heldEvents: List[Held](), comps: List[Completion](), st: DriverStats.zero())
+      comps: List[Completion](), st: DriverStats.zero())
   }
 
   // Its counters, as they are now
@@ -259,12 +226,6 @@ pub struct Driver {
 
   // Connections open or being made
   pub fn live(self: &) u32 {liveConns}
-
-  // Events held for full channels, still to be delivered. A driver with any
-  // must go on being driven (poll or pump) even once every connection has
-  // closed: a channel's events may be held behind a Closed that went to
-  // another sink
-  pub fn held(self: &) usize {heldEvents.len()}
 
   // Its configuration
   pub fn config(self: &) Config {cfg}
@@ -351,7 +312,7 @@ pub struct Driver {
       recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
       waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
-      dirty: false, held: 0u32, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
+      dirty: false, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
       streams: Dict[u32, u32](), writers: List[u32](), goAway: false, shutAsked: false,
       lastActive: Instant())
   }
@@ -361,7 +322,7 @@ pub struct Driver {
       sink: Sink.Here(0u64), body: BodyLength(), isHead: false,
       watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
       gotResponse: false, wantWritable: false, timing: Timing.zero(),
-      stream: 0u32, txAt: 0u64, marked: false, flushAt: 0u64, held: 0u32)
+      stream: 0u32, txAt: 0u64, marked: false, flushAt: 0u64)
   }
 
   // A new connection, its core in its role, its layer and sink given
@@ -419,7 +380,6 @@ pub struct Driver {
     c.failure = None;
     c.openBy = forever();
     c.dirty = false;
-    c.held = 0u32;
     c.inAtStart = 0u64;
     c.sendSeq = 0u64;
     c.sentSeq = 0u64;
@@ -489,7 +449,6 @@ pub struct Driver {
     r.txAt = 0u64;
     r.marked = false;
     r.flushAt = 0u64;
-    r.held = 0u32;
     ri
   }
 
@@ -514,130 +473,10 @@ pub struct Driver {
   // Events to sinks
   // ---------------------------------------------------------------------------
 
-  // Hand e to its sink. Its route names whose events keep their order
-  // behind a held one, and where credit goes; 'credit' is the body bytes a
-  // Data event releases once a channel takes it
-  fn emit(self: &mut, sink: &mut Sink, conn: u32, gen: u32, credit: usize, e: Event) {
+  // Hand e to its sink: the events for this thread, until pump hands them over
+  fn emit(self: &mut, e: Event) {
     st.events = st.events + 1u64;
-    if !isChan(sink) {
-      ready.push(e);
-      return;
-    }
-    self.emitRoute(sink, connRoute(conn, gen), credit, e);
-  }
-
-  // An HTTP/2 request's event: its order and credit are the request's
-  fn emitReq(self: &mut, sink: &mut Sink, ri: u32, credit: usize, e: Event) {
-    st.events = st.events + 1u64;
-    if !isChan(sink) {
-      ready.push(e);
-      return;
-    }
-    self.emitRoute(sink, self.routeOf(ri), credit, e);
-  }
-
-  // A channel's event, by its route (st.events counted by the caller)
-  fn emitRoute(self: &mut, sink: &mut Sink, route: Route, credit: usize, e: Event) {
-    if self.isHeld(route) {
-      self.hold(copySink(sink), route, credit, e);
-      return;
-    }
-    match trySink(sink, e) {
-      case var Full(f) {
-        self.hold(copySink(sink), route, credit, f.(e));
-        return;
-      }
-      case is Gone {st.dropped = st.dropped + 1u64;}
-      else {}
-    }
-    self.releaseTo(route, credit);
-  }
-
-  // The route of request ri's events: its connection's, or on HTTP/2 its own
-  fn routeOf(self: &, ri: u32) Route {
-    let r = self.reqAt(ri) as &Req;
-    if r.stream == 0u32 {return connRoute(r.conn, r.connGen);}
-    Route(r.conn, r.connGen, ri, r.gen, r.stream)
-  }
-
-  // Whether a route has events held, which later ones wait behind
-  fn isHeld(self: &, route: Route) bool {
-    if route.req != noEntry {
-      let r = self.reqAt(route.req) as &Req;
-      return r.gen == route.rgen && r.held > 0u32;
-    }
-    if route.conn == noEntry {return false;}
-    let c = self.connAt(route.conn) as &Conn;
-    c.gen == route.gen && c.held > 0u32
-  }
-
-  fn hold(self: &mut, sink: Sink, route: Route, credit: usize, e: Event) {
-    st.held = st.held + 1u64;
-    heldEvents.push(Held(e, sink, route, credit));
-    if route.req != noEntry {
-      let r = self.reqAt(route.req) as &mut Req;
-      if r.gen == route.rgen {r.held = r.held + 1u32;}
-    } else if route.conn != noEntry {
-      let c = self.connAt(route.conn) as &mut Conn;
-      if c.gen == route.gen {c.held = c.held + 1u32;}
-    }
-  }
-
-  // Body bytes a channel has taken (or dropped) go back to the core as
-  // credit: the connection's (HTTP/1.1), the stream's (HTTP/2)
-  fn releaseTo(self: &mut, route: Route, n: usize) {
-    if n == 0usize || route.conn == noEntry {return;}
-    let c = self.connAt(route.conn) as &mut Conn;
-    if c.gen != route.gen || c.state == cFree {return;}
-    coreRelease(c, route.stream, n);
-    self.markDirty(route.conn);
-  }
-
-  // Try again the events held for full channels, in order: a route's later
-  // events stay behind its first still held
-  fn retryHeld(self: &mut) {
-    if heldEvents.len() == 0usize {return;}
-    var kept = List[Held]();
-    var blocked = List[u64]();
-    // Credit goes back once the list is drained: a core's release is
-    // another package's, whose body the drain cannot see
-    var credits = List[Credit]();
-    {
-      each h in heldEvents.drain() {
-        let e, var sink, route, credit = h.(e, sink, route, credit);
-        let key = routeKey(route);
-        if isIn(&blocked, key) {
-          kept.push(Held(e, sink, route, credit));
-          continue;
-        }
-        // Tried: e goes into the channel, or comes back
-        match trySink(&mut sink, e) {
-          case var Full(f) {
-            blocked.push(key);
-            kept.push(Held(f.(e), sink, route, credit));
-            continue;
-          }
-          case is Gone {st.dropped = st.dropped + 1u64;}
-          else {}
-        }
-        if route.req != noEntry {
-          let r = self.reqAt(route.req) as &mut Req;
-          if r.gen == route.rgen && r.held > 0u32 {r.held = r.held - 1u32;}
-        } else if route.conn != noEntry {
-          let c = self.connAt(route.conn) as &mut Conn;
-          if c.gen == route.gen && c.held > 0u32 {
-            c.held = c.held - 1u32;
-            self.markDirty(route.conn);
-          }
-        }
-        if credit > 0usize {credits.push(Credit(route, credit));}
-      }
-    }
-    heldEvents = kept;
-    each cr in credits.drain() {
-      let route, n = cr.(route, n);
-      self.releaseTo(route, n);
-    }
+    ready.push(e);
   }
 
   // Events for this thread, moved to out: how many
@@ -661,7 +500,6 @@ pub struct Driver {
   // THE DRIVER)
   pub fn wakeAt(self: &) Instant {
     if dirty.len() > 0usize || ready.len() > 0usize {return Instant();}
-    if heldEvents.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
     forever()
   }
 
@@ -669,15 +507,13 @@ pub struct Driver {
   // ready; hand the driver what completed; drive what it touched; append the
   // events for this thread to out: how many. A completion that is not the
   // driver's is dropped (counted: stats().unclaimed). Nor does it wait when
-  // its first pump delivered events it held for a channel: 'held()' fell, and
-  // the program, which may be driving the driver until it is 0, must see it
+  // its first pump delivered events
   pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &uni List[Event]) usize {
-    let heldBefore = heldEvents.len();
     var n = self.pump(lp, out);
     var limit = until;
     let w = self.wakeAt();
     if w < limit {limit = w;}
-    if n > 0usize || heldEvents.len() < heldBefore {limit = Instant();}
+    if n > 0usize {limit = Instant();}
     var cs = List[Completion]();
     cs <-> comps;
     lp.poll(limit, &mut cs);
@@ -695,7 +531,6 @@ pub struct Driver {
   // Drive every connection a completion or a call has touched, and append
   // the events for this thread to out: how many
   pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
-    self.retryHeld();
     if rearm {self.rearmAccepts(lp);}
     while dirty.len() > 0usize {
       work <-> dirty;
@@ -832,7 +667,7 @@ pub struct Driver {
   // The core's events, to their sinks
   fn events(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
-    while c.held == 0u32 && c.state == cOpen {
+    while c.state == cOpen {
       match c.core.pollEvent() {
         case is NeedData {return;}
         case is Paused {return;}
@@ -856,7 +691,7 @@ pub struct Driver {
           var ev = Event.make(EventKind.Request, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
           ev.request = head;
           ev.body = body;
-          self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+          self.emit(ev);
         }
         case let Response(p) {
           if c.current != noEntry {
@@ -867,7 +702,7 @@ pub struct Driver {
             var ev = Event.make(EventKind.Response, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response = head;
             ev.body = body;
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            self.emit(ev);
           }
         }
         case let Interim(p) {
@@ -876,17 +711,16 @@ pub struct Driver {
             r.gotResponse = true;
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.response = p.(head);
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            self.emit(ev);
           }
         }
         case let Data(d) {
           let n = d.buf.len();
           if c.current != noEntry {
             let r = self.reqAt(c.current) as &mut Req;
-            let credit = if isChan(&mut r.sink) {n} else {0usize};
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
             ev.buf = d.(buf);
-            self.emit(&mut r.sink, i, c.gen, credit, ev);
+            self.emit(ev);
           } else {
             c.core.release(n);
           }
@@ -898,7 +732,7 @@ pub struct Driver {
             r.readDone = true;
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.trailers = e.(trailers);
-            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            self.emit(ev);
             if !c.server {
               c.current = noEntry;
               self.finishReq(lp, ri, endDone, None);
@@ -1007,7 +841,7 @@ pub struct Driver {
           ev.stream = stream;
           ev.request = head;
           ev.body = body;
-          self.emitReq(&mut r.sink, ri, 0usize, ev);
+          self.emit(ev);
         }
         case let Response(p) {
           let stream, head, body = p.(stream, head, body);
@@ -1020,7 +854,7 @@ pub struct Driver {
             ev.stream = stream;
             ev.response = head;
             ev.body = body;
-            self.emitReq(&mut r.sink, ri, 0usize, ev);
+            self.emit(ev);
           }
         }
         case let Interim(p) {
@@ -1032,7 +866,7 @@ pub struct Driver {
             var ev = Event.make(EventKind.Interim, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.response = head;
-            self.emitReq(&mut r.sink, ri, 0usize, ev);
+            self.emit(ev);
           }
         }
         case let Data(d) {
@@ -1041,11 +875,10 @@ pub struct Driver {
           let ri = self.reqOfStream(i, stream);
           if ri != noEntry {
             let r = self.reqAt(ri) as &mut Req;
-            let credit = if isChan(&mut r.sink) {n} else {0usize};
             var ev = Event.make(EventKind.Data, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.buf = buf;
-            self.emitReq(&mut r.sink, ri, credit, ev);
+            self.emit(ev);
           } else {
             coreRelease(c, stream, n);
           }
@@ -1059,7 +892,7 @@ pub struct Driver {
             var ev = Event.make(EventKind.End, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
             ev.stream = stream;
             ev.trailers = trailers;
-            self.emitReq(&mut r.sink, ri, 0usize, ev);
+            self.emit(ev);
             if !c.server {
               // The response is whole. A body still being sent is not
               // wanted: its stream is reset (CANCEL), as HTTP/1.1 would
@@ -1165,7 +998,7 @@ pub struct Driver {
       removeAt(&mut c.writers, k);
       var ev = Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
       ev.stream = r.stream;
-      self.emitReq(&mut r.sink, ri, 0usize, ev);
+      self.emit(ev);
     }
   }
 
@@ -1296,7 +1129,7 @@ pub struct Driver {
     if !r.wantWritable || r.finished {return;}
     if c.core.writeRoom() < cfg.protocol.writeWatermark / 2usize {return;}
     r.wantWritable = false;
-    self.emit(&mut r.sink, i, c.gen, 0usize,
+    self.emit(
       Event.make(EventKind.Writable, r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
   }
 
@@ -1452,8 +1285,7 @@ pub struct Driver {
         c.lastActive = r.timing.ended;
       }
     }
-    if r.stream != 0u32 {self.emitReq(&mut r.sink, ri, 0usize, ev);}
-    else {self.emit(&mut r.sink, r.conn, r.connGen, 0usize, ev);}
+    self.emit(ev);
     self.freeReqRec(ri);
   }
 
@@ -1554,7 +1386,7 @@ pub struct Driver {
       else {}
     }
     ev.peer = c.peer;
-    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.emit(ev);
     self.freeConnRec(i);
   }
 
@@ -1716,7 +1548,7 @@ pub struct Driver {
         st.connected = st.connected + 1u64;
         var ev = Event.make(EventKind.Connected, c.sink.token, self.connIdOf(index), ReqId.none());
         ev.peer = c.peer;
-        self.emit(&mut c.sink, index, c.gen, 0usize, ev);
+        self.emit(ev);
         self.markDirty(index);
       } else if comp.status == diag.outcomeTimedOut {
         self.failConn(lp, index, Stage.Connect, 0u32, ErrorKind.TimedOut, "no connection within connectTimeout");
@@ -1997,7 +1829,7 @@ pub struct Driver {
     var ev = Event.make(EventKind.Accepted, c.sink.token, self.connIdOf(i), ReqId.none());
     ev.listener = c.listener;
     ev.peer = c.peer;
-    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.emit(ev);
     self.markDirty(i);
   }
 
@@ -2312,46 +2144,8 @@ pub struct Driver {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// What a channel sink did with an event
-enum Sent {
-  pub struct Taken {}
-  pub struct Full {pub e: Event;}      // full: the event, handed back
-  pub struct Gone {}                   // its receiver has gone: the event is dropped
-}
-
-// Send e on a channel sink, never waiting
-fn trySink(s: &mut Sink, e: Event) Sent {
-  match s {
-    case let &Chan(ch) {
-      match ch.tx.trySend(e) {
-        case var Some(r) {
-          if ch.tx.isClosed() {Sent.Gone} else {Sent.Full(r)}
-        }
-        else {Sent.Taken}
-      }
-    }
-    else {Sent.Taken}
-  }
-}
-
-// The key a route's held events are kept in order by
-fn routeKey(r: Route) u64 {
-  if r.req != noEntry {return 0x8000000000000000u64 | (u64.from(r.rgen) << 32u64) | u64.from(r.req);}
-  (u64.from(r.gen) << 32u64) | u64.from(r.conn)
-}
-
 // Whether v is in l
 fn hasU32(l: &List[u32], v: u32) bool {
-  var j = 0usize;
-  while j < l.len() {
-    if *l[j] == v {return true;}
-    j = j + 1usize;
-  }
-  false
-}
-
-// Whether v is in l
-fn isIn(l: &List[u64], v: u64) bool {
   var j = 0usize;
   while j < l.len() {
     if *l[j] == v {return true;}
