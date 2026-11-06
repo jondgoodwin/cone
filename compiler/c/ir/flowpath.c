@@ -1634,15 +1634,26 @@ static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
 // function names no lifetimes, every borrow in its signature shares one, and
 // only what a parameter points at holding no borrow but ''static' ones takes
 // none the caller lent (loanStoredStatic): a caller hands it only a global's
-// loans (pwCallStores).
-static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how) {
+// loans (pwCallStores). 'byparm' when the reference is a parameter or a path
+// of field steps from one (pwByParm of the variable at its root); a local
+// holding a call's result, or a copy of a parameter, is not.
+static int pwIsParm(VarDclNode *var);
+
+// Is this variable a parameter that keeps the value the caller gave it? One
+// that may be assigned ('var') may hold a call's result from there on.
+static int pwByParm(VarDclNode *var) {
+    return pwIsParm(var) && !(var->perm && (permGetFlags(var->perm) & MayWrite));
+}
+
+static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how,
+        int byparm) {
     VarDclNode *through;
     // A node of an arena a caller keeps takes no other parameter's borrow where
     // the function names no lifetime (every borrow in its signature would share
     // one) or the arena was reached through a struct's field, whatever it
     // names: the arena's finalizers may read it after the caller's value is
     // gone. Only what the arena itself was lent is checked here.
-    if (loanArenaNodeBarred(refholds, pwSig->lifenamed)) {
+    if (loanArenaNodeBarred(refholds, pwSig->lifenamed, byparm)) {
         uint32_t foreign = loanArenaApart(stored, refholds, &through);
         if (foreign)
             loanApart(node, foreign, through, how);
@@ -1778,7 +1789,7 @@ static PathSet *pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rv
         if (own)
             loanSelfStore(lval, own, pl, LoanEscapeStore);
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
-            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore);
+            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var));
         if (lval->tag == DerefTag)
             pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
     }
@@ -2181,7 +2192,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape((INode *)call, local, LoanEscapeCall);
             else
-                pwStoreApart((INode *)call, argsets[at], beyond, 0, others, LoanEscapeCall);
+                pwStoreApart((INode *)call, argsets[at], beyond, 0, others, LoanEscapeCall, 0);
             pwStoreLands(argsets[at], beyond, others, 0);
             continue;
         }
@@ -2214,7 +2225,8 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
                     loanApart((INode *)call, apart, through, LoanEscapeCall);
             }
             else
-                pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
+                pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall,
+                    pwByParm(pathVars[target.var].var));
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
