@@ -1236,7 +1236,18 @@ node included, is `ErrorCallEscape`, even under one lifetime name. A later
 store through a node `alloc` returned (`f.p = Some(x)`) takes the same where
 the arena is a caller's and a body would otherwise see no ordering: the
 function names no lifetime, or the arena was reached through a struct's field
-(`loanArenaNodeBarred`, from `pwStoreApart`). Checked
+(`loanArenaNodeBarred`, from `pwStoreApart`). The field route is seen by the
+pin an arena's method made of its receiver's place in the body, or, where a
+helper made the node and left no pin, by a far caller loan of a parameter whose
+type holds an arena in a field. The second is asked only of a reference not
+reached from a parameter that is not assignable (`let`) by field steps and
+dereferences alone: such a path lands only in a place the parameter's type
+shows, which the caller's check refuses (`ErrorCallEscape` at the call); the
+arena hides a node only from a reference that came out of a call, held in a
+local or in a `var` parameter given one (`pwByParm`). A local copy of such a parameter
+(`let s2 = s;`) is not told apart from that, so a store through it of another
+parameter's borrow, into a struct holding an arena, is refused though it lands
+in no arena node. Checked
 at the store, in the body, so a caller trusts the signature: a free function
 handed a `&mut Arena` is no store at its caller. A function whose result goes
 back into the arena names which parameter the result comes from (`ar: &'a mut

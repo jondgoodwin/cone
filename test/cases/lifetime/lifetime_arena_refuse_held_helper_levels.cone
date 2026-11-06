@@ -1,0 +1,12 @@
+// Bug 61: a helper makes the node of an arena two struct levels down in what a caller lent. Refuse.
+mod lifetime_arena_refuse_held_helper_levels;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+struct H2 { pub h: &mut Hd; }
+fn mkF(a: &mut H2) &mut F { a.h.ar.alloc(F(None)) }
+fn stash(a: &mut H2, x: &mut T) { let f = mkF(a); f.p = Some(x); }  //~ ErrorEscape
+fn scope2(q: &mut Arena) { var h = Hd(q); var g = H2(&mut h); var t = T(7); stash(&mut g, &mut t); }
+fn main() { var a = Arena(); scope2(&mut a); }
