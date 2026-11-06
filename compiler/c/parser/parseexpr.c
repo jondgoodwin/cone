@@ -979,6 +979,7 @@ static INode *parsePropagate(ParseState *parse, INode *node) {
         errorMsgLex(ErrorQuesReturn,
             "'?' returns a failure from the function it is in, and a generator returns nothing but its items, through 'yield'. Use 'match' or let-else here.");
     VarDclNode *held = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, node);
+    held->flags |= FlagQuesHeld;
     inodeLexCopy((INode*)held, node);
     nodesAdd(&blk->stmts, (INode*)held);
     lexNextToken();

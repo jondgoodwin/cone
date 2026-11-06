@@ -357,25 +357,8 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     // the early return are, so 'x' is checked first, as the initializer of the
     // variable that holds it, and the statements below are checked as built
     else if (blk->flags & FlagPropagate) {
-        // At global level, with no try block, the '?' is refused whatever 'x' is
-        // (propagateLower), so 'x' is checked without the variable that would
-        // hold it, which a global's block would refuse in its own right as a
-        // local that is not a constant, a second report of the one fault. The
-        // variable is then dropped from the block, which holds the refusal
-        VarDclNode *held = (VarDclNode*)nodesGet(blk->stmts, 0);
-        int unheld = pstate->fn == NULL && !propagateTryOpen(pstate)
-            && held->tag == VarDclTag && held->value != NULL;
-        if (unheld) {
-            if (iexpTypeCheckCoerceStated(pstate, held->vtype, &held->value) && isExpNode(held->value))
-                held->vtype = ((IExpNode*)held->value)->vtype;
-            else
-                held->value = (INode*)newErrorNode(held->value);
-        }
-        else
-            blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
         propagateLower(pstate, blk);
-        if (unheld)
-            nodesGet(blk->stmts, 0) = newErrorNode((INode*)held);
     }
     // A 'try' block: its last value is held, and the '?'s in it leave it
     // (propagate.h), so its type is known once all but its last statement, the

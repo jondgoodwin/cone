@@ -493,6 +493,10 @@ enum NodeTags {
 // payload that is plain data, it holds the variant alone (castBindProject), so the
 // place is not moved from.
 #define FlagMatchArm  0x1000        // VarDcl: the matched place's copy or move, made by the arm that binds it
+// The hidden variable holding a '?' operand (parsePropagate). Many hidden variables
+// are named '_', so the name alone does not say this one belongs to a '?'. 0x0040
+// because it is a type flag on a type, and a variable is not one.
+#define FlagQuesHeld  0x0040        // VarDcl: holds the operand of a '?'
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)

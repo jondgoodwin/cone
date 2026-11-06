@@ -1128,8 +1128,8 @@ value (`let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that loca
 (a parameter's scope 1 is checked at scope 0), and it is no global, so no setup can lift it; the report says "a block
 that gives a global its value cannot declare a local that is computed at run time" and that a function can declare
 locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
-constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `blockTypeCheck`
-checks its operand without the hidden variable that would hold it, which the global's block would refuse a second time.
+constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
+reports nothing for the hidden variable holding its operand (`FlagQuesHeld`), since `propagateLower` always refuses that `?`.
 
 `ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
 method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
