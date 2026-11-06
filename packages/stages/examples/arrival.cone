@@ -5,7 +5,8 @@
 // counting sink that checks every byte (size and a running hash):
 //
 //   zip-stream   ONE archive (zipfile, entries in zstd or deflate) fetched with Client.streamTo into an
-//                ArchiveStream: each file is out of the archive, decompressed, as its bytes arrive
+//                archivestage.ArchiveStage: each file is out of the archive, decompressed, as its bytes
+//                arrive, and reaches a counting sink of its own
 //   zip-whole    the same archive fetched whole (Client.get), then opened and read (what a program does
 //                without a stream)
 //   files        every file a fetch of its own over the ONE HTTP/2 connection of the client (and so its one
@@ -42,7 +43,7 @@ mod arrival;
 import stdio use *;
 import fs;
 import path use Path;
-import sync use Channel, Sender, Receiver;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
 import collections use List, String, AnyError;
 import time use Instant, Duration;
 import thread;
@@ -56,6 +57,7 @@ import aio use IoLimits;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
 import stages use ChunkSink, ChunkSource, Ending;
 import httpdecode use Decoder;
+import archivestage use ArchiveStage;
 import zipfile;
 import deflate;
 import zstd;
@@ -457,124 +459,38 @@ actor Collector {
 // The sinks
 // ---------------------------------------------------------------------------
 
-// What the archive's files go to: one entry at a time, in order
-actor trait EntrySink {
-  pub async fn begin(self, name: String);
-  pub async fn data(self, c: IoBuf);
-  pub async fn endEntry(self);
-  pub async fn finished(self, how: Ending);
+// The archive's files go to a CheckSink each, made by this function for the n-th entry: the n-th file's
+// hash and size, or ones that no file has when the archive holds more entries than the corpus
+fn entryOpener(hashes: List[u64], sizes: List[u64], col: Collector) Uni[fn(e: &zipfile.Local) ChunkSink + Sendable] {
+  Uni[fn(e: &zipfile.Local) ChunkSink + Sendable](fn(e: &zipfile.Local) [hashes, sizes, col, var next = 0usize] ChunkSink {
+    let k = next;
+    next += 1usize;
+    if k < hashes.len() {
+      CheckSink(*hashes[k], *sizes[k], col.clone())
+    } else {
+      CheckSink(1u64, 1u64, col.clone())
+    }
+  })
 }
 
-actor EntryCounter is EntrySink {
-  hashes: List[u64];
-  sizes: List[u64];
+// Waits, on a thread, for the archive stage's one answer: an archive that failed leaves the run
+// abandoned (its remaining files will never come)
+struct Watch {
+  rx: OneshotReceiver[Result[u64, AnyError]];
   col: Collector;
-  idx: usize;
-  h: u64;
-  n: u64;
-
-  pub fn init(self: &new, hashes: List[u64], sizes: List[u64], col: Collector) {
-    *self = Self(hashes: hashes, sizes: sizes, col: col, idx: 0usize, h: 0u64, n: 0u64);
-  }
-
-  pub async fn begin(self, name: String) { h = 0u64; n = 0u64; }
-
-  pub async fn data(self, c: IoBuf) {
-    let v = c.view();
-    var i = 0usize;
-    while i < v.len { h = mix(h, v[i]); i += 1usize; }
-    n += u64.from(v.len);
-    sample(0u64);
-  }
-
-  pub async fn endEntry(self) {
-    let ok = idx < hashes.len() && n == *sizes[idx] && h == *hashes[idx];
-    idx += 1usize;
-    col.file(ok, n);
-  }
-
-  pub async fn finished(self, how: Ending) {
-    match how {
-      case is Finished {}
-      case is Failed { col.abandoned(); }
-    }
-  }
 }
 
-// A ChunkSink over an ArchiveStream, handing each file to an EntrySink. The bytes are fed (copied into the
-// stream), the chunk given back at once, so the HTTP window is the only credit; the files' data is
-// decompressed into buffers of its own, sent to the EntrySink.
-actor ArchiveSink is ChunkSink {
-  arch: zipfile.ArchiveStream;
-  up: Option[ChunkSource];
-  down: EntrySink;
-  out: IoBuf;
-  over: bool;
-
-  pub fn init(self: &new, down: EntrySink) {
-    *self = Self(arch: zipfile.ArchiveStream.make(), up: None[ChunkSource], down: down, out: IoBuf(65536usize), over: false);
-  }
-
-  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
-
-  fn pump(self: &mut) {
-    while !over {
-      out.clear();
-      let s = arch.pull(&mut out);
-      if s == zipfile.Step.Begin {
-        down.begin(String.from(arch.current().name.view()));
-      } else if s == zipfile.Step.Data {
-        // a buffer of the data's own size: the files are small, and 'out' is kept for the next pull
-        var piece = IoBuf(out.len());
-        piece.append(out.view());
-        down.data(piece);
-      } else if s == zipfile.Step.End {
-        down.endEntry();
-      } else if s == zipfile.Step.NeedInput {
-        return;
-      } else if s == zipfile.Step.Done {
-        over = true;
-        down.finished(Ending.Finished);
-      } else {
-        over = true;
-        match arch.error() {
-          case let Some(e) { down.finished(Ending.Failed(AnyError.from(e))); }
-          case is None[zipfile.ZipError] { down.finished(Ending.Failed(AnyError.msg("the archive failed"))); }
-        }
+fn watch(w: Watch) u64 {
+  match w.rx.recv() {
+    case let Some(r) {
+      match r {
+        case is Ok {}
+        case is Err { w.col.abandoned(); }
       }
     }
+    case is None { w.col.abandoned(); }
   }
-
-  pub async fn accept(self, c: IoBuf) {
-    sample(0u64);
-    if !over {
-      arch.feed(c.view());
-      self.pump();
-    }
-    match &up {
-      case let &Some(u) { u.giveBack(c); }
-      case is None {}
-    }
-  }
-
-  pub async fn end(self, how: Ending) {
-    if !over {
-      match how {
-        case is Finished {
-          arch.finish();
-          self.pump();
-        }
-        case let Failed(e) {
-          over = true;
-          down.finished(Ending.Failed(e));
-        }
-      }
-    }
-    // the stream is over: let go of the source and of the buffer, so no actor keeps another alive
-    up = None[ChunkSource];
-    out = IoBuf();
-    arch = zipfile.ArchiveStream.make();
-  }
+  0u64
 }
 
 // One file's chunks, checked
@@ -716,7 +632,11 @@ fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], s
   let n = hashes.len();
   let col = Collector(n, if cancelAt > 0usize { Some[CancelGroup](g) } else { None[CancelGroup] }, cancelAt, tx);
   if mode == 0u32 {
-    let sink = ArchiveSink(EntryCounter(hashes.clone(), sizes.clone(), col));
+    var atx: OneshotSender[Result[u64, AnyError]];
+    var arx: OneshotReceiver[Result[u64, AnyError]];
+    atx, arx = Oneshot[Result[u64, AnyError]].make();
+    let sink = ArchiveStage(entryOpener(hashes.clone(), sizes.clone(), col.clone()), atx);
+    _ = thread.start(Watch(arx, col.clone()), &watch);
     let f = ZipStreamer(client.clone());
     f.run(url(port, if cancelAt > 0usize { "/zip/big" } else if z { "/zip/z" } else { "/zip/g" }), sink, g, cancelAt > 0usize, col);
   } else if mode == 1u32 {
