@@ -159,7 +159,9 @@ primes[n]          // an element, by a constant or run-time index
 			<i>Not yet checked: a plain <span class="pre">var</span> global is still accepted today. The check at
 			the declaration is being built.</i></li>
 		<li><b>It must be given a valid value.</b> Usually the initial value is known when the program is
-			compiled: a literal, a named constant, or a <a href="#const">constant expression</a>. Otherwise the
+			compiled: a literal, a named constant, or a <a href="#const">constant expression</a>. A
+			<span class="pre">let</span> global may instead be given any other value where it is declared, a call
+			included, which the program computes at start-up (<a href="#setup">a setup</a>). Otherwise the
 			global is declared with its type and no value, and <a href="#dyninit">the module's initializer</a>
 			assigns it, as <span class="pre">days</span> is above.</li>
 	</ul>
@@ -263,6 +265,42 @@ fn enter() {
 		ordinary global on the CPU (<a href="conc-gpu.html#workgroup">Workgroup memory</a>). It is written as a
 		thread-local is, but with no initial value; a global is one or the other, never both.</p>
 
+	<h2 id="setup">A value computed where the global is declared</h2>
+	<p>A <span class="pre">let</span> global whose value is not a constant, a call or an expression using one, is
+		a <b>setup</b>. The program computes it at start-up, before anything else of the module runs:</p>
+<pre>
+fn openLog() Log { ... }
+fn pathOf(log: &Log) Path { ... }
+
+let logPath = pathOf(log);    // written first, but runs second
+let log = openLog();
+</pre>
+	<p>The compiler works out the order. A setup runs after the setups of the globals it reads, whether it names
+		them itself or reaches them through a function of the module it calls, however deep, and not before.
+		Setups that need no order run in the order they are written. Two setups that read each other, round any
+		number of others, have no order, and that is an error. A setup may call a function of another module,
+		whose globals are ready, since that module's setups and initializer ran earlier, though an instance of
+			another module's generic, given this module's type, may call back into this module, and is followed as
+			the module's own functions are. A setup's value is stored as <span class="pre">init</span>'s would be, so a
+			setup may hold a borrow of another global, but not a borrow of a temporary (<span class="pre">let r: &amp;P = &amp;make();</span>),
+			which would end with the setup and leave a dangling reference. A setup may not read a
+		global that the module's <span class="pre">init</span> assigns: all the module's setups have run by the
+		time <span class="pre">init</span> begins, so the global would hold nothing yet.</p>
+	<p>The module's setups run first among its own, and then its <span class="pre">init</span> if it has one;
+		a module with setups and no <span class="pre">init</span> is given one that runs them, and the program
+		runs it with every module's, in the <a href="#initall">same order</a>. A setup runs wherever
+		<span class="pre">init</span> does, however often that is. If a setup fails, panics for instance, the program ends
+		at once at start-up, as any panic ends it; nothing after it, no <span class="pre">init</span> and no
+		<span class="pre">main</span>, has run. The finalizer undoes them in the exact reverse (a global given a
+		constant is finalized last, then the setups in the reverse of the order they ran, and the globals
+		<span class="pre">init</span> assigned first).</p>
+	<p>Only a <span class="pre">let</span> global of a module may be a setup. A <span class="pre">var</span>
+		global, a static, a thread-local, an <span class="pre">extern</span> declaration and a global of a C-named
+		module still take only a constant, and so does any global compiled for a GPU, where nothing runs a
+		module's <span class="pre">init</span>. A call a setup makes that the compiler cannot follow (a function
+		written in C, a virtual call, a closure, a call through a function reference) is not checked for order,
+		as <span class="pre">init</span>'s are not: such a call relies on its author.</p>
+
 	<h2 id="dyninit">The module's initializer</h2>
 	<p>Sometimes a global's initial value is not known, or is too complex to write out, when the program is
 		compiled. Then the global is declared with its type and no value, and the module's initializer, a function
@@ -286,10 +324,11 @@ fn @initpure init() {
 	<p>What a function that <span class="pre">init</span> calls reads counts as <span class="pre">init</span>
 		reading it, at the call. The compiler follows the call into the module's own functions and methods, and
 		into the instance of a generic function or method the call names, and then into what those call in turn,
-		to any depth: a helper that reads a global the call comes before is refused, as the read would be in
+		to any depth. An instance of another module's generic, given this module's type, is followed too, since it
+			can call that type's method, which reads this module's globals. A helper that reads a global the call comes before is refused, as the read would be in
 		<span class="pre">init</span> itself. A helper's own assignment to a global does not count as
 		<span class="pre">init</span> setting it, so a helper that sets a global and then reads it is refused too,
-		when it is called before <span class="pre">init</span> sets it. A function of another module needs no
+		when it is called before <span class="pre">init</span> sets it. A plain function of another module needs no
 		following, since that module cannot read this one's globals without a cycle of modules, which is refused.
 		It goes by position, as
 		<span class="pre">init</span>'s own reads do: after <span class="pre">init</span> has assigned the global,
@@ -332,7 +371,7 @@ fn @initpure init() {
 	<p>Where a module's globals hold values whose type has a <a href="rec-methods.html#finalizer">finalizer</a>,
 		or owning references, the compiler gives the module a finalizer that runs the module's own
 		<span class="pre">final</span>, if it declares one, and then finalizes each such global, releasing an
-		owner as a local's end would, in the reverse of the order they are set (a global given its value where it is declared is set first, the others in the order <span class="pre">init</span> first assigns them),
+		owner as a local's end would, in the reverse of the order they are set (a global given a constant value is set first, then the <a href="#setup">setups</a> in the order they run, then the globals in the order <span class="pre">init</span> first assigns them),
 		while the module's own <span class="pre">final</span> runs before them all, as a type's
 		<span class="pre">final</span> runs before its fields are finalized. Such a module may not declare a
 		function named <span class="pre">drop</span>, which is the name the compiler gives it.</p>

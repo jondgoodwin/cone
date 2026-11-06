@@ -1564,6 +1564,16 @@ static void incAssemble(IncGen *g, IncMod *m, IncBuf *out) {
         }
         incBufPutSrc(out, lexer, p, strlen(p));
     }
+    // A module with setups and no 'init' of its own was given one that runs them
+    // (modSetupBuild), which no source text declares: the program's stitched init
+    // calls it by symbol, so the file declares it
+    ModuleNode *mod = m->mod;
+    if (mod->setups && mod->initfn && !mod->generic && !mod->genericinfo
+        && namespaceFind(&mod->namespace, initName) == NULL) {
+        if (out->len > 0 && out->text[out->len - 1] != '\n')
+            incBufPuts(out, "\n");
+        incBufPuts(out, "\nextern fn @initpure init();\n");
+    }
 }
 
 // The banner: that the file is generated, from what, and not to be edited

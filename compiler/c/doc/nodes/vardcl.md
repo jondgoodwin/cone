@@ -256,7 +256,11 @@ nothing.
    `let s: &Array[u8] = "text"` and `const K = 5` then `let g: i64 = K` are legal. A constant is typed as its value is, an untyped
    integer one as `i32`, so `let b: u8 = K` is refused as a type mismatch, since
    `i32` does not coerce to `u8`. `constDclTypeCheck` reads the value after
-   coercion too, so `const K3: i64 = K` is legal.
+   coercion too, so `const K3: i64 = K` is legal. **An exception: a `let`
+   global.** Where the value is not a literal after the fold, `modAddSetup`
+   (module.md, "Setups") takes it for a setup the module runs before its `init`,
+   and `ErrorNotLit` is not reported; a `var` global, a static and the other
+   globals it names keep the rule.
 5a. **A function's static joins the function.** `dclInfoJoin` with the function
    as owner, so its symbol is spelled after the function (`tick.calls`) and two
    functions' statics of one name stay apart. In an `inline` function the body

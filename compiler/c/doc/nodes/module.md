@@ -2080,7 +2080,8 @@ asked at the end of `fnCallFlow` while `init`'s own flow pass is the one walking
 the pass records the function in `modInitFnCur`, so a callee checked on demand in
 the middle of it asks nothing). Where the call is statically resolved to one of
 the module's own functions — an `FnDclNode` the module declares (`modDeclares`:
-owned by the module, or a method of a type the module declares), with a Cone
+owned by the module, or a method of a type it declares), or an instance of a
+generic wherever the generic lives (below), with a Cone
 body, not `extern` — `modReadsFollow` reads its body with `siVisit`
 (shapeinfer's tree walk) and looks for a name use of a global that is still
 unassigned *at that point of the walk* (`modGlobalUninit`, `VarInitialized`
@@ -2098,6 +2099,12 @@ its owner and is type checked when made; `modReadsFollow` walks that instance's
 body, whose names are resolved, and refuses to follow a `FnDclNode` still
 carrying `genericinfo` (a template, which no substituted call names). A method of
 a generic type's instance is an ordinary method of that instance, owned by it.
+**An instance of another module's generic is followed too** (`modIsInstance`: the
+function's `instnode`, set on a generic function's instance, or its type's, for a
+method cloned with an instantiated generic type): given this module's type, the
+generic's body can call that type's method, which reads this module's globals,
+and that is no cycle of modules. A plain function or a method of a plain type of
+another module is not an instance and is not followed.
 **Not followed, and so passing:** a call that is not statically resolved — a
 virtual call (`FlagVDisp`), a closure, a call through a function reference or any
 variable — and a call to an `extern` function; a closure literal's body is not
@@ -2106,12 +2113,59 @@ entered. These pass until `trust` is built, a known gap it closes.
 (`extern <file>:<line> <function> [<callee>]`, whole-program: those in a module's
 `init` and its helpers are this module's unfollowed externs); it lists no virtual
 call, function-reference call or closure, which `trust` will have to take over
-with the rest. **Another module's function needs no following:** that module
+with the rest. **Another module's plain function needs no following:** that module
 cannot read this module's globals without importing it, which would be a cycle of
 modules, and that is refused. A helper's own assignment to a global does not
 count as `init` setting it (the target of an assignment is not a read, and only
 `init`'s flow records a set), so a helper that sets a global and then reads it,
 called before `init` sets it, is refused.
+
+**Setups: a `let` global given a value written where it is declared** (rule 4;
+`modAddSetup`, `modSetupOrder`, `modSetupBuild`). `varDclTypeCheck` type checks a
+global's value as always, in the module's own context, and where `litFoldConst`
+finds it not a constant asks `modAddSetup` before reporting `ErrorNotLit`. A
+`let` global (immutable permission, scope 0, not a static, not `extern`,
+`@threadlocal` or `@workgroup`, not C-named, in a Cone-named module, on a target
+that is not a GPU's) is taken as a setup: its type-checked value moves into a
+pre-typed `AssignNode` on the module's `setups` list, the declaration is left
+with no value (`DclSetup`; `modGlobalUninit` excludes it, so `init` owes it
+nothing, and generation gives it zeroed, writable storage until its setup runs),
+and nothing is reported. Everything else keeps `ErrorNotLit`: a `var`, a static,
+the others above. The value cannot be type checked again (this pass lowers and
+replaces nodes), which is why it is moved and not rebuilt.
+
+Once the module is type checked, `modLifecycle` asks `modSetupBuild`. It reads each
+setup's value with the walk `init`'s check uses (`modReadsVisit` in collecting mode,
+`ModReadCtx.reads`: every setup global and every global `init` sets that the value
+names, directly or through the module's own functions that `modReadsFollow`
+enters, transitively, each once), reports a read of a global `init` sets
+(`ErrorSetupReadsInit`: setups run before `init`), and orders the setups depth
+first from declaration order: each after the setups it reads, a stable order
+otherwise. A setup reached again while its reads are placed is `ErrorSetupCycle`,
+at the global the round returns to. Only a module with neither is built:
+the ordered assignments become the body of `-setups`, a function of the module
+built pre-lowered as `drop` is (a name no source can write), whose flow pass is
+run at once with the setups' `VarInitialized` cleared, so flow judges each
+assignment as it judges a first assignment in `init` and a read of a setup global
+before its assignment is its own refusal. `init` calls it first: a call node put at the
+head of the body of the module's own `init`, or, where the module writes none, in an
+`init` made for it (`DclInitPure | DclLifecycle`, not in the module's namespace), which
+`mod->initfn` then is. So the program's stitched init, the C-named constructors and a
+package's exported `init` need nothing new; the include file declares the made `init`
+(`incAssemble`: `extern fn @initpure init();` at the module's end), since no
+source text does. `modGiveDrop` puts the setups, in the order they run, between the
+constant-valued globals and those `init` assigns, so rule 6's reverse holds. A
+generic module's instance is checked like any module and has setups of its own.
+
+**A setup's store is judged as `init`'s is.** Its value is type checked at scope 0,
+but it runs in a function, so `borrowTempScope` gives a borrow of a temporary the
+main block's scope there (2), as it has in `init`, and `assignBorrowLifetimeCheck`
+refuses a store of it into the global (`ErrorInvType`, 1013) when `-setups` is
+flowed. `modSetupBuild` also runs the loan walk on `-setups` where flow's gate asks
+for one (`flowPathWalk`, as `fnDclFlow` does for any function), which is what
+refuses a borrow of a temporary carried inside a struct value (`ErrorEscape`,
+1064). A borrow of another global is scope 0 and stays legal.
+What is not followed passes until `trust` is built, as in `init`'s check.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
 Where any global the module declares has anything to do as it dies
@@ -2121,8 +2175,9 @@ after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after nam
 resolution, built pre-lowered and never type checked or flow analyzed — calling
 the module's own `final`, if it has one, and then finalizing each such global
 **in the reverse of the order they are set** (rule 6). The setup order is
-built in `modGiveDrop`: first the globals `init` never assigns, in declaration
-order (the place PR 6's ordered setups will go), then those `init` assigns, in
+built in `modGiveDrop`: first the globals `init` never assigns that hold a constant,
+in declaration order, then the module's setups in the order they run
+(`mod->setups`, ordered by `modSetupBuild`; below), then those `init` assigns, in
 the order the flow pass first met an assignment to each (`modInitNoteSet`,
 called from `assignlvalrtype` while `init` is walked; kept in `mod->setorder`).
 Flow walks text order, so a branch whose arms set the same globals in different

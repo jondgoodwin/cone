@@ -38,6 +38,7 @@ typedef struct ModuleNode {
     struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
     Nodes *setorder;         // The globals its 'init' assigns, in the order the flow pass first met an assignment to each (modInitNoteSet); NULL where none
+    Nodes *setups;           // The assignments that set its 'let' globals given a value that is not a constant (modAddSetup): in the order type check met them, then in the order they run once modLifecycle has ordered them; NULL where none
     struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
     struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
     GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
@@ -159,6 +160,11 @@ uint16_t *modInitFlowBegin(ModuleNode *mod, struct FnDclNode *initfn);
 // function reads of the module's globals, and what the module's functions it calls
 // read in turn, counts as read at this call, so one 'init' has not yet set is refused
 void modInitCall(struct FlowState *fstate, struct FnCallNode *call);
+// A 'let' global whose value is not a constant is a setup: the module takes the type-checked
+// value to set the global before its 'init'. Answers 0, taking nothing, where the declaration
+// is not one a setup can serve (not a 'let' global of a Cone-named module), for the caller to
+// refuse the value as it refuses any global's
+int modAddSetup(struct VarDclNode *var);
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
 void modInitNoteSet(struct VarDclNode *var);
 

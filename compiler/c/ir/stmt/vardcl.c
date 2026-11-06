@@ -681,9 +681,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // before anything runs. A parameter may default to 'srcFile()' or
         // 'srcLine()' too, each a constant where each call taking it is
         // (fnCallFinalizeArgs). An expression of constants is folded into the
-        // one it computes (litFoldConst).
+        // one it computes (litFoldConst). A 'let' global given any other value
+        // is a setup, which its module runs before its 'init' (modAddSetup).
         if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litFoldConst(&name->value)
-            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value)))
+            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value))
+            && !modAddSetup(name))
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
