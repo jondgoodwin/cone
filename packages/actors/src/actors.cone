@@ -53,6 +53,9 @@
 //   actors.Future[T]                a behaviour's value kept, to 'await' later
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
+//   actors.workerHooks(after, idle), actors.askAfterTurn()
+//                                   for the I/O package, not for programs: what a worker
+//                                   runs between turns (WORKER HOOKS, at 'me')
 //   actors.parkBlocks()             the record blocks and per-thread keeps the runtime has
 //                                   taken from the allocator and given back (RECORD BLOCKS KEPT)
 //   actors.liveSegments()           how many mailbox segments are not yet freed
@@ -4110,6 +4113,61 @@ let running: Atomic[usize];
 // The worker this thread is, or 0
 var @threadlocal me: usize = 0usize;
 
+// WORKER HOOKS: what the I/O package (aio) runs on a worker, between turns, so
+// that a worker looks for the answers its own sends have raised (aio's THE I/O
+// THREAD). 'after' runs when the turn that asked for it has ended
+// (askAfterTurn), the actor marked idle or queued again; 'idle' runs each time
+// a worker is about to publish itself a sleeper, its spin over, and true sends
+// it back to look for work. Neither may wait, and neither runs an actor. One
+// pair for the process, set once, before the first ask
+struct WorkerHooks {
+  after: &fn();
+  idle: &fn() bool;
+}
+
+let workerHooksAt: Atomic[usize];
+var @threadlocal turnAsked = false;
+
+// The hooks set (WORKER HOOKS): a later call changes nothing
+pub fn workerHooks(after: &fn(), idle: &fn() bool) {
+  if workerHooksAt.load() != 0usize {
+    return;
+  }
+  let p = libc.malloc(mem.sizeof[WorkerHooks]()) as *WorkerHooks;
+  if p as usize == 0usize {
+    die("actors: out of memory for the worker hooks");
+  }
+  mem.writeRaw[WorkerHooks](p, WorkerHooks(after, idle));
+  workerHooksAt.store(p as usize);
+}
+
+// On a worker: its 'after' hook runs when this turn has ended, and true. Off
+// the workers: false, and nothing will run
+pub fn askAfterTurn() bool {
+  if me == 0usize {
+    return false;
+  }
+  turnAsked = true;
+  true
+}
+
+fn runAfterHook() {
+  let at = workerHooksAt.load();
+  if at != 0usize {
+    let f = (*(at as *WorkerHooks)).after;
+    f();
+  }
+}
+
+fn runIdleHook() bool {
+  let at = workerHooksAt.load();
+  if at == 0usize {
+    return false;
+  }
+  let f = (*(at as *WorkerHooks)).idle;
+  f()
+}
+
 fn workerAt(s: *Sched, i: u32) *Worker {
   (*s).workers + usize.from(i)
 }
@@ -4626,6 +4684,9 @@ fn idle(w: *Worker) bool {
   if spin(w) {
     return true;
   }
+  if runIdleHook() {
+    return true;
+  }
   if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {
     parkHoldHere(s, w, 1u32);
   }
@@ -4713,6 +4774,10 @@ fn workerMain(arg: WorkerArg) u32 {
     // worker's queue, then the pieces of a loop begun off the workers, then
     // its actors and the inject queue's, and only with all of those empty
     // another worker's pieces, and then another's actors
+    if turnAsked {
+      turnAsked = false;
+      runAfterHook();
+    }
     var t = emptyTask();
     if dequePopNewest(tasksOf(w), &mut t as *Task) {
       runTask(s, t);
@@ -4843,6 +4908,7 @@ fn @initpure init() {
   floorBytes = Atomic[usize].of(defaultFloor);
   stressOn = Atomic[bool].of(false);
   running = Atomic[usize].of(0usize);
+  workerHooksAt = Atomic[usize].of(0usize);
   chosenWorkers = Atomic[u32].of(0u32);
   chosenBatch = Atomic[u32].of(defaultBatch);
   statSlots = Atomic[usize].of(0usize);

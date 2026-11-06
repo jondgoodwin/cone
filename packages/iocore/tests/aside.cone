@@ -1,0 +1,69 @@
+// A thread standing aside (Waker's STANDING ASIDE) is waiting on a word, not in
+// the port, so whatever is posted must reach it. Raised and left alone, the
+// wait runs out with the word still raised. A wake from another thread ends it
+// well before its time, the word lowered, and the wake's packet is still in the
+// port for the next poll. endAside ends it with nothing posted, and with the
+// word lowered a wake and an endAside find nobody to tell.
+
+mod aside;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+
+struct Arg is Sendable {
+  pub w: Waker;
+  pub post: bool;
+}
+
+fn later(a: Arg) u32 {
+  thread.sleep(Duration.fromMillis(20i64));
+  if a.post {
+    a.w.wake();
+  } else {
+    a.w.endAside();
+  }
+  0u32
+}
+
+fn main() i32 {
+  initAll();
+  var lp = Loop.mustMake();
+  let w = lp.waker();
+  var out = List[Completion]();
+  expect(!w.isAside(), "not aside at first");
+  w.raiseAside();
+  expect(w.isAside(), "raised");
+  expect(w.waitAside(Duration.fromMillis(1i64)), "left alone, the wait runs out, the word raised");
+  w.lowerAside();
+  expect(!w.isAside(), "lowered");
+
+  var post = true;
+  var round = 0u32;
+  while round < 2u32 {
+    w.raiseAside();
+    let t = thread.start(Arg(lp.waker(), post), &later);
+    let from = Instant.now();
+    var raised = true;
+    while raised {
+      raised = w.waitAside(Duration.fromSeconds(30i64));
+    }
+    expect(Instant.now() - from < Duration.fromSeconds(20i64), "ended by the other thread, not by its time");
+    expect(!w.isAside(), "the word lowered for it");
+    t.join();
+    post = false;
+    round = round + 1u32;
+  }
+
+  // The wake's packet is there, whoever stood aside
+  let woken = lp.counters().wakes;
+  lp.poll(Instant.now(), &mut out);
+  expectUInt(lp.counters().wakes, woken + 1u64, "the wake's packet was left in the port");
+  w.endAside();
+  expect(w.wake(), "a wake with nobody aside");
+  lp.poll(Instant.now(), &mut out);
+  finalAll();
+  done()
+}
