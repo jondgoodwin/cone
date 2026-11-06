@@ -1,0 +1,321 @@
+// The driver's feed stops at the core's read credit, over a real TLS stream
+// (Bug 60, rows 17 and 18). A TLS session holds the records it has been given
+// and cannot say a record's size before it is read out, so a receive finishing
+// a held record and a whole one (here: a whole pile of them) used to pass the
+// HTTP/1.1 core more than its read credit: "http1: handleInput past the read
+// credit". The body is 1,000,000 bytes in TLS records, the receiving side's
+// consumer releases only when the driver has nothing more for it, and the
+// layer, a real tls.Stream behind a Hold that places the peer's wire bytes by
+// hand (it gives the stream nothing of the body until 'pile' bytes, or the
+// peer's end, have come, then all of it at once), is made to give up many
+// times the credit in one go.
+//
+// Three runs: the receiver a client (row 18) and a server (row 17), each with
+// a pile of 768 KiB and the connection kept alive (the body ends by its
+// length), and the client receiver with the whole body and the peer's
+// close_notify held and handed over together, the peer closing straight after
+// its last record (the peer's end then arrives with the records the credit
+// stopped). The server receiver's close_notify run cannot be placed through
+// the Driver (its close waits for the response, which waits for the body): it
+// stays with the probe's peer, and 'peerEnded' with records unread is pinned
+// directly in tlsended.
+//
+// Checked, for each: no panic, the body whole and byte for byte, the exchange
+// ended before the deadline, the end seen, and every buffer back in the pool.
+// The exact bytes of the step-0 probe (a record cut so one receive finishes
+// it and a second) stay with the probe's peer; this places the same overrun
+// at the layer's seam.
+
+mod tlsfeed;
+
+import stdio use *;
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Op, Completion, forever;
+import http use *;
+import httpconn use *;
+import tls;
+
+const bodyLen = 1000000usize;
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn at(i: usize) u8 {97u8 + u8.from((i * 7usize + i / 251usize) % 26usize)}
+
+// A tls.Stream that is given the wire's bytes late and all at once: once the
+// handshake is done it keeps what comes until 'pile' bytes, or the peer's end,
+// have, then hands the stream all of it, the end last
+struct Hold {
+  s: tls.Stream;
+  held: Chain;
+  ended: bool;
+  released: bool;
+  pile: usize;
+
+  pub fn make(s: tls.Stream, pile: usize) Hold {Hold(s: s, held: Chain.make(unbounded), ended: false, released: false, pile: pile)}
+
+  fn release(self: &mut, now: Instant) {
+    released = true;
+    while held.len() > 0usize {
+      match held.popFront() {
+        case let Some(b) {s.wireIn(b, now);}
+        case is None[IoBuf] {}
+      }
+    }
+    if ended {s.wireIn(IoBuf(), now);}
+  }
+
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {
+    if released || !s.isOpen() {
+      s.wireIn(buf, now);
+      return;
+    }
+    if buf.len() == 0usize {
+      ended = true;
+    } else {
+      _ = held.push(buf);
+    }
+    if ended || held.len() >= pile {self.release(now);}
+  }
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {s.wireOut(now)}
+  pub fn wireRoom(self: &) usize {if released || !s.isOpen() {s.wireRoom()} else {unbounded}}
+  pub fn plainIn(self: &mut, buf: IoBuf) {s.plainIn(buf);}
+  pub fn plainOut(self: &mut) IoBuf {s.plainOut()}
+  pub fn pending(self: &) usize {s.pending()}
+  pub fn isOpen(self: &) bool {s.isOpen()}
+  pub fn peerEnded(self: &) bool {s.peerEnded()}
+  pub fn closeSend(self: &mut) {s.closeSend();}
+  pub fn failed(self: &) bool {s.failed()}
+  pub fn failureCode(self: &) u32 {s.failureCode()}
+  pub fn failureText(self: &) String {s.failureText()}
+  pub fn wantsCall(self: &) bool {s.wantsCall()}
+  pub fn takeCall(self: &mut) Op {s.takeCall()}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {s.callDone(c, now);}
+  pub fn describe(self: &) String {s.describe()}
+  pub fn alpn(self: &) String {s.alpn()}
+}
+
+struct TlsMaker {
+  server: tls.Server;
+
+  pub fn make(self: &mut) Uni[Layer] {Uni[tls.Stream](server.stream())}
+}
+
+struct HoldMaker {
+  server: tls.Server;
+  pile: usize;
+
+  pub fn make(self: &mut) Uni[Layer] {Uni[Hold](Hold.make(server.stream(), pile))}
+}
+
+fn server() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
+    case let Ok(r) {
+      let s = r;
+      return s;
+    }
+    case let Err(e) {print <- e;}
+  }
+  panic("no server")
+}
+
+fn client() tls.Client {
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.offline = true;
+  match tls.Client.make(cfg) {
+    case let Ok(r) {
+      let c = r;
+      return c;
+    }
+    case let Err(e) {print <- e;}
+  }
+  panic("no client")
+}
+
+// The body from byte 'sent' on, as far as the connection takes it: the new
+// 'sent' (bodyLen + 1 when all is handed over and finished)
+fn pump(drv: &mut Driver, req: ReqId, sent: usize) usize {
+  var at0 = sent;
+  while at0 < bodyLen {
+    let n = if bodyLen - at0 < 16384usize {bodyLen - at0} else {16384usize};
+    var b = IoBuf(n);
+    let room = b.whole();
+    var j = 0usize;
+    while j < n {
+      room[j] = at(at0 + j);
+      j = j + 1usize;
+    }
+    b.setLen(n);
+    match drv.sendData(req, b) {
+      case is None[IoBuf] {at0 = at0 + n;}
+      else {return at0;}
+    }
+  }
+  drv.finish(req);
+  bodyLen + 1usize
+}
+
+fn listen(drv: &mut Driver, lp: &mut Loop, recvServer: bool, pile: usize) u16 {
+  var port = 0u16;
+  var id = ListenerId.none();
+  if recvServer {
+    match drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[HoldMaker](HoldMaker(server(), pile)), Sink.Here(tokServer)) {
+      case let Ok(r) {id = r;}
+      case let Err(e) {}
+    }
+  } else {
+    match drv.listenWith(lp, SocketAddr.localhost(0u16), Uni[TlsMaker](TlsMaker(server())), Sink.Here(tokServer)) {
+      case let Ok(r) {id = r;}
+      case let Err(e) {}
+    }
+  }
+  match drv.localAddr(lp, id) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  port
+}
+
+fn scenario(recvServer: bool, pile: usize, closeAfter: bool, label: &str) {
+  printStr(label);
+  printStr("\n");
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  let port = listen(&mut drv, &mut lp, recvServer, pile);
+  require(port != 0u16, "the server listens");
+  let cl = client();
+  let conn = if recvServer {
+    drv.connectWith(&mut lp, "127.0.0.1", port, Uni[tls.Stream](cl.stream("localhost")), Sink.Here(tokConn))
+  } else {
+    drv.connectWith(&mut lp, "127.0.0.1", port, Uni[Hold](Hold.make(cl.stream("localhost"), pile)), Sink.Here(tokConn))
+  };
+  var req = ReqId.none();
+  var sentUp = 0usize;
+  if recvServer {
+    req = drv.request(&mut lp, conn, RequestHead.make("POST", "/up", "localhost"), BodyLength.sized(u64.from(bodyLen)), Sink.Here(tokReq));
+    sentUp = pump(&mut drv, req, 0usize);
+  } else {
+    req = drv.request(&mut lp, conn, RequestHead.get("/big", "localhost"), BodyLength(), Sink.Here(tokReq));
+  }
+
+  var body = String();
+  var unreleased = 0usize;
+  var sent = 0usize;
+  var serverConn = ConnId.none();
+  var srvReq = ReqId.none();
+  var finished = false;
+  var over = false;
+  var failed = false;
+  var gotEnd = false;
+  var clientDone = false;
+  var events = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  while !over && Instant.now() < giveUp {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    let quiet = events.len() == 0usize;
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer && e.kind == EventKind.Accepted {
+        serverConn = e.conn;
+      } else if e.token == tokServer && e.kind == EventKind.End {
+        srvReq = e.req;
+        gotEnd = true;
+        if recvServer {
+          drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+          var b = IoBuf(8usize);
+          b.append("ok");
+          drv.sendData(e.req, b);
+          drv.finish(e.req);
+          over = true;
+        } else {
+          drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(bodyLen)));
+          sent = pump(&mut drv, e.req, 0usize);
+        }
+      } else if e.token == tokServer && e.kind == EventKind.Writable {
+        if !recvServer && sent <= bodyLen {sent = pump(&mut drv, e.req, sent);}
+      } else if e.token == tokServer && e.kind == EventKind.Data {
+        body.appendBytes(e.buf.view());
+        unreleased = unreleased + e.buf.len();
+        srvReq = e.req;
+      } else if e.token == tokReq && e.kind == EventKind.Writable {
+        if recvServer && sentUp <= bodyLen {sentUp = pump(&mut drv, req, sentUp);}
+      } else if e.token == tokReq && e.kind == EventKind.Data {
+        body.appendBytes(e.buf.view());
+        unreleased = unreleased + e.buf.len();
+      } else if e.token == tokReq && e.isTerminal() {
+        if !recvServer {
+          over = true;
+          failed = e.kind != EventKind.Done;
+        } else {
+          clientDone = true;
+        }
+      }
+    }
+    events.clear();
+    // The peer closes straight after its last record, close_notify with it
+    if closeAfter && !finished {
+      if !recvServer && sent > bodyLen && !serverConn.isNone() {
+        finished = true;
+        drv.close(&mut lp, serverConn);
+      } else if recvServer && sentUp > bodyLen {
+        finished = true;
+        drv.close(&mut lp, conn);
+      }
+    }
+    // The consumer is slow: it releases only when the driver had nothing for it
+    if quiet && unreleased > 0usize {
+      drv.release(if recvServer {srvReq} else {req}, unreleased);
+      unreleased = 0usize;
+    }
+  }
+  expect(over, "the exchange ended before the deadline");
+  expect(!failed, "the exchange ended Done, not Failed (a body cut short is Failed)");
+  expect(!recvServer || gotEnd, "the server saw the request's end");
+  requireUInt(u64.from(body.len()), u64.from(bodyLen), "every byte of the body arrived");
+  var good = true;
+  var i = 0usize;
+  while good && i < bodyLen {
+    if body.view()[i] != at(i) {good = false;}
+    i = i + 1usize;
+  }
+  expect(good, "the body arrived byte for byte, in order");
+  drv.abortAll(&mut lp);
+  events.clear();
+}
+
+fn main() i32 {
+  scenario(false, 786432usize, false, "client reads, pile 768 KiB, kept alive");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  scenario(true, 786432usize, false, "server reads, pile 768 KiB, kept alive");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  scenario(false, unbounded, true, "client reads, all at once with close_notify and the close");
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

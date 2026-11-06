@@ -630,9 +630,9 @@ pub struct Driver {
   // cannot say a buffer's size before it is read out. What it leaves stays in the
   // layer, and 'drive' runs it again when the credit has grown (the program's
   // release, or the core's own use of its input). The peer's end follows the
-  // loop and is never fed while the loop has stopped: a record the credit
-  // stopped is still in the layer, and the end fed ahead of it reads as a body
-  // cut short
+  // loop and needs no check of its own for a stop: a layer's 'peerEnded' is
+  // false while it holds a record unread (the Layer's contract: every byte was
+  // taken), so the end is never fed ahead of a record the credit stopped
   fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
     let need = self.feedNeed();
@@ -647,7 +647,7 @@ pub struct Driver {
       if b.len() == 0usize {break;}
       coreInput(c, b, now);
     }
-    if !c.feedHeld && c.layer.peerEnded() && !c.eofFed {
+    if c.layer.peerEnded() && !c.eofFed {
       c.eofFed = true;
       coreInput(c, IoBuf(), now);
     }
