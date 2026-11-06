@@ -1,4 +1,4 @@
-// The C# twin of packages/stages/examples/streamsample.cone (streams PR 7): the same job
+// The C# twin of packages/stageio/examples/streamsample.cone (streams PR 7): the same job
 // on the same input, with System.IO.Pipelines. A gzip stream arrives over a loopback TCP
 // socket; inflate it, take its sha256, and write the inflated bytes to a file.
 //
