@@ -1,0 +1,29 @@
+// Bug 55: a local struct wraps a '&mut Arena' parameter, no lifetime named. The function stores a borrow of
+// another parameter in a node of that arena; the node's finalizer reads it when the arena dies, after the caller's
+// local is gone. Refuse.
+mod lifetime_arena_refuse_local_struct;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F {
+  pub p: Option[&mut T];
+  fn final(self: &uni) {
+    match self.p {
+      case let Some(r) { print <- "finalizer reads ", r.v, "\n"; }
+      case None { print <- "none\n"; }
+    }
+  }
+}
+struct Hd { pub ar: &mut Arena; }
+fn stash(a: &mut Arena, x: &mut T) {
+  var h = Hd(a);
+  let f = h.ar.alloc(F(None));
+  f.p = Some(x);  //~ ErrorEscape
+}
+fn main() {
+  var a = Arena();
+  {
+    var t = T(7);
+    stash(&mut a, &mut t);
+  }
+}
