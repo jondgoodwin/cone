@@ -258,7 +258,6 @@ void nametblInit() {
     resultName = nametblFind("Result", 6);
     okName = nametblFind("Ok", 2);
     errorVariantName = nametblFind("Err", 3);
-    messageName = nametblFind("message", 7);
     reportName = nametblFind("report", 6);
 
     allocMethodName = nametblFind("alloc", 5);
