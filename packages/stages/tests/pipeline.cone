@@ -181,6 +181,77 @@ actor Checker1 is DigestSink[Array[u8, 20]] {
 }
 // ---- the source end ----
 
+// Reads a file through aio, 64 KiB at a time, into a link of four buffers
+actor FileSource is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  name: String;
+  file: File;
+  at: u64;
+  pumping: bool;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, name: String) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), name: name, file: File.none(),
+      at: 0u64, pumping: false, over: false);
+    down.attach(selfactor);
+  }
+
+  // Opens the file and reads it through
+  pub async fn start(self) {
+    let r = await aio.openFile(&Path.from(name.view()), Access.Read);
+    match r {
+      case let Ok(f) {
+        file = f;
+        selfactor.pump();
+      }
+      case let Err(e) {
+        over = true;
+        down.end(Ending.Failed(AnyError.from(e)));
+      }
+    }
+  }
+
+  // Reads while there is a buffer to read into
+  pub async fn pump(self) {
+    if pumping || over { return; }
+    pumping = true;
+    var more = true;
+    while more {
+      match link.take(65536usize) {
+        case is None { more = false; }
+        case let Some(b) {
+          let r = await file.readAt(at, b);
+          match r {
+            case let Ok(buf) {
+              if buf.isEmpty() {
+                link.give(buf);
+                over = true;
+                down.end(Ending.Finished);
+                more = false;
+              } else {
+                at = at + u64.from(buf.len());
+                down.accept(buf);
+              }
+            }
+            case let Err(e) {
+              over = true;
+              down.end(Ending.Failed(AnyError.from(e)));
+              more = false;
+            }
+          }
+        }
+      }
+    }
+    pumping = false;
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    if !pumping && !over { selfactor.pump(); }
+  }
+}
+
 // Sends a list of bytes in chunks of 64 KiB through a link of four buffers
 actor MemorySource is ChunkSource {
   down: ChunkSink;
