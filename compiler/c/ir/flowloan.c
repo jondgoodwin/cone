@@ -552,11 +552,12 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // (viafield), or, where a helper made the node or the reference and left no
 // pin here, a far loan of a parameter whose type holds an arena in a field
 // (heldfield). The second is not asked of a reference reached from a
-// parameter by field steps and dereferences alone ('byparm'): it can land
-// only in a place the parameter's type shows, which a caller's own check
-// sees. The arena hides a node only from a reference that came out of a call,
-// held in a local; so a local copy of a parameter (let s2 = s;) is refused
-// too, though it shows no more than the parameter does. The arena's
+// parameter that is not assignable ('let') by field steps and dereferences
+// alone ('byparm'): it can land only in a place the parameter's type shows,
+// which a caller's own check sees. The arena hides a node only from a
+// reference that came out of a call, held in a local or in a 'var' parameter
+// given one; so a local copy of a parameter (let s2 = s;) is refused too,
+// though it shows no more than the parameter does. The arena's
 // finalizers may read what is stored, so such a store takes only what the
 // arena was lent.
 int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {

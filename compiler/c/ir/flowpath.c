@@ -1635,9 +1635,16 @@ static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
 // only what a parameter points at holding no borrow but ''static' ones takes
 // none the caller lent (loanStoredStatic): a caller hands it only a global's
 // loans (pwCallStores). 'byparm' when the reference is a parameter or a path
-// of field steps from one (pwIsParm of the variable at its root); a local
+// of field steps from one (pwByParm of the variable at its root); a local
 // holding a call's result, or a copy of a parameter, is not.
 static int pwIsParm(VarDclNode *var);
+
+// Is this variable a parameter that keeps the value the caller gave it? One
+// that may be assigned ('var') may hold a call's result from there on.
+static int pwByParm(VarDclNode *var) {
+    return pwIsParm(var) && !(var->perm && (permGetFlags(var->perm) & MayWrite));
+}
+
 static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how,
         int byparm) {
     VarDclNode *through;
@@ -1782,7 +1789,7 @@ static PathSet *pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rv
         if (own)
             loanSelfStore(lval, own, pl, LoanEscapeStore);
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
-            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwIsParm(pathVars[pl->var].var));
+            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore, pwByParm(pathVars[pl->var].var));
         if (lval->tag == DerefTag)
             pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
     }
@@ -2219,7 +2226,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             }
             else
                 pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall,
-                    pwIsParm(pathVars[target.var].var));
+                    pwByParm(pathVars[target.var].var));
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
