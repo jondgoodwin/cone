@@ -833,11 +833,16 @@ pub struct FrameWriter {
   peerMax: usize;             // the peer's SETTINGS_MAX_FRAME_SIZE
   maxControl: usize;          // maxQueuedControlFrames
   control: usize;             // control frames queued since the last take
+  starved: bool;              // the pool refused a packing buffer (iobuf's tryMake): what is written after is dropped, and the connection fails
 
   pub fn make(cfg: &FrameConfig) FrameWriter {
     FrameWriter(out: Chain.make(noBound), pack: IoBuf(), peerMax: defaultMaxFrameSize,
-      maxControl: cfg.maxQueuedControlFrames, control: 0usize)
+      maxControl: cfg.maxQueuedControlFrames, control: 0usize, starved: false)
   }
+
+  // Whether the pool refused a buffer to pack into: the frames since are not
+  // all there, so the connection can only end
+  pub fn isStarved(self: &) bool {starved}
 
   // The peer's SETTINGS_MAX_FRAME_SIZE arrived (the reader has checked it)
   pub fn setPeerMaxFrameSize(self: &mut, n: usize) {peerMax = n;}
@@ -1019,14 +1024,14 @@ pub struct FrameWriter {
   }
 
   fn header(self: &mut, length: usize, kind: u8, flags: u8, stream: u32) {
-    self.room(frameHeaderLen);
+    if !self.room(frameHeaderLen) {return;}
     let at = pack.len();
     FrameHeader(length, kind, flags, stream).write(&mut pack.spare()[0usize ..< frameHeaderLen]);
     pack.setLen(at + frameHeaderLen);
   }
 
   fn byte(self: &mut, b: u8) {
-    self.room(1usize);
+    if !self.room(1usize) {return;}
     let at = pack.len();
     let s = pack.spare();
     s[0usize] = b;
@@ -1034,7 +1039,7 @@ pub struct FrameWriter {
   }
 
   fn u32be(self: &mut, v: u32) {
-    self.room(4usize);
+    if !self.room(4usize) {return;}
     let at = pack.len();
     writeU32(pack.spare(), 0usize, v);
     pack.setLen(at + 4usize);
@@ -1042,13 +1047,13 @@ pub struct FrameWriter {
 
   fn bytes(self: &mut, b: &Array[u8]) {
     if b.len == 0usize {return;}
-    self.room(b.len);
+    if !self.room(b.len) {return;}
     _ = pack.append(b);
   }
 
   fn zeros(self: &mut, n: usize) {
     if n == 0usize {return;}
-    self.room(n);
+    if !self.room(n) {return;}
     let at = pack.len();
     let s = pack.spare();
     var i = 0usize;
@@ -1066,11 +1071,21 @@ pub struct FrameWriter {
   }
 
   // Room for n more bytes in the packing buffer: when it has too little,
-  // it goes to the queue and a new one is begun
-  fn room(self: &mut, n: usize) {
-    if pack.room() >= n {return;}
+  // it goes to the queue and a new one is begun. False once the pool has refused
+  // that buffer (iobuf's tryMake), and from then on: nothing more is packed
+  fn room(self: &mut, n: usize) bool {
+    if starved {return false;}
+    if pack.room() >= n {return true;}
     self.flush();
-    pack = IoBuf(if n > packSize {n} else {packSize});
+    let got = match IoBuf.tryMake(if n > packSize {n} else {packSize}) {
+      case var Some(b) {b}
+      else {
+        starved = true;
+        return false;
+      }
+    };
+    pack = got;
+    true
   }
 
   // The packing buffer to the queue; until the next byte, there is none

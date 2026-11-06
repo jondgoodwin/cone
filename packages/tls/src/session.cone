@@ -450,7 +450,15 @@ pub struct Session is Move {
   pub fn verifyOp(self: &mut) Op {
     var job = List[u8]();
     self.verifyJob(&mut job);
-    var b = IoBuf(job.len());
+    // The job's size comes from the peer's certificates, so the pool may refuse its
+    // buffer (iobuf's tryMake): the handshake fails, and the op that goes does nothing
+    var b = match IoBuf.tryMake(job.len()) {
+      case var Some(got) {got}
+      else {
+        self.fail(TlsErrorKind.Backend, 0u32, "overloaded: no buffer for the certificate check, the buffer pool is full (iobuf maxBytes)");
+        return Op.Call(lane, &verifyNothing, 0u64, IoBuf());
+      }
+    };
     b.append(job.view());
     Op.Call(lane, &verifyWork, if offline {1u64} else {0u64}, b)
   }

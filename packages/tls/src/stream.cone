@@ -13,7 +13,7 @@ pub struct Stream is Move {
   s: Session;
   waiting: Chain;        // the protocol's bytes, until the handshake is done
   closeAsked: bool;
-  noBuffer: bool;        // plainOut was refused a buffer by the pool (maxBytes): the stream has failed
+  noBuffer: bool;        // plainOut or wireOut was refused a buffer by the pool (maxBytes): the stream has failed
 
   pub fn make(s: Session) Stream {
     Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false, noBuffer: false)
@@ -37,7 +37,15 @@ pub struct Stream is Move {
     self.flushWaiting();
     let n = s.pending();
     if n == 0usize {return IoBuf();}
-    var b = IoBuf(if n < sendChunk {n} else {sendChunk});
+    // A pool within its reserve of maxBytes gives no buffer: the stream fails
+    // (failed()), as plainOut does, and the driver ends the connection
+    var b = match IoBuf.tryMake(if n < sendChunk {n} else {sendChunk}) {
+      case var Some(got) {got}
+      else {
+        noBuffer = true;
+        return IoBuf();
+      }
+    };
     let got = s.transmit(b.spare());
     b.setLen(got);
     b
@@ -110,7 +118,7 @@ pub struct Stream is Move {
   // Why it failed, in words: its kind, and its detail, which holds the
   // OS's text and number when the OS gave the reason
   pub fn failureText(self: &) String {
-    if noBuffer {return String.from("no buffer for a record: the buffer pool is full (iobuf maxBytes)");}
+    if noBuffer {return String.from("overloaded: no buffer for the bytes, the buffer pool is full (iobuf maxBytes)");}
     let e = s.error();
     var out = String() <- e.kind;
     out.append(": ");

@@ -1,0 +1,178 @@
+// The driver's feed stops at the core's read credit (Bug 60). A client reads a
+// 1,000,000-byte sized body through a layer that holds plaintext in a pile (as a
+// TLS session holds records it has not read out) and gives the pile up all at
+// once: 768 KiB, three times HTTP/1.1's default 256 KiB of credit. The consumer
+// releases what it has been given only when the driver has nothing more for it,
+// so the credit runs out and must come back (a release, then the driver's drive,
+// then feed) for the rest to arrive. The server closes its end straight after
+// the last byte, so the layer's end of stream arrives with the pile: the end is
+// never fed ahead of a byte the credit stopped.
+//
+// Checked: no panic ("handleInput past the read credit"), the body whole and
+// byte for byte, the exchange Done (a body cut short is Failed), the deadline
+// not reached, and every buffer back in the pool.
+
+mod feedcredit;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Op, Lane, Outcome, Completion, forever;
+import http use *;
+import httpconn use *;
+
+const bodyLen = 1000000usize;
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+fn at(i: usize) u8 {97u8 + u8.from((i * 7usize + i / 251usize) % 26usize)}
+
+// A layer that passes the bytes as the plain layer does, except that it keeps
+// the plaintext until 'pile' bytes (or the end of the stream) have come, then
+// gives all of it up
+struct Gate {
+  inq: Chain;
+  outq: Chain;
+  ended: bool;
+  opened: bool;
+  pile: usize;
+
+  pub fn make(pile: usize) Gate {Gate(Chain.make(unbounded), Chain.make(unbounded), false, false, pile)}
+
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {
+    if buf.len() == 0usize {
+      ended = true;
+      return;
+    }
+    _ = inq.push(buf);
+  }
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {outq.popFront() || IoBuf()}
+  pub fn wireRoom(self: &) usize {unbounded}
+  pub fn plainIn(self: &mut, buf: IoBuf) {_ = outq.push(buf);}
+  pub fn plainOut(self: &mut) IoBuf {
+    if !opened {
+      if !ended && inq.len() < pile {return IoBuf();}
+      opened = true;
+    }
+    inq.popFront() || IoBuf()
+  }
+  pub fn pending(self: &) usize {outq.len()}
+  pub fn isOpen(self: &) bool {true}
+  pub fn peerEnded(self: &) bool {ended && inq.len() == 0usize}
+  pub fn closeSend(self: &mut) {}
+  pub fn failed(self: &) bool {false}
+  pub fn failureCode(self: &) u32 {0u32}
+  pub fn failureText(self: &) String {String()}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn describe(self: &) String {String.from("gate")}
+  pub fn alpn(self: &) String {String()}
+}
+
+fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
+
+// The server's body, from byte 'sent' on, as far as its connection takes it:
+// the new 'sent'
+fn pump(drv: &mut Driver, req: ReqId, sent: usize) usize {
+  var at0 = sent;
+  while at0 < bodyLen {
+    let n = if bodyLen - at0 < 16384usize {bodyLen - at0} else {16384usize};
+    var b = IoBuf(n);
+    let room = b.whole();
+    var j = 0usize;
+    while j < n {
+      room[j] = at(at0 + j);
+      j = j + 1usize;
+    }
+    b.setLen(n);
+    match drv.sendData(req, b) {
+      case is None[IoBuf] {at0 = at0 + n;}
+      else {return at0;}
+    }
+  }
+  drv.finish(req);
+  bodyLen + 1usize
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var port = 0u16;
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Err(e) {}
+  }
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  let conn = drv.connectWith(&mut lp, "127.0.0.1", port, Uni[Gate](Gate.make(786432usize)), Sink.Here(tokConn));
+  let req = drv.request(&mut lp, conn, RequestHead.get("/big", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
+
+  var body = String();
+  var unreleased = 0usize;
+  var sent = 0usize;
+  var serverReq = ReqId.none();
+  var serverConn = ConnId.none();
+  var finished = false;
+  var over = false;
+  var failed = false;
+  var events = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  while !over && Instant.now() < giveUp {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    let quiet = events.len() == 0usize;
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer && e.kind == EventKind.Accepted {
+        serverConn = e.conn;
+      } else if e.token == tokServer && e.kind == EventKind.End {
+        serverReq = e.req;
+        drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(u64.from(bodyLen)));
+        sent = pump(&mut drv, e.req, 0usize);
+      } else if e.token == tokServer && e.kind == EventKind.Writable {
+        if sent <= bodyLen {sent = pump(&mut drv, e.req, sent);}
+      } else if e.token == tokReq && e.kind == EventKind.Data {
+        body.appendBytes(e.buf.view());
+        unreleased = unreleased + e.buf.len();
+      } else if e.token == tokReq && e.isTerminal() {
+        over = true;
+        failed = e.kind != EventKind.Done;
+      }
+    }
+    events.clear();
+    // The server closes once its body is all handed over (the connection ends
+    // after what it holds is sent), so the client's end of stream follows the body
+    if !finished && sent > bodyLen && !serverConn.isNone() {
+      finished = true;
+      drv.close(&mut lp, serverConn);
+    }
+    // The consumer is slow: it releases only when the driver had nothing for it
+    if quiet && unreleased > 0usize {
+      drv.release(req, unreleased);
+      unreleased = 0usize;
+    }
+  }
+  expect(over, "the exchange ended before the deadline");
+  expect(!failed, "the exchange ended Done, not Failed (a body cut short is Failed)");
+  requireUInt(u64.from(body.len()), u64.from(bodyLen), "every byte of the body arrived");
+  var good = true;
+  var i = 0usize;
+  while good && i < bodyLen {
+    if body.view()[i] != at(i) {good = false;}
+    i = i + 1usize;
+  }
+  expect(good, "the body arrived byte for byte, in order");
+  drv.abortAll(&mut lp);
+  events.clear();
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}

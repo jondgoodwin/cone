@@ -89,6 +89,7 @@ const endCancelled = 2u32;
 const endTimedOut = 3u32;
 
 const recsPerBlock = 64u32;
+const feedRecord = 16384usize;        // the most plaintext one TLS record carries: 'feed' needs this much credit for a buffer
 const lingerSize = 4096usize;        // a closing connection's receive, read and dropped
 const resolveSize = 4096usize;       // a lookup's buffer: room for 128 addresses
 
@@ -124,6 +125,7 @@ struct Conn {
   sendsOut: u32;
   eof: bool;                 // the socket's receiving side has ended, or failed
   eofFed: bool;              // ...and the core has been told
+  feedHeld: bool;            // 'feed' stopped for the core's credit: the layer may still hold bytes
   shut: bool;                // its sending side is shut
   closeAsked: bool;          // 'close': end once what was asked of it is done
   timer: OpId;               // the core's deadline, or the linger, on the loop's timers
@@ -309,7 +311,7 @@ pub struct Driver {
       decided: false, cleartext: false,
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr](), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
-      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
+      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false, feedHeld: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
       waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
       dirty: false, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
@@ -371,6 +373,7 @@ pub struct Driver {
     c.sendsOut = 0u32;
     c.eof = false;
     c.eofFed = false;
+    c.feedHeld = false;
     c.shut = false;
     c.closeAsked = false;
     c.timer = OpId.none();
@@ -575,6 +578,10 @@ pub struct Driver {
       }
     }
     self.transmit(lp, i, now);
+    // Credit that has grown while this drive ran (the core used its input) lets
+    // 'feed' go on with what the layer holds; and a layer that failed in
+    // 'transmit' (a pool refusal) is read at once
+    if (c.feedHeld && coreCredit(c) >= self.feedNeed()) || c.layer.failed() {self.markDirty(i);}
     self.layerCall(lp, i);
     if c.isH2 {
       self.flushDone2(lp, i);
@@ -616,22 +623,53 @@ pub struct Driver {
   }
 
   // The bytes the layer has for the core, and the end of the stream
+  //
+  // It takes a buffer from the layer only while the core's credit holds the
+  // largest one a layer gives, a TLS record's plaintext (the threshold 'receive'
+  // asks for too): the core panics when handed more than its credit, and a layer
+  // cannot say a buffer's size before it is read out. What it leaves stays in the
+  // layer, and 'drive' runs it again when the credit has grown (the program's
+  // release, or the core's own use of its input). The peer's end follows the
+  // loop and is never fed while the loop has stopped: a record the credit
+  // stopped is still in the layer, and the end fed ahead of it reads as a body
+  // cut short
   fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
+    let need = self.feedNeed();
+    c.feedHeld = false;
     while c.decided {
+      // A core that has ended takes and drops what it is given, so it never holds
+      if coreCredit(c) < need && !coreClosed(c) {
+        c.feedHeld = true;
+        break;
+      }
       let b = c.layer.plainOut();
       if b.len() == 0usize {break;}
       coreInput(c, b, now);
     }
-    if c.layer.peerEnded() && !c.eofFed {
+    if !c.feedHeld && c.layer.peerEnded() && !c.eofFed {
       c.eofFed = true;
       coreInput(c, IoBuf(), now);
     }
     if c.layer.failed() {
-      let text = c.layer.failureText();
-      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
-      self.closeNow(lp, i, true, false);
+      self.layerFailed(lp, i);
     }
+  }
+
+  // The most credit a layer's one buffer needs: what 'receive' waits for, and
+  // at least a TLS record's plaintext
+  fn feedNeed(self: &) usize {
+    if cfg.recvSize > feedRecord {cfg.recvSize} else {feedRecord}
+  }
+
+  // The layer has failed: its text is the reason, a pool refusal (its text
+  // begins 'overloaded') being Overloaded and the rest Closed
+  fn layerFailed(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let text = c.layer.failureText();
+    let kind = if text.view().startsWith("overloaded") {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), kind, text.view()));
+    self.closeNow(lp, i, true, false);
   }
 
   // The layer's work for the blocking pool, one at a time (a TLS session's
@@ -1189,7 +1227,7 @@ pub struct Driver {
       else {
         // The pool is within its reserve of maxBytes: this connection ends, its
         // credit and buffers with it, rather than a later construction panicking
-        self.failConn(lp, i, Stage.Read, 0u32, ErrorKind.TooLarge, "the buffer pool is full (iobuf maxBytes): no buffer for a receive");
+        self.failConn(lp, i, Stage.Read, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for a receive");
         return;
       }
     };
@@ -1422,7 +1460,8 @@ pub struct Driver {
     // layer's failure is read (feed), and must not hide it
     if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
       let text = c.layer.failureText();
-      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
+      let lk = if text.view().startsWith("overloaded") {ErrorKind.Overloaded} else {ErrorKind.Closed};
+      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), lk, text.view()));
     } else {
       c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
     }
