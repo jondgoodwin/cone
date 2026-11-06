@@ -547,12 +547,16 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // that a caller may keep past this function, by a route that tells the body
 // nothing of what else the caller lent: the arena a parameter points at, where
 // the function names no lifetime; or an arena reached through a struct's field
-// whose root a caller lent, named lifetimes or not. The arena's finalizers may
-// read what is stored, so such a store takes only what the arena was lent.
+// whose root a caller lent, named lifetimes or not. That route is seen two
+// ways: the pin an arena's method made of its receiver's place in this body
+// (viafield), or, where a helper made the node or the reference and left no
+// pin here, a far loan of a parameter whose type holds an arena in a field
+// (heldfield). The arena's finalizers may read what is stored, so such a store
+// takes only what the arena was lent.
 int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
     if (refholds == NULL)
         return 0;
-    int caller = 0, arenaparm = 0, viafield = 0, armethod = 0, heldfield = 0;
+    int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         uint32_t id = loanOf(refholds->ids[i]);
         if (loans[id].kind == LoanCaller) {
@@ -564,20 +568,18 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
                 heldfield = 1;
         }
         else if (loans[id].kind == LoanPin && loans[id].site->tag == FnCallTag) {
-            // The pin an arena's method makes of its receiver's place: a field
-            // of a struct (a step), or a reference read from one (far); or, of
-            // a local that copied such a reference, held from a caller (heldfield)
+            // The pin an arena's method makes of its receiver's place: the
+            // arena is a field of a struct (a step), or a reference read from
+            // one (far)
             FnCallNode *call = (FnCallNode *)loans[id].site;
             INode *recvtype = call->args && call->args->used ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
             INode *place = recvtype && recvtype->tag == RefTag ? ((RefNode *)recvtype)->vtexp : NULL;
-            if (place && itypeIsArena(place) && !lifeSlotted(place)) {
-                armethod = 1;
-                if (loans[id].place.nsteps > 0 || loans[id].place.far)
-                    viafield = 1;
-            }
+            if (place && itypeIsArena(place) && !lifeSlotted(place)
+                    && (loans[id].place.nsteps > 0 || loans[id].place.far))
+                viafield = 1;
         }
     }
-    return (!lifenamed && arenaparm) || (viafield && caller) || (armethod && heldfield);
+    return (!lifenamed && arenaparm) || (viafield && caller) || heldfield;
 }
 
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
