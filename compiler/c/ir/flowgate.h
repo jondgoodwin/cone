@@ -94,6 +94,13 @@ static inline void flowGateCall(FlowState *fstate, Nodes *args) {
     }
 }
 
+// Gate trigger: a literal of two or more values, which the loan walk asks as it
+// does a call's arguments (pwJoinStores)
+static inline void flowGateJoin(FlowState *fstate, Nodes *elems) {
+    if (elems != NULL && elems->used >= 2 && flowGateOpen(fstate, FlowGateStore))
+        flowGateJoinAsk(fstate, elems);
+}
+
 // Gate trigger: a method lending a borrow from a value that may change shape,
 // reached through a reference, in a function that also makes a call with a
 // writable argument. Asked even when another trigger has fired, for it also

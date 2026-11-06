@@ -131,8 +131,11 @@ static int itypeCarriesAt(INode *type, int ending) {
         // at only, as an owning reference does.
         if (itypeGetTypeDcl(ref->region) == borrowRef) {
             // A read-only borrow is no way through for a store, nor a virtual one
+            // (a closure's capture of a variable is the one read-only borrow a
+            // store goes through: the body writes through a '&mut' the variable holds)
             if (ending == CarriesWritableBorrow)
-                return type->tag != VirtRefTag && (permGetFlags(ref->perm) & MayWrite);
+                return type->tag != VirtRefTag && ((permGetFlags(ref->perm) & MayWrite)
+                    || (ref->capture && itypeCarriesAt(ref->vtexp, ending)));
             if (ending && ref->lifename == staticLifeName)
                 return itypeCarriesAt(ref->vtexp, ending);
             return !lifeIsInvariant(ref->lifename)
@@ -383,9 +386,17 @@ int itypeWritableBorrowDepth(INode *type, int most) {
         RefNode *ref = (RefNode *)type;
         if (itypeGetTypeDcl(ref->region) != borrowRef)
             return itypeWritableBorrowDepth(ref->vtexp, most);
-        if (type->tag == VirtRefTag || !(permGetFlags(ref->perm) & MayWrite)
-            || !isTypeNode(ref->vtexp) || !itypeCarriesBorrow(ref->vtexp))
+        if (type->tag == VirtRefTag || !isTypeNode(ref->vtexp) || !itypeCarriesBorrow(ref->vtexp))
             return 0;
+        // A closure's capture of a variable (RefNode.capture) is read-only
+        // when the body only reads the variable, yet it writes through a
+        // '&mut' the variable holds: the way through is one borrow past the
+        // variable, to what the variable's type reaches, and none where it
+        // reaches no writable borrow
+        if (!(permGetFlags(ref->perm) & MayWrite)) {
+            int inner = ref->capture ? itypeWritableBorrowDepth(ref->vtexp, most - 1) : 0;
+            return inner ? 1 + inner : 0;
+        }
         return 1 + itypeWritableBorrowDepth(ref->vtexp, most - 1);
     }
     case PtrTag:

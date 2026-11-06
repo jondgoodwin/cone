@@ -199,7 +199,7 @@ one bit per trigger:
 | --- | --- | --- |
 | `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was). The temporary an operator changing its operand in place borrows it through (`x += 1`, `v <- (a, b)`; named `tempName`) is not asked: it is the operator's, as a method's receiver is, and the loan walk holds nothing in it |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow, a bare borrowed reference too: its scope number does not follow a borrow through a variable, a value holding it, or a call's by-value argument |
-| `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
+| `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or a struct, tuple or array literal (a closure's) of two values that may hold borrows, one of them a way to store (`flowGateJoinAsk`, from `typeLitFlow`, the value tuple and `arrayLitFlow`); or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`), the borrow made inside an operand that is itself a call or literal whose value may carry it included (`both(s.view(), &mut s)`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
@@ -1064,7 +1064,34 @@ v`), or through one a struct handed by value holds (`st(w, &x)`, `w` holding a
 borrows past it, and each place in that range is checked and takes the loans
 as a store through a reference there would: a borrow past the target is where
 its near loans point, two or more, anywhere its loans reach. An argument the
-walk cannot key (`st(W(&mut q), &x)`) is gone by through its own loans. A value may not be stored
+walk cannot key (`st(W(&mut q), &x)`) is gone by through its own loans.
+
+The same question is asked wherever borrows are made one value, since the
+borrows of a struct without lifetimes named, a tuple, an array and a closure
+(whose captures are the fields of its hidden struct) share one lifetime, and a
+later store through the value, or the holder's `final`, has no call to check
+(`pwJoinStores`, which asks `pwPartsStore`, the body of `pwCallStores`, of the
+parts). It is asked at a struct, tuple or array literal (`pwValue`; a closure
+literal is the struct literal of its captures), and at a value stored in a
+field or element of a local aggregate, or swapped into one, where the parts
+are that value and the aggregate with what it holds (`pwJoinField`, from
+`pwStore` and `pwSwap`), in both directions. A literal of a struct declaring
+lifetimes is not asked: its slots say which field holds which. A part
+carrying no loan reaches nothing and is not asked. A closure's capture of a
+variable is read-only when the body only reads it, yet the body writes through
+a `&mut` the variable holds, so a capture counts as a way to store where the
+variable's type reaches a writable borrow (`RefNode.capture` in
+`itypeWritableBorrowDepth`; a plain `&ro &mut H` field does not). The report
+is `ErrorCallEscape` worded for the value (`LoanEscapeJoin`). A struct or
+closure that only reads the younger borrow is refused as well: the rule asks
+whether it could store it. A value holding both whose store is in a callee
+that is handed only the holder is caught here, where the value is made;
+`pwCallStores` returns at once for a call of one argument. What is not caught:
+a closure whose body gives a captured `var` an arena node and stores another
+parameter's borrow in it (both read through the closure's `self`, Bug 48's
+exception admits it).
+
+A value may not be stored
 into what a reference points at when it carries a borrow of part of what that *same* reference
 points at (`held = buf.view()` in a method, `h.held = h.buf.view()` for `h: &mut H`, or
 `words.push(text.view())` into a list field): the caller lent the whole value, can change or move
@@ -2303,6 +2330,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorEscape` | `loanEscape`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where it may outlive the function, carries a loan of the function's own storage; or one stored into a global carries a caller loan |
 | `ErrorCallEscape` | `pwCallStores` (the loan walk) | a `&mut` or `&uni` argument, a receiver included, or a writable borrow one reaches, points at a place that may outlive the function and can hold a borrow, and another argument carries a borrow of the function's own storage, or one the caller lent of a lifetime not held there |
 | `ErrorCallEscape` | `loanEscape`, from `pwCallStores` | another argument carries a loan of the function's own storage, and a `&mut X` argument, or a writable borrow reached from one or held by a struct argument, reaches a place that may outlive the function |
+| `ErrorCallEscape` | `loanEscape`, `loanSelfStore`, `loanApart`, from `pwJoinStores` | the same, of the parts of one value: a literal's values, a closure's captures, a value stored in or swapped into a field of a local aggregate and what the aggregate holds (`LoanEscapeJoin`) |
 | `ErrorEscape` | `loanApart`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where a parameter points, carries a caller loan of a lifetime flowing to none the result, or what that parameter points at (the field, for a struct declaring lifetimes), holds (named lifetimes) |
 | `ErrorEscape` | `loanNotGlobalStatic`, from `pwStaticOnly` | a value given to a place whose type holds borrows but only `'static` ones (a literal's field, a store, a local's initializer) carries a loan that is not global |
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
