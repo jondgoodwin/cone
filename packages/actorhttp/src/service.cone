@@ -307,13 +307,9 @@ struct Service {
       w.resp.headers = headers;
     } else if k == httpconn.EventKind.Data {
       let n = e.buf.len();
-      if w.resp.body.len() + n > w.limit {
-        if !w.tooBig {
-          w.tooBig = true;
-          drv.cancel(lp, w.req);
-        }
-      } else {
-        w.resp.body.appendBytes(e.buf.view());
+      if !streams.gather(&mut w.resp.body, e.buf.view(), w.limit) && !w.tooBig {
+        w.tooBig = true;
+        drv.cancel(lp, w.req);
       }
       drv.release(e.req, n);
     } else if k == httpconn.EventKind.Writable {
@@ -425,13 +421,9 @@ fn onFetchEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event) {
     w.resp.url = url;
   } else if k == httpclient.EventKind.Data {
     let n = e.buf.len();
-    if w.resp.body.len() + n > w.limit {
-      if !w.tooBig {
-        w.tooBig = true;
-        rec.client.cancel(lp, w.fetch);
-      }
-    } else {
-      w.resp.body.appendBytes(e.buf.view());
+    if !streams.gather(&mut w.resp.body, e.buf.view(), w.limit) && !w.tooBig {
+      w.tooBig = true;
+      rec.client.cancel(lp, w.fetch);
     }
     rec.client.release(e.id, n);
   } else if e.isTerminal() {
