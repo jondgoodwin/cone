@@ -746,7 +746,14 @@ pub struct FrameReader {
         return self.fail(connectionError(ErrorCode.ProtocolError, h.stream, "a DATA frame's padding as long as its payload or longer"));
       }
     }
-    let buf = copyOutBuf(input, at, h.length - at - pad);
+    let buf = match copyOutBuf(input, at, h.length - at - pad) {
+      case var Some(b) {b}
+      else {
+        // The pool is within its reserve of maxBytes: the connection ends with
+        // INTERNAL_ERROR (its input and streams go with it), rather than a panic
+        return self.fail(connectionError(ErrorCode.InternalError, h.stream, "no buffer for a DATA frame: the buffer pool is full (iobuf maxBytes)"));
+      }
+    };
     input.advance(h.length);
     Parsed.Got(Frame.Data(h.stream, h.has(flagEndStream), buf, h.length))
   }
@@ -797,14 +804,18 @@ fn blockFrame(b: Block) Frame {
   Frame.Headers(stream, endStream, priority, fragments, streamError)
 }
 
-// n bytes at offset 'at' of input, copied into a buffer of their own
-fn copyOutBuf(input: &Chain, at: usize, n: usize) IoBuf {
-  if n == 0usize {return IoBuf();}
-  var buf = IoBuf(n);
+// n bytes at offset 'at' of input, copied into a buffer of their own; None when
+// the pool refuses the buffer (tryMake)
+fn copyOutBuf(input: &Chain, at: usize, n: usize) Option[IoBuf] {
+  if n == 0usize {return Some[IoBuf](IoBuf());}
+  var buf = match IoBuf.tryMake(n) {
+    case var Some(b) {b}
+    else {return None[IoBuf];}
+  };
   let room = buf.spare();
   let k = input.copyOut(at, &mut room[0usize ..< n]);
   buf.setLen(k);
-  buf
+  Some[IoBuf](buf)
 }
 
 // ---------------------------------------------------------------------------

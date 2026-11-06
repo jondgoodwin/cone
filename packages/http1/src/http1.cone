@@ -279,6 +279,9 @@ const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by th
 const tailSize = 4096usize;               // a buffer small writes gather in, when the last queued has no room
 const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
 const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
+// What a peek, or a body copy, that the buffer pool refused ends the connection with: the pool is
+// within its reserve of maxBytes (iobuf.tryMake). A peek of bytes held answers None only for that
+const noBufferText = "no buffer for the bytes: the buffer pool is full (iobuf maxBytes)";
 
 // One HTTP/1.1 connection's protocol state (see the package's header)
 pub struct Connection is Move {
@@ -830,7 +833,11 @@ pub struct Connection is Move {
       var found = HeadScan(0usize, headScan, scanOk);
       match input.peek(n) {
         case let Some(v) {found = scanHeadBytes(v, headScan, most, clientRole);}
-        case is None[&Array[u8]] {}
+        case is None[&Array[u8]] {
+          // n bytes are held (n is at most input.len()), so the pool refused the copy
+          self.fail(ErrorKind.TooLarge, 503u16, noBufferText);
+          return 0usize;
+        }
       }
       headScan = found.at;
       if found.why == scanBareLf {
@@ -883,7 +890,7 @@ pub struct Connection is Move {
   fn requestHead(self: &mut, len: usize) Event {
     let read = match input.peek(len) {
       case let Some(v) {readRequest(v, &cfg)}
-      case is None[&Array[u8]] {bad[RequestRead](ErrorKind.Malformed, 400u16, "the head is not in the input")}
+      case is None[&Array[u8]] {bad[RequestRead](ErrorKind.TooLarge, 503u16, noBufferText)}
     };
     self.consumeHead(len);
     match read {
@@ -909,7 +916,7 @@ pub struct Connection is Move {
   fn responseHead(self: &mut, len: usize) Event {
     let read = match input.peek(len) {
       case let Some(v) {readResponse(v, &cfg)}
-      case is None[&Array[u8]] {bad[ResponseRead](ErrorKind.Malformed, 0u16, "the head is not in the input")}
+      case is None[&Array[u8]] {bad[ResponseRead](ErrorKind.TooLarge, 0u16, noBufferText)}
     };
     self.consumeHead(len);
     match read {
@@ -1007,7 +1014,13 @@ pub struct Connection is Move {
       }
     } else {
       let want = if n > u64.from(maxCopy) {maxCopy} else {usize.from(n)};
-      buf = IoBuf(want);
+      buf = match IoBuf.tryMake(want) {
+        case var Some(b) {b}
+        else {
+          self.fail(ErrorKind.TooLarge, 503u16, noBufferText);
+          return self.failedEvent();
+        }
+      };
       let room = buf.spare();
       let k = input.copyOut(0usize, &mut room[0usize ..< want]);
       buf.setLen(k);
@@ -1082,7 +1095,7 @@ pub struct Connection is Move {
     }
     let read = match input.peek(at) {
       case let Some(s) {parseChunkLine(s, &cfg)}
-      case is None[&Array[u8]] {bad[u64](ErrorKind.Malformed, 400u16, "a chunk's size line is not in the input")}
+      case is None[&Array[u8]] {bad[u64](ErrorKind.TooLarge, 503u16, noBufferText)}
     };
     let size = match read {
       case var Ok(v) {v}
@@ -1123,7 +1136,7 @@ pub struct Connection is Move {
     }
     let read = match input.peek(len) {
       case let Some(v) {parseFields(v, 0usize, &cfg, !clientRole, false)}
-      case is None[&Array[u8]] {bad[FieldLines](ErrorKind.Malformed, 400u16, "the trailers are not in the input")}
+      case is None[&Array[u8]] {bad[FieldLines](ErrorKind.TooLarge, 503u16, noBufferText)}
     };
     self.consumeHead(len);
     match read {

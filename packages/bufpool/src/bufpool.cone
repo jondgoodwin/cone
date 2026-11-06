@@ -313,6 +313,7 @@ struct Globals {
   bigLent: Atomic[u64];      // oversize blocks lent now
   bigBytes: Atomic[u64];     // and their bytes
   bigTakes: Atomic[u64];     // oversize blocks ever lent
+  refused: Atomic[u64];      // tryAllocate's refusals
 }
 
 pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
@@ -321,6 +322,10 @@ pub const defaultKeepBytes = 8388608usize;     // 8 MiB of idle blocks kept
 let gAddr: Atomic[usize];
 
 var @threadlocal myCache: *ThreadCache = null;
+
+// How many bytes below maxBytes this thread's growth stops while a tryAllocate
+// is under way (see 'tryAllocate'); 0 the rest of the time
+var @threadlocal growthCut: usize = 0;
 
 // The slab a block is in: its address masked to 2 MiB, the page before
 fn slabOf(b: *u8) *SlabRec {
@@ -347,6 +352,7 @@ fn blocksInit() {
   (*g).bigLent = Atomic[u64].of(0u64);
   (*g).bigBytes = Atomic[u64].of(0u64);
   (*g).bigTakes = Atomic[u64].of(0u64);
+  (*g).refused = Atomic[u64].of(0u64);
   gAddr.store(g as usize);
 }
 
@@ -712,7 +718,9 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
 fn reserve(g: *Globals, size: usize) bool {
   let n = u64.from(size);
   let before = (*g).held.add(n);
-  if before + n > (*g).maxBytes.load() {
+  let max = (*g).maxBytes.load();
+  let cut = u64.from(growthCut);
+  if before + n > (if cut >= max {0u64} else {max - cut}) {
     (*g).held.sub(n);
     return false;
   }
@@ -843,6 +851,7 @@ pub struct BlockStats {
   pub osFrees: u64;         // and given back
   pub slabs: usize;         // slabs held
   pub threads: usize;       // thread caches on the registry
+  pub refused: u64;         // takes tryAllocate refused
 }
 
 pub fn blockStats() BlockStats {
@@ -897,7 +906,7 @@ pub fn blockStats() BlockStats {
   BlockStats(usize.from((*g).maxBytes.load()), usize.from((*g).keepBytes.load()), held, lentBytes,
     cachedBytes, if held > lentBytes {held - lentBytes} else {0usize}, stockBytes, lent, takes,
     if takes > misses {takes - misses} else {0u64}, (*g).osAllocs.load(), (*g).osFrees.load(),
-    slabs, threads)
+    slabs, threads, (*g).refused.load())
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +968,30 @@ fn poolAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
     return holdOversize(pageCeil(bytes));
   }
   blockTake(c)
+}
+
+// The bytes a refusing take leaves for what a program does on its own account:
+// an eighth of maxBytes, at least two slabs, at most half of maxBytes
+fn reserveOf(max: usize) usize {
+  var r = max / 8usize;
+  if r < 2usize * slabBytes {r = 2usize * slabBytes;}
+  if r > max / 2usize {r = max / 2usize;}
+  r
+}
+
+// The block 'bufferPool().allocate(bytes, page)' gives, but one the pool may
+// REFUSE (null) earlier: a take that needs a new slab or an oversize block is
+// refused once the bytes held would pass maxBytes less 'reserveOf' it. A take
+// served from a block already home is never refused. For the blocks a peer's
+// bytes cause, so that a flood stops short of maxBytes and the constructions a
+// program makes on its own account still find room
+pub fn tryAllocate(bytes: usize) *u8 {
+  let g = glob();
+  growthCut = reserveOf(usize.from((*g).maxBytes.load()));
+  let b = poolAlloc(bufferPool(), bytes, page);
+  growthCut = 0usize;
+  if b as usize == 0usize {(*g).refused.add(1u64);}
+  b
 }
 
 fn poolRelease(r: *MemRegion, block: *u8, bytes: usize) {

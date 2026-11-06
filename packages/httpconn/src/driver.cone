@@ -1184,7 +1184,15 @@ pub struct Driver {
       return;
     }
     c.readyHit = false;
-    let b = IoBuf(cfg.recvSize);
+    let b = match IoBuf.tryMake(cfg.recvSize) {
+      case var Some(got) {got}
+      else {
+        // The pool is within its reserve of maxBytes: this connection ends, its
+        // credit and buffers with it, rather than a later construction panicking
+        self.failConn(lp, i, Stage.Read, 0u32, ErrorKind.TooLarge, "the buffer pool is full (iobuf maxBytes): no buffer for a receive");
+        return;
+      }
+    };
     c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
     c.recvReading = reading;
@@ -1234,7 +1242,15 @@ pub struct Driver {
   fn lingerRecv(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     if c.eof || c.recvOut || c.readyOut {return;}
-    let b = IoBuf(lingerSize);
+    let b = match IoBuf.tryMake(lingerSize) {
+      case var Some(got) {got}
+      else {
+        // The linger reads are only to be dropped: a refusal ends the linger
+        c.eof = true;
+        self.closeNow(lp, i, false, false);
+        return;
+      }
+    };
     c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
     c.recvReading = false;

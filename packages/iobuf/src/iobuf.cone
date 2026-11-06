@@ -247,7 +247,7 @@ pub struct Stats {
   pub reuses: u64;         // takes served by the thread's own cache
   pub osAllocs: u64;       // slabs and oversize blocks got from the OS
   pub osFrees: u64;        // and given back
-  pub refused: u64;        // takes refused: 0, since a refusal panics
+  pub refused: u64;        // tryMake's refusals (a plain construction past maxBytes panics)
   pub cachedBytes: usize;  // bytes of idle blocks in threads' caches
   pub stockBytes: usize;   // bytes of idle blocks in the central stock
   pub slabs: usize;        // slabs held
@@ -258,7 +258,7 @@ pub struct Stats {
 pub fn stats() Stats {
   let s = bufpool.blockStats();
   Stats(s.maxBytes, s.keepBytes, s.heldBytes, s.idleBytes, s.lent, s.takes, s.reuses,
-    s.osAllocs, s.osFrees, 0u64, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
+    s.osAllocs, s.osFrees, s.refused, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
 }
 
 // Give every idle slab back to the OS (this thread's cache first)
@@ -306,6 +306,17 @@ pub struct IoBuf is Default, Move, Sendable {
 
   // A buffer with no block: capacity 0, from no pool
   pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize);}
+
+  // A buffer like 'IoBuf(size)', or None when the pool will not give one without
+  // growing past maxBytes less its reserve (THE BOUNDS): a refusal as a value,
+  // for the buffers a peer's bytes cause, so that a flood can never use up the
+  // room a program's own constructions need. A block already home is never refused
+  pub fn tryMake(size: usize) Option[IoBuf] {
+    let room = (bufpool.bufferPool() as &MemRegion).sizeFor(size, page);
+    let b = bufpool.tryAllocate(size);
+    if b as usize == 0usize {return None[IoBuf];}
+    Some[IoBuf](IoBuf(b, 0usize, room))
+  }
 
   pub fn len(self: &) usize {used}
   pub fn capacity(self: &) usize {cap}

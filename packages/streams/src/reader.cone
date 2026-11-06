@@ -15,7 +15,9 @@
 //   }
 //
 //   r.peek(n)       Option[&Array[u8]]: the first n bytes as ONE slice, or None
-//                   when fewer than n are held. In place when they lie in one
+//                   when fewer than n are held, or when n are held but the
+//                   buffer pool refused the copy (iobuf's tryMake: n <= r.len()
+//                   and None is that). In place when they lie in one
 //                   segment; copied once into the reader's own buffer only when
 //                   they cross a segment's edge.
 //   r.consume(n)    the first n bytes are used: segments wholly used go home
@@ -84,7 +86,10 @@ pub struct Reader is Move {
     let have = copy.len();
     if n > have {
       if n > copy.capacity() {
-        var bigger = IoBuf(n);
+        var bigger = match IoBuf.tryMake(n) {
+          case var Some(b) {b}
+          else {return None;}
+        };
         let k = chain.copyOut(0usize, bigger.spare());
         bigger.setLen(k);
         copy = bigger;
