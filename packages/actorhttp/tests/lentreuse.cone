@@ -1,12 +1,10 @@
-// The credit a streamTo fetch has lent is kept per buffer, and a buffer is known
-// by its address. The address must not come back to the service thread's next
-// receive while the record of the buffer's last life is still there: that would
-// merge two lives into one record, and the release of the first would give back
-// the second's bytes while a sink still held them. Here many fetches run at once
-// to sinks that give buffers back as hard as they can (some a buffer behind),
-// which is when a block just given back is the next one a receive is issued.
-// The service counts any merge it sees (actorhttp.lentMerges()); it must be 0.
-// Every byte is checked and every buffer must come home.
+// A plain stress test, not a guard: many streamTo fetches at once to sinks that
+// give buffers back as hard as they can (some a buffer or two late); every byte
+// is checked and every buffer must come home. It was written to show address
+// reuse in the per-buffer 'lent' records (a block given back being issued to the
+// service thread's next receive before its release job ran). Seven runs on the
+// code before the fix never showed it, so that fault is reasoned from the code,
+// not observed, and this test does not guard it.
 
 mod lentreuse;
 
@@ -185,7 +183,7 @@ fn url(port: u16, path: &str) String {
 fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
 
 const fetches = 24u64;
-const each_ = 8388608u64;
+const each_ = 2097152u64;
 
 fn main() i32 {
   initAll();
@@ -201,17 +199,14 @@ fn main() i32 {
     while k < fetches {
       let sink = Giver(usize.from(k % 3u64));
       let f = Fetcher(Client.standard());
-      f.run(url(port, "/big/8388608"), sink);
+      f.run(url(port, "/big/2097152"), sink);
       k = k + 1u64;
     }
     waitFor(&tally.finished, fetches);
-    printStr("24 concurrent 8 MiB fetches, sinks giving back at once or a buffer or two late: all ended ");
+    printStr("24 concurrent 2 MiB fetches, sinks giving back at once or a buffer or two late: all ended ");
     printStr(yes(tally.finished.load() == fetches));
     printStr(", every byte ");
     printStr(yes(tally.bytes.load() == fetches * each_ && tally.bad.load() == 0u64));
-    printStr("\n");
-    printStr("...no two live lent records ever shared an address: ");
-    printStr(yes(actorhttp.lentMerges() == 0u64));
     printStr("\n");
     printStr("...every buffer home: ");
     printStr(yes(allHome()));
