@@ -5,7 +5,7 @@
 // most while they run, and when they are over, with the buffer pool's own count of the
 // bytes it holds (iobuf.stats().heldBytes).
 //
-//   source -> Stage[Deflater] -> HashStage[Sha256] -> sink      mode "deflate"  (a codec holds its window)
+//   source -> TransformStage[Deflater] -> HashStage[Sha256] -> sink      mode "deflate"  (a codec holds its window)
 //   source -> HashStage[Sha256] -> HashStage[Sha256] -> sink    mode "hash"     (a pass-through holds nothing)
 //
 // Each stream moves 2 MiB in 64 KiB chunks through a link of four buffers, its own pool.
@@ -95,13 +95,13 @@ fn @initpure init() {
 
 actor Source is ChunkSource {
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   data: List[u8];
   left: u64;
   over: bool;
 
   pub fn init(self: &new, down: ChunkSink, data: List[u8]) {
-    *self = Self(down: down, link: Link.own(4usize * chunkBytes), data: data, left: chunksPer, over: false);
+    *self = Self(down: down, link: ChunkWindow.own(4usize * chunkBytes), data: data, left: chunksPer, over: false);
     down.attach(selfactor);
   }
 
@@ -208,7 +208,7 @@ fn main(argc: i32, argv: **u8) i32 {
     let sink = Sink();
     if codec {
       let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Quiet());
-      let def = Stage[deflate.Deflater](hash, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+      let def = TransformStage[deflate.Deflater](hash, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
       sources.push(Source(def, corpus(chunkBytes)));
     } else {
       let h2 = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Quiet());

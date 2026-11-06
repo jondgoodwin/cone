@@ -1,5 +1,5 @@
-// The bound on a Pool's memory: at most its cap plus ONE buffer for each link
-// that has nothing in flight when it asks (the floor, pool.cone: a stream is
+// The bound on a ChunkPool's memory: at most its cap plus ONE buffer for each link
+// that has nothing in flight when it asks (the floor, chunkpool.cone: a stream is
 // never left with no buffer at all). This runs one thread and no actor.
 //
 //   1. a full pool (cap 16 KiB, lent to one busy link) and four idle links: each
@@ -20,7 +20,7 @@ import collections use *;
 import iobuf use IoBuf;
 import stages use *;
 
-fn take(link: &mut Link, want: usize) IoBuf {
+fn take(link: &mut ChunkWindow, want: usize) IoBuf {
   match link.take(want) {
     case let Some(b) { b }
     case is None { expect(false, "a take that should find room does"); IoBuf() }
@@ -30,10 +30,10 @@ fn take(link: &mut Link, want: usize) IoBuf {
 fn main() i32 {
   let cap = 16384usize;
   let buf = 16384usize;   // the size class of a 5,000-byte take
-  let pool = Pool.make(cap);
+  let pool = ChunkPool.make(cap);
 
   // 1. a full pool and four idle links
-  var busy = Link.make(1048576usize, pool);
+  var busy = ChunkWindow.make(1048576usize, pool);
   var b1 = take(&mut busy, 4096usize);
   var b2 = take(&mut busy, 4096usize);
   var b3 = take(&mut busy, 4096usize);
@@ -41,10 +41,10 @@ fn main() i32 {
   expectUInt(u64.from(pool.lent()), u64.from(cap), "the pool is full: its cap is lent");
   expectUInt(pool.floored(), 0u64, "and nothing is yet past it");
 
-  var idle = List[Link]();
+  var idle = List[ChunkWindow]();
   var k = 0usize;
   while k < 4usize {
-    idle.push(Link.make(1048576usize, pool));
+    idle.push(ChunkWindow.make(1048576usize, pool));
     k += 1usize;
   }
   var floor = List[IoBuf]();
@@ -78,12 +78,12 @@ fn main() i32 {
 
   // 2. six links, pseudo-random takes and gives
   let cap2 = 32768usize;
-  let pool2 = Pool.make(cap2);
-  var links = List[Link]();
+  let pool2 = ChunkPool.make(cap2);
+  var links = List[ChunkWindow]();
   var held = List[List[IoBuf]]();
   k = 0usize;
   while k < 6usize {
-    links.push(Link.make(1048576usize, pool2));
+    links.push(ChunkWindow.make(1048576usize, pool2));
     held.push(List[IoBuf]());
     k += 1usize;
   }

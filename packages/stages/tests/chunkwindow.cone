@@ -1,8 +1,8 @@
-// A Link is one stream's window of bytes, and lends buffers from a Pool: take
+// A ChunkWindow is one stream's window of bytes, and lends buffers from a ChunkPool: take
 // until the window or the pool is full (a stall is counted), give back, and the
 // counters say what happened. This runs one thread and no actor; the credit of a
 // whole pipeline, with actors, is tested in credit.cone, and the order of a
-// stream's chunks in inbox.cone.
+// stream's chunks in chunkinbox.cone.
 //
 //   1. a window of three 4 KiB buffers: three takes, the fourth stalls, a give
 //      makes room, the peak does not pass three;
@@ -15,14 +15,14 @@
 //      nothing in flight is still lent one buffer (counted as floored);
 //   5. a link dropped with buffers out hands them back to the pool's count.
 
-mod linktest;
+mod chunkwindowtest;
 
 import testing use *;
 import collections use *;
 import iobuf use IoBuf;
 import stages use *;
 
-fn take(link: &mut Link, want: usize) IoBuf {
+fn take(link: &mut ChunkWindow, want: usize) IoBuf {
   match link.take(want) {
     case let Some(b) { b }
     case is None { expect(false, "a take that should find room does"); IoBuf() }
@@ -31,7 +31,7 @@ fn take(link: &mut Link, want: usize) IoBuf {
 
 fn main() i32 {
   // 1. a window of three 4 KiB buffers
-  var link = Link.own(12288usize);
+  var link = ChunkWindow.own(12288usize);
   expectUInt(u64.from(link.window()), 12288u64, "a window of 12 KiB");
   expectUInt(u64.from(link.inFlightBytes()), 0u64, "nothing in flight");
 
@@ -89,7 +89,7 @@ fn main() i32 {
   expectUInt(u64.from(link.sharedPool().lent()), 0u64, "and the pool has them all back");
 
   // 2. sized to the data
-  var sized = Link.own(1048576usize);
+  var sized = ChunkWindow.own(1048576usize);
   var small = take(&mut sized, 100usize);
   expectUInt(u64.from(small.capacity()), 4096u64, "100 bytes takes a 4 KiB block");
   expectUInt(u64.from(sized.inFlightBytes()), 4096u64, "and the window counts 4 KiB");
@@ -106,7 +106,7 @@ fn main() i32 {
   expectUInt(u64.from(sized.inFlightBytes()), 0u64, "all three given back");
 
   // 3. a window smaller than one chunk
-  var narrow = Link.own(4096usize);
+  var narrow = ChunkWindow.own(4096usize);
   var first = take(&mut narrow, 65536usize);
   expectUInt(u64.from(first.capacity()), 65536u64, "a 64 KiB chunk is lent through a 4 KiB window, nothing being in flight");
   expect(narrow.take(100usize) is None, "but not a second");
@@ -114,9 +114,9 @@ fn main() i32 {
   expect(narrow.take(100usize) is Some, "and when it is back, another");
 
   // 4. two links, one pool with a cap of 8 KiB
-  let pool = Pool.make(8192usize);
-  var a = Link.make(1048576usize, pool);
-  var b = Link.make(1048576usize, pool);
+  let pool = ChunkPool.make(8192usize);
+  var a = ChunkWindow.make(1048576usize, pool);
+  var b = ChunkWindow.make(1048576usize, pool);
   var a1 = take(&mut a, 4096usize);
   var a2 = take(&mut a, 4096usize);
   expectUInt(u64.from(pool.lent()), 8192u64, "the pool has lent its cap");
@@ -137,9 +137,9 @@ fn main() i32 {
   expectUInt(u64.from(pool.lent()), 0u64, "every byte is back");
 
   // 5. a link dropped with buffers out
-  let shared = Pool.make(1048576usize);
+  let shared = ChunkPool.make(1048576usize);
   {
-    var gone = Link.make(1048576usize, shared);
+    var gone = ChunkWindow.make(1048576usize, shared);
     var x = take(&mut gone, 4096usize);
     var y = take(&mut gone, 65536usize);
     expectUInt(u64.from(shared.lent()), 4096u64 + 65536u64, "two buffers out");

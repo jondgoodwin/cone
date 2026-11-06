@@ -1,7 +1,7 @@
 // Two streams through one stage, one stalled, the other at full rate (S4): a
 // stalled stream holds up nothing but itself. A Mux actor serves two streams
-// (an HTTP/2 connection's shape): each has an Inbox of its own, its own
-// producer with a link of its own, and both links draw on ONE shared Pool.
+// (an HTTP/2 connection's shape): each has a ChunkInbox of its own, its own
+// producer with a link of its own, and both links draw on ONE shared ChunkPool.
 //
 //   stream 0: 50 chunks of 4 KiB. Its first chunk STALLS: the Mux is parked in
 //             that chunk's 'await' (a write that does not complete) until stream
@@ -22,7 +22,7 @@
 // Checked: stream 1 is wholly handled, its end included, while stream 0's first
 // chunk is still in hand and none of stream 0's is finished; stream 0 then
 // finishes, in order, with its end after its last chunk; stream 0's other chunks
-// queued in its Inbox meanwhile and its producer was held to its window (at most
+// queued in its ChunkInbox meanwhile and its producer was held to its window (at most
 // 16 chunks in flight); the stall did not time out; the shared pool lent no more
 // than its cap and has nothing lent at the end.
 
@@ -48,7 +48,7 @@ struct Seen {
   pub finished: Atomic[u64];        // chunks finished
   pub endHandled: Atomic[u64];      // times the end was handled
   pub finishedAtEnd: Atomic[u64];   // chunks finished when it was
-  pub peakQueued: Atomic[u64];      // the most queued in the Inbox
+  pub peakQueued: Atomic[u64];      // the most queued in the ChunkInbox
   pub sourcePeak: Atomic[u64];      // the most chunks the producer had in flight
   pub sourceOut: Atomic[u64];       // buffers its link has out, at its last look
 }
@@ -79,16 +79,16 @@ fn @initpure init() {
 fn seenOf(k: u32) &Seen { if k == 0u32 {&seen0} else {&seen1} }
 
 actor Mux {
-  boxes: List[Inbox];          // one per stream
+  boxes: List[ChunkInbox];          // one per stream
   next: Array[u64, 2];         // the number expected to begin next, per stream
   arrived0: u64;
   done0: OneshotSender[u64];
   done1: OneshotSender[u64];
 
   pub fn init(self: &new, done0: OneshotSender[u64], done1: OneshotSender[u64]) {
-    var boxes = List[Inbox]();
-    boxes.push(Inbox.make());
-    boxes.push(Inbox.make());
+    var boxes = List[ChunkInbox]();
+    boxes.push(ChunkInbox.make());
+    boxes.push(ChunkInbox.make());
     *self = Self(boxes: boxes, next: [0u64, 0u64], arrived0: 0u64, done0: done0, done1: done1);
   }
 
@@ -179,12 +179,12 @@ actor Mux {
 actor Producer is ChunkSource {
   k: u32;
   mux: Mux;
-  link: Link;
+  link: ChunkWindow;
   made: u64;
   over: bool;
 
-  pub fn init(self: &new, k: u32, mux: Mux, pool: Pool) {
-    *self = Self(k: k, mux: mux, link: Link.make(windowBytes(), pool), made: 0u64, over: false);
+  pub fn init(self: &new, k: u32, mux: Mux, pool: ChunkPool) {
+    *self = Self(k: k, mux: mux, link: ChunkWindow.make(windowBytes(), pool), made: 0u64, over: false);
     mux.attach(k, selfactor);
   }
 
@@ -231,7 +231,7 @@ fn main() i32 {
   var tx1: OneshotSender[u64];
   var rx1: OneshotReceiver[u64];
   tx1, rx1 = Oneshot[u64].make();
-  let pool = Pool.make(1048576usize);
+  let pool = ChunkPool.make(1048576usize);
   {
     let mux = Mux(tx0, tx1);
     let p0 = Producer(0u32, mux, pool);
@@ -256,7 +256,7 @@ fn main() i32 {
   expectUInt(a.outOfOrder.load(), 0u64, "stream 0: in order");
   expectUInt(a.endHandled.load(), 1u64, "stream 0: its end handled once");
   expectUInt(a.finishedAtEnd.load(), 50u64, "stream 0: after the last chunk");
-  let queuedOk = expect(a.peakQueued.load() > 0u64, "stream 0: chunks queued in its Inbox behind the stalled one");
+  let queuedOk = expect(a.peakQueued.load() > 0u64, "stream 0: chunks queued in its ChunkInbox behind the stalled one");
   expect(a.sourcePeak.load() <= 16u64, "stream 0: its producer was held to its 64 KiB window");
   expectUInt(a.sourceOut.load(), 0u64, "stream 0: every buffer is back");
   expectUInt(b.sourceOut.load(), 0u64, "stream 1: every buffer is back");
