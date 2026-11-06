@@ -187,8 +187,9 @@ it, so the block's type is that type even where its value is thrown away. A type
 it cannot have (`ErrorTryType`) makes every path an error node and the type the
 error type. `break` and `continue` written in the body are untouched: name
 resolution binds them to loops, and a try block is none. A try block with no
-function around it (a global's value) is refused whatever it holds
-(`propagateTryFinish`, `ErrorNotLit`); `blockTypeCheck` compares a block's
+function around it (a global's value, a field's default) is refused at the start
+of `blockTypeCheck` (`ErrorNotLit`), takes the error type, and nothing in it is
+checked. A loop there is checked as any: `blockTypeCheck` compares a block's
 breaks with the function body's block only when there is a function.
 
 **`FlagEach`: the loop is built here, from the source's type.** Before any

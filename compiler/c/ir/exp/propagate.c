@@ -310,17 +310,12 @@ typedef struct PropagateTry {
     VarDclNode *val;            // the hidden variable holding the last value, or NULL
     int lastjumps;              // the body ends in a jump: no success to wrap
     int refused;                // a '?' in it was refused (reported) before its kind was known
-    int errorsAtEnter;          // the errors counted when it was entered
     PropagateSite *sites;
     uint32_t nsites, maxsites;
     struct PropagateTry *outer;
 } PropagateTry;
 
 static PropagateTry *propagateTryTop = NULL;
-
-int propagateTryOpen(TypeCheckState *pstate) {
-    return propagateTryTop != NULL && propagateTryTop->fn == pstate->fn;
-}
 
 // The column a node stands at, for a message naming another place
 static uint32_t propagateColumn(INode *node) {
@@ -332,7 +327,6 @@ void propagateTryEnter(TypeCheckState *pstate, BlockNode *blk, INode *expectType
     memset(trys, 0, sizeof(PropagateTry));
     trys->blk = blk;
     trys->fn = pstate->fn;
-    trys->errorsAtEnter = errors;
     if (blk->breaks == NULL)
         blk->breaks = newNodes(2);
 
@@ -485,7 +479,7 @@ static INode *propagateTryRefused(PropagateTry *trys) {
     return errorType;
 }
 
-static INode *propagateTryFinishIn(TypeCheckState *pstate, BlockNode *blk) {
+INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk) {
     PropagateTry *trys = propagateTryTop;
     propagateTryTop = trys->outer;
     INode *lexnode = (INode*)blk;
@@ -555,23 +549,6 @@ static INode *propagateTryFinishIn(TypeCheckState *pstate, BlockNode *blk) {
         *lastp = propagateConstruct(okv, succval, *lastp);
     }
     return rtype;
-}
-
-// A try block with no function around it gives a global its value. It holds that
-// value in a local of its own, which a block there may declare only as a constant
-// (vardcl.c), and nothing lifts the try into a setup. Whatever computed local it
-// declares is refused at the local already; this refuses the rest, which would
-// otherwise compile, so that a try at module level is refused whatever it holds.
-INode *propagateTryFinish(TypeCheckState *pstate, BlockNode *blk) {
-    int svErrors = propagateTryTop->errorsAtEnter;
-    int global = propagateTryTop->fn == NULL;
-    INode *type = propagateTryFinishIn(pstate, blk);
-    if (global && errors == svErrors) {
-        errorMsgNode((INode*)blk, ErrorNotLit,
-            "A try block cannot give a global its value: it holds the value in a local of its own, and a block that gives a global its value can declare only constants. Put the work in a function that returns the Result or Option, and give the global a call to it.");
-        return errorType;
-    }
-    return type;
 }
 
 void propagateLower(TypeCheckState *pstate, BlockNode *blk) {
