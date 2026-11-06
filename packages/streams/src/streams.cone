@@ -12,29 +12,11 @@
 //   import streams use *;
 //   import deflate;
 //
-//   // Any transform, run over 'input' in 64 KiB pieces: what it makes, joined.
-//   fn runAll[T: Transform](t: &mut T, input: &Array[u8]) List[u8] {
-//     var out = List[u8]();
-//     var buf = IoBuf(65536usize);
-//     var at = 0usize;
-//     while at < input.len {
-//       let n = if input.len - at < 65536usize {input.len - at} else {65536usize};
-//       t.feed(&input[at ..< at + n]);
-//       at += n;
-//     }
-//     t.finish();
-//     var st = Status.MoreOutput;
-//     while st == Status.MoreOutput {
-//       buf.clear();
-//       st = t.pull(&mut buf);                  // fills buf's spare room
-//       out.appendSlice(buf.view());
-//     }
-//     out
-//   }
-//
 //   fn main() {
 //     var inf = deflate.Inflater.make(deflate.Format.Gzip);   // meets Transform
-//     let text = runAll(&mut inf, gzFile.view());
+//     var text = List[u8]();
+//     // Any transform, fed all of 'input', finished, and pulled to the end: what it makes, joined
+//     let st = runAll(&mut inf, gzFile.view(), &mut text);    // Done, or Failed
 //   }
 //
 // WHAT IS HERE
@@ -46,6 +28,8 @@
 //                  Compressor meet it.
 //   Digester       a trait for what only consumes: 'feed' bytes in, 'finish'
 //                  for the digest. cryptohash's Sha256, Sha512 and Sha1 meet it.
+//   runAll, pullAll  the loop that drives any Transform: feed, finish, pull until it says
+//                  something but MoreOutput; the output appended to a List (drive.cone)
 //   Reader         the bytes that have arrived, as an iobuf Chain: 'peek(n)'
 //                  lends them as one slice, 'consume(n)' uses them up (reader.cone).
 //   Writer         a buffer being filled: 'spare()', 'advance(n)', and 'take()'
@@ -117,7 +101,7 @@
 mod streams;
 
 import iobuf use IoBuf, Chain;
-import collections use AnyError;
+import collections use AnyError, List;
 
 // What a 'pull' found. For every Transform.
 pub enum Status {

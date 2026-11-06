@@ -1,4 +1,4 @@
-// The Rust twin of packages/stages/examples/streamsample.cone and streamrates.cone (streams
+// The Rust twin of packages/stageio/examples/streamsample.cone and packages/stages/examples/streamrates.cone (streams
 // PR 7), and of tools/streambench/csharp: the same job on the same input. A gzip stream
 // arrives over a loopback TCP socket; inflate it, take its sha256, and write the inflated
 // bytes to a file. Tokio for the sockets, tasks and file, `bytes` for the chunks, flate2 for

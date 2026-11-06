@@ -1,0 +1,304 @@
+// SocketSource, the socket end of a stream, read into a FileSink over loopback TCP, in four runs:
+//
+//   0. 'start(addr)': a server sends 300,000 bytes and closes; the file holds the same bytes and
+//      'done' says Ok with the count (the end of the stream is the peer's close);
+//   1. 'startOn(conn)': the program accepts the connection itself, a dialer sends the same bytes
+//      and closes; the same result;
+//   2. a connect that is refused (the port was listened on and let go): the stream ends Failed,
+//      'done' says Err, and no file is made;
+//   3. a cancel while the source waits for bytes: the server sends 196,608 bytes and then keeps the
+//      connection open for 4 seconds; main cancels the source's group once the file has the bytes, the
+//      read in flight ends, the stream ends Failed, and 'done' says Err well before the server lets go
+//      (a source that did not honour the cancel would finish when the server closed, and say Ok).
+//
+// The data is a pseudo-random run of five words (as the other tests use). Every buffer is back in
+// its pool at the end.
+
+mod socketsource;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import fs;
+import path use Path;
+import iocore use SocketAddr, IoError;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket;
+import cancelgroups use *;
+import streams use *;
+import stages use *;
+import stageio use *;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) { s <-> *ok; }
+    else {}
+  }
+  s
+}
+
+// Listens, tells main the port, sends the bytes to the first connection, keeps it open for 'idle'
+// milliseconds, then lets it go
+actor Server {
+  data: List[u8];
+
+  pub fn init(self: &new, data: List[u8]) {
+    *self = Self(data: data);
+  }
+
+  pub async fn serve(self, port: OneshotSender[u16], idle: i64) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var at = 0usize;
+    var more = true;
+    while more && at < data.len() {
+      let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
+      var buf = IoBuf(n);
+      buf.append(&data.view()[at ..< at + n]);
+      at = at + n;
+      let sent = await conn.write(buf);
+      match sent {
+        case is Err { more = false; }
+        else {}
+      }
+    }
+    if idle > 0i64 { _ = await aio.sleep(Duration.fromMillis(idle)); }
+  }
+}
+
+// Listens and tells main the port, then lets the listener go
+actor Probe {
+  pub async fn run(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); }
+    }
+  }
+}
+
+// Listens, tells main the port, accepts the first connection and reads it with a SocketSource
+actor Acceptor {
+  pub async fn run(self, port: OneshotSender[u16], sink: ChunkSink) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    let src = SocketSource(sink);
+    src.startOn(conn);
+  }
+}
+
+// Connects to a port, sends the bytes, and closes
+actor Dialer {
+  data: List[u8];
+
+  pub fn init(self: &new, data: List[u8]) {
+    *self = Self(data: data);
+  }
+
+  pub async fn run(self, port: u16) {
+    let conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    var at = 0usize;
+    var more = true;
+    while more && at < data.len() {
+      let n = if data.len() - at < 65536usize {data.len() - at} else {65536usize};
+      var buf = IoBuf(n);
+      buf.append(&data.view()[at ..< at + n]);
+      at = at + n;
+      let sent = await conn.write(buf);
+      match sent {
+        case is Err { more = false; }
+        else {}
+      }
+    }
+  }
+}
+
+fn isOk(r: &Option[Result[u64, AnyError]]) bool {
+  match r {
+    case let &Some(x) {
+      match x {
+        case is Ok { true }
+        case is Err { false }
+      }
+    }
+    case is None { false }
+  }
+}
+
+fn isErr(r: &Option[Result[u64, AnyError]]) bool {
+  match r {
+    case let &Some(x) {
+      match x {
+        case is Ok { false }
+        case is Err { true }
+      }
+    }
+    case is None { false }
+  }
+}
+
+fn countOf(r: &Option[Result[u64, AnyError]]) u64 {
+  match r {
+    case let &Some(x) {
+      match x {
+        case let &Ok(n) { *n }
+        case is Err { 0u64 }
+      }
+    }
+    case is None { 0u64 }
+  }
+}
+
+fn bytesOf(name: &str) List[u8] {
+  var out = List[u8]();
+  match fs.readFile(&Path.from(name)) {
+    case let Ok(s) { out.appendSlice(s.view()); }
+    case is Err {}
+  }
+  out
+}
+
+fn portOf(rx: OneshotReceiver[u16]) u16 {
+  var r = rx;
+  match r.recv() {
+    case let Some(p) { p }
+    case is None { 0u16 }
+  }
+}
+
+fn gone(name: &str) { _ = fs.removeFile(&Path.from(name)); }
+
+fn main() i32 {
+  initAll();
+  let data = corpus(300000usize);
+  let part = corpus(196608usize);
+  gone("stages_sock_out0.tmp");
+  gone("stages_sock_out1.tmp");
+  gone("stages_sock_out2.tmp");
+  gone("stages_sock_out3.tmp");
+
+  var tx0: OneshotSender[Result[u64, AnyError]];
+  var rx0: OneshotReceiver[Result[u64, AnyError]];
+  tx0, rx0 = Oneshot[Result[u64, AnyError]].make();
+  var tx1: OneshotSender[Result[u64, AnyError]];
+  var rx1: OneshotReceiver[Result[u64, AnyError]];
+  tx1, rx1 = Oneshot[Result[u64, AnyError]].make();
+  var tx2: OneshotSender[Result[u64, AnyError]];
+  var rx2: OneshotReceiver[Result[u64, AnyError]];
+  tx2, rx2 = Oneshot[Result[u64, AnyError]].make();
+  var tx3: OneshotSender[Result[u64, AnyError]];
+  var rx3: OneshotReceiver[Result[u64, AnyError]];
+  tx3, rx3 = Oneshot[Result[u64, AnyError]].make();
+
+  let gc = CancelGroup.make();
+  let t0 = Instant.now();
+  {
+    // 0. start(addr)
+    var p0Tx: OneshotSender[u16];
+    var p0Rx: OneshotReceiver[u16];
+    p0Tx, p0Rx = Oneshot[u16].make();
+    let server0 = Server(corpus(300000usize));
+    server0.serve(p0Tx, 0i64);
+    let sink0 = FileSink(String.from("stages_sock_out0.tmp"), tx0);
+    let src0 = SocketSource(sink0);
+    src0.start(SocketAddr.localhost(portOf(p0Rx)));
+
+    // 1. startOn(conn): the program accepts, a dialer sends
+    var p1Tx: OneshotSender[u16];
+    var p1Rx: OneshotReceiver[u16];
+    p1Tx, p1Rx = Oneshot[u16].make();
+    let sink1 = FileSink(String.from("stages_sock_out1.tmp"), tx1);
+    let acceptor = Acceptor();
+    acceptor.run(p1Tx, sink1);
+    let dialer = Dialer(corpus(300000usize));
+    dialer.run(portOf(p1Rx));
+
+    // 2. a connect that is refused
+    var p2Tx: OneshotSender[u16];
+    var p2Rx: OneshotReceiver[u16];
+    p2Tx, p2Rx = Oneshot[u16].make();
+    let probe = Probe();
+    probe.run(p2Tx);
+    let closedPort = portOf(p2Rx);
+    thread.sleep(Duration.fromMillis(200i64));
+    let sink2 = FileSink(String.from("stages_sock_out2.tmp"), tx2);
+    let src2 = SocketSource(sink2);
+    src2.start(SocketAddr.localhost(closedPort));
+
+    // 3. a cancel while the source waits: the server holds the connection for 4 s
+    var p3Tx: OneshotSender[u16];
+    var p3Rx: OneshotReceiver[u16];
+    p3Tx, p3Rx = Oneshot[u16].make();
+    let server3 = Server(corpus(196608usize));
+    server3.serve(p3Tx, 4000i64);
+    let gs = gc.child();
+    let sink3 = FileSink(String.from("stages_sock_out3.tmp"), tx3);
+    let src3 = SocketSource(sink3);
+    let port3 = portOf(p3Rx);
+    actors.withGroup(&gs, fn() [src3] { src3.start(SocketAddr.localhost(port3)); });
+    thread.sleep(Duration.fromMillis(500i64));
+    gc.cancel();
+  }
+  let r0 = rx0.recv();
+  let r1 = rx1.recv();
+  let r2 = rx2.recv();
+  let r3 = rx3.recv();
+  let took = t0.elapsed().nanos();
+  finalAll();
+
+  expect(isOk(&r0), "0: done says Ok");
+  expectUInt(countOf(&r0), 300000u64, "0: and counts every byte");
+  expect(bytesOf("stages_sock_out0.tmp").view() == data.view(), "0: the file is the same bytes");
+
+  expect(isOk(&r1), "1: a connection given to startOn says Ok");
+  expectUInt(countOf(&r1), 300000u64, "1: and counts every byte");
+  expect(bytesOf("stages_sock_out1.tmp").view() == data.view(), "1: the file is the same bytes");
+
+  expect(isErr(&r2), "2: a refused connect ends the stream Failed, and done says Err");
+  expect(!fs.exists(&Path.from("stages_sock_out2.tmp")), "2: and no file is made");
+
+  expect(isErr(&r3), "3: cancelled while waiting for bytes, done says Err");
+  expect(took < 3500000000i64, "3: and it came before the server let go of the connection");
+  let got3 = bytesOf("stages_sock_out3.tmp");
+  expect(got3.len() <= part.len() && got3.view() == &part.view()[0usize ..< got3.len()], "3: the file holds the bytes that had arrived, in order, and no others");
+  expect(gc.isCancelled(), "3: the group was cancelled");
+
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  gone("stages_sock_out0.tmp");
+  gone("stages_sock_out1.tmp");
+  gone("stages_sock_out3.tmp");
+  done()
+}
