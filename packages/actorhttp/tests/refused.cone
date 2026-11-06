@@ -12,7 +12,12 @@
 // the same hoard causes at the far end (measured: with the site made a plain
 // IoBuf the test still passed): a server's text answer (answerText: a 500 or 503
 // or 413 text, 20 to 30 bytes, small enough for a cached block) and a client's
-// request body (sendBody), whose exchange fails Overloaded either way.
+// request body (sendBody), whose exchange fails Overloaded either way. Tried
+// again (6 Nov): a 100 byte POST body under a full hoard, sendBody made plain,
+// still ended 'err overloaded'; a hoard giving back blocks of the larger
+// classes for the far end's receives either reset the far end anyway or, by
+// freeing whole slabs, let the 4 KiB text be taken (not refused).
+// 'lent' is compared at the end with its value after the first request.
 
 mod refused;
 
@@ -208,6 +213,7 @@ fn main() i32 {
   // A request served, its connection kept alive
   f.get(url(port, "/hello"), otx.clone());
   expectStr(takeS(&mut orx).view(), "ok 200 5", "a request is served");
+  let lent0 = stats().lent;
 
   // pumpWrites: a streamed write while the pool is taken
   f.get(url(port, "/pump"), otx.clone());
@@ -225,5 +231,6 @@ fn main() i32 {
   // A new request is served once the pool has room again
   f.get(url(port, "/hello"), otx.clone());
   expectStr(takeS(&mut orx).view(), "ok 200 5", "after the shortage a request is served");
+  expectUInt(stats().lent, lent0, "after the shortage the pool's lent count is what it was");
   done()
 }
