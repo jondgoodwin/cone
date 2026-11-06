@@ -5,7 +5,7 @@
 //   the job: a gzip stream arrives over a loopback TCP socket; inflate it, take its
 //   sha256, and write the inflated bytes to a file.
 //
-//   mode "pipeline"  socket -> SocketSource -> Stage[Inflater] -> HashStage[Sha256] -> FileSink
+//   mode "pipeline"  socket -> SocketSource -> TransformStage[Inflater] -> HashStage[Sha256] -> FileSink
 //                    four actors under credit (a window of 256 KiB at each link, 64 KiB chunks);
 //                    the file is written as the bytes arrive
 //   mode "adhoc"     one actor: read the whole body into a List, gzipDecompress it in one call,
@@ -155,13 +155,13 @@ actor Checker is DigestSink[Array[u8, 32]] {
 // Reads a connected socket, 64 KiB at a time, into a link of four buffers
 actor SocketSource is ChunkSource {
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   conn: Socket;
   pumping: bool;
   over: bool;
 
   pub fn init(self: &new, down: ChunkSink) {
-    *self = Self(down: down, link: Link.own(262144usize), conn: Socket.none(), pumping: false, over: false);
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), conn: Socket.none(), pumping: false, over: false);
     down.attach(selfactor);
   }
 
@@ -209,10 +209,10 @@ actor SocketSource is ChunkSource {
   }
 }
 
-// Writes the chunks to a file in the order they arrive (an Inbox keeps the order across
+// Writes the chunks to a file in the order they arrive (a ChunkInbox keeps the order across
 // the awaits), a copy of each, since a write takes its buffer; then gives the chunk back
 actor FileSink is ChunkSink {
-  rx: Inbox;
+  rx: ChunkInbox;
   name: String;
   file: File;
   opened: bool;
@@ -220,7 +220,7 @@ actor FileSink is ChunkSink {
   done: OneshotSender[u64];
 
   pub fn init(self: &new, name: String, done: OneshotSender[u64]) {
-    *self = Self(rx: Inbox.make(), name: name, file: File.none(), opened: false, at: 0u64, done: done);
+    *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, at: 0u64, done: done);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -342,7 +342,7 @@ fn main(argc: i32, argv: **u8) i32 {
     } else {
       let sink = FileSink(String.from(name), doneTx);
       let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
-      let inf = Stage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+      let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
       let src = SocketSource(inf);
       src.start(port);
     }

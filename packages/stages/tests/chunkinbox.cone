@@ -2,12 +2,12 @@
 // AWAITS. A producer sends 1,000 chunks of 4 KiB through a link with a 64 KiB
 // window and then, at once, its 'end' (it does not wait for the buffers to come
 // back). A sink that awaits a different random little while in about half the
-// chunks (a write that takes time) keeps its stream in order with an Inbox. Three
+// chunks (a write that takes time) keeps its stream in order with a ChunkInbox. Three
 // runs, one after the other:
 //
 //   0. the whole stream: every chunk is HANDLED in the order sent, one at a time
 //      (never two in hand), and the 'end', which arrives while chunks are still
-//      queued, is handled after the last of the 1,000 (S1, S3). The Inbox did
+//      queued, is handled after the last of the 1,000 (S1, S3). The ChunkInbox did
 //      queue (its peak is above zero), so the order is its doing and not luck;
 //   1. a producer that fails: it sends 300 chunks and then 'end(Failed)'. The sink
 //      handles all 300 first, then gets the failure, which it passes on;
@@ -20,7 +20,7 @@
 // out and the pool has lent nothing, and the iobuf pool has none lent at the
 // very end), which is what the LSan run on the server checks.
 
-mod inbox;
+mod chunkinbox;
 
 import testing use *;
 import collections use *;
@@ -45,7 +45,7 @@ struct Seen {
   pub finished: Atomic[u64];      // chunks the sink finished
   pub endHandled: Atomic[u64];    // times the sink handled the end
   pub finishedAtEnd: Atomic[u64]; // chunks finished when it did (the last, if the end waits)
-  pub peakQueued: Atomic[u64];    // the most chunks the Inbox queued at once
+  pub peakQueued: Atomic[u64];    // the most chunks the ChunkInbox queued at once
   pub waits: Atomic[u64];         // chunks that queued
   pub ends: Atomic[u64];          // ends that reached the sink's downstream
   pub endFailed: Atomic[u64];     // of them, those Failed
@@ -116,18 +116,18 @@ actor Probe is ChunkSink {
 // ---- the sink that awaits ----
 
 // Handles each chunk for a random little while (none in half of them), in the
-// order the Inbox gives them. At chunk 'failAt' it fails, if that is a chunk
+// order the ChunkInbox gives them. At chunk 'failAt' it fails, if that is a chunk
 // that comes.
 actor Sink is ChunkSink {
   slot: usize;
   down: ChunkSink;
-  rx: Inbox;
+  rx: ChunkInbox;
   next: u64;                  // the number expected to begin next
   rng: u64;
   failAt: u64;
 
   pub fn init(self: &new, slot: usize, down: ChunkSink, failAt: u64) {
-    *self = Self(slot: slot, down: down, rx: Inbox.make(), next: 0u64, rng: 12345u64 + u64.from(slot), failAt: failAt);
+    *self = Self(slot: slot, down: down, rx: ChunkInbox.make(), next: 0u64, rng: 12345u64 + u64.from(slot), failAt: failAt);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -178,7 +178,7 @@ actor Sink is ChunkSink {
     s.waits.store(rx.waits());
   }
 
-  // The stream's end can arrive while chunks are in hand or queued: the Inbox
+  // The stream's end can arrive while chunks are in hand or queued: the ChunkInbox
   // holds it until the last is done
   pub async fn end(self, how: Ending) {
     match rx.arriveEnd(how) {
@@ -204,14 +204,14 @@ actor Sink is ChunkSink {
 actor Producer is ChunkSource {
   slot: usize;
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   total: u64;
   failAfter: u64;
   made: u64;
   over: bool;
 
   pub fn init(self: &new, slot: usize, down: ChunkSink, total: u64, failAfter: u64) {
-    *self = Self(slot: slot, down: down, link: Link.own(windowBytes()), total: total, failAfter: failAfter,
+    *self = Self(slot: slot, down: down, link: ChunkWindow.own(windowBytes()), total: total, failAfter: failAfter,
       made: 0u64, over: false);
     down.attach(selfactor);
   }
@@ -288,7 +288,7 @@ fn main() i32 {
   expectUInt(a.finished.load(), 1000u64, "0: and all finished");
   expectUInt(a.endHandled.load(), 1u64, "0: the end was handled once");
   expectUInt(a.finishedAtEnd.load(), 1000u64, "0: after the last chunk was finished (S3)");
-  expect(a.peakQueued.load() > 0u64, "0: the Inbox queued chunks (so the order was its doing)");
+  expect(a.peakQueued.load() > 0u64, "0: the ChunkInbox queued chunks (so the order was its doing)");
   expect(a.waits.load() > 0u64, "0: some chunks had to wait");
   expectUInt(a.ends.load(), 1u64, "0: one end reached the downstream");
   expectUInt(a.endFailed.load(), 0u64, "0: and it was Finished");

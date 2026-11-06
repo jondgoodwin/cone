@@ -1,5 +1,5 @@
-// An Inbox's states, one thread and no actor (inbox.cone tests it under actors,
-// with a sink that awaits). The Inbox here has no upstream attached, so a buffer
+// A ChunkInbox's states, one thread and no actor (chunkinbox.cone tests it under actors,
+// with a sink that awaits). The ChunkInbox here has no upstream attached, so a buffer
 // it gives back simply dies, and the buffer pool's count of lent buffers says
 // whether any was stranded.
 //
@@ -10,9 +10,9 @@
 //      the end comes out at once;
 //   3. a sink that fails: the chunk in hand and every queued one go back, the
 //      chunks that arrive later are refused, the upstream's end is swallowed;
-//   4. an Inbox dropped with chunks queued frees them.
+//   4. a ChunkInbox dropped with chunks queued frees them.
 
-mod inboxstate;
+mod chunkinboxstate;
 
 import testing use *;
 import collections use *;
@@ -67,11 +67,11 @@ fn main() i32 {
 
   // 1. chunks queue behind the one in hand; the end waits behind them all
   {
-    var rx = Inbox.make();
+    var rx = ChunkInbox.make();
     expect(!rx.isBusy(), "1: idle at first");
     let c1 = take(rx.arrive(chunkOf(1u8)));
     expectUInt(u64.from(c1.view()[0usize]), 1u64, "1: the first chunk is handed out at once");
-    expect(rx.isBusy(), "1: and the Inbox is busy");
+    expect(rx.isBusy(), "1: and the ChunkInbox is busy");
     expect(isWait(rx.arrive(chunkOf(2u8))), "1: a chunk that arrives meanwhile waits");
     expect(isWait(rx.arrive(chunkOf(3u8))), "1: and so does the next");
     expectUInt(u64.from(rx.queued()), 2u64, "1: two are queued");
@@ -92,7 +92,7 @@ fn main() i32 {
 
   // 2. a sink that never waits
   {
-    var rx = Inbox.make();
+    var rx = ChunkInbox.make();
     let c = take(rx.arrive(chunkOf(7u8)));
     expectUInt(u64.from(c.view()[0usize]), 7u64, "2: the chunk comes out");
     expect(isWait(rx.finished(c)), "2: finished with nothing behind it: Wait");
@@ -103,7 +103,7 @@ fn main() i32 {
 
   // 3. a sink that fails on the chunk in hand
   {
-    var rx = Inbox.make();
+    var rx = ChunkInbox.make();
     let c1 = take(rx.arrive(chunkOf(1u8)));
     expect(isWait(rx.arrive(chunkOf(2u8))), "3: queued");
     expect(isWait(rx.arrive(chunkOf(3u8))), "3: queued");
@@ -119,14 +119,14 @@ fn main() i32 {
 
   // 4. dropped with chunks queued
   {
-    var rx = Inbox.make();
+    var rx = ChunkInbox.make();
     let c1 = take(rx.arrive(chunkOf(1u8)));
     rx.arrive(chunkOf(2u8));
     rx.arrive(chunkOf(3u8));
     expectUInt(u64.from(rx.queued()), 2u64, "4: two queued");
     expect(iobuf.stats().lent >= before + 3u64, "4: three buffers are lent");
   }
-  expectUInt(iobuf.stats().lent, before, "4: the Inbox dropped with chunks queued freed them, and the one in hand died too");
+  expectUInt(iobuf.stats().lent, before, "4: the ChunkInbox dropped with chunks queued freed them, and the one in hand died too");
   expectUInt(iobuf.stats().lent, before, "every buffer is back in the buffer pool");
   done()
 }

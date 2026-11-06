@@ -1,4 +1,4 @@
-// ======== Layer 3, credit: a Link is one stream's window, and takes its buffers from a Pool ========
+// ======== Layer 3, credit: a ChunkWindow is one stream's window, and takes its buffers from a ChunkPool ========
 //
 // A link is the SENDING half of the connection between two stages, one per
 // stream. CREDIT IS A WINDOW OF BYTES: a stage may send a chunk only while the
@@ -12,14 +12,14 @@
 // nothing until a 'giveBack' arrives. A stalled stream costs the others
 // nothing, because every stream has a link of its own.
 //
-// The memory is not the credit's business. A buffer is taken from the link's Pool
-// (pool.cone), which may be shared by many links (a connection's streams, a
+// The memory is not the credit's business. A buffer is taken from the link's ChunkPool
+// (chunkpool.cone), which may be shared by many links (a connection's streams, a
 // pipeline's stages), only when there is data to carry, sized to it ('take' says
 // how many bytes are wanted, and the buffer is the smallest size class that holds
 // them), and the pool bounds all of them together.
 //
-//   let pool = Pool.make(1048576usize);         // shared; or Link.own(window), a pool of its own
-//   var link = Link.make(262144usize, pool);    // this stream may have 256 KiB in flight
+//   let pool = ChunkPool.make(1048576usize);         // shared; or ChunkWindow.own(window), a pool of its own
+//   var link = ChunkWindow.make(262144usize, pool);    // this stream may have 256 KiB in flight
 //   match link.take(65536usize) {               // None when the window or the pool is full
 //     case let Some(b) { ... fill b ...; sink.accept(b); }
 //     case is None { /* wait for giveBack */ }
@@ -56,8 +56,8 @@ fn capacityFor(want: usize) usize {
   (want + iobuf.page - 1usize) / iobuf.page * iobuf.page
 }
 
-pub struct Link is Move {
-  pool: Pool;
+pub struct ChunkWindow is Move {
+  pool: ChunkPool;
   size: usize;        // the window, in bytes
   held: usize;        // bytes of buffers out now (their capacities)
   count: usize;       // buffers out now
@@ -66,13 +66,13 @@ pub struct Link is Move {
   stalled: u64;       // takes that found no room
 
   // A stream that may have 'window' bytes in flight, its buffers from 'pool'
-  pub fn make(window: usize, pool: Pool) Link {
-    Link(pool, window, 0usize, 0usize, 0usize, 0usize, 0u64)
+  pub fn make(window: usize, pool: ChunkPool) ChunkWindow {
+    ChunkWindow(pool, window, 0usize, 0usize, 0usize, 0usize, 0u64)
   }
 
   // A stream with a pool of its own, as big as its window: what a pipeline of one stream wants
-  pub fn own(window: usize) Link {
-    Link.make(window, Pool.make(window))
+  pub fn own(window: usize) ChunkWindow {
+    ChunkWindow.make(window, ChunkPool.make(window))
   }
 
   // An empty buffer with room for at least 'want' bytes, or None when the window or the pool is full
@@ -93,7 +93,7 @@ pub struct Link is Move {
   // A buffer back from the consumer (or one a stage took and did not send)
   pub fn give(self: &mut, b: IoBuf, file: &Array[u8] = srcFile(), line: u32 = srcLine()) {
     let cap = b.capacity();
-    if count == 0usize || cap > held { panic("streams: Link.give with a buffer this link did not lend", file, line); }
+    if count == 0usize || cap > held { panic("streams: ChunkWindow.give with a buffer this link did not lend", file, line); }
     held = held - cap;
     count = count - 1usize;
     pool.release(cap);
@@ -106,7 +106,7 @@ pub struct Link is Move {
   pub fn peak(self: &) usize { top }
   pub fn peakBytes(self: &) usize { topBytes }
   pub fn stalls(self: &) u64 { stalled }
-  pub fn sharedPool(self: &) Pool { pool }
+  pub fn sharedPool(self: &) ChunkPool { pool }
 
   // Whatever is still out is the pool's again: an abandoned stream keeps nothing of it
   fn final(self: &uni) {

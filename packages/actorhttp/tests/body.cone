@@ -11,7 +11,7 @@
 //     gets one 'end' that is Failed("cancelled"), far short of the body, and
 //     every buffer comes home;
 //   - the consumer's quitting seen only by a buffer given back in a cancelled
-//     group (what a Stage does): the fetch ends the same way;
+//     group (what a TransformStage does): the fetch ends the same way;
 //   - a failure before the head (a refused connection): the caller's Err and
 //     the sink's one Failed end;
 //   - thirty fetches over one HTTP/2 connection (TLS, the tls package's test
@@ -37,7 +37,7 @@ import tls;
 import actors;
 import aio use IoLimits;
 import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
-import stages use ChunkSink, ChunkSource, Ending, Inbox, Turn;
+import stages use ChunkSink, ChunkSource, Ending, ChunkInbox, Turn;
 
 fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
 
@@ -171,11 +171,11 @@ actor Acceptor {
 // ---------------------------------------------------------------------------
 // The sinks. Role 0 never awaits: it counts, checks and gives each buffer back
 // at once. Role 1 awaits 'pace' ms before giving each back, and keeps its
-// chunks in order with an Inbox. Role 2 gives nothing back until it is
+// chunks in order with a ChunkInbox. Role 2 gives nothing back until it is
 // released (a stalled consumer).
 // ---------------------------------------------------------------------------
 
-// Gives buffers back in the group its message was sent in: what a Stage that has
+// Gives buffers back in the group its message was sent in: what a TransformStage that has
 // quit does with its input
 actor Returner {
   held: List[IoBuf];
@@ -189,7 +189,7 @@ actor Returner {
 
 actor Counter is ChunkSink {
   ret: Returner;
-  rx: Inbox;
+  rx: ChunkInbox;
   up: Option[ChunkSource];
   role: u32;
   pace: i64;
@@ -198,12 +198,12 @@ actor Counter is ChunkSink {
   held: List[IoBuf];
   quitAt: u64;                 // cancel 'quit' after this many bytes
   quit: CancelGroup;
-  quitting: bool;              // ...and give the buffers back in it, as a Stage that has quit does
+  quitting: bool;              // ...and give the buffers back in it, as a TransformStage that has quit does
   quitDone: bool;
   released: bool;              // a stalled sink let go: what comes after goes back at once
 
   pub fn init(self: &new, role: u32, pace: i64, quitAt: u64, quit: CancelGroup, quitting: bool) {
-    *self = Self(ret: Returner(List[IoBuf]()), rx: Inbox.make(), up: None[ChunkSource], role: role, pace: pace, at: 0u64, top: 0u64,
+    *self = Self(ret: Returner(List[IoBuf]()), rx: ChunkInbox.make(), up: None[ChunkSource], role: role, pace: pace, at: 0u64, top: 0u64,
       held: List[IoBuf](), quitAt: quitAt, quit: quit, quitting: quitting, quitDone: false, released: false);
   }
 
