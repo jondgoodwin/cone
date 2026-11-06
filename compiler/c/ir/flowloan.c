@@ -631,6 +631,14 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
             // included, still goes through the order below.
             if (sparm == parm && itypeIsArena(place))
                 continue;
+            // A node reached through 'ar: &'a mut Arena' takes what is named
+            // 'a as well. The arena's finalizers may reach the node, so the
+            // caller answers for it: each such call counts as a store into
+            // the arena (pwCallStores)
+            if (itypeIsArena(place) && !lifeSlotted(place) && parm->vtype->tag == RefTag
+                    && ((RefNode *)parm->vtype)->lifename
+                    && lifePartFlows(sig, sparm->vtype, spart, parm->vtype))
+                continue;
             int flows;
             if (slotted && slots)
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, slots, 0);
