@@ -529,6 +529,34 @@ int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
     return 0;
 }
 
+// Does a value of this type hold a plain arena, through a reference or
+// pointer or by value, in a field (depth-limited)?
+static int loanFieldReachesArena(INode *type, int depth) {
+    if (type == NULL || depth > 6)
+        return 0;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == NULL)
+        return 0;
+    switch (dcl->tag) {
+    case RefTag:
+    case PtrTag:
+        return loanFieldReachesArena(((RefNode *)dcl)->vtexp, depth + 1);
+    case StructTag: {
+        if (itypeIsArena(dcl))
+            return depth > 0 && !lifeSlotted(dcl);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)dcl)->fields, cnt, nodesp)) {
+            if (loanFieldReachesArena(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
 // that a caller may keep past this function, by a route that tells the body
@@ -537,8 +565,24 @@ int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
 // whose root a caller lent, named lifetimes or not. The arena's finalizers may
 // read what is stored, so such a store takes only what the arena was lent.
 int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
-    if (refholds == NULL || refholds == &pathSetAll)
+    if (refholds == NULL)
         return 0;
+    if (refholds == &pathSetAll) {
+        // A loop that does not settle widens the holders to All, which names
+        // no loan to read the route from. The signature does not widen: bar
+        // by the same rule from the parameters the caller lent.
+        int arenaparm = 0, viafield = 0;
+        for (uint32_t id = 1; id < nloans; ++id) {
+            if (loans[id].kind != LoanCaller)
+                continue;
+            INode *place = lifePointee(loanParm(id)->vtype);
+            if (itypeIsArena(place) && !lifeSlotted(place))
+                arenaparm = 1;
+            else if (loanFieldReachesArena(place, 0))
+                viafield = 1;
+        }
+        return (!lifenamed && arenaparm) || viafield;
+    }
     int caller = 0, arenaparm = 0, viafield = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         uint32_t id = loanOf(refholds->ids[i]);
@@ -575,7 +619,11 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **throu
         // Bug 48's exception: what the parameter the arena was reached by
         // lent the caller belongs to that arena
         int owned = 0;
-        if (arenaholds != NULL && arenaholds != &pathSetAll) {
+        // (Holders widened to All name no loan: the parameter pointing at an
+        // arena owns its own loans)
+        if (arenaholds == &pathSetAll)
+            owned = itypeIsArena(lifePointee(loanParm(sid)->vtype));
+        else if (arenaholds != NULL) {
             for (uint32_t i = 0; i < arenaholds->cnt; ++i) {
                 uint32_t hid = loanOf(arenaholds->ids[i]);
                 if (loans[hid].kind == LoanCaller && loanParm(hid) == loanParm(sid)
@@ -588,6 +636,19 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **throu
         if (!owned) {
             *through = arenaholds && arenaholds != &pathSetAll && arenaholds->cnt
                 ? loanParm(loanOf(arenaholds->ids[0])) : loanParm(sid);
+            // Widened by a loop, the holders name no loan: name the
+            // parameter that points at or reaches the arena instead
+            if (arenaholds == &pathSetAll) {
+                for (uint32_t id = 1; id < nloans; ++id) {
+                    if (loans[id].kind != LoanCaller)
+                        continue;
+                    INode *place = lifePointee(loanParm(id)->vtype);
+                    if ((itypeIsArena(place) && !lifeSlotted(place)) || loanFieldReachesArena(place, 0)) {
+                        *through = loanParm(id);
+                        break;
+                    }
+                }
+            }
             return sid;
         }
     }
