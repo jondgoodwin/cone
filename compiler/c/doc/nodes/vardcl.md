@@ -260,7 +260,10 @@ nothing.
    global.** Where the value is not a literal after the fold, `modAddSetup`
    (module.md, "Setups") takes it for a setup the module runs before its `init`,
    and `ErrorNotLit` is not reported; a `var` global, a static and the other
-   globals it names keep the rule.
+   globals it names keep the rule. A local declared in the block that gives a
+   global its value is no global and is never lifted: one started by a computed
+   value is `ErrorNotLit` with its own wording (a block cannot declare a local
+   computed at run time; a function can), not the variable's.
 5a. **A function's static joins the function.** `dclInfoJoin` with the function
    as owner, so its symbol is spelled after the function (`tick.calls`) and two
    functions' statics of one name stay apart. In an `inline` function the body
