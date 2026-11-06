@@ -73,20 +73,23 @@ pub actor FileSink is ChunkSink {
               case let Err(e) { good = false; why = Some[AnyError](AnyError.from(e)); }
             }
           }
-          if good && b.len() > 0usize {
-            // a write takes its buffer: the chunk is copied, and goes back when the write is done
-            var copy = IoBuf(b.len());
-            copy.append(b.view());
-            let w = await file.writeAt(at, copy);
+          var cur = b;
+          if good && cur.len() > 0usize {
+            // the write takes the chunk itself, no copy, and answers with it: it goes back to the
+            // source when the write is done. A failed write loses the buffer, so the source's
+            // credit is given back with an empty one of the same capacity
+            let n = cur.len();
+            let cap = cur.capacity();
+            let w = await file.writeAt(at, cur);
             match w {
-              case is Ok { at = at + u64.from(b.len()); }
-              case let Err(e) { good = false; why = Some[AnyError](AnyError.from(e)); }
+              case let Ok(back) { cur = back; at = at + u64.from(n); }
+              case let Err(e) { cur = IoBuf(cap); good = false; why = Some[AnyError](AnyError.from(e)); }
             }
           }
           if good {
-            turn = rx.finished(b);
+            turn = rx.finished(cur);
           } else {
-            rx.fail(b);
+            rx.fail(cur);
             self.shut();
             self.fault(why);
             turn = Turn.Wait;
