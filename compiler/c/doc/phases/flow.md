@@ -1253,7 +1253,9 @@ back into the arena, in a value whose death reads a borrow, names which
 parameter the result comes from (`ar: &'a mut Arena` and `&'a mut Node['a]`,
 the node type naming `'a` too: unnamed, a result's held part may come from an
 unnamed parameter and the store is refused, the message saying to name which
-parameter). Only a reference to the
+parameter). A raw pointer in a stored value is outside this rule, as it is
+everywhere: nothing is tracked through one, and `trust` vouches for what it
+reaches. Only a reference to the
 arena made by a cast from a raw pointer is trusted: it carries no loan but
 what was stored through it (`loanArenaChecked`), so its stores are unseen, and
 the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
