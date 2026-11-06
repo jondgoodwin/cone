@@ -1,0 +1,34 @@
+// A 'try' block as a 'let' global's value is refused, and the compiler stops after
+// reporting it (it once crashed on the way: the block's breaks were compared with
+// the body of the function around it, and there is none). A computed local in the
+// block is refused as in any block that gives a global its value, the hidden
+// variable that holds the try's last value among them. A try with no such local
+// to refuse is refused at the 'try' itself: the block holds its value in a local
+// and nothing lifts it into a setup. A try with no '?' and no type to be wanted as
+// is still asked for its type, and says no more.
+
+mod module_setup_try_block_reject;
+
+fn f() Result[i64, i32] { Ok(1i64) }
+fn g() i64 { 1i64 }
+
+// The crash: the block's computed local, and the hidden holder of its last value; its Result against i64 is a third report
+let a: i64 = try { let v = f()?; v + 1i64 };               //~ ErrorNotLit:24 "cannot declare a local that is computed at run time"
+                                                           //~^ ErrorNotLit:36 "Put the work in a function, which can declare locals"
+                                                           //~^^ ErrorInvType:14 "does not match variable's declared type"
+
+// The same, wanted as the Result it gives
+let b: Result[i64, i32] = try { let v = f()?; v + 1i64 };  //~ ErrorNotLit:37 "cannot declare a local that is computed at run time"
+                                                           //~^ ErrorNotLit:49 "cannot declare a local that is computed at run time"
+
+// No '?': the last value is the computed local
+let c: Result[i64, i32] = try { g() };                     //~ ErrorNotLit:34 "cannot declare a local that is computed at run time"
+
+// Nothing computed in the block's own scope: the 'try' is refused
+let d: Result[i64, i32] = try { 5i64 };                    //~ ErrorNotLit:27 "A try block cannot give a global its value"
+let e: Result[i64, i32] = try { f()?; 5i64 };              //~ ErrorNotLit:27 "Put the work in a function that returns the Result or Option"
+let h: Result[void, i32] = try { f()?; };                  //~ ErrorNotLit:28 "A try block cannot give a global its value"
+let i: Result[void, i32] = try { };                        //~ ErrorNotLit:28 "A try block cannot give a global its value"
+
+// No '?' and no type to be wanted as: the type is asked for, once
+let j: i64 = try { 5i64 };                                 //~ ErrorTryType:14 "has no '?'"

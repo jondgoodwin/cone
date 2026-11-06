@@ -475,7 +475,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         nodesp = (INode**)((blk->breaks) + 1);
         cnt = 0;
         for (; cnt < blk->breaks->used; ++cnt, ++nodesp) {
@@ -518,7 +518,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     // The block gives its last value or a break's, so a borrowed reference lives
     // only as long as the shortest-lived of them, not as the type expected of it
     uint16_t narrowest = lastexp ? iexpNarrowerScope(0, *lastexp) : 0;
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         for (nodesFor(blk->breaks, cnt, nodesp))
             narrowest = iexpNarrowerScope(narrowest, ((BreakRetNode *)*nodesp)->exp);
     }
