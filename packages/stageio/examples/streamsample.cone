@@ -16,7 +16,7 @@
 // sources of packages tls and http1); neither is a stage yet (the refit is a separate
 // brief), so this sample starts at the socket.
 //
-//   congo run --release packages/stages/examples/streamsample.cone -- <mode> [MiB of inflated data]
+//   congo run --release packages/stageio/examples/streamsample.cone -- <mode> [MiB of inflated data]
 //
 // It prints the milliseconds from the server's start to the file written, the rate in MB/s
 // of inflated data, and 'ok' if the digest and the file's size are right. The data is a
@@ -36,6 +36,7 @@ import actors;
 import aio use Socket, File;
 import streams use *;
 import stages use *;
+import stageio use *;
 import deflate;
 import cryptohash;
 
@@ -61,16 +62,6 @@ fn socketOf(r: Result[Socket, IoError]) Socket {
     else {}
   }
   s
-}
-
-fn fileOf(r: Result[File, IoError]) File {
-  var res = r;
-  var f = File.none();
-  match &mut res {
-    case var &mut Ok(ok) { f <-> *ok; }
-    else {}
-  }
-  f
 }
 
 fn digits(p: *u8) u32 {
@@ -150,125 +141,6 @@ actor Checker is DigestSink[Array[u8, 32]] {
   }
 }
 
-// ---- mode "pipeline" ----
-
-// Reads a connected socket, 64 KiB at a time, into a link of four buffers
-actor SocketSource is ChunkSource {
-  down: ChunkSink;
-  link: ChunkWindow;
-  conn: Socket;
-  pumping: bool;
-  over: bool;
-
-  pub fn init(self: &new, down: ChunkSink) {
-    *self = Self(down: down, link: ChunkWindow.own(262144usize), conn: Socket.none(), pumping: false, over: false);
-    down.attach(selfactor);
-  }
-
-  pub async fn start(self, port: u16) {
-    let r = await aio.connect(SocketAddr.localhost(port));
-    conn = socketOf(r);
-    selfactor.pump();
-  }
-
-  pub async fn pump(self) {
-    if pumping || over { return; }
-    pumping = true;
-    var more = true;
-    while more {
-      match link.take(65536usize) {
-        case is None { more = false; }
-        case let Some(b) {
-          let r = await conn.read(b);
-          match r {
-            case let Ok(buf) {
-              if buf.isEmpty() {
-                link.give(buf);
-                over = true;
-                down.end(Ending.Finished);
-                more = false;
-              } else {
-                down <- buf;
-              }
-            }
-            case let Err(e) {
-              over = true;
-              down.end(Ending.Failed(AnyError.from(e)));
-              more = false;
-            }
-          }
-        }
-      }
-    }
-    pumping = false;
-  }
-
-  pub async fn giveBack(self, b: IoBuf) {
-    link.give(b);
-    if !pumping && !over { selfactor.pump(); }
-  }
-}
-
-// Writes the chunks to a file in the order they arrive (a ChunkInbox keeps the order across
-// the awaits), a copy of each, since a write takes its buffer; then gives the chunk back
-actor FileSink is ChunkSink {
-  rx: ChunkInbox;
-  name: String;
-  file: File;
-  opened: bool;
-  at: u64;
-  done: OneshotSender[u64];
-
-  pub fn init(self: &new, name: String, done: OneshotSender[u64]) {
-    *self = Self(rx: ChunkInbox.make(), name: name, file: File.none(), opened: false, at: 0u64, done: done);
-  }
-
-  pub async fn attach(self, source: ChunkSource) {
-    rx.attach(source);
-  }
-
-  pub async fn accept(self, c: IoBuf) {
-    var turn = rx.arrive(c);
-    var more = true;
-    while more {
-      match turn {
-        case let Chunk(b) {
-          if !opened {
-            opened = true;
-            file = fileOf(await aio.openFile(&Path.from(name.view()), Access.Create));
-          }
-          var copy = IoBuf(b.len());
-          copy.append(b.view());
-          let w = await file.writeAt(at, copy);
-          at = at + u64.from(b.len());
-          turn = rx.finished(b);
-        }
-        case let End(how) {
-          self.over(how);
-          turn = Turn.Wait;
-          more = false;
-        }
-        case is Wait { more = false; }
-      }
-    }
-  }
-
-  pub async fn end(self, how: Ending) {
-    match rx.arriveEnd(how) {
-      case let End(h) { self.over(h); }
-      else {}
-    }
-  }
-
-  fn over(self, how: Ending) {
-    match how {
-      case is Finished { outcome.bytes.store(at); }
-      case let Failed(e) { outcome.failed.add(1u64); }
-    }
-    done.send(1u64);
-  }
-}
-
 // ---- mode "adhoc": one actor does it all, holding the body and the result whole ----
 
 actor AdHoc {
@@ -324,6 +196,9 @@ fn main(argc: i32, argv: **u8) i32 {
   var doneTx: OneshotSender[u64];
   var doneRx: OneshotReceiver[u64];
   doneTx, doneRx = Oneshot[u64].make();
+  var fileTx: OneshotSender[Result[u64, AnyError]];
+  var fileRx: OneshotReceiver[Result[u64, AnyError]];
+  fileTx, fileRx = Oneshot[Result[u64, AnyError]].make();
 
   let t0 = Instant.now();
   {
@@ -340,14 +215,27 @@ fn main(argc: i32, argv: **u8) i32 {
       w2.appendSlice(want.view());
       a.run(port, String.from(name), size, w2, doneTx);
     } else {
-      let sink = FileSink(String.from(name), doneTx);
+      let sink = FileSink(String.from(name), fileTx);
       let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
       let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
       let src = SocketSource(inf);
-      src.start(port);
+      src.start(SocketAddr.localhost(port));
     }
   }
-  doneRx.recv();
+  if adhoc {
+    doneRx.recv();
+  } else {
+    // the file sink's one answer: the bytes written, or why not
+    match fileRx.recv() {
+      case let Some(r) {
+        match r {
+          case let Ok(n) { outcome.bytes.store(n); }
+          case is Err { outcome.failed.add(1u64); }
+        }
+      }
+      case is None { outcome.failed.add(1u64); }
+    }
+  }
   finalAll();
   let ns = u64.from(t0.elapsed().nanos());
   let ok = outcome.digestOk.load() == 1u64 && outcome.failed.load() == 0u64 && outcome.bytes.load() == u64.from(size);

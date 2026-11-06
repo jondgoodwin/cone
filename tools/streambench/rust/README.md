@@ -1,6 +1,6 @@
 # streambench, Rust twin
 
-The Rust counterpart of `tools/streambench/csharp` and of `packages/stages/examples/streamsample.cone` /
+The Rust counterpart of `tools/streambench/csharp` and of `packages/stageio/examples/streamsample.cone` /
 `streamrates.cone` (streams PR 7): a gzip stream arrives over a loopback TCP socket; inflate it, take its sha256,
 write the inflated bytes to a file. Same corpus (the LCG run of five words), same gzip at level 1, 64 KiB chunks,
 same output lines as the C# twin.
