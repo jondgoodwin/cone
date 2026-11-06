@@ -323,10 +323,6 @@ let gAddr: Atomic[usize];
 
 var @threadlocal myCache: *ThreadCache = null;
 
-// How many bytes below maxBytes this thread's growth stops while a tryAllocate
-// is under way (see 'tryAllocate'); 0 the rest of the time
-var @threadlocal growthCut: usize = 0;
-
 // The slab a block is in: its address masked to 2 MiB, the page before
 fn slabOf(b: *u8) *SlabRec {
   (((b as usize) & (0usize - slabBytes)) - page) as *SlabRec
@@ -718,9 +714,7 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
 fn reserve(g: *Globals, size: usize) bool {
   let n = u64.from(size);
   let before = (*g).held.add(n);
-  let max = (*g).maxBytes.load();
-  let cut = u64.from(growthCut);
-  if before + n > (if cut >= max {0u64} else {max - cut}) {
+  if before + n > (*g).maxBytes.load() {
     (*g).held.sub(n);
     return false;
   }
@@ -971,25 +965,42 @@ fn poolAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
 }
 
 // The bytes a refusing take leaves for what a program does on its own account:
-// an eighth of maxBytes, at least two slabs, at most half of maxBytes
+// a quarter of maxBytes, at least five slabs (one for each of the five size
+// classes a program's own constructions may need), at most half of maxBytes
 fn reserveOf(max: usize) usize {
-  var r = max / 8usize;
-  if r < 2usize * slabBytes {r = 2usize * slabBytes;}
+  var r = max / 4usize;
+  if r < 5usize * slabBytes {r = 5usize * slabBytes;}
   if r > max / 2usize {r = max / 2usize;}
   r
 }
 
+// The bytes a take of 'bytes' lends: its class's block, or whole pages
+fn lentSize(bytes: usize) usize {
+  let c = classFor(bytes);
+  if c == usize.from(classCount) {return pageCeil(bytes);}
+  classSize(u32.from(c))
+}
+
 // The block 'bufferPool().allocate(bytes, page)' gives, but one the pool may
-// REFUSE (null) earlier: a take that needs a new slab or an oversize block is
-// refused once the bytes held would pass maxBytes less 'reserveOf' it. A take
-// served from a block already home is never refused. For the blocks a peer's
-// bytes cause, so that a flood stops short of maxBytes and the constructions a
-// program makes on its own account still find room
+// REFUSE (null): when the bytes lent now plus this block would pass maxBytes
+// less 'reserveOf' it, whether or not a free block exists. For the blocks a
+// peer's bytes cause, so that a flood stops short of maxBytes and the
+// constructions a program makes on its own account (which panic past maxBytes)
+// still find room. Lent bytes never exceed held bytes, and held is an atomic,
+// so while held plus the request is under the mark no refusal is possible and
+// nothing is summed; the sum (blockStats) runs only near the mark
 pub fn tryAllocate(bytes: usize) *u8 {
   let g = glob();
-  growthCut = reserveOf(usize.from((*g).maxBytes.load()));
+  let max = usize.from((*g).maxBytes.load());
+  let mark = max - reserveOf(max);
+  let want = lentSize(bytes);
+  if usize.from((*g).held.load()) + want > mark {
+    if blockStats().lentBytes + want > mark {
+      (*g).refused.add(1u64);
+      return null;
+    }
+  }
   let b = poolAlloc(bufferPool(), bytes, page);
-  growthCut = 0usize;
   if b as usize == 0usize {(*g).refused.add(1u64);}
   b
 }

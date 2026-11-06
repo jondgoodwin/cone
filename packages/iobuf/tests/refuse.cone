@@ -1,0 +1,126 @@
+// tryMake, a refusal as a value: it refuses when the bytes lent plus the request
+// would pass maxBytes less the reserve (a quarter of maxBytes, at least five
+// slabs, at most half), whether or not a free block exists. What a program
+// builds on its own account, plain IoBuf, still finds room in the reserve: in
+// every size class, freeing and retaking, after a fill of each class alone,
+// after a fill of all five mixed, and after a fill that leaves every slab
+// half used.
+
+mod refuse;
+
+import testing use *;
+import iobuf use *;
+
+const mib = 1048576usize;
+
+// The five classes' sizes
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Fill with tryMake until refused: class 'cls' (0 to 4), or every class in turn
+// for 5. With 'two' the buffers go to dest and other alternately
+fn fill(dest: &mut Chain, other: &mut Chain, cls: u32, two: bool) usize {
+  var n = 0usize;
+  var i = 0u32;
+  var going = true;
+  while going {
+    let sz = if cls == 5u32 {sizeOf(i % 5u32)} else {sizeOf(cls)};
+    match IoBuf.tryMake(sz) {
+      case var Some(b) {
+        b.append("x");
+        if two && i % 2u32 == 1u32 {other.push(b);} else {dest.push(b);}
+        n = n + 1usize;
+      }
+      else {going = false;}
+    }
+    i = i + 1u32;
+  }
+  n
+}
+
+// Plain constructions in every class, 1 MiB of each held at once, freed and
+// taken again 'rounds' times; true when they all came (a failure panics). A
+// class with no free block takes a whole 2 MiB slab, so 5 MiB asked can take
+// 10 MiB held: the reserve (16 MiB) covers that, and 5 slabs is its floor
+fn plainRounds(rounds: usize) bool {
+  var r = 0usize;
+  while r < rounds {
+    var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+    var c = 0u32;
+    while c < 5u32 {
+      let count = mib / sizeOf(c);
+      var k = 0usize;
+      while k < count {
+        var b = IoBuf(sizeOf(c));
+        b.append("x");
+        held.push(b);
+        k = k + 1usize;
+      }
+      c = c + 1u32;
+    }
+    held.advance(held.len());
+    r = r + 1usize;
+  }
+  true
+}
+
+fn gives(size: usize) bool {
+  match IoBuf.tryMake(size) {
+    case var Some(b) {true}
+    else {false}
+  }
+}
+
+// The reserve is 16 MiB: 11 of every class at once is 15.3 MiB
+fn scenario(cls: u32) {
+  setLimits(64usize * mib, 64usize * mib);
+  trim();
+  let before = stats();
+  var a = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var b = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  let n = fill(&mut a, &mut b, cls, false);
+  let s = stats();
+  expect(n > 0usize, "tryMake gave buffers before refusing");
+  expectUInt(s.refused - before.refused, 1u64, "and refused once, at the end");
+  expect(s.lentBytes <= 48usize * mib, "lent bytes stopped at maxBytes less the reserve (48 MiB)");
+  expect(s.lentBytes + 1048576usize > 48usize * mib, "and near it");
+  expect(s.heldBytes <= 64usize * mib, "held within maxBytes");
+  expect(plainRounds(6usize), "plain constructions in every class, freed and retaken");
+  expect(stats().lentBytes <= s.lentBytes, "and they gave all their bytes back");
+  a.advance(a.len());
+  expectUInt(u64.from(stats().lentBytes), 0u64, "all home");
+  expect(gives(sizeOf(4u32)), "tryMake gives once the buffers are home");
+}
+
+// Every slab half used (alternate buffers of a mixed fill freed), then a fill
+// of the big class, then plain constructions
+fn halfUsed() {
+  setLimits(64usize * mib, 64usize * mib);
+  trim();
+  var a = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var b = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var c = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var d = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  fill(&mut a, &mut b, 5u32, true);
+  b.advance(b.len());
+  fill(&mut c, &mut d, 4u32, false);
+  let s = stats();
+  expect(s.lentBytes <= 48usize * mib, "half used: lent bytes within the mark");
+  expect(plainRounds(6usize), "half used: plain constructions in every class");
+  a.advance(a.len());
+  c.advance(c.len());
+  expectUInt(u64.from(stats().lentBytes), 0u64, "half used: all home");
+}
+
+fn main() i32 {
+  initAll();
+  var cls = 0u32;
+  while cls < 6u32 {
+    scenario(cls);
+    cls = cls + 1u32;
+  }
+  halfUsed();
+  done()
+}
