@@ -1,0 +1,229 @@
+// A server's streamed write (pumpWrites) refused a buffer by the pool (iobuf's
+// tryMake, the pool at the reserve of its maxBytes): the exchange ends, the
+// handler's write is answered with an error, no panic, and a new request is
+// served once the pool has room. A plain IoBuf there would not be refused here
+// and the checks fail. The test takes the pool's reserve (a hoard, with
+// tryMake, until every size class refuses; every thread's cache first goes back
+// to the stock) after the connection's buffers are made and the handler is
+// waiting, and then lets the handler write 20,000 bytes (the 64 KiB class: a
+// block a thread's cache could still hold from before is of the 4 KiB class).
+//
+// Not here, because no check could tell the site from the receive refusals
+// the same hoard causes at the far end (measured: with the site made a plain
+// IoBuf the test still passed): a server's text answer (answerText: a 500 or 503
+// or 413 text, 20 to 30 bytes, small enough for a cached block) and a client's
+// request body (sendBody), whose exchange fails Overloaded either way.
+
+mod refused;
+
+import stdio use *;
+import thread;
+import iobuf use *;
+import sync use Channel, Sender, Receiver;
+import collections use List, String;
+import time use Instant, Duration;
+import testing use *;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Response, Request;
+import actors;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import aio;
+
+let go: Atomic[u64];
+
+fn @initpure init() {
+  go = Atomic[u64].of(0u64);
+}
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+// (every thread's cache goes back to the stock first: the service thread, which
+// makes the buffers under test, would otherwise be served from its own cache)
+fn hoard() Chain {
+  trimAll();
+  var held = Chain.make(unbounded);
+  // Largest first, then round again until a whole round takes nothing: a small
+  // class may still have a slab's room when a large one is refused
+  var took = true;
+  while took {
+    took = false;
+    var cls = 5u32;
+    while cls > 0u32 {
+      cls = cls - 1u32;
+      var going = true;
+      while going {
+        match IoBuf.tryMake(sizeOf(cls)) {
+          case var Some(b) {
+            b.append("x");
+            _ = held.push(b);
+            took = true;
+          }
+          else {going = false;}
+        }
+      }
+    }
+  }
+  held
+}
+
+// Answers one request; the paths that wait do so until main has taken the pool
+actor Handler {
+  ex: Exchange;
+  report: Sender[u64];
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if p == "/hello" {
+      ex.text(200u16, "hello");
+    } else if p == "/pump" {
+      ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+      report.send(10u64);
+      while go.load() == 0u64 {
+        let s = await aio.sleep(Duration.fromMillis(10i64));
+      }
+      let w = await ex.write(bigText(20000usize));
+      match w {
+        case let Ok(n) {report.send(1u64);}
+        case let Err(e) {report.send(0u64);}
+      }
+    } else if p == "/drop" {
+      // Dropped with no answer once the pool is taken: the server answers 500
+      // itself, with a text (answerText)
+      report.send(10u64);
+      while go.load() == 0u64 {
+        let s = await aio.sleep(Duration.fromMillis(10i64));
+      }
+    } else {
+      ex.text(200u16, "got");
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+  report: Sender[u64];
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok, report.clone());
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn describe(r: &Result[Response, FetchError]) String {
+  match r {
+    case let &Ok(ok) {
+      var s = String.from("ok ");
+      s.appendUInt(u64.from(ok.status));
+      s.append(" ");
+      s.appendUInt(u64.from(ok.body.len()));
+      s
+    }
+    case let &Err(e) {
+      if e.failure.error.kind == ErrorKind.Overloaded {String.from("err overloaded")} else {String.from("err other")}
+    }
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn get(self, u: String, out: Sender[String]) {
+    let r = await client.get(u.view());
+    out.send(describe(&r));
+  }
+
+  pub async fn post(self, u: String, body: String, out: Sender[String]) {
+    var req = Request.make("POST", u.view());
+    req.body = body;
+    let r = await client.send(req);
+    out.send(describe(&r));
+  }
+}
+
+fn bigText(n: usize) String {
+  var b = String.withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    b.appendByte(97u8 + u8.from(i % 26usize));
+    i = i + 1usize;
+  }
+  b
+}
+
+fn takeU(rx: &mut Receiver[u64]) u64 {rx.recvTimeout(Duration.fromSeconds(20i64)) || 999u64}
+fn takeS(rx: &mut Receiver[String]) String {rx.recvTimeout(Duration.fromSeconds(20i64)) || String.from("(timeout)")}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var rtx: Sender[u64];
+  var rrx: Receiver[u64];
+  rtx, rrx = Channel[u64].make();
+  var otx: Sender[String];
+  var orx: Receiver[String];
+  otx, orx = Channel[String].make();
+
+  let acceptor = Acceptor(Server.none(), rtx.clone());
+  acceptor.open(ServerConfig.make(), ptx.clone());
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the server listens");
+  acceptor.serve();
+  let f = Fetcher(Client.standard());
+
+  // A request served, its connection kept alive
+  f.get(url(port, "/hello"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 5", "a request is served");
+
+  // pumpWrites: a streamed write while the pool is taken
+  f.get(url(port, "/pump"), otx.clone());
+  expectUInt(takeU(&mut rrx), 10u64, "the handler started its streamed response");
+  {
+    let h = hoard();
+    go.store(1u64);
+    expectUInt(takeU(&mut rrx), 0u64, "the streamed write was refused (answered with an error)");
+  }
+  go.store(0u64);
+  let pumped = takeS(&mut orx);
+  expect(pumped.view() != "(timeout)", "the client's fetch of it ended, it did not hang");
+  expect(pumped.view() != "ok 200 20000", "...without the body whole");
+
+  // A new request is served once the pool has room again
+  f.get(url(port, "/hello"), otx.clone());
+  expectStr(takeS(&mut orx).view(), "ok 200 5", "after the shortage a request is served");
+  done()
+}
