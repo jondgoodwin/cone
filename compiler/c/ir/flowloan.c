@@ -636,6 +636,19 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **throu
         if (!owned) {
             *through = arenaholds && arenaholds != &pathSetAll && arenaholds->cnt
                 ? loanParm(loanOf(arenaholds->ids[0])) : loanParm(sid);
+            // Widened by a loop, the holders name no loan: name the
+            // parameter that points at or reaches the arena instead
+            if (arenaholds == &pathSetAll) {
+                for (uint32_t id = 1; id < nloans; ++id) {
+                    if (loans[id].kind != LoanCaller)
+                        continue;
+                    INode *place = lifePointee(loanParm(id)->vtype);
+                    if ((itypeIsArena(place) && !lifeSlotted(place)) || loanFieldReachesArena(place, 0)) {
+                        *through = loanParm(id);
+                        break;
+                    }
+                }
+            }
             return sid;
         }
     }
