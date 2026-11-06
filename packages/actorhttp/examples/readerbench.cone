@@ -44,7 +44,7 @@ import stdio use *;
 import libc;
 import thread;
 import sync use Channel, Sender, Receiver;
-import collections use List, String;
+import collections use List, String, AnyError;
 import time use Instant, Duration;
 import iobuf use IoBuf;
 import iocore use SocketAddr;
@@ -53,8 +53,7 @@ import httpclient use Request;
 import sse;
 import actors;
 import actorhttp use Client, Server, ServerConfig, Exchange;
-import stages use ChunkSink, ChunkSource, Ending;
-
+import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
 // ---- shared counters (the actors report here) ----
 
 let opened: Atomic[u64];
@@ -453,6 +452,61 @@ actor Counter is ChunkSink {
   }
 }
 
+// ---- the real ReaderSink: streamTo into it, an actor awaiting read() ----
+
+fn mkText(c: &IoBuf) Result[Option[String], AnyError] {
+  Ok[Option[String], AnyError](Some[String](String.fromBytes(c.view())))
+}
+
+fn mkEnd(how: &Ending) Result[Option[String], AnyError] {
+  match how {
+    case is Finished { Ok[Option[String], AnyError](None[String]) }
+    case let &Failed(e) { Err[Option[String], AnyError](AnyError.msg("stream failed")) }
+  }
+}
+
+actor SinkReader {
+  client: Client;
+
+  pub async fn run(self, url: String, wantLat: bool) {
+    var total = 0u64;
+    var k = 0u64;
+    var lat = List[u64]();
+    var bad = false;
+    let rs = ReaderSink[Result[Option[String], AnyError]](&mkText, &mkEnd);
+    let r = await client.streamTo(Request.get(url.view()), rs.clone());
+    match r {
+      case is Ok {
+        opened.add(1u64);
+        var going = true;
+        while going {
+          let n = await readSink(&rs);
+          match n {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  if wantLat && piece.len() > 0usize { lat.push(delayOf(piece.view() as &Array[u8])); }
+                  total = total + u64.from(piece.len());
+                  k = k + 1u64;
+                }
+                case is None[String] {going = false;}
+              }
+            }
+            case is Err {bad = true; going = false;}
+          }
+        }
+      }
+      case is Err {bad = true;}
+    }
+    if wantLat { summarize(&lat); }
+    gotBytes.add(total);
+    gotPieces.add(k);
+    if bad {failed.add(1u64);}
+    lastEnd.store(nowNs());
+    ended.add(1u64);
+  }
+}
+
 actor Fetcher {
   client: Client;
 
@@ -589,7 +643,7 @@ fn oneRun(mode: u32, port: u16, path: &String, wantLat: bool) u64 {
   if mode == 0u32 {
     Reader(Client.standard()).run(u, wantLat);
   } else if mode == 1u32 {
-    Fetcher(Client.standard()).run(u, wantLat);
+    SinkReader(Client.standard()).run(u, wantLat);
   } else if mode == 2u32 {
     EvReader(Client.standard()).run(u, wantLat);
   } else {
