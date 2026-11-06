@@ -4127,6 +4127,7 @@ struct WorkerHooks {
 
 let workerHooksAt: Atomic[usize];
 var @threadlocal turnAsked = false;
+var @threadlocal inHook = false;      // this worker is running a hook
 
 // The hooks set (WORKER HOOKS): a later call changes nothing
 pub fn workerHooks(after: &fn(), idle: &fn() bool) {
@@ -4155,7 +4156,9 @@ fn runAfterHook() {
   let at = workerHooksAt.load();
   if at != 0usize {
     let f = (*(at as *WorkerHooks)).after;
+    inHook = true;
     f();
+    inHook = false;
   }
 }
 
@@ -4165,7 +4168,10 @@ fn runIdleHook() bool {
     return false;
   }
   let f = (*(at as *WorkerHooks)).idle;
-  f()
+  inHook = true;
+  let more = f();
+  inHook = false;
+  more
 }
 
 fn workerAt(s: *Sched, i: u32) *Worker {
@@ -4198,7 +4204,13 @@ fn schedule(h: *Header) {
     die("actors: an actor made runnable after the runtime stopped");
   }
   let w = me as *Worker;
-  if w as usize != 0usize && (*w).sched as usize == s as usize {
+  // A worker's hook, between turns, may wake actors by the handful (aio's pass
+  // answers other actors' completions): the first is this worker's to run next,
+  // and the rest go where any idle worker is sure to be told of them. Left
+  // behind the first on this queue, one could wait out a long turn while
+  // workers sleep, as a thief takes only some of it (tests/hookwakes.cone)
+  if w as usize != 0usize && (*w).sched as usize == s as usize
+      && (!inHook || ld64(&(*w).tail as *u64) == ld64(&(*w).head as *u64)) {
     let startedp = &(*w).started as *u64;
     mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed) + 1u64, MemOrder.SeqCst);
     localPush(w, h);
@@ -4685,6 +4697,14 @@ fn idle(w: *Worker) bool {
     return true;
   }
   if runIdleHook() {
+    // A worker woken to look that goes on to work has stopped looking, as
+    // foundAway says, or 'searching' stays set through that work and every
+    // notify meanwhile wakes nobody. What the hook left on its queue is its own
+    // to run; anything else wakes another
+    mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst);
+    if ld64(&(*s).injectLen as *u64) != 0u64 || taskWork(s) {
+      notify(s);
+    }
     return true;
   }
   if mem.atomicLoad[u32](&(*s).parkHold as *u32, MemOrder.Relaxed) != 0u32 {

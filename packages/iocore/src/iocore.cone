@@ -1168,6 +1168,11 @@ struct Port is Sendable {
   // the port (Waker's STANDING ASIDE): whatever is posted lowers it, and wakes
   // that thread
   aside: Atomic[u32];
+  // Windows: what that thread waits on, made at its first raiseAside: an event
+  // that ends the wait, and a timer of its own that keeps its time. A timed
+  // wait on the word itself would be the system's tick late
+  asideEvent: usize;
+  asideTimer: usize;
 
   // Its queue, changed under its lock through a shared reference
   fn lists(self: &) &mut Port {
@@ -1188,7 +1193,44 @@ struct Port is Sendable {
   // The thread standing aside, if one is, told to come back
   fn endAside(self: &) {
     if aside.load() != 0u32 && aside.swap(0u32) != 0u32 {
-      sync.futexWake(&aside);
+      #if #os == .windows {SetEvent(asideEvent);} #else {sync.futexWake(&aside);}
+    }
+  }
+
+  // On the loop's thread. Windows: what it will wait on made, or nothing
+  // raised if that cannot be, and that thread goes on using the port
+  fn raiseAside(self: &) {
+    #if #os == .windows {
+      if asideEvent == 0usize {
+        let made = CreateEventW(null, 0i32, 0i32, null);
+        if made == 0usize {return;}
+        var tm = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+        if tm == 0usize {
+          tm = CreateWaitableTimerExW(null, null, 0u32, timerAllAccess);
+        }
+        self.lists().asideEvent = made;
+        self.lists().asideTimer = tm;
+      }
+    }
+    aside.store(1u32);
+  }
+
+  // On the loop's thread: sleep at most d, or until the word is lowered. An
+  // event left set by a poster that was late ends one wait early, which is
+  // only a look more. The port's own timeout is the backstop, as in armFor
+  fn waitAside(self: &, d: Duration) {
+    #if #os == .windows {
+      if aside.load() == 0u32 {return;}
+      var hs = AsideHandles(asideEvent, asideTimer);
+      var n = 1u32;
+      if asideTimer != 0usize {
+        var due = 0i64 - (d.nanos() + 99i64) / 100i64;
+        if SetWaitableTimer(asideTimer, &due, 0i32, null, null, 0i32) != 0i32 {n = 2u32;}
+      }
+      WaitForMultipleObjects(n, &mut hs as *AsideHandles as *u8, 0i32,
+        u32.from((d.nanos() + 999999i64) / 1000000i64 + 1i64));
+    } #else {
+      sync.futexWaitTimeout(&aside, 1u32, d);
     }
   }
 
@@ -1341,8 +1383,18 @@ struct Port is Sendable {
   // records is dropped (drainDead), and the port closed
   fn final(self: &uni) {
     self.drainDead();
-    #if #os == .windows {CloseHandle(handle);} #else {sysClose(fdOf(handle));}
+    #if #os == .windows {
+      CloseHandle(handle);
+      if asideEvent != 0usize {CloseHandle(asideEvent);}
+      if asideTimer != 0usize {CloseHandle(asideTimer);}
+    } #else {sysClose(fdOf(handle));}
   }
+}
+
+// The two handles a thread standing aside waits on, side by side for the wait
+struct AsideHandles {
+  event: usize;
+  timer: usize;
 }
 
 // A packet in the queue of a Linux Port
@@ -1378,16 +1430,19 @@ pub struct Waker {
   // raiseAside, then a look at the port that does not wait, then waitAside
   // until it answers false; lowerAside, then a look again, before waiting in
   // the port. A poster sees the word raised, or its packet is before that look
-  pub fn raiseAside(self: &) {port.aside.store(1u32);}
+  pub fn raiseAside(self: &) {port.raiseAside();}
   pub fn lowerAside(self: &) {port.aside.store(0u32);}
   pub fn isAside(self: &) bool {port.aside.load() != 0u32}
 
   // The thread standing aside told to come back, with nothing posted
   pub fn endAside(self: &) {port.endAside();}
 
-  // Wait on the word for at most d: whether it is still raised
+  // Wait for at most d, in real time (on Windows a high-resolution timer of its
+  // own, and no process-wide timer resolution; on Linux the timed futex keeps
+  // it already), anything posted ending it at once: whether the word is still
+  // raised
   pub fn waitAside(self: &, d: Duration) bool {
-    sync.futexWaitTimeout(&port.aside, 1u32, d);
+    port.waitAside(d);
     port.aside.load() != 0u32
   }
 

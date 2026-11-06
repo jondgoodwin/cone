@@ -1,6 +1,7 @@
 // A thread standing aside (Waker's STANDING ASIDE) is waiting on a word, not in
 // the port, so whatever is posted must reach it. Raised and left alone, the
-// wait runs out with the word still raised. A wake from another thread ends it
+// wait runs out with the word still raised, on time, not on the system's tick.
+// A wake from another thread ends it
 // well before its time, the word lowered, and the wake's packet is still in the
 // port for the next poll. endAside ends it with nothing posted, and with the
 // word lowered a wake and an endAside find nobody to tell.
@@ -39,6 +40,17 @@ fn main() i32 {
   expect(w.waitAside(Duration.fromMillis(1i64)), "left alone, the wait runs out, the word raised");
   w.lowerAside();
   expect(!w.isAside(), "lowered");
+
+  // It keeps real time: the system's tick, ~15 ms on Windows, would take 3 s
+  w.raiseAside();
+  let ticks = Instant.now();
+  var tick = 0u32;
+  while tick < 200u32 {
+    w.waitAside(Duration.fromMillis(1i64));
+    tick = tick + 1u32;
+  }
+  expect(Instant.now() - ticks < Duration.fromMillis(1600i64), "200 waits of 1 ms, nearly on time");
+  w.lowerAside();
 
   var post = true;
   var round = 0u32;

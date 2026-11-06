@@ -338,16 +338,18 @@
 // the port everything is as before, a record queued wakes it and no pass is
 // made. A record queued on a worker while it stands aside wakes nothing, its
 // worker's pass takes it (the only posts that went: they existed so the
-// I/O thread would dequeue). It stands aside only while turns ask at least every
+// I/O thread would dequeue). It stands aside only when turns ask at least every
 // 100 us: slower than that a completion would wait for a pass, and the port
-// answers at once. Standing aside it looks about every millisecond (the system's
-// tick on Windows, where that is ~15 ms), and goes back to the port when:
-// anything is posted to it, so jobs, hosted services' first jobs, a pool thread's
-// answers and the end reach it at once; the last worker that asked goes idle
-// (actors' 'idle' hook, after a last pass: that worker is the only one who would
-// have looked); workers have stopped asking that often, a long turn being
-// what stalls a pass; or a timer is due within 20 ms, as the port's wait
-// keeps better time than a futex. With a service hosted it never
+// answers at once. Standing aside it wakes every 500 us, in real time (iocore's
+// waitAside), to see when a turn last asked, touching neither the Loop nor the
+// baton, and goes back to the port when: no turn has asked for 300 us, a long
+// turn being what stalls a pass, so a completion nobody is polling waits at
+// most those two and the timer's lateness; anything is posted to it, so jobs,
+// hosted services' first jobs, a pool thread's answers and the end reach it at
+// once; the last worker that asked goes idle (actors' 'idle' hook, after a last
+// pass: that worker is the only one who would have looked); or a pass finds a
+// timer due within 2 ms, as the Loop's own wait is armed for the instant. With
+// a service hosted it never
 // stands aside: a service's completions are its alone (HOSTED SERVICES), and
 // it runs only there. Its jobs, and aio's own, stay the I/O thread's: a pass
 // with any queued takes nothing. opStats' workerDone counts the passes' answers.
@@ -898,6 +900,7 @@ struct IoThread {
   pub workerDone: Atomic[u64];  // records answered by workers' passes (opStats)
   pub seen: u64;                // the I/O thread's own: 'asks' at its last look,
   pub lookedAt: Instant;        //   and when that was
+  pub lastAsk: Atomic[i64];     // while it stands aside, when a turn last asked (Instant's nanoseconds)
   pub loopAt: usize;            // the thread's Loop and its two lists, for the holder of the baton:
   pub outAt: usize;             //   written before 'ready', all three on the thread's stack
   pub gotAt: usize;
@@ -1118,13 +1121,26 @@ fn enqueueRec(p: *OpCore) {
 
 // A WORKER'S PASS (the package's header, THE I/O THREAD)
 
-// How long the I/O thread stands aside before it looks for itself, and how
-// near a timer keeps it in the port, whose wait keeps better time. It stands
-// aside only while turns ask at least every asideRateNanos: slower than that,
-// a completion would wait for a pass, and the port answers at once
-const asideNanos = 1000000i64;
-const asideMarginNanos = 20000000i64;
+// How often the I/O thread, standing aside, sees when a turn last asked; how
+// long with none it takes for quiet; how near a timer sends it back to the
+// Loop's own wait; and how often turns must ask for it to stand aside at all
+// (slower than that, a completion would wait for a pass, and the port answers
+// at once). A completion nobody is polling waits at most asideNanos and
+// asideQuietNanos, and the timer's lateness, beyond the port's own path.
+//
+// asideNanos and asideQuietNanos are measured, roughly (a busy machine, Windows,
+// examples/longturn.cone and stream at 24 workers): at these values the added
+// delay was under 1 ms at worst and stream did not fall. Quiet at 100 us, or
+// counting asks between looks, took a pause between turns for quiet: stream at
+// 24 workers fell by a fifth or more, with worker switches up, as the answers
+// the I/O thread then took went to sleeping workers and parted actors sharing a
+// worker. The wake itself cost nothing that showed. asideRateNanos and
+// asideMarginNanos are NOT measured: the rate is a guess, kept from the first
+// build, and the margin is four looks, by reasoning
+const asideNanos = 500000i64;
+const asideMarginNanos = 2000000i64;
 const asideRateNanos = 100000i64;
+const asideQuietNanos = 300000i64;
 
 // On the I/O thread: whether workers are passing often enough to leave the
 // port to them, since its last look
@@ -1136,6 +1152,13 @@ fn workersBusy(t: *IoThread) bool {
   (*t).seen = a;
   (*t).lookedAt = now;
   (*t).hot.load() != 0u32 && moved != 0u64 && i64.from(moved) * asideRateNanos >= gap
+}
+
+// On the I/O thread, standing aside: no turn has asked for as long as they must
+// to keep it aside, so a look need not wait for the count to fall. Hard asking
+// that stops just after a look would otherwise pass for busy at the next one
+fn turnsQuiet(t: *IoThread) bool {
+  Instant.now().nanos() - (*t).lastAsk.loadOrdered(MemOrder.Relaxed) > asideQuietNanos
 }
 
 // True on a worker that has asked for a pass and not gone idle since
@@ -1194,6 +1217,11 @@ fn quickPass(t: *IoThread) usize {
     got.clear();
   }
   thePool().flushHere();
+  // The I/O thread waiting aside does not touch the Loop, so a time to keep is
+  // seen here, by whoever has it
+  if lp.dueWithin(Duration.fromNanos(asideMarginNanos)) {
+    (*t).waker.endAside();
+  }
   n
 }
 
@@ -1230,7 +1258,10 @@ fn afterTurn() {
   let t = io.load();
   if t != 0usize {
     (*(t as *IoThread)).asks.addOrdered(1u64, MemOrder.Relaxed);
-    passHere(t as *IoThread);
+    if (*(t as *IoThread)).waker.isAside() {
+      (*(t as *IoThread)).lastAsk.storeOrdered(Instant.now().nanos(), MemOrder.Relaxed);
+      passHere(t as *IoThread);
+    }
   }
 }
 
@@ -1253,32 +1284,34 @@ fn beforePark() bool {
 }
 
 // The I/O thread, with workers passing, waits on its word and not in the port
-// (iocore's STANDING ASIDE), the baton free for them. It looks every
-// asideNanos, and goes back when anything is posted, when the last worker has
-// gone idle, when workers have stopped asking often (a worker in a long turn
-// polls nothing), or when a timer is near. It comes back with the baton and the
-// word lowered; the caller's next look must not wait
+// (iocore's STANDING ASIDE), the baton free for them. It wakes every asideNanos
+// and goes back when anything is posted, when the last worker has gone idle,
+// when a pass has found a timer near, or at the first wake that finds turns
+// quiet (a worker in a long turn polls nothing). It comes back with the baton
+// and the word lowered; the caller's next look must not wait
 fn standAside(t: *IoThread) {
-  let lp = (*t).loopAt as *Loop as &mut Loop;
   let tick = Duration.fromNanos(asideNanos);
-  let margin = Duration.fromNanos(asideMarginNanos);
+  (*t).lastAsk.storeOrdered(Instant.now().nanos(), MemOrder.Relaxed);
   (*t).waker.raiseAside();
   quickPass(t);
   while true {
     (*t).baton.store(0u32);
-    if (*t).again.load() != 0u32 && tryBaton(t) {
-      (*t).again.store(0u32);
-      quickPass(t);
-      continue;
-    }
-    let raised = (*t).waker.waitAside(tick);
-    let stay = workersBusy(t) && raised;
-    takeBaton(t);
-    if !stay || lp.dueWithin(margin) {
+    if (*t).again.load() == 0u32 || !tryBaton(t) {
       break;
     }
+    (*t).again.store(0u32);
     quickPass(t);
   }
+  // Turns asking look for themselves, and this thread leaves them to it: an
+  // answer taken here goes to a worker asleep, parting actors sharing a worker.
+  // The words a worker leaves for the baton's holder are workers' now: only
+  // holders' releases read them, and this thread holds it no more
+  var stay = true;
+  while stay {
+    stay = (*t).waker.waitAside(tick) && !turnsQuiet(t);
+  }
+  workersBusy(t);           // a fresh count: what it counted aside says nothing of now
+  takeBaton(t);
   (*t).waker.lowerAside();
 }
 
