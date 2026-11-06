@@ -581,7 +581,7 @@ pub struct Driver {
     // Credit that has grown while this drive ran (the core used its input) lets
     // 'feed' go on with what the layer holds; and a layer that failed in
     // 'transmit' (a pool refusal) is read at once
-    if (c.feedHeld && coreCredit(c) >= self.feedNeed()) || c.layer.failed() {self.markDirty(i);}
+    if (c.feedHeld && coreCredit(c) >= self.feedNeed(c)) || c.layer.failed() {self.markDirty(i);}
     self.layerCall(lp, i);
     if c.isH2 {
       self.flushDone2(lp, i);
@@ -635,7 +635,7 @@ pub struct Driver {
   // taken), so the end is never fed ahead of a record the credit stopped
   fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
-    let need = self.feedNeed();
+    let need = self.feedNeed(c);
     c.feedHeld = false;
     while c.decided {
       // A core that has ended takes and drops what it is given, so it never holds
@@ -656,10 +656,13 @@ pub struct Driver {
     }
   }
 
-  // The most credit a layer's one buffer needs: what 'receive' waits for, and
-  // at least a TLS record's plaintext
-  fn feedNeed(self: &) usize {
-    if cfg.recvSize > feedRecord {cfg.recvSize} else {feedRecord}
+  // The most credit a layer's one buffer needs: what 'receive' waits for, and,
+  // for a layer that gives records (a TLS session's), at least a record's
+  // plaintext. A Plain layer's buffers are at most 'recvSize', so a plain
+  // connection with a small 'maxBuffered' is not made to wait for more credit
+  // than it can ever have
+  fn feedNeed(self: &, c: &Conn) usize {
+    if cfg.recvSize > feedRecord || !c.layer.givesRecords() {cfg.recvSize} else {feedRecord}
   }
 
   // The layer has failed: its text is the reason, a pool refusal (the layer's
@@ -1629,7 +1632,9 @@ pub struct Driver {
   }
 
   // A client connection whose bytes pass through layer (see LAYERS)
-  pub fn connectWith(self: &mut, lp: &mut Loop, host: &str, port: u16, layer: Uni[Layer], sink: Sink) ConnId {
+  pub fn connectWith(self: &mut, lp: &mut Loop, host: &str, port: u16, layer: Uni[Layer], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) ConnId {
+    self.checkRecords(layer.givesRecords(), file, line);
     let now = Instant.now();
     self.stamp(lp);
     let i = self.openClient(lp, layer, sink, now);
@@ -1660,6 +1665,18 @@ pub struct Driver {
     c.addrs.push(addr);
     self.connectNext(lp, i);
     id
+  }
+
+  // A layer that gives records (TLS) needs the core to be able to hold a whole
+  // record (feed waits for that much credit): a smaller http1 'maxBuffered'
+  // could never take one and the connection would hang, so it is refused at
+  // start-up, as http1 refuses a 'maxBuffered' smaller than a head. (http2's
+  // 'maxBuffered' must hold a frame header and a frame, at least 16 KiB, so it
+  // cannot sit under a record)
+  fn checkRecords(self: &, records: bool, file: &Array[u8], line: u32) {
+    if records && cfg.protocol.maxBuffered < feedRecord {
+      panic("httpconn: a layer that gives records (TLS) needs http1 Config.maxBuffered of at least 16 KiB", file, line);
+    }
   }
 
   // A client connection's record; one past maxConnections is refused at
@@ -1807,7 +1824,11 @@ pub struct Driver {
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
-  pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, make: Uni[LayerMaker + ShapeKeeping], sink: Sink) Result[ListenerId, IoError] {
+  pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, var make: Uni[LayerMaker + ShapeKeeping], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) Result[ListenerId, IoError] {
+    // No layer exists yet: one is made, asked, and dropped
+    let probe = make.make();
+    self.checkRecords(probe.givesRecords(), file, line);
     self.stamp(lp);
     let h = lp.listen(addr)?;
     let k = u32.from(listeners.len());

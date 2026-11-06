@@ -1,0 +1,87 @@
+// A plain connection with a small receive buffer and a small read credit
+// (recvSize 4096, maxBuffered 8192, heads of 4096 at most: a legal
+// configuration) still serves a request, with a deadline. The driver's feed
+// must not wait for a TLS record's 16 KiB of credit on a layer that never gives
+// more than recvSize at once: it would stop with nothing to resume it, and the
+// connection would hang with no error.
+
+mod smallconfig;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var cfg = Config.make();
+  cfg.recvSize = 4096usize;
+  cfg.protocol.maxBuffered = 8192usize;
+  cfg.protocol.maxHeadBytes = 4096usize;
+  cfg.protocol.maxResponseHeadBytes = 4096usize;
+  var drv = Driver.make(cfg);
+  var port = 0u16;
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Err(e) {}
+  }
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+
+  var events = List[Event]();
+  var connected = false;
+  var requested = false;
+  var answered = 0u32;
+  var state = 0u32;        // 0 pending, 1 Done, 2 not Done
+  var got = 0usize;
+  var req = ReqId.none();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while state == 0u32 && Instant.now() < giveUp {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer && e.kind == EventKind.End {
+        drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+        var b = IoBuf(8usize);
+        b.append("ok");
+        drv.sendData(e.req, b);
+        drv.finish(e.req);
+        answered = answered + 1u32;
+      } else if e.token == tokConn && e.kind == EventKind.Connected {
+        connected = true;
+      } else if e.token == tokReq && e.kind == EventKind.Data {
+        got = got + e.buf.len();
+        drv.release(e.req, e.buf.len());
+      } else if e.token == tokReq && e.isTerminal() {
+        state = if e.kind == EventKind.Done {1u32} else {2u32};
+      }
+    }
+    events.clear();
+    if connected && !requested {
+      requested = true;
+      req = drv.request(&mut lp, conn, RequestHead.get("/a", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
+    }
+  }
+  expectUInt(u64.from(state), 1u64, "the request ended Done before the deadline, it did not hang");
+  expectUInt(u64.from(answered), 1u64, "the server answered it");
+  expectUInt(u64.from(got), 2u64, "the body is whole");
+  drv.abortAll(&mut lp);
+  events.clear();
+  expectUInt(stats().lent, 0u64, "every buffer back in the pool");
+  done()
+}
