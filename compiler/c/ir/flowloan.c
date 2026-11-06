@@ -551,9 +551,15 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // ways: the pin an arena's method made of its receiver's place in this body
 // (viafield), or, where a helper made the node or the reference and left no
 // pin here, a far loan of a parameter whose type holds an arena in a field
-// (heldfield). The arena's finalizers may read what is stored, so such a store
-// takes only what the arena was lent.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
+// (heldfield). The second is not asked of a reference reached from a
+// parameter by field steps and dereferences alone ('byparm'): it can land
+// only in a place the parameter's type shows, which a caller's own check
+// sees. The arena hides a node only from a reference that came out of a call,
+// held in a local; so a local copy of a parameter (let s2 = s;) is refused
+// too, though it shows no more than the parameter does. The arena's
+// finalizers may read what is stored, so such a store takes only what the
+// arena was lent.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
     if (refholds == NULL)
         return 0;
     int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
@@ -564,7 +570,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
             INode *place = lifePointee(loanParm(id)->vtype);
             if (itypeIsArena(place) && !lifeSlotted(place))
                 arenaparm = 1;
-            else if ((refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
+            else if (!byparm && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
         else if (loans[id].kind == LoanPin && loans[id].site->tag == FnCallTag) {
