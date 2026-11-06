@@ -23,8 +23,6 @@
 // Sets of ids
 // *********************
 
-PathSet pathSetAll = { UINT32_MAX };
-
 static PathSet *pathSetNew(uint32_t cnt) {
     PathSet *set = (PathSet *)memAllocBlk(sizeof(PathSet) + cnt * sizeof(uint32_t));
     set->cnt = cnt;
@@ -34,8 +32,6 @@ static PathSet *pathSetNew(uint32_t cnt) {
 int pathSetHas(PathSet *set, uint32_t id) {
     if (set == NULL)
         return 0;
-    if (set == &pathSetAll)
-        return 1;
     uint32_t lo = 0;
     uint32_t hi = set->cnt;
     while (lo < hi) {
@@ -67,7 +63,7 @@ PathSet *pathSetAdd(PathSet *set, uint32_t id) {
 
 // The set without 'id'
 static PathSet *pathSetWithout(PathSet *set, uint32_t id) {
-    if (set == &pathSetAll || !pathSetHas(set, id))
+    if (!pathSetHas(set, id))
         return set;
     if (set->cnt == 1)
         return NULL;
@@ -85,7 +81,7 @@ static PathSet *pathSetWithout(PathSet *set, uint32_t id) {
 // such a loan stale: the name now says another place, as in 'cur = next(cur)',
 // whose borrow of '*cur' is of the old one, so the new 'cur' does not hold it.
 static PathSet *pathSetWithoutThrough(PathSet *set, uint32_t var) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     uint32_t kept = 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
@@ -107,9 +103,9 @@ static PathSet *pathSetWithoutThrough(PathSet *set, uint32_t var) {
 
 // Is every id of 'a' in 'b'?
 static int pathSetWithin(PathSet *a, PathSet *b) {
-    if (a == NULL || a == b || b == &pathSetAll)
+    if (a == NULL || a == b)
         return 1;
-    if (b == NULL || a == &pathSetAll)
+    if (b == NULL)
         return 0;
     uint32_t k = 0;
     for (uint32_t i = 0; i < a->cnt; ++i) {
@@ -154,7 +150,7 @@ static int pathSetEqual(PathSet *a, PathSet *b) {
 // by their bits: untagged near ones below LoanIdMask, tagged near ones up to
 // LoanFar, and the far ones after, untagged first.
 static int pathSetTagged(PathSet *set) {
-    if (set == NULL || set == &pathSetAll || set->cnt == 0)
+    if (set == NULL || set->cnt == 0)
         return 0;
     if (set->ids[set->cnt - 1] > (LoanFar | LoanIdMask))
         return 1;
@@ -173,8 +169,6 @@ static int pathSetTagged(PathSet *set) {
 int pathSetHasLoan(PathSet *set, uint32_t loan) {
     if (set == NULL)
         return 0;
-    if (set == &pathSetAll)
-        return 1;
     if (pathSetHas(set, loan) || pathSetHas(set, loan | LoanFar))
         return 1;
     if (!pathSetTagged(set))
@@ -223,7 +217,7 @@ static uint32_t pathRemakeEntry(uint32_t e, int how, uint32_t tag, uint32_t mask
 // nothing changes. The entries are few, so they are put back in order by
 // insertion.
 static PathSet *pathSetRemake(PathSet *set, int how, uint32_t tag, uint32_t mask) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     uint32_t i;
     for (i = 0; i < set->cnt; ++i) {
@@ -257,7 +251,7 @@ static PathSet *pathSetRemake(PathSet *set, int how, uint32_t tag, uint32_t mask
 // them, the far ones sort after the near, each run in order, so the two runs
 // are merged; a tagged set is remade.
 static PathSet *pathSetLoansAs(PathSet *set, int far) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     if (pathSetTagged(set))
         return pathSetRemake(set, far ? RemakeFar : RemakeNear, 0, 0);
@@ -295,7 +289,7 @@ static PathSet *pathSetUntagged(PathSet *set) {
 // which of its loans its borrows point at, and which are held further on, is
 // not known (a call's result, what a call may store)
 static PathSet *pathSetUnsure(PathSet *set) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     PathSet *near = pathSetLoansAs(set, 0);
     return pathSetUnion(near, pathSetLoansAs(near, 1));
@@ -308,7 +302,7 @@ static PathSet *pathSetUnsure(PathSet *set) {
 // value may point at or hold further on. The far ones sort after the near,
 // each run in order, so the result is the far run stripped, then the far run.
 static PathSet *pathSetThrough(PathSet *set) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     uint32_t k = 0;
     while (k < set->cnt && !(set->ids[k] & LoanFar))
@@ -418,11 +412,22 @@ static uint32_t statFns = 0;
 static uint32_t statLoanFns = 0;
 static uint32_t statLoops = 0;
 static uint32_t statRewalks = 0;
-static uint32_t statCapped = 0;
+static uint32_t statMostWalks = 0;
 
-// A loop walked this many times without settling has its holders widened to
-// every loan, which settles it (conservatively) within a walk or two more
-#define PathLoopCap 4
+// A loop is walked until the facts at its head stop changing; the walk that
+// finds nothing new is its last. A loop that would need more than this many
+// walks is refused (pwLoopRefuse)
+#define PathLoopCap 24
+static int pwRefused = 0;       // a loop was refused in this function: the walk goes no further
+
+static void pwLoopRefuse(BlockNode *blk, uint32_t walks) {
+    errorMsgNode((INode *)blk, ErrorLoopTangled,
+        "This loop is too tangled for the borrow checker to follow: the references it passes between "
+        "variables were still changing after %u walks of its body. Keep fewer references rotating "
+        "through the loop (for example, hold an index instead of a reference, or move part of the body "
+        "into a function)", walks);
+    pwRefused = 1;
+}
 
 void *pathGrow(void *buf, uint32_t *cap, size_t size) {
     uint32_t old = *cap;
@@ -1210,7 +1215,7 @@ static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
     if (!pwIsBorrowed(iexpGetTypeDcl((INode *)deref)))
         return base;
     for (uint32_t k = 0; k < pwOwnCnt; ++k) {
-        for (uint32_t i = 0; base && base != &pathSetAll && i < base->cnt; ) {
+        for (uint32_t i = 0; base && i < base->cnt; ) {
             if (loanOf(base->ids[i]) == pwOwnLoans[k]) {
                 base = pathSetWithout(base, base->ids[i]);
                 i = 0;
@@ -1232,7 +1237,7 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     int moved = pwMoved;
     pwMoved = svmoved;
     if (!found) {
-        if (base && base != &pathSetAll && (*nodep)->tag == DerefTag)
+        if (base && (*nodep)->tag == DerefTag)
             base = pwSlotRead((StarNode *)*nodep, base);
         return base && pwCarries(((IExpNode *)*nodep)->vtype) ? base : NULL;
     }
@@ -1532,7 +1537,7 @@ static int pwPlaceLevel(Place *pl) {
 // points at (a reborrow '&mut *r'). 'except' is the holder whose own
 // reference this is, already given them.
 static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t except) {
-    if (refholds == NULL || refholds == &pathSetAll)
+    if (refholds == NULL)
         return;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
         if ((refholds->ids[i] & LoanFar) && !beyond)
@@ -1721,8 +1726,6 @@ static PathSet *pwStaticOnly(INode *node, INode *type, Name *strname, Name *fiel
     if (!loan)
         return holds;
     loanNotGlobalStatic(node, loan, strname, field);
-    if (holds == &pathSetAll)
-        return holds;
     PathSet *kept = holds;
     for (uint32_t k = 0; k < holds->cnt; ++k) {
         if (!loanIsGlobal(loanOf(holds->ids[k])))
@@ -1828,8 +1831,6 @@ static PathSet *pwArgCarries(FnSigNode *sig, uint32_t i, INode *wanted, PathSet 
     case LifeCarryWhole:
         return carried;
     case LifeCarryHeld:
-        if (carried == &pathSetAll)
-            return carried;
         if (lifeIsOwnBorrow(parmtype))
             return pathSetRemake(carried, RemakePointees, 0, slots);
         return pathSetUntagged(pathSetSlots(carried, slots));
@@ -1845,7 +1846,7 @@ static PathSet *pwArgCarries(FnSigNode *sig, uint32_t i, INode *wanted, PathSet 
 // (loanOfGlobal)
 static PathSet *pwArgCarriesTo(FnSigNode *sig, uint32_t i, INode *wanted, PathSet *carried, int globalonly) {
     PathSet *set = pwArgCarries(sig, i, wanted, carried);
-    if (!globalonly || set == NULL || set == &pathSetAll)
+    if (!globalonly || set == NULL)
         return set;
     PathSet *kept = set;
     for (uint32_t k = 0; k < set->cnt; ++k) {
@@ -1866,7 +1867,7 @@ static void pwUntagHolder(uint32_t var) {
     PathSet *held = pv->holds;
     if (pathSetTagged(held))
         pathSetFacts(var, pathSetUntagged(held), pv->pending);
-    if (held == NULL || held == &pathSetAll)
+    if (held == NULL)
         return;
     for (uint32_t i = 0; i < held->cnt; ++i) {
         if (held->ids[i] & LoanFar)
@@ -2169,7 +2170,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
                 // cannot place (a method's result): it may be anywhere, so
                 // no local's borrow may be stored in it
                 VarDclNode *through;
-                int known = argsets[at] && (argsets[at] == &pathSetAll || argsets[at]->cnt);
+                int known = argsets[at] && argsets[at]->cnt;
                 if (known && local && loanArenaChecked(others, argsets[at]))
                     loanEscape((INode *)call, local, LoanEscapeCall);
                 uint32_t apart = known ? loanArenaApart(others, argsets[at], &through) : 0;
@@ -2307,7 +2308,7 @@ int flowShapeRetry = 0;
 // may change while the reference is used: then there is no other name
 static int pwHeldExcluding(Place *pl, int sharedok) {
     PathSet *held = pathVars[pl->var].holds;
-    if (held == NULL || held == &pathSetAll || held->cnt == 0)
+    if (held == NULL || held->cnt == 0)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
         if (sharedok ? !loanExcludesWriters(held->ids[i]) : !loanIsExclusive(held->ids[i]))
@@ -2615,7 +2616,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // The borrow handed to this very call, beside whatever could reshape its collection
         int own = 0;
         for (uint32_t j = 0; (loan != recvloan || sk) && j < nargs; ++j) {
-            if (argsets[j] && argsets[j] != &pathSetAll && pathSetHasLoan(argsets[j], loan))
+            if (argsets[j] && pathSetHasLoan(argsets[j], loan))
                 own = 1;
         }
         if (own || loanShapeInFlight(loan))
@@ -2850,7 +2851,7 @@ static PathSet *pwCall(FnCallNode *call) {
     // it was reached through is frozen while the result is used, and a change
     // through another name is asked of every call made meanwhile
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
-        if (lentloan[i] && argsets[i] != &pathSetAll
+        if (lentloan[i]
                 && pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i]))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }
@@ -3179,7 +3180,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
     int keeptemps = blk->flags & FlagKeepTemps;
     uint32_t blocktempmark = ntemps;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        if (dead)
+        if (dead || pwRefused)
             break;
         // The temporaries a statement makes die at its end, a value it hands
         // on still carrying what it borrowed of them
@@ -3465,6 +3466,13 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move) {
         pwLockPoint(blk, (INode *)blk, 1);
     PathSet *value = pwStmts(blk, move);
     pwQuiet -= quiet;
+    // A refused loop ended the walk: what is left of the state is not the block's
+    if (pwRefused) {
+        ndecls = frames[f].declstart;
+        --nframes;
+        dead = 1;
+        return NULL;
+    }
     if (!dead && !fnblock)
         pwScopeEndHanding(frames[f].declstart, move ? value : NULL);
     int fallthrough = !dead;
@@ -3476,8 +3484,9 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move) {
 
 // A loop: its body walked from the state at its head, then again from the
 // join of that state with every path back to the head, until the head stops
-// growing. Facts only grow, so it settles; errors fire the first time they
-// arise and are reported once. Only a 'break' leaves it.
+// growing. Facts only grow and are drawn from a finite set, so it settles, or
+// takes more than PathLoopCap walks and is refused (pwLoopRefuse); errors fire
+// the first time they arise and are reported once. Only a 'break' leaves it.
 static PathSet *pwLoop(BlockNode *blk) {
     uint32_t f = nframes;
     pwFramePush(blk);
@@ -3494,6 +3503,13 @@ static PathSet *pwLoop(BlockNode *blk) {
         pwStmts(blk, 0);
         pwQuiet -= quiet;
         frame = &frames[f];
+        if (pwRefused) {
+            // A loop inside this one was refused
+            ndecls = frame->declstart;
+            --nframes;
+            dead = 1;
+            return NULL;
+        }
         if (!dead) {
             pwScopeEnd(frame->declstart);
             frame->loops = pathDeltaPush(frame->loops, pathDelta(frame->mark, NULL));
@@ -3504,20 +3520,16 @@ static PathSet *pwLoop(BlockNode *blk) {
         if (!pathJoin(frame->loops, 1))
             break;
         ++statRewalks;
-        // A loop that will not settle has every holder that changed around it
-        // widened to every loan: conservative, and it settles
+        // A loop still changing at the cap is refused (pwLoopRefuse)
         if (walks >= PathLoopCap) {
-            if (walks == PathLoopCap)
-                ++statCapped;
-            for (PathDelta *path = frame->loops; path; path = path->next) {
-                for (uint32_t i = 0; i < path->cnt; ++i) {
-                    PathVar *pv = &pathVars[path->ents[i].var];
-                    if (pv->holder && pv->holds != &pathSetAll)
-                        pathSetFacts(path->ents[i].var, &pathSetAll, pv->pending);
-                }
-            }
+            pwLoopRefuse(blk, walks);
+            --nframes;
+            dead = 1;
+            return NULL;
         }
     }
+    if (walks > statMostWalks)
+        statMostWalks = walks;
     PathFrame *frame = &frames[f];
     PathSet *value = NULL;
     if (frame->exits) {
@@ -3642,7 +3654,7 @@ static int pwIsGuard(VarDclNode *var) {
 
 // A loan set with only its global loans
 static PathSet *pwGlobalOnly(PathSet *set) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     PathSet *kept = set;
     for (uint32_t i = 0; i < set->cnt; ++i) {
@@ -3733,7 +3745,7 @@ static PathSet *pwSeam(AwaitNode *node, int move) {
 
 // A loan set without the loans of the generator's own ground
 static PathSet *pwGenKept(PathSet *set) {
-    if (set == NULL || set == &pathSetAll)
+    if (set == NULL)
         return set;
     PathSet *kept = set;
     for (uint32_t i = 0; i < set->cnt; ++i) {
@@ -3887,6 +3899,8 @@ static PathSet *pwYield(YieldNode *node) {
 // Walk an expression as a value, returning the loans it may carry. 'move'
 // says the value goes to a new holder, which moves it when its type moves.
 static PathSet *pwValue(INode **nodep, int move) {
+    if (pwRefused)
+        return NULL;
     INode *node = *nodep;
     // An element borrowed where it lies, '&mut ls[i]': a borrow of that element of the array's place
     if (pwIsElemBorrow(node)) {
@@ -4142,6 +4156,7 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
     pwSawGuard = 0;
     pwQuiet = 0;
     pwArm = 0;
+    pwRefused = 0;
     nlockpts = 0;
 
     // The parameters are variables of the function's block; what a caller lent
@@ -4173,6 +4188,6 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
 }
 
 void flowPathPrint() {
-    printf("Path walk: %u functions (%u for loans), %u loops, %u walked again, %u widened\n\n",
-        statFns, statLoanFns, statLoops, statRewalks, statCapped);
+    printf("Path walk: %u functions (%u for loans), %u loops, %u walked again, most walks of one loop %u\n\n",
+        statFns, statLoanFns, statLoops, statRewalks, statMostWalks);
 }
