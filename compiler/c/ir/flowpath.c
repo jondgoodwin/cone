@@ -424,6 +424,26 @@ static uint32_t statCapped = 0;
 // every loan, which settles it (conservatively) within a walk or two more
 #define PathLoopCap 4
 
+// Debug switch: CONE_PATH_LOOP_CAP=n (n >= 1) replaces PathLoopCap, so 1 widens
+// every changing holder to every loan after a loop's first walk. It is a test
+// mode: every check must fail safe under &pathSetAll, whatever the cap does.
+// CONE_PATH_ALL=1: stronger than the cap switch, and independent of loops
+static int pathAllMode(void) {
+    static int e = -1;
+    if (e < 0) { char *s = getenv("CONE_PATH_ALL"); e = s && atoi(s) != 0; }
+    return e;
+}
+
+static uint32_t pathLoopCap(void) {
+    static uint32_t cap = 0;
+    if (!cap) {
+        char *e = getenv("CONE_PATH_LOOP_CAP");
+        int n = e ? atoi(e) : 0;
+        cap = n >= 1 ? (uint32_t)n : PathLoopCap;
+    }
+    return cap;
+}
+
 void *pathGrow(void *buf, uint32_t *cap, size_t size) {
     uint32_t old = *cap;
     *cap = old ? old << 1 : 16;
@@ -531,6 +551,13 @@ void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
     pathLogVar(var);
     if (holds && holds != pv->holds)
         loanHeldBy(var, holds);
+    // CONE_PATH_ALL=1 (test mode): every holder holding anything holds every loan
+    // (only in the user's code: the packages' own code is not under test)
+    if (pathAllMode() && pv->holder && pv->var && pv->var->lexer && holds && holds != &pathSetAll && holds->cnt
+            && !strstr(pv->var->lexer->url, "packages")) {
+        loanHeldBy(var, &pathSetAll);
+        holds = &pathSetAll;
+    }
     pv->holds = holds;
     pv->pending = pending;
 }
@@ -2616,8 +2643,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         int own = 0;
         for (uint32_t j = 0; (loan != recvloan || sk) && j < nargs; ++j) {
             if (argsets[j] && argsets[j] != &pathSetAll && pathSetHasLoan(argsets[j], loan))
-                own = 1;
-        }
+                own = 1;        }
         if (own || loanShapeInFlight(loan))
             loanShapeNow((INode *)call, loan, verdicts[c].why, callee);
         else
@@ -3506,8 +3532,8 @@ static PathSet *pwLoop(BlockNode *blk) {
         ++statRewalks;
         // A loop that will not settle has every holder that changed around it
         // widened to every loan: conservative, and it settles
-        if (walks >= PathLoopCap) {
-            if (walks == PathLoopCap)
+        if (walks >= pathLoopCap()) {
+            if (walks == pathLoopCap())
                 ++statCapped;
             for (PathDelta *path = frame->loops; path; path = path->next) {
                 for (uint32_t i = 0; i < path->cnt; ++i) {
