@@ -1232,7 +1232,11 @@ after it is `ErrorFrozen`). Reached through a reference, it takes of the
 caller's loans only the reference's own parameter's (`loanArenaApart`: Bug 48's
 exception, the stored loan and the place are one parameter that points at a
 `NoLoanMut` container); a borrow from another parameter, a second arena's
-node included, is `ErrorCallEscape`, even under one lifetime name. Checked
+node included, is `ErrorCallEscape`, even under one lifetime name. A later
+store through a node `alloc` returned (`f.p = Some(x)`) takes the same where
+the arena is a caller's and a body would otherwise see no ordering: the
+function names no lifetime, or the arena was reached through a struct's field
+(`loanArenaNodeBarred`, from `pwStoreApart`). Checked
 at the store, in the body, so a caller trusts the signature: a free function
 handed a `&mut Arena` is no store at its caller. A function whose result goes
 back into the arena names which parameter the result comes from (`ar: &'a mut

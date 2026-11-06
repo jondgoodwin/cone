@@ -529,6 +529,39 @@ int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
     return 0;
 }
 
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
+// that a caller may keep past this function, by a route that tells the body
+// nothing of what else the caller lent: the arena a parameter points at, where
+// the function names no lifetime; or an arena reached through a struct's field
+// whose root a caller lent, named lifetimes or not. The arena's finalizers may
+// read what is stored, so such a store takes only what the arena was lent.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
+    if (refholds == NULL || refholds == &pathSetAll)
+        return 0;
+    int caller = 0, arenaparm = 0, viafield = 0;
+    for (uint32_t i = 0; i < refholds->cnt; ++i) {
+        uint32_t id = loanOf(refholds->ids[i]);
+        if (loans[id].kind == LoanCaller) {
+            caller = 1;
+            INode *place = lifePointee(loanParm(id)->vtype);
+            if (itypeIsArena(place) && !lifeSlotted(place))
+                arenaparm = 1;
+        }
+        else if (loans[id].kind == LoanPin && (loans[id].place.nsteps > 0 || loans[id].place.far)
+                && loans[id].site->tag == FnCallTag) {
+            // The pin an arena's method makes of its receiver's place, a field
+            // of a struct (a step), or a reference read from one (far)
+            FnCallNode *call = (FnCallNode *)loans[id].site;
+            INode *recvtype = call->args && call->args->used ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+            INode *place = recvtype && recvtype->tag == RefTag ? ((RefNode *)recvtype)->vtexp : NULL;
+            if (place && itypeIsArena(place) && !lifeSlotted(place))
+                viafield = 1;
+        }
+    }
+    return (!lifenamed && arenaparm) || (viafield && caller);
+}
+
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
     if (stored == NULL)
         return 0;
