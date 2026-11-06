@@ -900,8 +900,8 @@ package's tests call, ordinary library code that the compiler knows nothing of
 Cone package over `libc`: a growable `List[T]`, an owned `String` and a
 `Dict[K, V]` (a SwissTable over any `K` that is `Hash`), `OrderedDict[K, V]` (the same
 table indexing a dense array, so it iterates in insertion order), `Set[T]` and a ring-buffer `Deque[T]`,
-each holding its elements in one block from its region (core's `MemRegion`; the heap's, which is core's raw blocks layer, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics,
-and the structural capability traits `Collection`, `Indexed`, `Stack`, `Queue` and `Map`; its generic types'
+each holding its elements in one block from its region (core's `MemRegion`; the heap's, which is core's raw blocks layer, unless it is made in another: struct.md, "CarriesRegion") and moving them with core's `mem` intrinsics
+(it declares no capability traits: the shared method names are documented, and a program declares the traits it needs); its generic types'
 methods are written whole into its include file, so each importer compiles the
 instances it uses.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would

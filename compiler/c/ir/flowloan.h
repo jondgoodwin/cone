@@ -145,6 +145,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
 // with the parameter it was stored through as 'through'.
 uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through);
 
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena a caller may keep, reached by a route that shows the body nothing of
+// what else the caller lent (loanArenaApart then decides what it may store).
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed);
+
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
 // pointer, the one trusted route).

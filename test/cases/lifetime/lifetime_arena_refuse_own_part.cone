@@ -1,0 +1,25 @@
+// Bug 55: a part of the struct handed to the function (the one holding the '&mut Arena') is stored in a node of
+// that arena. The struct is a caller's local declared after the arena, so the node's finalizer reads the part
+// when the arena dies, after the struct is gone. Refuse.
+mod lifetime_arena_refuse_own_part;
+import stdio use *;
+import arena use *;
+struct Hd { pub ar: &mut Arena; pub t: i64; }
+struct M {
+  pub p: Option[&mut i64];
+  fn final(self: &uni) {
+    match self.p {
+      case let Some(r) { print <- "finalizer reads ", *r, "\n"; }
+      case None { print <- "none\n"; }
+    }
+  }
+}
+fn own(h: &mut Hd) {
+  let n = h.ar.alloc(M(None));
+  n.p = Some(&mut h.t);  //~ ErrorEscape
+}
+fn main() {
+  var a = Arena();
+  var h = Hd(&mut a, 1);
+  own(&mut h);
+}
