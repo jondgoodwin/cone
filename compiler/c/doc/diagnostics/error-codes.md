@@ -1121,6 +1121,16 @@ setup that reads a global the module's `init` sets, which holds nothing when the
 global naming the global read and the function that reads it. `modSetupOrder` reports every one it finds before it
 gives up, and the setups' function is built only when none is found.
 
+`ErrorNotLit` (1015) has one wording for each place a value must be a constant: a global, static or parameter
+("Variable may only be initialized with a literal value"), a `const` ("Named constants must be assigned to a constant
+value"), a field default ("Field default must be a constant value"), and the local of a block that gives a global its
+value (`let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that local at scope 1 with no function round it
+(a parameter's scope 1 is checked at scope 0), and it is no global, so no setup can lift it; the report says "a block
+that gives a global its value cannot declare a local that is computed at run time" and that a function can declare
+locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
+constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `blockTypeCheck`
+checks its operand without the hidden variable that would hold it, which the global's block would refuse a second time.
+
 `ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
 method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
 (`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
