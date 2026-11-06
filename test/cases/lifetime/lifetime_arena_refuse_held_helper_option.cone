@@ -1,0 +1,12 @@
+// Bug 61: a node a helper returns inside an Option, stored through after a match: the arena was reached through a struct a caller lent. Refuse.
+mod lifetime_arena_refuse_held_helper_option;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+struct H2 { pub h: &mut Hd; }
+fn mkF(a: &mut Hd) Option[&mut F] { Some(a.ar.alloc(F(None))) }
+fn stash(a: &mut Hd, x: &mut T) { match mkF(a) { case let Some(f) { f.p = Some(x); } case None {} } }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Hd(q); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); }
