@@ -662,12 +662,12 @@ pub struct Driver {
     if cfg.recvSize > feedRecord {cfg.recvSize} else {feedRecord}
   }
 
-  // The layer has failed: its text is the reason, a pool refusal (its text
-  // begins 'overloaded') being Overloaded and the rest Closed
+  // The layer has failed: its text is the reason, a pool refusal (the layer's
+  // 'overloaded') being Overloaded and the rest Closed
   fn layerFailed(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     let text = c.layer.failureText();
-    let kind = if text.view().startsWith("overloaded") {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    let kind = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
     c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), kind, text.view()));
     self.closeNow(lp, i, true, false);
   }
@@ -1460,7 +1460,7 @@ pub struct Driver {
     // layer's failure is read (feed), and must not hide it
     if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
       let text = c.layer.failureText();
-      let lk = if text.view().startsWith("overloaded") {ErrorKind.Overloaded} else {ErrorKind.Closed};
+      let lk = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
       c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), lk, text.view()));
     } else {
       c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
