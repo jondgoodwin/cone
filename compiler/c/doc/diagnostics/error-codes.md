@@ -1130,6 +1130,9 @@ that gives a global its value cannot declare a local that is computed at run tim
 locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
 constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
 reports nothing for the hidden variable holding its operand (`FlagQuesHeld`), since `propagateLower` always refuses that `?`.
+A `try` block with no function around it is `ErrorNotLit` at the `try`, once, whatever it holds ("A try block cannot give a
+global its value", `blockTypeCheck`): the block holds its value in a local of its own and no setup lifts it, so it takes
+the error type and nothing in it is checked.
 
 `ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
 method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant

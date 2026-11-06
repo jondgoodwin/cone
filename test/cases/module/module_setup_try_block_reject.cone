@@ -1,0 +1,34 @@
+// A 'try' block with no function around it is refused at the 'try', once, whatever it
+// holds, and nothing in it is checked: it holds its value in a local of its own, and
+// nothing lifts it into a setup. The compiler stops after reporting it (it once crashed
+// on the way: the block's breaks were compared with the body of the function around
+// it, and there is none).
+
+mod module_setup_try_block_reject;
+
+fn f() Result[i64, i32] { Ok(1i64) }
+fn g() i64 { 1i64 }
+
+// The crash, and the same wanted as the Result it gives
+let a: i64 = try { let v = f()?; v + 1i64 };               //~ ErrorNotLit:14 "A try block cannot give a global its value"
+let b: Result[i64, i32] = try { let v = f()?; v + 1i64 };  //~ ErrorNotLit:27 "A try block cannot give a global its value"
+
+// A last value that is computed, and one that is not
+let c: Result[i64, i32] = try { g() };                     //~ ErrorNotLit:27 "A try block cannot give a global its value"
+let d: Result[i64, i32] = try { 5i64 };                    //~ ErrorNotLit:27 "Put the work in a function that returns the Result or Option"
+
+// With a '?' and nothing computed, with no last value, and empty
+let e: Result[i64, i32] = try { f()?; 5i64 };              //~ ErrorNotLit:27 "A try block cannot give a global its value"
+let h: Result[void, i32] = try { f()?; };                  //~ ErrorNotLit:28 "A try block cannot give a global its value"
+let i: Result[void, i32] = try { };                        //~ ErrorNotLit:28 "A try block cannot give a global its value"
+
+// No '?' and no Result or Option wanted: nothing in it is asked of it
+let j: i64 = try { 5i64 };                                 //~ ErrorNotLit:14 "A try block cannot give a global its value"
+let k = try { 5i64 };                                      //~ ErrorNotLit:9 "A try block cannot give a global its value"
+
+// Inside another, the outer alone; inside a plain block, the 'try'
+let l: Result[i64, i32] = try { try { 5i64 } };            //~ ErrorNotLit:27 "A try block cannot give a global its value"
+let m: Result[i64, i32] = { try { 5i64 } };                //~ ErrorNotLit:29 "A try block cannot give a global its value"
+
+// A field's default has no function around it either
+struct S { x: Result[i64, i32] = try { 5i64 } }            //~ ErrorNotLit:34 "A try block cannot"

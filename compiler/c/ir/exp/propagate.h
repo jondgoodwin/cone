@@ -44,10 +44,6 @@
 // return type is not written, a generator (ErrorQuesReturn, the last at parse).
 void propagateLower(TypeCheckState *pstate, BlockNode *blk);
 
-// Is a try block of the function being checked (or of no function, at global
-// level) open? A '?' outside both has nowhere to send its failure (propagateLower)
-int propagateTryOpen(TypeCheckState *pstate);
-
 // "Result" or "Option" where this type is an instance of core's, else NULL
 char *propagateCoreName(INode *type);
 

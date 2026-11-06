@@ -317,10 +317,6 @@ typedef struct PropagateTry {
 
 static PropagateTry *propagateTryTop = NULL;
 
-int propagateTryOpen(TypeCheckState *pstate) {
-    return propagateTryTop != NULL && propagateTryTop->fn == pstate->fn;
-}
-
 // The column a node stands at, for a message naming another place
 static uint32_t propagateColumn(INode *node) {
     return (uint32_t)(node->srcp - node->linep) + 1;
