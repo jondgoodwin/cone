@@ -2106,7 +2106,7 @@ pub struct StrCharIndices['a] is Iterator[StrCharIndex] {
 // ITERATION: the two shapes an iteration walks, named for the code that is
 // generic over them. A type is an 'Iterator[T]' by having 'next', and an
 // 'Iterable[T]' by having 'iter'; none declares either, as no type declares
-// that it is Stack (collections), so 'StrChars' and every cursor of the
+// that it meets a trait of a program's own, so 'StrChars' and every cursor of the
 // collections are iterators already, and a user's own struct with the method is.
 // A function asks for one as a static bound, decided where it is called and
 // compiled for the type's own methods:
@@ -4084,4 +4084,225 @@ pub trait Error {
 extern {
   // conestd's: standard output flushed, then the record written to standard error
   fn @c("cone_mainErrorRecord") mainErrorRecord(out: &uni TextOut);
+}
+
+// ---------------------------------------------------------------------------
+// Numbers read from text and from other numbers
+// ---------------------------------------------------------------------------
+//
+// 'i32.parse("42")' and 'u8.tryFrom(300i64)' are written on the number types
+// and answer 'Result[T, NumberConvError[T]]'. A number type's methods are built
+// into the compiler, which cannot hold a body written in Cone, so it rewrites
+// the call (fnCallNumberConvert) to the same static function of 'NumberConv[T]'
+// below: 'NumberConv[i32].parse("42")'. These are ordinary generic functions,
+// and a program that parses nothing carries none of them. Write 'T.parse(text)'
+// and 'T.tryFrom(x)', which also work through a type parameter. Each number
+// type has an error of its own, 'NumberConvError[T]'.
+
+// What went wrong reading a number from text or from another number
+pub enum NumberConvError[T] is Error, Sendable {
+  Empty;          // text with nothing in it
+  Invalid;        // a character that does not belong in a number of that type
+  TooLarge;       // above the type's greatest
+  TooSmall;       // below the type's least
+  NotWhole;       // a float with a fraction, asked for as an integer
+  Inexact;        // an integer or float the float type cannot hold exactly
+  NotANumber;     // a NaN, asked for as an integer
+
+  // 'self: &', so each variant has it and meets Error: one written over the whole enum would not
+  pub fn toText(self: &, out: &uni TextOut) inline { self.write(out); }
+  fn write(self: &NumberConvError[T], out: &uni TextOut) inline {
+    match self {
+      case is Empty { out <- "no number in empty text"; }
+      case is Invalid { out <- "invalid character in number text"; }
+      case is TooLarge { out <- "number too large for the type"; }
+      case is TooSmall { out <- "number too small for the type"; }
+      case is NotWhole { out <- "number is not a whole number"; }
+      case is Inexact { out <- "number cannot be held exactly by the type"; }
+      case is NotANumber { out <- "NaN has no integer value"; }
+    }
+  }
+}
+
+// Whether T is a signed type, and how many bits it holds
+fn nbrIsSigned[T]() bool inline where T is Numeric { T.from(-1i32) < T.from(0i32) }
+fn nbrBits[T]() u32 inline { u32.from(mem.sizeof[T]()) * 8u32 }
+
+// The integer the text writes: an optional '+' or '-' (a '-' only for a signed
+// type) and one or more digits. Past the type's range is TooLarge or TooSmall.
+fn nbrParseInt[T: Integer](text: &str) Result[T, NumberConvError[T]] {
+  let n = text.len();
+  if n == 0usize { return Err[T, NumberConvError[T]](NumberConvError.Empty[T]); }
+  let signed = nbrIsSigned[T]();
+  var at = 0usize;
+  var neg = false;
+  let first = text[0usize];
+  if first == '-' {
+    if !signed { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+    neg = true;
+    at = 1usize;
+  }
+  else if first == '+' { at = 1usize; }
+  if at == n { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+  // The greatest magnitude the type holds on that side of zero
+  let top = nbrBits[T]() - (if signed {1u32} else {0u32});
+  var limit = 0xFFFFFFFFFFFFFFFFu64;
+  if top < 64u32 { limit = (1u64 << u64.from(top)) - 1u64; }
+  if neg { limit = limit + 1u64; }
+  var mag = 0u64;
+  var big = false;
+  while at < n {
+    let c = text[at];
+    if c < '0' || c > '9' { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+    let d = u64.from(c - '0');
+    if mag > (0xFFFFFFFFFFFFFFFFu64 - d) / 10u64 { big = true; }
+    else { mag = mag * 10u64 + d; }
+    at = at + 1usize;
+  }
+  if big || mag > limit {
+    return Err[T, NumberConvError[T]](if neg {NumberConvError.TooSmall[T]} else {NumberConvError.TooLarge[T]});
+  }
+  if neg {
+    if mag == 0u64 { return Ok[T, NumberConvError[T]](T.from(0i32)); }
+    // -(mag) as -(mag - 1) - 1, so the least value never overflows on the way
+    return Ok[T, NumberConvError[T]](T.from(0i32) - T.from(mag - 1u64) - T.from(1i32));
+  }
+  Ok[T, NumberConvError[T]](T.from(mag))
+}
+
+fn nbrLower(c: u8) u8 inline { if c >= 'A' && c <= 'Z' { c + 32u8 } else { c } }
+
+// Whether the text from 'at' is, all of it, the word (in lower case)
+fn nbrWordAt(text: &str, at: usize, word: &str) bool inline {
+  if text.len() - at != word.len() { return false; }
+  var i = 0usize;
+  while i < word.len() {
+    if nbrLower(text[at + i]) != word[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// The float the text writes, the nearest one (the even one on a tie): an
+// optional sign, digits with an optional '.', an optional exponent
+// ('e', a sign, digits), or 'inf', 'infinity' or 'nan' in either case. Past
+// the type's range is TooLarge or TooSmall rather than an infinity.
+fn nbrParseFloat[T: Float](text: &str) Result[T, NumberConvError[T]] {
+  let n = text.len();
+  if n == 0usize { return Err[T, NumberConvError[T]](NumberConvError.Empty[T]); }
+  var at = 0usize;
+  var neg = false;
+  if text[0usize] == '-' { neg = true; at = 1usize; }
+  else if text[0usize] == '+' { at = 1usize; }
+  let special = nbrWordAt(text, at, "inf") || nbrWordAt(text, at, "infinity") || nbrWordAt(text, at, "nan");
+  if !special {
+    var digits = 0usize;
+    while at < n && text[at] >= '0' && text[at] <= '9' { at = at + 1usize; digits = digits + 1usize; }
+    if at < n && text[at] == '.' {
+      at = at + 1usize;
+      while at < n && text[at] >= '0' && text[at] <= '9' { at = at + 1usize; digits = digits + 1usize; }
+    }
+    if digits == 0usize { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+    if at < n && (text[at] == 'e' || text[at] == 'E') {
+      at = at + 1usize;
+      if at < n && (text[at] == '+' || text[at] == '-') { at = at + 1usize; }
+      var expdigits = 0usize;
+      while at < n && text[at] >= '0' && text[at] <= '9' { at = at + 1usize; expdigits = expdigits + 1usize; }
+      if expdigits == 0usize { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+    }
+    if at != n { return Err[T, NumberConvError[T]](NumberConvError.Invalid[T]); }
+  }
+  // conestd's exact reader (cone_parseF64, cone_parseF32; no C library) answers the nearest value
+  var wide = 0.0;
+  var narrow = 0.0f32;
+  var ok = false;
+  if mem.sizeof[T]() == 4usize { ok = parseF32(text.bytes() as *u8, n, &mut narrow as *f32); }
+  else { ok = parseF64(text.bytes() as *u8, n, &mut wide as *f64); }
+  let v = if mem.sizeof[T]() == 4usize { T.from(narrow) } else { T.from(wide) };
+  if !special && !ok {
+    return Err[T, NumberConvError[T]](if neg {NumberConvError.TooSmall[T]} else {NumberConvError.TooLarge[T]});
+  }
+  Ok[T, NumberConvError[T]](v)
+}
+
+extern {
+  // conestd's: the text is already known to be a float's grammar. Answers false
+  // when the value is past the range of the type (it would be an infinity)
+  fn @c("cone_parseF64") parseF64(text: *u8, len: usize, out: *f64) bool;
+  fn @c("cone_parseF32") parseF32(text: *u8, len: usize, out: *f32) bool;
+}
+
+// Integer to integer: an error rather than a wrap
+fn nbrTryFromInt[T: Integer, S: Integer](x: S) Result[T, NumberConvError[T]] {
+  let y = T.from(x);
+  let negx = x < S.from(0i32);
+  if S.from(y) != x || negx != (y < T.from(0i32)) {
+    return Err[T, NumberConvError[T]](if negx {NumberConvError.TooSmall[T]} else {NumberConvError.TooLarge[T]});
+  }
+  Ok[T, NumberConvError[T]](y)
+}
+
+// The float 2 to the n, exact
+fn nbrPow2[F: Float](n: u32) F {
+  var p = F.from(1i32);
+  var i = 0u32;
+  while i < n { p = p * F.from(2i32); i = i + 1u32; }
+  p
+}
+
+// Float to integer: the value must be whole and in the type's range
+fn nbrTryFromFloat[T: Integer, S: Float](x: S) Result[T, NumberConvError[T]] {
+  if x != x { return Err[T, NumberConvError[T]](NumberConvError.NotANumber[T]); }
+  let signed = nbrIsSigned[T]();
+  let bits = nbrBits[T]();
+  let hi = nbrPow2[S](bits - (if signed {1u32} else {0u32}));
+  let lo = if signed { -hi } else { S.from(0i32) };
+  if x < lo { return Err[T, NumberConvError[T]](NumberConvError.TooSmall[T]); }
+  if x >= hi { return Err[T, NumberConvError[T]](NumberConvError.TooLarge[T]); }
+  let y = T.from(x);
+  if S.from(y) != x { return Err[T, NumberConvError[T]](NumberConvError.NotWhole[T]); }
+  Ok[T, NumberConvError[T]](y)
+}
+
+// Integer to float: the float must hold the value exactly, which is so when the
+// value's significant bits (from its first 1 to its last) fit the float's
+// mantissa: 24 bits for an f32, 53 for an f64. So 2 to the 60th is held, as is
+// the least i64, and 2 to the 24th plus 1 (f32) is not. Decided on the integer,
+// with no float conversion and no reliance on how an out-of-range 'from' acts.
+fn nbrTryFromIntToFloat[T: Float, S: Integer](x: S) Result[T, NumberConvError[T]] {
+  let m = if mem.sizeof[T]() == 4usize { 24u64 } else { 53u64 };
+  let neg = x < S.from(0i32);
+  var mag = if neg { u64.from(~x) + 1u64 } else { u64.from(x) };
+  if mag != 0u64 {
+    while (mag & 1u64) == 0u64 { mag = mag >> 1u64; }
+    if (mag >> m) != 0u64 {
+      return Err[T, NumberConvError[T]](NumberConvError.Inexact[T]);
+    }
+  }
+  Ok[T, NumberConvError[T]](T.from(x))
+}
+
+// Float to float: the value must be held exactly (a NaN or an infinity always is)
+fn nbrTryFromFloatToFloat[T: Float, S: Float](x: S) Result[T, NumberConvError[T]] {
+  let y = T.from(x);
+  if S.from(y) != x && x == x { return Err[T, NumberConvError[T]](NumberConvError.Inexact[T]); }
+  Ok[T, NumberConvError[T]](y)
+}
+
+// The functions a number type's 'parse' and 'tryFrom' are made of, which the
+// compiler reaches by this name (fnCallNumberConvert). The kinds of T and S pick
+// the reading: an integer from text or a float from text; an integer, a float
+// or the other kind from an integer or a float.
+pub struct NumberConv[T] {
+  pub fn parse(text: &str) Result[T, NumberConvError[T]] where T is Numeric {
+    #if T is Float { nbrParseFloat[T](text) } #else { nbrParseInt[T](text) }
+  }
+
+  pub fn tryFrom[S](x: S) Result[T, NumberConvError[T]] where T is Numeric && S is Numeric {
+    #if T is Float {
+      #if S is Float { nbrTryFromFloatToFloat[T, S](x) } #else { nbrTryFromIntToFloat[T, S](x) }
+    } #else {
+      #if S is Float { nbrTryFromFloat[T, S](x) } #else { nbrTryFromInt[T, S](x) }
+    }
+  }
 }

@@ -316,6 +316,17 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     Nodes *hoists = NULL;
     int parentered = 0;     // A parallel each built, whose body is checked below
 
+    // A 'try' block with no function around it gives a global its value. It holds
+    // that value in a local of its own, which a block there may declare only as a
+    // constant (vardcl.c), and nothing lifts it into a setup: it is refused here,
+    // once, and nothing in it is checked
+    if ((blk->flags & FlagTry) && pstate->fn == NULL) {
+        errorMsgNode((INode*)blk, ErrorNotLit,
+            "A try block cannot give a global its value: it holds the value in a local of its own, and a block that gives a global its value can declare only constants. Put the work in a function that returns the Result or Option, and give the global a call to it.");
+        blk->vtype = errorType;
+        return;
+    }
+
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
@@ -475,7 +486,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         nodesp = (INode**)((blk->breaks) + 1);
         cnt = 0;
         for (; cnt < blk->breaks->used; ++cnt, ++nodesp) {
@@ -518,7 +529,7 @@ static void blockTypeCheckIn(TypeCheckState *pstate, BlockNode *blk, INode *expe
     // The block gives its last value or a break's, so a borrowed reference lives
     // only as long as the shortest-lived of them, not as the type expected of it
     uint16_t narrowest = lastexp ? iexpNarrowerScope(0, *lastexp) : 0;
-    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+    if (blk->breaks && (pstate->fn == NULL || blk != (BlockNode*)pstate->fn->value)) {
         for (nodesFor(blk->breaks, cnt, nodesp))
             narrowest = iexpNarrowerScope(narrowest, ((BreakRetNode *)*nodesp)->exp);
     }

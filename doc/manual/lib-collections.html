@@ -25,7 +25,7 @@
 
 	<p>The <span class="pre">collections</span> package holds the growable collections: <a href="#list">List</a>,
 		<a href="#dict">Dict</a>, <a href="#ordereddict">OrderedDict</a>, <a href="#set">Set</a>,
-		<a href="#deque">Deque</a>, <a href="#priorityqueue">PriorityQueue</a> and <a href="#string">String</a>, all brought in by
+		<a href="#deque">Deque</a>, <a href="#priorityqueue">PriorityQueue</a>, <a href="#soalist">SoaList</a> and <a href="#string">String</a>, all brought in by
 		<span class="pre">import collections use *;</span>. Under them are the language's own
 		<a href="#array">arrays</a>, whose size is fixed, and <a href="#slices">slices</a>, borrowed views of a run of
 		elements. This page also covers what every collection shares: <a href="#send">the send operator's entries</a>,
@@ -419,10 +419,64 @@ fn main() i32 {
 		any order, where a queue costs log n for each value in and out, and pays off only when pushes and pops are
 		mixed.</p>
 
+	<h2 id="soalist">SoaList</h2>
+	<p><span class="pre">SoaList[T]</span> is a list of rows of a struct <span class="pre">T</span> held as columns, one
+		<span class="pre">List</span> for each field of <span class="pre">T</span>, named as the field is and of its type.
+		A loop that touches one field reads one packed column, and two columns may be borrowed together, each with its own
+		permission, as two fields of a struct are. It is written in Cone, over the compile-time walk of
+		<span class="pre">T</span>'s fields (<a href="mod-generativity.html#metagen">Members made from a type's fields</a>),
+		so <span class="pre">T</span> must be a struct whose fields are public, or all visible to the module that makes
+		the <span class="pre">SoaList</span> (a type from another module opts in with
+		<span class="pre">@reflect</span>).</p>
+<pre>
+struct Particle { pub x: i32; pub y: i64; }
+
+fn main() {
+  var ps = SoaList[Particle]();
+  ps.push(Particle(1, 10i64));
+  ps.push(Particle(2, 20i64));
+  ps.x[1usize] = 7;                    // a column is a List: index it, write it
+  let p = ps.get(1usize).unwrap();     // a whole row, built from each column: Particle(7, 20)
+  print &lt;- ps.len(), " ", ps.y[0usize], " ", p.x, "\n";   // 2 10 7
+}
+</pre>
+	<p><span class="pre">push(row)</span> and <span class="pre">get(i)</span> exist where <span class="pre">T</span> is
+		<span class="pre">Copy</span>, because a row is taken apart field by field and a field of an owned value that
+		moves cannot be moved out of it. <span class="pre">get(i)</span> is the checked read, as a list's is: it answers
+		an <span class="pre">Option[T]</span>, <span class="pre">None</span> past the end. It holds the row by value, not
+		a reference, since no contiguous row exists to point at. A <span class="pre">T</span> with a field that moves (a
+		<span class="pre">String</span>, a type with a <span class="pre">final</span>) is built and read by column,
+		<span class="pre">ps.name.push(s)</span> and <span class="pre">ps.name[i]</span>, and whoever pushes to columns
+		one at a time keeps them the same length; its death finalizes every column's values. <span class="pre">len</span>
+		is the length of the columns and <span class="pre">isEmpty</span> is a list's. A field of
+		<span class="pre">T</span> named <span class="pre">push</span>, <span class="pre">get</span>,
+		<span class="pre">len</span> or <span class="pre">isEmpty</span> clashes with the method of that name and is
+		refused. A push can move the blocks, so a column borrowed before it is stale after.</p>
+	<p><i>Not built:</i> <span class="pre">ps[i].pos</span> as a place and the layout marker the compiler would
+		recognise it by, <span class="pre">remove</span>, and a borrowed slice of rows.</p>
+
 	<h2 id="string">String</h2>
 	<p><span class="pre">String</span> is the growable string: a list of bytes, lent as text,
 		<span class="pre">&amp;str</span>, by <span class="pre">s.view()</span>, with the methods of text folded in as its
 		own. The Guide's <a href="guide-text.html">String</a> teaches it, and its methods are listed with text's.</p>
+
+	<h2 id="shared">The names the collections share</h2>
+	<p>The collections give the same operation the same name wherever it exists: <span class="pre">len</span> and
+		<span class="pre">isEmpty</span> on every collection; <span class="pre">get</span> (an <span class="pre">Option</span>
+		of a borrow: by position in a <span class="pre">List</span> or <span class="pre">Deque</span>, <span class="pre">None</span>
+		out of range, where <span class="pre">[i]</span> panics; by a <span class="pre">&amp;K</span> key in a
+		<span class="pre">Dict</span> or <span class="pre">OrderedDict</span>); <span class="pre">push</span> and
+		<span class="pre">pop</span> at the back and <span class="pre">pushFront</span> and <span class="pre">popFront</span> at
+		the front; <span class="pre">peek</span>, which borrows the value <span class="pre">pop</span> would move out;
+		<span class="pre">insert</span>, <span class="pre">remove</span> and <span class="pre">contains</span>. A dictionary's
+		<span class="pre">insert</span> answers the old value, moved out, or <span class="pre">None</span> for a new key; a
+		<span class="pre">Set</span>'s answers whether the element was new.</p>
+	<p>The package declares no trait for them. A function that needs one ability, or a program that needs "any queue"
+		behind a virtual reference, declares a small trait of its own, such as
+		<span class="pre">trait Queue[T] { pub fn push(self: &amp;mut, value: T); pub fn popFront(self: &amp;mut) Option[T]; }</span>
+		(the methods are <span class="pre">pub</span> so a virtual reference has a slot for each).
+		A trait is met by having the methods, so every queue meets it without declaring anything
+		(<a href="mod-substitution.html#collectiontraits">The collections meet traits of your own</a>).</p>
 
 	<h2 id="send">The send operator's entries</h2>
 	<p><span class="pre">&lt;-</span> is the one operator for giving values to anything that takes them:

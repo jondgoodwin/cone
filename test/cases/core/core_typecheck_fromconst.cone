@@ -1,0 +1,42 @@
+// A constant that '.from' cannot give a value is refused in any expression, as
+// a 'const' already refuses it (core_typecheck_constexpr), not only where a
+// constant is required (Bug 43). A float that does not fit its integer type, and
+// a number that is no code point converted to a char, have a defined answer at
+// run time (saturated; U+FFFD) -- and a constant that can only mean that is a
+// mistake, so it is an error. A value that fits is not touched, and a value
+// that reaches '.from' through a call takes the run-time answer
+// (core_from_saturate, core_char_from).
+
+mod core_typecheck_fromconst;
+
+fn same(x: f64) f64 { x }
+
+fn main() {
+  // A float past its integer type, below it, or no number
+  let a = u8.from(1.0e30);                 //~ ErrorConstOverflow
+  let b = i32.from(-3.0e10);               //~ ErrorConstOverflow
+  let c = usize.from(0.0 - 1.0);           //~ ErrorConstOverflow
+  let d = i64.from(9223372036854775808.0); //~ ErrorConstOverflow
+  let e = u16.from(65536.0f32);            //~ ErrorConstOverflow
+  let f = i32.from(0.0 / 0.0);             //~ ErrorConstDivZero
+
+  // A number that is no code point
+  let g = char.from(0x110000u32);          //~ ErrorConstChar
+  let h = char.from(0xD800u32);            //~ ErrorConstChar
+  let i = char.from(0xDFFFu16);            //~ ErrorConstChar
+  let j = char.from(-1i32);                //~ ErrorConstChar
+  let k = char.from(1.0e30);               //~ ErrorConstChar
+  let l = char.from(0.0 - 1.0);            //~ ErrorConstChar
+
+  // What fits, and what reaches '.from' at run time, is not refused
+  let m = u8.from(255.9);
+  let n = i8.from(-128.5);
+  let o = u32.from(0.0 - 0.5);
+  let p = char.from(0x10FFFFu32);
+  let q = char.from(0xD7FFu32);
+  let r = char.from(0xE000u16);
+  let s = char.from(65u8);
+  let t = char.from(66.9);
+  let u = u8.from(same(1.0e30));
+  let v = char.from(same(0.0 - 1.0));
+}

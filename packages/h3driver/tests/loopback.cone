@@ -73,7 +73,7 @@ fn serverCtx(streams: u64, idleMs: i64) quic.Context {
   match quic.Context.server(q, &cert, &key) {
     case var Ok(r) {return r;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }
@@ -249,7 +249,7 @@ fn serverEvents(d: &mut Driver, sv: &mut Server, events: &mut List[Event]) {
       let j = jobOf(sv, e.req);
       if j < sv.jobs.len() {
         sv.jobs[j].outcome = if e.kind == EventKind.Done {1u32} else if e.kind == EventKind.Failed {2u32} else {3u32};
-        if e.kind == EventKind.Failed {sv.jobs[j].failText = e.failure.message();}
+        if e.kind == EventKind.Failed {sv.jobs[j].failText = String() <- e.failure;}
       }
     }
   }
@@ -320,9 +320,9 @@ fn newClient() Client {
 
 // A failure's stage and kind: 'tls: refused'
 fn headOf(f: &Failure) String {
-  var s = String.from(stageName(f.stage));
+  var s = String() <- f.stage;
   s.append(": ");
-  s.append(kindName(f.error.kind));
+  s <- f.error.kind;
   s
 }
 
@@ -389,7 +389,7 @@ fn clientEvents(d: &mut Driver, lp: &mut Loop, cl: &mut Client, events: &mut Lis
       if e.clean {
         cl.clean = cl.clean + 1u64;
       } else {
-        cl.closeText = e.failure.message();
+        cl.closeText = String() <- e.failure;
         cl.closeHead = headOf(&e.failure);
         cl.closeCode = e.failure.code;
       }
@@ -430,7 +430,7 @@ fn clientEvents(d: &mut Driver, lp: &mut Loop, cl: &mut Client, events: &mut Lis
       if e.kind == EventKind.Failed {
         cl.asks[a].retrySafe = e.failure.error.isRetrySafe();
         cl.asks[a].unsent = e.failure.unsent;
-        cl.asks[a].failText = e.failure.message();
+        cl.asks[a].failText = String() <- e.failure;
         cl.asks[a].failHead = headOf(&e.failure);
       }
     }
@@ -477,13 +477,13 @@ fn world(streams: u64, idleMs: i64) World {
         case let Err(e) {}
       }
     }
-    case let Err(f) {printStr(f.message().view()); printStr("\n");}
+    case let Err(f) {print <- f; printStr("\n");}
   }
   var cli = Driver.make(clientConfig(idleMs));
   var conn = ConnId.none();
   match cli.connect(&mut lp, SocketAddr.localhost(port), "localhost", 2u64) {
     case let Ok(c) {conn = c;}
-    case let Err(f) {printStr(f.message().view()); printStr("\n");}
+    case let Err(f) {print <- f; printStr("\n");}
   }
   World(lp, cli, srv, Server(List[Job](), 0u64, 0u64, 0u64, ConnId.none(), 0u64),
     newClient(), conn)

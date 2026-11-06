@@ -3,7 +3,7 @@
 // stages that stop the stream, not a polite source) feeds a pipeline of three
 // stages and a sink:
 //
-//   source -> Stage[Deflater] -> Stage[Inflater] -> HashStage[Sha256] -> sink
+//   source -> TransformStage[Deflater] -> TransformStage[Inflater] -> HashStage[Sha256] -> sink
 //
 // The consumer's group is Gc; the source runs in Gs, a child of Gc (the chunks
 // carry Gs down the pipeline, and what the consumer gives back carries it up).
@@ -88,14 +88,14 @@ fn block() List[u8] {
 actor Source is ChunkSource {
   slot: usize;
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   data: List[u8];
   left: u64;
   over: bool;
   noEnd: bool;                  // after its last chunk it sends no 'end': a producer that never ends
 
   pub fn init(self: &new, slot: usize, down: ChunkSink, data: List[u8], left: u64, noEnd: bool) {
-    *self = Self(slot: slot, down: down, link: Link.own(262144usize), data: data, left: left, over: false, noEnd: noEnd);
+    *self = Self(slot: slot, down: down, link: ChunkWindow.own(262144usize), data: data, left: left, over: false, noEnd: noEnd);
     down.attach(selfactor);
   }
 
@@ -208,23 +208,23 @@ fn main() i32 {
     let gs0 = gc0.child();
     let sink0 = Sink(0usize, gc0, 10u64, tx0);
     let hash0 = HashStage[cryptohash.Sha256](sink0, cryptohash.Sha256.make(), Checker(0usize));
-    let inf0 = Stage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib));
-    let def0 = Stage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let inf0 = TransformStage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib));
+    let def0 = TransformStage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
     let src0 = Source(0usize, def0, block(), 2000u64, false);
 
     // 1. main cancels the consumer's group from outside
     let gs1 = gc1.child();
     let sink1 = Sink(1usize, gc1, 0u64, tx1);
     let hash1 = HashStage[cryptohash.Sha256](sink1, cryptohash.Sha256.make(), Checker(1usize));
-    let inf1 = Stage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib));
-    let def1 = Stage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let inf1 = TransformStage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib));
+    let def1 = TransformStage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
     let src1 = Source(1usize, def1, block(), 2000u64, true);
 
     // 2. no group at all: runs to its end
     let sink2 = Sink(2usize, gc0, 0u64, tx2);
     let hash2 = HashStage[cryptohash.Sha256](sink2, cryptohash.Sha256.make(), Checker(2usize));
-    let inf2 = Stage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
-    let def2 = Stage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let inf2 = TransformStage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
+    let def2 = TransformStage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
     let src2 = Source(2usize, def2, block(), 200u64, false);
 
     actors.withGroup(&gs0, fn() [src0] { src0.start(); });

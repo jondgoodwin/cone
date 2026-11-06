@@ -36,11 +36,11 @@ fn main() i32 {
     case is None { say("llmcheck: --prompt is missing\n"); return 2i32; }
   }
   var n = 64usize;
-  match argValue(&args, "--n") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { n = usize.from(x); } case is None {} } } case is None {} }
+  match argValue(&args, "--n") { case let Some(t) { match u64.parse(t.view()) { case let Ok(x) { n = usize.from(x); } case is Err {} } } case is None {} }
   var top = 5usize;
-  match argValue(&args, "--top") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { top = usize.from(x); } case is None {} } } case is None {} }
+  match argValue(&args, "--top") { case let Some(t) { match u64.parse(t.view()) { case let Ok(x) { top = usize.from(x); } case is Err {} } } case is None {} }
   var ctx = 1024usize;
-  match argValue(&args, "--ctx") { case let Some(t) { match parseUInt(t.view()) { case let Some(x) { ctx = usize.from(x); } case is None {} } } case is None {} }
+  match argValue(&args, "--ctx") { case let Some(t) { match u64.parse(t.view()) { case let Ok(x) { ctx = usize.from(x); } case is Err {} } } case is None {} }
 
   utf8Console();
   // No window and no validation layer unless --validate (see llmchat)
@@ -53,11 +53,11 @@ fn main() i32 {
   let modelFile = Path.from(modelPath.view());
   var engine: Engine = match Engine.open(&mut device, &modelFile, &LoadOptions(ctx, 64usize)) {
     case var Ok(e) { e }
-    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   };
   var vocab: ModelTokens = match loadTokens(engine.ggufModel()) {
     case var Ok(v) { v }
-    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   };
 
   let ids = vocab.tok.encode(prompt.view());
@@ -71,7 +71,7 @@ fn main() i32 {
   var logits = List[f32]();
   match engine.feed(&mut device, ids.view(), true) {
     case var Ok(l) { logits <-> l; }
-    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   }
   let t1 = Instant.now();
   let recPrefill = engine.recordNanos - rec0;
@@ -103,7 +103,7 @@ fn main() i32 {
       one.push(id);
       match engine.feed(&mut device, one.view(), true) {
         case var Ok(l) { logits <-> l; }
-        case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+        case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
       }
     }
   }

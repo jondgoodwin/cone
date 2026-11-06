@@ -1564,6 +1564,16 @@ static void incAssemble(IncGen *g, IncMod *m, IncBuf *out) {
         }
         incBufPutSrc(out, lexer, p, strlen(p));
     }
+    // A module with setups and no 'init' of its own was given one that runs them
+    // (modSetupBuild), which no source text declares: the program's stitched init
+    // calls it by symbol, so the file declares it
+    ModuleNode *mod = m->mod;
+    if (mod->setups && mod->initfn && !mod->generic && !mod->genericinfo
+        && namespaceFind(&mod->namespace, initName) == NULL) {
+        if (out->len > 0 && out->text[out->len - 1] != '\n')
+            incBufPuts(out, "\n");
+        incBufPuts(out, "\nextern fn @initpure init();\n");
+    }
 }
 
 // The banner: that the file is generated, from what, and not to be edited
@@ -1737,6 +1747,144 @@ int incFileIsGenerated(char *text) {
     return strncmp(text, IncFileBanner, strlen(IncFileBanner)) == 0;
 }
 
+// ---- The instances the package uses -----------------------------------------
+//
+// A generic module's instance is made where it is named, so a program that never
+// names an instance a package uses would never build it, and the stitched init
+// and final (pgmInstanceOrder, genlInit) would have no place for it. The file
+// records each such instance in a private function at its end,
+// 'fn __uses() { g[i64]; }': a module is no type to alias, and no declaration
+// names an instance but a body. The program's compile checks the body, so it
+// builds the instance, from the generic's include file, and places it. An
+// instance is recorded when the
+// package's own root text names it: not one made inside another instance's body
+// (the program makes that one with the instance), and not one made by text the
+// package includes from elsewhere.
+
+// Spell a type argument the file can name bare: a number type. Anything else
+// has no spelling here
+static int incSpellArg(INode *arg, IncBuf *out) {
+    INode *type = itypeGetTypeDcl(arg);
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case IntNbrTag: case UintNbrTag: case FloatNbrTag:
+    {
+        Name *name = inodeGetName(type);
+        if (name == NULL)
+            return 0;
+        incBufPuts(out, &name->namestr);
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Whether the root's own text wrote 'node'
+static int incWrittenByRoot(ModuleNode *root, INode *node) {
+    DclSpans *spans = root->spans;
+    for (uint32_t i = 0; spans && i < spans->count; ++i) {
+        if (spans->items[i]->lexer == node->lexer)
+            return 1;
+    }
+    return 0;
+}
+
+// Whether a generic module declares an 'init' or a 'final': an instance of it
+// has setup the program must run, which an unrecorded instance would lose
+static int incGenericHasSetup(ModuleNode *inst) {
+    if (inst->initfn || inst->finalfn)
+        return 1;
+    INode *init = namespaceFind(&inst->generic->namespace, initName);
+    INode *final = namespaceFind(&inst->generic->namespace, finalName);
+    return (init && init->tag == FnDclTag) || (final && final->tag == FnDclTag);
+}
+
+// Whether a package's submodule's own text wrote 'node'
+static int incWrittenBySubmodule(IncGen *g, INode *node) {
+    for (uint32_t k = 1; k < g->nmods; ++k) {
+        DclSpans *spans = g->mods[k]->mod->spans;
+        for (uint32_t i = 0; spans && i < spans->count; ++i) {
+            if (spans->items[i]->lexer == node->lexer)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void incInstanceUses(IncGen *g, IncBuf *out) {
+    Nodes *instances = modInstanceList();
+    if (instances == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t nbr = 0;
+    IncBuf body, notes;
+    memset(&body, 0, sizeof(body));
+    memset(&notes, 0, sizeof(notes));
+    for (nodesFor(instances, cnt, nodesp)) {
+        ModuleNode *inst = (ModuleNode*)*nodesp;
+        if (inst->generic == NULL || inst->generic->genericinfo == NULL
+            || inst->instnode == NULL || inst->instnode->tag != FnCallTag)
+            continue;
+        FnCallNode *call = (FnCallNode*)inst->instnode;
+        if (incWithin(inst->generic, g->root))
+            continue;
+        if (!incWrittenByRoot(g->root, (INode*)call)) {
+            // Made in a submodule's file: the root cannot spell it, so its setup
+            // would never run. Made inside another instance's body, or by text
+            // included from elsewhere, it is in no submodule's file
+            if (incWrittenBySubmodule(g, (INode*)call) && incGenericHasSetup(inst)) {
+                errorMsgNode((INode*)call, ErrorInstanceUnrecorded,
+                    "The include file cannot record this instance of generic module '%s', made in a submodule's file, so its 'init' and 'final' would never run in a program that does not name it itself. Make the instance in the package's root file.",
+                    &inst->generic->namesym->namestr);
+                g->failed = 1;
+            }
+            continue;
+        }
+        IncBuf line;
+        memset(&line, 0, sizeof(line));
+        size_t spelled = line.len;
+        int ok = call->objfn && call->objfn->tag == NameUseTag;
+        if (ok)
+            incBufPuts(&line, &((NameUseNode*)call->objfn)->namesym->namestr);
+        incBufPuts(&line, "[");
+        INode **argp;
+        uint32_t argcnt;
+        for (nodesFor(call->args, argcnt, argp)) {
+            if (argcnt != call->args->used)
+                incBufPuts(&line, ", ");
+            ok = ok && incSpellArg(*argp, &line);
+        }
+        incBufPuts(&line, "];\n");
+        if (ok) {
+            incBufPuts(&body, "  ");
+            incBufPutBuf(&body, &line, 0, line.len);
+            ++nbr;
+        }
+        else if (incGenericHasSetup(inst)) {
+            errorMsgNode((INode*)call, ErrorInstanceUnrecorded,
+                "The include file cannot spell this instance of generic module '%s' (its arguments are not number types, or its name is qualified), so its 'init' and 'final' would never run in a program that does not name it itself. Use a bare generic name with number-type arguments.",
+                &inst->generic->namesym->namestr);
+            g->failed = 1;
+        }
+        else {
+            incBufPuts(&notes, "// Not recorded, since it has no spelling here: ");
+            incBufPutBuf(&notes, &line, spelled, line.len);
+        }
+    }
+    if (nbr == 0 && notes.len == 0)
+        return;
+    incBufPuts(out, "\n");
+    incBufPutBuf(out, &notes, 0, notes.len);
+    if (nbr) {
+        incBufPuts(out, "fn __uses() {\n");
+        incBufPutBuf(out, &body, 0, body.len);
+        incBufPuts(out, "}\n");
+    }
+}
+
 // Generate the include file of the program's root module
 char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     IncGen gen;
@@ -1802,6 +1950,8 @@ char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     memset(&text, 0, sizeof(text));
     incBanner(&text, g->root, files, nfiles);
     incAssemble(g, rootm, &text);
+    if (g->root->genericinfo == NULL)
+        incInstanceUses(g, &text);
     IncBuf out;
     memset(&out, 0, sizeof(out));
     incMarkLines(&text, &out, nfiles ? files[0]->url : NULL);

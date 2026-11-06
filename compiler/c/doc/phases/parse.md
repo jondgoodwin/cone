@@ -1308,10 +1308,14 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
     it from noting the same cut again. A chain mixing a build fact and a type fact is refused inside a
     pass as anywhere. The quota is the one option that can differ between a package's build and its
     importer's, and it can only refuse an expansion, not change one.
-  - **Where it is not built.** A `#each` at a module's level, in a type's braces, in an `extern` block
-    or in expression position is `ErrorMetaEachPlace` (`parseMetaStray`), its header and block read past.
-    It would generate declarations, which waits for generated names. A `#if` condition cannot ask
-    about a meta variable (`ErrorMetaFact`).
+  - **Where it is not built.** A `#each` at a module's level, in a type's braces (but a generic struct's,
+    below), in an `extern` block or in expression position is `ErrorMetaEachPlace` (`parseMetaStray`),
+    its header and block read past. A `#if` condition cannot ask about a meta variable (`ErrorMetaFact`).
+  - **A module's level.** `let #sizes = [8, 16];` between a file's declarations (`parseGlobalStmtsIn`,
+    `parseMetaIsDecl`, `parseMetaDecl`) is held until the end of the file (`parseGlobalStmts` takes the
+    `parseMetaScope` mark), so the functions and generics below read it as one declared in their own
+    bodies. Only `let` (a `var` is `ErrorMetaVar`). Its statement has a `SpanOther` span with no node, which the
+    include file leaves as written, so an importer that reads a generic's body again finds the constant.
 - **`#each #f in #fields(T) { body }`** (`parseHashFields`, called by `parseHashEach` when the list is
   `HashFieldsToken`) cannot be expanded by reading the body again: T's fields are known only when the
   generic is cloned. The body is read **once**, with `#f` bound as `MetaBindField`, and the loop is a
@@ -1329,8 +1333,44 @@ Nothing in it is looked up, since nothing of it reaches name resolution.
   where `Self` is repointed at it; cloned with no type to take it, it is the trait and is refused as a
   non-struct. A loop cloned while T is still
   a parameter of another generic is copied whole to be decided later. The `--meta-ir` dump does not
-  show these loops. Not built: `#f.attrs` (there are no field attributes), `#fields` outside a `#each`,
-  generated members (step 5).
+  show these loops. Not built: `#f.attrs` (there are no field attributes), `#fields` outside a `#each`.
+  `cloneFieldEach` is `fieldEachOpen` (T and its visible fields, once per loop and instance),
+  `fieldEachPassBegin`/`End` (the hooks of one field) and the clone of the body between them; a generic
+  struct's loop (next) uses the same three.
+- **`#each #f in #fields(T) { members }` in a generic struct's braces** makes fields and methods
+  (`parseHashEachMembers`, called from `parseStructItems` when the struct is generic and not an enum or
+  trait; `parseHashFields` with a struct instead of a block). The members are read once, by the same
+  `parseStructItems` (`StructItems.inloop`), and join the struct as its own; each is marked with a
+  `GenName` (`FieldDclNode.gen`, `FnDclNode.gen`, `ir/meta/fields.h`): the loop, and a fixed `prefix` or
+  `suffix` to join to the described field's name. A member's name is `#f` (the field's) or
+  `#name("get_", #f)` / `#name(#f, "_x")` (`HashNameToken`, `parseMetaGenName`: one string literal and `#f`
+  in either order; nothing else is computed); the template holds it under that spelling as a `Name`, so the
+  template's namespace sees a duplicate spelling. `metaGenMark` refuses a member of the loop not named from
+  `#f` (a fixed name would be made for every field and clash), a static, a macro or an alias
+  (`ErrorMetaGenName`); a nested `#each` and a type-fact `#if` inside the loop are refused as well.
+  Name resolution resolves the loop's `T` at the first member that carries it (`fieldEachSubjectNameRes`).
+  The instance is made in `cloneStructNode` (`struct.c`): the template's fields are walked in order and a
+  run of fields of one loop is made pass by pass (`structCloneGenFields`: for each field of T the
+  pass's hooks are set, each field of the run cloned and named `genNameFor`); the loop's methods get
+  shells appended after the written ones (`genfill`), and are filled while their field's hooks are set,
+  after the written members' bodies. `structGenClash` refuses a name already in the instance's namespace
+  (`ErrorMetaGenClash`), generated or written. A loop whose T is still a parameter of an enclosing generic
+  is kept as written (`undecided`), as `cloneFieldEach` does. Indices of fields are renumbered by the
+  instance's type check as for any struct. The include file copies the struct's text as written, loop and
+  all (every member of a generic type travels), and the importer expands it.
+- **`#each #f in #fields(T) { #f: value }` among a call's arguments** (`parseHashEachArg`, called from
+  `parseArgs` for a parenthesised list only; an index's brackets get `ErrorMetaEachPlace` from `parseMetaStray`)
+  makes one named argument per field. The body is read by `metaArgBodyRead`, not as a block: it is exactly
+  `#f: value` (`ErrorMetaEachArg`; a written name is `ErrorMetaEachArgName`), held as a `NamedValNode` whose name
+  is a use of `#f` that `fieldEachSplice` turns into the field's name when cloned. The loop is a `BlockNode`
+  with `fieldeach` among the call's arguments, name-resolved as any block. `cloneFnCallNode` clones the
+  arguments with `cloneFieldEachArgs`, which expands such a block in place (`fieldEachClone` with an argument
+  list to add to: one cloned `NamedValNode` per pass, `errorEachPass` set so an error names its pass) and
+  keeps an undecided one as written, as a statement loop is, to be decided per instance. A loop may stand
+  beside other arguments; the parser cannot tell a construction from a call, so the loop is accepted in any
+  parenthesised list and a call of a function is refused later by the ordinary named-argument rule
+  (`namedValRefuseArgs`). A clone that reported an error leaves `FlagEachFailed` on the call, which type check
+  replaces by an error node rather than report the missing arguments (`ErrorBadArray`).
 - **Layout facts.** `#size(T)` and `#align(T)` (`parseMetaLayout`, `HashSizeToken`/`HashAlignToken`) are a
   `SizeofNode` with `what` set; `#f.offset` is a `SizeofNode` of kind `SizeofOffset`, made by the clone
   (`fieldPropAnswer`) with the instance's type and field. None is folded by the front end: the code

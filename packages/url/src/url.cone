@@ -18,17 +18,17 @@
 //         r.target()              // '/a/c?x=1'      (as a request's target)
 //         match r.resolve("../d?y") { case mut t Ok { ... 'https://example.com/d?y' } ... }
 //       }
-//       case imm e Err {... e.message() ...}   // 'url: a port is 0 to 65535 (at 22)'
+//       case imm e Err {... String() <- e ...}   // 'url: a port is 0 to 65535 (at 22)'
 //     }
 //   }
 //
 //   Url.parse(text)  u.resolve(ref)  resolveRef(base, ref)               (READING)
-//   u.text()  u.origin()  u.authority()  u.target()  u.clone()            (WRITING)
+//   u.text()  u.toText(out)  u.origin()  u.authority()  u.target()  u.clone()            (WRITING)
 //   u.scheme  u.userinfo  u.host  u.hostKind  u.port  u.hasPort u.path   (PARTS)
 //     u.query  u.hasQuery  u.fragment  u.hasFragment  u.hasAuthority
 //   u.effectivePort()  u.isHttp()  u.isSecure()  u.sameOrigin(o)  defaultPort(scheme)
 //   HostKind: Empty, Name, Ipv4, Ipv6
-//   UrlError: e.at e.why e.message()                                     (ERRORS)
+//   UrlError: e.at e.why String() <- e                                     (ERRORS)
 //   encodeComponent(s)  decode(s)  removeDotSegments(path)               (HELPERS)
 //
 // READING. 'Url.parse' takes an absolute URL: a scheme, then what follows
@@ -181,14 +181,8 @@ pub struct UrlError is Error {
   pub fn isNone(self: &) bool {why.len() == 0usize}
 
   // 'url: a port is 0 to 65535 (at 22)'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from("url: ");
-    out.append(why.view());
-    out.append(" (at ");
-    out.appendUInt(u64.from(at));
-    out.append(")");
-    out
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- "url: ", why.view(), " (at ", at, ")";
   }
 }
 
@@ -299,7 +293,9 @@ pub struct Url is Default {
     out
   }
 
-  // The URL as text (see the package's header, WRITING)
+  // The URL as text (see the package's header, WRITING); 'toText' sends the
+  // same text, so '$"{u}"' and 'print <- u' take the URL
+  pub fn toText(self: &, out: &uni TextOut) { out <- self.text().view(); }
   pub fn text(self: &) String {
     var out = String();
     if scheme.len() > 0usize {

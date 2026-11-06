@@ -74,7 +74,6 @@ const kWatch = 1u8;
 
 const sendChunk = 65536usize;          // the most of a body one send carries
 const drainLimit = 65536usize;         // a redirect's body read past this is cut off
-const heldRetryNs = 1000000i64;        // events held for a full channel are tried again after this
 
 // A fetch
 struct Fetch {
@@ -108,7 +107,6 @@ struct Fetch {
   sent: usize;               // body bytes sent, this attempt
   retries: u32;
   maxRedirects: u32;
-  heldEvents: u32;           // its events held for a full channel
   timing: Timing;
 
   fn methodName(self: &) &str {
@@ -147,19 +145,6 @@ struct Limits {
   priorKnowledge: bool;      // http connections speak HTTP/2 from their first byte (the driver's h2PriorKnowledge)
   h3Origins: List[String];   // the origins (Url.origin) known to speak HTTP/3
   h3Timeout: Duration;
-}
-
-// An event held for a full channel: where it goes, its fetch and that
-// fetch's generation, the body bytes it releases once taken, and to which
-// request
-struct Held {
-  e: Event;
-  sink: Sink;
-  fetch: u32;
-  gen: u32;
-  credit: usize;
-  req: httpconn.ReqId;
-  qreq: H3Req;
 }
 
 // An origin: its pool and its queue
@@ -202,7 +187,6 @@ pub struct Client {
   dev: List[httpconn.Event];
   comps: List[Completion];
   ready: List[Event];        // events for this thread, until pump hands them over
-  heldEvents: List[Held];    // events held for full channels, in order
   wantSchedule: bool;
   st: ClientStats;
   h3: Uni[Http3];            // the HTTP/3 plug-in: the config's maker's, or NoHttp3
@@ -246,7 +230,7 @@ pub struct Client {
     let tlsc = match tls.Client.make(tlsConfig) {
       case var Ok(r) {Ok[tls.Client, Failure](r)}
       case var Err(e) {
-        Err[tls.Client, Failure](Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, e.message().view()))
+        Err[tls.Client, Failure](Failure.make(Stage.Tls, e.osError, ErrorKind.Unsupported, (String() <- e).view()))
       }
     };
     let priorKnowledge = conn.h2PriorKnowledge;
@@ -257,7 +241,7 @@ pub struct Client {
       fetchBlocks: List[*Fetch](), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
       queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn](), connCount: 0u32, freeConn: noEntry,
       total: 0u32, undecided: List[u32](), origins: SlotTable[Origin].make(8u32), dev: List[httpconn.Event](),
-      comps: List[Completion](), ready: List[Event](), heldEvents: List[Held](),
+      comps: List[Completion](), ready: List[Event](),
       wantSchedule: false, st: ClientStats.zero(), h3: h3, h3on: h3on, h3evs: List[H3Event](), attempts: List[u32]())
   }
 
@@ -301,10 +285,6 @@ pub struct Client {
   // Fetches waiting for a connection
   pub fn queued(self: &) u32 {queuedN}
 
-  // Events held for full channels, still to be delivered: a client with any
-  // must go on being driven
-  pub fn held(self: &) usize {heldEvents.len() + drv.held()}
-
   // Whether id names a fetch not yet answered
   pub fn isLive(self: &, id: FetchId) bool {self.fetchIndex(id) != noEntry}
 
@@ -339,7 +319,7 @@ pub struct Client {
       req: httpconn.ReqId.none(), qreq: H3Req.none(), deadline: forever(), group: None, watch: OpId.none(),
       ending: endNone, delivered: false, following: false, cutting: false, location: String(),
       redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
-      maxRedirects: 0u32, heldEvents: 0u32, timing: Timing.zero())
+      maxRedirects: 0u32, timing: Timing.zero())
   }
 
   fn newFetch(self: &mut) u32 {
@@ -376,7 +356,6 @@ pub struct Client {
     f.held = 0usize;
     f.sent = 0usize;
     f.retries = 0u32;
-    f.heldEvents = 0u32;
     f.timing = Timing.zero();
     liveFetches = liveFetches + 1u32;
     i
@@ -523,7 +502,7 @@ pub struct Client {
     // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
     match urlError {
       case var Some(ue) {
-        self.refuse(lp, fi, Stage.Url, ue.message().view());
+        self.refuse(lp, fi, Stage.Url, (String() <- ue).view());
         return id;
       }
       else {}
@@ -765,7 +744,7 @@ pub struct Client {
       }
       else {}
     }
-    self.emit(fi, 0usize, ev);
+    self.emit(ev);
     self.freeFetchRec(fi);
   }
 
@@ -781,80 +760,10 @@ pub struct Client {
   // Events to sinks
   // ---------------------------------------------------------------------------
 
-  // Hand e, about fetch fi, to its sink; 'credit' is the body bytes a Data
-  // event releases once a channel takes it
-  fn emit(self: &mut, fi: u32, credit: usize, e: Event) {
+  // Hand e to its sink: the events for this thread, until pump hands them over
+  fn emit(self: &mut, e: Event) {
     st.events = st.events + 1u64;
-    let f = self.fetchAt(fi) as &mut Fetch;
-    if !isChan(&mut f.sink) {
-      ready.push(e);
-      return;
-    }
-    if f.heldEvents > 0u32 {
-      self.hold(fi, credit, e);
-      return;
-    }
-    match trySink(&mut f.sink, e) {
-      case var Full(b) {
-        self.hold(fi, credit, b.(e));
-        return;
-      }
-      case is Gone {st.dropped = st.dropped + 1u64;}
-      else {}
-    }
-    if credit > 0usize {self.creditReq(f.req, f.qreq, credit);}
-  }
-
-  fn hold(self: &mut, fi: u32, credit: usize, e: Event) {
-    let f = self.fetchAt(fi) as &mut Fetch;
-    st.held = st.held + 1u64;
-    heldEvents.push(Held(e, copySink(&mut f.sink), fi, f.gen, credit, f.req, f.qreq));
-    f.heldEvents = f.heldEvents + 1u32;
-  }
-
-  // Try again the events held for full channels, in order: a fetch's later
-  // events stay behind its first still held
-  fn retryHeld(self: &mut) {
-    if heldEvents.len() == 0usize {return;}
-    var kept = List[Held]();
-    var blocked = List[u64]();
-    // The credit of those taken goes back to the driver after: its calls are
-    // not visible here, so none is made while the held list is drained
-    var creditTo = List[httpconn.ReqId]();
-    var creditQ = List[H3Req]();
-    var credits = List[usize]();
-    {
-      each h in heldEvents.drain() {
-        let e, var sink, fi, gen, n, q, qq = h.(e, sink, fetch, gen, credit, req, qreq);
-        let key = (u64.from(gen) << 32u64) | u64.from(fi);
-        if isIn(&blocked, key) {
-          kept.push(Held(e, sink, fi, gen, n, q, qq));
-          continue;
-        }
-        match trySink(&mut sink, e) {
-          case var Full(b) {
-            blocked.push(key);
-            kept.push(Held(b.(e), sink, fi, gen, n, q, qq));
-            continue;
-          }
-          case is Gone {st.dropped = st.dropped + 1u64;}
-          else {}
-        }
-        let f = self.fetchAt(fi) as &mut Fetch;
-        if f.gen == gen && f.state != fFree && f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
-        if n > 0usize {
-          creditTo.push(q);
-          creditQ.push(qq);
-          credits.push(n);
-        }
-      }
-    }
-    heldEvents = kept;
-    var k = 0usize;
-    while k < credits.len() {
-      self.creditReq(*creditTo[k], *creditQ[k], *credits[k]);
-      k = k + 1usize;
-    }
+    ready.push(e);
   }
 
   // Events for this thread, moved to out: how many
@@ -888,24 +797,19 @@ pub struct Client {
       if due < w {w = due;}
       k = k + 1usize;
     }
-    if heldEvents.len() > 0usize {
-      let h = Instant.now() + Duration.fromNanos(heldRetryNs);
-      if h < w {w = h;}
-    }
     w
   }
 
   // Poll the loop, at most until 'until' and not at all while events are
   // ready; hand the client what completed; drive what it touched; append the
   // events for this thread to out: how many. Nor does it wait when its
-  // first pump delivered events held for a channel ('held()' fell)
+  // first pump delivered events
   pub fn poll(self: &mut, lp: &mut Loop, until: Instant, out: &uni List[Event]) usize {
-    let heldBefore = self.held();
     var n = self.pump(lp, out);
     var limit = until;
     let w = self.wakeAt();
     if w < limit {limit = w;}
-    if n > 0usize || self.held() < heldBefore {limit = Instant();}
+    if n > 0usize {limit = Instant();}
     var cs = List[Completion]();
     cs <-> comps;
     lp.poll(limit, &mut cs);
@@ -944,7 +848,6 @@ pub struct Client {
   // Drive everything the completions and calls have touched, and append the
   // events for this thread to out: how many
   pub fn pump(self: &mut, lp: &mut Loop, out: &uni List[Event]) usize {
-    self.retryHeld();
     var rounds = 0u32;
     while rounds < 64u32 {
       let got = self.takeDriverEvents(lp) + self.takeH3Events(lp);
@@ -1837,7 +1740,7 @@ pub struct Client {
     ev.response = response;
     ev.body = body;
     ev.url = f.url.text();
-    self.emit(fi, 0usize, ev);
+    self.emit(ev);
   }
 
   // Body bytes of fetch fi's response: a redirect's dropped, else to its sink
@@ -1856,12 +1759,8 @@ pub struct Client {
     }
     var ev = Event.make(EventKind.Data, f.sink.token, self.idOf(fi));
     ev.buf = buf;
-    if isChan(&mut f.sink) {
-      self.emit(fi, n, ev);
-    } else {
-      f.held = f.held + n;
-      self.emit(fi, 0usize, ev);
-    }
+    f.held = f.held + n;
+    self.emit(ev);
   }
 
   // Fetch fi's response is whole
@@ -1870,7 +1769,7 @@ pub struct Client {
     if f.following {return;}
     var ev = Event.make(EventKind.End, f.sink.token, self.idOf(fi));
     ev.trailers = trailers;
-    self.emit(fi, 0usize, ev);
+    self.emit(ev);
   }
 
   // Fetch fi's exchange ended well: its connection is free again (or carries
@@ -1940,7 +1839,7 @@ pub struct Client {
     var why = String();
     match f.url.resolve(f.location.view()) {
       case let Ok(r) {next = r;}
-      case let Err(x) {why = x.message();}
+      case let Err(x) {why = String() <- x;}
     }
     if why.len() == 0usize && !next.isHttp() {why = String.from("it is not an http or https URL");}
     if why.len() > 0usize {
@@ -2130,58 +2029,6 @@ fn safeToRetry(fl: &Failure, method: Method, reused: bool, h2: bool) bool {
   if !connEnded {return false;}
   if fl.unsent {return true;}
   fl.error.noResponse && (isIdempotent(method) || (reused && !h2))
-}
-
-// Whether v is in l
-fn isIn(l: &List[u64], v: u64) bool {
-  var j = 0usize;
-  while j < l.len() {
-    if *l[j] == v {return true;}
-    j = j + 1usize;
-  }
-  false
-}
-
-// What a channel sink did with an event
-enum Sent {
-  pub struct Taken {}
-  pub struct Full {pub e: Event;}      // full: the event, handed back
-  pub struct Gone {}                   // its receiver has gone: the event is dropped
-}
-
-// A second sink to the same place: a channel's sender cloned
-fn copySink(s: &mut Sink) Sink {
-  var out: Sink = Sink.Here(s.token);
-  match s {
-    case let &Chan(c) {out = Sink.Chan(s.token, c.tx.clone());}
-    else {}
-  }
-  out
-}
-
-// Whether a sink is a channel
-fn isChan(s: &mut Sink) bool {
-  var yes = false;
-  match s {
-    case is &Chan {yes = true;}
-    else {}
-  }
-  yes
-}
-
-// Send e on a channel sink, never waiting
-fn trySink(s: &mut Sink, e: Event) Sent {
-  match s {
-    case let &Chan(ch) {
-      match ch.tx.trySend(e) {
-        case var Some(r) {
-          if ch.tx.isClosed() {Sent.Gone} else {Sent.Full(r)}
-        }
-        else {Sent.Taken}
-      }
-    }
-    else {Sent.Taken}
-  }
 }
 
 fn removeAt(l: &mut List[u32], k: usize) {

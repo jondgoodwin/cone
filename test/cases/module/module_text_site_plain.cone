@@ -1,0 +1,68 @@
+// A type with a five-parameter 'open' that is not the call-site protocol stays an ordinary
+// receiver of its own '<-': the second parameter is not '&mut', or the last is not a u32,
+// or what it answers lacks 'value', or 'open' takes no self. None of them gets a call site's storage made for it.
+
+mod module_text_site_plain;
+
+import stdio use *;
+
+struct Site {
+  pub var seen: u32;
+}
+
+struct Rec {
+  pub var n: i32;
+  pub fn text(self: &mut, s: &str) { print <- "rec text(", s, ") "; }
+  pub fn value(self: &mut, n: i64) { print <- "rec i64(", n, ") "; }
+  pub fn finish(self: &mut) { print <- "rec finish\n"; }
+}
+
+struct NoValue {
+  pub var n: i32;
+  pub fn text(self: &mut, s: &str) { print <- "novalue text(", s, ") "; }
+  pub fn finish(self: &mut) { print <- "novalue finish\n"; }
+}
+
+// the second parameter is '&', not '&mut'
+struct ReadSite {
+  pub var level: i32;
+  pub fn open(self: &, site: &Site, spec: &str, file: &str, line: u32) Rec { Rec(0) }
+  pub fn takeStr overload `<-`(self: &mut, s: &str) { print <- "ReadSite str(", s, ") "; }
+  pub fn takeInt overload `<-`(self: &mut, n: i64) { print <- "ReadSite int(", n, ")\n"; }
+}
+
+// the last parameter is an i64, not a u32
+struct WideLine {
+  pub var level: i32;
+  pub fn open(self: &, site: &mut Site, spec: &str, file: &str, line: i64) Rec { Rec(0) }
+  pub fn takeStr overload `<-`(self: &mut, s: &str) { print <- "WideLine str(", s, ") "; }
+  pub fn takeInt overload `<-`(self: &mut, n: i64) { print <- "WideLine int(", n, ")\n"; }
+}
+
+// the record it answers has no 'value'
+struct NoValueLog {
+  pub var level: i32;
+  pub fn open(self: &, site: &mut Site, spec: &str, file: &str, line: u32) NoValue { NoValue(0) }
+  pub fn takeStr overload `<-`(self: &mut, s: &str) { print <- "NoValueLog str(", s, ") "; }
+  pub fn takeInt overload `<-`(self: &mut, n: i64) { print <- "NoValueLog int(", n, ")\n"; }
+}
+
+// 'open' takes no self: it is a function of the type, not a method
+struct FnOpen {
+  pub var level: i32;
+  pub fn open(log: &FnOpen, site: &mut Site, spec: &str, file: &str, line: u32) Rec { Rec(0) }
+  pub fn takeStr overload `<-`(self: &mut, s: &str) { print <- "FnOpen str(", s, ") "; }
+  pub fn takeInt overload `<-`(self: &mut, n: i64) { print <- "FnOpen int(", n, ")\n"; }
+}
+
+fn main() i32 {
+  var a = ReadSite(1);
+  var b = WideLine(2);
+  var c = NoValueLog(3);
+  var d = FnOpen(4);
+  a <- "n=", 1i64;
+  b <- "n=", 2i64;
+  c <- "n=", 3i64;
+  d <- "n=", 4i64;
+  0
+}

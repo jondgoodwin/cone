@@ -1,0 +1,126 @@
+// '<-' to a Log: one event per call site. The kind's name is the fixed text with each
+// value as {name}, the fields are named from the braces' source text (or numbered), a
+// number, bool, text and duration stay typed and anything else is its debug text, the
+// message is the text flattened. Two calls at one site share a kind, two sites do not.
+// A level changed at run time reaches a site's kind. Off, no piece is evaluated.
+
+mod logsite;
+
+import testing use *;
+import stdio use *;
+import trace use Level, Log, Nanos, Value, Type, Phase;
+
+let log: Log;
+var made = 0;
+
+struct Point {
+  x: i32;
+  y: i32;
+}
+
+struct User {
+  id: u64;
+  name: &str;
+}
+
+fn @initpure init() {
+  log = Log.make("app", Level.Info);
+}
+
+fn typeName(t: Type) &str {
+  match t {
+    case is Type.I64 {"i64"}
+    case is Type.U64 {"u64"}
+    case is Type.F64 {"f64"}
+    case is Type.Bool {"bool"}
+    case is Type.Text {"text"}
+    case is Type.Duration {"duration"}
+    else {"time"}
+  }
+}
+
+var lastId = 0u32;
+
+struct Printer is trace.Sink {
+  pub n: i64;
+
+  pub fn enabled(self: &, k: &trace.Info) bool {true}
+
+  pub fn record(self: &, e: &trace.Event) {
+    let k = e.kind;
+    print <- "[", k.name, "] ", k.target, " ", k.level.name(), " fields ", k.fields;
+    var i = 0usize;
+    while i < e.values.len {
+      print <- " ", k.names[i], ":", typeName(k.types[i]), "=";
+      match e.values[i] {
+        case let I64(v) {print <- v;}
+        case let U64(v) {print <- v;}
+        case let F64(v) {print <- v;}
+        case let Bool(v) {print <- v;}
+        case let Text(v) {print <- "'", v, "'";}
+        case let Duration(v) {print <- v, "ns";}
+        case let Time(v) {print <- "(a time)";}
+      }
+      i = i + 1usize;
+    }
+    print <- " msg='", e.message, "'";
+    // The two calls of login share one site, so one kind
+    if k.name[0] == 'u' {
+      let addr = (k as *u8) as usize;
+      print <- if loginKind == 0usize {" (first login)"} else if loginKind == addr {" (same kind as the first login)"} else {" (A DIFFERENT KIND)"};
+      loginKind = addr;
+    }
+    print <- "\n";
+  }
+}
+
+var loginKind = 0usize;
+
+// A log send in a generic: each instance has the brace's name, from the source text
+fn tagged[T](x: &T) {
+  log <- $"tagged {x}";
+}
+
+fn bump() i32 {
+  made = made + 1;
+  made
+}
+
+fn login(user: &User) {
+  log <- $"user {user.id} logged in";
+}
+
+fn main() i32 {
+  expect(trace.install(Uni[Printer](0)), "the sink is installed");
+  trace.setDefaultLevel(Level.Info);
+  let u = User(7u64, "ada");
+  login(&u);
+  login(&User(9u64, "bob"));
+  let ms = 12;
+  let p = Point(1, 2);
+  let flag = true;
+  log <- "took ", ms, " ms";
+  log <- $"point {p} ok={flag} name={u.name} ratio={0.5}";
+  log <- $"timer {Nanos(1500i64)} {ms + 1}";
+  log <- "just text";
+  log <- $"five {ms} {ms + 1} {ms + 2} {ms + 3} {ms + 4}";
+
+  // Off: no piece runs
+  trace.setLevel("app", Level.Error);
+  log <- $"never {bump()}";
+  expect(made == 0, "off: the piece was not evaluated");
+  trace.setLevel("app", Level.Info);
+  log <- $"again {bump()}";
+  expect(made == 1, "on again: the piece ran once");
+
+  // A filter set at run time reaches a site's kind, as it reaches a declared kind
+  tagged(&p);
+  trace.filter("app=error");
+  log <- $"filtered out {bump()}";
+  expect(made == 1, "a filter turns the site off");
+  trace.filter("app=info");
+  log <- $"filtered back {bump()}";
+  expect(made == 2, "and on again");
+  tagged(&u);
+  done()
+}

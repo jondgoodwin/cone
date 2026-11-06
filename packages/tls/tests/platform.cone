@@ -38,7 +38,7 @@ fn client() tls.Client {
   match tls.Client.make(cfg) {
     case var Ok(r) {return r;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }
@@ -52,7 +52,7 @@ fn server(cert: &str, key: &str) tls.Server {
   match tls.Server.make(cfg) {
     case var Ok(r) {return r;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }
@@ -80,8 +80,12 @@ fn pump(c: &mut tls.Session, s: &mut tls.Session) {
   }
 }
 
-fn kindName(s: &tls.Session) &str {
-  if s.isFailed() {s.error().kind.name()} else {"none"}
+fn kindName(s: &tls.Session) String {
+  if s.isFailed() {
+    let k = s.error().kind;
+    return String() <- k;
+  }
+  String.from("none")
 }
 
 // A handshake that must succeed
@@ -91,7 +95,8 @@ fn accepted(label: &str, c: &mut tls.Session, s: &mut tls.Session) {
   printStr(": ");
   printStr(if c.isOpen() {"open"} else {"not open"});
   printStr(", verified by ");
-  printStr(tls.verifyKindName(c.info().verifiedBy));
+  let verifiedBy = c.info().verifiedBy;
+  print <- toText(&verifiedBy);
   printStr("\n");
   expect(c.isOpen() && s.isOpen(), label);
   expect(c.info().verifiedBy == tls.VerifyKind.Platform, "...and the platform verifier decided");
@@ -103,11 +108,11 @@ fn refused(label: &str, c: &mut tls.Session, s: &mut tls.Session, want: tls.TlsE
   pump(c, s);
   printStr(label);
   printStr(": client ");
-  printStr(kindName(c));
+  printStr(kindName(c).view());
   printStr("\n");
   if c.isFailed() {
     printStr("  ");
-    printStr(c.error().message().view());
+    print <- c.error();
     printStr("\n");
   }
   expect(c.isFailed() && c.error().kind == want, label);

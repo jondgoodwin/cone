@@ -28,9 +28,10 @@
 		into memory for reading; a folder
 		is made, listed, walked and removed; a file's size, time and kind are asked; and the
 		current folder is read and changed.</li>
-	<li><span class="pre">env</span>: the program's environment variables, read, set and removed.</li>
+	<li><span class="pre">env</span>: what this process's environment is: the program's arguments, and its
+		environment variables, read, set and removed.</li>
 	<li><span class="pre">process</span>: running another program, waiting for it, and capturing what it
-		writes; and this program's own arguments and path.</li>
+		writes; and this program's own path.</li>
 	</ul>
 	<p>A program reaches them with <span class="pre">import fs;</span>,
 		<span class="pre">import path use Path;</span>, <span class="pre">import env;</span> and
@@ -40,7 +41,8 @@
 		POSIX's one separator and root);
 		<span class="pre">fs</span> and <span class="pre">env</span> are written over ISO C and the
 		<a href="#posix">posix package</a>, which is the C library's own POSIX functions on Linux and maps
-		the POSIX names onto the Windows C runtime on Windows; and
+		the POSIX names onto the Windows C runtime on Windows (and <span class="pre">env.args</span> on Windows
+		calls <span class="pre">kernel32</span> and <span class="pre">shell32</span> for the command line); and
 		<span class="pre">process</span> is written directly over <span class="pre">kernel32</span> on Windows
 		and over <span class="pre">posix_spawn</span>, pipes and <span class="pre">poll</span> on Linux.
 		Where the two behave differently it is said where the function is described; a version for another system
@@ -274,7 +276,7 @@ normalized they meet
 		<span class="pre">i32</span>, one of the <span class="pre">posix</span> package's <span class="pre">E...</span>
 		constants (<span class="pre">posix.ENOENT</span>, <span class="pre">posix.EACCES</span>, ...), kept for
 		diagnostics.</li>
-	<li><span class="pre">message()</span>: one line to show a person, a new <span class="pre">String</span>:
+	<li><span class="pre">toText</span>: one line to show a person (<span class="pre">String() &lt;- e</span> makes a new <span class="pre">String</span>):
 		<span class="pre">readFile notes.txt: No such file or directory</span>, or
 		<span class="pre">rename a.txt to b.txt: File exists</span>.</li>
 	<li><span class="pre">notFound()</span> asks whether nothing has that name (the kind
@@ -307,7 +309,7 @@ match fs.readFile(&amp;dir.join("missing.txt")) {
     printStr("\nnotFound: ");
     printStr(if e.notFound() {"yes";} else {"no";});
     printStr("\nmessage: ");
-    let m = e.message();
+    let m = String() &lt;- e;
     printStr(m.view());
     printStr("\n");
   }
@@ -382,7 +384,7 @@ match fs.mapFile(&amp;file) {
     printStr("\n");
   }
   case let Err(e) {
-    let msg = e.message();
+    let msg = String() &lt;- e;
     printStr(msg.view());
     printStr("\n");
     return 1i32;
@@ -393,7 +395,7 @@ fs.removeFile(&amp;file);
 
 match fs.mapFile("scratch-missing.bin") {
   case let Err(e) {
-    let msg = e.message();
+    let msg = String() &lt;- e;
     printStr(msg.view());
     printStr("\n");
   }
@@ -708,7 +710,7 @@ printStr("\n");
 
 match fs.setCurrentDir("no such folder") {
   case let Err(e) {
-    let m = e.message();
+    let m = String() &lt;- e;
     printStr(m.view());
     printStr("\n");
   }
@@ -737,11 +739,19 @@ setCurrentDir no such folder: No such file or directory
 		is its bytes, which the system takes as they are, and nothing is set.</p>
 
 	<h2 id="env">Environment variables: the env package</h2>
-	<p>The program's environment variables, read, set and removed. A program it starts inherits them as they
+	<p>What this process's environment is: the program's arguments, and its environment variables, read, set
+		and removed. A program it starts inherits the variables as they
 		are when it starts. Names and values are text (<span class="pre">&amp;str</span>), UTF-8, whatever
 		locale the program has set: a variable inherited beyond ASCII reads as the UTF-8 of what Windows
 		holds (on POSIX, as the bytes the system holds), and one set reaches a child as that.</p>
 	<ul>
+	<li><span class="pre">env.args()</span> answers a <span class="pre">List[String]</span>: this program's own
+		arguments, its name first, in UTF-8 whatever the system's code page, as Windows' parser splits them.
+		<span class="pre">main</span>'s <span class="pre">argv</span> says the same for ASCII, and loses whatever
+		the code page cannot hold; <span class="pre">main(argc, argv)</span> stays, for C interop. On POSIX they
+		are <span class="pre">argv</span>'s own bytes, read from <span class="pre">/proc/self/cmdline</span>.
+		A program that only wants its arguments needs no <span class="pre">process</span> for them
+		(<span class="pre">process.args()</span> forwards here).</li>
 	<li><span class="pre">env.get(name)</span> answers an <span class="pre">Option[String]</span>: the value, or
 		<span class="pre">None</span> when the variable is not set. A variable not being set is not a failure.
 		A name that is no name (empty, or holding <span class="pre">=</span> or a NUL byte) is simply
@@ -889,7 +899,7 @@ fn main() i32 {
       printStr("\n");
     }
     case let Err(e) {
-      let m = e.message();
+      let m = String() &lt;- e;
       printStr(m.view());
       printStr("\n");
       return 1i32;
@@ -901,7 +911,7 @@ fn main() i32 {
   missing.push(String.from("no-such-program-anywhere"));
   match process.run(missing.view()) {
     case let Err(e) {
-      let m = e.message();
+      let m = String() &lt;- e;
       printStr(m.view());
       printStr("\nnotFound: ");
       printStr(if e.notFound() {"yes"} else {"no"});
@@ -1022,7 +1032,7 @@ match process.run(inFolder.view()) { ... prints the same way ... }
 // A folder that is not there is a failure to start
 match process.run(inFolder.view(), process.Options(), "scratch-options/missing") {
   case let Err(e) {
-    let m = e.message();
+    let m = String() &lt;- e;
     printStr(m.view());
     printStr("\n");
   }
@@ -1165,7 +1175,7 @@ runLine: hello from cmd
 		<span class="pre">errorInvalidParameter</span> (87), <span class="pre">errorInvalidName</span> (123),
 		<span class="pre">errorDirectory</span> (267) and <span class="pre">errorNoUnicodeTranslation</span>
 		(1113).</li>
-	<li><span class="pre">message()</span>: one line for a person, in the system's own words (on Windows in
+	<li><span class="pre">toText</span>: one line for a person (<span class="pre">String() &lt;- e</span> makes a String), in the system's own words (on Windows in
 		English where it has them): <span class="pre">run nosuch: The system cannot find the file specified</span>,
 		or <span class="pre">run conec in build/x: The directory name is invalid</span>; on POSIX
 		<span class="pre">run nosuch: No such file or directory</span>.</li>
@@ -1177,9 +1187,10 @@ runLine: hello from cmd
 	<h3 id="process-self">This program: args and currentExe</h3>
 	<ul>
 	<li><span class="pre">process.args()</span> answers a <span class="pre">List[String]</span>: this program's own
-		arguments, its name first, in UTF-8 whatever the system's code page, as Windows' parser splits them.
-		<span class="pre">main</span>'s <span class="pre">argv</span> says the same for ASCII, and loses whatever
-		the code page cannot hold. On POSIX they are <span class="pre">argv</span>'s own bytes.</li>
+		arguments, its name first. It forwards to <a href="#env"><span class="pre">env.args()</span></a>, which
+		answers them (UTF-8 whatever the system's code page; <span class="pre">main</span>'s
+		<span class="pre">argv</span> loses whatever the code page cannot hold); a program that needs only its
+		arguments imports <span class="pre">env</span>.</li>
 	<li><span class="pre">process.currentExe()</span> answers a <span class="pre">Result[Path, ProcessError]</span>:
 		the path of this program's executable, normalized, every separator
 		<span class="pre">/</span>.</li>
@@ -1208,7 +1219,7 @@ match process.currentExe() {
     printStr(")\n");
   }
   case let Err(e) {
-    let m = e.message();
+    let m = String() &lt;- e;
     printStr(m.view());
     printStr("\n");
   }

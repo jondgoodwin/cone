@@ -1,0 +1,26 @@
+// Bug 55: as lifetime_arena_refuse_unnamed_param, the local the finalizer reads is the one in a block of the
+// caller's caller, the arena a local of 'main'. Refuse.
+mod lifetime_arena_refuse_unnamed_param_caller;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F {
+  pub p: Option[&mut T];
+  fn final(self: &uni) {
+    match self.p {
+      case let Some(r) { print <- r.v, "\n"; }
+      case None { print <- "none\n"; }
+    }
+  }
+}
+fn stash(ar: &mut Arena, x: &mut T) {
+  let f = ar.alloc(F(None));
+  f.p = Some(x);  //~ ErrorEscape
+}
+fn main() {
+  var a = Arena();
+  {
+    var t = T(7);
+    stash(&mut a, &mut t);
+  }
+}

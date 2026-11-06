@@ -1,0 +1,181 @@
+// ======== Layer 3, order: a ChunkInbox is the receiving half of a link ========
+//
+// A mailbox delivers one sender's messages in the order sent, so a stream's chunks
+// ARRIVE in order. What breaks the order is a sink whose 'accept' awaits (a file
+// write, a socket send): while it is parked, the actor runs its next message, which
+// may be chunk n+1, or the stream's 'end'. Serialising the actor's behaviours is
+// what the design refuses; the stream keeps order with state of its own instead,
+// and that state is the ChunkInbox: one per stream, in the sink, beside the ChunkWindow in the
+// source. It holds a small queue, a mark that says a chunk is being handled, and
+// an 'end' that arrived too early. A stage that never awaits has no use for it
+// and pays nothing.
+//
+//   actor FileSink is ChunkSink {
+//     rx: ChunkInbox;
+//     file: File;
+//     pub async fn attach(self, up: ChunkSource) { rx.attach(up); }
+//     pub async fn accept(self, c: IoBuf) {
+//       var turn = rx.arrive(c);                  // Wait if a chunk is being handled: it is queued
+//       var more = true;
+//       while more {
+//         match turn {
+//           case let Chunk(b) {
+//             let r = await file.write(b);        // parked here; other messages run
+//             turn = rx.finished(r.buf);          // gives it back; the next queued chunk, or the end
+//           }
+//           case let End(how) { ...close the file, pass `how` on...; more = false; }
+//           case is Wait { more = false; }
+//         }
+//       }
+//     }
+//     pub async fn end(self, how: Ending) {
+//       match rx.arriveEnd(how) {                 // End(how) at once if nothing is in hand, else it waits
+//         case let End(h) { ...close the file, pass `h` on... }
+//         else {}
+//       }
+//     }
+//   }
+//
+//   rx.attach(up)           who to give buffers back to (the sink's 'attach')
+//   rx.arrive(c)            a chunk arrived: Chunk(c) to handle now, or Wait (queued behind the one in hand)
+//   rx.finished(c)          the chunk in hand is finished (its effect is done): it goes back to the
+//                           source, and the answer is the next queued chunk, the end that was waiting,
+//                           or Wait
+//   rx.arriveEnd(how)       the stream's end arrived: End(how) to handle now, or Wait (it comes out of
+//                           'finished' after the last chunk)
+//   rx.fail(c)              the sink failed on the chunk in hand: it and every queued chunk go back, and
+//                           the chunks that still arrive go back unhandled; the sink sends its own
+//                           'end(Failed)' on
+//
+// THE PROMISES, as this keeps them for a sink that follows the loop above:
+//   S1  one stream's chunks are handled in the order sent, chunk n+1 starting only once n is finished;
+//   S2  each buffer goes back only once the sink is finished with it, so 'giveBack' IS the
+//       acknowledgement "chunk n is done";
+//   S3  the end is handled after every chunk before it (it waits in 'pending');
+//   S4  one ChunkInbox per stream: a stage serving several streams keeps one for each, and a stalled stream
+//       holds up nothing but itself, since the actor is never blocked (it is only parked at the 'await').
+//
+// The queue is never longer than the link's window can carry, since only that much of the stream is in
+// flight. The upstream handle is dropped when the stream is over (the end handed out, or the sink failed
+// and the upstream's end has arrived), so the actors do not keep each other alive. A ChunkInbox that is
+// dropped with chunks still queued frees them: their blocks go home to the buffer pool.
+//
+// A ChunkInbox does not know the ChunkSink trait: a stage serving several streams has behaviours of its own
+// that say which stream a chunk belongs to ('data(stream, c)' of an HTTP/2 connection), and picks the
+// stream's ChunkInbox.
+
+// What a sink does next, asked of its ChunkInbox
+pub enum Turn {
+  // Handle this chunk now; then say 'finished'
+  Chunk(IoBuf);
+  // Handle the end of the stream now
+  End(Ending);
+  // Nothing to do now: the chunk or the end was queued, or refused
+  Wait;
+}
+
+pub struct ChunkInbox is Move {
+  up: Option[ChunkSource];
+  queue: Deque[IoBuf];        // chunks that arrived while one was in hand
+  busy: bool;                 // a chunk is in hand
+  pending: Option[Ending];    // the end, arrived before the chunks ahead of it were done
+  upEnded: bool;              // the end has arrived
+  failed: bool;               // the sink failed: chunks are given back unhandled
+  closed: bool;               // the end has been handed out
+  top: usize;                 // the longest the queue has been
+  waited: u64;                // chunks that had to queue
+
+  pub fn make() ChunkInbox {
+    ChunkInbox(None[ChunkSource], Deque[IoBuf](), false, None[Ending], false, false, false, 0usize, 0u64)
+  }
+
+  // The stage that sends here, to give buffers back to (the sink's 'attach')
+  pub fn attach(self: &mut, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  // A chunk arrived
+  pub fn arrive(self: &mut, c: IoBuf) Turn {
+    if failed || closed {
+      handBack(&up, c);
+      return Turn.Wait;
+    }
+    if busy {
+      queue.push(c);
+      waited = waited + 1u64;
+      if queue.len() > top { top = queue.len(); }
+      return Turn.Wait;
+    }
+    busy = true;
+    Turn.Chunk(c)
+  }
+
+  // The chunk in hand is finished: it goes back, and the next thing to do is the answer
+  pub fn finished(self: &mut, c: IoBuf) Turn {
+    handBack(&up, c);
+    match queue.popFront() {
+      case let Some(n) { return Turn.Chunk(n); }
+      case is None {}
+    }
+    busy = false;
+    self.release()
+  }
+
+  // The end arrived
+  pub fn arriveEnd(self: &mut, how: Ending) Turn {
+    upEnded = true;
+    if failed {
+      up = None[ChunkSource];
+      return Turn.Wait;
+    }
+    if closed { return Turn.Wait; }
+    if busy {
+      pending = Some[Ending](how);
+      return Turn.Wait;
+    }
+    closed = true;
+    up = None[ChunkSource];
+    Turn.End(how)
+  }
+
+  // The sink failed on the chunk in hand: it, and each chunk queued, go back
+  pub fn fail(self: &mut, c: IoBuf) {
+    handBack(&up, c);
+    failed = true;
+    busy = false;
+    var more = true;
+    while more {
+      match queue.popFront() {
+        case let Some(n) { handBack(&up, n); }
+        case is None { more = false; }
+      }
+    }
+    pending = None[Ending];
+    if upEnded { up = None[ChunkSource]; }
+  }
+
+  // The end that was waiting, now that nothing is ahead of it
+  fn release(self: &mut) Turn {
+    var taken = None[Ending];
+    taken <-> pending;
+    match taken {
+      case let Some(how) {
+        closed = true;
+        up = None[ChunkSource];
+        Turn.End(how)
+      }
+      case is None { Turn.Wait }
+    }
+  }
+
+  // Whether a chunk is in hand
+  pub fn isBusy(self: &) bool { busy }
+  // Chunks queued now
+  pub fn queued(self: &) usize { queue.len() }
+  // The most chunks that have been queued at once
+  pub fn peakQueued(self: &) usize { top }
+  // Chunks that arrived while another was in hand
+  pub fn waits(self: &) u64 { waited }
+  // Whether the sink has failed on this stream
+  pub fn hasFailed(self: &) bool { failed }
+}

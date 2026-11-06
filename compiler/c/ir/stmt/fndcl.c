@@ -28,6 +28,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->compute[0] = node->compute[1] = node->compute[2] = 0;
     node->closure = NULL;
     node->generatedFor = NULL;
+    node->gen = NULL;
     return node;
 }
 
@@ -213,6 +214,10 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         nstate->expander = (INode*)fndclnode;
         exportCondStep(fndclnode);
     }
+
+    // A method made for each field of a type parameter: the type it describes (fields.h)
+    if (fndclnode->gen)
+        fieldEachSubjectNameRes(nstate, fndclnode->gen->fe);
 
     nametblHookPush();
     // Resolve generic parameters inside the hooked context. Resolving one hooks
@@ -679,7 +684,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // A module's 'init' starts with its module's uninitialized globals holding
     // nothing, as a local does, and must leave each one assigned
     ModuleNode *initmod = modInitOf(fnnode);
-    uint16_t *saved = initmod ? modInitFlowBegin(initmod) : NULL;
+    uint16_t *saved = initmod ? modInitFlowBegin(initmod, fnnode) : NULL;
     // Flow runs inside type check's span, which may itself be nested in another
     // function's, so the timer hands the time back to whichever was running
     size_t svTimer = timerCurrent;

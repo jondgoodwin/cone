@@ -1134,7 +1134,7 @@ excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
 [scenario.module_final_globals]
 category = "run"
-description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
+description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in the reverse of declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
 tags = ["genllvm", "runtime"]
 
 [scenario.module_init_link]
@@ -1507,6 +1507,46 @@ contains = [
   "global internal thread_local holder[i64].inner.hits comdat nodeduplicate",
 ]
 excludes = ["holder.inner", "inner[i64]"]
+
+# A generic instance only a package uses: q uses g[i64] and the program never
+# names it. q's include file records the instance, so the program's compile
+# builds it and the stitched init and final place it, once, before q's init and
+# after q's final. g[i64].inits reads 1: the program's object and q's both hold
+# the instance's 'init', shared, and the stitched init calls it once.
+[scenario.module_generic_pkguse]
+category = "run"
+description = "A generic instance only a package uses, named nowhere in the program: its init runs once before the package's and its final once after it"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
+
+# The program's object defines the instance q's include file records, from g's
+# include file, though no line of the program names it
+[[scenario.module_generic_pkguse.check]]
+name = "the-program-defines-the-instance-only-q-uses"
+target = "symbols"
+contains = ["define linkonce_odr g[i64].init comdat any"]
+
+# Once only: q and q2 both use g[i64], and the program names it too. The
+# instance is one, built in four objects and merged at link, and its init and
+# final run once each (g init, q init, q2 init; the finals reversed).
+[scenario.module_generic_pkguseonce]
+category = "run"
+description = "A generic instance used by two packages and named by the program too: its init and final each run once"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild", "q2/q2.conebuild"]
+include = ["include/g.cone", "include/q.cone", "include/q2.cone"]
+
+# A generic struct's statics, in an instance only a package uses. A static takes
+# a literal (ErrorNotLit otherwise), so it has no run-time init and nothing to
+# finalize: the instance only q uses has nothing for the stitched init to miss.
+# Pinned: the program's read of the static and q's calls meet in one copy.
+[scenario.module_generic_struct_static]
+category = "run"
+description = "A generic struct's static, in an instance only a package uses: one shared copy, and nothing to init or finalize"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
 
 # Every kind across packages, as module_generic_link carries the flat case: g
 # declares an enum, a generic type, a generic function, a trait and a type
@@ -3880,6 +3920,21 @@ description = "A library global whose inferred type is another package's submodu
 tags = ["genllvm"]
 diagnostics = 1
 
+# A generic instance the include file cannot record: g[bool] has no spelling in
+# '__uses', and g declares an 'init', so the package's include file is refused
+# rather than leaving g[bool]'s init to be missed unseen.
+[scenario.module_generic_pkguse_unspelled]
+category = "reject"
+description = "A package using an instance of a generic module with an 'init' that its include file cannot spell (a non-number argument) is refused, since the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
+[scenario.module_generic_pkguse_submodule]
+category = "reject"
+description = "A package's submodule using an instance of a generic module with an 'init' is refused, since the root's include file cannot record it and the init would never run"
+tags = ["genllvm"]
+diagnostics = 1
+
 [scenario.module_gpu_unavailable]
 category = "reject"
 description = "In GPU code a reference to a function, a virtual reference made from a reference, and an allocation are refused where they are written; a call by name, a generic over a signature or a trait, and a struct built as a value are not"
@@ -4127,6 +4182,21 @@ diagnostics = 1
   contains = ["define"]
   excludes = ["toDebug", "debugArray"]
 
+[scenario.module_text_noformat]
+  category = "compile"
+  description = "A program that never imports the format package, optimized, holds none of its symbols: the number wrappers cost nothing to a program that does not use them"
+  tags = ["genllvm"]
+
+  [[scenario.module_text_noformat.run]]
+  name = "library"
+  options = ["--library"]
+
+  [[scenario.module_text_noformat.check]]
+  name = "no-format-code"
+  target = "llvmir"
+  contains = ["define"]
+  excludes = ["FloatFormat", "RadixText", "SignedText"]
+
 [scenario.module_debug_private]
 category = "run"
 description = "A generated debug form is part of its type: it writes the type's private fields, and a field of another module's type is written by that type's own generated form, so the outer form reaches none of the inner's private fields"
@@ -4207,7 +4277,37 @@ options = ["--library"]
 [[scenario.module_text_wants_ir.check]]
 name = "the-flag-is-loaded-and-the-record-is-behind-the-branch"
 target = "llvmir"
-contains = ["load i1, ptr %0", "br i1 %1, label %ifblk, label %endif", "ifblk:"]
+contains = ["load i1, ptr %0", ", label %ifblk, label %endif", "ifblk:"]
+
+[scenario.module_trace_wants_ir]
+category = "compile"
+description = "A log send to a trace Log from another package, optimized: 'wants' is inlined, so the off path is an atomic load of the kind's state and a compare, with no call to wants and no read of the any-sink flag; the record is built only past the test"
+tags = ["genllvm"]
+
+[[scenario.module_trace_wants_ir.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.module_trace_wants_ir.check]]
+name = "the-state-is-loaded-and-wants-is-not-called"
+target = "llvmir"
+contains = ["load atomic i8, ptr %state monotonic", "switch i8 %atomicload", "i8 0, label %endif"]
+excludes = ["@_CNvNtC5trace3Log5wants"]
+
+[scenario.module_text_site]
+category = "run"
+description = "A '<-' to a receiver whose 'open' takes a call site's storage is one event: the fixed text to 'text', each value to the overloaded 'value', then 'finish'; the spec names each value from its brace's source text, or by number in a plain list; one Site per call site, shared by its calls"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_text_site_plain]
+category = "run"
+description = "A five-parameter 'open' that is not the call-site protocol (the second parameter '&' not '&mut', the last an i64 not a u32, a record without 'value', or no self) leaves its type an ordinary receiver of its own '<-'"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_text_site_inline]
+category = "reject"
+description = "A log send in an inline function is refused (ErrorBadStatic): its call-site kind is a static, which an inline body would copy into each caller"
+tags = ["typecheck"]
 
 [scenario.module_debug_work]
 category = "run"
@@ -4218,3 +4318,111 @@ tags = ["runtime"]
 category = "run"
 description = "A struct holding a concrete actor's handle has a generated toDebug, and writes the handle as the actor's own name, and an actor-trait handle as the trait's name"
 tags = ["typecheck", "runtime"]
+
+[scenario.module_final_setup_order]
+category = "run"
+description = "A module's globals are finalized in the reverse of the order they are set, which is the order 'init' first assigns each, not the order declared: a global 'init' never sets is set first; a branch whose arms set the same globals in different orders takes the first order written; an earlier-declared global set from a later one is finalized before it"
+tags = ["genllvm", "runtime"]
+
+[scenario.module_init_reach]
+category = "run"
+description = "A module's 'init' calls its own functions that read its globals once those are set: a read counts at the call through two levels of helpers, a cycle of helpers ends, a global set after the calls and not read by them is not counted, a method and a generic function of the module are read after the set, and a call through a function reference or a virtual call, which cannot be followed, passes (a known gap that 'trust' closes)"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_init_reach_reject]
+category = "reject"
+description = "A call 'init' makes reads a global of its module that 'init' has not set yet, through a helper, through two levels of helpers, round a cycle of helpers, through a method of a type the module declares, a generic function, a generic method, and a method of a generic type's instance; a helper that sets a global and then reads it, called before 'init' sets it, is refused (its assignment is not init's); the same calls after the set are accepted"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.module_setup_order]
+category = "run"
+description = "A 'let' global given a value that is not a constant is a setup the module runs before its 'init': ordered by what each reads whatever order they are written in, one reading another directly and one through a function of the module; finalized in the exact reverse of the order set (a constant value first, the setups in the order they ran, then what 'init' sets)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_modules]
+category = "run"
+description = "Setups across modules: a module with a setup and no 'init' is given one that runs it; the imported module's setups run before the importer's, whose setup reads the imported module's global through a call into it; finals run in the exact reverse across the two modules"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_reject]
+category = "reject"
+description = "Setups with no order or no value yet are refused: two setups reading each other, one reaching the other through a function, and one reading itself (a cycle); a setup reading a global 'init' sets, directly and through a function of the module. A 'var' global and a static are still refused a value that is not a constant"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.module_setup_panic]
+category = "run"
+description = "A setup that fails panics at start-up, before the module's 'init' and the program's 'main'; the setup before it has run"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.module_setup_generic]
+category = "run"
+description = "A generic module's setup: each instance is a module of its own with its own global and its own setup, run once with that instance's type, in the module order before the root's 'init'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_link]
+category = "run"
+description = "A package compiled on its own, whose module has setups and no 'init': the library compile gives it an 'init' that runs them and exports it, its include file declares that 'init', and the program's stitched init calls it before the program's own setup, which reads the package's setups; the package's finalizer, linked, runs them in the reverse"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
+
+[scenario.module_setup_link_untyped]
+category = "run"
+description = "A package whose 'pub' setups are untyped ('pub let first = make(1)'): its include file declares each with the type its value has, as it does a typed one, and the program's stitched init and final run them as for module_setup_link"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
+
+[scenario.module_setup_borrow_temp_reject]
+category = "reject"
+description = "A setup's store is judged as init's is: a 'let' global of reference type set to a borrow of a temporary, directly and through a function handing the borrow back, is refused as the same store in 'init' is"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.module_setup_borrow_struct_reject]
+category = "reject"
+description = "A setup storing a struct value that carries a borrow of a temporary is refused, as the same store in 'init' is: the setup is walked for loans as any function is"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.module_setup_borrow_global]
+category = "run"
+description = "A setup may store a borrow of another global, directly and through a function handing the borrow back"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_setup_generic_callback]
+category = "run"
+description = "The setups' order follows a generic instance of another module: its function, and a method of its generic type's instance, call back this module's type, whose method reads a later setup, which therefore runs first"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_init_reach_other_reject]
+category = "reject"
+description = "'init' reading a global before it sets it, through a generic function of another module and a method of its generic type's instance, each given this module's type whose method reads it; the same calls after the set are accepted"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.module_setup_block_local_reject]
+category = "reject"
+description = "A block giving a global its value cannot declare a local that is computed: the report says so and points to a function, not to the local as the fault; a local started by a constant is still fine, a 'var' global's block is refused at its local and again at the global, an 'if let' is refused at its hidden variable, and a parameter's non-literal default keeps the old wording"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.module_setup_try_reject]
+category = "reject"
+description = "'?' in a 'let' global's value has no function to return from and is refused for that alone (ErrorQuesReturn); the value it takes is not also reported as a local that is not a constant"
+tags = ["typecheck"]
+diagnostics = 1
+
+[scenario.module_setup_try_block_reject]
+category = "reject"
+description = "A try block with no function around it, as a 'let' global's value or a field's default, is refused at the 'try', once, whatever it holds, and the compiler stops cleanly (it crashed: no function around it to compare its breaks with); nothing in it is checked, so a '?', a computed local or a type it cannot have adds nothing"
+tags = ["typecheck"]
+diagnostics = 12
+
+[scenario.module_setup_block_loop]
+category = "run"
+description = "A 'while' or 'each' in a block giving a global its value runs in the global's setup and gives the right value (it crashed: a loop's breaks were compared with the body of a function, and there is none here)"
+tags = ["typecheck", "genllvm", "runtime"]

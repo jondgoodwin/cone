@@ -737,3 +737,96 @@ name = "each-is-the-bit-operation"
 target = "llvmir"
 contains = ["bitcast float %0 to i32", "bitcast double %0 to i64", "bitcast i32 %0 to float", "bitcast i64 %0 to double", "icmp slt i32", "icmp slt i64", "and i32", "and i64", "lshr i32", "lshr i64", "add nsw i32 %2, -127", "add nsw i32 %3, -1023"]
 excludes = ["call ", "br ", "select", "load", "store", "alloca"]
+
+# A float converted to an integer with '.from' saturates and never has an
+# undefined value (Bug 43): every float width into every integer width, at the
+# limits, just past them, at the infinities and at NaN, against an oracle. Two
+# runs, as core_success's: the result must not depend on the optimizer. The IR
+# checks pin that the conversion is the saturating one, and the bounds check an
+# index of it meets survives.
+[scenario.core_from_saturate]
+category = "run"
+description = "A float converted with .from to an integer saturates: top, bottom, 0 for NaN"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_from_saturate.run]]
+name = "release"
+options = []
+
+[[scenario.core_from_saturate.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.core_from_saturate.check]]
+name = "conversion-is-saturating"
+target = "preir"
+contains = ["llvm.fptosi.sat", "llvm.fptoui.sat"]
+
+# The conversion's effect on the optimizer (Bug 43): an index converted from a
+# float constant that cannot be an index was poison, and LLVM deleted the bounds
+# check, the panic and the read as undefined behavior. Saturated, the index is
+# 0 for NaN and -1.0, usize's top for 1.0e30, the optimized IR keeps the failing
+# check as a panic with that index, and no poison appears.
+[scenario.core_from_saturate_ir]
+category = "run"
+description = "A float constant converted to an index saturates: the bounds check stays, as a panic with the top index, and no poison appears"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=core_from_saturate_ir\.cone:)\d+']
+
+[[scenario.core_from_saturate_ir.run]]
+name = "release"
+options = []
+
+[[scenario.core_from_saturate_ir.check]]
+name = "conversion-is-saturating"
+target = "preir"
+contains = ["llvm.fptoui.sat"]
+excludes = ["fptoui double", "br i1 poison"]
+
+[[scenario.core_from_saturate_ir.check]]
+name = "optimized-keeps-the-bounds-check"
+target = "llvmir"
+contains = ["call void @cone_panicIndex(i64 -1, i64 4,"]
+excludes = ["poison"]
+
+# A float constant its integer type cannot hold, and a constant that is no code
+# point converted to a char, are refused in any expression as a 'const' refuses
+# them (Bug 43); what fits, and what reaches '.from' through a call, is not.
+[scenario.core_typecheck_fromconst]
+category = "reject"
+description = "A constant float past its integer type, or a constant that is no code point as a char, is refused wherever it is written"
+tags = ["typecheck"]
+diagnostics = 12
+
+# 'char.from(n)' of a number that is no code point is U+FFFD (Bug 43): every
+# integer width and both float widths, at 0x10FFFF, 0x110000, the surrogates and
+# a negative. Two runs, as core_success's.
+[scenario.core_char_from]
+category = "run"
+description = "char.from of a number that is no code point is U+FFFD: above 0x10FFFF, a surrogate, a negative, a float's conversion"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_char_from.run]]
+name = "release"
+options = []
+
+[[scenario.core_char_from.run]]
+name = "debug"
+options = ["--debug"]
+
+# A discarded literal of a nullable-pointer enum that is the first to lay out its type
+# (bug 52): the flag that marks the type as a nullable pointer is set during layout, and
+# the literal read it before. Without the fix conec dies with 0xC0000409 and no message.
+[scenario.core_nullable_literal_first]
+category = "run"
+description = "A discarded None[&mut T] literal that is the first use of its type compiles and runs"
+tags = ["genllvm", "runtime"]
+
+[[scenario.core_nullable_literal_first.run]]
+name = "release"
+options = []
+
+[[scenario.core_nullable_literal_first.run]]
+name = "debug"
+options = ["--debug"]

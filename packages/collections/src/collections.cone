@@ -1,7 +1,8 @@
 // The collections package: a growable list, an owned string, a dictionary of
 // any keys that are Hash (and an ordered one, which visits in insertion order),
-// a set, and a double-ended queue, each holding its elements in one block of memory
-// that it gets, grows and gives back through a region it points to (core's
+// a set, a double-ended queue, and a list held as one column per field of its element
+// ('SoaList'), each holding its elements in one block of memory (a 'SoaList', one block for
+// each column) that it gets, grows and gives back through a region it points to (core's
 // 'MemRegion'; the heap's, which calls the C allocator, unless it is made in
 // another). Built as Congo needs them, and no further.
 //
@@ -181,7 +182,9 @@ pub struct List[T] is Default, ShapeChanging, Sendable, CarriesRegion, GcTraceEl
     if n > 0usize {
       let room = blockRoom[T](region, n);
       self.ptr = blockNew[T](region, n);
-      self.cap = room;
+      // The floor is written out because the answer comes from an indirect call, and
+      // the optimizer needs this fact to drop bounds checks.
+      self.cap = if room > n {room} else {n};
     }
   }
 
@@ -699,6 +702,60 @@ pub struct ListDrain['a, T] is Iterator[T] {
       var i = pos;
       while i < end { mem.finalize(ptr + i); i = i + 1usize; }
     }
+  }
+}
+
+// -------- SoaList --------
+
+// A growable list of rows of T held as columns, struct of arrays: one 'List' for each field of
+// T, of that field's type, named as the field is, all the same length. 'SoaList[Body]()' for a
+// 'Body' with 'pos' and 'mass' has the columns 'pos: List[Vec3]' and 'mass: List[f64]'. A loop
+// that touches one field reads one packed column, and two columns may be borrowed with their own
+// permissions at once ('&uni ps.pos' beside '&imm ps.mass', as two fields of a struct are).
+//
+// The columns are made by the compile-time walk of T's fields (mod-generativity.html#meta), so T
+// must be a struct, and its fields public, or all of them visible to this module (a type from
+// another module opts in with '@reflect'). A field of T named 'push', 'len', 'isEmpty' or 'get'
+// clashes with the method of that name and is refused (ErrorDupName, 1011, with ErrorFldArgs
+// after it at this file's own uses of 'self.len'; not the 1596 of two generated members).
+//
+// A row goes in whole with 'push' and comes out whole with 'get(i)', where T is Copy: a row is
+// taken apart field by field, and a field of an owned value that moves cannot be moved out of it.
+// 'get(i)' is the checked read, as a List's is, but it answers an 'Option[T]' holding a value, not
+// a reference, since no contiguous row exists to point at: 'None' past the end.
+// A column is a List, so 'ps.pos[i]' reads and writes that element of the field, 'ps.pos.push(v)'
+// grows that column alone, and a move type's rows are built and read by column ('ps.name.push(s)',
+// 'ps.name[i]'); whoever pushes to columns one at a time keeps them the same length ('len' reads
+// the last column). A push can move the blocks, as a List's does, so a column borrowed before
+// it is stale after.
+// Not yet: 'ps[i].pos' as a place, a layout marker, and 'remove'.
+pub struct SoaList[T] is Default {
+  #each #f in #fields(T) {
+    pub #f: List[#f.type];
+  }
+
+  // How many rows it holds: the length of its columns (0 for a T with no fields)
+  pub fn len(self: &) usize {
+    var n = 0usize;
+    #each #f in #fields(T) {
+      n = self.#f.len();
+    }
+    n
+  }
+
+  pub fn isEmpty(self: &) bool { self.len() == 0usize }
+
+  // Add a row at the end, one value to each column
+  pub fn push(self: &mut, row: T) where T is Copy {
+    #each #f in #fields(T) {
+      self.#f.push(row.#f);
+    }
+  }
+
+  // The row at index, built from each column's value there, or None when index is past the end
+  pub fn get(self: &, index: usize) Option[T] where T is Copy {
+    if index >= self.len() { return None; }
+    Some[T](T(#each #f in #fields(T) { #f: self.#f[index] }))
   }
 }
 
@@ -2866,68 +2923,19 @@ pub struct SetDrain['a, T: Hash] is Iterator[T] {
   }
 }
 
-// -------- capability traits --------
+// -------- shared method names --------
 
-// What a collection can do, one small trait for each, so that a function asks
-// for exactly the ability it uses. A trait here is met structurally: a type
-// fits one by having the methods, whether or not it ever heard of the trait
-// (reference, "Traits"), so List, Deque, Dict, OrderedDict and Set declare
-// nothing, and a user's own type with the same methods fits too.
-//
-// A function asks for one as a static bound: 'fn drain[S Stack[i64]](s &mut
-// S)', 'fn drain[T, S: Stack[T]](s: &mut S)' or 'fn drain[T, S](s &mut S) where
-// S is Stack[T]', called with '&mut list' or '&mut deque' as it is. The bound
-// is decided where the function is called and compiled for the type's own
-// methods, so nothing is looked up when it runs. The trait is given all its
-// type arguments ('[S: Stack]' is refused, there are no associated types yet),
-// and a bound decides a parameter before an unsuffixed integer literal takes a
-// type of its own. 'Collection', which mentions no element type, is written
-// alone: 'fn count[C: Collection](c: &C)'.
-//
-// The other form is dynamic: a virtual reference, 'fn drain(s &<mut
-// Stack[i64])', takes the same arguments through one compiled function and a
-// table of the type's methods. Use it for a value whose type is not known where
-// the function is compiled; otherwise prefer the bound.
-//
-// The names an operation has are the same wherever it exists: 'push' and 'pop'
-// at the back, 'pushFront' and 'popFront' at the front, 'len', 'isEmpty'.
-
-// Anything that holds a number of values
-pub trait Collection {
-  pub fn len(self: &) usize;
-  pub fn isEmpty(self: &) bool;
-}
-
-// Values reached by their position, counted from the front (List, Deque). 'get'
-// answers None for a position that is out of range; the indexing '[i]' panics.
-pub trait Indexed[T] {
-  pub fn get(self: &, index: usize) Option[&T];
-}
-
-// Values pushed and popped at one end, the last in the first out (List, Deque,
-// at the back). 'peek' borrows the value 'pop' would move out.
-pub trait Stack[T] {
-  pub fn push(self: &mut, value: T);
-  pub fn pop(self: &mut) Option[T];
-  pub fn peek(self: &) Option[&T];
-}
-
-// Values pushed at the back and popped from the front, the first in the first
-// out (Deque)
-pub trait Queue[T] {
-  pub fn push(self: &mut, value: T);
-  pub fn popFront(self: &mut) Option[T];
-}
-
-// Values found by a key (Dict, OrderedDict). 'insert' answers the old value,
-// moved out, when the key was already there (Rust's HashMap::insert), else
-// None; 'remove' moves the value out.
-pub trait Map[K, V] {
-  pub fn get(self: &, key: &K) Option[&V];
-  pub fn insert(self: &mut, key: K, value: V) Option[V];
-  pub fn remove(self: &mut, key: &K) Option[V];
-  pub fn contains(self: &, key: &K) bool;
-}
+// The collections share their method names, so that code written for one reads
+// the same for another: 'len' and 'isEmpty'; 'get' (by position in List and
+// Deque, answering None out of range; by key in Dict and OrderedDict); 'push'
+// and 'pop' at the back and 'pushFront' and 'popFront' at the front; 'peek'
+// (borrows the value 'pop' would move out); 'insert' (Dict and OrderedDict
+// answer the old value, moved out, or None for a new key), 'remove' and
+// 'contains'. No trait names them, and no collection declares one. A function
+// that needs one ability declares a small trait of its own and asks for it as a
+// bound; a List, a Deque or a user's type fits by having the methods
+// (reference, "Traits"). A program that needs "any queue" behind a virtual
+// reference declares its own Queue trait, which every queue meets structurally.
 
 // -------- errors --------
 
@@ -2948,7 +2956,7 @@ struct TextError is Error, Sendable {
 // error, so it is Sendable and crosses between actors (anyhow's Send + Sync).
 //
 // 'addContext' wraps what an AnyError holds in a line of text, so that the line is
-// its 'message()' and the error it was is the 'source()' under it; a chain of
+// its text and the error it was is the 'source()' under it; a chain of
 // them is a chain of such lines. 'report()' (the Error trait's default, which
 // 'main' prints) gives the lines, then the original error's message and each of
 // its own causes.
@@ -2975,9 +2983,6 @@ pub struct AnyError is Error, Sendable {
 
   // The outermost line: the latest context, or the error's own text
   pub fn toText(self: &, out: &uni TextOut) { inner.toText(out); }
-
-  // The same as a String
-  pub fn message(self: &) String { String() <- self }
 
   // What is under the outermost line
   pub fn source(self: &) Option[&<Error] { inner.source() }
@@ -3139,57 +3144,6 @@ pub fn mean(xs: &Array[f64]) f64 {
 fn nan() f64 {
   let zero = 0.0;
   zero / zero
-}
-
-// The integer the text spells in decimal: a '-' or a '+' or neither, then one
-// or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
-// None for any other text, and for a number beyond i64's range, which is
-// -9223372036854775808 to 9223372036854775807.
-pub fn parseInt(s: &str) Option[i64] {
-  let text: &Array[u8] = s;
-  var start = 0usize;
-  var negative = false;
-  if text.len > 0usize && (text[0usize] == '-' || text[0usize] == '+') {
-    negative = text[0usize] == '-';
-    start = 1usize;
-  }
-  // A negative number's magnitude reaches one past the largest i64
-  let limit = if negative {9223372036854775808u64} else {9223372036854775807u64};
-  match digitsValue(&text[start..], limit) {
-    case let Some(m) {
-      if !negative {Some[i64](i64.from(m))}
-      else if m == 0u64 {Some[i64](0i64)}
-      else {Some[i64](-1i64 - i64.from(m - 1u64))}
-    }
-    case is None {None}
-  }
-}
-
-// The same for a u64, 0 to 18446744073709551615: a '+' or nothing, then the
-// digits. A '-' is None, even before 0.
-pub fn parseUInt(s: &str) Option[u64] {
-  let text: &Array[u8] = s;
-  var start = 0usize;
-  if text.len > 0usize && text[0usize] == '+' { start = 1usize; }
-  digitsValue(&text[start..], 18446744073709551615u64)
-}
-
-// The value of one or more decimal digits and nothing else, or None when
-// there are none, when anything else is there, or when it is beyond limit
-fn digitsValue(digits: &Array[u8], limit: u64) Option[u64] {
-  if digits.len == 0usize { return None; }
-  var n = 0u64;
-  var i = 0usize;
-  while i < digits.len {
-    let c = digits[i];
-    if c < '0' || c > '9' { return None; }
-    let d = u64.from(c - '0');
-    // Whether n * 10 + d would pass limit, asked without overflowing
-    if n > (limit - d) / 10u64 { return None; }
-    n = n * 10u64 + d;
-    i = i + 1usize;
-  }
-  Some[u64](n)
 }
 
 // -------- program errors --------

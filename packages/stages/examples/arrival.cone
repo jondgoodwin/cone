@@ -9,7 +9,7 @@
 //   zip-whole    the same archive fetched whole (Client.get), then opened and read (what a program does
 //                without a stream)
 //   files        every file a fetch of its own over the ONE HTTP/2 connection of the client (and so its one
-//                shared buffer Pool), each with Content-Encoding zstd or gzip, decoded by httpdecode.Decoder
+//                shared buffer ChunkPool), each with Content-Encoding zstd or gzip, decoded by httpdecode.Decoder
 //
 // for the two codecs, 'zstd' (entries of method 93 / Content-Encoding zstd) and 'gzip' (entries of method 8 /
 // Content-Encoding gzip). A run of each is timed from asking for the fetch to
@@ -378,11 +378,11 @@ actor Acceptor {
           else if p == "/zip/g" { body = zipG.clone(); }
           else if p == "/zip/big" { body = zipBig.clone(); }
           else if p.len > 8usize && &p[0usize ..< 8usize] == "/file/z/" {
-            let i = usize.from(collections.parseUInt(&p[8usize ..]) || 0u64);
+            let i = usize.from(u64.parse(&p[8usize ..]) || 0u64);
             body = filesZ.view()[i].clone();
             coding = String.from("zstd");
           } else if p.len > 8usize && &p[0usize ..< 8usize] == "/file/g/" {
-            let i = usize.from(collections.parseUInt(&p[8usize ..]) || 0u64);
+            let i = usize.from(u64.parse(&p[8usize ..]) || 0u64);
             body = filesG.view()[i].clone();
             coding = String.from("gzip");
           }
@@ -578,7 +578,7 @@ actor ArchiveSink is ChunkSink {
 }
 
 // One file's chunks, checked
-actor FileSink is ChunkSink {
+actor CheckSink is ChunkSink {
   want: u64;
   size: u64;
   col: Collector;
@@ -725,7 +725,7 @@ fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], s
   } else {
     var i = 0usize;
     while i < n {
-      let d = Decoder(FileSink(*hashes[i], *sizes[i], col), 1073741824usize);
+      let d = Decoder(CheckSink(*hashes[i], *sizes[i], col), 1073741824usize);
       let f = FileFetcher(client.clone());
       f.run(fileUrl(port, z, i), d, g, cancelAt > 0usize);
       i += 1usize;

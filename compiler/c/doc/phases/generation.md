@@ -368,15 +368,18 @@ and SRoA can undo it.
 `genpgm` then settles the blocks no path reaches and checks every block's
 terminator (section 6, "A jump ends the path"), optionally verifies, dumps `.preir`, runs LLVM's new pass manager
 through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
-standard pipeline, `default<O2>`**, handed the target machine, so that the
+standard pipeline, `default<O3>`**, handed the target machine, so that the
 inliner's, the vectorizers' and the unroller's costs are the target's: the
 `--cpu` and `--features` the machine was made with, `generic` by default (on
-x86-64, SSE2 and no more). That is the pipeline clang's `-O2` runs: SROA,
+x86-64, SSE2 and no more). That is the pipeline clang's `-O3` runs: SROA,
 instcombine, inlining, LICM, unrolling, dead global elimination (so an
 internal definition nothing reaches is gone from `.ir`), and the loop and SLP
-vectorizers. Measured against `default<O3>` (3 Oct 2026, LLVM 23), O3 ran no
-faster on any benchmark but one matrix product (9%), compiled 5 to 11% slower
-and made larger code. **No float is ever reordered**: generation marks no
+vectorizers. Measured against `default<O2>` (5 Nov 2026, LLVM 23), O3 ran
+`nbody` 13 to 14% faster wherever its code was placed and matrix products an
+uncertain 2 to 8% faster, for about 6% more compile time and exe size; a few
+rows ran 2 to 4% slower. A loop's position alone can move a row by more than
+that (`fannkuch` by 13% at either level), so a comparison of the two levels
+needs its loops at matched positions. **No float is ever reordered**: generation marks no
 operation fast-math or contractable, so a vectorizer widens only what keeps
 each lane's operations in their written order (a loop scaling a slice, a
 matrix's columns), never a sum over a loop, and no multiply and add are fused,
@@ -388,7 +391,7 @@ GPU target's pipeline is its own, at every level (section 7). **There is no
 
 **Only what live code reaches is emitted**, in a debug build as in a release
 one. `.preir` is what generation wrote, every function included; the `globaldce`
-that opens the debug pipeline (it is in `default<O2>` already) deletes each
+that opens the debug pipeline (it is in `default<O3>` already) deletes each
 definition with internal, private or `linkonce` linkage that nothing refers to,
 and then whatever only it referred to, before anything else runs, so `.ir`
 and the object have only what live code reaches. The roots are the symbols the
@@ -1635,6 +1638,14 @@ a `RegionRef`:
 - `&imm T`, where `T` holds no atomic inline (`itypeHoldsAtomic`) and the
   permission is not a lock's: `noalias nonnull readonly`. An atomic is written
   through an immutable borrow by design, as Rust's `UnsafeCell` is.
+- `align <ABI alignment of T, capped at 16>` beside it: LLVM may hoist a load past a
+  conditional exit only if it is safe to speculate, which needs the alignment as
+  well as the size (a matmul over `&imm, &imm, &uni List`, 2.8 s without, 0.87 s
+  with). 16 is what the heap gives (core's `RawBlocks`). The attribute assumes a
+  borrow's address meets the pointee's alignment up to 16, as a read through that
+  borrow already assumes its ABI alignment. A cast from a pointer or integer to a
+  reference is not checked for it (`castRefPermCheck`); whether that changes
+  belongs to `trust` (`WI\trust.md` in the MyDrive Cone domain).
 - `dereferenceable(<store size of T>)` on both, added by `genlBorrowDeref` as
   the body is generated, because a pointee's layout is not known when the
   signature is (the pointee of a reference is generated later,
@@ -2630,6 +2641,7 @@ variables.
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpls`, `genlVtableImpl` | vtable type and the virtref fat pointer; then, once no type is being generated, the per-struct constants (the implementer's type record last) and their list |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
+| | `genlVtableInlineFn` | the function filling a slot an `inline` method satisfies: the method's expansion over the slot's parameters (an inline method has no symbol; only an enum's has a slot, `structMakeVtable`) |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
 | | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |

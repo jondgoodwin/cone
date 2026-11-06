@@ -1,0 +1,50 @@
+// A 'let' global may be given a value that is not a constant, a call or an
+// expression of calls: a setup, which the module runs before its 'init'. The
+// compiler orders the module's setups by what each reads, whatever order they
+// are written in: 'first' is declared last but runs first; 'second' reads
+// 'first' directly; 'third' reads 'second' only through 'readSecond', a function
+// of the module that its setup calls. Each 'make' prints as it runs, so the
+// line shows the order: make1 make2 make3. Then the module's 'init' runs
+// ("init"), reading the three, and sets 'late' from them; then 'main'.
+//
+// The finalizer runs the reverse of the order they were set (rule 6). 'constant'
+// has a value written as a constant, so it is set before all of them, and is
+// finalized last. Then the setups in the order they ran: 'first', 'second',
+// 'third'. Then 'late', which 'init' sets, after every setup. So the finals
+// print F4 (late) F3 F2 F1 F9 (constant).
+//
+// 'late' is 1 + 3 = 4: 'first' is 1, 'second' is 1 + 1 = 2, and 'third' is
+// 'second' + 1 = 3, so main prints 1, 2, 3.
+
+mod module_setup_order;
+
+import stdio use *;
+
+struct Fin {
+  pub n: i64;
+  fn final(self: &uni) { printStr("F"); printInt(n); printStr("\n"); }
+}
+
+fn make(n: i64) Fin {
+  printStr("make"); printInt(n); printStr(" ");
+  Fin(n)
+}
+fn readSecond() i64 { second.n }
+
+let third: Fin = make(readSecond() + 1i64);
+let second: Fin = make(first.n + 1i64);
+let first: Fin = make(1i64);
+let constant = Fin(9i64);
+let late: Fin;
+
+fn @initpure init() {
+  printStr("init ");
+  late = Fin(first.n + third.n);
+}
+
+fn main() i32 {
+  printStr("main ");
+  printInt(first.n); printInt(second.n); printInt(third.n);
+  printStr("\n");
+  0i32
+}

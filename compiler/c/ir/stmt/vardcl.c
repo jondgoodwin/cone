@@ -625,7 +625,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         }
         else
-            matches = iexpTypeCheckCoerce(pstate, name->vtype, &name->value);
+            matches = iexpTypeCheckCoerceStated(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
@@ -634,7 +634,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype, &whycode) : NULL;
             char privwhy[400];
             if (why)
-                errorMsgNode(name->value, whycode, "%s", why);
+                fnSigRefusalMsg(name->value, whycode, why);
             // A macro's plain argument, bound to its parameter: said of the parameter
             else if (name->flags & FlagMacroBind)
                 macroArgTypeRefused(name->value, name->namesym, 0, name->vtype);
@@ -681,10 +681,25 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // before anything runs. A parameter may default to 'srcFile()' or
         // 'srcLine()' too, each a constant where each call taking it is
         // (fnCallFinalizeArgs). An expression of constants is folded into the
-        // one it computes (litFoldConst).
+        // one it computes (litFoldConst). A 'let' global given any other value
+        // is a setup, which its module runs before its 'init' (modAddSetup).
         if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litFoldConst(&name->value)
-            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value)))
-            errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
+            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value))
+            && !modAddSetup(name)) {
+            // A local of the block that gives a global its value (scope 1 reached with no
+            // function around, where a parameter's scope is 0 here) is no global, and
+            // naming it the fault would mislead: the block may not declare a computed local
+            if (name->scope == 1 && !(name->flags & FlagStatic) && pstate->fn == NULL && pstate->scope >= 1) {
+                // The variable holding a '?' operand reports nothing: with no function here
+                // and no try block (refused unchecked, block.c), propagateLower always
+                // refuses that '?', the one fault here
+                if (!(name->flags & FlagQuesHeld))
+                    errorMsgNode((INode*)name, ErrorNotLit,
+                        "A block that gives a global its value cannot declare a local that is computed at run time: only a constant can start a variable here. Put the work in a function, which can declare locals, and give the global a call to it.");
+            }
+            else
+                errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
+        }
     }
 
     // The variable the parser names '-using' holds what a pattern's function gave back, and a

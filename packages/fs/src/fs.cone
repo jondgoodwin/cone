@@ -12,7 +12,7 @@
 //     match fs.readFile("notes.txt") {
 //       case let Ok(ok) { text = ok; }              // the String moved out
 //       case let Err(e) {
-//         let m = e.message();                      // 'readFile notes.txt: No such file or directory'
+//         let m = String() <- e;                    // 'readFile notes.txt: No such file or directory'
 //         eprintStr(m.view());
 //         return 1i32;
 //       }
@@ -33,7 +33,7 @@
 // same on every system (NotFound, PermissionDenied, AlreadyExists, ...; the
 // ioerror package's, which iocore's IoError shares), which
 // a caller matches on, and 'code', the C library's errno it was read from, a
-// posix 'E...' constant, kept for diagnostics. Its 'message()' is one line to
+// posix 'E...' constant, kept for diagnostics. Its text ('String() <- e') is one line to
 // show a person, 'readFile notes.txt: No such file or directory', and
 // 'notFound()' asks the commonest question about it. A path holding a NUL byte, which C would read
 // as its end, fails with EINVAL before anything is asked of the system.
@@ -183,20 +183,11 @@ pub struct FsError is Error {
 
   // One line for a person: 'readFile notes.txt: No such file or directory',
   // or 'rename a.txt to b.txt: File exists'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from(op.view());
-    if !path.isEmpty() {
-      out.append(" ");
-      out.append(path.view());
-    }
-    if !other.isEmpty() {
-      out.append(" to ");
-      out.append(other.view());
-    }
-    out.append(": ");
-    out.append(libc.strerror(code).view());
-    out
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- op.view();
+    if !path.isEmpty() { out <- " ", path.view(); }
+    if !other.isEmpty() { out <- " to ", other.view(); }
+    out <- ": ", libc.strerror(code).view();
   }
 
   // Whether it failed because nothing has that name (NotFound: ENOENT)
@@ -633,7 +624,7 @@ pub fn mapFile(path: &Path) Result[MappedFile, FsError] {
 // Windows: size the file, make a file-mapping object over it, map a view of
 // the whole of it, and let the object go (the view keeps the file)
 fn mapWindows(path: &Path, f: *libc.FILE) Result[MappedFile, FsError] {
-  let h = _get_osfhandle(_fileno(f)) as usize;
+  let h = usize.from(_get_osfhandle(_fileno(f)));
   var size = 0i64;
   if GetFileSizeEx(h, &mut size) == 0i32 {
     return fail[MappedFile]("mapFile", path, errnoOfWindows(GetLastError()));

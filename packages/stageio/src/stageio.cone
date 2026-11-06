@@ -1,0 +1,42 @@
+// The stageio package: the ends of a pipeline in the OS, for the stages of package stages.
+// A pipeline of stages (layer 3) starts at a source and finishes at a sink; the stages
+// between them do no I/O, and the ends here do, over package aio. They are a package
+// apart so that stages imports no I/O, and a program that only inflates and hashes does
+// not import the OS. This package holds the ends aio can reach (a pipe or console end
+// can join these); a device end gets a package of its own, or it would bring its library
+// to every program that only wants a file.
+//
+//   mod squash;
+//   import actors;
+//   import stages use *;
+//   import stageio use *;
+//
+//   let sink = FileSink(String.from("out.bin"), done);   // done: OneshotSender[Result[u64, AnyError]]
+//   let inf  = TransformStage[deflate.Inflater](sink, deflate.Inflater.make(deflate.Format.Gzip));
+//   let src  = FileSource(inf, String.from("in.gz"));
+//   src.start();
+//
+// WHAT IS HERE
+//
+//   FileSink(name, done)  a ChunkSink that writes the chunks to the file 'name', in order, and tells
+//                  'done' (a OneshotSender[Result[u64, AnyError]]) the bytes written, or why not
+//   FileSource(down, name)  a ChunkSource that reads the file 'name' into the stream, 64 KiB a chunk
+//                  (both in filestages.cone, over package aio's File)
+//   SocketSource(down)  a ChunkSource that reads a TCP connection into the stream, 64 KiB a chunk:
+//                  'start(addr)' connects first, 'startOn(conn)' reads one the program has
+//                  (socketsource.cone, over package aio's Socket)
+//
+// The types they plug into, ChunkSink, ChunkSource, ChunkInbox, ChunkWindow, Ending and the
+// constants linkWindow and linkBytes, are package stages'.
+
+mod stageio;
+
+import iobuf use IoBuf;
+import collections use AnyError, String;
+import actors;
+import streams use *;
+import stages use *;
+import sync use OneshotSender;
+import path use Path;
+import iocore use Access, SocketAddr;
+import aio use File, Socket, IoLimits;

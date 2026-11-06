@@ -1,0 +1,93 @@
+// ======== Layer 3, memory: a ChunkPool is the buffers a connection or pipeline may hold ========
+//
+// CREDIT IS A WINDOW OF BYTES (chunkwindow.cone), and MEMORY IS A POOL: the two are
+// decoupled. Each stream's link may run a window of bytes ahead (how far it may
+// get, which keeps streams fair to each other); the buffers that carry the bytes
+// come from one ChunkPool shared by everything that moves together (a connection's
+// streams, a pipeline's stages), are taken only when there is data to carry and
+// are sized to it, and are bounded by the pool's cap. An idle stream holds
+// nothing, a hundred small streams hold what they carry, and one bulk stream
+// still gets its whole window in flight.
+//
+//   let pool = ChunkPool.make(4194304usize);         // at most 4 MiB lent at once
+//   var a = ChunkWindow.make(262144usize, pool);       // stream a: a 256 KiB window
+//   var b = ChunkWindow.make(262144usize, pool);       // stream b: its own window, the same pool
+//   // a stage made with 'pool' draws its output buffers from it: TransformStage[T](down, t, pool)
+//
+// A ChunkPool counts bytes, not buffers: what it lends is measured by the buffers'
+// capacities (an IoBuf's block is a whole size class: 4, 16, 64, 256 KiB, 1 MiB),
+// so the cap is a bound on memory. The blocks themselves come from the iobuf
+// package's buffer pool, as every IoBuf's do; a ChunkPool is the accounting that keeps
+// a connection's or a pipeline's share of it bounded. A pool is a handle: a
+// copy is another owner of the same counts, and it crosses between actors.
+//
+// THE CAP IS HARD EXCEPT FOR THE LAST RESORT. A link with nothing in flight is
+// always lent one buffer even when the pool is full: its stream could otherwise
+// wait for a buffer that no giveBack of its own will ever free (the buffers are
+// held by other streams, which owe this one nothing), and a stalled stream is
+// the one thing the design refuses. So the most a pool lends is its cap plus one
+// buffer for each link that was empty when it asked. 'floored' counts those
+// lends; a pool of the right size never shows one.
+//
+//   pool.cap()      the bound, in bytes
+//   pool.lent()     bytes lent now          pool.peak()     the most lent at once
+//   pool.refused()  takes the cap refused   pool.floored()  takes allowed past the cap, as above
+//   pool.lends()    buffers lent, ever
+
+pub struct PoolState is Sendable, Move {
+  cap: usize;
+  out: Atomic[usize];         // bytes lent now
+  top: Atomic[usize];         // the most out at once
+  count: Atomic[u64];         // lends, ever
+  refusals: Atomic[u64];      // takes refused for the cap
+  floors: Atomic[u64];        // takes allowed past the cap
+}
+
+pub struct ChunkPool {
+  s: Arc[imm, PoolState];
+
+  // A pool that lends at most 'cap' bytes at once
+  pub fn make(cap: usize) ChunkPool {
+    ChunkPool(Arc[imm, PoolState](PoolState(cap: cap, out: Atomic[usize].of(0usize), top: Atomic[usize].of(0usize),
+      count: Atomic[u64].of(0u64), refusals: Atomic[u64].of(0u64), floors: Atomic[u64].of(0u64))))
+  }
+
+  pub fn cap(self: &) usize { s.cap }
+  pub fn lent(self: &) usize { s.out.load() }
+  pub fn peak(self: &) usize { s.top.load() }
+  pub fn refused(self: &) u64 { s.refusals.load() }
+  pub fn floored(self: &) u64 { s.floors.load() }
+  pub fn lends(self: &) u64 { s.count.load() }
+
+  // Lend 'bytes' if that stays within the cap, or if 'last' (the link has nothing
+  // in flight, see above). True when lent; the caller owes a 'release' of as many
+  fn reserve(self: &, bytes: usize, last: bool) bool {
+    var cur = s.out.load();
+    var ok = false;
+    var go = true;
+    while go {
+      let over = cur + bytes > s.cap;
+      if over && !last {
+        s.refusals.add(1u64);
+        go = false;
+      } else {
+        let seen, won = s.out.compareSwap(cur, cur + bytes);
+        if won {
+          ok = true;
+          go = false;
+          if over { s.floors.add(1u64); }
+          s.top.max(cur + bytes);
+          s.count.add(1u64);
+        } else {
+          cur = seen;
+        }
+      }
+    }
+    ok
+  }
+
+  // 'bytes' come home
+  fn release(self: &, bytes: usize) {
+    s.out.sub(bytes);
+  }
+}

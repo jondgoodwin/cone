@@ -21,6 +21,17 @@ picoseconds a pass, their medians and the ratio; pin it to one core
 (`start /affinity 4`, `taskset -c 2`). Timings on a machine other programs
 share are only good taken one at a time.
 
+`logcost` (one command, quiet machine, pinned to a core) times a million
+`log <- $"line {i}"` against a million `emit` of a declared kind, on and off,
+and prints picoseconds a line and the ratios:
+`congo run --release examples/logcost.cone -- 1000000`.
+
+## Logging
+
+`log <- $"user {user.id} logged in"` to a `trace.Log` is one event per call
+site (see the header comment of `src/trace.cone`, "Logging", and the page's
+"Logging a line"). `logsite`, `logprivate` and `logasync` test it.
+
 ## Not here yet
 
 - Sinks (a buffered binary file, ETW, console text), the packages' own

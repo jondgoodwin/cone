@@ -17,7 +17,7 @@ $vc = '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bui
 $env:LIB = "C:\libs\SDL3-3.4.16\lib\x64;" + $env:LIB
 function ConeRun($mode) {
   Push-Location $root
-  $o = cmd /c "$vc >nul && python tools\congo\congo.py run --release packages/stages/examples/streamsample.cone -- $mode $Mib" 2>&1
+  $o = cmd /c "$vc >nul && python tools\congo\congo.py run --release packages/stageio/examples/streamsample.cone -- $mode $Mib" 2>&1
   Pop-Location
   ($o | Select-String "MiB: " | Select-Object -Last 1).Line
 }

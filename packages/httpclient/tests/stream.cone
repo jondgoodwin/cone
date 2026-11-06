@@ -5,17 +5,13 @@
 // slow consumer, holding what it was given and releasing a little at a
 // time, slowing the link rather than filling memory (the same bound); a
 // fetch cancelled mid-body, Cancelled and nothing after, its connection
-// reset; and a body sent through a bounded channel to a slow thread, every
-// event arriving there in order, the final answer last, with the same
-// bound.
+// reset.
 
 mod stream;
 
 import testing use *;
 import collections use List, String;
 import time use Instant, Duration;
-import thread;
-import sync use Sender, Receiver, Channel;
 import iobuf use *;
 import iocore use Loop, SocketAddr, Completion, forever;
 import http use *;
@@ -97,7 +93,7 @@ fn reply(sv: &mut Srv, req: httpconn.ReqId, head: bool, status: u16, location: &
   }
 }
 
-fn number(s: &str) u64 { collections.parseUInt(s) || 0u64 }
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
 
 // Stream j's next pieces, as many as the connection takes now
 fn pumpStream(sv: &mut Srv, j: usize) {
@@ -345,8 +341,8 @@ fn seen() Seen {
 }
 
 fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
-  let n = eventName(e.kind);
-  s.kinds.appendByte(n[0usize]);
+  let n = String() <- toDebug(&e.kind);
+  s.kinds.appendByte(n.view()[0usize]);
   if e.kind == EventKind.Response {
     s.status = e.response.status;
     s.url = e.url.clone();
@@ -358,7 +354,7 @@ fn note(cl: &mut Client, s: &mut Seen, e: &mut Event) {
     s.last = e.kind;
     s.timing = e.timing;
     if e.kind == EventKind.Failed {
-      s.failure = e.failure.message();
+      s.failure = String() <- e.failure;
       s.stage = e.failure.stage;
     }
   }
@@ -497,44 +493,6 @@ fn readBig(cl: &mut Client, sv: &mut Srv, lp: &mut Loop, port: u16, n: u64, perS
   r
 }
 
-// A channel's reader, on its own thread: every event of one fetch, in
-// order, the final answer last; slow, a millisecond every eight events
-struct ChanRead {
-  pub bytes: u64;
-  pub good: bool;
-  pub responses: u64;
-  pub ends: u64;
-  pub finals: u64;
-  pub doneLast: bool;
-}
-
-fn chanReader(rx: Receiver[Event]) ChanRead {
-  var r = ChanRead(0u64, true, 0u64, 0u64, 0u64, false);
-  var inbox = rx;
-  var seen = 0u64;
-  while true {
-    var e = Event.make(EventKind.Data, 0u64, FetchId.none());
-    match inbox.recv() {
-      case var Some(s) {e <-> s;}
-      case is None[Event] {break;}
-    }
-    seen = seen + 1u64;
-    if seen % 8u64 == 0u64 {thread.sleep(Duration.fromMillis(1i64));}
-    if r.finals > 0u64 {r.good = false;}
-    if e.kind == EventKind.Response {r.responses = r.responses + 1u64;}
-    else if e.kind == EventKind.Data {
-      if !pattern(e.buf.view(), r.bytes) {r.good = false;}
-      r.bytes = r.bytes + u64.from(e.buf.len());
-    } else if e.kind == EventKind.End {r.ends = r.ends + 1u64;}
-    else if e.isTerminal() {
-      r.finals = r.finals + 1u64;
-      r.doneLast = e.kind == EventKind.Done;
-      break;
-    }
-  }
-  r
-}
-
 fn main() i32 {
   var lp = Loop.mustMake();
   var sv = server();
@@ -572,7 +530,7 @@ fn main() i32 {
       while k < out.len() {
         let e = &mut out[k];
         k = k + 1usize;
-        kinds.appendByte(eventName(e.kind)[0usize]);
+        kinds.appendByte((String() <- toDebug(&e.kind)).view()[0usize]);
         if e.kind == EventKind.Data {
           cl.release(e.id, e.buf.len());
           if !cancelled {
@@ -588,32 +546,6 @@ fn main() i32 {
     expect(kinds.startsWith("RD") && kinds.endsWith("C"), "Response, Data..., then Cancelled");
     expectUInt(finals, 1u64, "...one final answer, nothing after it");
     expect(sv.open < openBefore || sv.open == 0u64, "...its connection reset: the server's side closed");
-  }
-
-  // Through a bounded channel to a slow thread
-  {
-    var tx: Sender[Event];
-    var rx: Receiver[Event];
-    tx, rx = Channel[Event].bounded(4u64);
-    let reader = thread.start(rx, &chanReader);
-    let id = cl.get(&mut lp, url(port, "/big/4194304").view(), Sink.Chan(3u64, tx));
-    var out = List[Event]();
-    var peak = 0u64;
-    let giveUp = Instant.now() + Duration.fromSeconds(60i64);
-    while (cl.live() > 0u32 || cl.held() > 0usize) && Instant.now() < giveUp {
-      step(&mut cl, &mut sv, &mut lp, &uni out, giveUp);
-      out.clear();
-      let l = lent();
-      if l > peak {peak = l;}
-    }
-    let r = reader.join();
-    expectUInt(r.bytes, 4u64 * mib, "4 MiB through a channel of 4: every byte");
-    expect(r.good, "...each the right one, nothing after the final answer");
-    expect(r.responses == 1u64 && r.ends == 1u64 && r.finals == 1u64 && r.doneLast,
-      "...one Response, one End, one Done, last");
-    expect(peak <= 2u64 * mib, "...the bytes lent never past 2 MiB");
-    expect(cl.stats().held > 0u64, "...the channel was full at times: events held, none lost");
-    expectUInt(cl.stats().dropped, 0u64, "...none dropped");
   }
 
   let s = cl.stats();

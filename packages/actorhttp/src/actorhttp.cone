@@ -23,7 +23,7 @@
 //       imm r = await client.get(url.view());      // pauses until the whole response is in
 //       match r {
 //         case imm ok Ok {...ok.status...  ok.body.view()...}
-//         case imm e Err {...e.isTimedOut()  e.isCancelled()  e.failure.message()...}
+//         case imm e Err {...e.isTimedOut()  e.isCancelled()  String() <- e.failure...}
 //       }
 //     }
 //   }
@@ -76,7 +76,7 @@
 //                                                               Result[Response, FetchError]
 //   Conn.none()  conn.isNone()
 //   FetchError: e.kind() (FetchErrorKind: Failed, Cancelled, TimedOut)  e.isCancelled()  e.isTimedOut()
-//     e.failure (Failed: httpclient.Failure: its stage, code, HTTP error)  e.message()
+//     e.failure (Failed: httpclient.Failure: its stage, code, HTTP error)  String() <- e
 //   defaultMaxBody                the most body bytes a client takes unless made with another limit
 //   c.stream(request)  c.streamIn(request, lim)     a response read as it arrives, in chunks   (STREAMS)
 //                                                               Result[BodyStream, FetchError]
@@ -98,7 +98,7 @@
 //   ex.start(head, length)  ex.startEvents()  ex.startEventsWith(head)   a streamed one (not awaited)
 //   ex.write(bytes)  ex.sendEvent(event)  ex.sendComment(text)     Result[usize, ServerError]
 //   ex.finish()                                                    Result[u64, ServerError]
-//   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  e.message()
+//   ServerError: e.kind() (ServerErrorKind: Failed, Closed)  e.isClosed()  e.code  String() <- e
 //   defaultMaxRequestBody         the most request body bytes a server takes unless configured
 //
 // Each of the first four and the two of a connection makes an OPERATION, an
@@ -244,7 +244,7 @@
 // with httpclient's Failure). A failure before the head is both: the caller's Err
 // and the sink's one Failed end. A 4xx or 5xx body goes to the sink too: read
 // 'isOk()' of the head. THERE IS ONE CREDIT: the buffers are the client's, not a
-// Link's, and the HTTP window is the window. A buffer's bytes are released to the
+// ChunkWindow's, and the HTTP window is the window. A buffer's bytes are released to the
 // connection when the sink gives that buffer back (giveBack, on the BodySource), so
 // a sink that holds buffers or gives them back slowly slows the connection, and
 // through TCP or its HTTP/2 stream the server, and nothing else. The credit is
@@ -254,7 +254,7 @@
 // (Content-Encoding) goes through package httpdecode's Decoder, which sits over
 // this call. A fetch's group (lim's, or the
 // request's) cancels it at the client as for any fetch, ending the sink Failed once;
-// and a buffer given back in a cancelled group (a Stage that has seen its consumer
+// and a buffer given back in a cancelled group (a TransformStage that has seen its consumer
 // quit gives its input back so) cancels it too. 'read()' stays, for text and for
 // small bodies; it is the same fetch with a String copy per piece.
 //
@@ -427,11 +427,10 @@ pub struct FetchError is Error {
 
   // 'connect: closed: the connection could not be made (...)', or 'cancelled',
   // or 'deadline passed'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    if cause == FetchErrorKind.Cancelled {return String.from("cancelled");}
-    if cause == FetchErrorKind.TimedOut {return String.from("deadline passed");}
-    failure.message()
+  pub fn toText(self: &, out: &uni TextOut) {
+    if cause == FetchErrorKind.Cancelled {out <- "cancelled";}
+    else if cause == FetchErrorKind.TimedOut {out <- "deadline passed";}
+    else {out <- failure;}
   }
 }
 
@@ -468,7 +467,7 @@ fn final() {
 
 // The operation awaited: its job, made now, queued for the service by the
 // 'await', which hands the job's 'run(self, lp &mut Loop, sv &mut Service,
-// rp actors.Reply)' the reply its answer goes back in
+// rp actors.ReplyOf[R])' the reply its answer goes back in
 fn awaitable[J, R](body: J) actors.Awaitable[R] {
   svcHost.awaitable[J, R](body)
 }
@@ -560,7 +559,7 @@ pub struct Client is Move {
   pub fn streamIn(self: &, req: httpclient.Request, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
     let r = limitedRequest(req, lim, file, line);
-    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, false))
+    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r))
   }
 
   // A request whose response body goes to a sink as it arrives (the package's
@@ -594,7 +593,7 @@ pub struct Client is Move {
     var r = limitedRequest(req, lim, file, line);
     if !r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
     if !r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
-    awaitable[StreamOpenJob, Result[EventStream, FetchError]](StreamOpenJob(id, r, true))
+    awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r))
   }
 
   fn final(self: &uni) {

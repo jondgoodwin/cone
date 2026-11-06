@@ -131,6 +131,24 @@ static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
     return NULL;
 }
 
+// A variant narrowed to by a bare name keeps the lifetimes the matched value's enum is
+// written with ('E['=a]'): the variant's fields are the enum's, so a key it holds is of the
+// brand the value carries, not of a brand not known. A generic's type arguments come with
+// the instance (the variant is already its own).
+static void castPatternAdoptLifetimes(NameUseNode *name, INode *exp) {
+    if (!lifeInvariantSeen || name->lifeuse != NULL)
+        return;
+    INode *type = ((IExpNode*)exp)->vtype;
+    while (type && (type->tag == RefTag || type->tag == VirtRefTag))
+        type = ((RefNode*)type)->vtexp;
+    while (type && type->tag == AliasDclTag)
+        type = ((AliasDclNode*)type)->target;
+    if (type == NULL || type->tag != NameUseTag || ((NameUseNode*)type)->lifeuse == NULL
+        || (((NameUseNode*)type)->lifeuse->names == NULL && ((NameUseNode*)type)->lifeuse->typeargs == NULL))
+        return;
+    name->lifeuse = ((NameUseNode*)type)->lifeuse;
+}
+
 // Bind a pattern's bare root name against the value being matched. A variant of
 // that value's enum is what the name means, whatever it means lexically, so
 // 'Red' on a 'Lamp' is the Lamp's 'Red' while a 'use' of another enum with a 'Red'
@@ -157,8 +175,10 @@ static int castPatternBindName(CastNode *node, int report) {
         name->flags &= 0xFFFF - FlagPattern;
         StructNode *enumdcl = castMatchedEnum(node->exp);
         INode *variant = castEnumVariant(enumdcl, name->namesym);
-        if (variant && !hasargs)
+        if (variant && !hasargs) {
             name->dclnode = variant;
+            castPatternAdoptLifetimes(name, node->exp);
+        }
         else if (name->dclnode == NULL) {
             if (report && variant)
                 errorMsgNode((INode*)name, ErrorPatArgs,

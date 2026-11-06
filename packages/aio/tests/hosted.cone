@@ -50,18 +50,19 @@ struct Timed {
   id: u64;
   added: u64;                    // what AddJobs have added
   due: Instant;                  // when 'tick' is answered: forever when none waits
-  tick: Option[actors.Reply];
-  later: Option[actors.Reply];
+  tick: Option[actors.ReplyOf[u64]];
+  later: Option[actors.ReplyOf[u64]];
 
   pub fn make(id: u64) Timed {Timed(id, 0u64, forever(), None, None)}
 
   pub fn turn(self: &mut, lp: &mut Loop) {
     if due < forever() && Instant.now() >= due {
-      match &mut tick {
-        case var &mut Some(r) {actors.answerNowIn[u64](r, id);}
+      var taken: Option[actors.ReplyOf[u64]] = None;
+      taken <-> tick;
+      match taken {
+        case let Some(r) {r.answer(id);}
         else {}
       }
-      tick = None;
       due = forever();
     }
   }
@@ -70,11 +71,12 @@ struct Timed {
     if c.token != tokenOf(id) {
       return false;
     }
-    match &mut later {
-      case var &mut Some(r) {actors.answerNowIn[u64](r, id * 100u64);}
+    var taken: Option[actors.ReplyOf[u64]] = None;
+    taken <-> later;
+    match taken {
+      case let Some(r) {r.answer(id * 100u64);}
       else {}
     }
-    later = None;
     true
   }
 
@@ -83,7 +85,7 @@ struct Timed {
   pub fn end(self: &mut, lp: &mut Loop) {
     printStr("end "); printUInt(id);
     match &later {
-      case is &Some[actors.Reply] {printStr(", its timer pending");}
+      case is &Some[actors.ReplyOf[u64]] {printStr(", its timer pending");}
       else {}
     }
     printStr("\n");
@@ -100,28 +102,28 @@ struct AddJob {
 
 // What has been added
 struct SumJob {
-  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
-    actors.answerNow[u64](rp, s.added);
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.ReplyOf[u64]) {
+    rp.answer(s.added);
   }
 }
 
 // Answered by a timer of the Loop's, its Completion claimed by the service
 struct LaterJob {
   pub ms: i64;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.ReplyOf[u64]) {
     let ms = self.(ms);
     lp.after(Instant.now() + Duration.fromMillis(ms), Target.Here(tokenOf(s.id)));
-    s.later = Some[actors.Reply](rp);
+    s.later = Some[actors.ReplyOf[u64]](rp);
   }
 }
 
 // A timer that is not due before the program ends: 'ready' told once it is set
 struct KeepJob {
   pub ready: OneshotSender[u64];
-  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.ReplyOf[u64]) {
     let ready = self.(ready);
     lp.after(Instant.now() + Duration.fromMillis(100000i64), Target.Here(tokenOf(s.id)));
-    s.later = Some[actors.Reply](rp);
+    s.later = Some[actors.ReplyOf[u64]](rp);
     var r = ready;
     r.send(1u64);
   }
@@ -130,10 +132,10 @@ struct KeepJob {
 // Answered at a turn the service asks for by its wakeAt
 struct TickJob {
   pub ms: i64;
-  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.Reply) {
+  pub fn run(self, lp: &mut Loop, s: &mut Timed, rp: actors.ReplyOf[u64]) {
     let ms = self.(ms);
-    s.due = Instant.now() + Duration.fromMillis(ms);
-    s.tick = Some[actors.Reply](rp);
+    s.due =Instant.now() + Duration.fromMillis(ms);
+    s.tick = Some[actors.ReplyOf[u64]](rp);
   }
 }
 

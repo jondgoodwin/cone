@@ -24,6 +24,7 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->via2 = NULL;
     fldnode->via3 = NULL;
     fldnode->hashcond = NULL;
+    fldnode->gen = NULL;
     fldnode->index = 0;
     fldnode->lifeslots = 0;
     fldnode->lifeknown = 0;
@@ -164,6 +165,9 @@ static StructNode *fieldDclPrivateType(INode *type) {
 
 // Enable name resolution of field declarations
 void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
+    // A field made for each field of a type parameter: the type it describes (fields.h)
+    if (name->gen)
+        fieldEachSubjectNameRes(pstate, name->gen->fe);
     inodeNameRes(pstate, (INode**)&name->perm);
     inodeNameRes(pstate, &name->vtype);
 

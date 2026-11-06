@@ -12,31 +12,13 @@ import testing use *;
 import collections use *;
 import json;
 
-fn kindName(k: &json.ErrorKind) &str {
-  match k {
-    case is UnexpectedEnd { "UnexpectedEnd" }
-    case is UnexpectedByte { "UnexpectedByte" }
-    case is BadNumber { "BadNumber" }
-    case is BadEscape { "BadEscape" }
-    case is BadSurrogate { "BadSurrogate" }
-    case is BadUtf8 { "BadUtf8" }
-    case is ControlChar { "ControlChar" }
-    case is TooDeep { "TooDeep" }
-    case is TrailingText { "TrailingText" }
-    case is DuplicateKey { "DuplicateKey" }
-    case is WriteOrder { "WriteOrder" }
-    case is WriteValue { "WriteValue" }
-    case is Shape { "Shape" }
-  }
-}
-
 // text must be refused with that kind, at that line and column, the reason
 // holding that phrase
 fn refuse(text: &str, kind: &str, line: u32, col: u32, phrase: &str) {
   match json.parse(text) {
     case is Ok { expectStr("<parsed>", kind, text); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), kind, text);
+      expectStr((String() <- toDebug(&e.kind)).view(), kind, text);
       expectUInt(u64.from(e.line), u64.from(line), text);
       expectUInt(u64.from(e.column), u64.from(col), text);
       if !e.reason.view().contains(phrase) { expectStr(e.reason.view(), phrase, text); }
@@ -48,7 +30,7 @@ fn accept(text: &str) {
   match json.parse(text) {
     case is Ok { expect(true, text); }
     case let Err(e) {
-      let m = e.message();
+      let m = String() <- e;
       expectStr(m.view(), "<parsed>", text);
     }
   }
@@ -221,7 +203,7 @@ fn main() i32 {
   match json.parse("[1,\n 2 3]") {
     case is Ok { expect(false, "message"); }
     case let Err(e) {
-      let m = e.message();
+      let m = String() <- e;
       expectStr(m.view(), "json: line 2, column 4: expected ',' or ']' after an array's element", "the message names line and column");
       expectUInt(u64.from(e.offset), 7u64, "the offset");
     }
@@ -237,14 +219,14 @@ fn main() i32 {
     match r.next() {
       case is Ok { steps = steps + 1usize; }
       case let Err(e) {
-        firstMessage = e.message();
+        firstMessage = String() <- e;
         break;
       }
     }
   }
   match r.next() {
     case is Ok { expect(false, "a failed reader answers its failure again"); }
-    case let Err(e) { againMessage = e.message(); }
+    case let Err(e) { againMessage = String() <- e; }
   }
   expectUInt(u64.from(steps), 2u64, "two events before the failure");
   expectStr(againMessage.view(), firstMessage.view(), "the failure is answered again");
@@ -260,7 +242,7 @@ fn main() i32 {
   match json.parseWith(dups, &strict) {
     case is Ok { expect(false, "duplicate names refused"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "DuplicateKey", "duplicate kind");
+      expectStr((String() <- toDebug(&e.kind)).view(), "DuplicateKey", "duplicate kind");
       // The inner repeat comes first, at its name
       expectUInt(u64.from(e.column), 19u64, "duplicate column");
       expect(e.reason.view().contains("\"c\""), "duplicate reason names it");
@@ -278,7 +260,7 @@ fn main() i32 {
   match json.parseWith("[[[1]]]", &shallow) {
     case is Ok { expect(false, "depth 3 refused at maxDepth 2"); }
     case let Err(e) {
-      expectStr(kindName(&e.kind), "TooDeep", "depth kind");
+      expectStr((String() <- toDebug(&e.kind)).view(), "TooDeep", "depth kind");
       expectUInt(u64.from(e.column), 3u64, "depth column");
     }
   }

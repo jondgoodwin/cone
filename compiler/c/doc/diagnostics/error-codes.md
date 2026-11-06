@@ -397,7 +397,8 @@ value no thread changes buys nothing; the remedy is `var`, or no attribute.
 module's `init` would assign on its own thread alone; the remedy is a literal
 value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
 nothing yet finalizes a thread's copy as its thread ends. An initial value that
-is not a literal wears `ErrorNotLit`, as on any global.
+is not a literal wears `ErrorNotLit`, as on any global (a `let` global of a Cone-named module is the exception: its
+other values are setups, `ErrorSetupCycle`).
 
 A `@workgroup` global takes four codes on the same plan. `ErrorWorkgroupPlace`
 is `@workgroup` anywhere `@threadlocal` would be misplaced, and also beside
@@ -567,7 +568,10 @@ whichever operation produced it — an integer operation past its range, a float
 one past its finite range, a float converted to an integer that cannot hold it
 or to an `f32` past its range — since the remedy is the same: a wider type or
 smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
-`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+`ErrorConstShift` a shift by the width or more. `ErrorConstChar` (1600) is a
+constant converted to a `char` that is no code point (the run time gives
+U+FFFD); `T.from(constant)` is refused so in any expression, a float into an
+integer included (`fnCallNumberFrom`). None is `ErrorLitRange`, which
 is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
@@ -940,8 +944,8 @@ make. The `from` that converts is an `overload from` or a plain method named `fr
 generic one too), and `ErrorQuesConvert` says so, except where the destination has a `from`
 and the error is bound to its thread: then it says the error is not Sendable, and why
 (AnyError's `from` takes only Sendable errors). A `main` returning a Result prints its
-error with the error type's `report()` where that gives text, else its `message()`; a type
-with neither giving text is `ErrorMainResult`, at the return type (`propagateMainResult`).
+error through core's `Error` where the type meets it, else with its `report()` where that
+gives text; a type with neither is `ErrorMainResult`, at the return type (`propagateMainResult`).
 
 A `try` block adds two (`propagateTryFinish`, `propagateTrySite`): one wanted as no Result
 or Option whose type cannot be read off it, its `?`s failing with different error types
@@ -1091,6 +1095,53 @@ itself, which only the code generator has: the condition of a `#if` (`metaCond`)
 (`arrayTypeCheck`) or a `const` initializer (`constDclTypeCheck`); each is refused at that place (`sizeofConstRefused`)
 rather than falling to `ErrorMetaFact`, `ErrorBadArray` or `ErrorNotLit`. A larger expression holding one in a `const`
 (`#size(T) * 2`) still falls to `ErrorNotLit`.
+
+`ErrorMetaEachArg` and `ErrorMetaEachArgName` are a `#each #f in #fields(T)` among a call's arguments
+(`parseHashEachArg`), read at parse: `ErrorMetaEachArg` is a block that is not exactly one `#f: value` (nothing
+named, `#f` alone, a second argument, a value that did not read); `ErrorMetaEachArgName` is an argument named by a
+written name, which every pass would give. A list loop there is `ErrorMetaEachPlace`. What the loop makes is
+checked as written arguments are; a failed expansion marks the call (`FlagEachFailed`) so its missing arguments
+are not a second error.
+
+`ErrorInstanceUnrecorded` is an instance of a generic module that declares an `init` or `final` which a package's
+include file cannot record in `__uses` (no bare spelling: a type argument that is no number type, or a qualified name;
+or made in a submodule's file), so the instance's setup would never run in a program that does not name it. Pointed at
+the instance, when the include file is generated. A generic with neither leaves the `// Not recorded` comment.
+(`module_generic_pkguse_unspelled`.)
+`ErrorMetaGenName` and `ErrorMetaGenClash` are members made from a type's fields (a `#each #f in #fields(T)` in
+a generic struct's braces). `ErrorMetaGenName` is read at parse: a `#name(...)` that is not a string literal and
+the loop's `#f` in either order, a `#f` or `#name` naming a member outside such a loop, a member in the loop not
+named from `#f`, a static, macro or alias in it, a `#if` on a type or a `#each` inside it. `ErrorMetaGenClash` is
+the instance: two members of one name, one generated at least, pointed at the template's member and naming the name.
+
+`ErrorSetupCycle` (1605) and `ErrorSetupReadsInit` (1606) refuse a module's setups (a `let` global given a value that is
+not a constant; `module.md`, "Setups"). The first is setups that read one another round a cycle, directly or through the
+module's own functions, reported at the global the round comes back to, with the round spelled out; the second is a
+setup that reads a global the module's `init` sets, which holds nothing when the setups run, reported at the setup's
+global naming the global read and the function that reads it. `modSetupOrder` reports every one it finds before it
+gives up, and the setups' function is built only when none is found.
+
+`ErrorNotLit` (1015) has one wording for each place a value must be a constant: a global, static or parameter
+("Variable may only be initialized with a literal value"), a `const` ("Named constants must be assigned to a constant
+value"), a field default ("Field default must be a constant value"), and the local of a block that gives a global its
+value (`let a: i64 = { let y = f(); y + 1 }`). `varDclTypeCheck` meets that local at scope 1 with no function round it
+(a parameter's scope 1 is checked at scope 0), and it is no global, so no setup can lift it; the report says "a block
+that gives a global its value cannot declare a local that is computed at run time" and that a function can declare
+locals and the global can call it, not that the local is the fault. What is refused is unchanged: a local started by a
+constant is still accepted. A `?` outside any function and any `try` block is `ErrorQuesReturn` alone: `varDclTypeCheck`
+reports nothing for the hidden variable holding its operand (`FlagQuesHeld`), since `propagateLower` always refuses that `?`.
+A `try` block with no function around it is `ErrorNotLit` at the `try`, once, whatever it holds ("A try block cannot give a
+global its value", `blockTypeCheck`): the block holds its value in a local of its own and no setup lifts it, so it takes
+the error type and nothing in it is checked.
+
+`ErrorWholeEnumMeth` (1604) is a variant (or the enum) refused behind a virtual reference, where the enum writes a
+method the trait requires over the whole enum (`self: &Two`). Such a method has no copy in any variant
+(`structIsWholeEnumMethod`), so `structMapVtableImpl` finds none and the conversion fails; `fnSigVrefWholeEnumRefusal`
+(reached from `fnSigConvRefusal`, so at an argument, an initializer, a `return` and any other refused coercion) names
+the method and says `self: &` makes the variants comply. The rule of what complies is unchanged; only the message is. A requirement with no slot (a private one, or a
+default `structMakeVtable` passes by) is met by a whole-enum method, so it is skipped, and a conversion refused for
+another reason keeps that reason's message. `fnSigRefusalMsg` reports it at the user's own line, where the outermost
+instantiation began: inside `AnyError.from` or `?` the fix is the caller's, not the library body's.
 
 `ErrorMetaMixFact` is a `#if` chain in a generic struct's braces or a function body (a
 statement or a value) that rests on a fact of the build in one place and on a type in

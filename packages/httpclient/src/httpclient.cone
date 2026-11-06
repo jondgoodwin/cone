@@ -35,7 +35,7 @@
 //     }
 //     // or, in one call, the whole body up to a limit:
 //     imm r = client.fetchWhole(&mut lp, Request.get("https://example.com/"), 1048576usize);
-//     if r.isOk() { ... r.status ... r.body.view() ... } else { ... r.failure.message() ... }
+//     if r.isOk() { ... r.status ... r.body.view() ... } else { ... String() <- r.failure ... }
 //   }
 //
 //   Client.make(config)  getWhole(url, limit)                   (THE CLIENT)
@@ -43,7 +43,7 @@
 //   c.release(id, n)  c.cancel(lp, id)  c.reprioritize(id, intent, score)
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
-//   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)  c.http3Live()
+//   c.stats()  c.driverStats()  c.live()  c.queued()  c.isLive(id)  c.http3Live()
 //   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
 //     maxLifetime maxQueued maxRetries maxRedirects userAgent
 //     http3 http3Origins http3Timeout                                    (HTTP/3)
@@ -51,13 +51,13 @@
 //   readAltSvc(value, host): AltSvc.H3(port, maxAge) Clear Nothing
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
-//   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
-//   Sink.Here(token)  Sink.Chan(token, tx)                              (SINKS)
+//   Intent: Urgent Visible Prefetch Background;  toText(i)               (INTENTS)
+//   Sink.Here(token)                                                    (SINKS)
 //   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
 //     e.trailers e.failure e.timing;  e.isTerminal()
-//   EventKind: Response Data End Done Failed Cancelled TimedOut;  eventName(k)
+//   EventKind: Response Data End Done Failed Cancelled TimedOut;  toDebug(k)
 //   Response: r.outcome r.status r.version r.headers r.body r.url r.failure r.timing r.isOk()
-//   Failure: f.stage f.code f.error f.unsent f.attempts f.message();  Stage  (FAILURES)
+//   Failure: f.stage f.code f.error f.unsent f.attempts String() <- f;  Stage  (FAILURES)
 //   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
 //
 // THE CLIENT. One per Loop, driven by the loop's thread, as httpconn's
@@ -250,21 +250,17 @@
 //
 // SINKS AND CREDIT (invariant I9: bounded memory). Where a fetch's events go,
 // and the token they carry back: Sink.Here(token), appended for this thread
-// by poll and pump; Sink.Chan(token, tx), sent on a sync channel to
-// another thread, never waiting: a full channel holds the event, and the
-// fetch's later events wait behind it, tried again at every pump (poll waits
-// at most a millisecond then). A response's body bytes are on loan to the
-// program until it says it is done with them: 'release(id, n)' for Data
-// delivered Here; for a channel, as the channel takes them. Its connection
-// reads no more than httpconn's body window (256 KiB) ahead of what was
-// released, and TCP holds the server: a slow consumer slows the link, never
-// fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
+// by poll and pump. (A program that wants them on another thread sends them
+// there itself from what poll appends.) A response's body bytes are on loan to the
+// program until it says it is done with them: 'release(id, n)' for Data. Its
+// connection reads no more than httpconn's body window (256 KiB) ahead of
+// what was released, and TCP holds the server: a slow consumer slows the
+// link, never fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
 // initialWindowSize, 256 KiB: a slow consumer stops only its own stream). A fetch's final answer releases what it still had out (the
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
-// 'maxTotal' connections, the body window per connection, and a channel's
-// own bound.
+// 'maxTotal' connections, and the body window per connection.
 //
 // FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
 // Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
@@ -275,7 +271,7 @@
 // redirects, requests sent on a kept connection against new ones (and as
 // HTTP/2 streams, and over HTTP/3), HTTP/3 attempts and those that fell
 // back, Alt-Svc alternatives learned,
-// connections opened and closed, events delivered, held and dropped, the
+// connections opened and closed, events delivered, the
 // queue now and at its deepest; 'driverStats()' is the driver's own. Done
 // carries the fetch's Timing: when it was asked for, last given a
 // connection, its response's first byte, its end, the attempts and
@@ -327,7 +323,6 @@ import libc;
 import slots use SlotTable;
 import collections use List, String;
 import time use Instant, Duration;
-import sync use Sender;
 import iobuf use IoBuf;
 import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
 import http use *;
@@ -346,15 +341,16 @@ pub enum Intent {
   Urgent,        // the frame is waiting on it
   Visible,       // in view now: the default
   Prefetch,      // likely soon
-  Background    // speculative
-}
+  Background;    // speculative
 
-// The name of an intent
-pub fn intentName(i: Intent) &str {
-  if i == Intent.Urgent {"urgent"}
-  else if i == Intent.Visible {"visible"}
-  else if i == Intent.Prefetch {"prefetch"}
-  else {"background"}
+  // The intent's name, in lower case: 'urgent'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let i = *self;
+    out <- if i == Intent.Urgent {"urgent"}
+      else if i == Intent.Visible {"visible"}
+      else if i == Intent.Prefetch {"prefetch"}
+      else {"background"};
+  }
 }
 
 // Its place in the order: 0 first
@@ -481,22 +477,23 @@ pub enum Stage {
   Tls,           // TLS failed: the handshake, the certificate, a record
   Closed,        // its connection closed before the exchange ended
   Limit,         // a bound refused it (fetchWhole's limit; a pool's buffers)
-  Redirect      // too many redirects, or a Location that cannot be followed
-}
+  Redirect;      // too many redirects, or a Location that cannot be followed
 
-// The name of a stage, in lower case
-pub fn stageName(s: Stage) &str {
-  if s == Stage.Url {"url"}
-  else if s == Stage.Queue {"queue"}
-  else if s == Stage.Resolve {"resolve"}
-  else if s == Stage.Connect {"connect"}
-  else if s == Stage.Read {"read"}
-  else if s == Stage.Write {"write"}
-  else if s == Stage.Http {"http"}
-  else if s == Stage.Tls {"tls"}
-  else if s == Stage.Closed {"closed"}
-  else if s == Stage.Limit {"limit"}
-  else {"redirect"}
+  // The stage's name, in lower case: 'connect'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let s = *self;
+    out <- if s == Stage.Url {"url"}
+      else if s == Stage.Queue {"queue"}
+      else if s == Stage.Resolve {"resolve"}
+      else if s == Stage.Connect {"connect"}
+      else if s == Stage.Read {"read"}
+      else if s == Stage.Write {"write"}
+      else if s == Stage.Http {"http"}
+      else if s == Stage.Tls {"tls"}
+      else if s == Stage.Closed {"closed"}
+      else if s == Stage.Limit {"limit"}
+      else {"redirect"};
+  }
 }
 
 // Why a fetch failed (see the package's header, FAILURES)
@@ -541,17 +538,11 @@ pub struct Failure is Error {
   // failure's words, and the system's failure (its kind, number and text)
   // when there is one. A Tls stage's number is its certificate verifier's,
   // whose words already hold the OS's text and number
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from(stageName(stage));
-    out.append(": ");
-    out.append(error.message().view());
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- stage, ": ", error;
     if code != 0u32 && stage != Stage.Tls {
-      out.append(" (");
-      out.append(IoError(code).describe().view());
-      out.append(")");
+      out <- " (", IoError(code).describe().view(), ")";
     }
-    out
   }
 }
 
@@ -579,7 +570,6 @@ pub struct Timing {
 pub enum Sink {
   pub token: u64;
   pub struct Here {}
-  pub struct Chan {pub tx: Sender[Event];}
 }
 
 // What an event says happened (see the package's header, FETCHING)
@@ -591,17 +581,6 @@ pub enum EventKind {
   Failed,        // FINAL: failure, timing
   Cancelled,     // FINAL
   TimedOut      // FINAL
-}
-
-// The name of an event's kind
-pub fn eventName(k: EventKind) &str {
-  if k == EventKind.Response {"Response"}
-  else if k == EventKind.Data {"Data"}
-  else if k == EventKind.End {"End"}
-  else if k == EventKind.Done {"Done"}
-  else if k == EventKind.Failed {"Failed"}
-  else if k == EventKind.Cancelled {"Cancelled"}
-  else {"TimedOut"}
 }
 
 // What happened to a fetch: its kind, and the fields that kind fills (the
@@ -677,8 +656,6 @@ pub struct ClientStats {
   pub altSvc: u64;         // h3 alternatives learned from Alt-Svc fields
   pub closed: u64;         // connections ended
   pub events: u64;         // events handed to sinks
-  pub held: u64;           // events held for a full channel
-  pub dropped: u64;        // events dropped: their channel's receiver had gone
   pub unclaimed: u64;      // completions poll was given that were not the client's
   pub queuedNow: u32;      // requests waiting for a connection, now
   pub queuedMax: u32;      // ...at the most
@@ -689,6 +666,6 @@ pub struct ClientStats {
 
   pub fn zero() ClientStats {
     ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
+      0u64, 0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
   }
 }

@@ -551,7 +551,10 @@ static int borrowLockPlace(TypeCheckState *pstate, RefNode *node) {
 }
 
 uint16_t borrowTempScope(TypeCheckState *pstate) {
-    return (uint16_t)pstate->scope;
+    // A global's value is type checked at scope 0, but one that is not a
+    // constant is run by a function (a setup, modAddSetup), whose temporaries
+    // die with its block: the main block's scope, as in 'init'
+    return (uint16_t)(pstate->scope == 0 ? 2 : pstate->scope);
 }
 
 // A 'var' local variable, or a part of one held by value, lends '&uni': a source

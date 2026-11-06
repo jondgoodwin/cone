@@ -79,8 +79,15 @@ match r.peek(4usize) {                 // the first four bytes, or None (too few
 		actor: <span class="pre">ChunkSink</span> takes chunks (<span class="pre">accept</span>, which
 		<span class="pre">sink &lt;- chunk</span> spells; <span class="pre">end</span>; <span class="pre">attach</span>) and
 		<span class="pre">ChunkSource</span> gets emptied ones back (<span class="pre">giveBack</span>). The library's own
-		stages are generic actors: <span class="pre">Stage[T]</span> for any transform and
-		<span class="pre">HashStage[D]</span> for a digest that passes the chunk on untouched.</p>
+		stages are generic actors: <span class="pre">TransformStage[T]</span> for any transform and
+		<span class="pre">HashStage[D]</span> for a digest that passes the chunk on untouched. The ends of a pipeline in the
+		OS are actors too, in their own package, <span class="pre">stageio</span>, so that <span class="pre">stages</span>
+		imports no I/O; they are over <span class="pre">aio</span>: <span class="pre">FileSink</span> writes the chunks to a
+		file and <span class="pre">FileSource</span> reads a file into a stream, <span class="pre">SocketSource</span>
+		reads a connection into one. Each stops when the cancel group it works in is cancelled. A
+		<span class="pre">FileSink</span> that fails (a write, or a cancel) leaves the partly written file as it is, and
+		tells its <span class="pre">Oneshot</span> why. A source is told of a failed sink only through the stream, by its
+		buffers coming back; a producer that should stop on a failed sink stops through a cancel group its consumer holds.</p>
 	<p><b>Credit is the buffers.</b> A stage sends only while its window of bytes (256 KiB by default) has room; the
 		buffers come from a pool, are taken only when there is data, and are sized to it; and the consumer gives the same
 		buffer back when it has <i>finished</i> with the chunk, which is the acknowledgement that lets the next go. A slow
@@ -90,16 +97,16 @@ match r.peek(4usize) {                 // the first four bytes, or None (too few
 		<b>Whoever sends the end lets go of the sink with it</b>, so a sink may keep the source it was attached with
 		(and need not drop it at its own <span class="pre">end</span>) without a reference cycle keeping the pair alive.
 		A stage that awaits in <span class="pre">accept</span> (a file write) keeps its stream's order with an
-		<span class="pre">Inbox</span>, so one stream's chunks are handled in order and a stalled stream holds up no other.</p>
+		<span class="pre">ChunkInbox</span>, so one stream's chunks are handled in order and a stalled stream holds up no other.</p>
 	<p>A pipeline is built from the sink end back, each stage made with the one after it. Here a gzip stream arrives on a
-		socket, is inflated, hashed and written to a file (<span class="pre">packages/stages/examples/streamsample.cone</span>,
+		socket, is inflated, hashed and written to a file (<span class="pre">packages/stageio/examples/streamsample.cone</span>,
 		compiled and run):</p>
 <pre>
-let sink = FileSink(String.from(name), doneTx);
+let sink = FileSink(String.from(name), fileTx);   // fileTx: OneshotSender[Result[u64, AnyError]]
 let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
-let inf = Stage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
 let src = SocketSource(inf);
-src.start(port);
+src.start(SocketAddr.localhost(port));
 </pre>
 	<p>The same job without a stream reads the whole body, inflates it in one call, hashes the result and writes the file
 		in one call (<span class="pre">streamsample.cone</span> runs both, on the same input). The stream holds a few

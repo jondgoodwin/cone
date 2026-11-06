@@ -41,22 +41,6 @@ fn hasFlag(args: &List[String], name: &str) bool {
   false
 }
 
-fn parseNumber(s: &str) f64 {
-  var whole = 0.0;
-  var scale = 0.0;
-  var i = 0usize;
-  while i < s.len() {
-    let c = s[i];
-    if c == '.' { scale = 0.1; }
-    else if c >= '0' && c <= '9' {
-      let d = f64.from(c - '0');
-      if scale == 0.0 { whole = whole * 10.0 + d; } else { whole = whole + d * scale; scale = scale / 10.0; }
-    }
-    i = i + 1usize;
-  }
-  whole
-}
-
 fn main() i32 {
   let args = process.args();
   var dir = String.from("C:/src/speech-models/kokoro");
@@ -66,9 +50,9 @@ fn main() i32 {
   var outPath = String.from("out.wav");
   match argValue(&args, "--out") { case var Some(o) { outPath = o; } case is None {} }
   var speed = 1.0f;
-  match argValue(&args, "--speed") { case let Some(s) { speed = f32.from(parseNumber(s.view())); } case is None {} }
+  match argValue(&args, "--speed") { case let Some(s) { speed = f32.parse(s.view()) || speed; } case is None {} }
   var seed = 2024u64;
-  match argValue(&args, "--seed") { case let Some(s) { seed = u64.from(parseNumber(s.view())); } case is None {} }
+  match argValue(&args, "--seed") { case let Some(s) { seed = u64.parse(s.view()) || seed; } case is None {} }
   var text = String();
   match argValue(&args, "--text") { case var Some(t) { text = t; } case is None {} }
   match argValue(&args, "--file") {
@@ -94,11 +78,11 @@ fn main() i32 {
   let british = voiceName.view().startsWith("b");
   var speaker = match Speaker.open(&mut device, dir.view(), british) {
     case var Ok(s) { s }
-    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   };
   let voice = match Voice.load(dir.view(), voiceName.view()) {
     case var Ok(v) { v }
-    case let Err(m) { say(m.message().view()); say("\n"); return 1i32; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return 1i32; }
   };
   speaker.seed(seed);
   let t1 = Instant.now();
@@ -136,7 +120,7 @@ fn render(speaker: &mut Speaker, device: &mut Device, voice: &Voice, text: &str,
   let ts = Instant.now();
   let samples = match speaker.speak(device, text, voice, speed) {
     case var Ok(s) { s }
-    case let Err(m) { say(m.message().view()); say("\n"); return false; }
+    case let Err(m) { say((String() <- m).view()); say("\n"); return false; }
   };
   let t2 = Instant.now();
   let sound = Sound(OUTPUT_RATE, 1u32, samples);

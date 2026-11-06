@@ -128,10 +128,46 @@ generic type's brackets or `where` clause.
 
 **An invariant lifetime is the exception.** A key stays a key in the
 instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
-renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
-`List[&'=a Node['=a]]` and `List[&'=b Node['=c]]` are one instance,
-`List[&'=1 Node['=2]]`, which assumes no two places one brand; the memo
-compares those names (`lifeBrandsEqual`) as well as the types. A function's
+renames every brand the arguments carry by its first occurrence, `'=1`, `'=2`,
+a brand met again keeping the name it was given. An instance is made at the
+pattern of equal brands its use has, and what it is instanced at is that
+pattern as well as the types: `List[&'=a Node['=a]]` and
+`List[&'=b Node['=b]]` are one instance, `List[&'=1 Node['=1]]`, while
+`List[&'=a Node['=b]]` is another, `List[&'=1 Node['=2]]`. One instance per
+pattern of equal brands, not per brand, and where no invariant lifetime appears
+nothing changes. Two different brands stay two names: a brand equals only
+itself. One name is no brand yet: while a function is checked, a name only its
+result writes and nothing has bound (`lifeBrandFnBindable`) is unresolved, so
+it claims no number of the brands' (`seq`). Each unresolved name has a count of
+its own (`useq`), so the first is `'=1`, the second `'=2`: `Atlas['=t, '=r]`
+keeps its two names two, and `List[&'=r mut Road['=t]]` in `empty()` is the
+field's instance, `List[&'=1 Road['=2]]` (counting every unresolved name as
+`'=1` refused `packages/arena/examples/atlas.cone` with 1588, found by the batch
+gate). `Option[&'=m1 Node['=a]]` (inferred from `Some(ar.alloc(..))`, `m1` the
+local arena's minted brand) and the declared `Option[&'=a Node['=a]]` are still
+one instance, `'=1` for the brand and for the one unresolved name, and brand
+agreement binds `a` to `m1`, once; a name already bound to another brand never
+matches. A value of one unresolved name does not reach the other's place
+(`lifetime_inv_two_result_names_refused`); an unresolved name's number and a
+minted brand's may coincide, and only the pattern is named so: agreement, not
+the instance, decides whether they are one brand. The memo compares those names (`lifeBrandsEqual`) as well as the
+types. **A typed `let` or an assignment's target adopts brands a call minted**
+(Bug 50): `let e: Either[&'=a mut Num, &'=a mut Bin] = Either.L(a)` has `A`
+from the value, `&'=m1 mut Num`, `m1` minted by `ar.alloc`, and `B` from the
+declared type. `iexpTypeCheckCoerceStated` puts the stated type in
+`genericStatedType` while the value is checked, `fnCallTypeCheck` sets
+`genericExpectStated` for the one call whose `expectType` is that very node,
+and only then (`genericAdoptMode`, with `genericExpectMode`) does
+`genericCaptureType` let the declared argument stand for the inferred one
+where they differ only in minted brands (`lifeBrandsAdopt`: the substitution
+binds each from-brand once, a brand not minted by a call never changes, the
+substituted type must be the declared one), and `genericInferType` reads the
+declared use's written arguments (`lifeuse->typeargs`, the instance holds them
+numbered). A callee's parameter type is also an expectation, and its `'=a` is
+the callee's to bind, not a brand in scope (`usee(Some(t), t)`): it is never
+the stated type, so it adopts nothing. A struct whose arguments are related (`IterIndexed[T, I:
+Iterator[T]]`) is therefore checked, and conforms to its trait, at the
+relation its use has. A function's
 instance use keeps its arguments as written too, where they carry brands,
 for a call to bind the places to ([Type Check
 Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
@@ -1317,6 +1353,21 @@ included, so a name in any branch must exist; it is never type checked.
   (an `#else` cannot redeclare the field of its `#if`). The locals of a branch are the branch's own
   block's. Not built: a module's level (a generic module's declarations), an `extern` block, an enum
   or a trait, and a condition over a region parameter (a region is no generic parameter yet).
+
+### A `#each #f in #fields(T)` in a struct's braces
+
+The template holds each member of the loop once (`FieldDclNode.gen`, `FnDclNode.gen`), under the spelling of
+its name (`#f`, `#name("get_", #f)`), name resolved once like every member (the loop's `T` at the first member:
+`fieldEachSubjectNameRes`). `cloneStructNode` makes the instance's: the fields of a loop pass by pass
+(`structCloneGenFields`), the methods as shells after the written ones and filled afterwards with the pass's
+hooks set. The pass's hooks are the ones a `#each` in a body uses (`fieldEachPassBegin`): `#f.type` and the
+other properties are pseudo generic parameters whose `Name.node` is the field's answer while the member is
+cloned, and `x.#f` is a member name `#f` that `cloneNameUseNode` turns into the field's. A generated member's name
+is the field's with the loop's fixed word (`genNameFor`); a name already in the instance is
+`ErrorMetaGenClash` (`structGenClash`). A generated member's `gen` is cleared in the instance, so the instance is
+an ordinary struct. Not built: a generated member in a plain (non-generic) struct, an enum or a trait, a static,
+macro or alias, a `#if` on a type inside the loop, and a loop inside a loop. An error in a generated member's
+body does not name its pass (a body's loops do, via `EachPass`).
 
 ## Flow
 

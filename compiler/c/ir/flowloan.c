@@ -512,6 +512,88 @@ uint32_t loanStoredStatic(PathSet *stored, PathSet *refholds, int beyond, VarDcl
     return 0;
 }
 
+// Whether the loans an arena reference holds are to be checked. One holding no
+// loan but what was stored through it was made by a route the walk does not
+// follow (from a raw pointer, as DynArena's 'alloc' reaches its inner arena):
+// that, and only that, is trusted, as every such cast is. Any other is
+// checked, whether the walk can place it or not.
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds) {
+    if (stored == &pathSetAll || arenaholds == &pathSetAll)
+        return 1;
+    for (uint32_t i = 0; arenaholds && i < arenaholds->cnt; ++i) {
+        uint32_t hid = loanOf(arenaholds->ids[i]);
+        if (!pathSetHasLoan(stored, hid)
+            || (loans[hid].kind == LoanCaller && itypeIsArena(lifePointee(loanParm(hid)->vtype))))
+            return 1;
+    }
+    return 0;
+}
+
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena (the plain 'Arena', not a 'DynArena', whose keys have their own rule)
+// that a caller may keep past this function, by a route that tells the body
+// nothing of what else the caller lent: the arena a parameter points at, where
+// the function names no lifetime; or an arena reached through a struct's field
+// whose root a caller lent, named lifetimes or not. The arena's finalizers may
+// read what is stored, so such a store takes only what the arena was lent.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed) {
+    if (refholds == NULL || refholds == &pathSetAll)
+        return 0;
+    int caller = 0, arenaparm = 0, viafield = 0;
+    for (uint32_t i = 0; i < refholds->cnt; ++i) {
+        uint32_t id = loanOf(refholds->ids[i]);
+        if (loans[id].kind == LoanCaller) {
+            caller = 1;
+            INode *place = lifePointee(loanParm(id)->vtype);
+            if (itypeIsArena(place) && !lifeSlotted(place))
+                arenaparm = 1;
+        }
+        else if (loans[id].kind == LoanPin && (loans[id].place.nsteps > 0 || loans[id].place.far)
+                && loans[id].site->tag == FnCallTag) {
+            // The pin an arena's method makes of its receiver's place, a field
+            // of a struct (a step), or a reference read from one (far)
+            FnCallNode *call = (FnCallNode *)loans[id].site;
+            INode *recvtype = call->args && call->args->used ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+            INode *place = recvtype && recvtype->tag == RefTag ? ((RefNode *)recvtype)->vtexp : NULL;
+            if (place && itypeIsArena(place) && !lifeSlotted(place))
+                viafield = 1;
+        }
+    }
+    return (!lifenamed && arenaparm) || (viafield && caller);
+}
+
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through) {
+    if (stored == NULL)
+        return 0;
+    uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
+    if (!loanArenaChecked(stored, arenaholds))
+        return 0;
+    for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
+        uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
+        if (loans[sid].kind != LoanCaller)
+            continue;
+        // Bug 48's exception: what the parameter the arena was reached by
+        // lent the caller belongs to that arena
+        int owned = 0;
+        if (arenaholds != NULL && arenaholds != &pathSetAll) {
+            for (uint32_t i = 0; i < arenaholds->cnt; ++i) {
+                uint32_t hid = loanOf(arenaholds->ids[i]);
+                if (loans[hid].kind == LoanCaller && loanParm(hid) == loanParm(sid)
+                        && itypeIsArena(lifePointee(loanParm(hid)->vtype))) {
+                    owned = 1;
+                    break;
+                }
+            }
+        }
+        if (!owned) {
+            *through = arenaholds && arenaholds != &pathSetAll && arenaholds->cnt
+                ? loanParm(loanOf(arenaholds->ids[0])) : loanParm(sid);
+            return sid;
+        }
+    }
+    return 0;
+}
+
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
         VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
@@ -527,6 +609,11 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
             continue;
         VarDclNode *parm = loanParm(id);
         INode *place = loanCallerPlace(id);
+        // A place of a type that cannot hold a borrow anywhere (itypeHoldsNoBorrow)
+        // takes none, so nothing stored can land in it; as loanStoredStatic
+        // skips one holding no borrow
+        if (itypeHoldsNoBorrow(place))
+            continue;
         int slotted = lifeSlotted(place) != NULL;
         // The field a store lands in is known only where it is in what the
         // parameter's own reference points at
@@ -537,6 +624,13 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
                 continue;
             VarDclNode *sparm = loanParm(sid);
             uint32_t spart = loans[sid].part;
+            // What belongs to the arena a parameter points at is no foreign
+            // borrow to it: the stored loan and the place come from the same
+            // parameter, which points at a 'NoLoanMut' container (Bug 48's
+            // exception). A borrow from another parameter, a second arena's
+            // included, still goes through the order below.
+            if (sparm == parm && itypeIsArena(place))
+                continue;
             int flows;
             if (slotted && slots)
                 flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, slots, 0);
@@ -1126,8 +1220,8 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
-            lent, &through->namesym->namestr);
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated. If the value is a call's result, name which parameter it comes from: the same lifetime on that parameter and on the result.",
+            lent,&through->namesym->namestr);
         break;
     }
 }

@@ -1,0 +1,326 @@
+// The receiving half of a link keeps a stream in order at a sink whose 'accept'
+// AWAITS. A producer sends 1,000 chunks of 4 KiB through a link with a 64 KiB
+// window and then, at once, its 'end' (it does not wait for the buffers to come
+// back). A sink that awaits a different random little while in about half the
+// chunks (a write that takes time) keeps its stream in order with a ChunkInbox. Three
+// runs, one after the other:
+//
+//   0. the whole stream: every chunk is HANDLED in the order sent, one at a time
+//      (never two in hand), and the 'end', which arrives while chunks are still
+//      queued, is handled after the last of the 1,000 (S1, S3). The ChunkInbox did
+//      queue (its peak is above zero), so the order is its doing and not luck;
+//   1. a producer that fails: it sends 300 chunks and then 'end(Failed)'. The sink
+//      handles all 300 first, then gets the failure, which it passes on;
+//   2. a sink that fails at chunk 500: it gives back that chunk and every one
+//      queued, sends 'end(Failed)' on, and the 499 chunks still to come, which the
+//      producer goes on sending, are given back unhandled, and the producer's own
+//      'end' is swallowed (one end downstream, not two).
+//
+// Every buffer is back at the end of each run (the producer's link has nothing
+// out and the pool has lent nothing, and the iobuf pool has none lent at the
+// very end), which is what the LSan run on the server checks.
+
+mod chunkinbox;
+
+import testing use *;
+import collections use *;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf;
+import actors;
+import aio;
+import stages use *;
+
+fn chunkBytes() usize { 4096usize }
+fn windowBytes() usize { 65536usize }
+
+// What the actors of one run write down, read by main once they have all finished
+struct Seen {
+  pub sent: Atomic[u64];          // chunks the producer sent
+  pub arrived: Atomic[u64];       // chunks that reached the sink's 'accept'
+  pub handled: Atomic[u64];       // chunks the sink began to handle
+  pub outOfOrder: Atomic[u64];    // of them, those that began out of the order sent
+  pub inHand: Atomic[i64];        // chunks in hand now
+  pub inHandMax: Atomic[i64];     // the most in hand at once
+  pub finished: Atomic[u64];      // chunks the sink finished
+  pub endHandled: Atomic[u64];    // times the sink handled the end
+  pub finishedAtEnd: Atomic[u64]; // chunks finished when it did (the last, if the end waits)
+  pub peakQueued: Atomic[u64];    // the most chunks the ChunkInbox queued at once
+  pub waits: Atomic[u64];         // chunks that queued
+  pub ends: Atomic[u64];          // ends that reached the sink's downstream
+  pub endFailed: Atomic[u64];     // of them, those Failed
+  pub endMessageOk: Atomic[u64];  // of them, those with the expected message
+  pub sourceOut: Atomic[u64];     // buffers the producer's link has out, at its last look
+  pub poolLent: Atomic[u64];      // bytes its pool has lent, at its last look
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[i64].of(0i64),
+    Atomic[i64].of(0i64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64))
+}
+
+let seen0: Seen;
+let seen1: Seen;
+let seen2: Seen;
+
+fn @initpure init() {
+  seen0 = newSeen();
+  seen1 = newSeen();
+  seen2 = newSeen();
+}
+
+fn seenOf(slot: usize) &Seen {
+  if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else {&seen2}
+}
+
+// ---- the downstream of the sink: it only wants the end ----
+
+actor Probe is ChunkSink {
+  slot: usize;
+  wantMessage: String;        // the failure's message, or "" if none is expected
+  up: Option[ChunkSource];
+  done: OneshotSender[u64];
+
+  pub fn init(self: &new, slot: usize, wantMessage: String, done: OneshotSender[u64]) {
+    *self = Self(slot: slot, wantMessage: wantMessage, up: None[ChunkSource], done: done);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    let s = seenOf(slot);
+    s.ends.add(1u64);
+    match how {
+      case is Finished {}
+      case let Failed(e) {
+        s.endFailed.add(1u64);
+        if (String() <- e).view() == wantMessage.view() { s.endMessageOk.add(1u64); }
+      }
+    }
+    up = None[ChunkSource];
+    done.send(1u64);
+  }
+}
+
+// ---- the sink that awaits ----
+
+// Handles each chunk for a random little while (none in half of them), in the
+// order the ChunkInbox gives them. At chunk 'failAt' it fails, if that is a chunk
+// that comes.
+actor Sink is ChunkSink {
+  slot: usize;
+  down: ChunkSink;
+  rx: ChunkInbox;
+  next: u64;                  // the number expected to begin next
+  rng: u64;
+  failAt: u64;
+
+  pub fn init(self: &new, slot: usize, down: ChunkSink, failAt: u64) {
+    *self = Self(slot: slot, down: down, rx: ChunkInbox.make(), next: 0u64, rng: 12345u64 + u64.from(slot), failAt: failAt);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    rx.attach(source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let s = seenOf(slot);
+    s.arrived.add(1u64);
+    var turn = rx.arrive(c);
+    var more = true;
+    while more {
+      match turn {
+        case let Chunk(b) {
+          let v = b.view();
+          let n = u64.from(v[0usize]) | (u64.from(v[1usize]) << 8u64) | (u64.from(v[2usize]) << 16u64);
+          if n != next { s.outOfOrder.add(1u64); }
+          next = n + 1u64;
+          s.handled.add(1u64);
+          let now = s.inHand.add(1i64) + 1i64;
+          s.inHandMax.max(now);
+          if n == failAt {
+            s.inHand.add(-1i64);
+            rx.fail(b);
+            down.end(Ending.Failed(AnyError.msg("the disk is full")));
+            turn = Turn.Wait;
+            more = false;
+          } else {
+            rng = rng * 6364136223846793005u64 + 1442695040888963407u64;
+            let ms = i64.from((rng >> 33u64) % 5u64);       // 0 to 4; 0 and 1 mean no wait
+            if ms >= 2i64 {
+              let r = await aio.sleep(Duration.fromMillis(ms - 1i64));
+            }
+            s.inHand.add(-1i64);
+            s.finished.add(1u64);
+            turn = rx.finished(b);
+          }
+        }
+        case let End(how) {
+          self.over(how);
+          turn = Turn.Wait;
+          more = false;
+        }
+        case is Wait { more = false; }
+      }
+    }
+    s.peakQueued.store(u64.from(rx.peakQueued()));
+    s.waits.store(rx.waits());
+  }
+
+  // The stream's end can arrive while chunks are in hand or queued: the ChunkInbox
+  // holds it until the last is done
+  pub async fn end(self, how: Ending) {
+    match rx.arriveEnd(how) {
+      case let End(h) { self.over(h); }
+      else {}
+    }
+  }
+
+  // Every chunk before the end is finished: pass the end on
+  fn over(self, how: Ending) {
+    let s = seenOf(slot);
+    s.endHandled.add(1u64);
+    s.finishedAtEnd.store(s.finished.load());
+    down.end(how);
+  }
+}
+
+// ---- the producer ----
+
+// Sends chunk n with its number in the first three bytes, as many as its window
+// lets it, and its end at once after the last: Finished, or Failed after 'failAfter'
+// chunks when that is below 'total'
+actor Producer is ChunkSource {
+  slot: usize;
+  down: ChunkSink;
+  link: ChunkWindow;
+  total: u64;
+  failAfter: u64;
+  made: u64;
+  over: bool;
+
+  pub fn init(self: &new, slot: usize, down: ChunkSink, total: u64, failAfter: u64) {
+    *self = Self(slot: slot, down: down, link: ChunkWindow.own(windowBytes()), total: total, failAfter: failAfter,
+      made: 0u64, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  fn pump(self) {
+    let s = seenOf(slot);
+    var more = !over;
+    while more {
+      if made >= failAfter && failAfter < total {
+        over = true;
+        down.end(Ending.Failed(AnyError.msg("the source went away")));
+        more = false;
+      } else if made >= total {
+        over = true;
+        down.end(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(chunkBytes()) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            let room = buf.spare();
+            room[0usize] = u8.from(made & 255u64);
+            room[1usize] = u8.from((made >> 8u64) & 255u64);
+            room[2usize] = u8.from((made >> 16u64) & 255u64);
+            buf.setLen(chunkBytes());
+            made = made + 1u64;
+            s.sent.add(1u64);
+            down <- buf;
+          }
+        }
+      }
+    }
+    s.sourceOut.store(u64.from(link.inFlight()));
+    s.poolLent.store(u64.from(link.sharedPool().lent()));
+  }
+}
+
+// One run: a producer, a sink that awaits, a probe; wait until the probe has the end
+fn run(slot: usize, total: u64, failAfter: u64, failAt: u64, wantMessage: &str) {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    let probe = Probe(slot, String.from(wantMessage), tx);
+    let sink = Sink(slot, probe, failAt);
+    let source = Producer(slot, sink, total, failAfter);
+    source.start();
+  }
+  rx.recv();
+}
+
+fn main() i32 {
+  initAll();
+  run(0usize, 1000u64, 100000u64, 100000u64, "");
+  run(1usize, 1000u64, 300u64, 100000u64, "the source went away");
+  run(2usize, 1000u64, 100000u64, 500u64, "the disk is full");
+  finalAll();
+
+  // 0. the whole stream
+  let a = &seen0;
+  expectUInt(a.sent.load(), 1000u64, "0: the producer sent 1,000 chunks");
+  expectUInt(a.arrived.load(), 1000u64, "0: they all arrived");
+  expectUInt(a.handled.load(), 1000u64, "0: they were all handled");
+  expectUInt(a.outOfOrder.load(), 0u64, "0: in the order sent (S1)");
+  expectInt(a.inHandMax.load(), 1i64, "0: one at a time, never two in hand (S1)");
+  expectUInt(a.finished.load(), 1000u64, "0: and all finished");
+  expectUInt(a.endHandled.load(), 1u64, "0: the end was handled once");
+  expectUInt(a.finishedAtEnd.load(), 1000u64, "0: after the last chunk was finished (S3)");
+  expect(a.peakQueued.load() > 0u64, "0: the ChunkInbox queued chunks (so the order was its doing)");
+  expect(a.waits.load() > 0u64, "0: some chunks had to wait");
+  expectUInt(a.ends.load(), 1u64, "0: one end reached the downstream");
+  expectUInt(a.endFailed.load(), 0u64, "0: and it was Finished");
+  expect(a.peakQueued.load() <= u64.from(windowBytes() / chunkBytes()), "0: the queue never passed what the window carries");
+  expectUInt(a.sourceOut.load(), 0u64, "0: every buffer is back in the producer's link");
+  expectUInt(a.poolLent.load(), 0u64, "0: and the pool has lent nothing");
+
+  // 1. the producer fails after 300
+  let b = &seen1;
+  expectUInt(b.sent.load(), 300u64, "1: the producer sent 300 chunks and then failed");
+  expectUInt(b.handled.load(), 300u64, "1: the sink handled all 300");
+  expectUInt(b.outOfOrder.load(), 0u64, "1: in order");
+  expectUInt(b.finishedAtEnd.load(), 300u64, "1: the failure was handled after the last of them");
+  expectUInt(b.ends.load(), 1u64, "1: one end reached the downstream");
+  expectUInt(b.endFailed.load(), 1u64, "1: Failed");
+  expectUInt(b.endMessageOk.load(), 1u64, "1: with the producer's message");
+  expectUInt(b.sourceOut.load(), 0u64, "1: every buffer is back");
+  expectUInt(b.poolLent.load(), 0u64, "1: and the pool has lent nothing");
+
+  // 2. the sink fails at chunk 500
+  let c = &seen2;
+  expectUInt(c.sent.load(), 1000u64, "2: the producer went on and sent all 1,000");
+  expectUInt(c.arrived.load(), 1000u64, "2: they all arrived");
+  expectUInt(c.handled.load(), 501u64, "2: the sink began chunks 0 to 500 and no more");
+  expectUInt(c.finished.load(), 500u64, "2: and finished 500, chunk 500 being the one it failed on");
+  expectUInt(c.outOfOrder.load(), 0u64, "2: in order");
+  expectUInt(c.endHandled.load(), 0u64, "2: the producer's own end was swallowed");
+  expectUInt(c.ends.load(), 1u64, "2: one end reached the downstream");
+  expectUInt(c.endFailed.load(), 1u64, "2: Failed");
+  expectUInt(c.endMessageOk.load(), 1u64, "2: with the sink's message");
+  expectUInt(c.sourceOut.load(), 0u64, "2: every buffer is back in the producer's link, handled or not");
+  expectUInt(c.poolLent.load(), 0u64, "2: and the pool has lent nothing");
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in the buffer pool");
+  done()
+}

@@ -736,7 +736,7 @@ static INode *propagateTextMethod(INode *edcl, Name *name, int *form, INode **gi
 // lent, 3 the error prints itself: it meets core's Error trait, and
 // core's 'Error.reportFailure' writes 'Error: ', its 'report()' and a newline to standard
 // error. Otherwise the method is the error's 'report()' where it has one that
-// answers text, else its 'message()'. All are found by name. (What the Error
+// answers text. Both are found by name. (What the Error
 // trait's report() prints is INTERIM until the display design lands.)
 static int propagateMainMessage(INode *errtype, INode *errnode, Name **method) {
     char ename[200];
@@ -751,26 +751,22 @@ static int propagateMainMessage(INode *errtype, INode *errnode, Name **method) {
         *method = reportName;
         return 3;
     }
-    if (propagateTextMethod(edcl, reportName, &form, &gives) != NULL && form != 0) {
+    INode *repfn = propagateTextMethod(edcl, reportName, &form, &gives);
+    if (repfn != NULL && form != 0) {
         *method = reportName;
         return form;
     }
-    INode *msgfn = propagateTextMethod(edcl, messageName, &form, &gives);
-    if (msgfn == NULL) {
+    if (repfn == NULL) {
         errorMsgNode(errnode, ErrorMainResult,
-            "A 'main' returning a Result prints its error when it fails, with the error's 'report()' where it has one, else its 'message()', and %s declares no 'message(self: &)'.",
+            "A 'main' returning a Result prints its error when it fails, as an error meeting core's Error or with the error's 'report()', and %s is not an Error and declares no 'report(self: &)'.",
             propagateSpell(ename, sizeof(ename), errtype));
         return 0;
     }
-    if (form == 0) {
-        char gname[200];
-        errorMsgNode(errnode, ErrorMainResult,
-            "A 'main' returning a Result prints its error when it fails, with the error's 'report()' where it has one, else its 'message()', and the 'message()' of %s gives %s, which is neither a String nor a '&str'.",
-            propagateSpell(ename, sizeof(ename), errtype), propagateSpell(gname, sizeof(gname), gives));
-        return 0;
-    }
-    *method = messageName;
-    return form;
+    char gname[200];
+    errorMsgNode(errnode, ErrorMainResult,
+        "A 'main' returning a Result prints its error when it fails, as an error meeting core's Error or with the error's 'report()', and the 'report()' of %s gives %s, which is neither a String nor a '&str'.",
+        propagateSpell(ename, sizeof(ename), errtype), propagateSpell(gname, sizeof(gname), gives));
+    return 0;
 }
 
 // Is this a module's 'main' that returns a Result: a function of the module, not
@@ -858,7 +854,7 @@ void propagateMainResult(TypeCheckState *pstate, ModuleNode *mod) {
     held->namesym = anonName;
     nodesAdd(&body->stmts, (INode*)held);
 
-    // if -held is Err { let -err = [Err]-held; let -msg = -err.report() (or message()); -mainError(-msg.view()); return 1 }
+    // if -held is Err { let -err = [Err]-held; let -msg = -err.report(); -mainError(-msg.view()); return 1 }
     CastNode *failtest, *failbind;
     propagateTest(held, errorVariantName, lexnode, &failtest, &failbind);
     BlockNode *arm = newBlockNode();

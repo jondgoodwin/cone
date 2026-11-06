@@ -19,7 +19,7 @@
 //         if o.exitCode != 0u32 { ... o.stderr.view() ... }
 //       }
 //       case imm e Err {
-//         imm m = e.message();                   // 'run conec: The system cannot find the file specified'
+//         imm m = String() <- e;                 // 'run conec: The system cannot find the file specified'
 //         ...
 //       }
 //     }
@@ -33,9 +33,9 @@
 //   process.runLine(line, opts, dir)  run a command line written out by hand
 //   process.Options               timeout, inherit, crashReport; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
-//   process.ProcessError          op, program, dir, code, message(), notFound()
+//   process.ProcessError          op, program, dir, code, String() <- e, notFound()
 //   process.commandLine(args)     the line 'run' hands Windows for args
-//   process.args()                this program's arguments, in UTF-8
+//   process.args()                this program's arguments, in UTF-8 (env.args())
 //   process.currentExe()          this program's executable, a Path
 //
 // Two systems run programs by two designs, and the package gives the same
@@ -159,7 +159,7 @@
 //
 // **Failure.** An Err holds a ProcessError: what was being done ('op'),
 // the program, the folder it was to start in, and the system's error number
-// ('code': on Windows GetLastError's, on POSIX errno's). Its 'message()' is
+// ('code': on Windows GetLastError's, on POSIX errno's). Its text ('String() <- e') is
 // one line for a person, in the system's own words (on Windows in English
 // where it has them): 'run nosuch: The system cannot find the file
 // specified', 'run conec in build/x: The directory name is invalid'; on POSIX
@@ -168,10 +168,9 @@
 // system gives ENOENT for both).
 //
 // **This program.** 'args()' is this program's own arguments, its name
-// first, in UTF-8 whatever the system's code page, as Windows' parser splits
-// them: 'main''s argv says the same for ASCII, and loses whatever the code
-// page cannot hold (on POSIX they are argv's bytes, read from /proc/self/cmdline).
-// 'currentExe()' is the path of this program's executable, a 'Path',
+// first, in UTF-8 whatever the system's code page: it forwards to the env
+// package's 'args', which answers them (a program that only wants its
+// arguments imports env, not process). 'currentExe()' is the path of this program's executable, a 'Path',
 // normalized, every separator '/' (on POSIX read from /proc/self/exe).
 //
 // **What differs by system.** The package's interface (a list of arguments, a
@@ -179,7 +178,7 @@
 // Windows': it is what Go, Rust, Python, Zig and Odin each give. Its
 // insides differ, said here as plainly as can be. On Windows it is written over
 // kernel32 (CreateProcessW, named pipes read with overlapped I/O, a job
-// object, the debugging functions) and shell32's CommandLineToArgvW, with
+// object, the debugging functions), with
 // nothing of ISO C or POSIX beneath it, since neither can start a program with its outputs apart, in a
 // folder, under a time limit. On POSIX it is posix_spawn with pipes read by
 // poll (a process group stopped by a signal, a working folder set by
@@ -193,12 +192,13 @@ import libc;
 import posix;
 import collections use String, List;
 import path use Path;
+import env;
 import time;
 import ioerror use osKind;
 
 // ---------------------------------------------------------------------------
-// Windows: kernel32, and shell32's command-line parser. Everything the
-// package asks of the OS is in this section.
+// Windows: kernel32. Everything the package asks of the OS (but the arguments
+// of this program, which are env's) is in this section.
 // ---------------------------------------------------------------------------
 
 struct SecurityAttributes {
@@ -298,9 +298,6 @@ extern {
   fn @c(system) FormatMessageW(flags: u32, source: *u8, id: u32, language: u32, buf: *u16, size: u32,
       args: *u8) u32;
   fn @c(system) GetModuleFileNameW(module: usize, buf: *u16, size: u32) u32;
-  fn @c(system) GetCommandLineW() *u16;
-  fn @c(system) LocalFree(p: *u8) usize;
-  fn @c(system) CommandLineToArgvW(line: *u16, count: &mut i32) **u16;
 }
 
 const genericRead = 0x80000000u32;
@@ -421,29 +418,20 @@ pub struct ProcessError is Error {
 
   // One line for a person: 'run nosuch: The system cannot find the file
   // specified', or 'run conec in build/x: The directory name is invalid'
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from(op.view());
-    if !program.isEmpty() {
-      out.append(" ");
-      out.append(program.view());
-    }
-    if !dir.isEmpty() {
-      out.append(" in ");
-      out.append(dir.view());
-    }
-    out.append(": ");
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- op.view();
+    if !program.isEmpty() { out <- " ", program.view(); }
+    if !dir.isEmpty() { out <- " in ", dir.view(); }
+    out <- ": ";
     let text = systemText(code);
     // A number the system has no text for: the kind and the number, in the
     // words iocore's IoError.describe() gives ('other, OS error 12345')
     if text.isEmpty() {
-      out.append(osKind(code).name());
-      out.append(", OS error ");
-      out.appendUInt(u64.from(code));
+      let kindOfCode = osKind(code);
+      out <- kindOfCode, ", OS error ", code;
     } else {
-      out.append(text.view());
+      out <- text.view();
     }
-    out
   }
 
   // Whether it failed because there is no such program (or no folder on its
@@ -1412,34 +1400,6 @@ fn startPosix(op: &str, program: &str, args: &Array[String], dir: &Path, opts: O
 // This program
 // ---------------------------------------------------------------------------
 
-// This program's arguments on POSIX, its own name first: argv's bytes, which
-// the kernel keeps as the NUL-ended strings of /proc/self/cmdline
-fn argsPosix() List[String] {
-  var out = List[String]();
-  let f = libc.fopen("/proc/self/cmdline", "rb");
-  if f == null { return out; }
-  var whole = String();
-  var buf = Array[u8, 4096]() <- fill 0u8;
-  let bp: *u8 = &[]buf as *u8;
-  var going = true;
-  while going {
-    let n = libc.fread(bp, 1usize, 4096usize, f);
-    if n > 0usize { whole.appendBytes(mem.sliceFromParts(bp, n)); }
-    going = n == 4096usize;
-  }
-  libc.fclose(f);
-  var begin = 0usize;
-  var i = 0usize;
-  while i < whole.len() {
-    if whole[i] == 0u8 {
-      out.push(whole.sub(begin, i));
-      begin = i + 1usize;
-    }
-    i = i + 1usize;
-  }
-  out
-}
-
 // The path of this program's executable on POSIX, where /proc/self/exe links
 fn currentExePosix() Result[Path, ProcessError] {
   var size = 256usize;
@@ -1463,27 +1423,9 @@ fn currentExePosix() Result[Path, ProcessError] {
   Err[Path, ProcessError](failure("currentExe", "", "", errnoInvalid))
 }
 
-// This program's arguments, its own name first, as Windows' parser
-// (CommandLineToArgvW) splits its command line, each in UTF-8, whatever the
-// system's code page: what 'main''s argv holds when every one is ASCII
-pub fn args() List[String] {
-  #if #os == .windows {argsWindows()} #else {argsPosix()}
-}
-
-fn argsWindows() List[String] {
-  var out = List[String]();
-  var n = 0i32;
-  let argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
-  if argv as usize == 0usize { return out; }
-  var i = 0usize;
-  let count = usize.from(n);
-  while i < count {
-    out.push(narrow(*(argv + i), -1i32));
-    i = i + 1usize;
-  }
-  LocalFree(argv as *u8);
-  out
-}
+// This program's arguments, its own name first: the env package's 'args',
+// which is where the program's environment is answered; this forwards to it.
+pub fn args() List[String] { env.args() }
 
 // The path of this program's executable, normalized ('C:/work/build/app.exe')
 pub fn currentExe() Result[Path, ProcessError] {

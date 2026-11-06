@@ -65,7 +65,7 @@ fn clientCtx(v: tls.Verifier) quic.Context {
   match quic.Context.client(cfg) {
     case var Ok(r) {return r;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }
@@ -78,7 +78,7 @@ fn serverCtx(cert: &str, key: &str) quic.Context {
   match quic.Context.server(quic.Config.make(), &certFile, &keyFile) {
     case var Ok(r) {return r;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }
@@ -199,8 +199,10 @@ fn yesNo(b: bool) &str {if b {"yes"} else {"no"}}
 
 // The kind of the verifier's own number the connection's error holds (Windows'
 // error, or OpenSSL's verify result), the same on both; "none" for no number
-fn certKindName(osError: u32) &str {
-  if osError == 0u32 {"none"} else {tls.certErrorKind(osError).name()}
+fn certKindName(osError: u32) String {
+  if osError == 0u32 {return String.from("none");}
+  let k = tls.certErrorKind(osError);
+  String() <- k
 }
 
 // One connection: the client's verifier against a server, and what came of it
@@ -216,7 +218,8 @@ fn attempt(label: &str, cctx: &quic.Context, sctx: &quic.Context, host: &str, lp
   var ss = Side.make();
   pump(&mut c, &mut s, &mut cs, &mut ss, &mut now, lp, pooled);
   printStr("verifier: ");
-  printStr(tls.verifyKindName(c.verifiedBy()));
+  let verifiedBy = c.verifiedBy();
+  print <- toText(&verifiedBy);
   printStr(", asked for the OS's verdict: ");
   printUInt(u64.from(cs.verifyAsked));
   printStr("\n");
@@ -242,10 +245,10 @@ fn attempt(label: &str, cctx: &quic.Context, sctx: &quic.Context, host: &str, lp
   match c.error() {
     case let Some(e) {
       printStr("client's error: ");
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
       printStr("...the verifier's error, as a kind: ");
-      printStr(certKindName(e.osError));
+      printStr(certKindName(e.osError).view());
       printStr("\n");
     }
     case is None[quic.QuicError] {printStr("client's error: none\n");}
@@ -267,7 +270,7 @@ fn mustClient(cctx: &quic.Context, host: &str, now: Instant) quic.Connection {
   match quic.Connection.client(cctx, host, &clientAddr(), &serverAddr(), now) {
     case var Ok(c) {return c;}
     case let Err(err) {
-      printStr(err.message().view());
+      print <- err;
       printStr("\n");
     }
   }
@@ -278,7 +281,7 @@ fn mustAccept(sctx: &quic.Context, first: &Array[u8], now: Instant) quic.Connect
   match quic.Connection.accept(sctx, first, &serverAddr(), &clientAddr(), now) {
     case var Ok(s) {return s;}
     case let Err(e) {
-      printStr(e.message().view());
+      print <- e;
       printStr("\n");
     }
   }

@@ -5,9 +5,8 @@
 // First on one thread: one Loop and one Driver run both the server and the
 // client, which fetches three pages over one kept-alive connection. Then
 // across two threads: the server on a thread of its own, with its own Loop
-// and Driver, and the client on the main thread, whose last request's
-// events go by a channel to a third thread that prints them. Each response
-// is printed with its status, body and timing.
+// and Driver, and the client on the main thread. Each response is printed
+// with its status, body and timing.
 
 mod fetch;
 
@@ -101,7 +100,7 @@ fn fetchAll(drv: &mut Driver, lp: &mut Loop, port: u16, targets: &Array[&str], s
           printStr("\n");
         } else if e.kind == EventKind.Closed && !e.clean {
           printStr("connection failed: ");
-          printStr(e.failure.message().view());
+          print <- e.failure;
           printStr("\n");
           return;
         }
@@ -122,7 +121,7 @@ fn fetchAll(drv: &mut Driver, lp: &mut Loop, port: u16, targets: &Array[&str], s
         inFlight = false;
       } else if e.kind == EventKind.Failed {
         printStr("  failed: ");
-        printStr(e.failure.message().view());
+        print <- e.failure;
         printStr("\n");
         inFlight = false;
       }
@@ -178,39 +177,6 @@ fn serve(a: ServerArgs) u64 {
   served
 }
 
-// The final answers a driver has given
-fn finals(d: &Driver) u64 {
-  let s = d.stats();
-  s.done + s.failed + s.cancelled + s.timedOut
-}
-
-// A thread that prints a request's events as they come over a channel
-fn printer(rx: Receiver[Event]) u64 {
-  var r = rx;
-  var n = 0u64;
-  while true {
-    var last = true;
-    match r.recv() {
-      case var Some(s) {
-        let e = &mut s;
-        n = n + 1u64;
-        printStr("  [printer thread] ");
-        printStr(eventName(e.kind));
-        if e.kind == EventKind.Data {
-          printStr(": ");
-          printStr(e.buf.view() as &str);
-        } else {
-          printStr("\n");
-        }
-        last = e.isTerminal();
-      }
-      case is None[Event] {}
-    }
-    if last {break;}
-  }
-  n
-}
-
 fn main() {
   let targets: Array[&str, 3] =["/", "/about", "/time"];
   printStr("== one thread: server and client on one Loop ==\n");
@@ -236,26 +202,6 @@ fn main() {
     var lp = Loop.mustMake();
     var drv = Driver.make(Config.make());
     fetchAll(&mut drv, &mut lp, port, &targets, false);
-    // One more request, its events to another thread by a channel
-    var tx: Sender[Event];
-    var rx: Receiver[Event];
-    tx, rx = Channel[Event].bounded(16u64);
-    let pr = thread.start(rx, &printer);
-    let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
-    printStr("GET /about, its events to a channel\n");
-    let before = finals(&drv);
-    drv.request(&mut lp, conn, RequestHead.get("/about", "127.0.0.1"), BodyLength(), Sink.Chan(50u64, tx));
-    var events = List[Event]();
-    let until = Instant.now() + Duration.fromSeconds(3i64);
-    // Driven until its final answer has gone into the channel
-    while (finals(&drv) == before || drv.held() > 0usize) && Instant.now() < until {
-      drv.poll(&mut lp, until, &uni events);
-      events.clear();
-    }
-    let n = pr.join();
-    printStr("the printer thread got ");
-    printUInt(n);
-    printStr(" events\n");
     drv.abortAll(&mut lp);
     stop.store(true);
     printStr("the server thread served ");

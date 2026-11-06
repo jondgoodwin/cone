@@ -1,0 +1,94 @@
+// runAll and pullAll, the loop that drives any Transform to its end, checked over the four codecs:
+//
+//   - a gzip stream made by runAll over a Deflater, inflated by runAll over an Inflater, is the input
+//     again (300,000 bytes, so the output takes five pulls through the one 64 KiB buffer): both end Done;
+//   - the same over zstd's Compressor and Decompressor;
+//   - the gzip stream made by runAll is byte for byte the one 'deflate.gzipCompress' makes;
+//   - a stream that is not valid ends Failed, and the transform's failure() says why;
+//   - a stream cut short ends with a status that is not Done;
+//   - 'pullAll' on a transform with nothing fed answers NeedInput and appends nothing;
+//   - output already in the List is kept: runAll appends.
+//
+// The data is a pseudo-random run of five words (as the codecs' tests use).
+
+mod drive;
+
+import testing use *;
+import collections use *;
+import streams use *;
+import deflate;
+import zstd;
+
+fn corpus(n: usize) List[u8] {
+  let w: Array[&str, 5] = ["alpha ", "beta ", "gamma ", "delta ", "epsilon "];
+  var d = List[u8].withCapacity(n + 16usize);
+  var s = 7u64;
+  while d.len() < n {
+    s = s * 6364136223846793005u64 + 1442695040888963407u64;
+    let word = w[usize.from((s >> 40u64) % 5u64)];
+    var i = 0usize;
+    while i < word.len { d.push(word[i]); i += 1usize; }
+  }
+  d.truncate(n);
+  d
+}
+
+fn main() i32 {
+  let data = corpus(300000usize);
+
+  // gzip, there and back
+  var def = deflate.Deflater.make(deflate.Format.Gzip, 2);
+  var packed = List[u8]();
+  let stDef = runAll(&mut def, data.view(), &mut packed);
+  expect(stDef == Status.Done, "gzip: the Deflater ends Done");
+  expect(packed.view() == deflate.gzipCompress(data.view(), 2).view(), "gzip: and makes the bytes the one-shot gzipCompress makes");
+  var inf = deflate.Inflater.make(deflate.Format.Gzip);
+  var back = List[u8]();
+  let stInf = runAll(&mut inf, packed.view(), &mut back);
+  expect(stInf == Status.Done, "gzip: the Inflater ends Done");
+  expect(back.view() == data.view(), "gzip: and gives the input back");
+
+  // zstd, there and back
+  var comp = zstd.Compressor.make(2);
+  var frame = List[u8]();
+  expect(runAll(&mut comp, data.view(), &mut frame) == Status.Done, "zstd: the Compressor ends Done");
+  var dec = zstd.Decompressor.make();
+  var again = List[u8]();
+  expect(runAll(&mut dec, frame.view(), &mut again) == Status.Done, "zstd: the Decompressor ends Done");
+  expect(again.view() == data.view(), "zstd: and gives the input back");
+
+  // bad input
+  var bad = deflate.Inflater.make(deflate.Format.Gzip);
+  var junk = List[u8]();
+  var noise = List[u8]();
+  var i = 0usize;
+  while i < 200usize { noise.push(u8.from((i * 37usize + 11usize) % 251usize)); i += 1usize; }
+  let stBad = runAll(&mut bad, noise.view(), &mut junk);
+  expect(stBad == Status.Failed, "bad input: the Inflater ends Failed");
+  match bad.failure() {
+    case is Some { expect(true, "bad input: and failure() says why"); }
+    case is None { expect(false, "bad input: and failure() says why"); }
+  }
+
+  // a stream cut short
+  var cut = deflate.Inflater.make(deflate.Format.Gzip);
+  var some = List[u8]();
+  let stCut = runAll(&mut cut, &packed.view()[0usize ..< packed.len() / 2usize], &mut some);
+  expect(stCut != Status.Done, "cut short: the stream does not end Done");
+  expect(some.len() > 0usize && some.len() < data.len(), "cut short: what was delivered is kept");
+
+  // nothing fed
+  var idle = deflate.Inflater.make(deflate.Format.Gzip);
+  var none = List[u8]();
+  expect(pullAll(&mut idle, &mut none) == Status.NeedInput, "nothing fed: pullAll says NeedInput");
+  expectUInt(u64.from(none.len()), 0u64, "nothing fed: and appends nothing");
+
+  // appends
+  var inf2 = deflate.Inflater.make(deflate.Format.Gzip);
+  var kept = List[u8]();
+  kept.push(65u8);
+  _ = runAll(&mut inf2, packed.view(), &mut kept);
+  expectUInt(u64.from(kept.len()), 300001u64, "appends: what was in the List stays, the output follows");
+  expectUInt(u64.from(*kept[0usize]), 65u64, "appends: the first byte is still the one put there");
+  done()
+}

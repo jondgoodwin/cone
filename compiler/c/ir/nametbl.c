@@ -233,6 +233,8 @@ void nametblInit() {
 
     optionName = nametblFind("Option", 6);
     fromName = nametblFind("from", 4);
+    parseName = nametblFind("parse", 5);
+    tryFromName = nametblFind("tryFrom", 7);
     selectName = nametblFind("select", 6);
     joinName = nametblFind("join", 4);
     hashName = nametblFind("hash", 4);
@@ -256,7 +258,6 @@ void nametblInit() {
     resultName = nametblFind("Result", 6);
     okName = nametblFind("Ok", 2);
     errorVariantName = nametblFind("Err", 3);
-    messageName = nametblFind("message", 7);
     reportName = nametblFind("report", 6);
 
     allocMethodName = nametblFind("alloc", 5);

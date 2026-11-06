@@ -32,6 +32,8 @@ ModuleNode *newModuleNode() {
     mod->traitname = NULL;
     mod->trait = NULL;
     mod->ntaken = 0;
+    mod->setorder = NULL;
+    mod->setups = NULL;
     mod->initfn = NULL;
     mod->finalfn = NULL;
     mod->genericinfo = NULL;
@@ -1477,11 +1479,12 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
 }
 
 // A global the module declares without an initial value, which its 'init' must
-// assign. An 'extern' global is defined elsewhere, initial value and all
+// assign. An 'extern' global is defined elsewhere, initial value and all. A setup's
+// global holds no value of its own either, but its module's setups set it (modAddSetup)
 static int modGlobalUninit(INode *node) {
     // A '@workgroup' global has no value until a workgroup's invocations write one
     return node->tag == VarDclTag && ((VarDclNode*)node)->value == NULL
-        && !(((VarDclNode*)node)->dclinfo.facts & (DclExternal | DclWorkgroup));
+        && !(((VarDclNode*)node)->dclinfo.facts & (DclExternal | DclWorkgroup | DclSetup));
 }
 
 ModuleNode *modInitOf(FnDclNode *fnnode) {
@@ -1491,7 +1494,162 @@ ModuleNode *modInitOf(FnDclNode *fnnode) {
     return owner != NULL && owner->tag == ModuleTag ? (ModuleNode*)owner : NULL;
 }
 
-uint16_t *modInitFlowBegin(ModuleNode *mod) {
+// The module whose 'init' the flow pass is walking, or NULL
+static ModuleNode *modInitCur = NULL;
+
+// The flow pass met an assignment to this name: where it is a global of the
+// module whose 'init' is being walked and is not yet in the module's setup
+// order, it is next in it. Text order, so the first order written wins where
+// branches set the same globals in different orders
+void modInitNoteSet(VarDclNode *var) {
+    if (modInitCur == NULL || var->dclinfo.owner != (INode*)modInitCur)
+        return;
+    if (modInitCur->setorder == NULL)
+        modInitCur->setorder = newNodes(4);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(modInitCur->setorder, cnt, nodesp)) {
+        if (*nodesp == (INode*)var)
+            return;
+    }
+    nodesAdd(&modInitCur->setorder, (INode*)var);
+}
+
+// The 'init' function itself, so that only its own flow walk checks its calls
+static FnDclNode *modInitFnCur = NULL;
+
+// What reading a callee's body (and, through it, the bodies of the module's own
+// functions it calls) has to answer: does it read a global of the module that
+// 'init' has not yet set at the call being walked?
+typedef struct {
+    ModuleNode *mod;
+    Nodes *seen;            // The module's functions whose bodies were entered: a cycle among them ends here
+    INode *skip;            // The name an assignment stores to, which is not a read
+    VarDclNode *hit;        // The first global found that 'init' has not set yet, or NULL
+    FnDclNode *hitfn;       // The function whose body reads it
+    FnDclNode *cur;         // The function whose body is being read
+    Nodes *reads;           // Where given, the walk collects instead of judging: every setup global, and every global 'init' sets, of the module that is read (modSetupReads)
+    Nodes *readfns;         // Beside 'reads', the function whose body reads each (NULL for the value itself)
+} ModReadCtx;
+
+static int modReadsVisit(INode *node, void *vctx);
+
+// Does the module declare this function: as one of its own, or as a method of a
+// type it declares? An instance of a generic function or method it declares is
+// owned the same way, being a clone of it
+static int modDeclares(ModuleNode *mod, FnDclNode *fn) {
+    INode *owner = fn->dclinfo.owner;
+    if (owner == (INode*)mod)
+        return 1;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && inodeGetOwner(owner) == (INode*)mod;
+}
+
+// Is this function an instance of a generic, or a method of an instantiated
+// generic type? What instantiated it is recorded on the instance (a generic
+// function's) or on its type's (a method's, cloned with the type)
+static int modIsInstance(FnDclNode *fn) {
+    if (fn->instnode != NULL)
+        return 1;
+    INode *owner = fn->dclinfo.owner;
+    return (fn->flags & FlagMethFld) && owner != NULL && owner->tag != ModuleTag && owner->instnode != NULL;
+}
+
+// The body of one of the module's own functions, followed wherever the call to
+// it is statically resolved: a function, or a method of a type the module
+// declares, with a body written in Cone, and an instance of a generic of either
+// (the instance's body, whose names are resolved, never the template's). An
+// instance of a generic of another module is followed too, including a method
+// of an instantiated generic type: given this module's type, it can call that
+// type's method, which reads this module's globals (a clone carries its
+// 'instnode'). Not followed: an extern, a generic still uninstantiated, a plain
+// function of another module (it cannot read this module's globals without a
+// cycle, which is refused), and what is not statically resolved -- a virtual
+// call, a closure, a function reference -- which passes until 'trust'
+static int modReadsFollow(ModReadCtx *ctx, INode *dcl) {
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)dcl;
+    if (!(modDeclares(ctx->mod, fn) || modIsInstance(fn)) || fn->genericinfo != NULL || (fn->flags & FlagExtern)
+        || fn->value == NULL || fn->value->tag != BlockTag)
+        return 0;
+    INode **seenp;
+    uint32_t cnt;
+    for (nodesFor(ctx->seen, cnt, seenp)) {
+        if (*seenp == dcl)
+            return 0;
+    }
+    nodesAdd(&ctx->seen, dcl);
+    FnDclNode *svcur = ctx->cur;
+    ctx->cur = fn;
+    int found = siVisit(fn->value, modReadsVisit, ctx);
+    ctx->cur = svcur;
+    return found;
+}
+
+static int modReadsVisit(INode *node, void *vctx) {
+    ModReadCtx *ctx = (ModReadCtx*)vctx;
+    switch (node->tag) {
+    case AssignTag:
+        // 'g = v' stores to g, as 'init' itself may; its other operands are read
+        ctx->skip = ((AssignNode*)node)->lval;
+        return 0;
+    case NameUseTag: {
+        INode *dcl = ((NameUseNode*)node)->dclnode;
+        if (node == ctx->skip || dcl == NULL || dcl->tag != VarDclTag)
+            return 0;
+        VarDclNode *var = (VarDclNode*)dcl;
+        if (ctx->reads) {
+            if (var->dclinfo.owner == (INode*)ctx->mod && ((var->dclinfo.facts & DclSetup) || modGlobalUninit(dcl))) {
+                INode **readp;
+                uint32_t readcnt;
+                for (nodesFor(ctx->reads, readcnt, readp)) {
+                    if (*readp == dcl)
+                        return 0;
+                }
+                nodesAdd(&ctx->reads, dcl);
+                nodesAdd(&ctx->readfns, (INode*)ctx->cur);
+            }
+            return 0;
+        }
+        if (var->dclinfo.owner != (INode*)ctx->mod || !modGlobalUninit(dcl) || (var->flowtempflags & VarInitialized))
+            return 0;
+        ctx->hit = var;
+        ctx->hitfn = ctx->cur;
+        return 1;
+    }
+    case FnCallTag: {
+        INode *objfn = ((FnCallNode*)node)->objfn;
+        if (objfn != NULL && isNameUseNode(objfn) && !(((FnCallNode*)node)->flags & FlagVDisp))
+            return modReadsFollow(ctx, ((NameUseNode*)objfn)->dclnode);
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// A call 'init' makes is walked by flow: where it calls one of the module's own
+// functions, what that function reads counts as 'init' reading it at this point,
+// through every function of the module it calls in turn. Positional, as 'init''s
+// own reads are: only a global not yet set where the call stands is refused, and
+// a cycle of helpers ends where it comes back to one already entered
+void modInitCall(FlowState *fstate, FnCallNode *call) {
+    if (modInitCur == NULL || modInitFnCur == NULL || fstate->fnsig != (FnSigNode*)modInitFnCur->vtype)
+        return;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn) || (call->flags & FlagVDisp))
+        return;
+    ModReadCtx ctx = { modInitCur, newNodes(8), NULL, NULL, NULL, NULL };
+    if (!modReadsFollow(&ctx, ((NameUseNode*)call->objfn)->dclnode))
+        return;
+    errorMsgNode((INode*)call, ErrorMove,
+        "This call reads global %s, in %s, which has not been initialized: 'init' has not set it by this point, so there is no value to use.",
+        &ctx.hit->namesym->namestr, &ctx.hitfn->namesym->namestr);
+}
+
+uint16_t *modInitFlowBegin(ModuleNode *mod, FnDclNode *initfn) {
+    modInitCur = mod;
+    modInitFnCur = initfn;
+    mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
     uint32_t cnt;
@@ -1508,6 +1666,8 @@ uint16_t *modInitFlowBegin(ModuleNode *mod) {
 }
 
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
+    modInitCur = NULL;
+    modInitFnCur = NULL;
     INode **nodesp;
     uint32_t cnt;
     uint32_t pos = 0;
@@ -1583,6 +1743,231 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
     return fn;
 }
 
+// ---- Setups: a 'let' global given a value written where it is declared -------
+//
+// A 'let' global whose value is not a constant (a call, say) is a setup. Type
+// check meets its value as it meets any global's, and modAddSetup takes it out
+// of the declaration -- which then holds no value, as a global 'init' sets does
+// not -- into an assignment of the global, listed in the module's 'setups'.
+// Once the module is checked, modSetupBuild orders the setups by what each
+// reads, as 'init''s use-before-set check reads (the module's own functions
+// followed, modReadsFollow), refusing a cycle; makes them the body of a
+// function of the module; and has the module's 'init' (one is made where the
+// module writes none) call it first. So every setup of a module has run before
+// its 'init' does, and the program's stitched init runs the modules in their
+// order. A setup that panics ends the program at start-up, as any panic does.
+// The module's finalizer takes the setups in this order (modGiveDrop), so the
+// reverse of it is the reverse of the order they ran.
+
+int modAddSetup(VarDclNode *var) {
+    INode *owner = var->dclinfo.owner;
+    // Nothing on a GPU target runs a module's 'init', so nothing would run the setup
+    if (flowGpu || var->scope != 0 || (var->flags & FlagStatic) || owner == NULL || owner->tag != ModuleTag
+        || !permIsSame(var->perm, (INode*)immPerm) || var->value == NULL
+        || (var->dclinfo.facts & (DclCName | DclExternal | DclThreadLocal | DclWorkgroup))
+        || (((ModuleNode*)owner)->dclinfo.facts & DclCName))
+        return 0;
+    ModuleNode *mod = (ModuleNode*)owner;
+    INode *lval = newNameUseFromDclNode((INode*)var, (INode*)var);
+    AssignNode *assign = newAssignNode(NormalAssign, lval, var->value);
+    inodeLexCopy((INode*)assign, (INode*)var);
+    assign->vtype = ((IExpNode*)var->value)->vtype;
+    var->value = NULL;
+    var->dclinfo.facts |= DclSetup;
+    if (mod->setups == NULL)
+        mod->setups = newNodes(4);
+    nodesAdd(&mod->setups, (INode*)assign);
+    return 1;
+}
+
+static VarDclNode *modSetupVar(INode *assign) {
+    return (VarDclNode*)((NameUseNode*)((AssignNode*)assign)->lval)->dclnode;
+}
+
+// The setups, each read through the module's own functions the way init's
+// check reads, in declaration order. 'order' gets the setups in the order they
+// run, or NULL where one is refused
+static Nodes *modSetupOrder(ModuleNode *mod) {
+    Nodes *decl = newNodes(8);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != VarDclTag || !(((VarDclNode*)*nodesp)->dclinfo.facts & DclSetup))
+            continue;
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setups, setcnt, setp)) {
+            if ((INode*)modSetupVar(*setp) == *nodesp)
+                nodesAdd(&decl, *setp);
+        }
+    }
+    uint32_t n = decl->used;
+    Nodes **reads = (Nodes**)memAllocBlk(sizeof(Nodes*) * (n + 1));
+    int refused = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        AssignNode *assign = (AssignNode*)nodesGet(decl, i);
+        ModReadCtx ctx = { mod, newNodes(8), NULL, NULL, NULL, NULL, newNodes(4), newNodes(4) };
+        siVisit(assign->rval, modReadsVisit, &ctx);
+        reads[i] = ctx.reads;
+        // Setups run before 'init': a global it sets holds nothing yet
+        for (uint32_t k = 0; k < ctx.reads->used; ++k) {
+            VarDclNode *read = (VarDclNode*)nodesGet(ctx.reads, k);
+            if (read->dclinfo.facts & DclSetup)
+                continue;
+            FnDclNode *readfn = (FnDclNode*)nodesGet(ctx.readfns, k);
+            errorMsgNode((INode*)modSetupVar((INode*)assign), ErrorSetupReadsInit,
+                "The setup of %s reads global %s, which the module's 'init' sets: setups run before 'init', so it holds no value yet%s%s.",
+                &modSetupVar((INode*)assign)->namesym->namestr, &read->namesym->namestr,
+                readfn ? ", in " : "", readfn ? &readfn->namesym->namestr : "");
+            refused = 1;
+        }
+    }
+
+    // Depth first, in declaration order: each setup after the setups it reads,
+    // and a setup reached again while its own reads are being placed is a cycle
+    uint8_t *state = (uint8_t*)memAllocBlk(n + 1);    // 0 not reached, 1 being placed, 2 placed
+    Nodes *ordered = newNodes(n + 1);
+    int cyclic = refused;
+    uint32_t *stack = (uint32_t*)memAllocBlk(sizeof(uint32_t) * (n + 1));
+    uint32_t *next = (uint32_t*)memAllocBlk(sizeof(uint32_t) * (n + 1));
+    for (uint32_t root = 0; root < n; ++root) {
+        if (state[root])
+            continue;
+        uint32_t depth = 0;
+        stack[0] = root;
+        next[0] = 0;
+        state[root] = 1;
+        while (1) {
+            uint32_t at = stack[depth];
+            uint32_t k = next[depth];
+            if (k < reads[at]->used) {
+                next[depth] = k + 1;
+                uint32_t to = n;
+                for (uint32_t j = 0; j < n; ++j) {
+                    if ((INode*)modSetupVar(nodesGet(decl, j)) == nodesGet(reads[at], k))
+                        to = j;
+                }
+                if (to == n || state[to] == 2)
+                    continue;
+                if (state[to] == 1) {
+                    char chain[400];
+                    chain[0] = '\0';
+                    uint32_t from = 0;
+                    while (stack[from] != to)
+                        ++from;
+                    for (uint32_t d = from; d <= depth; ++d) {
+                        size_t used = strlen(chain);
+                        snprintf(chain + used, sizeof(chain) - used, "%s%s", d > from ? " -> " : "",
+                            &modSetupVar(nodesGet(decl, stack[d]))->namesym->namestr);
+                    }
+                    size_t used = strlen(chain);
+                    snprintf(chain + used, sizeof(chain) - used, " -> %s", &modSetupVar(nodesGet(decl, to))->namesym->namestr);
+                    errorMsgNode((INode*)modSetupVar(nodesGet(decl, to)), ErrorSetupCycle,
+                        "The setups of this module's globals read one another round a cycle (%s), so none can be set before the one that reads it.",
+                        chain);
+                    cyclic = 1;
+                    continue;
+                }
+                state[to] = 1;
+                ++depth;
+                stack[depth] = to;
+                next[depth] = 0;
+                continue;
+            }
+            state[at] = 2;
+            nodesAdd(&ordered, nodesGet(decl, at));
+            if (depth == 0)
+                break;
+            --depth;
+        }
+    }
+    return cyclic ? NULL : ordered;
+}
+
+// Make the module's setups a function of its own, run first by its 'init'
+// (made where the module writes none). Pre-lowered as 'drop' is, its flow pass
+// run here so that what a value moves or copies is judged as it is for any
+// assignment: each setup global holds nothing until its assignment, as an
+// uninitialized local does, so a read of one before its setup is flow's own
+// refusal
+static FnDclNode *modSetupBuild(ModuleNode *mod, FnDclNode *initfn) {
+    int errorsOnEntry = errors;
+    Nodes *ordered = modSetupOrder(mod);
+    if (ordered == NULL || errors != errorsOnEntry)
+        return initfn;
+    mod->setups = ordered;
+
+    FnSigNode *sig = newFnSigNode();
+    sig->rettype = (INode*)newVoidNode();
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)mod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ordered, cnt, nodesp))
+        nodesAdd(&block->stmts, *nodesp);
+    BreakRetNode *retnode = newReturnNode();
+    retnode->exp = (INode*)newNilLitNode();
+    retnode->block = block;
+    nodesAdd(&block->stmts, (INode*)retnode);
+    FnDclNode *setupfn = newFnDclNode(nametblFind("-setups", 7), 0, (INode*)sig, (INode*)block);
+    inodeLexCopy((INode*)setupfn, (INode*)mod);
+    dclInfoJoin((INode*)setupfn, (INode*)mod);
+    modLifecycleCone(setupfn);
+    setupfn->flags |= TypeChecked;
+    setupfn->dclinfo.facts |= DclBodyTyped;
+
+    // Flow: the setups' globals hold nothing until their assignments
+    uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (ordered->used + 1));
+    uint32_t pos = 0;
+    for (nodesFor(ordered, cnt, nodesp)) {
+        VarDclNode *var = modSetupVar(*nodesp);
+        saved[pos++] = var->flowtempflags;
+        var->flowtempflags &= 0xFFFF - (VarInitialized | VarMoved);
+    }
+    FlowState fstate;
+    flowStateInit(&fstate, sig);
+    blockFlow(&fstate, &block);
+    flowCurrent = NULL;
+    // A borrow held in a way only a walk following each path can judge -- a
+    // temporary's, stored into a global -- is walked as any function's is
+    // (fnDclFlow), so a setup's store is judged as the same store in 'init' is
+    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry) {
+        int loans = fstate.gate != 0;
+        if (loans)
+            shapeWalkReady(setupfn, 0);
+        flowPathWalk(setupfn, loans, fstate.dropgate != 0, 0);
+    }
+    pos = 0;
+    for (nodesFor(ordered, cnt, nodesp))
+        modSetupVar(*nodesp)->flowtempflags = saved[pos++];
+    nodesAdd(&mod->nodes, (INode*)setupfn);
+
+    // 'init' runs them first
+    FnCallNode *call = newFnCallLower((INode*)mod, (INode*)setupfn, 1);
+    call->vtype = sig->rettype;
+    if (initfn == NULL) {
+        FnSigNode *initsig = newFnSigNode();
+        initsig->rettype = (INode*)newVoidNode();
+        BlockNode *initblock = newBlockNode();
+        inodeLexCopy((INode*)initblock, (INode*)mod);
+        nodesAdd(&initblock->stmts, (INode*)call);
+        BreakRetNode *initret = newReturnNode();
+        initret->exp = (INode*)newNilLitNode();
+        initret->block = initblock;
+        nodesAdd(&initblock->stmts, (INode*)initret);
+        initfn = newFnDclNode(initName, 0, (INode*)initsig, (INode*)initblock);
+        inodeLexCopy((INode*)initfn, (INode*)mod);
+        dclInfoJoin((INode*)initfn, (INode*)mod);
+        initfn->dclinfo.facts |= DclInitPure | DclLifecycle;
+        modLifecycleCone(initfn);
+        initfn->flags |= TypeChecked;
+        nodesAdd(&mod->nodes, (INode*)initfn);
+    }
+    else
+        nodesInsert(&((BlockNode*)initfn->value)->stmts, (INode*)call, 0);
+    return initfn;
+}
+
 // Whether the module's finalizer finalizes this global: its type has anything
 // to do as it dies (itypeNeedsFinal), and it is not C's storage. A thread-local
 // needing it is refused (modGiveDrop), and a '@workgroup' global may hold only
@@ -1594,9 +1979,9 @@ int modGlobalFinalized(VarDclNode *var) {
 // Give the module a 'drop' where any global it declares needs finalizing
 // (itypeNeedsFinal, the question a local's death asks): a function owned by the
 // module, so its symbol is spelled after it ('q.drop'), that calls the module's
-// own 'final' and then finalizes each such global, in the order the globals are
-// declared -- a type's 'drop' is its 'final' and then its fields', and a
-// module's globals are its fields. It is the return's release list, as a
+// own 'final' and then finalizes each such global, in the reverse of the order
+// the globals were set (the setup list) -- a type's 'drop' is its 'final' and then its
+// fields', and a module's globals are its fields, set in order, ended in reverse. It is the return's release list, as a
 // function's locals are released: a struct or an enum listed as its drop's
 // call, anything else -- an owning reference, a tuple or an array -- listed as
 // the global itself, which generation finalizes in place (genlDealiasNode).
@@ -1609,9 +1994,37 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     Nodes *releases = NULL;
     INode **nodesp;
     uint32_t cnt;
+    // The order the globals are set (rule 6): first those with a constant value,
+    // in declaration order, then the setups in the order they run (modSetupBuild),
+    // then those 'init' assigns, in the order the flow pass first met an
+    // assignment to each
+    Nodes *setup = newNodes(8);
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        if ((*nodesp)->tag != VarDclTag)
+        if ((*nodesp)->tag != VarDclTag || (((VarDclNode*)*nodesp)->dclinfo.facts & DclSetup))
             continue;
+        int assigned = 0;
+        if (mod->setorder) {
+            INode **setp;
+            uint32_t setcnt;
+            for (nodesFor(mod->setorder, setcnt, setp))
+                assigned |= *setp == *nodesp;
+        }
+        if (!assigned)
+            nodesAdd(&setup, *nodesp);
+    }
+    if (mod->setups) {
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setups, setcnt, setp))
+            nodesAdd(&setup, (INode*)modSetupVar(*setp));
+    }
+    if (mod->setorder) {
+        INode **setp;
+        uint32_t setcnt;
+        for (nodesFor(mod->setorder, setcnt, setp))
+            nodesAdd(&setup, *setp);
+    }
+    for (nodesFor(setup, cnt, nodesp)) {
         VarDclNode *var = (VarDclNode*)*nodesp;
         // A thread-local is a copy per thread, and each copy would need
         // finalizing as its thread ends, which nothing does yet. So its type
@@ -1665,6 +2078,12 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     if (block == NULL)
         return final;
 
+    // The reverse of the order they were set (the setup list above)
+    for (uint32_t lo = 0, hi = releases->used; lo + 1 < hi; ++lo, --hi) {
+        INode *tmp = nodesGet(releases, lo);
+        nodesGet(releases, lo) = nodesGet(releases, hi - 1);
+        nodesGet(releases, hi - 1) = tmp;
+    }
     BreakRetNode *retnode = newReturnNode();
     retnode->exp = (INode*)newNilLitNode();
     retnode->block = block;
@@ -1686,6 +2105,8 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
 static void modLifecycle(ModuleNode *mod) {
     mod->initfn = modLifecycleFn(mod, initName);
     FnDclNode *final = modLifecycleFn(mod, finalName);
+    if (mod->setups)
+        mod->initfn = modSetupBuild(mod, mod->initfn);
 
     // An 'init' the module declares checks its globals itself, well formed or
     // not: one that is malformed has been reported, and that is the one error

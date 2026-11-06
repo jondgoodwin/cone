@@ -82,7 +82,8 @@
 		<span class="pre">hasAuthority</span>. The methods write it, or ask about it:</p>
 	<ul>
 	<li><span class="pre">text()</span>: the URL as text, the port only when it is not the scheme's default
-		(80 for http, 443 for https).</li>
+		(80 for http, 443 for https). <span class="pre">toText(out)</span> sends the same text, so
+		<span class="pre">$"{u}"</span> and <span class="pre">print &lt;- u</span> take a URL.</li>
 	<li><span class="pre">origin()</span>: <span class="pre">scheme://host:port</span>, the port always written. It is
 		what a client pools connections under.</li>
 	<li><span class="pre">authority()</span>: what HTTP writes as <span class="pre">Host</span>.</li>
@@ -103,7 +104,7 @@
 
 	<h3 id="url-errors">Refusals</h3>
 	<p>A URL that cannot be read gives a <span class="pre">UrlError</span>: <span class="pre">at</span>, the byte
-		where it was found, <span class="pre">why</span>, and <span class="pre">message()</span>, which joins them.
+		where it was found, <span class="pre">why</span>, and <span class="pre">toText</span>, which joins them.
 		A scheme that is not a letter followed by letters, digits, <span class="pre">+ - .</span>, a port that is
 		not decimal or is past 65535, a host with a character no host may hold, a control character, an http or
 		https URL with no host, and an IPv6 address that is not one are refused. Refused by name, because they are not read
@@ -150,21 +151,21 @@ fn main() {
       // Resolve a reference against it
       match u.resolve("../d?y") {
         case let Ok(t) {show("resolved ", t.text().view());}
-        case let Err(e) {show("error    ", e.message().view());}
+        case let Err(e) {show("error    ", (String() <- e).view());}
       }
       match u.resolve("//other.example/x") {
         case let Ok(t) {show("resolved ", t.text().view());}
-        case let Err(e) {show("error    ", e.message().view());}
+        case let Err(e) {show("error    ", (String() <- e).view());}
       }
     }
-    case let Err(e) {show("error    ", e.message().view());}
+    case let Err(e) {show("error    ", (String() <- e).view());}
   }
 
   // A refusal says where and why
   match Url.parse("http://example.com:99999/") {
     case let Ok(u) {show("text     ", u.text().view());}
     case let Err(e) {
-      show("error    ", e.message().view());
+      show("error    ", (String() <- e).view());
       printStr("at byte  ");
       printUInt(u64.from(e.at));
       printStr("\n");
@@ -294,7 +295,7 @@ decoded   a b&amp;c=d/é
 		<span class="pre">Closed</span> (the connection ended mid-message) or <span class="pre">TimedOut</span>
 		&mdash; the <span class="pre">status</span> a server would answer it with (0 for none),
 		<span class="pre">noResponse</span> (no byte of a response had arrived: with an idempotent method, the
-		time a client may retry), and <span class="pre">detail</span>, one line. <span class="pre">message()</span>
+		time a client may retry), and <span class="pre">detail</span>, one line. <span class="pre">toText</span>
 		joins the kind and the detail.</p>
 <pre>
 mod msgs;
@@ -368,7 +369,7 @@ fn main() {
   printStr(if body.isSized() &amp;&amp; !body.isUnsized() {"sized\n"} else {"?\n"});
 
   let err = HttpError.make(ErrorKind.Malformed, 400u16, "a header field's name has a space before its colon");
-  printStr(err.message().view());
+  print <- err;
   printStr("\n");
 }
 </pre>
@@ -458,7 +459,7 @@ fn events(c: &amp;mut Connection) {
       case is End {printStr("event End\n");}
       case var Failed(f) {
         printStr("event Failed ");
-        printStr(f.error.message().view());
+        print <- f.error;
         printStr("\n");
       }
       case is Closed {
@@ -708,7 +709,7 @@ fn main() {
         case let Err(e) {}
       }
     }
-    case let Err(e) {printStr(e.message().view());}
+    case let Err(e) {print <- e;}
   }
 
   // A client on the same loop asks it three things
@@ -853,11 +854,7 @@ if e.kind == EventKind.End {
 		<span class="pre">token</span> it carries back, a <span class="pre">u64</span> the driver never reads. The
 		program tells its events apart by token, as the programs above do.
 		<span class="pre">Sink.Here(token)</span> delivers to the thread that polls, appended to
-		<span class="pre">events</span>. <span class="pre">Sink.Chan(token, tx)</span> sends on a channel's
-		<span class="pre">Sender[Event]</span> to another thread, never waiting: when the channel is full the event is
-		held, the connection's reading stops behind it, and it is tried again at every pump, so the channel's bound
-		bounds what the connection holds. Events keep their order within one sink, not across sinks; a program
-		drives the driver until <span class="pre">drv.held()</span> is 0 before it stops. A
+		<span class="pre">events</span>; a program that wants them on another thread sends them there itself. A
 		<span class="pre">drv.stats()</span> counts connections, requests by final answer, events and bytes.</p>
 
 	<h3 id="httpconn-events">Events</h3>
@@ -872,7 +869,7 @@ if e.kind == EventKind.End {
 		<span class="pre">failure</span>, <span class="pre">request</span>, <span class="pre">response</span>,
 		<span class="pre">body</span>, <span class="pre">buf</span>, <span class="pre">trailers</span> and
 		<span class="pre">timing</span>. <span class="pre">e.isTerminal()</span> is true of the four final answers;
-		<span class="pre">eventName(kind)</span> is a kind's name.</p>
+		<span class="pre">toDebug(&amp;kind)</span> writes a kind's name.</p>
 
 	<h3 id="httpconn-cancel">Cancelling and deadlines</h3>
 	<p><span class="pre">drv.cancel(lp, req)</span> asks a request to end. Still waiting, it is taken out and
@@ -901,7 +898,7 @@ if e.kind == EventKind.End {
 		<span class="pre">HttpError</span> (its kind, detail and <span class="pre">noResponse</span>); and
 		<span class="pre">unsent</span>, no byte of the request reached the socket. A request may be tried again
 		on another connection when it is unsent, or when it is idempotent and has
-		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">message()</span>
+		<span class="pre">noResponse</span>; the client above decides, and these two say exactly. <span class="pre">toText</span>
 		joins them as <span class="pre">connect: closed: ... (connection refused, OS error 10061: ...)</span>: the kind,
 		the system's number and its words (a <span class="pre">Tls</span> stage's words already hold the verifier's).</p>
 
@@ -995,9 +992,9 @@ fn show(label: &amp;str, r: &amp;Response) {
     printStr(if r.timing.reused {"kept connection"} else {"new connection"});
     printStr(")\n");
   } else {
-    printStr(eventName(r.outcome));
+    print <- toDebug(&amp;r.outcome);
     printStr(", ");
-    printStr(stageName(r.failure.stage));
+    print &lt;- toText(&amp;r.failure.stage);
     printStr(" stage\n");
   }
 }
@@ -1056,7 +1053,7 @@ fn main() {
   let bad = client.fetchWhole(&amp;mut lp, Request.get("ftp://127.0.0.1/"), 65536usize);
   show("GET ftp://", &amp;bad);
   printStr("  ");
-  printStr(bad.failure.message().view());
+  print <- bad.failure;
   printStr("\n");
 
   // A GET is repeated on a fresh connection when the first is reset under it; two repeats, then it fails
@@ -1106,8 +1103,8 @@ GET /reset: Failed, read stage
 		the answer, after any redirects; <span class="pre">e.url</span>, the URL that gave it),
 		<span class="pre">Data</span> (the body's bytes, in order, each an <span class="pre">IoBuf</span> the program
 		owns, handed back with <span class="pre">client.release(id, n)</span>) and <span class="pre">End</span>
-		(<span class="pre">e.trailers</span>). Sinks are <span class="pre">Sink.Here(token)</span> and
-		<span class="pre">Sink.Chan(token, tx)</span> as in <span class="pre">httpconn</span>, and the polling is
+		(<span class="pre">e.trailers</span>). The sink is <span class="pre">Sink.Here(token)</span>
+		as in <span class="pre">httpconn</span>, and the polling is
 		<span class="pre">client.poll(&amp;mut lp, until, &amp;mut events)</span>, or
 		<span class="pre">complete</span> and <span class="pre">pump</span> beside a program's own operations, with
 		<span class="pre">wakeAt()</span>. A fetch that cannot be made &mdash; a URL that does not parse or is not http or
@@ -1120,7 +1117,7 @@ GET /reset: Failed, read stage
 		answer's <span class="pre">e.timing</span> says when it was queued, last given a connection, first answered and
 		ended, how many requests it took, how many redirects, and whether its connection had been used before.
 		<span class="pre">client.stats()</span> and <span class="pre">client.driverStats()</span> count what
-		happened; <span class="pre">live()</span>, <span class="pre">queued()</span>, <span class="pre">held()</span> and
+		happened; <span class="pre">live()</span>, <span class="pre">queued()</span> and
 		<span class="pre">isLive(id)</span> say what is outstanding; <span class="pre">abortAll(lp)</span> ends everything.</p>
 
 	<h3 id="httpclient-pool">The pool</h3>
@@ -1185,7 +1182,7 @@ fn main() {
       k = k + 1usize;
       printUInt(e.token);
       printStr(" ");
-      printStr(eventName(e.kind));
+      print <- toDebug(&amp;e.kind);
       if e.kind == EventKind.Response {
         printStr(" ");
         printUInt(u64.from(e.response.status));
@@ -1250,8 +1247,8 @@ fn main() {
 		<span class="pre">Closed</span>, <span class="pre">Limit</span> or <span class="pre">Redirect</span>), the Windows
 		<span class="pre">code</span> when there is one, an <span class="pre">HttpError</span>,
 		<span class="pre">unsent</span>, and <span class="pre">attempts</span>, how many requests were made.
-		<span class="pre">message()</span> joins them, and <span class="pre">stageName</span>,
-		<span class="pre">intentName</span> and <span class="pre">eventName</span> name the enums.
+		<span class="pre">toText</span> joins them, and a stage's and
+		an intent's <span class="pre">toText</span> name the enums, and <span class="pre">toDebug</span> an event's kind.
 		<span class="pre">Config.make()</span> gives <span class="pre">conn</span> (an
 		<span class="pre">httpconn.Config</span>, its driver's), <span class="pre">tlsConfig</span> (a
 		<span class="pre">tls.ClientConfig</span>), <span class="pre">maxPerOrigin</span>,
@@ -1313,7 +1310,7 @@ match tls.Server.make(tls.ServerConfig.make(&amp;certFile, &amp;keyFile)) {
       ...
     }
   }
-  case let Err(e) {printStr(e.message().view());}
+  case let Err(e) {print <- e;}
 }
 </pre>
 	<p>Nothing else about the server changes: its requests are the same events, answered the same way. A client
@@ -1351,9 +1348,9 @@ fn main() {
   var client2 = httpclient.Client.make(asking);
   let refused = client2.fetchWhole(&amp;mut lp2, httpclient.Request.get(address.view()), 4096usize);
   printStr("asking the OS: ");
-  printStr(httpclient.eventName(refused.outcome));
+  print <- toDebug(&amp;refused.outcome);
   printStr(", ");
-  printStr(refused.failure.message().view());
+  print <- refused.failure;
   printStr("\n");
 
   client.abortAll(&amp;mut lp);
@@ -1501,7 +1498,7 @@ fn main() {
           printStr(", ALPN ");
           printStr(info.alpn.view());
           printStr(", verified by ");
-          printStr(tls.verifyKindName(info.verifiedBy));
+          print &lt;- toText(&amp;info.verifiedBy);
           printStr("\n");
 
           // Plaintext in, ciphertext out, and the other way
@@ -1527,17 +1524,17 @@ fn main() {
           var s2 = srv.session();
           pump(&amp;mut c2, &amp;mut s2, &amp;mut cin, &amp;mut sin);
           if c2.isFailed() {
-            let why = c2.error().message();
+            let why = String() <- c2.error();
             printStr(why.view());
           } else {
             printStr("no failure");
           }
           printStr("\n");
         }
-        case let Err(e) {printStr(e.message().view());}
+        case let Err(e) {print <- e;}
       }
     }
-    case let Err(e) {printStr(e.message().view());}
+    case let Err(e) {print <- e;}
   }
 }
 </pre>
@@ -1571,8 +1568,8 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		(the system's own number when it gave the reason: its certificate verifier's, Windows' error on Windows and
 		OpenSSL's verify result on Linux, each as it is), and <span class="pre">detail</span>, the system's words with
 		its number among them.
-		<span class="pre">message()</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
-		<span class="pre">kind.name()</span> names a kind. What a program matches on is the kind;
+		<span class="pre">toText</span> joins them as <span class="pre">tls: certificate untrusted: ...</span>, and
+		<span class="pre">toText(&amp;kind)</span> names a kind. What a program matches on is the kind;
 		<span class="pre">certErrorKind(osError)</span> reads a bare number kept elsewhere (an httpconn
 		<span class="pre">Failure</span>'s <span class="pre">code</span>, a <span class="pre">QuicError</span>'s
 		<span class="pre">osError</span>) as the kind it stands for, and <span class="pre">certErrorText(osError)</span>
@@ -1581,7 +1578,7 @@ tls: certificate name mismatch: hostname mismatch (OpenSSL's verify result 62)
 		<span class="pre">version</span> and <span class="pre">versionName</span>, <span class="pre">cipher</span>,
 		<span class="pre">alpn</span>, <span class="pre">resumed</span>, <span class="pre">verifiedBy</span>,
 		<span class="pre">handshakeTime</span> and <span class="pre">verifyTime</span> (the system's verifier's share of it),
-		<span class="pre">closeNotify</span> and <span class="pre">truncated</span>; <span class="pre">text()</span> says it
+		<span class="pre">closeNotify</span> and <span class="pre">truncated</span>; <span class="pre">String() &lt;- info</span> says it
 		in one line, which is what a connection's <span class="pre">layerInfo</span> gives. <span class="pre">tls.stats()</span>
 		counts, for the process, handshakes (and those resumed), failures, verifications by the system's verifier,
 		close_notify sent and received, and streams that ended without one.</p>

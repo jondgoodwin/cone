@@ -76,6 +76,12 @@ void genericInstantiateExit();
 uint32_t genericInstantiateDepth();
 void genericInstantiateDepthSet(uint32_t depth);
 
+// A typed 'let' or an assignment's target states the type its value is wanted
+// as: 'genericStatedType' is it while the value is checked, and fnCallTypeCheck
+// sets 'genericExpectStated' for the call whose expected type it is, and only it.
+extern int genericExpectStated;
+extern INode *genericStatedType;
+
 // Perform generic substitution, if this is a correctly set up generic "fncall".
 // A type parameter the arguments leave unsaid is read off 'expectType', the type
 // the call's value is wanted as (unknownType if nothing says): see

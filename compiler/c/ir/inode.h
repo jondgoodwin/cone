@@ -300,6 +300,7 @@ enum NodeTags {
 // private member exactly where the method it stands in for could. Set only by
 // cloneFnCallNode, during a macro method's expansion.
 #define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
+#define FlagEachFailed 0x8000       // FnCall: a '#each #f in #fields(T)' among its arguments failed when the call was cloned (and said why); the call is not checked further
 // An index whose argument is a range, 'x[a..<b]', which a borrow makes a slice of
 // part of an array. Its arguments are the start and, unless the range runs to
 // the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '..=',
@@ -492,6 +493,10 @@ enum NodeTags {
 // payload that is plain data, it holds the variant alone (castBindProject), so the
 // place is not moved from.
 #define FlagMatchArm  0x1000        // VarDcl: the matched place's copy or move, made by the arm that binds it
+// The hidden variable holding a '?' operand (parsePropagate). Many hidden variables
+// are named '_', so the name alone does not say this one belongs to a '?'. 0x0040
+// because it is a type flag on a type, and a variable is not one.
+#define FlagQuesHeld  0x0040        // VarDcl: holds the operand of a '?'
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)

@@ -139,6 +139,22 @@ uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
     VarDclNode **through);
 
+// What an arena reached through a reference takes of caller loans: only those
+// of the parameter the reference holds a loan of, the arena's own (Bug 48's
+// exception, Bug 51). Returns the first stored caller loan that is not, or 0,
+// with the parameter it was stored through as 'through'.
+uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **through);
+
+// Whether a store through a reference holding 'refholds' is into a node of an
+// arena a caller may keep, reached by a route that shows the body nothing of
+// what else the caller lent (loanArenaApart then decides what it may store).
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed);
+
+// Whether the arena reference holding 'arenaholds' is checked at all: not
+// where it holds no loan but what was stored through it (made from a raw
+// pointer, the one trusted route).
+int loanArenaChecked(PathSet *stored, PathSet *arenaholds);
+
 // The same for a function naming no lifetimes: a caller loan among 'stored'
 // going where a reference holding 'refholds' points, at what a parameter lent
 // that holds no borrow but ''static' ones (itypeCarriesEndingBorrow), which

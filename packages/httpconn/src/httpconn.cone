@@ -55,13 +55,13 @@
 //   d.cancel(lp, req)                                                   (CANCEL)
 //   d.poll(lp, until, events)  d.complete(lp, c)  d.pump(lp, events)  d.wakeAt()  (DRIVING)
 //   d.owns(token)  d.upperToken(lp, kind, n)  d.isUpperToken(token)
-//   d.stats()  d.live()  d.held()  d.abortAll(lp)
-//   Sink.Here(token)  Sink.Chan(token, tx)                             (SINKS)
+//   d.stats()  d.live()  d.abortAll(lp)
+//   Sink.Here(token)                                                   (SINKS)
 //   Event: e.kind e.token e.conn e.req e.stream, and per kind e.peer e.clean e.failure  (EVENTS)
 //     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
 //   EventKind: Connected Accepted Closed Request Response Interim Data End
-//     Writable Done Failed Cancelled TimedOut;  eventName(k)
-//   Failure: f.stage f.code f.error f.unsent f.message()               (FAILURES)
+//     Writable Done Failed Cancelled TimedOut;  toDebug(k)
+//   Failure: f.stage f.code f.error f.unsent String() <- f               (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
 //   Layer, Plain, plainLayer(), LayerMaker, PlainMaker                 (LAYERS)
 //
@@ -92,7 +92,7 @@
 // 'lp' there if it has none yet) the eight above, and 'isUpperToken' is
 // false of a token with another driver's generation. 'wakeAt()' is the latest
 // instant the program's own poll may wait to: forever, unless the driver has
-// work ready (now) or events held for a full channel (a millisecond on).
+// work ready (now).
 //
 // CONNECTIONS. A client connection is made by 'connect(lp, host, port,
 // sink)': the host is looked up on iocore's DNS lane (unless it is an IPv4
@@ -146,15 +146,8 @@
 //
 // SINKS. Where events go, and the token they carry back (plain data the
 // driver never reads, as iocore's targets are). Sink.Here(token): to this
-// thread, appended by pump or poll. Sink.Chan(token, tx): sent on a sync
-// channel (a Sender[Event]) to another thread, never waiting: when the
-// channel is full the event is held, the connection's later events wait
-// behind it (on HTTP/2, the request's), its reading stops (on HTTP/2, its
-// stream's credit stays out), and it is tried again at every pump --
-// so the channel's bound bounds what the connection holds. Events keep their
-// order per sink, not across sinks: a request's events held for a channel
-// may still be on their way after its connection's Closed has gone Here, so
-// a program drives the driver until 'held()' is 0 before it stops. An actor
+// thread, appended by pump or poll; a program that wants them on another
+// thread sends them there itself. An actor
 // is not a sink: the actorhttp package runs its Drivers as a service hosted on aio's
 // I/O thread, on aio's Loop, and answers an actor's awaited request with the whole response.
 //
@@ -165,8 +158,7 @@
 // the connection's, so bytes released after the request's Done still count
 // -- (the core pauses
 // once 'bodyWindow' bytes are out unreleased, the driver stops reading, and
-// TCP holds the peer); for a channel, the bytes are released as the channel
-// takes them, so the channel's own bound is the window. Sending is bounded
+// TCP holds the peer). Sending is bounded
 // by the core's watermark: 'sendData' hands a buffer back, refused, when it
 // is reached, and Writable comes when there is room again. Nothing queues
 // without a bound: requests wait 'maxWaiting' deep, connections are at most
@@ -265,8 +257,7 @@
 // - Credit: 'release(req, n)' gives the credit back to that request's stream
 //   alone (the connection's comes back as the bytes arrive: http2's
 //   approach), so one slow reader stops only its own stream, at its window
-//   ('h2.initialWindowSize'); a channel's events are held in order by request,
-//   not by connection, so a full channel holds back only its own.
+//   ('h2.initialWindowSize').
 // - Errors: a stream reset fails its request alone, Stage.Http with the
 //   core's error: Reset, or Refused when the peer did not process it
 //   (isRetrySafe). A peer's GOAWAY refuses the streams above its last stream
@@ -286,8 +277,7 @@
 //   limit, its watermark ('h2.writeWatermark' is what Writable waits for).
 //
 // DIAGNOSTICS. 'stats()' counts connections made, accepted, refused and
-// closed, requests by their final answer, events delivered, held and
-// dropped, and bytes; Done carries the request's Timing (submitted,
+// closed, requests by their final answer, events delivered, and bytes; Done carries the request's Timing (submitted,
 // started on the wire, first byte of the response, ended).
 //
 // MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
@@ -327,7 +317,7 @@ mod httpconn;
 import libc;
 import collections use List, Deque, Dict, String;
 import time use Instant, Duration;
-import sync use Sender, Mutex;
+import sync use Mutex;
 import iobuf use IoBuf, Chain;
 import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, KeepAlive, forever, resolveOp, addressesIn;
 import ioerror use IoErrorKind, noAddress;
@@ -481,19 +471,20 @@ pub enum Stage {
   Http,          // the core refused what came, or one of its deadlines passed
   Tls,           // the connection's layer failed: a TLS handshake refused, a record broken
   Closed,        // the connection closed, or was reset, before the request could finish
-  Limit         // a bound refused it
-}
+  Limit;         // a bound refused it
 
-// The name of a stage, in lower case
-pub fn stageName(s: Stage) &str {
-  if s == Stage.Resolve {"resolve"}
-  else if s == Stage.Connect {"connect"}
-  else if s == Stage.Read {"read"}
-  else if s == Stage.Write {"write"}
-  else if s == Stage.Http {"http"}
-  else if s == Stage.Tls {"tls"}
-  else if s == Stage.Closed {"closed"}
-  else {"limit"}
+  // The stage's name, in lower case: 'connect'
+  pub fn toText(self: &, out: &uni TextOut) {
+    let s = *self;
+    out <- if s == Stage.Resolve {"resolve"}
+      else if s == Stage.Connect {"connect"}
+      else if s == Stage.Read {"read"}
+      else if s == Stage.Write {"write"}
+      else if s == Stage.Http {"http"}
+      else if s == Stage.Tls {"tls"}
+      else if s == Stage.Closed {"closed"}
+      else {"limit"};
+  }
 }
 
 // Why a request or a connection failed (see the package's header, FAILURES)
@@ -522,17 +513,11 @@ pub struct Failure is Error {
   // OS error 10061: No connection could be made ...)'. A Tls stage's
   // number is its certificate verifier's, whose words (the OS's text and
   // number) the layer's failureText holds already
-  pub fn toText(self: &, out: &uni TextOut) { out <- self.message().view(); }
-  pub fn message(self: &) String {
-    var out = String.from(stageName(stage));
-    out.append(": ");
-    out.append(error.message().view());
+  pub fn toText(self: &, out: &uni TextOut) {
+    out <- stage, ": ", error;
     if code != 0u32 && stage != Stage.Tls {
-      out.append(" (");
-      out.append(IoError(code).describe().view());
-      out.append(")");
+      out <- " (", IoError(code).describe().view(), ")";
     }
-    out
   }
 }
 
@@ -555,28 +540,10 @@ pub struct Timing {
 pub enum Sink {
   pub token: u64;
   pub struct Here {}
-  pub struct Chan {pub tx: Sender[Event];}
 }
 
-// A second sink to the same place: a channel's sender cloned
-fn copySink(s: &mut Sink) Sink {
-  var out: Sink = Sink.Here(s.token);
-  match s {
-    case let &Chan(c) {out = Sink.Chan(s.token, c.tx.clone());}
-    else {}
-  }
-  out
-}
-
-// Whether a sink is a channel
-fn isChan(s: &mut Sink) bool {
-  var yes = false;
-  match s {
-    case is &Chan {yes = true;}
-    else {}
-  }
-  yes
-}
+// A second sink to the same place
+fn copySink(s: &mut Sink) Sink {Sink.Here(s.token)}
 
 // What an event says happened (see the package's header, CONNECTIONS,
 // REQUESTS, SERVING)
@@ -594,23 +561,6 @@ pub enum EventKind {
   Failed,        // FINAL: failure
   Cancelled,     // FINAL
   TimedOut      // FINAL
-}
-
-// The name of an event's kind
-pub fn eventName(k: EventKind) &str {
-  if k == EventKind.Connected {"Connected"}
-  else if k == EventKind.Accepted {"Accepted"}
-  else if k == EventKind.Closed {"Closed"}
-  else if k == EventKind.Request {"Request"}
-  else if k == EventKind.Response {"Response"}
-  else if k == EventKind.Interim {"Interim"}
-  else if k == EventKind.Data {"Data"}
-  else if k == EventKind.End {"End"}
-  else if k == EventKind.Writable {"Writable"}
-  else if k == EventKind.Done {"Done"}
-  else if k == EventKind.Failed {"Failed"}
-  else if k == EventKind.Cancelled {"Cancelled"}
-  else {"TimedOut"}
 }
 
 // What happened: its kind, and the fields that kind fills (the rest are
@@ -666,15 +616,13 @@ pub struct DriverStats {
   pub cancelled: u64;
   pub timedOut: u64;
   pub events: u64;         // events handed to sinks
-  pub held: u64;           // events held for a full channel
-  pub dropped: u64;        // events dropped: their channel's receiver had gone
   pub unclaimed: u64;      // completions poll was given that were not the driver's
   pub bytesIn: u64;        // bytes received
   pub bytesOut: u64;       // bytes sent
 
   pub fn zero() DriverStats {
     DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64)
+      0u64, 0u64, 0u64)
   }
 }
 

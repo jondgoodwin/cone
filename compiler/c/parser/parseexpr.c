@@ -160,6 +160,8 @@ static Nodes *parseInterpPieces(ParseState *parse) {
         sub->srcp = sub->tokp = sub->prevend = part->exprp;
         sub->linep = sub->prevlinep = part->linep;
         sub->linenbr = sub->prevlinenbr = part->linenbr;
+        sub->interpstart = part->exprp;
+        sub->interpend = part->exprend;
         int errs = errors;
         lexPush(sub);
         INode *piece = parseSimpleExpr(parse);
@@ -568,6 +570,11 @@ INode *parseTerm(ParseState *parse) {
     }
 }
 
+// The value of a named argument, as parseArg reads it
+INode *parseArgValue(ParseState *parse) {
+    return parseContentsAfter(parse, parseSimpleExpr(parse));
+}
+
 // Parse a function/method call argument
 INode *parseArg(ParseState *parse) {
     INode *arg = parseContentsAfter(parse, parseSimpleExpr(parse));
@@ -596,11 +603,21 @@ Nodes *parseArgs(ParseState *parse) {
     Nodes *args = newNodes(8);
     int svinlist = parse->inlist;
     parse->inlist = 1;
+    // A '#each' among a call's arguments (not an index's) makes named arguments, one for each field
+    // of a type parameter; the call's clone expands it (cloneFieldEachArgs)
+    int paren = closetok == RParenToken;
     if (!lexIsToken(closetok)) {
-        nodesAdd(&args, parseArg(parse));
-        while (lexIsToken(CommaToken)) {
+        while (1) {
+            if (paren && lexIsToken(HashEachToken)) {
+                INode *loop = parseHashEachArg(parse);
+                if (loop)
+                    nodesAdd(&args, loop);
+            }
+            else
+                nodesAdd(&args, parseArg(parse));
+            if (!lexIsToken(CommaToken))
+                break;
             lexNextToken();
-            nodesAdd(&args, parseArg(parse));
         }
     }
     parse->inlist = svinlist;
@@ -962,6 +979,7 @@ static INode *parsePropagate(ParseState *parse, INode *node) {
         errorMsgLex(ErrorQuesReturn,
             "'?' returns a failure from the function it is in, and a generator returns nothing but its items, through 'yield'. Use 'match' or let-else here.");
     VarDclNode *held = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, node);
+    held->flags |= FlagQuesHeld;
     inodeLexCopy((INode*)held, node);
     nodesAdd(&blk->stmts, (INode*)held);
     lexNextToken();
