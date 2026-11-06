@@ -2375,10 +2375,15 @@ for it), is caught before its body is expanded, so the module asks for no
 64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
 intrinsics. The CPU is untouched, and the C library is called there. Core's
 `sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
-every target, and so are a number's `abs`, `min`, `max`, `floor`, `ceil`, `round`
-and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
+every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
+`round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+**A float's `min`, `max` and `clamp` are `llvm.minimum` and `llvm.maximum` (a NaN in
+either gives a NaN), and the back end of 5 Nov 2026 selects those same `NMin` and `NMax`
+(read from `--asm`), which answer the other operand where one is a NaN: so on a GPU target
+a kernel's float `min`, `max` and `clamp` do not keep the CPU's NaN answer, nor `-0.0`
+below `0.0`. Not yet resolved; see the PR that made them propagate.**
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,

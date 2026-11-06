@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `FmaIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `ClampIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/manual/safe-intrinsics.html` |
 
@@ -33,17 +33,17 @@ cannot yet add a method to a number type; they keep the lowering under
 `--intrinsic-fallback`, which is what lets `intrinsic_bits` check each fallback
 body against it in one run.
 
-**A number's `abs`, `min`, `max`, `floor`, `ceil`, `round` and `fma` are declared the
+**A number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`, `round` and `fma` are declared the
 same way and are methods the same way.** They are in core's `mem`, in the registry (with
-classes `ClassSigned | ClassFloat` for `abs`, `ClassInt | ClassFloat` for `min` and
-`max`, `ClassFloat` for the rest) and have one arm each in `genlDeclaredIntrinsic`,
+classes `ClassSigned | ClassFloat` for `abs`, `ClassInt | ClassFloat` for `min`, `max` and
+`clamp`, `ClassFloat` for the rest) and have one arm each in `genlDeclaredIntrinsic`,
 which all go to `genlNumberIntrinsic`. `nbrMathMethods` (`corenumber.c`) gives every
 number type the ones that apply to it (no `abs` on an unsigned integer, no rounding or
 `fma` on an integer), the node's `typearg` the type; `vectorMethods` (`vector.c`,
 `vecAddLanewise`) gives a vector the same kinds with the *vector type* as the `typearg`.
 So one lowering serves a scalar and a vector: `genlNumberIntrinsic` reads the lane type
 from the Cone type (the element type of a vector, else the type itself), and LLVM's
-`llvm.fabs`, `llvm.abs`, `llvm.minnum`, `llvm.smin`, `llvm.floor`, `llvm.fma` and the
+`llvm.fabs`, `llvm.abs`, `llvm.minimum`, `llvm.smin`, `llvm.floor`, `llvm.fma` and the
 rest are overloaded on a whole vector as on a number. This is the house rule kept: the
 meaning is the Cone type's, never an LLVM type kind. They carry no fallback body (the
 registry's `fallback` is 0), so `--intrinsic-fallback` changes nothing for them. A
@@ -234,7 +234,8 @@ type while each call gives its own orderings.
 | `rotateLeft[T]`, `rotateRight[T]` | operation | `llvm.fshl` and `llvm.fshr` with `x` as both halves, the `u32` amount resized to `T`; the funnel shifts take it modulo the width themselves |
 | `shlMasked[T]`, `shrMasked[T]` | operation | the amount resized to `T` and anded with width - 1 (the width a power of two, so that is modulo the width), then `shl`, or `ashr` for a signed `T` and `lshr` for an unsigned one |
 | `abs[T]` | operation | a float's `llvm.fabs`; an integer's `llvm.abs` with `is_int_min_poison` false, so the smallest value wraps to itself as `-x` does. `T` a signed integer of 8 to 64 bits or a float (`ClassSigned \| ClassFloat`); `genlNumberIntrinsic` |
-| `min[T]`, `max[T]` | operation | a float's `llvm.minnum` and `llvm.maxnum` (the number over a NaN, as the vector reductions are), an integer's `llvm.smin`/`smax` or `llvm.umin`/`umax` by signedness. `T` an integer or a float |
+| `min[T]`, `max[T]` | operation | a float's `llvm.minimum` and `llvm.maximum` (a NaN in either gives a NaN, and `-0.0` is below `0.0`, as the vector reductions `fminimum` and `fmaximum` are), an integer's `llvm.smin`/`smax` or `llvm.umin`/`umax` by signedness. `T` an integer or a float |
+| `clamp[T]` | operation | `max(x, lo)` then `min(_, hi)`, each as `min` and `max` above, so a NaN in any of the three gives a NaN and `lo > hi` gives `hi`. `T` an integer or a float |
 | `floor[T]`, `ceil[T]`, `round[T]`, `fma[T]` | operation | `llvm.floor`, `llvm.ceil`, `llvm.round` (half away from zero, never `roundeven`) and `llvm.fma`. `T` a float (`ClassFloat`) |
 | `mulFold` | operation | both `u64`s zero-extended to `i128`, one `mul`, the product's high half `lshr` 64, and the two halves `trunc`ated and xored (`genlDeclaredIntrinsic`): one multiply on a 64-bit target. Declared in `mem` with a fallback body that forms the product from 32-bit halves, which `intrinsic_mulfold` checks against the lowering. The mixing step of core's `Hasher` ([struct](struct.md), "Hash") |
 
