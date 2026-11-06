@@ -2,7 +2,7 @@
 // to (actorhttp's Client.streamTo): it asks for the encodings it can decode,
 // waits for the response's head, and puts between the body and the caller's sink
 // the stage the head's Content-Encoding names (gzip, deflate or zstd:
-// 'Stage[deflate.Inflater]' or 'Stage[zstd.Decompressor]'), or none for a body
+// 'TransformStage[deflate.Inflater]' or 'TransformStage[zstd.Decompressor]'), or none for a body
 // that is not encoded. What reaches the caller's sink is the decoded bytes,
 // chunk by chunk, and the one 'end'.
 //
@@ -46,7 +46,7 @@ import http use *;
 import httpclient;
 import actors;
 import actorhttp use Client, BodyHead, FetchError;
-import stages use ChunkSink, ChunkSource, Ending, Stage;
+import stages use ChunkSink, ChunkSource, Ending, TransformStage;
 import deflate;
 import zstd;
 import iocore use CancelGroup;
@@ -188,15 +188,15 @@ pub actor Decoder is ChunkSink, ChunkSource {
     if c == Coding.Gzip {
       var t = deflate.Inflater.make(deflate.Format.Gzip);
       t.setLimit(limit);
-      target = Some[ChunkSink](Stage[deflate.Inflater](down, t));
+      target = Some[ChunkSink](TransformStage[deflate.Inflater](down, t));
     } else if c == Coding.Zlib {
       var t = deflate.Inflater.make(deflate.Format.Zlib);
       t.setLimit(limit);
-      target = Some[ChunkSink](Stage[deflate.Inflater](down, t));
+      target = Some[ChunkSink](TransformStage[deflate.Inflater](down, t));
     } else if c == Coding.Zstd {
       var t = zstd.Decompressor.make();
       t.setLimit(limit);
-      target = Some[ChunkSink](Stage[zstd.Decompressor](down, t));
+      target = Some[ChunkSink](TransformStage[zstd.Decompressor](down, t));
     } else if c == Coding.Identity {
       target = Some[ChunkSink](sink);
     } else {

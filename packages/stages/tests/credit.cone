@@ -1,5 +1,5 @@
 // Credit is a window of bytes: a slow consumer holds a fast producer to the
-// window of its link. A producer owns a Link with a 256 KiB window and sends 64
+// window of its link. A producer owns a ChunkWindow with a 256 KiB window and sends 64
 // chunks of 64 KiB (4 MiB) to a sink that keeps each chunk for 3 ms before it
 // gives it back. The producer can only send while its window has room, so the
 // chunks in flight (sent and not yet given back) never pass four. That is
@@ -20,7 +20,7 @@
 // end.
 //
 // The slow sink awaits inside 'accept', so it keeps its stream in order with an
-// Inbox (the receiving half of the link): the chunks it holds are one in hand
+// ChunkInbox (the receiving half of the link): the chunks it holds are one in hand
 // and the rest queued, each handled after the one before it is finished, and
 // the 'end' that follows the last chunk waits behind them.
 //
@@ -76,16 +76,16 @@ fn @initpure init() {
 fn seenOf(which: u32) &Seen { if which == 0u32 {&slow} else {&quick} }
 
 // Takes chunks and keeps each for 'pauseMs' before giving it back. It awaits
-// inside 'accept', so the stream's order is its Inbox's
+// inside 'accept', so the stream's order is its ChunkInbox's
 actor Sink is ChunkSink {
   which: u32;
   pauseMs: i64;
-  rx: Inbox;
+  rx: ChunkInbox;
   next: u64;
   done: OneshotSender[u64];     // told when the stream has ended, so that main can wait
 
   pub fn init(self: &new, which: u32, pauseMs: i64, done: OneshotSender[u64]) {
-    *self = Self(which: which, pauseMs: pauseMs, rx: Inbox.make(), next: 0u64, done: done);
+    *self = Self(which: which, pauseMs: pauseMs, rx: ChunkInbox.make(), next: 0u64, done: done);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -131,7 +131,7 @@ actor Sink is ChunkSink {
   }
 
   // The 'end' that follows the last chunk can run before that chunk's behaviour
-  // has finished (a parked behaviour lets the next message run): the Inbox holds
+  // has finished (a parked behaviour lets the next message run): the ChunkInbox holds
   // it until the chunks ahead of it are done
   pub async fn end(self, how: Ending) {
     match rx.arriveEnd(how) {
@@ -155,12 +155,12 @@ actor Sink is ChunkSink {
 actor Producer is ChunkSource {
   which: u32;
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   made: u64;
   over: bool;
 
   pub fn init(self: &new, which: u32, down: ChunkSink) {
-    *self = Self(which: which, down: down, link: Link.own(buffers() * chunkBytes()), made: 0u64, over: false);
+    *self = Self(which: which, down: down, link: ChunkWindow.own(buffers() * chunkBytes()), made: 0u64, over: false);
     down.attach(selfactor);
   }
 

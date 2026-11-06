@@ -9,28 +9,28 @@
 //   import stages use *;
 //
 //   // sink end first: each stage is made with the one after it
-//   let inf = Stage[deflate.Inflater](sink, deflate.Inflater.make(deflate.Format.Gzip));
+//   let inf = TransformStage[deflate.Inflater](sink, deflate.Inflater.make(deflate.Format.Gzip));
 //   source.start(inf);                 // a source that sends chunks to 'inf'
 //
 // WHAT IS HERE
 //
-//   Ending         how a stream ended: Finished, or Failed(AnyError) (stage.cone)
+//   Ending         how a stream ended: Finished, or Failed(AnyError) (transformstage.cone)
 //   ChunkSink      an actor trait: accept(c), end(how), attach(up)
 //   ChunkSource    an actor trait: giveBack(b), the credit coming back
 //   DigestSink[Out] an actor trait: digest(r), where a hash stage sends its digest (Ok)
 //                  or the failure that ended the stream (Err): one answer, always
-//   Link           a stream's window of bytes in flight, its buffers from a Pool: the
-//                  credit, the sending half (link.cone)
-//   Pool           the buffers a connection or pipeline may hold, a cap shared by its
-//                  links (pool.cone)
-//   Inbox, Turn    the receiving half of a link, in a sink whose 'accept' awaits: keeps
-//                  one stream's chunks in order and its 'end' after the last (inbox.cone)
-//   Stage[T]       a generic actor: a stage over any Transform T, one that makes new
+//   ChunkWindow    a stream's window of bytes in flight, its buffers from a ChunkPool: the
+//                  credit, the sending half (chunkwindow.cone)
+//   ChunkPool      the buffers a connection or pipeline may hold, a cap shared by its
+//                  links (chunkpool.cone)
+//   ChunkInbox, Turn  the receiving half of a link, in a sink whose 'accept' awaits: keeps
+//                  one stream's chunks in order and its 'end' after the last (chunkinbox.cone)
+//   TransformStage[T]  a generic actor: a stage over any Transform T, one that makes new
 //                  chunks. The codecs are the instances:
-//                    Stage[deflate.Inflater](down, inflater)     inflate a gzip, zlib or raw deflate stream
-//                    Stage[deflate.Deflater](down, deflater)     compress into one
-//                    Stage[zstd.Decompressor](down, decompressor)  decompress zstd frames
-//                    Stage[zstd.Compressor](down, compressor)    compress into a zstd frame
+//                    TransformStage[deflate.Inflater](down, inflater)     inflate a gzip, zlib or raw deflate stream
+//                    TransformStage[deflate.Deflater](down, deflater)     compress into one
+//                    TransformStage[zstd.Decompressor](down, decompressor)  decompress zstd frames
+//                    TransformStage[zstd.Compressor](down, compressor)    compress into a zstd frame
 //                  (the transform is made first, with its own 'make', and handed in)
 //   HashStage[D]   a generic actor: a stage over any Digester D, passing the chunks on
 //                  unchanged and sending the digest of all of them to 'to', a
@@ -39,7 +39,7 @@
 //                    HashStage[cryptohash.Sha512](down, sha512, to)   to: DigestSink[Array[u8, 64]]
 //                    HashStage[cryptohash.Sha1](down, sha1, to)       to: DigestSink[Array[u8, 20]]
 //
-// stage.cone is the longer account: the end and an error travel forward as the
+// transformstage.cone is the longer account: the end and an error travel forward as the
 // call 'end(how)', credit is a window of bytes and memory a pool, and a pipeline is
 // wired from the sink end back. A corrupt gzip stream reaches the last sink as
 // 'Ending.Failed(e)', with the inflater's own message and its DeflateError inside
@@ -48,11 +48,11 @@
 // A SINK THAT AWAITS inside 'accept' (to write a file, say) is parked there and
 // the actor runs its next message meanwhile, so the next chunk, or the 'end' that
 // follows the last, can start before that chunk is finished. Such a sink keeps an
-// Inbox per stream (inbox.cone): it queues what arrives while a chunk is in hand,
+// ChunkInbox per stream (chunkinbox.cone): it queues what arrives while a chunk is in hand,
 // gives each buffer back only when its chunk is finished, and lets the 'end' out
 // after the last. A stage that never awaits needs none.
 //
-// The stages are generic actors: 'Stage[T: Transform]' is one declaration, and
+// The stages are generic actors: 'TransformStage[T: Transform]' is one declaration, and
 // each T it is made at is an actor of its own, with its own state, messages and
 // handle. Layer 3 is here and not in package streams so that the codecs, which
 // import streams, do not import actors.

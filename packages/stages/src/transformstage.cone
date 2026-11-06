@@ -17,9 +17,9 @@
 // codec's own typed error (DeflateError, ZstdError) with nothing lost: its
 // message, its chain of causes, and 'holds[E]()' to take the typed error out.
 //
-// THE CREDIT IS A WINDOW OF BYTES, THE MEMORY A POOL (link.cone, pool.cone). A
-// stage owns a Link, its stream's window (256 KiB by default), and sends only
-// while the chunks it has out stay within it; the buffers come from a Pool, shared
+// THE CREDIT IS A WINDOW OF BYTES, THE MEMORY A POOL (chunkwindow.cone, chunkpool.cone). A
+// stage owns a ChunkWindow, its stream's window (256 KiB by default), and sends only
+// while the chunks it has out stay within it; the buffers come from a ChunkPool, shared
 // by the stages of a pipeline or the streams of a connection and bounded by a cap,
 // taken only when there is data and sized to it. The consumer gives the same
 // buffer back when it has FINISHED with the chunk: 'giveBack' IS the
@@ -31,11 +31,11 @@
 // the stage has seen the upstream 'end' and returned every buffer it holds), so
 // the actors do not keep each other alive.
 //
-// THE ORDER OF A STREAM (inbox.cone). A stage that never awaits handles one
+// THE ORDER OF A STREAM (chunkinbox.cone). A stage that never awaits handles one
 // chunk after another by the nature of an actor, and needs nothing more. A sink
 // whose 'accept' awaits (a file write) is parked there while the actor runs its
 // next message, which could be chunk n+1 or the 'end'; its stream keeps order with
-// an Inbox, the receiving half of the link, so that one stream's chunks are handled
+// a ChunkInbox, the receiving half of the link, so that one stream's chunks are handled
 // in the order sent and its 'end' after the last of them, and so that a stalled
 // stream holds up no other. The promises each side makes, for a stream:
 //
@@ -55,8 +55,8 @@
 // sends 'end(Failed(err))' on; chunks that still arrive are given back unhandled.
 // A producer that fails sends 'end(Failed(err))' in order after what it already
 // sent; the sink handles those chunks, then fails. ABANDONMENT: a stage that quits
-// stops sending and gives back what it holds; an Inbox that is dropped frees what it
-// queued; a Link that is dropped returns its share of the pool.
+// stops sending and gives back what it holds; a ChunkInbox that is dropped frees what it
+// queued; a ChunkWindow that is dropped returns its share of the pool.
 //
 // CANCELLATION. A stage works in the cancel group of the message it handles: a
 // chunk and an 'end' come in the group the sender works in (the source's), a buffer
@@ -76,10 +76,10 @@
 //   // sink end first; each stage is made with its downstream
 //   let count = Counter();
 //   let hash  = HashStage[cryptohash.Sha256](count, cryptohash.Sha256.make(), whoGetsTheDigest);
-//   let inf   = Stage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
+//   let inf   = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
 //   source.start(inf);
 //
-// TWO ACTORS, each generic. 'Stage[T]' holds any Transform with its Link and
+// TWO ACTORS, each generic. 'TransformStage[T]' holds any Transform with its ChunkWindow and
 // does the work of a stage that makes new chunks (inflate, deflate, zstd): feed
 // what arrives, pull what comes out into the link's buffers, and hold the input
 // chunk until all its output is out. A pass-through such as a hash stage is
@@ -159,16 +159,16 @@ fn handBack(up: &Option[ChunkSource], b: IoBuf) {
 // 'linkBytes', its stream's window 'linkWindow' bytes and a pool of its own. The
 // transform comes in whole ('make' it first), and is the stage's from then on:
 //
-//   Stage[deflate.Inflater](down, deflate.Inflater.make(deflate.Format.Gzip))
-//   Stage[deflate.Deflater](down, deflate.Deflater.make(deflate.Format.Gzip, 6i32))
-//   Stage[zstd.Decompressor](down, zstd.Decompressor.make())
-//   Stage[zstd.Compressor](down, zstd.Compressor.make(3i32))
+//   TransformStage[deflate.Inflater](down, deflate.Inflater.make(deflate.Format.Gzip))
+//   TransformStage[deflate.Deflater](down, deflate.Deflater.make(deflate.Format.Gzip, 6i32))
+//   TransformStage[zstd.Decompressor](down, zstd.Decompressor.make())
+//   TransformStage[zstd.Compressor](down, zstd.Compressor.make(3i32))
 //
 // A stage of a pipeline or connection that shares a pool, and has a window of its
-// own choosing, is made with the pool: Stage[T](down, t, pool, window).
-pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
+// own choosing, is made with the pool: TransformStage[T](down, t, pool, window).
+pub actor TransformStage[T: Transform] is ChunkSink, ChunkSource {
   t: T;
-  link: Link;                 // the output's window, and its buffers from a pool
+  link: ChunkWindow;                 // the output's window, and its buffers from a pool
   down: Option[ChunkSink];    // the consumer; let go when our 'end' is sent
   up: Option[ChunkSource];
   cur: Option[IoBuf];         // the input chunk being worked on; held until its output is all out
@@ -180,15 +180,15 @@ pub actor Stage[T: Transform] is ChunkSink, ChunkSource {
   ended: bool;                // our 'end' has been sent downstream
 
   pub fn own overload init(self: &new, down: ChunkSink, t: T) {
-    *self = Self(t: t, link: Link.own(linkWindow), down: Some[ChunkSink](down), up: None[ChunkSource],
+    *self = Self(t: t, link: ChunkWindow.own(linkWindow), down: Some[ChunkSink](down), up: None[ChunkSource],
       cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
       upEnded: false, ended: false);
     down.attach(selfactor);
   }
 
   // The same, its output buffers from a shared 'pool' and its window 'window' bytes
-  pub fn shared overload init(self: &new, down: ChunkSink, t: T, pool: Pool, window: usize) {
-    *self = Self(t: t, link: Link.make(window, pool), down: Some[ChunkSink](down), up: None[ChunkSource],
+  pub fn shared overload init(self: &new, down: ChunkSink, t: T, pool: ChunkPool, window: usize) {
+    *self = Self(t: t, link: ChunkWindow.make(window, pool), down: Some[ChunkSink](down), up: None[ChunkSource],
       cur: None[IoBuf], backlog: Deque[IoBuf](), waiting: false, finishing: false, dry: false,
       upEnded: false, ended: false);
     down.attach(selfactor);
@@ -405,7 +405,7 @@ pub actor HashStage[D: Digester] is ChunkSink, ChunkSource {
   }
 
   // The stage works in the cancel group of the message it handles; when that
-  // group is cancelled (Stage.cancelCheck) it answers the digest sink with an
+  // group is cancelled (TransformStage.cancelCheck) it answers the digest sink with an
   // error and ends downstream with Failed, once, and gives later chunks back
   fn cancelCheck(self: &mut) {
     if stopped || upEnded || !actors.isCancelled() { return; }

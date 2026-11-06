@@ -1,11 +1,11 @@
-// Stages that share a Pool, and a pipeline that has a pool of its own by default.
+// Stages that share a ChunkPool, and a pipeline that has a pool of its own by default.
 //
-// Two pipelines run at once, each memory -> Stage[Deflater] -> Stage[Inflater] ->
+// Two pipelines run at once, each memory -> TransformStage[Deflater] -> TransformStage[Inflater] ->
 // HashStage[Sha256] -> a counting sink. Both draw ALL their buffers (the sources',
-// and each stage's output) from ONE Pool of 512 KiB, with a window of 128 KiB a
-// stream: Stage[T](down, t, pool, window). A third pipeline, which names no
-// pool (Stage[T](down, t), as every caller before the pool did), has one of its
-// own. Every pipeline ends in a counting sink with an Inbox; pipeline 2's AWAITS
+// and each stage's output) from ONE ChunkPool of 512 KiB, with a window of 128 KiB a
+// stream: TransformStage[T](down, t, pool, window). A third pipeline, which names no
+// pool (TransformStage[T](down, t), as every caller before the pool did), has one of its
+// own. Every pipeline ends in a counting sink with a ChunkInbox; pipeline 2's AWAITS
 // now and then, so the chunks that arrive meanwhile queue (the stage's output
 // window fills, and the stage waits for chunks to come back) and the end waits
 // behind them: the bytes counted when the end is handled are all of them.
@@ -74,18 +74,18 @@ fn seenOf(slot: usize) &Seen {
   if slot == 0usize {&seen0} else if slot == 1usize {&seen1} else {&seen2}
 }
 
-// Counts what arrives, with an Inbox. Pipeline 2's sink also AWAITS (a 1 ms
+// Counts what arrives, with a ChunkInbox. Pipeline 2's sink also AWAITS (a 1 ms
 // wait in every seventh chunk, as a write that takes a while would), so the
 // chunks that arrive meanwhile queue and the end waits behind them; the other
-// two never wait and their Inbox never queues anything.
+// two never wait and their ChunkInbox never queues anything.
 actor Counting is ChunkSink {
   slot: usize;
-  rx: Inbox;
+  rx: ChunkInbox;
   n: u64;
   done: OneshotSender[u64];
 
   pub fn init(self: &new, slot: usize, done: OneshotSender[u64]) {
-    *self = Self(slot: slot, rx: Inbox.make(), n: 0u64, done: done);
+    *self = Self(slot: slot, rx: ChunkInbox.make(), n: 0u64, done: done);
   }
 
   pub async fn attach(self, source: ChunkSource) {
@@ -156,13 +156,13 @@ actor Checker is DigestSink[Array[u8, 32]] {
 // Sends a list of bytes in chunks of 64 KiB through a link on the pool
 actor MemorySource is ChunkSource {
   down: ChunkSink;
-  link: Link;
+  link: ChunkWindow;
   data: List[u8];
   at: usize;
   over: bool;
 
-  pub fn init(self: &new, down: ChunkSink, data: List[u8], pool: Pool, window: usize) {
-    *self = Self(down: down, link: Link.make(window, pool), data: data, at: 0usize, over: false);
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], pool: ChunkPool, window: usize) {
+    *self = Self(down: down, link: ChunkWindow.make(window, pool), data: data, at: 0usize, over: false);
     down.attach(selfactor);
   }
 
@@ -223,7 +223,7 @@ fn main() i32 {
   let original = corpus(total());
   let size = u64.from(original.len());
   let sha256 = digestOf(&cryptohash.sha256(original.view()));
-  let pool = Pool.make(524288usize);
+  let pool = ChunkPool.make(524288usize);
   let window = 131072usize;
   var tx0: OneshotSender[u64];
   var rx0: OneshotReceiver[u64];
@@ -238,22 +238,22 @@ fn main() i32 {
     // 0 and 1: memory -> deflate -> inflate -> sha256 -> count, all on one pool
     let count0 = Counting(0usize, tx0);
     let hash0 = HashStage[cryptohash.Sha256](count0, cryptohash.Sha256.make(), Checker(0usize, dup(&sha256)));
-    let inf0 = Stage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
-    let def0 = Stage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
+    let inf0 = TransformStage[deflate.Inflater](hash0, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
+    let def0 = TransformStage[deflate.Deflater](inf0, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
     let src0 = MemorySource(def0, dup(&original), pool, window);
 
     let count1 = Counting(1usize, tx1);
     let hash1 = HashStage[cryptohash.Sha256](count1, cryptohash.Sha256.make(), Checker(1usize, dup(&sha256)));
-    let inf1 = Stage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
-    let def1 = Stage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
+    let inf1 = TransformStage[deflate.Inflater](hash1, deflate.Inflater.make(deflate.Format.Zlib), pool, window);
+    let def1 = TransformStage[deflate.Deflater](inf1, deflate.Deflater.make(deflate.Format.Zlib, 1i32), pool, window);
     let src1 = MemorySource(def1, dup(&original), pool, window);
 
     // 2: the same, naming no pool: each stage has one of its own
     let count2 = Counting(2usize, tx2);
     let hash2 = HashStage[cryptohash.Sha256](count2, cryptohash.Sha256.make(), Checker(2usize, dup(&sha256)));
-    let inf2 = Stage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
-    let def2 = Stage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
-    let src2 = MemorySource(def2, dup(&original), Pool.make(262144usize), 262144usize);
+    let inf2 = TransformStage[deflate.Inflater](hash2, deflate.Inflater.make(deflate.Format.Zlib));
+    let def2 = TransformStage[deflate.Deflater](inf2, deflate.Deflater.make(deflate.Format.Zlib, 1i32));
+    let src2 = MemorySource(def2, dup(&original), ChunkPool.make(262144usize), 262144usize);
 
     src0.start();
     src1.start();
