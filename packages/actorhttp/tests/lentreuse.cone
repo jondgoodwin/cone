@@ -1,0 +1,224 @@
+// The credit a streamTo fetch has lent is kept per buffer, and a buffer is known
+// by its address. The address must not come back to the service thread's next
+// receive while the record of the buffer's last life is still there: that would
+// merge two lives into one record, and the release of the first would give back
+// the second's bytes while a sink still held them. Here many fetches run at once
+// to sinks that give buffers back as hard as they can (some a buffer behind),
+// which is when a block just given back is the next one a receive is issued.
+// The service counts any merge it sees (actorhttp.lentMerges()); it must be 0.
+// Every byte is checked and every buffer must come home.
+
+mod lentreuse;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, Deque, String;
+import iobuf use IoBuf;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Request;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange;
+import stages use ChunkSink, ChunkSource, Ending;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub bad: Atomic[u64];
+  pub finished: Atomic[u64];
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(120000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+// GET /big/N answers N bytes, byte i being i % 251
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let left = n - at;
+      let m = if left < 65536u64 {usize.from(left)} else {65536usize};
+      var piece = List[u8].withCapacity(m);
+      var i = 0usize;
+      while i < m {
+        piece.push(u8.from((at + u64.from(i)) % 251u64));
+        i = i + 1usize;
+      }
+      let w = await ex.write(String.fromBytes(piece.view()));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+// A sink that checks each chunk and gives it back, 'behind' buffers late
+// (0: at once)
+actor Giver is ChunkSink {
+  up: Option[ChunkSource];
+  behind: usize;
+  held: Deque[IoBuf];
+  at: u64;
+
+  pub fn init(self: &new, behind: usize) {
+    *self = Self(up: None[ChunkSource], behind: behind, held: Deque[IoBuf](), at: 0u64);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  fn giveNow(self: &mut, b: IoBuf) {
+    match &up {
+      case let &Some(u) { u.giveBack(b); }
+      case is None {}
+    }
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    let v = c.view();
+    var bad = 0u64;
+    var i = 0usize;
+    while i < v.len {
+      if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+      i = i + 1usize;
+    }
+    at = at + u64.from(v.len);
+    if bad > 0u64 {tally.bad.add(bad);}
+    held.push(c);
+    while held.len() > behind {
+      match held.popFront() {
+        case let Some(b) {self.giveNow(b);}
+        case is None {}
+      }
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    each b in held.drain() { self.giveNow(b); }
+    tally.bytes.add(at);
+    tally.finished.add(1u64);
+  }
+}
+
+actor Fetcher {
+  client: Client;
+
+  pub async fn run(self, u: String, sink: ChunkSink) {
+    let r = await client.streamToIn(Request.get(u.view()), sink, IoLimits.none());
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn take[T](rx: &mut Receiver[T], dflt: T) T { rx.recv() || dflt }
+
+const fetches = 24u64;
+const each_ = 8388608u64;
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let plain = Acceptor(Server.none());
+    plain.open(ServerConfig.make(), ptx.clone());
+    let port = take[u16](&mut prx, 0u16);
+    plain.serve();
+    var k = 0u64;
+    while k < fetches {
+      let sink = Giver(usize.from(k % 3u64));
+      let f = Fetcher(Client.standard());
+      f.run(url(port, "/big/8388608"), sink);
+      k = k + 1u64;
+    }
+    waitFor(&tally.finished, fetches);
+    printStr("24 concurrent 8 MiB fetches, sinks giving back at once or a buffer or two late: all ended ");
+    printStr(yes(tally.finished.load() == fetches));
+    printStr(", every byte ");
+    printStr(yes(tally.bytes.load() == fetches * each_ && tally.bad.load() == 0u64));
+    printStr("\n");
+    printStr("...no two live lent records ever shared an address: ");
+    printStr(yes(actorhttp.lentMerges() == 0u64));
+    printStr("\n");
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    plain.stop();
+  }
+  finalAll();
+  printStr("end\n");
+  0i32
+}

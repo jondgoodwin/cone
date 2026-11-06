@@ -32,7 +32,9 @@ struct StreamRec {
   readEvent: Option[actors.ReplyOf[Result[Option[sse.Event], FetchError]]];  // ...or the next event
   gone: bool;                      // its handle has gone
   sink: Option[ChunkSink];         // the body goes to this sink (Client.streamTo), not to a reader
-  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent
+  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent.
+                                   // Sound as a key because the release job carries the buffer and clears the record before the
+                                   // buffer dies, so a block cannot be reissued while a record of it stands
 }
 
 // A stream opening, its fetch not yet sent: the caller puts its reply in the
@@ -230,6 +232,7 @@ fn onSinkEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot: u
     if n == 0usize {return;}
     let at = buf.base() as usize;
     let before = s.lent.getCopy(&at) || 0usize;
+    if before > 0usize {lentMergeCount.add(1u64);}
     s.lent.insert(at, before + n);
     match &s.sink {
       case let &Some(sk) {sk.accept(buf);}
@@ -408,12 +411,15 @@ struct StreamToJob {
 // A buffer given back to a body source: the bytes the record says were lent in
 // it are released to the client. The buffer is known by its address, which a
 // sink that trims it (setLen) leaves as it was; a buffer the record does not
-// hold (given back twice, or not this fetch's) releases nothing
+// hold (not this fetch's) releases nothing. The job carries the buffer itself:
+// it dies when the job does, on this thread, after the record is cleared (and
+// also when the job is dropped unrun), so its block is never reissued while a
+// record of it stands
 struct StreamReleaseJob {
   pub client: u64;
   pub slot: u32;
   pub id: u64;
-  pub at: usize;
+  pub buf: IoBuf;
 
   pub fn run(self: &mut, lp: &mut Loop, sv: &mut Service) {
     let k = sv.findClient(client);
@@ -422,6 +428,7 @@ struct StreamReleaseJob {
     let s = streamOf(rec as &ClientRec, slot, id);
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
+    let at = buf.base() as usize;
     let m = st.lent.remove(&at) || 0usize;
     if m > 0usize {rec.client.release(st.fetch, m);}
   }
