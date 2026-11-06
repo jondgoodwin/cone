@@ -25,6 +25,10 @@
 //                  links (chunkpool.cone)
 //   ChunkInbox, Turn  the receiving half of a link, in a sink whose 'accept' awaits: keeps
 //                  one stream's chunks in order and its 'end' after the last (chunkinbox.cone)
+//   FileSink(name, done)  a ChunkSink that writes the chunks to the file 'name', in order, and tells
+//                  'done' (a OneshotSender[Result[u64, AnyError]]) the bytes written, or why not
+//   FileSource(down, name)  a ChunkSource that reads the file 'name' into the stream, 64 KiB a chunk
+//                  (both in filestages.cone, over package aio's File)
 //   TransformStage[T]  a generic actor: a stage over any Transform T, one that makes new
 //                  chunks. The codecs are the instances:
 //                    TransformStage[deflate.Inflater](down, inflater)     inflate a gzip, zlib or raw deflate stream
@@ -65,7 +69,10 @@ import iobuf use IoBuf;
 import collections use AnyError, List, Deque, String;
 import actors;
 import streams use *;
-import sync use Arc;
+import sync use Arc, OneshotSender;
+import path use Path;
+import iocore use Access;
+import aio use File;
 
 // How far ahead a stream's link may run by default (its window, in bytes), and the
 // size a stage makes its chunks at most
