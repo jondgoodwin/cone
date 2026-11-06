@@ -1,0 +1,13 @@
+// The same store as lifetime_arena_refuse_widened_loop_deep with no loop: the arena is reached through a struct inside the struct the caller lent. Refuse.
+mod lifetime_arena_refuse_field_arena_deep;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct HR['a] { pub ar: &'a mut Arena; }
+struct Hd { pub ar: &mut Arena; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct Pair { pub first: Hd; pub n: i64; }
+fn stash(p: &mut Pair, x: &mut T) { let ar = p.first.ar; var f1 = ar.alloc(F(None)); var f2 = ar.alloc(F(None)); var f3 = ar.alloc(F(None)); var f4 = ar.alloc(F(None)); var f5 = ar.alloc(F(None)); var f6 = ar.alloc(F(None)); var i = 0; f1 = f2; f1.p = Some(x); }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Pair(Hd(q), 1); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }

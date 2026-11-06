@@ -116,7 +116,7 @@ compiler reported as Analysis. Being two clock reads per function, it runs only
 when `-V 1` or more asks (`timerFine`). `-V 2` adds the count of functions flow's
 gate marked ([Flow](../phases/flow.md), "The gate"), and the path walk's: the
 functions it walked (and how many for borrow freezing), their loops, how many
-loop bodies it walked again, and how many loops it had to widen to settle
+loop bodies it walked again, and the most walks any one loop took
 ("The loan walk"); and the drop-flag client's: the functions it walked for
 drops, and the variables it gave a flag ("Drop flags").
 

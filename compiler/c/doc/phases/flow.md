@@ -1328,12 +1328,20 @@ through.
 
 **Loops.** A loop body is walked from the state at its head; the paths back to
 the head — its end, each `continue` — join into it, and if that added anything
-the body is walked again from the grown head. Facts only grow, so it settles,
-nearly always on the first walk. An error fires on whichever walk first meets
-it, once. A loop still growing after four walks has each holder that changed
-around it widened to every loan (`pathSetAll`): conservative, and then it
-settles. The paths out are its `break`s. `-V 2` prints
-`Path walk: F functions (L for loans), L loops, W walked again, C widened`
+the body is walked again from the grown head. `pathJoin` unions each changed
+fact with the head's own, so facts only grow, and they are drawn from a finite
+set (loans and pending conflicts are each made once per site or key, a state is
+a few bits): the walk ends when a walk finds nothing new, nearly always the
+second. A reference rotated through k variables takes k+1 walks, one step of
+the chain a walk. An error fires on whichever walk first meets it, once. A loop
+that would need more than `PathLoopCap` (24) walks is refused with
+`ErrorLoopTangled` (`pwLoopRefuse`): no holder is widened, no set stands for "any
+loan", and the function's walk stops there (`pwRefused`: no statement, value or
+scope end after it is walked, so nothing is judged from half-walked state). In a
+generic function the loop is walked for each type it is made for, so the
+refusal is reported at the loop with the instantiation named. The paths out
+are its `break`s. `-V 2` prints
+`Path walk: F functions (L for loans), L loops, W walked again, most walks of one loop M`
 (`flowPathPrint`).
 
 **Scope ends.** As a block ends, at its end, at a jump leaving it or at a
