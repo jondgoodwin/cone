@@ -43,7 +43,7 @@
 //   c.release(id, n)  c.cancel(lp, id)  c.reprioritize(id, intent, score)
 //   c.closeIdle(lp)  c.abortAll(lp)
 //   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
-//   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)  c.http3Live()
+//   c.stats()  c.driverStats()  c.live()  c.queued()  c.isLive(id)  c.http3Live()
 //   Config.make(): conn tlsConfig http2 maxPerOrigin maxTotal idleTimeout  (CONFIGURATION)
 //     maxLifetime maxQueued maxRetries maxRedirects userAgent
 //     http3 http3Origins http3Timeout                                    (HTTP/3)
@@ -52,7 +52,7 @@
 //   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
 //     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
 //   Intent: Urgent Visible Prefetch Background;  toText(i)               (INTENTS)
-//   Sink.Here(token)  Sink.Chan(token, tx)                              (SINKS)
+//   Sink.Here(token)                                                    (SINKS)
 //   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
 //     e.trailers e.failure e.timing;  e.isTerminal()
 //   EventKind: Response Data End Done Failed Cancelled TimedOut;  toDebug(k)
@@ -250,21 +250,17 @@
 //
 // SINKS AND CREDIT (invariant I9: bounded memory). Where a fetch's events go,
 // and the token they carry back: Sink.Here(token), appended for this thread
-// by poll and pump; Sink.Chan(token, tx), sent on a sync channel to
-// another thread, never waiting: a full channel holds the event, and the
-// fetch's later events wait behind it, tried again at every pump (poll waits
-// at most a millisecond then). A response's body bytes are on loan to the
-// program until it says it is done with them: 'release(id, n)' for Data
-// delivered Here; for a channel, as the channel takes them. Its connection
-// reads no more than httpconn's body window (256 KiB) ahead of what was
-// released, and TCP holds the server: a slow consumer slows the link, never
-// fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
+// by poll and pump. (A program that wants them on another thread sends them
+// there itself from what poll appends.) A response's body bytes are on loan to the
+// program until it says it is done with them: 'release(id, n)' for Data. Its
+// connection reads no more than httpconn's body window (256 KiB) ahead of
+// what was released, and TCP holds the server: a slow consumer slows the
+// link, never fills memory (on HTTP/2 the window is its stream's, 'conn.h2'
 // initialWindowSize, 256 KiB: a slow consumer stops only its own stream). A fetch's final answer releases what it still had out (the
 // bytes the program holds then are its own). Nothing queues without a
 // bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
 // once, Stage.Queue: a full queue is a visible error, never silent growth),
-// 'maxTotal' connections, the body window per connection, and a channel's
-// own bound.
+// 'maxTotal' connections, and the body window per connection.
 //
 // FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
 // Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
@@ -275,7 +271,7 @@
 // redirects, requests sent on a kept connection against new ones (and as
 // HTTP/2 streams, and over HTTP/3), HTTP/3 attempts and those that fell
 // back, Alt-Svc alternatives learned,
-// connections opened and closed, events delivered, held and dropped, the
+// connections opened and closed, events delivered, the
 // queue now and at its deepest; 'driverStats()' is the driver's own. Done
 // carries the fetch's Timing: when it was asked for, last given a
 // connection, its response's first byte, its end, the attempts and
@@ -327,7 +323,6 @@ import libc;
 import slots use SlotTable;
 import collections use List, String;
 import time use Instant, Duration;
-import sync use Sender;
 import iobuf use IoBuf;
 import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, SocketAddr, forever, resolveOp, addressesIn;
 import http use *;
@@ -575,7 +570,6 @@ pub struct Timing {
 pub enum Sink {
   pub token: u64;
   pub struct Here {}
-  pub struct Chan {pub tx: Sender[Event];}
 }
 
 // What an event says happened (see the package's header, FETCHING)
@@ -662,8 +656,6 @@ pub struct ClientStats {
   pub altSvc: u64;         // h3 alternatives learned from Alt-Svc fields
   pub closed: u64;         // connections ended
   pub events: u64;         // events handed to sinks
-  pub held: u64;           // events held for a full channel
-  pub dropped: u64;        // events dropped: their channel's receiver had gone
   pub unclaimed: u64;      // completions poll was given that were not the client's
   pub queuedNow: u32;      // requests waiting for a connection, now
   pub queuedMax: u32;      // ...at the most
@@ -674,6 +666,6 @@ pub struct ClientStats {
 
   pub fn zero() ClientStats {
     ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
+      0u64, 0u64, 0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
   }
 }

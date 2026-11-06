@@ -7,10 +7,8 @@
 //    body byte checked, each a stream of its own, the response saying HTTP/2;
 //    then the client's close ends both sides cleanly.
 // 2. slowReader: three 1 MiB downloads at once with a stream window of
-//    65535, one never released, and a fourth to a channel of room for one
-//    that is never read: the two released finish while the slow one stops
-//    at exactly its window and the channel's holds; released and read, both
-//    finish.
+//    65535, one never released: the two released finish while the slow one
+//    stops at exactly its window; released, it finishes.
 // 3. resetMidBody: the server resets one stream after 256 KiB (the client's
 //    request Failed: Reset, CANCEL), the client cancels another mid-body (the
 //    server's Failed: Reset), and a third, beside them, is whole; the
@@ -40,7 +38,6 @@ import fs;
 import path use Path;
 import collections use List, String;
 import time use Instant, Duration;
-import sync use Sender, Receiver, Channel;
 import iobuf use *;
 import iocore use Loop, SocketAddr, Completion, forever;
 import http use *;
@@ -507,16 +504,6 @@ fn ask(w: &mut World, target: &str, size: u64, release: bool) usize {
   k
 }
 
-fn askChan(w: &mut World, target: &str, size: u64, tx: Sender[Event]) usize {
-  let k = w.cl.gots.len();
-  w.cl.gots.push(Got(ReqId.none(), size, true, 0u16, Version.Http11, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64,
-    EventKind.Closed, ErrorKind.Closed, 0u64, Stage.Closed, false, false, 0u64, 0u64));
-  let req = w.cli.request(&mut w.lp, w.cl.conn, RequestHead.get(target, "localhost"), BodyLength(),
-    Sink.Chan(tokReq + u64.from(k), tx));
-  w.cl.gots[k].req = req;
-  k
-}
-
 // A POST of 'up' body bytes, sent as Writable says, answered with 'size'
 fn askPost(w: &mut World, target: &str, up: u64, size: u64) usize {
   let k = w.cl.gots.len();
@@ -593,8 +580,6 @@ fn warm(w: &mut World, sev: &uni List[Event], cev: &uni List[Event], scene: &Str
 fn finish(w: &mut World, sev: &uni List[Event], cev: &uni List[Event], scene: &String) {
   w.srv.abortAll(&mut w.lp);
   w.cli.abortAll(&mut w.lp);
-  let giveUp = Instant.now() + Duration.fromSeconds(5i64);
-  while (w.srv.held() > 0usize || w.cli.held() > 0usize) && Instant.now() < giveUp {step(w, sev, cev);}
   step(w, sev, cev);
 }
 
@@ -679,13 +664,9 @@ fn slowReader(secure: bool) {
   var sev = List[Event]();
   var cev = List[Event]();
   warm(&mut w, &uni sev, &uni cev, &scene);
-  var tx: Sender[Event];
-  var rx: Receiver[Event];
-  tx, rx = Channel[Event].bounded(1u64);
   let a = ask(&mut w, target("/n/", mib).view(), mib, true);
   let b = ask(&mut w, target("/n/", mib).view(), mib, true);
   let slow = ask(&mut w, target("/n/", mib).view(), mib, false);
-  let ch = askChan(&mut w, target("/n/", mib).view(), mib, tx);
   let giveUp = Instant.now() + Duration.fromSeconds(20i64);
   while (w.cl.gots[a].finals == 0u64 || w.cl.gots[b].finals == 0u64) && Instant.now() < giveUp {
     step(&mut w, &uni sev, &uni cev);
@@ -700,9 +681,7 @@ fn slowReader(secure: bool) {
   expect(w.cl.gots[b].last == EventKind.Done && w.cl.gots[b].bytes == mib, lab(&scene, "...and another").view());
   expectUInt(w.cl.gots[slow].bytes, 65535u64, lab(&scene, "the unreleased one stops at exactly its stream window").view());
   expectUInt(w.cl.gots[slow].finals, 0u64, lab(&scene, "...still under way").view());
-  expectUInt(w.cl.gots[ch].finals, 0u64, lab(&scene, "the unread channel's request: still under way").view());
-  expect(w.cli.held() > 0usize, lab(&scene, "...its events held for the full channel").view());
-  // Released and read, both finish
+  // Released, it finishes
   let owed = w.cl.gots[slow].unreleased;
   w.cl.gots[slow].release = true;
   w.cl.gots[slow].unreleased = 0u64;
@@ -710,16 +689,9 @@ fn slowReader(secure: bool) {
   let giveUp2 = Instant.now() + Duration.fromSeconds(20i64);
   while !allFinal(&w, 1usize) && Instant.now() < giveUp2 {
     step(&mut w, &uni sev, &uni cev);
-    while true {
-      match rx.tryRecv() {
-        case var Some(e) {take(&mut w, &mut e);}
-        else {break;}
-      }
-    }
   }
   expect(w.cl.gots[slow].last == EventKind.Done && w.cl.gots[slow].bytes == mib, lab(&scene, "released, the slow one finishes").view());
-  expect(w.cl.gots[ch].last == EventKind.Done && w.cl.gots[ch].bytes == mib, lab(&scene, "read, the channel's finishes").view());
-  expectUInt(w.cl.gots[slow].bad + w.cl.gots[ch].bad + w.cl.gots[a].bad + w.cl.gots[b].bad, 0u64, lab(&scene, "every byte right").view());
+  expectUInt(w.cl.gots[slow].bad + w.cl.gots[a].bad + w.cl.gots[b].bad, 0u64, lab(&scene, "every byte right").view());
   expectUInt(w.sv.accepted, 1u64, lab(&scene, "all on one connection").view());
   finish(&mut w, &uni sev, &uni cev, &scene);
 }
