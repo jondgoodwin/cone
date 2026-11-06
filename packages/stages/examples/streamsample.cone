@@ -140,65 +140,6 @@ actor Checker is DigestSink[Array[u8, 32]] {
   }
 }
 
-// ---- mode "pipeline" ----
-
-// Reads a connected socket, 64 KiB at a time, into a link of four buffers
-actor SocketSource is ChunkSource {
-  down: ChunkSink;
-  link: ChunkWindow;
-  conn: Socket;
-  pumping: bool;
-  over: bool;
-
-  pub fn init(self: &new, down: ChunkSink) {
-    *self = Self(down: down, link: ChunkWindow.own(262144usize), conn: Socket.none(), pumping: false, over: false);
-    down.attach(selfactor);
-  }
-
-  pub async fn start(self, port: u16) {
-    let r = await aio.connect(SocketAddr.localhost(port));
-    conn = socketOf(r);
-    selfactor.pump();
-  }
-
-  pub async fn pump(self) {
-    if pumping || over { return; }
-    pumping = true;
-    var more = true;
-    while more {
-      match link.take(65536usize) {
-        case is None { more = false; }
-        case let Some(b) {
-          let r = await conn.read(b);
-          match r {
-            case let Ok(buf) {
-              if buf.isEmpty() {
-                link.give(buf);
-                over = true;
-                down.end(Ending.Finished);
-                more = false;
-              } else {
-                down <- buf;
-              }
-            }
-            case let Err(e) {
-              over = true;
-              down.end(Ending.Failed(AnyError.from(e)));
-              more = false;
-            }
-          }
-        }
-      }
-    }
-    pumping = false;
-  }
-
-  pub async fn giveBack(self, b: IoBuf) {
-    link.give(b);
-    if !pumping && !over { selfactor.pump(); }
-  }
-}
-
 // ---- mode "adhoc": one actor does it all, holding the body and the result whole ----
 
 actor AdHoc {
@@ -277,7 +218,7 @@ fn main(argc: i32, argv: **u8) i32 {
       let hash = HashStage[cryptohash.Sha256](sink, cryptohash.Sha256.make(), Checker(want));
       let inf = TransformStage[deflate.Inflater](hash, deflate.Inflater.make(deflate.Format.Gzip));
       let src = SocketSource(inf);
-      src.start(port);
+      src.start(SocketAddr.localhost(port));
     }
   }
   if adhoc {
