@@ -466,12 +466,14 @@ fn entryOpener(hashes: List[u64], sizes: List[u64], col: Collector) Uni[fn(e: &z
     let k = next;
     next += 1usize;
     if k < hashes.len() {
-      CheckSink(*hashes[k], *sizes[k], col.clone())
+      asSink(CheckSink(*hashes[k], *sizes[k], col.clone()))
     } else {
-      CheckSink(1u64, 1u64, col.clone())
+      asSink(CheckSink(1u64, 1u64, col.clone()))
     }
   })
 }
+
+fn asSink(s: ChunkSink) ChunkSink { s }
 
 // Waits, on a thread, for the archive stage's one answer: an archive that failed leaves the run
 // abandoned (its remaining files will never come)
@@ -480,7 +482,7 @@ struct Watch {
   col: Collector;
 }
 
-fn watch(w: Watch) u64 {
+fn watch(var w: Watch) u64 {
   match w.rx.recv() {
     case let Some(r) {
       match r {
@@ -636,7 +638,8 @@ fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], s
     var arx: OneshotReceiver[Result[u64, AnyError]];
     atx, arx = Oneshot[Result[u64, AnyError]].make();
     let sink = ArchiveStage(entryOpener(hashes.clone(), sizes.clone(), col.clone()), atx);
-    _ = thread.start(Watch(arx, col.clone()), &watch);
+    let th = thread.start(Watch(arx, col.clone()), &watch);
+    th.detach();
     let f = ZipStreamer(client.clone());
     f.run(url(port, if cancelAt > 0usize { "/zip/big" } else if z { "/zip/z" } else { "/zip/g" }), sink, g, cancelAt > 0usize, col);
   } else if mode == 1u32 {

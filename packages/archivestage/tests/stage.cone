@@ -59,9 +59,11 @@ fn newSeen() Seen {
 }
 
 let seen: Seen;
+let hung: Atomic[u64];
 
 fn @initpure init() {
   seen = newSeen();
+  hung = Atomic[u64].of(0u64);
 }
 
 fn resetSeen() {
@@ -300,7 +302,7 @@ fn lentNow() u64 { iobuf.stats().lent }
 
 // Wait, within a deadline, for every sink to have been ended, every input chunk and every output buffer to be back
 fn settle(pool: &ChunkPool, base: u64) bool {
-  let limit = Instant.now() + Duration.fromMillis(15000i64);
+  let limit = Instant.now() + Duration.fromMillis(if hung.load() != 0u64 { 1000i64 } else { 15000i64 });
   while Instant.now() < limit {
     if seen.ends.load() + seen.failedEnds.load() == seen.begins.load() && seen.back.load() == seen.sent.load()
         && pool.lent() == 0usize && lentNow() == base { return true; }
@@ -328,8 +330,12 @@ fn runWith(data: &List[u8], p: &Plan, cfg: &Config, cut: usize, piece: usize, fa
     let src = Source(stage, data.clone(), cut, piece, failAfter, false);
     actors.withGroup(&gs, fn() [src] { src.start(); });
   }
-  let answer = rx.recvTimeout(Duration.fromMillis(deadlineMs));
+  // once a run has hung, the ones after it get a short deadline: a broken stage fails the test, it does not take an hour
+  let ms = if hung.load() != 0u64 { 2000i64 } else { deadlineMs };
+  let answer = rx.recvTimeout(Duration.fromMillis(ms));
+  if answer is None { hung.add(1u64); }
   let ok = settle(&pool, base);
+  if !ok { hung.add(1u64); }
   Outcome(answer, pool, ok)
 }
 
@@ -545,7 +551,7 @@ fn main() i32 {
     let p = planOf(small.view());
     var cut = 0usize;
     var wrong = 0u64;
-    while cut <= small.len() {
+    while cut <= small.len() && hung.load() == 0u64 {
       let o = run(&small, &p, &plain(), cut, 100000usize);
       let n = okCount(&o) || 0u64;
       if n != 3u64 || seen.good.load() != 3u64 || !o.settled || seen.bad.load() + seen.failedEnds.load() != 0u64 { wrong += 1u64; }
@@ -583,7 +589,7 @@ fn main() i32 {
     }
     var cut = 0usize;
     var wrong = 0u64;
-    while cut < 600usize {
+    while cut < 600usize && hung.load() == 0u64 {
       let o = run(&data, &p, &plain(), cut, 100000usize);
       let n = okCount(&o) || 0u64;
       if n != u64.from(p.names.len()) || seen.good.load() != n || !o.settled { wrong += 1u64; }
@@ -656,7 +662,7 @@ fn main() i32 {
     cfg.slowMod = 3usize;
     var wrong = 0u64;
     var round = 0usize;
-    while round < 200usize {
+    while round < 200usize && hung.load() == 0u64 {
       let piece = if round % 2usize == 0usize { 16384usize } else { 700usize };
       let o = run(&data, &p, &cfg, 0usize, piece);
       let n = okCount(&o) || 0u64;
@@ -713,7 +719,7 @@ fn main() i32 {
     let heldBefore = iobuf.stats().heldBytes;
     var wrong = 0u64;
     var round = 0usize;
-    while round < 20usize {
+    while round < 20usize && hung.load() == 0u64 {
       let o = run(&bad, &p, &cfg, 0usize, 8192usize);
       if !isErr(&o) || seen.failedEnds.load() != 1u64 || seen.ends.load() != 6u64 || seen.begins.load() != 7u64
           || seen.stray.load() != 0u64 || !o.settled { wrong += 1u64; }
