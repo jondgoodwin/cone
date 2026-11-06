@@ -1,0 +1,93 @@
+// What kind a failed layer ends its connection with: the layer's own word,
+// 'overloaded()', and nothing in its failure text. A layer that fails and says
+// overloaded ends the connection Overloaded at Stage.Tls (a TLS stream whose
+// buffer the pool refused: the tls package's tests pin that it says so); one
+// that fails and does not, Closed, whatever its text says -- here the text
+// begins "overloaded" in both cases.
+
+mod layerkind;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Op, Lane, Outcome, Completion, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 100u64;
+const tokConn = 1u64;
+
+// A layer that has failed from the start, with a text that begins "overloaded"
+// whatever it says by 'overloaded()'
+struct Broken {
+  says: bool;
+
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {}
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {IoBuf()}
+  pub fn wireRoom(self: &) usize {65536usize}
+  pub fn plainIn(self: &mut, buf: IoBuf) {}
+  pub fn plainOut(self: &mut) IoBuf {IoBuf()}
+  pub fn pending(self: &) usize {0usize}
+  pub fn isOpen(self: &) bool {false}
+  pub fn peerEnded(self: &) bool {false}
+  pub fn closeSend(self: &mut) {}
+  pub fn failed(self: &) bool {true}
+  pub fn failureCode(self: &) u32 {0u32}
+  pub fn failureText(self: &) String {String.from("overloaded: the words say it either way")}
+  pub fn overloaded(self: &) bool {says}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn describe(self: &) String {String.from("broken")}
+  pub fn alpn(self: &) String {String()}
+}
+
+fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
+
+// A connection over a Broken layer: the kind its Closed event carries
+fn kindOf(says: bool) ErrorKind {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var port = 0u16;
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Err(e) {}
+  }
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  drv.connectWith(&mut lp, "127.0.0.1", port, Uni[Broken](Broken(says)), Sink.Here(tokConn));
+  var kind = ErrorKind.TimedOut;
+  var stage = Stage.Closed;
+  var seen = false;
+  var events = List[Event]();
+  let giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while !seen && Instant.now() < giveUp {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokConn && e.kind == EventKind.Closed {
+        seen = true;
+        kind = e.failure.error.kind;
+        stage = e.failure.stage;
+      }
+    }
+    events.clear();
+  }
+  drv.abortAll(&mut lp);
+  expect(seen, "the connection over the failed layer closed");
+  expect(stage == Stage.Tls, "...at Stage.Tls");
+  kind
+}
+
+fn main() i32 {
+  expect(kindOf(true) == ErrorKind.Overloaded, "a failed layer that says overloaded: the connection ends Overloaded");
+  expect(kindOf(false) == ErrorKind.Closed, "a failed layer that does not, with the same words: Closed");
+  done()
+}

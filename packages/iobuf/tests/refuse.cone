@@ -18,6 +18,7 @@
 //    plain take cannot reuse them, and a try take can; the counts of both banks
 //    sum in stats(), and come back to 0.
 // 4. The same, with the blocks dropped on another thread.
+// 5. An oversize tryMake on a full try bank is refused, a plain one served.
 
 mod refuse;
 
@@ -200,6 +201,30 @@ fn banksApart() {
   expectUInt(u64.from(stats().lentBytes), 0u64, "no bytes lent in either bank");
 }
 
+// 5. With the try bank full, an oversize tryMake is refused too (a value, no
+// panic), and an oversize plain construction still succeeds from the reserve
+fn oversizeFull() {
+  fresh();
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var other = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  _ = fill(&mut held, &mut other, 5u32, 1u32);
+  let before = stats().refused;
+  var refusedBig = true;
+  match IoBuf.tryMake(3usize * mib) {
+    case var Some(b) {refusedBig = false;}
+    else {}
+  }
+  expect(refusedBig, "oversize: a 3 MiB tryMake on the full try bank is refused");
+  expect(stats().refused > before, "oversize: ...and counted");
+  {
+    var plain = IoBuf(3usize * mib);
+    plain.append("x");
+    expectUInt(u64.from(plain.len()), 1u64, "oversize: a plain 3 MiB construction is served from the reserve");
+  }
+  held.advance(held.len());
+  expectUInt(stats().lent, 0u64, "oversize: all home");
+}
+
 // Drop what arrives, on this thread
 fn dropAll(c: Chain) u64 {
   var k = c;
@@ -257,6 +282,7 @@ fn main() i32 {
   }
   sparsePin();
   banksApart();
+  oversizeFull();
   otherThread();
   trim();
   done()

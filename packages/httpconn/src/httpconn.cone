@@ -167,6 +167,14 @@
 // 256 KiB), and a connection holds a receive buffer only while it reads a message (a
 // client's response, a server's request body): otherwise, idle or answering,
 // it waits with a zero-byte receive and pins no buffer ('idleRecvReady').
+// The same credit stops the layer's output: the driver takes a buffer from the
+// layer ('plainOut') only while the core's credit holds the most a layer gives
+// (a TLS record's 16 KiB of plaintext, or 'recvSize' if more), since a TLS
+// session cannot say a record's size before it is read out and the core panics
+// when handed more than its credit. What is left stays in the layer, and the
+// driver feeds again when the credit has grown (a release, or the core's own
+// use of its input); the peer's end is fed only once the layer's 'peerEnded'
+// says every byte was taken.
 //
 // CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
 // req)' asks a request to end: still waiting, it is taken out and answered
@@ -660,6 +668,10 @@ pub trait Layer {
   pub fn failureCode(self: &) u32;
   // Why it failed, in words, the OS's text and number among them
   pub fn failureText(self: &) String;
+  // Whether it failed because the buffer pool refused it a buffer (a moment
+  // that passes, not the peer's doing): the connection then ends Overloaded
+  // rather than Closed
+  pub fn overloaded(self: &) bool;
   // Whether it has work that may block, to run on the blocking pool (a TLS
   // session's certificate check by the OS, which may fetch over the network)
   pub fn wantsCall(self: &) bool;
@@ -705,6 +717,7 @@ pub struct Plain {
   pub fn failed(self: &) bool {false}
   pub fn failureCode(self: &) u32 {0u32}
   pub fn failureText(self: &) String {String()}
+  pub fn overloaded(self: &) bool {false}
   pub fn wantsCall(self: &) bool {false}
   pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
   pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}

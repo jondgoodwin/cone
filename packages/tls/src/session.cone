@@ -63,6 +63,7 @@ pub struct Session is Move {
   events: u32;
   verifyWanted: bool;  // the chain is ready for the OS's verifier
   ownError: bool;      // the error was this package's verdict: OpenSSL's that follows is not the cause
+  noBuffer: bool;      // it failed because the pool refused a buffer (iobuf's tryMake)
   verifyAt: Instant;
   verifyTime: Duration;
   begun: bool;         // its first handshake bytes have gone out or come in
@@ -97,7 +98,7 @@ pub struct Session is Move {
     SSL_set_bio(ssl, r, w);
     Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
       resume: resume, lane: lane, offline: offline, host: String(), phase: pHandshake,
-      events: 0u32, verifyWanted: false, ownError: false, verifyAt: Instant(),
+      events: 0u32, verifyWanted: false, ownError: false, noBuffer: false, verifyAt: Instant(),
       verifyTime: Duration.zero(), begun: false, begunAt: Instant(), handshakeTime: Duration.zero(),
       wasOpen: false, mayRead: false, eof: false, gotClose: false,
       endTold: false, sentClose: false, err: TlsError.none())
@@ -270,6 +271,9 @@ pub struct Session is Move {
   pub fn isHandshaking(self: &) bool {phase == pHandshake || phase == pVerify}
 
   pub fn isFailed(self: &) bool {phase == pFailed}
+
+  // It failed because the pool had no buffer for it (the failure is not the peer's)
+  pub fn overloaded(self: &) bool {noBuffer}
 
   // The peer's stream has ended, and every byte of it has been read
   pub fn peerEnded(self: &) bool {gotClose || (eof && !mayRead)}
@@ -455,7 +459,8 @@ pub struct Session is Move {
     var b = match IoBuf.tryMake(job.len()) {
       case var Some(got) {got}
       else {
-        self.fail(TlsErrorKind.Backend, 0u32, "overloaded: no buffer for the certificate check, the buffer pool is full (iobuf maxBytes)");
+        noBuffer = true;
+        self.fail(TlsErrorKind.Backend, 0u32, "no buffer for the certificate check, the buffer pool is full (iobuf maxBytes)");
         return Op.Call(lane, &verifyNothing, 0u64, IoBuf());
       }
     };
