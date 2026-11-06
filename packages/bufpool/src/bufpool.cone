@@ -74,7 +74,9 @@
 // or in osBytes(), only the 2 MiB of blocks: it is 0.2% on top. A block is at
 // least 8 bytes: while it sits idle in the stock its first word links it to the
 // next. Classes are registered while modules initialise, before any thread takes
-// a block: at most 8, each with a cache of at most 32 blocks.
+// a block: at most 10, each with a cache of at most 32 blocks. The pool registers
+// the five sizes twice, as classes 0 to 4 (the PLAIN BANK) and 5 to 9 (the
+// TRY BANK, which only tryAllocate takes from; see THE BANKS).
 //
 // THREADS. Each thread has a CACHE: for each class a stack of idle blocks (an
 // array of block pointers in the thread's own record, so that taking one touches
@@ -110,13 +112,25 @@
 // slabs wholly idle are given back to the OS, a whole slab at a time, but never
 // below the bound, so a steady load does not make the OS calls it saved.
 //
+// THE BANKS. A flood of a peer's small buffers must not leave the program's own
+// constructions without a slab, whichever way the peer's blocks are freed. So
+// tryAllocate takes from slabs of its own, the try bank: a second set of classes
+// of the same five sizes, with their own stock, slab lists and caches. The plain
+// bank grows to maxBytes, as ever. The try bank gets a new slab (or an oversize
+// block) only while the bytes held, both banks together, plus the slab stay
+// within maxBytes less a reserve, a quarter of maxBytes (at least five slabs, at
+// most half). So the plain bank can always grow by the reserve, however the try
+// bank's blocks lie. A free block of the try bank is always safe to give. A
+// block goes home to the bank it came from: release reads the slab's 'home', a
+// copy of its class written once on a line of the header page of its own.
+//
 // COUNTS. Each thread counts its own takes and returns, per class, in its
 // record (plain numbers, no atomics: one add on the path); the stats add them
 // up. So they are exact once the threads that took and returned have stopped;
 // read while others run, they are a sum of moments. The OS counters and the
 // stock's are exact: kept under its locks or atomically.
 //
-// The module's init makes the region and registers the five classes; its final
+// The module's init makes the region and registers the five classes twice; its final
 // gives every idle slab back to the OS, after every module that uses the pool has
 // finalized.
 //
@@ -172,7 +186,7 @@ const slabBytes = 2097152usize;
 // A block's alignment, and the unit every oversize capacity is a multiple of
 pub const page = 4096usize;
 
-const maxClasses = 8usize;
+const maxClasses = 10usize;    // the five sizes twice: the plain bank, then tryAllocate's
 const maxCache = 32u32;
 
 // A new slab: slabBytes bytes aligned to slabBytes, the page before them
@@ -260,6 +274,8 @@ struct SlabRec {
   prevP: *SlabRec;
   nextA: *SlabRec;   // the list of every slab
   prevA: *SlabRec;
+  pad: Array[u64, 6];  // 'home' is alone on the next 64-byte line of the header page
+  home: u32;         // its class again, written once before the slab is listed, read without the lock
 }
 
 // A class's stock. Every field is reached under 'lock', except the class's
@@ -289,9 +305,9 @@ struct CacheLine {
 
 // One thread's cache, malloc'd and on the registry for good
 struct ThreadCache {
-  lines: Array[CacheLine, 8];
-  takes: Array[u64, 8];
-  returns: Array[u64, 8];
+  lines: Array[CacheLine, 10];
+  takes: Array[u64, 10];
+  returns: Array[u64, 10];
   misses: u64;               // takes that had to go to the stock
   nextReg: *ThreadCache;     // every record ever made
   nextFree: *ThreadCache;    // the retired ones, for reuse
@@ -300,7 +316,7 @@ struct ThreadCache {
 
 // Everything the mechanism shares, one malloc'd record found by 'gAddr'
 struct Globals {
-  classes: Array[ClassState, 8];
+  classes: Array[ClassState, 10];
   regLock: Mutex;
   regHead: *ThreadCache;
   freeRecs: *ThreadCache;
@@ -710,33 +726,49 @@ fn freeSlabs(g: *Globals, head: *SlabRec) {
 // The OS, and the bound
 // ---------------------------------------------------------------------------
 
-// Count size bytes against the bound; whether it holds
-fn reserve(g: *Globals, size: usize) bool {
+// Count size bytes against a bound on the bytes held; whether it holds
+fn reserve(g: *Globals, size: usize, limit: u64) bool {
   let n = u64.from(size);
   let before = (*g).held.add(n);
-  if before + n > (*g).maxBytes.load() {
+  if before + n > limit {
     (*g).held.sub(n);
     return false;
   }
   true
 }
 
-// Count size bytes against the bound, making room if need be: every wholly
+// Count size bytes against a bound, making room if need be: every wholly
 // idle slab of every class back to the OS, then this thread's cache
-fn reserveRoom(g: *Globals, size: usize) bool {
-  if reserve(g, size) {return true;}
+fn reserveRoom(g: *Globals, size: usize, limit: u64) bool {
+  if reserve(g, size, limit) {return true;}
   trimStockOf(g);
-  if reserve(g, size) {return true;}
+  if reserve(g, size, limit) {return true;}
   let tc = myCache;
   if tc as usize != 0usize {flushCache(tc);}
   trimStockOf(g);
-  reserve(g, size)
+  reserve(g, size, limit)
+}
+
+// The bytes held, both banks together, that the try bank grows to: maxBytes less
+// the reserve, a quarter of maxBytes, at least five slabs (one for each of the
+// five size classes the program's own constructions may need), at most half
+fn tryMark(g: *Globals) u64 {
+  let max = usize.from((*g).maxBytes.load());
+  var r = max / 4usize;
+  if r < 5usize * slabBytes {r = 5usize * slabBytes;}
+  if r > max / 2usize {r = max / 2usize;}
+  u64.from(max - r)
+}
+
+// The bound a class's new slab is counted against: its bank's
+fn limitOf(g: *Globals, cs: *ClassState) u64 {
+  if (*cs).index >= classCount {tryMark(g)} else {(*g).maxBytes.load()}
 }
 
 // A new slab for class cs, got from the OS and listed; false when the bound or
 // the OS refuses it
 fn newSlab(g: *Globals, cs: *ClassState) bool {
-  if !reserveRoom(g, slabBytes) {
+  if !reserveRoom(g, slabBytes, limitOf(g, cs)) {
     return false;
   }
   var base = null as *u8;
@@ -751,6 +783,7 @@ fn newSlab(g: *Globals, cs: *ClassState) bool {
   (*s).base = base;
   (*s).osBase = osBase;
   (*s).cls = (*cs).index;
+  (*s).home = (*cs).index;
   (*s).total = (*cs).perSlab;
   (*cs).lock.lock();
   (*s).nextA = (*cs).all;
@@ -802,7 +835,12 @@ pub fn trimEverything() {
 // counted against the bound, or null when the bound or the OS refuses it
 pub fn holdOversize(size: usize) *u8 {
   let g = glob();
-  if !reserveRoom(g, size) {
+  holdOversizeWithin(g, size, (*g).maxBytes.load())
+}
+
+// The same, counted against 'limit' bytes held
+fn holdOversizeWithin(g: *Globals, size: usize, limit: u64) *u8 {
+  if !reserveRoom(g, size, limit) {
     return null;
   }
   let b = osAlloc(size);
@@ -964,57 +1002,45 @@ fn poolAlloc(r: *MemRegion, bytes: usize, align: usize) *u8 {
   blockTake(c)
 }
 
-// The bytes a refusing take leaves for what a program does on its own account:
-// a quarter of maxBytes, at least five slabs (one for each of the five size
-// classes a program's own constructions may need), at most half of maxBytes
-fn reserveOf(max: usize) usize {
-  var r = max / 4usize;
-  if r < 5usize * slabBytes {r = 5usize * slabBytes;}
-  if r > max / 2usize {r = max / 2usize;}
-  r
-}
-
-// The bytes a take of 'bytes' lends: its class's block, or whole pages
-fn lentSize(bytes: usize) usize {
-  let c = classFor(bytes);
-  if c == usize.from(classCount) {return pageCeil(bytes);}
-  classSize(u32.from(c))
-}
-
-// The block 'bufferPool().allocate(bytes, page)' gives, but one the pool may
-// REFUSE (null): when the bytes lent now plus this block would pass maxBytes
-// less 'reserveOf' it, whether or not a free block exists. For the blocks a
-// peer's bytes cause, so that a flood stops short of maxBytes and the
-// constructions a program makes on its own account (which panic past maxBytes)
-// still find room. Lent bytes never exceed held bytes, and held is an atomic,
-// so while held plus the request is under the mark no refusal is possible and
-// nothing is summed; the sum (blockStats) runs only near the mark
+// The block 'bufferPool().allocate(bytes, page)' gives, but taken from the try
+// bank (THE BANKS) and one the pool may REFUSE (null): a free block of the bank
+// is always given; a new slab or an oversize block only while the bytes held
+// stay within maxBytes less the reserve. For the blocks a peer's bytes cause, so
+// that no flood can leave the constructions a program makes on its own account
+// (plain, which panic past maxBytes) without room. Release it as any block
 pub fn tryAllocate(bytes: usize) *u8 {
   let g = glob();
-  let max = usize.from((*g).maxBytes.load());
-  let mark = max - reserveOf(max);
-  let want = lentSize(bytes);
-  if usize.from((*g).held.load()) + want > mark {
-    if blockStats().lentBytes + want > mark {
-      (*g).refused.add(1u64);
-      return null;
-    }
+  let c = classFor(bytes);
+  var b = null as *u8;
+  if c == usize.from(classCount) {
+    b = holdOversizeWithin(g, pageCeil(bytes), tryMark(g));
+  } else {
+    b = blockTake(c + usize.from(classCount));
   }
-  let b = poolAlloc(bufferPool(), bytes, page);
   if b as usize == 0usize {(*g).refused.add(1u64);}
   b
 }
 
+// A block goes home to the bank it came from: its slab's 'home' says which, and
+// is checked against the size it is released with
 fn poolRelease(r: *MemRegion, block: *u8, bytes: usize) {
   if block as usize == 0usize {return;}
   let c = classFor(bytes);
   if c == usize.from(classCount) {
     releaseOversize(block, pageCeil(bytes));
   } else {
-    blockPut(c, block);
+    let home = usize.from((*slabOf(block)).home);
+    if home % usize.from(classCount) != c {
+      panic("bufpool: a block was released with a size of another class than it came from");
+    }
+    blockPut(home, block);
   }
 }
 
+// A block of the same class stays where it is, in its own bank. Moving to
+// another class takes a block of the PLAIN bank (a resize is the holder's own
+// account, not a tryAllocate) and sends the old one home to its own bank
+// through poolRelease, which reads its slab: no block crosses banks
 fn poolResize(r: *MemRegion, block: *u8, oldBytes: usize, newBytes: usize, align: usize) *u8 {
   if block as usize == 0usize {
     return poolAlloc(r, newBytes, align);
@@ -1041,10 +1067,14 @@ fn @initpure init() {
   liveBytes = Atomic[u64].of(0u64);
   gAddr = Atomic[usize].of(0usize);
   blocksInit();
-  var c = 0u32;
-  while c < classCount {
-    registerClass(classSize(c), cacheBlocksFor(c));
-    c = c + 1u32;
+  var bank = 0u32;
+  while bank < 2u32 {       // the plain bank, classes 0 to 4; the try bank, 5 to 9
+    var c = 0u32;
+    while c < classCount {
+      registerClass(classSize(c), cacheBlocksFor(c));
+      c = c + 1u32;
+    }
+    bank = bank + 1u32;
   }
   poolRegion = MemRegion(&poolAlloc, &poolResize, &poolRelease, &poolSize);
 }
