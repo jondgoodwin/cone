@@ -6,6 +6,7 @@
 */
 
 #include "../ir/ir.h"
+#include "../ir/flowloan.h"
 #include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "../shared/timer.h"
@@ -1765,6 +1766,78 @@ static void genlCallWalk(GenState *gen, GenlCallWalk *walk, LLVMValueRef fn) {
     --walk->depth;
 }
 
+// Each expansion of an inline function on a GPU target: the function expanded
+// and the one it was expanded into (an inline function has no function of its
+// own, and its body is reached as the function holding it is)
+typedef struct {
+    FnDclNode *inlined;
+    LLVMValueRef into;
+} GenlInlineEdge;
+static GenlInlineEdge *genlInlineEdges = NULL;
+static uint32_t genlInlineCnt = 0;
+static uint32_t genlInlineCap = 0;
+
+void genlGpuInlineNote(GenState *gen, FnDclNode *fndcl) {
+    if (genlInlineCnt > 0 && genlInlineEdges[genlInlineCnt - 1].inlined == fndcl
+        && genlInlineEdges[genlInlineCnt - 1].into == gen->fn)
+        return;
+    if (genlInlineCnt == genlInlineCap) {
+        genlInlineCap = genlInlineCap ? genlInlineCap * 2 : 256;
+        GenlInlineEdge *grown = (GenlInlineEdge *)memAllocBlk(genlInlineCap * sizeof(GenlInlineEdge));
+        if (genlInlineCnt)
+            memcpy(grown, genlInlineEdges, genlInlineCnt * sizeof(GenlInlineEdge));
+        genlInlineEdges = grown;
+    }
+    genlInlineEdges[genlInlineCnt].inlined = fndcl;
+    genlInlineEdges[genlInlineCnt].into = gen->fn;
+    ++genlInlineCnt;
+}
+
+// The functions a kernel calls, directly or through others, by the same table
+typedef struct {
+    GenlCallWalk *walk;
+    uint8_t *seen;
+} GenlGpuReach;
+
+static void genlGpuReachFrom(GenlGpuReach *reach, LLVMValueRef fn) {
+    uint32_t slot = genlCallSlot(reach->walk, fn);
+    if (reach->seen[slot])
+        return;
+    reach->seen[slot] = 1;
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (!LLVMIsACallInst(inst))
+                continue;
+            LLVMValueRef callee = LLVMGetCalledValue(inst);
+            if (LLVMIsAFunction(callee) && !LLVMIsDeclaration(callee))
+                genlGpuReachFrom(reach, callee);
+        }
+    }
+}
+
+// Whether a kernel reaches the function. One that has no function in this
+// object was generated for no call (a call of it would have made one), and is
+// not reached
+static int genlGpuReached(void *ctx, FnDclNode *fndcl) {
+    GenlGpuReach *reach = (GenlGpuReach *)ctx;
+    LLVMValueRef fn = (LLVMValueRef)fndcl->llvmvar;
+    if (fn != NULL) {
+        uint32_t slot = genlCallSlot(reach->walk, fn);
+        if (reach->walk->fns[slot] == fn)
+            return reach->seen[slot];
+    }
+    // An inline function: reached where the function holding an expansion is.
+    // Expansions inside expansions are noted against the function holding both
+    for (uint32_t i = 0; i < genlInlineCnt; ++i) {
+        if (genlInlineEdges[i].inlined != fndcl)
+            continue;
+        uint32_t slot = genlCallSlot(reach->walk, genlInlineEdges[i].into);
+        if (reach->walk->fns[slot] == genlInlineEdges[i].into && reach->seen[slot])
+            return 1;
+    }
+    return 0;
+}
+
 // A GPU has no call stack to speak of, and Vulkan's SPIR-V types a pointer by
 // the memory it points into: only with every call inlined does each borrow
 // have one origin, whose address space LLVM's inference then settles. So
@@ -1803,6 +1876,17 @@ static void genlGpuCalls(GenState *gen) {
         if (!LLVMIsDeclaration(fn) && walk.state[genlCallSlot(&walk, fn)] == 0)
             genlCallWalk(gen, &walk, fn);
     }
+    // What flow held back of core's own functions (loanGpuHeldFlush) is refused
+    // for those a kernel reaches: the same calls, walked from each kernel
+    GenlGpuReach reach;
+    reach.walk = &walk;
+    reach.seen = (uint8_t *)memAllocBlk(cap);
+    memset(reach.seen, 0, cap);
+    for (uint32_t e = 0; e < gen->entrycnt; ++e) {
+        if (gen->entries[e].kernel && !LLVMIsDeclaration(gen->entries[e].kernel))
+            genlGpuReachFrom(&reach, gen->entries[e].kernel);
+    }
+    loanGpuHeldFlush(genlGpuReached, &reach);
 }
 
 // LLVM 23's SPIR-V backend mishandles a struct or array held as one value (a
