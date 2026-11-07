@@ -1635,6 +1635,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     items.fieldnbr = 0;
     items.priortag = NULL;
     items.hasEnumFld = 0;
+    items.inloop = 0;
     if (parseHasBlock()) {
         parseBlockStart();
         parseStructItems(parse, &items);

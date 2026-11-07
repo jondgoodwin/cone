@@ -1,0 +1,355 @@
+// A behaviour parked at an 'await' holding a value that a pattern or a binding
+// took from another (the record the seam saves, genlawait.c). Each row owns a
+// value whose 'final' adds to a tally, held across an 'await' in the shape the
+// row names: it must be finalized once, no more and no fewer, wherever the
+// behaviour ends.
+//
+// Two phases run every row:
+//
+//   resumed: the behaviour awaits a short sleep, resumes, and its scope ends.
+//   abandoned: the behaviour awaits a job of a hosted service, whose reply the
+//     service keeps and never answers; main ends the service while the program
+//     runs (Host.end), which drops the reply, abandons the behaviour, and drops
+//     its parked record (the abandoned record's drop function, genlSeamDrop).
+//
+// A row's finals are counted in a nibble of its phase's tally: a double drop
+// reads 2, a value left undropped 0. The rows, by the nibble they count in:
+//
+//    0  'case let Ok(x)' on a variable (the Result is a local)
+//    1  the same on a call's value
+//    2  'if let Ok(x) = r'
+//    3  a pattern within a pattern's binding
+//  4-5  a tuple taken apart by 'let a, b = pair'
+//  6-7  a variant with fields of its own, bound whole ('case let Duo(d)')
+//    8  a value that is the result of an 'await', held across the next
+//    9  a loop's item ('match xs.pop()' in a 'while')
+//   10  the binding moved on before the await: nothing of it left to drop
+// 12-13 a variant bound whole, moved on before the await when the behaviour
+//       resumes only (the owner's drop flag differs by path)
+// 14-15 the same when it is abandoned only
+//   11  a plain local (the control)
+
+mod seamdrop;
+
+import stdio use *;
+import thread;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import collections use List;
+import iocore use Loop, Completion, forever;
+import actors;
+import aio use Host;
+
+let park: Host[Park];
+let resumedTally: Atomic[u64];
+let abandonedTally: Atomic[u64];
+let keptCount: Atomic[u64];     // replies the service holds
+
+fn @initpure init() {
+  park = aio.host[Park](&makePark);
+  resumedTally = Atomic[u64].of(0u64);
+  abandonedTally = Atomic[u64].of(0u64);
+  keptCount = Atomic[u64].of(0u64);
+}
+
+fn makePark() Park {Park.make()}
+
+// A value whose death is counted: in the nibble 'n' of the tally of its phase
+struct Counted {
+  pub n: u64;
+  pub short: bool;
+  fn final(self: &uni) {
+    if short {resumedTally.add(1u64 << (n * 4u64));} else {abandonedTally.add(1u64 << (n * 4u64));}
+  }
+}
+
+// A hosted service keeping the replies of the jobs it is asked, none answered
+struct Park {
+  kept: List[actors.ReplyOf[u64]];
+
+  pub fn make() Park {Park(List[actors.ReplyOf[u64]]())}
+  pub fn turn(self: &mut, lp: &mut Loop) {}
+  pub fn complete(self: &mut, lp: &mut Loop, c: &mut Completion) bool {false}
+  pub fn wakeAt(self: &) Instant {forever()}
+  pub fn end(self: &mut, lp: &mut Loop) {}
+}
+
+struct ParkJob {
+  pub fn run(self, lp: &mut Loop, s: &mut Park, rp: actors.ReplyOf[u64]) {
+    s.kept.push(rp);
+    keptCount.add(1u64);
+  }
+}
+
+// Answers at once with a counted value of its own
+struct GiveJob {
+  pub n: u64;
+  pub short: bool;
+  pub fn run(self, lp: &mut Loop, s: &mut Park, rp: actors.ReplyOf[Counted]) {
+    rp.answer(Counted(self.(n), self.(short)));
+  }
+}
+
+enum Shape {
+  Nothing;
+  struct Duo { pub a: Counted; pub b: Counted }
+}
+
+fn give(c: Counted) {}
+
+fn giveDuo(d: Shape.Duo) {}
+
+fn okOf(n: u64, short: bool) Result[Counted, u32] {Ok[Counted, u32](Counted(n, short))}
+
+actor Holder {
+  // 0: the Result matched is a variable, 'case let Ok(x)' (bug 63's shape)
+  pub async fn caseLet(self, short: bool, done: OneshotSender[u64]) {
+    let r = okOf(0u64, short);
+    match r {
+      case let Ok(x) {
+        if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+        if x.n > 99u64 {printStr("never\n");}
+      }
+      case is Err {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 1: the Result matched is a call's value
+  pub async fn matchCall(self, short: bool, done: OneshotSender[u64]) {
+    match okOf(1u64, short) {
+      case let Ok(x) {
+        if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+        if x.n > 99u64 {printStr("never\n");}
+      }
+      case is Err {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 2: 'if let'
+  pub async fn ifLet(self, short: bool, done: OneshotSender[u64]) {
+    let r = okOf(2u64, short);
+    if let Ok(x) = r {
+      if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+      else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+      if x.n > 99u64 {printStr("never\n");}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 3: a pattern within the binding of another
+  pub async fn nested(self, short: bool, done: OneshotSender[u64]) {
+    let r: Result[Option[Counted], u32] = Ok[Option[Counted], u32](Some[Counted](Counted(3u64, short)));
+    match r {
+      case let Ok(o) {
+        match o {
+          case let Some(x) {
+            if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+            else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+            if x.n > 99u64 {printStr("never\n");}
+          }
+          case is None[Counted] {}
+        }
+      }
+      case is Err {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 4, 5: a tuple taken apart by a 'let'
+  pub async fn tuple(self, short: bool, done: OneshotSender[u64]) {
+    let pair = (Counted(4u64, short), Counted(5u64, short));
+    let a, b = pair;
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if a.n + b.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 6, 7: a variant with fields of its own, bound whole
+  pub async fn duo(self, short: bool, done: OneshotSender[u64]) {
+    let s: Shape = Shape.Duo(Counted(6u64, short), Counted(7u64, short));
+    match s {
+      case let Duo(d) {
+        if short {let sl = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+        if d.a.n + d.b.n > 99u64 {printStr("never\n");}
+      }
+      else {}
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+
+  // 8: a value that is the result of an 'await', held across the next one
+  pub async fn fromAwait(self, short: bool, done: OneshotSender[u64]) {
+    let x = await park.awaitable[GiveJob, Counted](GiveJob(8u64, short));
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if x.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 9: a loop's item
+  pub async fn loopItem(self, short: bool, done: OneshotSender[u64]) {
+    var xs = List[Counted]();
+    xs.push(Counted(9u64, short));
+    var going = true;
+    while going {
+      match xs.pop() {
+        case let Some(x) {
+          if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+          else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+          if x.n > 99u64 {printStr("never\n");}
+        }
+        case is None[Counted] {going = false;}
+      }
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 10: the binding moved on before the await: nothing for the record to drop
+  pub async fn movedOn(self, short: bool, done: OneshotSender[u64]) {
+    let r = okOf(10u64, short);
+    match r {
+      case let Ok(x) {
+        give(x);
+        if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+      }
+      case is Err {}
+    }
+    var d = done;
+    d.send(1u64);
+  }
+
+  // 12, 13: a variant bound whole, moved on before the await on one path only
+  // (when the behaviour resumes), so that its owner's drop flag differs by path
+  pub async fn movedSometimes(self, short: bool, done: OneshotSender[u64]) {
+    let s: Shape = Shape.Duo(Counted(12u64, short), Counted(13u64, short));
+    match s {
+      case let Duo(d) {
+        if short {giveDuo(d);}
+        if short {let sl = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+      }
+      else {}
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+
+  // 14, 15: the same, moved on when the behaviour is abandoned instead
+  pub async fn movedOtherwise(self, short: bool, done: OneshotSender[u64]) {
+    let s: Shape = Shape.Duo(Counted(14u64, short), Counted(15u64, short));
+    match s {
+      case let Duo(d) {
+        if !short {giveDuo(d);}
+        if short {let sl = await aio.sleep(Duration.fromMillis(10i64));}
+        else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+      }
+      else {}
+    }
+    var dn = done;
+    dn.send(1u64);
+  }
+
+  // 11: a plain local (the control)
+  pub async fn plain(self, short: bool, done: OneshotSender[u64]) {
+    let c = Counted(11u64, short);
+    if short {let s = await aio.sleep(Duration.fromMillis(10i64));}
+    else {let n = await park.awaitable[ParkJob, u64](ParkJob());}
+    if c.n > 99u64 {printStr("never\n");}
+    var d = done;
+    d.send(1u64);
+  }
+}
+
+const rows = 16u64;
+
+// Rows 5, 7, 13 and 15 are the second values of rows 4, 6, 12 and 14
+fn isSecond(row: u64) bool {row == 5u64 || row == 7u64 || row == 13u64 || row == 15u64}
+
+fn start(h: &Holder, row: u64, short: bool, tx: OneshotSender[u64]) {
+  if row == 0u64 {h.caseLet(short, tx);}
+  else if row == 1u64 {h.matchCall(short, tx);}
+  else if row == 2u64 {h.ifLet(short, tx);}
+  else if row == 3u64 {h.nested(short, tx);}
+  else if row == 4u64 {h.tuple(short, tx);}
+  else if row == 6u64 {h.duo(short, tx);}
+  else if row == 8u64 {h.fromAwait(short, tx);}
+  else if row == 9u64 {h.loopItem(short, tx);}
+  else if row == 10u64 {h.movedOn(short, tx);}
+  else if row == 12u64 {h.movedSometimes(short, tx);}
+  else if row == 14u64 {h.movedOtherwise(short, tx);}
+  else {h.plain(short, tx);}
+}
+
+fn report(what: &str, tally: u64) {
+  printStr(what);
+  var n = 0u64;
+  while n < rows {
+    printStr(" ");
+    printUInt((tally >> (n * 4u64)) & 15u64);
+    n = n + 1u64;
+  }
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  var row = 0u64;
+  while row < rows {
+    if !isSecond(row) {
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      {
+        let h = Holder();
+        start(&h, row, true, tx);
+        rx.recv();
+      }
+    }
+    row = row + 1u64;
+  }
+  actors.waitUntilIdle();
+  report("resumed:  ", resumedTally.load());
+  var rxs = List[OneshotReceiver[u64]]();
+  var started = 0u64;
+  row = 0u64;
+  while row < rows {
+    if !isSecond(row) {
+      started = started + 1u64;
+      var tx: OneshotSender[u64];
+      var rx: OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      rxs.push(rx);
+      let h = Holder();
+      start(&h, row, false, tx);
+    }
+    row = row + 1u64;
+  }
+  // Every behaviour is parked once the service holds its reply and no actor runs
+  while keptCount.load() < started {thread.sleep(Duration.fromMillis(1i64));}
+  actors.waitQuiet();
+  printStr("parked: "); printUInt(started); printStr("\n");
+  // Their handles are gone and their calls are outstanding: each actor lives,
+  // so nothing is finalized yet but what the rows gave away before their await
+  // (10, 14, 15)
+  report("held:     ", abandonedTally.load());
+  park.end();
+  actors.waitQuiet();
+  report("abandoned:", abandonedTally.load());
+  finalAll();
+  printStr("end\n");
+}

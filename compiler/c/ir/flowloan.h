@@ -106,6 +106,7 @@ enum LoanEscape {
     LoanEscapeReturn,
     LoanEscapeStore,
     LoanEscapeCall,
+    LoanEscapeJoin,     // borrows made one value: a literal, or a field assigned on a local aggregate
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 

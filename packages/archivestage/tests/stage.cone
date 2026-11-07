@@ -1,0 +1,805 @@
+// ArchiveStage: a zip archive read as a stream, each entry handed to a sink of its own.
+//
+// First what it does: forty entries (empty, tiny, small, large; stored, deflate, zstd) arrive in chunks of any
+// size, and every entry's bytes reach its own sink, whole, once, in order, with the answer Ok(40); a small
+// archive split at every byte offset gives the same; an empty archive (no entries) answers Ok(0); an entry with
+// a data descriptor straddles chunks; a sink that stops looking at its entry's data does not hold the others
+// up; a cancelled group, mid-entry, ends the open entry Failed once and the answer is an error.
+//
+// Then the five ways it could fail without anyone noticing (the brief's list), each with the check that
+// would see it:
+//
+//   F1  a stall at the window that looks like a slow fetch: a 16 MiB entry through a window of 128 KiB and a
+//       sink that holds each buffer a while, with a deadline, so that a hang fails the test;
+//   F2  an entry's bytes reaching the wrong sink: many small entries, slow sinks and fast ones mixed, a
+//       window that makes the stage stop between and inside entries, 200 times over, every hash against the
+//       archive's;
+//   F3  a caller acting on an archive its directory disowns: the entries are delivered, the answer is the error;
+//   F4  credit lost on a failed archive: a corrupt entry with buffers out; every buffer is back, the source
+//       has every input chunk back, the pool's lent bytes are 0 and the buffer pool holds no more than before
+//       (iobuf's heldBytes, which lent bytes alone do not show), the entry's sink got one end(Failed);
+//   F5  the limits gone: entryLimit and maxDirectory, set small, refuse an archive through the stage.
+
+mod stagetest;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import cancelgroups use *;
+import stages use *;
+import archivestage use *;
+import zipfile;
+import fs;
+import path use Path;
+
+// ---------------------------------------------------------------------------
+// What the sinks and the source write down
+// ---------------------------------------------------------------------------
+
+struct Seen {
+  pub begins: Atomic[u64];       // entry sinks made
+  pub ends: Atomic[u64];         // end(Finished) at an entry sink
+  pub failedEnds: Atomic[u64];   // end(Failed) at an entry sink
+  pub good: Atomic[u64];         // entries whose bytes and length were the archive's
+  pub bad: Atomic[u64];          // entries that ended Finished with other bytes
+  pub badName: Atomic[u64];      // entries whose local header was not the one expected at that place
+  pub stray: Atomic[u64];        // a chunk or an end after an end
+  pub sent: Atomic[u64];         // input chunks the source sent
+  pub back: Atomic[u64];         // ... and had back
+  pub dataAfterCancel: Atomic[u64];
+}
+
+fn newSeen() Seen {
+  Seen(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64))
+}
+
+let seen: Seen;
+let hung: Atomic[u64];
+
+fn @initpure init() {
+  seen = newSeen();
+  hung = Atomic[u64].of(0u64);
+}
+
+fn resetSeen() {
+  seen.begins.store(0u64);
+  seen.ends.store(0u64);
+  seen.failedEnds.store(0u64);
+  seen.good.store(0u64);
+  seen.bad.store(0u64);
+  seen.badName.store(0u64);
+  seen.stray.store(0u64);
+  seen.sent.store(0u64);
+  seen.back.store(0u64);
+  seen.dataAfterCancel.store(0u64);
+}
+
+fn mix(h: u64, b: u8) u64 { (h ^ u64.from(b)) * 1099511628211u64 }
+
+fn hashOf(v: &Array[u8]) u64 {
+  var h = 14695981039346656037u64;
+  var i = 0usize;
+  while i < v.len { h = mix(h, v[i]); i += 1usize; }
+  h
+}
+
+// ---------------------------------------------------------------------------
+// The archive's own account of its entries, from Archive.open and read
+// ---------------------------------------------------------------------------
+
+struct Plan {
+  names: List[String];
+  hashes: List[u64];
+  lens: List[u64];
+}
+
+fn planOf(data: &Array[u8]) Plan {
+  var p = Plan(List[String](), List[u64](), List[u64]());
+  match zipfile.Archive.open(data) {
+    case let Err(e) { expect(false, "the archive opens"); }
+    case let Ok(ar) {
+      var i = 0usize;
+      while i < ar.count() {
+        match ar.read(data, i) {
+          case let Ok(got) {
+            p.names.push(ar.entry(i).name.clone());
+            p.hashes.push(hashOf(got.view()));
+            p.lens.push(u64.from(got.len()));
+          }
+          case let Err(e) { expect(false, "an entry reads"); }
+        }
+        i += 1usize;
+      }
+    }
+  }
+  p
+}
+
+// ---------------------------------------------------------------------------
+// The entry sink: hashes its bytes, holds each buffer for 'spin' passes over it, gives it back
+// ---------------------------------------------------------------------------
+
+actor EntryHash is ChunkSink {
+  idx: usize;
+  wantHash: u64;
+  wantLen: u64;
+  spin: u32;
+  stopAfter: u64;               // 0, or: after this many chunks the sink looks at no more bytes (it gives them back)
+  g: CancelGroup;
+  cancelAt: u64;                // 0, or: at this chunk cancel 'g'
+  up: Option[ChunkSource];
+  h: u64;
+  n: u64;
+  chunks: u64;
+  junk: u64;
+  over: bool;
+
+  pub fn init(self: &new, idx: usize, wantHash: u64, wantLen: u64, spin: u32, stopAfter: u64, g: CancelGroup, cancelAt: u64) {
+    *self = Self(idx: idx, wantHash: wantHash, wantLen: wantLen, spin: spin, stopAfter: stopAfter, g: g, cancelAt: cancelAt,
+      up: None[ChunkSource], h: 14695981039346656037u64, n: 0u64, chunks: 0u64, junk: 0u64, over: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if over { seen.stray.add(1u64); }
+    chunks += 1u64;
+    if stopAfter == 0u64 || chunks <= stopAfter {
+      let v = c.view();
+      var i = 0usize;
+      while i < v.len { h = mix(h, v[i]); i += 1usize; }
+      n += u64.from(v.len);
+      var pass = 0u32;
+      while pass < spin {
+        var x = junk;
+        i = 0usize;
+        while i < v.len { x = mix(x, v[i]); i += 1usize; }
+        junk = x;
+        pass += 1u32;
+      }
+    }
+    if cancelAt != 0u64 && chunks == cancelAt { g.cancel(); }
+    match &up {
+      case let &Some(u) { u.giveBack(c); }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    if over { seen.stray.add(1u64); }
+    over = true;
+    match how {
+      case is Finished {
+        seen.ends.add(1u64);
+        if h == wantHash && n == wantLen { seen.good.add(1u64); } else { seen.bad.add(1u64); }
+      }
+      case is Failed { seen.failedEnds.add(1u64); }
+    }
+    up = None[ChunkSource];
+  }
+}
+
+fn asSink(s: ChunkSink) ChunkSink { s }
+
+// What the caller's function makes of each entry: the next sink, expecting the next entry of the plan
+fn opener(p: &Plan, spin: u32, slowMod: usize, stopIdx: usize, g: CancelGroup, cancelIdx: usize, cancelAt: u64)
+    Uni[fn(e: &zipfile.Local) ChunkSink + Sendable] {
+  let names = p.names.clone();
+  let hashes = p.hashes.clone();
+  let lens = p.lens.clone();
+  Uni[fn(e: &zipfile.Local) ChunkSink + Sendable](fn(e: &zipfile.Local) [names, hashes, lens, spin, slowMod, stopIdx, g, cancelIdx, cancelAt, var next = 0usize] ChunkSink {
+    let i = next;
+    next += 1usize;
+    seen.begins.add(1u64);
+    var wh = 0u64;
+    var wl = 0u64;
+    if i < hashes.len() {
+      wh = *hashes[i];
+      wl = *lens[i];
+      if e.name.view() != names[i].view() { seen.badName.add(1u64); }
+    } else {
+      seen.badName.add(1u64);
+    }
+    let sp = if slowMod != 0usize && i % slowMod == 0usize { spin } else { 0u32 };
+    let stop = if i == stopIdx { 1u64 } else { 0u64 };
+    let at = if i == cancelIdx { cancelAt } else { 0u64 };
+    asSink(EntryHash(i, wh, wl, sp, stop, g.clone(), at))
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The source: the archive in chunks (the first of 'cut' bytes, if that splits it, the rest of 'piece')
+// ---------------------------------------------------------------------------
+
+actor Source is ChunkSource {
+  down: ChunkSink;
+  link: ChunkWindow;
+  data: List[u8];
+  cut: usize;
+  piece: usize;
+  at: usize;
+  failAfter: u64;               // 0, or: after this many chunks the stream ends Failed
+  noEnd: bool;
+  over: bool;
+
+  pub fn init(self: &new, down: ChunkSink, data: List[u8], cut: usize, piece: usize, failAfter: u64, noEnd: bool) {
+    *self = Self(down: down, link: ChunkWindow.own(262144usize), data: data, cut: cut, piece: piece, at: 0usize,
+      failAfter: failAfter, noEnd: noEnd, over: false);
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    seen.back.add(1u64);
+    link.give(b);
+    self.pump();
+  }
+
+  fn pump(self) {
+    var more = !over;
+    while more {
+      if failAfter != 0u64 && seen.sent.load() >= failAfter {
+        over = true;
+        down.end(Ending.Failed(AnyError.msg("the disk went away")));
+        more = false;
+      } else if at >= data.len() {
+        over = true;
+        if !noEnd { down.end(Ending.Finished); }
+        more = false;
+      } else {
+        let left = data.len() - at;
+        var n = if left < piece { left } else { piece };
+        if at == 0usize && cut > 0usize && cut < data.len() { n = cut; }
+        match link.take(n) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.append(&data.view()[at ..< at + n]);
+            at += n;
+            seen.sent.add(1u64);
+            down.accept(buf);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One run
+// ---------------------------------------------------------------------------
+
+struct Config {
+  window: usize;
+  entryLimit: u64;
+  maxDirectory: usize;
+  ownPool: bool;                // the stage with a pool and window of its own
+  spin: u32;
+  slowMod: usize;
+  stopIdx: usize;
+}
+
+fn plain() Config {
+  Config(262144usize, 1073741824u64, 16777216usize, false, 0u32, 0usize, 999999usize)
+}
+
+// What a run came to
+struct Outcome {
+  answer: Option[Result[u64, AnyError]];
+  pool: ChunkPool;
+  settled: bool;                // everything came home within the deadline
+}
+
+fn lentNow() u64 { iobuf.stats().lent }
+
+// Wait, within a deadline, for every sink to have been ended, every input chunk and every output buffer to be back
+fn settle(pool: &ChunkPool, base: u64) bool {
+  let limit = Instant.now() + Duration.fromMillis(if hung.load() != 0u64 { 1000i64 } else { 15000i64 });
+  while Instant.now() < limit {
+    if seen.ends.load() + seen.failedEnds.load() == seen.begins.load() && seen.back.load() == seen.sent.load()
+        && pool.lent() == 0usize && lentNow() == base { return true; }
+    thread.yieldNow();
+  }
+  false
+}
+
+fn runWith(data: &List[u8], p: &Plan, cfg: &Config, cut: usize, piece: usize, failAfter: u64, g: CancelGroup, cancelIdx: usize, cancelAt: u64,
+    deadlineMs: i64) Outcome {
+  resetSeen();
+  let base = lentNow();
+  var tx: OneshotSender[Result[u64, AnyError]];
+  var rx: OneshotReceiver[Result[u64, AnyError]];
+  tx, rx = Oneshot[Result[u64, AnyError]].make();
+  let pool = ChunkPool.make(cfg.window * 4usize);
+  let gs = g.child();
+  {
+    let open = opener(p, cfg.spin, cfg.slowMod, cfg.stopIdx, g.clone(), cancelIdx, cancelAt);
+    let stage = if cfg.ownPool {
+      ArchiveStage(open, tx)
+    } else {
+      ArchiveStage(open, tx, pool.clone(), cfg.window, cfg.entryLimit, cfg.maxDirectory)
+    };
+    let src = Source(stage, data.clone(), cut, piece, failAfter, false);
+    actors.withGroup(&gs, fn() [src] { src.start(); });
+  }
+  // once a run has hung, the ones after it get a short deadline: a broken stage fails the test, it does not take an hour
+  let ms = if hung.load() != 0u64 { 2000i64 } else { deadlineMs };
+  let answer = rx.recvTimeout(Duration.fromMillis(ms));
+  if answer is None { hung.add(1u64); }
+  let ok = settle(&pool, base);
+  if !ok { hung.add(1u64); }
+  Outcome(answer, pool, ok)
+}
+
+fn run(data: &List[u8], p: &Plan, cfg: &Config, cut: usize, piece: usize) Outcome {
+  runWith(data, p, cfg, cut, piece, 0u64, CancelGroup.make(), 999999usize, 0u64, 30000i64)
+}
+
+fn okCount(o: &Outcome) Option[u64] {
+  match &o.answer {
+    case let &Some(r) {
+      match r {
+        case let &Ok(n) { Some[u64](*n) }
+        case is Err { None[u64] }
+      }
+    }
+    case is None { None[u64] }
+  }
+}
+
+fn isErr(o: &Outcome) bool {
+  match &o.answer {
+    case let &Some(r) {
+      match r {
+        case is Ok { false }
+        case is Err { true }
+      }
+    }
+    case is None { false }
+  }
+}
+
+// The kind of the ZipError inside the answer, if the answer is an Err holding one
+fn kindOf(o: &Outcome) Option[zipfile.ErrorKind] {
+  match &o.answer {
+    case let &Some(r) {
+      match r {
+        case let &Err(e) {
+          match e.downcastRef[zipfile.ZipError]() {
+            case let Some(z) { Some[zipfile.ErrorKind](z.kind) }
+            case is None { None[zipfile.ErrorKind] }
+          }
+        }
+        case is Ok { None[zipfile.ErrorKind] }
+      }
+    }
+    case is None { None[zipfile.ErrorKind] }
+  }
+}
+
+fn hasKind(o: &Outcome, k: zipfile.ErrorKind) bool {
+  match kindOf(o) {
+    case let Some(got) { got == k }
+    case is None { false }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Archives
+// ---------------------------------------------------------------------------
+
+fn text(n: usize, seed: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var i = seed;
+  while out.len() < n {
+    let s = "row of text number ";
+    var k = 0usize;
+    while k < s.len() && out.len() < n { out.push(s[k]); k += 1usize; }
+    var d = i * 7919usize % 100000usize;
+    var j = 0usize;
+    while j < 5usize && out.len() < n { out.push(u8.from(48usize + d % 10usize)); d = d / 10usize; j += 1usize; }
+    if out.len() < n { out.push(10u8); }
+    i += 1usize;
+  }
+  out
+}
+
+fn noise(n: usize, seed: u64) List[u8] {
+  var out = List[u8].withCapacity(n);
+  var x = seed * 2862933555777941757u64 + 3037000493u64;
+  var i = 0usize;
+  while i < n {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    out.push(u8.from(x & 255u64));
+    i += 1usize;
+  }
+  out
+}
+
+fn nameOf(i: usize) String {
+  var s = String.from("dir/file");
+  s.appendUInt(u64.from(i));
+  s
+}
+
+// 'count' entries of the sizes below, in the method given (0 stored, 1 deflate, 2 zstd, 3 a mix)
+fn make(count: usize, method: u32) List[u8] {
+  let sizes: Array[usize, 8] = [0usize, 1usize, 300usize, 5000usize, 30000usize, 65536usize, 150000usize, 12usize];
+  var w = zipfile.ZipWriter.make();
+  var i = 0usize;
+  while i < count {
+    let n = sizes[i % 8usize];
+    let d = if i % 5usize == 4usize { noise(n, u64.from(i)) } else { text(n, i) };
+    let m = if method == 3u32 { u32.from(i % 3usize) } else { method };
+    if m == 0u32 {
+      _ = w.add(nameOf(i).view(), d.view(), &zipfile.EntryOptions.stored());
+    } else if m == 1u32 {
+      _ = w.add(nameOf(i).view(), d.view(), &zipfile.EntryOptions.deflated(2i32));
+    } else {
+      _ = w.add(nameOf(i).view(), d.view(), &zipfile.EntryOptions.zstd(2i32));
+    }
+    i += 1usize;
+  }
+  match w.bytes() {
+    case let Ok(b) { b }
+    case let Err(e) { expect(false, "the archive is made"); List[u8]() }
+  }
+}
+
+fn patched(data: &Array[u8], at: usize, v: u8) List[u8] {
+  var i = 0usize;
+  var r = List[u8].withCapacity(data.len);
+  while i < data.len {
+    r.push(if i == at { v } else { data[i] });
+    i += 1usize;
+  }
+  r
+}
+
+// The place of the n-th local header (signature PK 3 4), found from the front
+fn localAt(data: &Array[u8], n: usize) usize {
+  var i = 0usize;
+  var seenN = 0usize;
+  while i + 4usize <= data.len {
+    if data[i] == 0x50u8 && data[i + 1usize] == 0x4Bu8 && data[i + 2usize] == 0x03u8 && data[i + 3usize] == 0x04u8 {
+      if seenN == n { return i; }
+      seenN += 1usize;
+    }
+    i += 1usize;
+  }
+  data.len
+}
+
+fn load(name: &str) List[u8] {
+  var p = String.from("../../../../../zipfile/tests/data/");
+  p.append(name);
+  match fs.readFile(&Path.from(p.view())) {
+    case let Ok(s) {
+      var out = List[u8].withCapacity(s.len());
+      var k = 0usize;
+      while k < s.len() { out.push(s[k]); k += 1usize; }
+      out
+    }
+    case let Err(e) { expect(false, "a fixture is missing"); List[u8]() }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+fn expectGood(label: &str, o: &Outcome, entries: u64) {
+  var l = String.from(label);
+  match okCount(o) {
+    case let Some(n) { expectUInt(n, entries, l.view()); }
+    case is None { expect(false, l.view()); }
+  }
+  expectUInt(seen.begins.load(), entries, "...every entry began");
+  expectUInt(seen.good.load(), entries, "...every entry's bytes reached its own sink whole");
+  expectUInt(seen.bad.load() + seen.failedEnds.load() + seen.badName.load() + seen.stray.load(), 0u64, "...and none wrong, failed, misnamed or stray");
+  expect(o.settled, "...and every buffer came home");
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+
+  // ---- forty entries, every method, chunks of every size ----
+  {
+    let methods: Array[u32, 4] = [1u32, 2u32, 0u32, 3u32];
+    let names: Array[&str, 4] = ["deflate", "zstd", "stored", "mixed"];
+    var m = 0usize;
+    while m < 4usize {
+      let data = make(40usize, methods[m]);
+      let p = planOf(data.view());
+      expectUInt(u64.from(p.names.len()), 40u64, "the archive lists forty entries");
+      let pieces: Array[usize, 4] = [65536usize, 16384usize, 1000usize, 7usize];
+      var k = 0usize;
+      while k < 4usize {
+        if !(k == 3usize && m != 0usize) {
+          let o = run(&data, &p, &plain(), 0usize, pieces[k]);
+          var l = String.from("forty ");
+          l.append(names[m]);
+          l.append(" entries in chunks of ");
+          l.appendUInt(u64.from(pieces[k]));
+          expectGood(l.view(), &o, 40u64);
+        }
+        k += 1usize;
+      }
+      m += 1usize;
+    }
+    // the stage with a pool and window of its own
+    let data = make(40usize, 3u32);
+    let p = planOf(data.view());
+    var cfg = plain();
+    cfg.ownPool = true;
+    let o = run(&data, &p, &cfg, 0usize, 16384usize);
+    expectGood("the stage with a pool of its own", &o, 40u64);
+  }
+
+  // ---- a small archive split at every byte offset ----
+  {
+    let small = smallArchive();         // an empty file, a one-byte file, a 300-byte file
+    let p = planOf(small.view());
+    var cut = 0usize;
+    var wrong = 0u64;
+    while cut <= small.len() && hung.load() == 0u64 {
+      let o = run(&small, &p, &plain(), cut, 100000usize);
+      let n = okCount(&o) || 0u64;
+      if n != 3u64 || seen.good.load() != 3u64 || !o.settled || seen.bad.load() + seen.failedEnds.load() != 0u64 { wrong += 1u64; }
+      cut += 1usize;
+    }
+    expectUInt(wrong, 0u64, "a small archive split into two chunks at every byte offset gives the same entries");
+    let one = run(&small, &p, &plain(), 0usize, 1usize);
+    expectGood("a small archive in chunks of one byte", &one, 3u64);
+  }
+
+  // ---- an empty archive ----
+  {
+    var empty = List[u8]();
+    var ww = zipfile.ZipWriter.make();
+    match ww.bytes() {
+      case let Ok(b) { empty = b; }
+      case let Err(e) { expect(false, "an empty archive is made"); }
+    }
+    let p = planOf(empty.view());
+    let o = run(&empty, &p, &plain(), 0usize, 100usize);
+    expectGood("an archive with no entries", &o, 0u64);
+  }
+
+  // ---- entries with a data descriptor, straddling chunks ----
+  {
+    let data = load("stream-desc.zip");
+    expect(data.len() > 1000usize, "the stream-desc fixture is loaded");
+    let p = planOf(data.view());
+    let pieces: Array[usize, 5] = [100000usize, 4096usize, 1000usize, 61usize, 1usize];
+    var k = 0usize;
+    while k < 5usize {
+      let o = run(&data, &p, &plain(), 0usize, pieces[k]);
+      expectGood("data descriptors, chunks of one size", &o, u64.from(p.names.len()));
+      k += 1usize;
+    }
+    var cut = 0usize;
+    var wrong = 0u64;
+    while cut < 600usize && hung.load() == 0u64 {
+      let o = run(&data, &p, &plain(), cut, 100000usize);
+      let n = okCount(&o) || 0u64;
+      if n != u64.from(p.names.len()) || seen.good.load() != n || !o.settled { wrong += 1u64; }
+      cut += 1usize;
+    }
+    expectUInt(wrong, 0u64, "data descriptors, the archive split at each of its first 600 bytes");
+  }
+
+  // ---- a sink that looks at no more of its entry's bytes does not hold up the others ----
+  {
+    let data = make(16usize, 1u32);
+    let p = planOf(data.view());
+    var cfg = plain();
+    cfg.stopIdx = 5usize;               // entry 5 (65536 bytes) is looked at for its first chunk only
+    cfg.window = 65536usize;
+    let o = run(&data, &p, &cfg, 0usize, 16384usize);
+    expectUInt(okCount(&o) || 0u64, 16u64, "an early-stopping sink: the archive is still Ok");
+    expectUInt(seen.ends.load(), 16u64, "...every entry's stream ended");
+    expectUInt(seen.good.load(), 15u64, "...fifteen entries were whole");
+    expectUInt(seen.bad.load(), 1u64, "...the one whose sink stopped is the one that differs");
+    expect(o.settled, "...and every buffer came home");
+  }
+
+  // ---- a cancelled group, mid-entry ----
+  {
+    let data = make(8usize, 1u32);        // entry 6 is 150000 bytes: three chunks of 64 KiB
+    let p = planOf(data.view());
+    let g = CancelGroup.make();
+    let o = runWith(&data, &p, &plain(), 0usize, 4096usize, 0u64, g.clone(), 6usize, 2u64, 30000i64);
+    expect(g.isCancelled(), "the group was cancelled by the sink in the middle of entry 6");
+    expect(isErr(&o), "cancelled: the answer is an Err");
+    expectUInt(seen.failedEnds.load(), 1u64, "...the open entry got end(Failed), once");
+    expectUInt(seen.ends.load(), 6u64, "...the six entries before it ended Finished");
+    expectUInt(seen.begins.load(), 7u64, "...and the stage began no entry after the cancel");
+    expectUInt(seen.stray.load(), 0u64, "...nothing reached a sink after its end");
+    expect(o.settled, "...and every buffer came home");
+  }
+
+  // ---- F1: an entry many times the window, through a sink that holds each buffer a while ----
+  {
+    var w = zipfile.ZipWriter.make();
+    let big = text(16777216usize, 1usize);
+    _ = w.add("big.txt", big.view(), &zipfile.EntryOptions.deflated(1i32));
+    let tail = text(1000usize, 2usize);
+    _ = w.add("tail.txt", tail.view(), &zipfile.EntryOptions.deflated(1i32));
+    var data = List[u8]();
+    match w.bytes() {
+      case let Ok(b) { data = b; }
+      case let Err(e) { expect(false, "the big archive is made"); }
+    }
+    let p = planOf(data.view());
+    var cfg = plain();
+    cfg.window = 131072usize;
+    cfg.spin = 6u32;
+    cfg.slowMod = 1usize;
+    let o = runWith(&data, &p, &cfg, 0usize, 16384usize, 0u64, CancelGroup.make(), 999999usize, 0u64, 40000i64);
+    expect(o.answer is Some, "F1: the answer came within the deadline (a stall at the window would hang)");
+    expectGood("F1: a 16 MiB entry through a window of 128 KiB and a slow sink, then a small one", &o, 2u64);
+    expect(o.pool.peak() <= cfg.window, "F1: the bytes lent never passed the window");
+    expect(o.pool.peak() >= 65536usize, "F1: and the window was used");
+  }
+
+  // ---- F2: many small entries, sinks slow and fast, 200 times: every entry's bytes at its own sink ----
+  {
+    let data = make(40usize, 3u32);
+    let p = planOf(data.view());
+    var cfg = plain();
+    cfg.window = 131072usize;
+    cfg.spin = 3u32;
+    cfg.slowMod = 3usize;
+    var wrong = 0u64;
+    var round = 0usize;
+    while round < 200usize && hung.load() == 0u64 {
+      let piece = if round % 2usize == 0usize { 16384usize } else { 700usize };
+      let o = run(&data, &p, &cfg, 0usize, piece);
+      let n = okCount(&o) || 0u64;
+      if n != 40u64 || seen.good.load() != 40u64 || seen.bad.load() != 0u64 || seen.failedEnds.load() != 0u64
+          || seen.badName.load() != 0u64 || seen.stray.load() != 0u64 || !o.settled { wrong += 1u64; }
+      round += 1usize;
+    }
+    expectUInt(wrong, 0u64, "F2: in 200 runs of 40 entries through a small window, every entry's hash was the archive's, and every buffer came home");
+  }
+
+  // ---- F3: an archive its own directory disowns: the entries are delivered, the answer is the error ----
+  {
+    let data = make(7usize, 1u32);
+    let p = planOf(data.view());
+    // the first local header's name, one byte changed: the entry streams (its header and data agree), the directory
+    // then names another file at that place
+    let a = patched(data.view(), localAt(data.view(), 0usize) + 30usize, 88u8);
+    let o = run(&a, &p, &plain(), 0usize, 4096usize);
+    expect(isErr(&o), "F3: an archive whose directory disagrees with a local name: the answer is an Err");
+    expect(hasKind(&o, zipfile.ErrorKind.Corrupt), "F3: ...Corrupt");
+    expectUInt(seen.ends.load(), 7u64, "F3: ...after all seven entries were delivered, each ended Finished");
+    expectUInt(seen.good.load(), 7u64, "F3: ...and whole");
+    expectUInt(seen.badName.load(), 1u64, "F3: ...the changed name was the one the first sink was given");
+    expectUInt(seen.failedEnds.load(), 0u64, "F3: ...no entry sink was told it failed (the entries were whole)");
+    // the directory's CRC-32 for the first entry
+    var cd = 0usize;
+    while cd + 4usize <= data.len() && !(*data[cd] == 0x50u8 && *data[cd + 1usize] == 0x4Bu8 && *data[cd + 2usize] == 0x01u8 && *data[cd + 3usize] == 0x02u8) { cd += 1usize; }
+    let b = patched(data.view(), cd + 16usize, 0x5Au8);
+    let ob = run(&b, &p, &plain(), 0usize, 4096usize);
+    expect(hasKind(&ob, zipfile.ErrorKind.BadChecksum), "F3: a directory CRC-32 that differs: BadChecksum, as the answer");
+    expectUInt(seen.good.load(), 7u64, "F3: ...after the seven entries were delivered");
+    // the archive cut inside its directory, the source saying it finished
+    let cutAt = data.len() - 30usize;
+    let c = headOf(&data, cutAt);
+    let oc = run(&c, &p, &plain(), 0usize, 4096usize);
+    expect(isErr(&oc) && hasKind(&oc, zipfile.ErrorKind.Truncated), "F3: an archive cut inside its directory: Truncated");
+    // and the same archive untouched
+    let ok = run(&data, &p, &plain(), 0usize, 4096usize);
+    expectGood("F3: the untouched archive", &ok, 7u64);
+  }
+
+  // ---- F4: a corrupt entry with buffers out: every buffer back, the entry's sink told once ----
+  {
+    let data = make(8usize, 1u32);
+    let p = planOf(data.view());
+    // entry 6 (150000 bytes, deflated): a byte in the middle of its compressed data changed
+    let at = localAt(data.view(), 6usize) + 30usize + 9usize + 40usize;
+    let bad = patched(data.view(), at, 0xFFu8);
+    var cfg = plain();
+    cfg.window = 131072usize;
+    cfg.spin = 20u32;
+    cfg.slowMod = 1usize;
+    iobuf.trimAll();
+    let heldBefore = iobuf.stats().heldBytes;
+    var wrong = 0u64;
+    var round = 0usize;
+    while round < 20usize && hung.load() == 0u64 {
+      let o = run(&bad, &p, &cfg, 0usize, 8192usize);
+      if !isErr(&o) || seen.failedEnds.load() != 1u64 || seen.ends.load() != 6u64 || seen.begins.load() != 7u64
+          || seen.stray.load() != 0u64 || !o.settled { wrong += 1u64; }
+      round += 1usize;
+    }
+    expectUInt(wrong, 0u64, "F4: a corrupt entry: Err, its sink told Failed once, six before it Finished, the seventh never begun, every buffer home");
+    let o = run(&bad, &p, &cfg, 0usize, 8192usize);
+    expectUInt(u64.from(o.pool.lent()), 0u64, "F4: the pool lent nothing at the end");
+    expectUInt(seen.back.load(), seen.sent.load(), "F4: the source had every input chunk back");
+    iobuf.trimAll();
+    expectUInt(u64.from(iobuf.stats().heldBytes), u64.from(heldBefore), "F4: iobuf holds from the OS what it held before (heldBytes, not lent bytes)");
+  }
+
+  // ---- F5: the limits, set small, hold through the stage ----
+  {
+    // an entry that declares no size (a data descriptor): bounded by entryLimit as it inflates
+    let desc = load("stream-desc.zip");
+    let pd = planOf(desc.view());
+    var cfg = plain();
+    cfg.entryLimit = 5000u64;
+    let o = run(&desc, &pd, &cfg, 0usize, 4096usize);
+    expect(isErr(&o) && hasKind(&o, zipfile.ErrorKind.TooLarge), "F5: a descriptor entry past entryLimit: the answer is TooLarge");
+    expectUInt(seen.failedEnds.load(), 1u64, "F5: ...its sink told Failed, once");
+    expect(seen.good.load() >= 1u64 && seen.good.load() < 5u64, "F5: ...with the entries before it delivered, and not the ones after");
+    expect(o.settled, "F5: ...and every buffer came home");
+    // an entry that declares more than the limit: refused at its header, a zip bomb that says what it is
+    var w = zipfile.ZipWriter.make();
+    var zeros = List[u8].withCapacity(8388608usize);
+    var z = 0usize;
+    while z < 8388608usize { zeros.push(0u8); z += 1usize; }
+    _ = w.add("zeros", zeros.view(), &zipfile.EntryOptions.deflated(2i32));
+    var bomb = List[u8]();
+    match w.bytes() {
+      case let Ok(b) { bomb = b; }
+      case let Err(e) { expect(false, "the bomb is made"); }
+    }
+    expect(bomb.len() < 100000usize, "F5: the bomb is small on the wire");
+    let pb = planOf(bomb.view());
+    var cfg2 = plain();
+    cfg2.entryLimit = 1048576u64;
+    let ob = run(&bomb, &pb, &cfg2, 0usize, 4096usize);
+    expect(isErr(&ob) && hasKind(&ob, zipfile.ErrorKind.TooLarge), "F5: an entry declaring 8 MiB at a limit of 1 MiB: TooLarge");
+    expectUInt(seen.bad.load() + seen.good.load(), 0u64, "F5: ...and no byte of it was delivered");
+    let od = run(&bomb, &pb, &plain(), 0usize, 4096usize);
+    expectGood("F5: the same archive at the default limit", &od, 1u64);
+    // the central directory, held up to maxDirectory
+    let many = make(8usize, 1u32);
+    let pm = planOf(many.view());
+    var cfg3 = plain();
+    cfg3.maxDirectory = 100usize;
+    let om = run(&many, &pm, &cfg3, 0usize, 4096usize);
+    expect(isErr(&om) && hasKind(&om, zipfile.ErrorKind.TooLarge), "F5: a directory past maxDirectory: TooLarge");
+    expectUInt(seen.good.load(), 8u64, "F5: ...after the eight entries were delivered");
+  }
+
+  // no run hung or left a buffer out anywhere in the file (the loops above skip once one has, and some runs check no 'settled')
+  expectUInt(hung.load(), 0u64, "no run in the file hung or left a buffer out");
+
+  finalAll();
+  done()
+}
+
+fn headOf(a: &List[u8], n: usize) List[u8] {
+  var out = List[u8].withCapacity(n);
+  out.appendSlice(&a.view()[0usize ..< n]);
+  out
+}
+
+// A small archive: an empty, a one-byte and a 300-byte entry
+fn smallArchive() List[u8] {
+  var w = zipfile.ZipWriter.make();
+  let nothing = List[u8]();
+  _ = w.add("a", nothing.view(), &zipfile.EntryOptions.deflated(2i32));
+  var b = List[u8]();
+  b.push(120u8);
+  _ = w.add("b", b.view(), &zipfile.EntryOptions.deflated(2i32));
+  let t = text(300usize, 3usize);
+  _ = w.add("dir/c", t.view(), &zipfile.EntryOptions.zstd(2i32));
+  match w.bytes() {
+    case let Ok(x) { x }
+    case let Err(e) { expect(false, "the small archive is made"); List[u8]() }
+  }
+}

@@ -1132,7 +1132,9 @@ void loanEscape(INode *node, uint32_t loan, int how) {
         else
             errorMsgNode(node, how == LoanEscapeStore ? ErrorEscape : ErrorCallEscape,
                 "%s where it may outlive this function, a value carries a borrow of a temporary (made %s), which %s.",
-                how == LoanEscapeStore ? "Stored" : "Handed to a call that could store it", where,
+                how == LoanEscapeStore ? "Stored" : how == LoanEscapeJoin
+                    ? "Joined in one value with a borrow that reaches beyond this function, so that it could be stored there"
+                    : "Handed to a call that could store it", where,
                 loanTempEnds(temp));
         return;
     }
@@ -1147,6 +1149,11 @@ void loanEscape(INode *node, uint32_t loan, int how) {
     case LoanEscapeStore:
         errorMsgNode(node, ErrorEscape,
             "Stored where it may outlive this function, the value carries a borrow of '%s' (made %s), which belongs to this function.%s",
+            srcname, where, advice);
+        break;
+    case LoanEscapeJoin:
+        errorMsgNode(node, ErrorCallEscape,
+            "Borrowed references that share one lifetime are made one value here, and one could be stored where it would outlive the value it points to: a part carries a borrow of '%s' (made %s), and another part reaches beyond this function.%s",
             srcname, where, advice);
         break;
     default:
@@ -1198,7 +1205,8 @@ void loanSelfStore(INode *node, uint32_t loan, Place *target, int how) {
     loanWhere(&loans[loan], where, sizeof(where));
     errorMsgNode(node, ErrorSelfStore,
         "%s '%s', the value carries a borrow of '%s' (made %s). Both are parts of the one value the caller lent, which the caller may change or move while the borrow is still held: a value may not keep a borrow of its own storage after the call. Store an index or offset into '%s' instead, or hold the buffer somewhere else and borrow it from there.",
-        how == LoanEscapeStore ? "Stored into" : "Handed to a call that could store it into",
+        how == LoanEscapeStore ? "Stored into" : how == LoanEscapeJoin
+            ? "Joined in one value with a borrow that could be stored into" : "Handed to a call that could store it into",
         stored, borrowed, where, borrowed);
 }
 
@@ -1234,6 +1242,11 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
         errorMsgNode(node, ErrorEscape,
             "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             &through->namesym->namestr, lent);
+        break;
+    case LoanEscapeJoin:
+        errorMsgNode(node, ErrorCallEscape,
+            "Borrowed references that share one lifetime are made one value here, and one could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
+            lent, &through->namesym->namestr);
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,

@@ -704,8 +704,8 @@ mem.mulFold(0x8000000000000000u64, 2u64)          // 1: the product is 2^64, hig
 		<span class="pre">mulFold</span> extends both operands to 128 bits, multiplies, shifts the high half down and
 		exclusive-ors the halves.</p>
 
-	<h2 id="numbers">A number's abs, min, max, rounding and fma</h2>
-	<p>Seven operations on a number. Each is also a method of the number types it applies to,
+	<h2 id="numbers">A number's abs, min, max, clamp, rounding and fma</h2>
+	<p>Eight operations on a number. Each is also a method of the number types it applies to,
 		<span class="pre">x.abs()</span> for <span class="pre">mem.abs(x)</span>, and of a
 		<a href="guide-vectors.html#math">vector</a> of them, lane by lane (<a href="guide-numbers.html#methods">Numbers</a>).
 		None needs trust, and none has a fallback body: nothing written in Cone rounds a float. A type outside the
@@ -714,6 +714,7 @@ mem.mulFold(0x8000000000000000u64, 2u64)          // 1: the product is 2^64, hig
 fn @intrinsic abs[T](x: T) T                    // T a signed integer of 8 to 64 bits, or a float
 fn @intrinsic min[T](a: T, b: T) T              // T an integer of 8 to 64 bits, or a float
 fn @intrinsic max[T](a: T, b: T) T
+fn @intrinsic clamp[T](x: T, lo: T, hi: T) T    // T as for min
 fn @intrinsic floor[T](x: T) T                  // T a float
 fn @intrinsic ceil[T](x: T) T
 fn @intrinsic round[T](x: T) T
@@ -722,8 +723,16 @@ fn @intrinsic fma[T](x: T, y: T, z: T) T
 	<p><span class="pre">abs</span> of an integer's smallest value is that value, as negating it is (it wraps, never
 		poison); of a float it clears the sign, a NaN's and a zero's included. <span class="pre">min</span> and
 		<span class="pre">max</span> compare an unsigned <span class="pre">T</span> as unsigned and a signed one as signed; of
-		floats they answer the number where the other is a NaN, and a NaN only where both are. Which of
-		<span class="pre">-0.0</span> and <span class="pre">0.0</span> is the smaller is not defined. <span class="pre">floor</span>
+		floats they give a NaN where either is a NaN, and <span class="pre">-0.0</span> is the smaller of the two zeros.
+			<span class="pre">clamp</span> is <span class="pre">min(max(x, lo), hi)</span>: a NaN in any of the three
+			gives a NaN, and where <span class="pre">lo</span> is above <span class="pre">hi</span> it gives
+			<span class="pre">hi</span>.
+			That is the CPU's answer. <b>In a GPU kernel</b> a float's <span class="pre">min</span>, <span class="pre">max</span>
+			and <span class="pre">clamp</span> are SPIR-V's <span class="pre">NMin</span> and <span class="pre">NMax</span>, and
+			a NaN or a signed zero is not promised to give it: Vulkan lets a driver assume there are no NaNs unless a
+			kernel declares <span class="pre">SignedZeroInfNanPreserve</span>, an optional feature, so a kernel answers as
+			it always has.
+		<span class="pre">floor</span>
 		and <span class="pre">ceil</span> round toward minus and plus infinity; <span class="pre">round</span> goes to the
 		nearest whole number and a half away from zero (<span class="pre">mem.round(2.5)</span> is 3,
 		<span class="pre">mem.round(-2.5)</span> is -3). <span class="pre">fma</span> is
@@ -731,12 +740,13 @@ fn @intrinsic fma[T](x: T, y: T, z: T) T
 <pre>
 mem.abs(-7)                       // 7
 mem.min(3u8, 200u8)               // 3
-mem.max(1.5, nan)                 // 1.5, nan being a NaN
+mem.max(1.5, nan)                 // nan, nan being a NaN
+mem.clamp(9, 1, 4)                // 4
 mem.round(0.5)                    // 1
 mem.fma(2.0f32, 3.0f32, 1.0f32)   // 7
 </pre>
 	<p>They are <span class="pre">llvm.fabs</span> or <span class="pre">llvm.abs</span> (told the smallest value is not
-		poison), <span class="pre">llvm.minnum</span> and <span class="pre">llvm.maxnum</span> for floats and
+		poison), <span class="pre">llvm.minimum</span> and <span class="pre">llvm.maximum</span> for floats and
 		<span class="pre">llvm.smin</span>, <span class="pre">llvm.smax</span>, <span class="pre">llvm.umin</span> and
 		<span class="pre">llvm.umax</span> for integers, <span class="pre">llvm.floor</span>,
 		<span class="pre">llvm.ceil</span>, <span class="pre">llvm.round</span> (half away from zero, not
