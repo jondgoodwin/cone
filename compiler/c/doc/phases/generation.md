@@ -2384,10 +2384,18 @@ for it), is caught before its body is expanded, so the module asks for no
 64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
 intrinsics. The CPU is untouched, and the C library is called there. Core's
 `sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
-every target, and so are a number's `abs`, `min`, `max`, `floor`, `ceil`, `round`
-and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
+every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
+`round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+**A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
+exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
+`max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
+`NMin` and `NMax` for those same intrinsics (read from `--asm`). Vulkan lets a driver assume
+there are no NaNs unless a kernel declares `SignedZeroInfNanPreserve`, an optional feature,
+which Cone does not declare. So a kernel answers as it always has, and the NaN and the
+`-0.0` answers of the CPU are not promised there. None of this has been run on a GPU;
+`module_target_spirv_numbers` pins only the instructions selected.
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,

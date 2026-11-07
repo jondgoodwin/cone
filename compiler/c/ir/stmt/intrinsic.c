@@ -205,6 +205,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 1, {ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
     {"fma", FmaIntrinsic, "fma[T](x: T, y: T, z: T) T",
         1, 3, {ShapeT, ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassFloat},
+    {"clamp", ClampIntrinsic, "clamp[T](x: T, lo: T, hi: T) T",
+        1, 3, {ShapeT, ShapeT, ShapeT}, ShapeT, 0, 0, PhaseOperation, 1, ClassInt | ClassFloat},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))

@@ -1,0 +1,115 @@
+// A TLS stream's 'peerEnded' (the Layer contract: the peer's stream has ended
+// and every byte of it was taken) while records are in it unread. The driver's
+// feed stops at the core's credit and leaves records in the stream; it feeds
+// the peer's end only if 'peerEnded' is true, so this is what keeps the end
+// from being fed ahead of a record (a body read short).
+//
+// A server stream writes three records and close_notify; a client stream is
+// handed all of it in one go, and then the peer's FIN. Nothing is read out
+// yet: peerEnded must be false. It stays false while any of the three records
+// is still to be read out, and is true only once a read has found the
+// close_notify behind them.
+
+mod tlsended;
+
+import stdio use *;
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import tls;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn record(tag: u8) IoBuf {
+  var b = IoBuf(16384usize);
+  let room = b.whole();
+  var j = 0usize;
+  while j < 16384usize {
+    room[j] = tag;
+    j = j + 1usize;
+  }
+  b.setLen(16384usize);
+  b
+}
+
+fn main() i32 {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var srv = match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
+    case let Ok(r) {r}
+    case let Err(e) {print <- e; panic("no server")}
+  };
+  var cfg = tls.ClientConfig.make();
+  cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.offline = true;
+  var cli = match tls.Client.make(cfg) {
+    case let Ok(r) {r}
+    case let Err(e) {print <- e; panic("no client")}
+  };
+  var s = srv.stream();
+  var c = cli.stream("localhost");
+  let now = Instant.now();
+
+  // The handshake, the wire carried by hand between the two
+  var rounds = 0u32;
+  while (!s.isOpen() || !c.isOpen()) && rounds < 50u32 {
+    rounds = rounds + 1u32;
+    let a = c.wireOut(now);
+    if a.len() > 0usize {s.wireIn(a, now);}
+    let b = s.wireOut(now);
+    if b.len() > 0usize {c.wireIn(b, now);}
+  }
+  require(s.isOpen() && c.isOpen(), "the handshake finished");
+
+  // Three records and close_notify, all handed to the client at once, and the FIN
+  s.plainIn(record(65u8));
+  s.plainIn(record(66u8));
+  s.plainIn(record(67u8));
+  s.closeSend();
+  var wire = 0usize;
+  var going = true;
+  while going {
+    let w = s.wireOut(now);
+    if w.len() == 0usize {
+      going = false;
+    } else {
+      wire = wire + w.len();
+      c.wireIn(w, now);
+    }
+  }
+  c.wireIn(IoBuf(), now);
+  expect(wire > 3usize * 16384usize, "the server wrote its three records and the close_notify");
+
+  expect(!c.peerEnded(), "everything is in the stream, nothing read out: the peer has not ended");
+  let a = c.plainOut();
+  expectUInt(u64.from(a.len()), 16384u64, "the first record is read out");
+  expect(a.view()[0usize] == 65u8, "...the first one");
+  expect(!c.peerEnded(), "two records unread: the peer has not ended");
+  let b = c.plainOut();
+  expect(b.len() == 16384usize && b.view()[0usize] == 66u8, "the second record is read out");
+  expect(!c.peerEnded(), "one record unread: the peer has not ended");
+  let d = c.plainOut();
+  expect(d.len() == 16384usize && d.view()[0usize] == 67u8, "the third record is read out");
+  expect(!c.peerEnded(), "the last record taken, the close_notify not yet read: not ended");
+  let e = c.plainOut();
+  expectUInt(u64.from(e.len()), 0u64, "a read after the last record finds the close_notify, no bytes");
+  expect(c.peerEnded(), "the close_notify reached: the peer has ended");
+  done()
+}

@@ -131,7 +131,7 @@ actor Prober {
     let name = Path.from("aiolimits.tmp");
     let f = fileOf(await aio.openFile(&name, Access.Create));
     let w = await f.writeAt(0u64, block(4096usize, 7u8));
-    say("setup write", endOf[usize](&w));
+    say("setup write", endOf[IoBuf](&w));
 
     // A group cancelled before the operation starts: answered at once
     let g1 = CancelGroup.make();
@@ -139,7 +139,7 @@ actor Prober {
     let a1 = await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.within(g1));
     say("read, cancelled before it starts", endOf[IoBuf](&a1));
     let a2 = await f.writeAtIn(0u64, block(4096usize, 9u8), IoLimits.within(g1));
-    say("write, cancelled before it starts", endOf[usize](&a2));
+    say("write, cancelled before it starts", endOf[IoBuf](&a2));
     let s1 = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("  and the write did not happen", isBlock(&s1, 4096usize, 7u8));
 
@@ -147,7 +147,7 @@ actor Prober {
     let a3 = await f.readAtIn(0u64, IoBuf(4096usize), IoLimits.until(Instant.now()));
     say("read, deadline past", endOf[IoBuf](&a3));
     let a4 = await f.writeAtIn(0u64, block(4096usize, 9u8), IoLimits.until(Instant.now()));
-    say("write, deadline past", endOf[usize](&a4));
+    say("write, deadline past", endOf[IoBuf](&a4));
     let s2 = bufOf(await f.readAt(0u64, IoBuf(4096usize)));
     note("  and the write did not happen", isBlock(&s2, 4096usize, 7u8));
 
@@ -165,7 +165,7 @@ actor Prober {
     note("  cancel() found the group live", g7.cancel());
     note("  and its second cancel found it cancelled already", !g7.cancel());
     let a8 = await f.writeAtIn(0u64, block(4096usize, 7u8), IoLimits.within(g7));
-    say("write in the group now cancelled", endOf[usize](&a8));
+    say("write in the group now cancelled", endOf[IoBuf](&a8));
 
     // A group cancelled by a message, while the read is paused: Done or Cancelled
     let g9 = CancelGroup.make();
@@ -204,11 +204,11 @@ actor Prober {
       let wr = f.writeAtIn(0u64, block(4096usize, 7u8), IoLimits.within(gw));
       selfactor.stop(gw);
       let wa = await wr;
-      let wh = endOf[usize](&wa);
+      let wh = endOf[IoBuf](&wa);
       if wh == 0u32 {
         tally.done.add(1u64);
         match wa {
-          case let Ok(n) {if n != 4096usize {tally.wrong.add(1u64);}}
+          case let Ok(n) {if n.len() != 4096usize {tally.wrong.add(1u64);}}
           else {}
         }
       } else if wh == 1u32 {
