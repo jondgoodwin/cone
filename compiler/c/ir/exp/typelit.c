@@ -296,6 +296,7 @@ void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
         flowGateOperand(fstate, *valp);
         flowGateStatic(fstate, (INode *)*nodep, i++, *valp);
     }
+    flowGateJoin(fstate, (*nodep)->args);
     flowGateOperandsEnd(fstate, inflight, keep);
 }
 
