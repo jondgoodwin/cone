@@ -2778,8 +2778,17 @@ class Runner:
         leftover = list(unlocated)
         for want in scenario.unlocated:
             code = self.codes.get(want.get("code"))
+            # A diagnostic in an imported package's file is claimed only by an
+            # entry that names that file (``path``, the end of its path); one
+            # that names none claims only what has no file of a package
+            def same_file(d: Diagnostic) -> bool:
+                path = normalize_path(d.path) if d.path else ""
+                if "/packages/" not in path:
+                    return "path" not in want
+                return "path" in want and path.endswith(normalize_path(want["path"]))
             hit = next((d for d in leftover
-                        if d.code == code and want.get("message", "") in d.message), None)
+                        if d.code == code and want.get("message", "") in d.message
+                        and same_file(d)), None)
             if hit:
                 leftover.remove(hit)
             else:
