@@ -1723,7 +1723,16 @@ waiting for their statement's end (`GenTemp`), the newest first, but a lock's
 guard and any that does nothing as it dies; and flow's record of variables
 (`seamvars`: holding its value, and used after the seam or droppable), the
 last declared first, but `self`, which the dispatcher lends each half afresh,
-each bringing its drop flag where it has one. A value in flight is one
+each bringing its drop flag where it has one. **A match's binding by value
+(`flowMatchInPlace`) is no variable of its own to the record**: it names the
+matched value's storage, which its owner (`flowDropOwner`) carries once -- by
+the owner's own entry where that is carried, else, if the binding is used after
+the seam and the owner holds a value but would not be carried, by the owner in
+the binding's place. An owner that holds nothing at the seam (the binding took
+the whole payload, `case let Ok(x)`) leaves the record nothing, so the
+abandoned record's drop function (`genlSeamDrop`) and trace function
+(`genlSeamTrace`), which walk the same fields, see the value once, in `x`.
+A value in flight is one
 generated before a later operand holding a seam -- `x` in `two(x, await
 give())`, a call's argument or receiver, a literal's field or element -- which
 belongs to no variable: `genlExprsAcross` keeps it in a slot of its own
