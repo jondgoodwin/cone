@@ -13,9 +13,10 @@ pub struct Stream is Move {
   s: Session;
   waiting: Chain;        // the protocol's bytes, until the handshake is done
   closeAsked: bool;
+  noBuffer: bool;        // plainOut or wireOut was refused a buffer by the pool (maxBytes): the stream has failed
 
   pub fn make(s: Session) Stream {
-    Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false)
+    Stream(s: s, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false, noBuffer: false)
   }
 
   // Its session: its info, its error
@@ -36,7 +37,15 @@ pub struct Stream is Move {
     self.flushWaiting();
     let n = s.pending();
     if n == 0usize {return IoBuf();}
-    var b = IoBuf(if n < sendChunk {n} else {sendChunk});
+    // A pool within its reserve of maxBytes gives no buffer: the stream fails
+    // (failed()), as plainOut does, and the driver ends the connection
+    var b = match IoBuf.tryMake(if n < sendChunk {n} else {sendChunk}) {
+      case var Some(got) {got}
+      else {
+        noBuffer = true;
+        return IoBuf();
+      }
+    };
     let got = s.transmit(b.spare());
     b.setLen(got);
     b
@@ -61,8 +70,16 @@ pub struct Stream is Move {
 
   // The next of the protocol's bytes that came, moved out; empty when none
   pub fn plainOut(self: &mut) IoBuf {
-    if !s.canRead() {return IoBuf();}
-    var b = IoBuf(recordPlain);
+    if !s.canRead() || noBuffer {return IoBuf();}
+    // A pool within its reserve of maxBytes gives no buffer: the record stays in
+    // the session, and the stream fails (failed()), rather than the pool panicking
+    var b = match IoBuf.tryMake(recordPlain) {
+      case var Some(got) {got}
+      else {
+        noBuffer = true;
+        return IoBuf();
+      }
+    };
     let got = s.read(b.spare());
     if got == 0usize {return IoBuf();}
     b.setLen(got);
@@ -90,7 +107,7 @@ pub struct Stream is Move {
 
   // Whether it has failed: reported once what it had to send (an alert)
   // has gone out
-  pub fn failed(self: &) bool {s.isFailed() && s.pending() == 0usize}
+  pub fn failed(self: &) bool {noBuffer || (s.isFailed() && s.pending() == 0usize)}
 
   // The number the OS gave for the reason, else 0 (TlsError's osError): its
   // certificate verifier's own (Windows' error, or OpenSSL's verify result
@@ -98,9 +115,17 @@ pub struct Stream is Move {
   // of the verifier's job that could not run
   pub fn failureCode(self: &) u32 {s.error().osError}
 
+  // Whether the failure is the pool's refusal of a buffer (iobuf's tryMake), a
+  // moment that passes: the driver then ends the connection Overloaded
+  pub fn overloaded(self: &) bool {noBuffer || s.overloaded()}
+
+  // A TLS session's plaintext comes a record at a time, of a size known only when read out
+  pub fn givesRecords(self: &) bool {true}
+
   // Why it failed, in words: its kind, and its detail, which holds the
   // OS's text and number when the OS gave the reason
   pub fn failureText(self: &) String {
+    if noBuffer {return String.from("no buffer for the bytes, the buffer pool is full (iobuf maxBytes)");}
     let e = s.error();
     var out = String() <- e.kind;
     out.append(": ");

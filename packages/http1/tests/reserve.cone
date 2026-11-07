@@ -1,0 +1,135 @@
+// A head split across two buffers is looked at as one slice, which copies it
+// into a buffer of the connection's own (Reader.peek). With the buffer pool at
+// the reserve of its maxBytes (every tryMake refused), that copy is refused: the
+// connection fails, Overloaded, answering 503, rather than the pool panicking
+// or the connection waiting for bytes it already holds. The same head with
+// room in the pool is read. After the failure the connection's buffers go
+// home: the pool's lent count is what it was when the pool is no longer
+// hoarded.
+
+mod reserve;
+
+import testing use *;
+import collections use String;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused: the
+// pool then refuses any further tryMake
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+// A request head of 'pad' bytes of one field, fed in buffers of 4096
+fn feed(c: &mut Connection, pad: usize, at: Instant) {
+  var text = String.from("GET /x HTTP/1.1\r\nHost: h\r\nX-Pad: ");
+  var i = 0usize;
+  while i < pad {
+    text.append("p");
+    i = i + 1usize;
+  }
+  text.append("\r\n\r\n");
+  let all = text.view() as &Array[u8];
+  var at0 = 0usize;
+  while at0 < all.len {
+    var b = IoBuf(4096usize);
+    let n = b.append(&all[at0 ..< all.len]);
+    c.handleInput(b, at);
+    at0 = at0 + n;
+  }
+}
+
+fn drain(c: &mut Connection, at: Instant) String {
+  var s = String();
+  var ch = c.pollTransmit(at);
+  while true {
+    match ch.popFront() {
+      case var Some(b) {s.appendBytes(b.view());}
+      else {break;}
+    }
+  }
+  s
+}
+
+fn main() i32 {
+  let t = Instant.fromNanos(1000000000i64);
+  let lentBefore = stats().lent;
+
+  // With room: the head is read
+  {
+    var c = Connection.server(Config.make(), t);
+    feed(&mut c, 6000usize, t);
+    var got = false;
+    match c.pollEvent() {
+      case is Request {got = true;}
+      else {}
+    }
+    expect(got, "with room in the pool, a head across two buffers is read");
+  }
+  expectUInt(stats().lent, lentBefore, "its buffers are home");
+
+  // At the reserve: the connection fails
+  {
+    let refusedBefore = stats().refused;
+    let h = hoard();
+    var c = Connection.server(Config.make(), t);
+    feed(&mut c, 6000usize, t);
+    var failed = false;
+    var overloaded = false;
+    var status = 0u16;
+    match c.pollEvent() {
+      case var Failed(f) {
+        failed = true;
+        overloaded = f.error.kind == ErrorKind.Overloaded;
+        status = f.error.status;
+      }
+      else {}
+    }
+    expect(failed, "at the reserve, a head across two buffers fails the connection (not a wait for bytes it holds)");
+    expect(overloaded, "...Overloaded");
+    expectUInt(u64.from(status), 503u64, "...answering 503");
+    expect(stats().refused > refusedBefore, "the pool counted the refusal");
+    let sent = drain(&mut c, t);
+    expect(sent.startsWith("HTTP/1.1 503"), "the 503 goes out");
+    expect(c.shouldClose(), "and then the connection closes");
+  }
+  expectUInt(stats().lent, lentBefore, "after the failure and the hoard's end, lent is what it was");
+
+  // And a new connection is served
+  {
+    var c = Connection.server(Config.make(), t);
+    feed(&mut c, 6000usize, t);
+    var got = false;
+    match c.pollEvent() {
+      case is Request {got = true;}
+      else {}
+    }
+    expect(got, "a new connection is read once the pool has room");
+  }
+  expectUInt(stats().lent, lentBefore, "every buffer home");
+  done()
+}
