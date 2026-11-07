@@ -89,6 +89,7 @@ const endCancelled = 2u32;
 const endTimedOut = 3u32;
 
 const recsPerBlock = 64u32;
+const feedRecord = 16384usize;        // the most plaintext one TLS record carries: 'feed' needs this much credit for a buffer
 const lingerSize = 4096usize;        // a closing connection's receive, read and dropped
 const resolveSize = 4096usize;       // a lookup's buffer: room for 128 addresses
 
@@ -124,6 +125,7 @@ struct Conn {
   sendsOut: u32;
   eof: bool;                 // the socket's receiving side has ended, or failed
   eofFed: bool;              // ...and the core has been told
+  feedHeld: bool;            // 'feed' stopped for the core's credit: the layer may still hold bytes
   shut: bool;                // its sending side is shut
   closeAsked: bool;          // 'close': end once what was asked of it is done
   timer: OpId;               // the core's deadline, or the linger, on the loop's timers
@@ -309,7 +311,7 @@ pub struct Driver {
       decided: false, cleartext: false,
       layer: plainLayer(), sink: Sink.Here(0u64), addrs: List[SocketAddr](), nextAddr: 0usize,
       connOp: OpId.none(), callOp: OpId.none(), connectBy: Instant(), peer: SocketAddr.localhost(0u16),
-      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
+      recvOut: false, recvOp: OpId.none(), recvReading: false, recvAsked: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false, feedHeld: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: Instant(), current: noEntry,
       waiting: Deque[Waiting](), flushing: List[u32](), failure: None, openBy: forever(),
       dirty: false, inAtStart: 0u64, sendSeq: 0u64, sentSeq: 0u64, allTaken: false,
@@ -371,6 +373,7 @@ pub struct Driver {
     c.sendsOut = 0u32;
     c.eof = false;
     c.eofFed = false;
+    c.feedHeld = false;
     c.shut = false;
     c.closeAsked = false;
     c.timer = OpId.none();
@@ -575,6 +578,10 @@ pub struct Driver {
       }
     }
     self.transmit(lp, i, now);
+    // Credit that has grown while this drive ran (the core used its input) lets
+    // 'feed' go on with what the layer holds; and a layer that failed in
+    // 'transmit' (a pool refusal) is read at once
+    if (c.feedHeld && coreCredit(c) >= self.feedNeed(c)) || c.layer.failed() {self.markDirty(i);}
     self.layerCall(lp, i);
     if c.isH2 {
       self.flushDone2(lp, i);
@@ -616,9 +623,26 @@ pub struct Driver {
   }
 
   // The bytes the layer has for the core, and the end of the stream
+  //
+  // It takes a buffer from the layer only while the core's credit holds the
+  // largest one a layer gives, a TLS record's plaintext (the threshold 'receive'
+  // asks for too): the core panics when handed more than its credit, and a layer
+  // cannot say a buffer's size before it is read out. What it leaves stays in the
+  // layer, and 'drive' runs it again when the credit has grown (the program's
+  // release, or the core's own use of its input). The peer's end follows the
+  // loop and needs no check of its own for a stop: a layer's 'peerEnded' is
+  // false while it holds a record unread (the Layer's contract: every byte was
+  // taken), so the end is never fed ahead of a record the credit stopped
   fn feed(self: &mut, lp: &mut Loop, i: u32, now: Instant) {
     let c = self.connAt(i) as &mut Conn;
+    let need = self.feedNeed(c);
+    c.feedHeld = false;
     while c.decided {
+      // A core that has ended takes and drops what it is given, so it never holds
+      if coreCredit(c) < need && !coreClosed(c) {
+        c.feedHeld = true;
+        break;
+      }
       let b = c.layer.plainOut();
       if b.len() == 0usize {break;}
       coreInput(c, b, now);
@@ -628,10 +652,27 @@ pub struct Driver {
       coreInput(c, IoBuf(), now);
     }
     if c.layer.failed() {
-      let text = c.layer.failureText();
-      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
-      self.closeNow(lp, i, true, false);
+      self.layerFailed(lp, i);
     }
+  }
+
+  // The most credit a layer's one buffer needs: what 'receive' waits for, and,
+  // for a layer that gives records (a TLS session's), at least a record's
+  // plaintext. A Plain layer's buffers are at most 'recvSize', so a plain
+  // connection with a small 'maxBuffered' is not made to wait for more credit
+  // than it can ever have
+  fn feedNeed(self: &, c: &Conn) usize {
+    if cfg.recvSize > feedRecord || !c.layer.givesRecords() {cfg.recvSize} else {feedRecord}
+  }
+
+  // The layer has failed: its text is the reason, a pool refusal (the layer's
+  // 'overloaded') being Overloaded and the rest Closed
+  fn layerFailed(self: &mut, lp: &mut Loop, i: u32) {
+    let c = self.connAt(i) as &mut Conn;
+    let text = c.layer.failureText();
+    let kind = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+    c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), kind, text.view()));
+    self.closeNow(lp, i, true, false);
   }
 
   // The layer's work for the blocking pool, one at a time (a TLS session's
@@ -1184,7 +1225,15 @@ pub struct Driver {
       return;
     }
     c.readyHit = false;
-    let b = IoBuf(cfg.recvSize);
+    let b = match IoBuf.tryMake(cfg.recvSize) {
+      case var Some(got) {got}
+      else {
+        // The pool is within its reserve of maxBytes: this connection ends, its
+        // credit and buffers with it, rather than a later construction panicking
+        self.failConn(lp, i, Stage.Read, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for a receive");
+        return;
+      }
+    };
     c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
     c.recvReading = reading;
@@ -1234,7 +1283,15 @@ pub struct Driver {
   fn lingerRecv(self: &mut, lp: &mut Loop, i: u32) {
     let c = self.connAt(i) as &mut Conn;
     if c.eof || c.recvOut || c.readyOut {return;}
-    let b = IoBuf(lingerSize);
+    let b = match IoBuf.tryMake(lingerSize) {
+      case var Some(got) {got}
+      else {
+        // The linger reads are only to be dropped: a refusal ends the linger
+        c.eof = true;
+        self.closeNow(lp, i, false, false);
+        return;
+      }
+    };
     c.recvOp = lp.submit(Op.Recv(c.sock, b), Target.Here(self.tok(kRecv, i, c.gen)));
     c.recvOut = true;
     c.recvReading = false;
@@ -1406,7 +1463,8 @@ pub struct Driver {
     // layer's failure is read (feed), and must not hide it
     if (stage == Stage.Read || stage == Stage.Write) && c.layer.failed() {
       let text = c.layer.failureText();
-      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), ErrorKind.Closed, text.view()));
+      let lk = if c.layer.overloaded() {ErrorKind.Overloaded} else {ErrorKind.Closed};
+      c.failure = Some[Failure](Failure.make(Stage.Tls, c.layer.failureCode(), lk, text.view()));
     } else {
       c.failure = Some[Failure](Failure.make(stage, code, kind, detail));
     }
@@ -1574,7 +1632,9 @@ pub struct Driver {
   }
 
   // A client connection whose bytes pass through layer (see LAYERS)
-  pub fn connectWith(self: &mut, lp: &mut Loop, host: &str, port: u16, layer: Uni[Layer], sink: Sink) ConnId {
+  pub fn connectWith(self: &mut, lp: &mut Loop, host: &str, port: u16, layer: Uni[Layer], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) ConnId {
+    self.checkRecords(layer.givesRecords(), file, line);
     let now = Instant.now();
     self.stamp(lp);
     let i = self.openClient(lp, layer, sink, now);
@@ -1605,6 +1665,18 @@ pub struct Driver {
     c.addrs.push(addr);
     self.connectNext(lp, i);
     id
+  }
+
+  // A layer that gives records (TLS) needs the core to be able to hold a whole
+  // record (feed waits for that much credit): a smaller http1 'maxBuffered'
+  // could never take one and the connection would hang, so it is refused at
+  // start-up, as http1 refuses a 'maxBuffered' smaller than a head. (http2's
+  // 'maxBuffered' must hold a frame header and a frame, at least 16 KiB, so it
+  // cannot sit under a record)
+  fn checkRecords(self: &, records: bool, file: &Array[u8], line: u32) {
+    if records && cfg.protocol.maxBuffered < feedRecord {
+      panic("httpconn: a layer that gives records (TLS) needs http1 Config.maxBuffered of at least 16 KiB", file, line);
+    }
   }
 
   // A client connection's record; one past maxConnections is refused at
@@ -1752,7 +1824,11 @@ pub struct Driver {
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
-  pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, make: Uni[LayerMaker + ShapeKeeping], sink: Sink) Result[ListenerId, IoError] {
+  pub fn listenWith(self: &mut, lp: &mut Loop, addr: SocketAddr, var make: Uni[LayerMaker + ShapeKeeping], sink: Sink,
+      file: &Array[u8] = srcFile(), line: u32 = srcLine()) Result[ListenerId, IoError] {
+    // No layer exists yet: one is made, asked, and dropped
+    let probe = make.make();
+    self.checkRecords(probe.givesRecords(), file, line);
     self.stamp(lp);
     let h = lp.listen(addr)?;
     let k = u32.from(listeners.len());

@@ -2125,23 +2125,41 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         // below).
         int arenaplace = at == 0 && arenameth && isref && argtype->tag == RefTag
             && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite) && pwIsNoLoanMut(storedin);
-        if (arenaplace && depth == 0)
+        // A free function handed 'ar: &'a mut Arena' and something else of
+        // ''a' may store that in a node of the arena (loanStoredApart lets it,
+        // the body having no say over who else reaches the node): at this
+        // call it is a store into the arena, so the arena's death is checked
+        // against it
+        INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
+        int arenaparm = !arenameth && parmtype && parmtype->tag == RefTag && ((RefNode *)parmtype)->lifename != NULL
+            && isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
+            && pwIsNoLoanMut(storedin) && !lifeSlotted(storedin);
+        if ((arenaplace || arenaparm) && depth == 0)
             depth = 1;
         if (depth == 0)
             continue;
-        INode *pointee = sig && at < sig->parms->used
-            ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
+        INode *pointee = parmtype ? lifePointee(parmtype) : NULL;
+        if (arenaparm)
+            pointee = parmtype;
         // What a writable borrow points at, where it holds no borrow but
         // ''static' ones and no writable borrow leads further, takes only a
         // global's loans: the callee may store nothing else there
         // (loanStoredStatic)
-        int globalonly = isref && depth == 1 && !arenaplace && !itypeCarriesEndingBorrow(storedin);
+        int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
             if (i == at || argsets[i] == NULL || (arenaplace && pwParmBorrowed(arenameth, i)))
                 continue;
             // A value made only of the receiver's own path stays in its arena
             if (arenaplace && pwStoredOnlyBy(nodesGet(call->args, i), nodesGet(call->args, 0)))
+                continue;
+            // The arena reads what it holds only when it finalizes it. A
+            // value whose death reads no borrow is no store: its borrows stay
+            // on the handle the call returns, which carries them
+            if (arenaplace && !itypeDropReadsBorrow(iexpGetTypeDcl(nodesGet(call->args, i))))
+                continue;
+            // A parameter with no lifetime named shares none with the arena
+            if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of what it borrows: the
@@ -2150,7 +2168,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             PathSet *carried = argsets[i];
             INode *site = pwLendSite(nodesGet(call->args, i));
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && !arenaplace && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
+            if (own && !arenaplace && !arenaparm && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
@@ -2213,7 +2231,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             loanEscape((INode *)call, local, LoanEscapeCall);
         else if (reach.deref) {
             // What belongs to the arena itself is no self-store (Bug 48's exception)
-            uint32_t own = !arenaplace && pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
+            uint32_t own = !arenaplace && !arenaparm && pwPlaceOutlives(&reach) ? loanNamedThroughIn(others, target.var) : 0;
             if (own)
                 loanSelfStore((INode *)call, own, &target, LoanEscapeCall);
             if (arenaplace) {
