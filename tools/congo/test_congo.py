@@ -3503,6 +3503,138 @@ def clean_environment() -> dict[str, str]:
     return env
 
 
+@unittest.skipIf(CONGO_EXE, "congo.py only: the Cone Congo does not share libraries yet")
+class SharedLibraries(unittest.TestCase):
+    """'congo test' over a folder of packages compiles each library once for the
+    run, in .congo-shared/ in that folder, not once for every package. A wrong
+    share is a package linked against a library built for another
+    configuration, so the scenarios are those where a share would be wrong:
+    other -D defines, a changed source, a library that does not compile."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    registry = Scenarios.registry
+
+    LEAF = """
+        mod leaf;
+
+        pub fn value() i64 {{
+          #if #define("N") == 5 {{5i64}} #else {{{other}i64}}
+        }}
+        {more}"""
+
+    def folders(self, other: int = 1, more: str = "") -> Path:
+        """Two folders of packages: libs/, which holds leaf and is only read,
+        and pkgs/, which holds one and two, each a library importing leaf and
+        with a test that prints leaf.value() through it. Returns pkgs/."""
+        libs, pkgs = self.root / "libs", self.root / "pkgs"
+        self.registry(libs, pkgs)
+        write(libs / "leaf" / "congo.toml",
+              '[package]\nname = "leaf"\nversion = "0.1.0"\noutput = "library"\n')
+        self.set_leaf(other, more)
+        for name in ("one", "two"):
+            write(pkgs / name / "congo.toml",
+                  f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
+            write(pkgs / name / "src" / f"{name}.cone", f"""
+                mod {name};
+
+                import leaf;
+
+                pub fn value() i64 {{
+                  leaf.value()
+                }}
+                """)
+            write(pkgs / name / "tests" / "show.cone", f"""
+                mod show;
+
+                import stdio use *;
+                import {name};
+
+                fn main() i32 {{
+                  printInt({name}.value());
+                  printStr("\\n");
+                  0i32
+                }}
+                """)
+            write(pkgs / name / "tests" / "show.out", "1\n")
+        return pkgs
+
+    def set_leaf(self, other: int, more: str = "") -> None:
+        write(self.root / "libs" / "leaf" / "src" / "leaf.cone",
+              self.LEAF.format(other=other, more=more))
+
+    def test_each_library_is_compiled_once_for_the_folder(self):
+        pkgs = self.folders()
+        run = self.congo("test", cwd=pkgs)
+        self.assertIn("2 packages", run.stdout)
+        names = compiled(run)
+        for shared in ("libc", "core", "stdio", "leaf"):
+            self.assertEqual(names.count(shared), 1, f"{shared}: {names}")
+        # The packages under test are built where they are, as ever
+        self.assertEqual(sorted(n for n in names if n in ("one", "two")), ["one", "two"])
+        for name in ("one", "two"):
+            self.assertTrue((pkgs / name / "build" / "debug" / f"{name}{congo.OBJ_EXT}").is_file())
+            self.assertFalse((pkgs / name / "build" / "debug" / f"leaf{congo.OBJ_EXT}").exists())
+        self.assertTrue((pkgs / ".congo-shared").is_dir())
+        # A second run compiles nothing
+        self.assertEqual(compiled(self.congo("test", cwd=pkgs)), [])
+        # A package tested alone is not changed: it compiles all it imports into
+        # its own build/debug, and leaves no shared folder
+        run = self.congo("test", cwd=pkgs / "one")
+        self.assertEqual(compiled(run).count("leaf"), 1)
+        self.assertTrue((pkgs / "one" / "build" / "debug" / f"leaf{congo.OBJ_EXT}").is_file())
+
+    def test_a_define_gives_the_library_its_own_build(self):
+        pkgs = self.folders()
+        self.congo("test", cwd=pkgs)
+        # -D N=5 reaches the shared leaf: its value is 5, and the tests, whose
+        # expected output is 1, fail on it; leaf is compiled again, once
+        run = self.congo("test", "-D", "N=5", cwd=pkgs, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertEqual(compiled(run).count("leaf"), 1, compiled(run))
+        self.assertEqual(run.stdout.count("test show ... FAILED"), 2, run.stdout)
+        # With the define on, the expected output of 5 passes; this is the proof
+        # that the define took effect in the shared build
+        for name in ("one", "two"):
+            write(pkgs / name / "tests" / "show.out", "5\n")
+        run = self.congo("test", "-D", "N=5", cwd=pkgs)
+        self.assertEqual(run.stdout.count("test show ... ok"), 2, run.stdout)
+        # And back: without it, a library built for N=5 is not what is linked
+        run = self.congo("test", cwd=pkgs, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertEqual(run.stdout.count("test show ... FAILED"), 2, run.stdout)
+
+    def test_a_changed_source_rebuilds_the_library_once(self):
+        pkgs = self.folders()
+        self.congo("test", cwd=pkgs)
+        self.set_leaf(1, "// another version\n")
+        run = self.congo("test", cwd=pkgs)
+        self.assertEqual(compiled(run).count("leaf"), 1, compiled(run))
+        self.assertEqual(compiled(run).count("core"), 0, compiled(run))
+        self.set_leaf(2)
+        for name in ("one", "two"):
+            write(pkgs / name / "tests" / "show.out", "2\n")
+        run = self.congo("test", cwd=pkgs)
+        self.assertEqual(compiled(run).count("leaf"), 1, compiled(run))
+        self.assertEqual(run.stdout.count("test show ... ok"), 2, run.stdout)
+
+    def test_a_library_that_does_not_compile_is_reported_once(self):
+        pkgs = self.folders(more="pub fn broken() i64 { nosuchthing }\n")
+        run = self.congo("test", cwd=pkgs, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        text = run.stdout + run.stderr
+        self.assertEqual(text.count("Error 1019"), 1, text)
+        self.assertIn("failed earlier in this run", text)
+        self.assertEqual(compiled(run).count("leaf"), 1, compiled(run))
+        for name in ("one", "two"):
+            self.assertIn(f"{name}: the package does not build", text)
+        # Mended, the next run builds it and passes
+        self.set_leaf(1)
+        run = self.congo("test", cwd=pkgs)
+        self.assertEqual(run.stdout.count("test show ... ok"), 2, run.stdout)
+
+
 @unittest.skipUnless(IS_WINDOWS, "vcvars64.bat is Visual Studio's, on Windows")
 class MsvcEnvironmentCache(unittest.TestCase):
     """What vcvars64.bat sets, captured once into <Congo home>/msvc-env.json

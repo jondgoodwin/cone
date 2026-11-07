@@ -1,0 +1,11 @@
+// Bug 48/51 (design chat probe f6): the arena's path is reassigned, a finalizable node of the other arena holds the stale arena and reads it at its death. Refuse.
+mod lifetime_arena_refuse_reassigned_final;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct H { pub p: &mut T; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct W { pub a: &mut Arena; fn final(self: &uni) { print <- "finalizer sees ", self.a.blockCount(), "\n"; } }
+struct S { pub home: &mut Arena; }
+fn bad(s: &mut S, other: &mut Arena) { let old = s.home; s.home = other; s.home.alloc(W(old)); }  //~ ErrorCallEscape
+fn main() { var b = Arena(); { var a = Arena(); var s = S(&mut a); bad(&mut s, &mut b); } print <- clobber(3), "\n"; }

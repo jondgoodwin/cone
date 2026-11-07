@@ -1,0 +1,13 @@
+// Bug 61: a node made by a helper two calls deep, stored through with no pin of the arena: the arena was reached through a struct a caller lent. Refuse.
+mod lifetime_arena_refuse_held_helper_deep;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+struct H2 { pub h: &mut Hd; }
+fn mkF(a: &mut Hd) &mut F { a.ar.alloc(F(None)) }
+fn mkF2(a: &mut Hd) &mut F { mkF(a) }
+fn stash(a: &mut Hd, x: &mut T) { let f = mkF2(a); f.p = Some(x); }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Hd(q); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); }

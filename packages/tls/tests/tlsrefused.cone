@@ -1,0 +1,187 @@
+// The buffers a TLS stream makes on a connection's account, refused by the pool
+// (iobuf's tryMake, the pool at the reserve of its maxBytes): a record read
+// out (plainOut), the ciphertext to send (wireOut) and the certificate job for
+// the OS's verifier (verifyOp). Each ends in the stream failing (or, for the
+// verifier's job, the handshake failing) with its reason in words, and no
+// panic; a plain IoBuf in any of the three would panic here. Each test takes
+// the pool's reserve first (a hoard, with tryMake, until every size class
+// refuses) and then acts. Every buffer is back in the pool afterwards.
+
+mod tlsrefused;
+
+import stdio use *;
+import testing use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import tls;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+fn record(tag: u8) IoBuf {
+  var b = IoBuf(16384usize);
+  let room = b.whole();
+  var j = 0usize;
+  while j < 16384usize {
+    room[j] = tag;
+    j = j + 1usize;
+  }
+  b.setLen(16384usize);
+  b
+}
+
+fn server() tls.Server {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  match tls.Server.make(tls.ServerConfig.make(&certFile, &keyFile)) {
+    case let Ok(r) {
+      let s = r;
+      return s;
+    }
+    case let Err(e) {print <- e;}
+  }
+  panic("no server")
+}
+
+// platform: the OS's verifier (the handshake then waits for its job)
+fn client(platform: bool) tls.Client {
+  var cfg = tls.ClientConfig.make();
+  if !platform {cfg.verify = tls.Verifier.roots(readText("ca.pem").view());}
+  cfg.offline = true;
+  match tls.Client.make(cfg) {
+    case let Ok(r) {
+      let c = r;
+      return c;
+    }
+    case let Err(e) {print <- e;}
+  }
+  panic("no client")
+}
+
+// Carry the wire by hand between the two until both are open, or (stopAtJob)
+// the client has the verifier's job to hand out
+fn shuttle(s: &mut tls.Stream, c: &mut tls.Stream, stopAtJob: bool) {
+  let now = Instant.now();
+  var rounds = 0u32;
+  while (!s.isOpen() || !c.isOpen()) && rounds < 50u32 && !(stopAtJob && c.wantsCall()) {
+    rounds = rounds + 1u32;
+    let a = c.wireOut(now);
+    if a.len() > 0usize {s.wireIn(a, now);}
+    let b = s.wireOut(now);
+    if b.len() > 0usize {c.wireIn(b, now);}
+  }
+}
+
+// plainOut: a record is in the client's session, the pool has no block for it
+fn plainOutRefused() {
+  let srv = server();
+  let cli = client(false);
+  var s = srv.stream();
+  var c = cli.stream("localhost");
+  shuttle(&mut s, &mut c, false);
+  require(s.isOpen() && c.isOpen(), "plainOut: the handshake finished");
+  let now = Instant.now();
+  s.plainIn(record(65u8));
+  var going = true;
+  while going {
+    let w = s.wireOut(now);
+    if w.len() == 0usize {going = false;} else {c.wireIn(w, now);}
+  }
+  let refusedBefore = stats().refused;
+  let h = hoard();
+  let r = c.plainOut();
+  expectUInt(u64.from(r.len()), 0u64, "plainOut: refused, no buffer comes out");
+  expect(c.failed(), "plainOut: the stream has failed");
+  expect(c.failureText().contains("buffer pool"), "plainOut: the failure says the buffer pool is full");
+  expect(c.overloaded() && !c.failureText().view().startsWith("overloaded"), "plainOut: the stream says overloaded, not the words");
+  expect(stats().refused > refusedBefore, "plainOut: the pool counted the refusal");
+}
+
+// wireOut: the server session has ciphertext to send, the pool has no block for it
+fn wireOutRefused() {
+  let srv = server();
+  let cli = client(false);
+  var s = srv.stream();
+  var c = cli.stream("localhost");
+  shuttle(&mut s, &mut c, false);
+  require(s.isOpen() && c.isOpen(), "wireOut: the handshake finished");
+  s.plainIn(record(66u8));
+  expect(s.pending() > 0usize, "wireOut: ciphertext waits to be sent");
+  let h = hoard();
+  let w = s.wireOut(Instant.now());
+  expectUInt(u64.from(w.len()), 0u64, "wireOut: refused, no buffer comes out");
+  expect(s.failed(), "wireOut: the stream has failed");
+  expect(s.failureText().contains("buffer pool"), "wireOut: the failure says the buffer pool is full");
+  expect(s.overloaded() && !s.failureText().view().startsWith("overloaded"), "wireOut: the stream says overloaded, not the words");
+}
+
+// verifyOp: the client holds the server's certificates for the OS's verifier,
+// and the pool has no block for the job
+fn verifyOpRefused() {
+  let srv = server();
+  let cli = client(true);
+  var s = srv.stream();
+  var c = cli.stream("localhost");
+  shuttle(&mut s, &mut c, true);
+  require(c.wantsCall(), "verifyOp: the client has the verifier's job");
+  let h = hoard();
+  let op = c.takeCall();
+  expect(c.failed(), "verifyOp: the handshake has failed");
+  expect(!c.isOpen(), "verifyOp: ...and is not open");
+  expect(c.failureText().contains("buffer pool"), "verifyOp: the failure says the buffer pool is full");
+  expect(c.overloaded() && !c.failureText().view().startsWith("overloaded"), "verifyOp: the stream says overloaded, not the words");
+}
+
+fn main() i32 {
+  let lent0 = stats().lent;
+  plainOutRefused();
+  expectUInt(stats().lent, lent0, "plainOut: every buffer back in the pool");
+  wireOutRefused();
+  expectUInt(stats().lent, lent0, "wireOut: every buffer back in the pool");
+  verifyOpRefused();
+  expectUInt(stats().lent, lent0, "verifyOp: every buffer back in the pool");
+  done()
+}

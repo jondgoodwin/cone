@@ -87,6 +87,13 @@ each value through the finalizer in its type's record
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
 **scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
 are its whole safety, with their gaps (below, "Where each rule is enforced").
+An arena reads what it holds only when it dies, so a value stored in it must
+outlive it only if its finalizer, or that of anything it owns, can read a
+borrow it holds (`itypeDropReadsBorrow`, which answers yes for a type it cannot
+see all of); any other value is no store, and the borrow `alloc` returns
+carries what the value held. A function handed `ar: &'a mut Arena` and
+something else of `'a` may fill a node of the arena with it, and its caller
+answers for the call as for a store into the arena.
 The `pool` package's `Pool[T]` is a generational pool: `add` returns a
 `Ref[T]`, a slot's index and generation, which owns nothing and is checked
 against the slot each time it is used, through the pool value — `get` answers
