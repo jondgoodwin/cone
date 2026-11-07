@@ -423,6 +423,11 @@ actor Collector {
       sent: false, quit: quit, quitAt: quitAt, out: out);
   }
 
+  // Restarts the clock at a time the caller took, so set-up the other modes lack (the watcher thread) stays out of it
+  pub async fn start(self, at: Instant) {
+    t0 = at;
+  }
+
   fn report(self: &mut) {
     if sent { return; }
     sent = true;
@@ -637,9 +642,11 @@ fn runOnce(client: &Client, port: u16, mode: u32, z: bool, hashes: &List[u64], s
     var atx: OneshotSender[Result[u64, AnyError]];
     var arx: OneshotReceiver[Result[u64, AnyError]];
     atx, arx = Oneshot[Result[u64, AnyError]].make();
-    let sink = ArchiveStage(entryOpener(hashes.clone(), sizes.clone(), col.clone()), atx);
+    // The watcher's thread starts before the clock: the timed window holds the stage, as the other modes hold their fetch
     let th = thread.start(Watch(arx, col.clone()), &watch);
     th.detach();
+    col.start(Instant.now());
+    let sink = ArchiveStage(entryOpener(hashes.clone(), sizes.clone(), col.clone()), atx);
     let f = ZipStreamer(client.clone());
     f.run(url(port, if cancelAt > 0usize { "/zip/big" } else if z { "/zip/z" } else { "/zip/g" }), sink, g, cancelAt > 0usize, col);
   } else if mode == 1u32 {
