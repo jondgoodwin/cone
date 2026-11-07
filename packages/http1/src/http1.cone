@@ -86,10 +86,16 @@
 // with them, 'release(n)': once 'bodyWindow' bytes are out unreleased, the
 // core gives Paused instead of more Data, its Chain fills, its credit falls
 // to 0, the driver stops reading, and TCP's own flow control holds the peer.
+// The window is checked before a piece goes out, so one Data piece may carry
+// the total past 'bodyWindow' by up to one segment, which is at most a block.
 // A body is never gathered whole: a 4 GiB response streams through a few
 // hundred KiB. While it waits on the consumer this way, the body timeout
 // does not run. Sending is bounded too: 'sendData' refuses a buffer, handing
 // it back, once 'writeWatermark' bytes wait to be sent ('writeRoom()').
+// The credit is in bytes, whatever blocks hold them: while the input holds
+// bytes, an arriving buffer whose bytes fit the room of the last segment is
+// copied into it and its block dies (handleInput), so short writes do not
+// each hold a block; a full read finds no room and joins whole, copying nothing.
 //
 // FRAMING (RFC 9112, section 6). A body is read by Content-Length, by the
 // chunked coding (with its trailer fields), or, for a response with
@@ -373,7 +379,15 @@ pub struct Connection is Move {
     }
     if closed || failed {return;}
     if input.len() + n > cfg.maxBuffered {panic("http1: handleInput past the read credit", file, line);}
-    input.push(buf);
+    // A consumer that is behind (input not empty) takes what fits in the last
+    // segment's room into it, and the arriving block dies: a peer's short
+    // writes cannot each hold a block. A full read finds no room and joins
+    // whole, copying nothing; a consumer keeping up has an empty input
+    if !input.isEmpty() && n <= input.lastRoom() {
+      let joined = input.appendLast(buf.view());
+    } else {
+      input.push(buf);
+    }
     bytesIn = bytesIn + u64.from(n);
     if rs == ReadState.Idle && !clientRole && !headArmed {
       // A request's first byte: its head timeout starts (pollEvent skips
