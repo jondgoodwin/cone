@@ -1,0 +1,13 @@
+// Bug 61: a node stored through, the arena reached through a struct a caller lent by a helper's result. The finalizer reads what is stored after the caller's local is gone. Refuse.
+mod lifetime_arena_refuse_held_method_result;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Hd { pub ar: &mut Arena; }
+struct H2 { pub h: &mut Hd; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+fn arenaOf(h: &mut Hd) &mut Arena { h.ar }
+fn stash(a: &mut Hd, x: &mut T) { let ar = arenaOf(a); let f = ar.alloc(F(None)); f.p = Some(x); }  //~ ErrorEscape
+fn scope(q: &mut Arena) { var h = Hd(q); var t = T(7); stash(&mut h, &mut t); }
+fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }

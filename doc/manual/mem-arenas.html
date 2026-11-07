@@ -166,6 +166,33 @@ fn main() {
   printInt(x.a);                            //   borrow is used again below. It may not be changed.
 }
 </pre>
+	<h3 id="stores">What an arena may hold</h3>
+	<p>An arena reads what it holds at one time only: when it dies, to finalize it. So a value stored in an arena must
+		outlive the arena only if its finalizer, or the finalizer of something it owns, can read a borrow it holds. Any other
+		value is no store: the reference <span class="pre">alloc</span> returns carries the borrows the value held, and is
+		checked like any other borrow of them. A type the compiler cannot see all of (a type parameter, a trait, a
+		closure) is taken to read what it holds. A raw pointer in a stored value is outside this rule, as it is everywhere:
+		nothing is tracked through one, and whoever writes it vouches for what it reaches.</p>
+<pre>
+struct T { pub v: i64; }
+struct Plain { pub p: &amp;mut T; }
+struct Reader { pub p: &amp;mut T; fn final(self: &amp;uni) { printInt(self.p.v); } }
+
+fn main() {
+  var a = Arena();
+  {
+    var t = T(7);
+    let n = a.alloc(Plain(&amp;mut t));       // Ok: Plain has no final, and n is used while t lives
+    printInt(n.p.v);
+    a.alloc(Reader(&amp;mut t));              // Error 1168: 't', declared here, goes out of scope while 'a'
+  }                                       //   still holds a borrow of it, used again when 'a''s value is finalized
+}
+</pre>
+	<p>A function handed <span class="pre">ar: &amp;'a mut Arena</span> may fill a node of that arena with another argument
+		of lifetime <span class="pre">'a</span>, and its caller answers for it: a finalizer elsewhere in the arena may reach
+		the node, so each call counts as a store into the arena, and the argument must outlive it. Name no lifetime on the
+		arena, and the call is no store at its caller, but the body may then keep nothing of another parameter in a node
+		of that arena.</p>
 
 	<h2 id="dynarena">A dynamic arena</h2>
 	<p>A scratch arena is tied to one scope, and its memory is held until that scope ends. That gets worse the longer a
