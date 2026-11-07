@@ -253,7 +253,14 @@
 // through TCP or its HTTP/2 stream the server, and nothing else. The credit is
 // what the service's own record says was lent in that buffer (kept by the buffer's
 // address), never the length it comes back with, so a sink may trim a buffer
-// first; a buffer the record does not hold releases nothing. A body to be decoded
+// first; a buffer the record does not hold releases nothing. A SINK HOLDS ABOUT ITS
+// WINDOW, in memory: the capacities of the buffers sent and not given back are held
+// to 'stages.linkWindow'. A piece goes at once while there is room; with none, its
+// bytes join staging buffers (64 KiB, 'tryMake'; a refusal ends the fetch Failed,
+// Overloaded) and the piece's own block is freed, and they go to the sink first, in
+// order, as buffers come back (while anything is staged, a piece joins it). The
+// connection's credit is not released until the staged buffer is given back. The end
+// sends what is still staged first. A body to be decoded
 // (Content-Encoding) goes through package httpdecode's Decoder, which sits over
 // this call. A fetch's group (lim's, or the
 // request's) cancels it at the client as for any fetch, ending the sink Failed once;
@@ -386,7 +393,7 @@ import tls;
 import sse;
 import aio use IoLimits;
 import actors;
-import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink;
+import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink, linkWindow;
 import streams;
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);

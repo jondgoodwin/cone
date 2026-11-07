@@ -23,10 +23,31 @@ struct StreamRec {
   group: Option[CancelGroup];      // cancelled when the handle is dropped
   status: u16;
   sink: Option[ChunkSink];         // the body goes to this sink
-  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent.
-                                   // Sound as a key because the release job carries the buffer and clears the record before the
-                                   // buffer dies, so a block cannot be reissued while a record of it stands
+  lent: Dict[usize, usize];        // ...each buffer sent to it and not yet given back: its address, the bytes it held when sent
+                                   // (low 32 bits) and its capacity (high 32), 'packLent'. Sound as a key because the release job
+                                   // carries the buffer and clears the record before the buffer dies, so a block cannot be
+                                   // reissued while a record of it stands
+  // The sink's window, in memory: 'sinkHeld' is the capacities of the buffers sent and not yet given back, against
+  // linkWindow. While it is full, a piece's bytes join the staging buffers (the full ones 'staged', then the one being
+  // filled 'tail'), which go to the sink first, in order, as buffers come back. A terminal event sends what is
+  // still staged, in order, ahead of the end (the sink may never give a buffer back once its reader is gone, so the
+  // end cannot wait on that). 'refused' says the pool would not give a staging buffer: the fetch is ending Overloaded
+  sinkHeld: usize;
+  staged: Deque[IoBuf];
+  tail: IoBuf;
+  refused: bool;
 }
+
+// A staging buffer's size (stages' linkBytes, the size a stage makes its chunks): pieces of fewer
+// bytes join a buffer of it. A receive's block is smaller, so a staged buffer is larger than a
+// piece that finds room in the window, and bytes stay in order only because a piece joins
+// whatever is staged
+const stageBlock = 65536usize;
+
+// What 'lent' keeps for a buffer, in one word: its bytes and its capacity
+fn packLent(bytes: usize, cap: usize) usize {(cap << 32usize) | bytes}
+fn lentBytes(v: usize) usize {v & 0xFFFFFFFFusize}
+fn lentCap(v: usize) usize {v >> 32usize}
 
 // A stream opening, its fetch not yet sent: the caller puts its reply in the
 // one open field that answers its type
@@ -36,7 +57,8 @@ fn openingStream(id: u64) StreamRec {
     openEvents: None[actors.ReplyOf[Result[EventStream, FetchError]]],
     openHead: None[actors.ReplyOf[Result[BodyHead, FetchError]]],
     bodyReader: None[ReaderSink[Result[Option[String], FetchError]]], eventReader: None[EventSink], group: None[CancelGroup],
-    status: 0u16, sink: None[ChunkSink], lent: Dict[usize, usize]())
+    status: 0u16, sink: None[ChunkSink], lent: Dict[usize, usize](), sinkHeld: 0usize, staged: Deque[IoBuf](),
+    tail: IoBuf(), refused: false)
 }
 
 // A reply kept in a stream's record answered in place, and let go
@@ -131,12 +153,22 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     let buf, kind = e.(buf, kind);
     let n = buf.len();
     if n == 0usize {return;}
-    let at = buf.base() as usize;
-    let before = s.lent.getCopy(&at) || 0usize;
-    s.lent.insert(at, before + n);
-    match &s.sink {
-      case let &Some(sk) {sk.accept(buf);}
-      else {}
+    if s.refused {return;}
+    if !(s.sink is Some) {
+      // no sink to send to: recorded as it always was, the buffer dies
+      let at = buf.base() as usize;
+      let before = s.lent.getCopy(&at) || 0usize;
+      s.lent.insert(at, packLent(lentBytes(before) + n, buf.capacity()));
+      return;
+    }
+    // With room in the sink's window, and nothing staged before it, the piece
+    // goes at once; else its bytes join the staging buffers (while anything is
+    // staged, a piece joins it, so bytes stay in order) and its block dies
+    if stagingEmpty(s) && hasRoom(s, buf.capacity()) {
+      deliver(s, buf);
+    } else if !stagePiece(s, &buf) {
+      s.refused = true;
+      rec.client.cancel(lp, s.fetch);
     }
   } else if e.isTerminal() {
     if s.openBody is Some {
@@ -148,18 +180,95 @@ fn onStreamEvent(rec: &mut ClientRec, lp: &mut Loop, e: httpclient.Event, sslot:
     if s.openHead is Some {
       answerKept[Result[BodyHead, FetchError]](&mut s.openHead, Err[BodyHead, FetchError](endError(k, &e.failure)));
     }
-    // the end is the last thing sent to the sink, so the record lets go of it with it
+    // the end is the last thing sent to the sink, so the record lets go of it with it: what is
+    // still staged goes first, in order, whatever the window (no more bytes are coming, and the
+    // staged bytes are bounded by the connection's credit)
+    while !stagingEmpty(s) {sendStaged(s);}
     var held = None[ChunkSink];
     held <-> s.sink;
     match held {
       case let Some(sk) {
-        if k == httpclient.EventKind.Done {sk.end(Ending.Finished);}
+        if s.refused {sk.end(Ending.Failed(AnyError.from(FetchError.failed(overloadedFailure()))));}
+        else if k == httpclient.EventKind.Done {sk.end(Ending.Finished);}
         else {sk.end(Ending.Failed(AnyError.from(endError(k, &e.failure))));}
       }
       else {}
     }
     freeStream(rec, sslot);
     unrefClient(rec, lp);
+  }
+}
+
+// Whether nothing is staged
+fn stagingEmpty(s: &StreamRec) bool {s.staged.isEmpty() && s.tail.len() == 0usize}
+
+// Whether the sink's window has room for a buffer of capacity cap: always for the
+// first, so a buffer larger than the window cannot stall the stream
+fn hasRoom(s: &StreamRec, cap: usize) bool {s.sinkHeld == 0usize || s.sinkHeld + cap <= linkWindow}
+
+// A buffer sent to the sink: recorded in 'lent' (its bytes, for the credit it
+// gives back; its capacity, for the window) before it goes
+fn deliver(s: &mut StreamRec, buf: IoBuf) {
+  let at = buf.base() as usize;
+  let n = buf.len();
+  let cap = buf.capacity();
+  let before = s.lent.getCopy(&at) || 0usize;
+  if before == 0usize {
+    s.lent.insert(at, packLent(n, cap));
+    s.sinkHeld = s.sinkHeld + cap;
+  } else {
+    s.lent.insert(at, packLent(lentBytes(before) + n, lentCap(before)));
+  }
+  match &s.sink {
+    case let &Some(sk) {sk.accept(buf);}
+    else {}
+  }
+}
+
+// A piece's bytes added to the staging buffers; false if the pool refused one
+fn stagePiece(s: &mut StreamRec, buf: &IoBuf) bool {
+  let n = buf.len();
+  var off = 0usize;
+  while off < n {
+    if s.tail.room() == 0usize {
+      if s.tail.len() > 0usize {
+        var full = IoBuf();
+        full <-> s.tail;
+        s.staged.push(full);
+      }
+      let want = n - off;
+      match IoBuf.tryMake(if want > stageBlock {want} else {stageBlock}) {
+        case let Some(b) {s.tail = b;}
+        else {return false;}
+      }
+    }
+    off = off + s.tail.append(mem.sliceFromParts(buf.base() + off, n - off));
+  }
+  true
+}
+
+// The first staged buffer sent to the sink
+fn sendStaged(s: &mut StreamRec) {
+  match s.staged.popFront() {
+    case let Some(b) {deliver(s, b);}
+    else {
+      var t = IoBuf();
+      t <-> s.tail;
+      deliver(s, t);
+    }
+  }
+}
+
+// Staged buffers sent to the sink, in order, while its window has room
+fn drainStaged(s: &mut StreamRec) {
+  while !stagingEmpty(s) {
+    var cap = s.tail.capacity();
+    match s.staged.peekFront() {
+      case let Some(b) {cap = b.capacity();}
+      else {}
+    }
+    if !hasRoom(s, cap) {return;}
+    sendStaged(s);
   }
 }
 
@@ -283,8 +392,13 @@ struct StreamReleaseJob {
     if s as usize == 0usize {return;}
     let st = s as &mut StreamRec;
     let at = buf.base() as usize;
-    let m = st.lent.remove(&at) || 0usize;
+    let v = st.lent.remove(&at) || 0usize;
+    // the window reopens by the capacity recorded when the buffer was sent, never by what it comes back as
+    let c = lentCap(v);
+    st.sinkHeld = if c < st.sinkHeld {st.sinkHeld - c} else {0usize};
+    let m = lentBytes(v);
     if m > 0usize {rec.client.release(st.fetch, m);}
+    drainStaged(st);
   }
 }
 
