@@ -507,15 +507,10 @@ pub struct @opaque str {
   // The pieces between each 'sep', as borrows of this text (nothing copied): a
   // cursor whose 'next' gives each. "a,b,,c" is four pieces, the third empty; ""
   // is one empty piece; a sep at either end gives an empty piece there. The
-  // empty 'sep' is a panic (it matches everywhere). Rust's 'split'; 'split' on
-  // arrays is the cut at an index.
-  pub fn splitOn(self: &, sep: &str, file: &Array[u8] = srcFile(), line: u32 = srcLine()) StrSplit inline {
-    let p: &Array[u8] = sep;
-    if p.len == 0usize {
-      panic("splitOn: the separator is empty", file, line);
-    }
-    StrSplit(self, sep, 0usize, false)
-  }
+  // empty 'sep' matches between every character, as Rust's does: "abc" gives
+  // "", "a", "b", "c" and "". Rust's 'split'; 'split' on arrays is the cut at
+  // an index.
+  pub fn splitOn(self: &, sep: &str) StrSplit inline { StrSplit(self, sep, 0usize, false, false) }
 
   // The same, cut at each occurrence of the character
   pub fn splitOnChar(self: &, c: char) StrSplitChar inline { StrSplitChar(self, c, 0usize, false) }
@@ -539,8 +534,9 @@ pub struct @opaque str {
   // lines and "" is none. Rust's 'lines'.
   pub fn lines(self: &) StrLines inline { StrLines(self, 0usize) }
 
-  // The runs of characters that are not ASCII whitespace (as 'trim' counts it),
-  // none of them empty
+  // The runs of characters between ASCII whitespace (as 'trim' counts it: space,
+  // tab, line feed, form feed, carriage return), none of them empty. Only ASCII
+  // whitespace: Unicode's waits for the tables, and 'trim' with it.
   pub fn splitWhitespace(self: &) StrWords inline { StrWords(self, 0usize) }
 
   // -1, 0 or 1 as the bytes sort before, with or after o's, a text that is
@@ -2133,11 +2129,27 @@ pub struct StrSplit['a] is Iterator[&str] {
   sep: &'a str;
   pos: usize;
   done: bool;
+  started: bool;
 
   pub fn next(self: &mut) Option[&'a str] inline {
     if done { return None; }
     let b: &Array[u8] = text;
     let n: &Array[u8] = sep;
+    // The empty separator is found before the text, between each character
+    // (never inside one) and after the text
+    if n.len == 0usize {
+      if !started {
+        started = true;
+        return Some[&str](&b[pos..<pos] as &str);
+      }
+      if pos >= b.len {
+        done = true;
+        return Some[&str](&b[pos..] as &str);
+      }
+      let start = pos;
+      pos = pos + strCharWidth(b, pos);
+      return Some[&str](&b[start..<pos] as &str);
+    }
     var i = pos;
     while i + n.len <= b.len {
       if strBytesAt(b, i, n) {
