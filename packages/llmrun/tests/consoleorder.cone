@@ -1,0 +1,38 @@
+// Output through llmrun.writeBytes goes through the console that 'print' uses, so the two stay in order,
+// and its bytes are untouched: a token that ends inside a UTF-8 character is reassembled on the other end.
+// The test runner reads this program's standard output through a pipe, so the .out file is the check.
+
+mod consoleorder;
+
+import collections use *;
+import llmrun use *;
+import stdio use print;
+
+fn bytesOf(a: u8, b: u8, c: u8) List[u8] {
+  var l = List[u8]();
+  l.push(a);
+  if b != 0u8 { l.push(b); }
+  if c != 0u8 { l.push(c); }
+  l
+}
+
+fn main() i32 {
+  print <- "a1\n";
+  writeBytes("b1\n".bytes());
+  print <- "a2\n";
+  writeBytes("b2 ".bytes());
+  writeBytes("b3\n".bytes());
+  // the euro sign, E2 82 AC, split in the middle of the character as a token can be
+  let first = bytesOf(0xE2u8, 0x82u8, 0u8);
+  let second = bytesOf(0xACu8, 0u8, 0u8);
+  writeBytes(first.view());
+  writeBytes(second.view());
+  print <- "\n";
+  // a lone byte that is not valid UTF-8 on its own, then its continuation, one write each
+  let h1 = bytesOf(0xC3u8, 0u8, 0u8);
+  let h2 = bytesOf(0xA9u8, 0u8, 0u8);
+  writeBytes(h1.view());
+  writeBytes(h2.view());
+  print <- "\nlast\n";
+  0
+}

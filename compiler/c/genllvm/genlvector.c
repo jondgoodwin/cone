@@ -254,7 +254,8 @@ LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMV
     // lane 2, and so on -- since nothing marks a float operation as
     // reassociable, started at -0.0, which adds to lane 0 and changes nothing,
     // not even a -0.0 there. The product likewise, from 1.0. A float minimum
-    // or maximum takes the number over a NaN, as LLVM's minnum and maxnum do.
+    // or maximum gives a NaN where any lane is one, and -0.0 below 0.0, as
+    // LLVM's minimum and maximum do.
     case VecSumIntrinsic:
         if (isfloat) {
             LLVMValueRef args[2] = {LLVMConstReal(lane, -0.0), a};
@@ -268,11 +269,11 @@ LLVMValueRef genlVectorIntrinsic(GenState *gen, INode *site, int16_t kind, LLVMV
         }
         return genlVecCall(gen, "llvm.vector.reduce.mul", &vectype, 1, &a, 1);
     case VecMinIntrinsic:
-        return genlVecCall(gen, isfloat ? "llvm.vector.reduce.fmin" : "llvm.vector.reduce.umin", &vectype, 1, &a, 1);
+        return genlVecCall(gen, isfloat ? "llvm.vector.reduce.fminimum" : "llvm.vector.reduce.umin", &vectype, 1, &a, 1);
     case VecSMinIntrinsic:
         return genlVecCall(gen, "llvm.vector.reduce.smin", &vectype, 1, &a, 1);
     case VecMaxIntrinsic:
-        return genlVecCall(gen, isfloat ? "llvm.vector.reduce.fmax" : "llvm.vector.reduce.umax", &vectype, 1, &a, 1);
+        return genlVecCall(gen, isfloat ? "llvm.vector.reduce.fmaximum" : "llvm.vector.reduce.umax", &vectype, 1, &a, 1);
     case VecSMaxIntrinsic:
         return genlVecCall(gen, "llvm.vector.reduce.smax", &vectype, 1, &a, 1);
     case VecAnyIntrinsic:

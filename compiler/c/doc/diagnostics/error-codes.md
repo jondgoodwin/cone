@@ -1121,6 +1121,13 @@ setup that reads a global the module's `init` sets, which holds nothing when the
 global naming the global read and the function that reads it. `modSetupOrder` reports every one it finds before it
 gives up, and the setups' function is built only when none is found.
 
+`ErrorLoopTangled` (1607) is a loop the loan walk would have to walk more than `PathLoopCap` (24) times before the facts
+at its head stop changing: one more walk than the longest chain of references copied from one variable to the next, so
+a rotation of 24 reference variables. It is reported at the loop by `pwLoopRefuse` and ends the function's loan walk
+(`pwRefused`), so no later check judges half-walked state; a loop in a generic function names the instantiation as any
+error does. No holder is ever widened to an unknown set, so every check that reads a holder's loans sees the loans it
+holds (`lifetime_loop_rotation_*`, `lifetime_loop_rotation_cap_refused`).
+
 `ErrorNotLit` (1015) has one wording for each place a value must be a constant: a global, static or parameter
 ("Variable may only be initialized with a literal value"), a `const` ("Named constants must be assigned to a constant
 value"), a field default ("Field default must be a constant value"), and the local of a block that gives a global its

@@ -37,7 +37,7 @@
 //   BodyLength()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
 //   HttpError: e.kind  e.status  e.noResponse  e.detail  String() <- e     (ERRORS)
 //     e.code  e.scope  e.isRetrySafe()  HttpError.coded(kind, code, scope, detail)
-//   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset
+//   ErrorKind: Malformed TooLarge Unsupported Closed TimedOut Refused Reset Overloaded
 //   ErrorScope: Stream Connection
 //
 // METHODS. A method is a token, compared case-sensitively ('get' is not
@@ -97,7 +97,9 @@
 // request above a GOAWAY's last stream, or one never sent; safe to retry on
 // another connection whatever its method, RFC 9113 section 8.7), Reset (the
 // peer, or this end, reset the one stream: HTTP/2's RST_STREAM, HTTP/3's
-// RESET_STREAM); the status a server would answer it with (400, 408, 431,
+// RESET_STREAM), Overloaded (the buffer pool would not give room for the
+// bytes, iobuf's tryMake refusing: not a message too big, a moment that is
+// not right, so a caller may come back later); the status a server would answer it with (400, 408, 431,
 // 501, 505; 0 for none); 'noResponse', whether no byte of the response had
 // arrived, which, with an idempotent method, is when a client may retry on
 // a fresh connection (the client layer's decision); 'code', the protocol's
@@ -275,7 +277,7 @@ pub struct BodyLength is Default {
 
 // What kind of failure (see the package's header, ERRORS)
 pub enum ErrorKind {
-  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset;
+  Malformed, TooLarge, Unsupported, Closed, TimedOut, Refused, Reset, Overloaded;
 
   // The kind's name, in lower case: 'too large'
   pub fn toText(self: &, out: &uni TextOut) {
@@ -286,6 +288,7 @@ pub enum ErrorKind {
       else if k == ErrorKind.Closed {"closed"}
       else if k == ErrorKind.TimedOut {"timed out"}
       else if k == ErrorKind.Refused {"refused"}
+      else if k == ErrorKind.Overloaded {"overloaded"}
       else {"reset"};
   }
 }

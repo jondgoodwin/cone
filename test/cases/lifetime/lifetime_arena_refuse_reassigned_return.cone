@@ -1,0 +1,14 @@
+// Bug 48/51 (design chat probe f5): the arena's path is reassigned, so a node of b holds the reference to the shorter-lived arena a and is kept past a's block. Refuse.
+mod lifetime_arena_refuse_reassigned_return;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct H { pub p: &mut T; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct W { pub a: &mut Arena; pub n: i64; }
+struct S { pub home: &mut Arena; }
+fn bad(s: &mut S, other: &mut Arena) &mut W { let old = s.home; s.home = other; s.home.alloc(W(old, 1)) }
+fn main() { var b = Arena(); var keep = b.alloc(W(&mut b, 0));
+  { var a = Arena(); var s = S(&mut a); keep = bad(&mut s, &mut b); }  //~ ErrorFrozen
+//~^ ErrorFrozen
+  print <- clobber(3), " ", keep.a.blockCount(), "\n"; }

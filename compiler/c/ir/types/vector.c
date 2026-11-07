@@ -249,6 +249,13 @@ static void vectorMethods(TypeCheckState *pstate, VectorNode *vec, INode *lane) 
         vecAddLanewise(vec, "_min_lanes", minsym, vecSigNamed(self, self, self, "other"), MinIntrinsic);
         vecAddLanewise(vec, "_max_reduce", maxsym, reduce, issigned ? VecSMaxIntrinsic : VecMaxIntrinsic);
         vecAddLanewise(vec, "_max_lanes", maxsym, vecSigNamed(self, self, self, "other"), MaxIntrinsic);
+        // 'clamp(lo, hi)', named as a number's is
+        FnSigNode *clamp = newFnSigNode();
+        clamp->rettype = self;
+        nodesAdd(&clamp->parms, (INode*)newVarDclFull(nametblFind("self", 4), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        nodesAdd(&clamp->parms, (INode*)newVarDclFull(nametblFind("lo", 2), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        nodesAdd(&clamp->parms, (INode*)newVarDclFull(nametblFind("hi", 2), VarDclTag, self, newPermUseNode(immPerm), NULL));
+        vecAddLanewise(vec, "clamp", NULL, clamp, ClampIntrinsic);
         vectorSliceMethods(pstate, vec, lane);
         if (isfloat || issigned)
             vecAddLanewise(vec, "abs", NULL, unary, AbsIntrinsic);
@@ -419,7 +426,8 @@ int vectorBroadcastOperand(TypeCheckState *pstate, FnCallNode *callnode) {
         && iexpGetDerefTypeDcl(callnode->objfn)->tag == VectorTag) {
         char *meth = &((NameUseNode*)callnode->methfld)->namesym->namestr;
         uint32_t nargs = callnode->args->used;
-        if ((nargs == 1 && (strcmp(meth, "min") == 0 || strcmp(meth, "max") == 0)) || (nargs == 2 && strcmp(meth, "fma") == 0)) {
+        if ((nargs == 1 && (strcmp(meth, "min") == 0 || strcmp(meth, "max") == 0))
+            || (nargs == 2 && (strcmp(meth, "fma") == 0 || strcmp(meth, "clamp") == 0))) {
             INode *vectype = iexpGetDerefTypeDcl(callnode->objfn);
             for (uint32_t i = 0; i < nargs; ++i) {
                 INode **argp = &nodesGet(callnode->args, i);
