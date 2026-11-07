@@ -1,0 +1,98 @@
+// A record parked by an 'await' holds a match's binding of an actor's region
+// value: the collector finds the value through the record's trace function and
+// moves it, and the binding reads it afterwards at its new address. The record
+// carries a match's binding by value once (the binding names its matched
+// value's own storage, and its owner carries it: generation.md, "A split
+// method"), so these pin that what the trace function walks is still every
+// reference the binding holds.
+//
+//   one(n)    'case let Some(t)': the payload is a region reference
+//   pair(n)   'case let Pair(p)': a variant with two region references, bound
+//             whole; the binding is used after the await and its owner is not
+//             droppable, so the owner is carried in its place
+//
+// Stress mode collects after every message, so the objects move down once the
+// junk made first is gone.
+
+mod gcbound;
+
+import actors;
+import stdio use *;
+
+struct Link {
+  pub n: i64;
+}
+alias LinkRef = ActorGc[mut, Link];
+
+enum Two {
+  Nothing;
+  struct Pair { pub a: LinkRef; pub b: LinkRef }
+}
+
+fn line(label: &str, n: i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+actor Doubler {
+  pub async fn twice(self, n: i64) i64 { n * 2 }
+}
+
+actor Waiter {
+  d: Doubler;
+
+  fn init(self: &new, d: Doubler) {
+    *self = Self(d: d);
+  }
+
+  pub async fn one(self, n: i64) {
+    var i = 0i64;
+    while i < 7 {
+      let junk = new self[Link](i);
+      i = i + 1;
+    }
+    let o: Option[LinkRef] = Some[LinkRef](new self[Link](n + 2));
+    match o {
+      case let Some[LinkRef](t) {
+        let before = &*t as *u8 as usize;
+        let doubled = await d.twice(n);
+        let after = &*t as *u8 as usize;
+        line("one moved", if after != before {1} else {0});
+        line("one sum", t.n + doubled);
+      }
+      else {}
+    }
+  }
+
+  pub async fn pair(self, n: i64) {
+    var i = 0i64;
+    while i < 7 {
+      let junk = new self[Link](i);
+      i = i + 1;
+    }
+    let w: Two = Two.Pair(new self[Link](n + 1), new self[Link](n + 2));
+    match w {
+      case let Pair(p) {
+        let before = &*p.a as *u8 as usize;
+        let doubled = await d.twice(n);
+        let after = &*p.a as *u8 as usize;
+        line("pair moved", if after != before {1} else {0});
+        line("pair sum", p.a.n + p.b.n + doubled);
+      }
+      else {}
+    }
+  }
+}
+
+fn main() {
+  actors.setStress(true);
+  {
+    let d = Doubler();
+    let w = Waiter(d);
+    w.one(10i64);
+    actors.waitUntilIdle();
+    w.pair(20i64);
+  }
+}

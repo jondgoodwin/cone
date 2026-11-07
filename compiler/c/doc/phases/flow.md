@@ -1221,10 +1221,15 @@ A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
 `&mut a` may live at once and `a.alloc(Spawner(2, &mut a))` is one call. The
 arena holds what is stored in it through raw memory its fields do not show,
-so a by-value argument to a method of a `NoLoanMut` receiver is a *store into
-the arena*, wherever the receiver was reached (a local, a `&mut` parameter, a
-struct's field, a closure's capture, `new a[T](...)`): `pwCallStores`, with the
-receiver as the only place (`arenaplace`). A body may store into an arena only
+and reads it only when it finalizes it. So a by-value argument to a method of a
+`NoLoanMut` receiver is a *store into the arena* where the value's death may
+read a borrow it holds (`itypeDropReadsBorrow`, which answers yes for a type it
+cannot see all of), wherever the receiver was reached (a local, a `&mut`
+parameter, a struct's field, a closure's capture, `new a[T](...)`):
+`pwCallStores`, with the receiver as the only place (`arenaplace`). Any other
+value is no store: the handle `alloc` returns carries its borrows, as any
+result does, and a local that dies before the handle's last use is
+`ErrorFrozen`. A body may store such a value into an arena only
 what outlives it: a global, what the arena already owns, and, for an arena
 local to the body, locals declared before it (the arena variable is a holder,
 and its death reads what it holds, `itypeDropReadsBorrow`, so a local declared
@@ -1236,13 +1241,32 @@ node included, is `ErrorCallEscape`, even under one lifetime name. A later
 store through a node `alloc` returned (`f.p = Some(x)`) takes the same where
 the arena is a caller's and a body would otherwise see no ordering: the
 function names no lifetime, or the arena was reached through a struct's field
-(`loanArenaNodeBarred`, from `pwStoreApart`). Checked
-at the store, in the body, so a caller trusts the signature: a free function
-handed a `&mut Arena` is no store at its caller. A function whose result goes
-back into the arena names which parameter the result comes from (`ar: &'a mut
-Arena` and `&'a mut Node['a]`, the node type naming `'a` too: unnamed, a
-result's held part may come from an unnamed parameter and the store is
-refused, the message saying to name which parameter). Only a reference to the
+(`loanArenaNodeBarred`, from `pwStoreApart`). The field route is seen by the
+pin an arena's method made of its receiver's place in the body, or, where a
+helper made the node and left no pin, by a far caller loan of a parameter whose
+type holds an arena in a field. The second is asked only of a reference not
+reached from a parameter that is not assignable (`let`) by field steps and
+dereferences alone: such a path lands only in a place the parameter's type
+shows, which the caller's check refuses (`ErrorCallEscape` at the call); the
+arena hides a node only from a reference that came out of a call, held in a
+local or in a `var` parameter given one (`pwByParm`). A local copy of such a parameter
+(`let s2 = s;`) is not told apart from that, so a store through it of another
+parameter's borrow, into a struct holding an arena, is refused though it lands
+in no arena node. Where the arena is
+`ar: &'a mut Arena`, such a node takes what is named `'a` as well
+(`loanStoredApart`): a finalizer elsewhere in the arena may reach the node, and
+the body cannot know, so each call of that function counts as a store into the
+arena at the caller (`pwCallStores`, `arenaparm`) and the arena's death is
+checked against the argument. Other stores are checked in the body, so a caller
+trusts the signature: a free function handed a `&mut Arena` with no lifetime
+named on it is no store at its caller. A function whose result goes
+back into the arena, in a value whose death reads a borrow, names which
+parameter the result comes from (`ar: &'a mut Arena` and `&'a mut Node['a]`,
+the node type naming `'a` too: unnamed, a result's held part may come from an
+unnamed parameter and the store is refused, the message saying to name which
+parameter). A raw pointer in a stored value is outside this rule, as it is
+everywhere: nothing is tracked through one, and `trust` vouches for what it
+reaches. Only a reference to the
 arena made by a cast from a raw pointer is trusted: it carries no loan but
 what was stored through it (`loanArenaChecked`), so its stores are unseen, and
 the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
@@ -2345,7 +2369,9 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 `AwaitNode`'s `seamvars` ([Generation](generation.md), "A split method"): a
 variable `SeamOpen` and `SeamLive` or `SeamDies` travels, so a variable used
 after a seam and noted dead there reads garbage in the second half, and a
-droppable noted as holding nothing is never finalized.
+droppable noted as holding nothing is never finalized. A match's binding by
+value is untracked, so it is always noted `SeamOpen` whatever its owner holds;
+the record takes its owner's state instead, not the binding's.
 
 ## 9. Hazards
 
@@ -2466,7 +2492,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateStaticAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperandNext`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow`, `itypeCarriesEndingBorrow` | may a value of this type hold a borrowed reference; one of a lifetime that ends, not `'static`; a struct's answers remembered in `StructNode.carriesborrow` and `carriesending` |
-| | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach. The walk stops at 16 nested structs and answers the depth it was asked, so it first asks whether a struct can hold a writable borrow at all (`StructNode.carrieswritable`), and answers 0 for one that cannot, however deep it nests |
+| | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check, and whether an `alloc` is a store; a type it cannot see all of, such as a type parameter, an open trait, an opaque struct, a closure or a walk past 16 nested structs, answers yes); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach. The walk stops at 16 nested structs and answers the depth it was asked, so it first asks whether a struct can hold a writable borrow at all (`StructNode.carrieswritable`), and answers 0 for one that cannot, however deep it nests |
 | `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper, with its frame (`flowLoopBegin`, `flowLoopEnd`); a `break` or `continue` handing its state to its loop (`flowLoopJump`); whether every path jumped away (`jumped`) |
 | | `blockDiscards` | a block throwing its final expression's value away |
 | `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not jump away joined; later conditions and arms one level deeper |

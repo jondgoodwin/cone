@@ -14,6 +14,7 @@ struct Wait {
   reply: actors.ReplyOf[Result[httpclient.Response, FetchError]];
   resp: httpclient.Response;
   tooBig: bool;                  // the body passed the limit, and the exchange was cancelled for it
+  refused: bool;                 // the pool refused a buffer for the request body, and the exchange was cancelled for it
   limit: usize;                  // the most body bytes it takes
   fetch: httpclient.FetchId;     // a client's fetch
   req: httpconn.ReqId;           // a connection's request
@@ -25,7 +26,7 @@ struct Wait {
 
 // A wait for reply, its response not begun, taking at most limit body bytes
 fn waitFor(rp: actors.ReplyOf[Result[httpclient.Response, FetchError]], limit: usize) Wait {
-  Wait(reply: rp, resp: httpclient.Response.blank(), tooBig: false, limit: limit,
+  Wait(reply: rp, resp: httpclient.Response.blank(), tooBig: false, refused: false, limit: limit,
     fetch: httpclient.FetchId.none(), req: httpconn.ReqId.none(), body: String(), sent: 0usize,
     conn: 0usize, bodyDone: false)
 }
@@ -326,7 +327,7 @@ struct Service {
       // The wait is over: taken out whole, its reply answered with what it gathered
       match xwaits.take(xwaits.slotAt(u32.from(slot))) {
         case var Some(over) {
-          let reply, var resp, tooBig = over.(reply, resp, tooBig);
+          let reply, var resp, tooBig, refused = over.(reply, resp, tooBig, refused);
           resp.timing = timing;
           var v: Result[httpclient.Response, FetchError] = Err[httpclient.Response, FetchError](FetchError.cancelled());
           if k == httpconn.EventKind.Done {
@@ -336,6 +337,8 @@ struct Service {
             v = Err[httpclient.Response, FetchError](FetchError.failed(httpclient.Failure.fromConn(&e.failure)));
           } else if k == httpconn.EventKind.TimedOut {
             v = Err[httpclient.Response, FetchError](FetchError.timedOut());
+          } else if refused {
+            v = Err[httpclient.Response, FetchError](FetchError.failed(overloadedFailure()));
           } else if tooBig {
             v = Err[httpclient.Response, FetchError](FetchError.failed(limitFailure()));
           }
@@ -353,7 +356,18 @@ struct Service {
     while w.sent < w.body.len() {
       let left = w.body.len() - w.sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf(n);
+      // A pool that refuses the buffer (iobuf's tryMake) ends the exchange: it is
+      // cancelled, and its fetch answered Overloaded
+      var b = match IoBuf.tryMake(n) {
+        case var Some(got) {got}
+        else {
+          if !w.refused {
+            w.refused = true;
+            drv.cancel(lp, w.req);
+          }
+          return;
+        }
+      };
       // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
       let all = w.body.view() as &Array[u8];
       b.append(&all[w.sent ..< w.sent + n]);
@@ -373,6 +387,12 @@ struct Service {
 
 // The body bytes sent in a piece
 const sendChunk = 16384usize;
+
+// The failure of an exchange whose buffer the pool refused
+fn overloadedFailure() httpclient.Failure {
+  httpclient.Failure.make(httpclient.Stage.Limit, 0u32, ErrorKind.Overloaded,
+    "the buffer pool is full (iobuf maxBytes): no buffer for the request body")
+}
 
 // A connect's reply carries v back to the actor awaiting it, answered in
 // place: the reply is spent after, as the connection lives on; a second

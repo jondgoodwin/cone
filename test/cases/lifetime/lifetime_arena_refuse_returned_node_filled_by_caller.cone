@@ -1,0 +1,16 @@
+// Bug 51 (spike): a node of the callee's arena returned, the caller fills it with a borrow of a local. Refuse.
+mod lifetime_arena_refuse_returned_node_filled_by_caller;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct N { pub p: Option[&mut T]; }
+struct S['a] { pub p: Option[&'a mut T]; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct FS['a] { pub p: Option[&'a mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct G { pub n: &mut N; fn final(self: &uni) { match self.n.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct GS['a] { pub n: &'a mut S['a]; fn final(self: &uni) { match self.n.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct Holder { pub ar: Arena; }
+struct HR['a] { pub ar: &'a mut Arena; }
+fn mkf(ar: &'a mut Arena) &'a mut F { ar.alloc(F(None)) }
+fn main() { var a = Arena(); let f = mkf(&mut a); { var t = T(7); f.p = Some(&mut t); } }  //~ ErrorEscape
+//~^ ErrorFrozen
