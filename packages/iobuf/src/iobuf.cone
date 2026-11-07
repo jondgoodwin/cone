@@ -120,10 +120,11 @@
 //   lent and idle together, slabs and oversize blocks. A construction that
 //   would pass it first gives idle slabs of every class back to the OS and
 //   flushes the thread's cache; if that is not enough the region answers a null
-//   block and IoBuf's construction PANICS, for now, at the caller's line. A
-//   refusal as a value is to come: it cannot be 'trynew IoBuf(n)', which the
-//   compiler refuses (error 1217: 'trynew' takes a managed reference type, and
-//   an IoBuf is a value owning its block).
+//   block and IoBuf's construction PANICS, at the caller's line. A refusal as
+//   a value is 'IoBuf.tryMake(n)' (it cannot be 'trynew IoBuf(n)', which the
+//   compiler refuses, error 1217: 'trynew' takes a managed reference type, and
+//   an IoBuf is a value owning its block). THE RESERVE below says what it
+//   leaves a plain construction.
 // - 'keepBytes' (8 MiB by default) bounds the idle bytes the stock keeps: when
 //   blocks come home past it, slabs wholly idle go back to the OS, a whole slab
 //   at a time, though never below the bound.
@@ -131,12 +132,37 @@
 // 'setLimits(maxBytes, keepBytes)' sets them for the process, once, at
 // start-up; a bound of 0 leaves that one alone.
 //
+// THE RESERVE. For the buffers a peer's bytes cause, use 'IoBuf.tryMake(n)':
+// None means the pool will not give one without eating into the room for the
+// program's own plain constructions. tryMake takes its blocks from slabs of its
+// own (a second bank of the same five classes, which stats() sums with the
+// first), and gives a free block of that bank always, but a new slab or an
+// oversize block only while the bytes held, both banks together, plus the slab
+// stay within maxBytes less a reserve: a quarter of maxBytes, at least five
+// slabs, at most half. So a peer can never pin the room plain constructions
+// need, however it holds or frees its buffers. The reserve is counted in slabs,
+// 8 at the default, not 16 MiB of any mix: a class with no free block takes a
+// whole 2 MiB slab, and a 1 MiB block has 2 to a slab. A program whose own
+// plain use passes that while the second bank is full still panics, as a plain
+// construction says it does; a program expecting that raises setLimits, or uses
+// tryMake. A buffer goes home to the bank it came from, whatever thread drops it.
+//
+// THE LIMIT, PLAINLY. A refusal is a value and there is no retry: tryMake does
+// not wait for memory to come back, and trying again at once adds nothing, since
+// the taking already trims idle slabs and flushes this thread's cache first. The
+// caller ends what asked (a connection, a fetch) and releases what it held. The
+// promise that a peer cannot pin the plain bank holds for a plain bank that is
+// not itself fragmented: a slab belongs to one size, so a program's own churn
+// can leave half-used slabs that no other size can use, and the reserve then
+// holds fewer plain constructions than its slabs suggest (measured: a third
+// back-to-back mix of classes panicked at 8 slabs with 8 MiB idle in them).
+//
 // 'stats()' copies the pool's counters out: the two bounds; the bytes held from
 // the OS, and of them the bytes idle (held and not lent: cached, idle in the
 // stock, or in a slab's part not yet used) and in threads' caches; buffers
 // lent now, ever taken, and served from the taking thread's own cache; slabs
-// and oversize blocks got from the OS and given back; and takes refused (0:
-// they panic). Each thread counts its own takes and returns in a plain number
+// and oversize blocks got from the OS and given back; and takes
+// tryMake refused (a plain construction panics instead). Each thread counts its own takes and returns in a plain number
 // of its own, so they are exact once the threads have stopped, and a sum of
 // moments while they run. These count every block of the pool, a List's too, not
 // IoBufs alone. 'osBlocks()' and 'osBytes()' count what the pool holds from the
@@ -247,7 +273,7 @@ pub struct Stats {
   pub reuses: u64;         // takes served by the thread's own cache
   pub osAllocs: u64;       // slabs and oversize blocks got from the OS
   pub osFrees: u64;        // and given back
-  pub refused: u64;        // takes refused: 0, since a refusal panics
+  pub refused: u64;        // tryMake's refusals (a plain construction past maxBytes panics)
   pub cachedBytes: usize;  // bytes of idle blocks in threads' caches
   pub stockBytes: usize;   // bytes of idle blocks in the central stock
   pub slabs: usize;        // slabs held
@@ -258,7 +284,7 @@ pub struct Stats {
 pub fn stats() Stats {
   let s = bufpool.blockStats();
   Stats(s.maxBytes, s.keepBytes, s.heldBytes, s.idleBytes, s.lent, s.takes, s.reuses,
-    s.osAllocs, s.osFrees, 0u64, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
+    s.osAllocs, s.osFrees, s.refused, s.cachedBytes, s.stockBytes, s.slabs, s.lentBytes)
 }
 
 // Give every idle slab back to the OS (this thread's cache first)
@@ -306,6 +332,18 @@ pub struct IoBuf is Default, Move, Sendable {
 
   // A buffer with no block: capacity 0, from no pool
   pub fn initEmpty overload init(self: &new) {*self = IoBuf(null, 0usize, 0usize);}
+
+  // A buffer like 'IoBuf(size)', or None when the pool will not give one without
+  // growing the try bank past maxBytes less its reserve (THE RESERVE): a refusal
+  // as a value, for the buffers a peer's bytes cause, so that a flood can never
+  // use up the room a program's own constructions need. A free block of the try
+  // bank is never refused
+  pub fn tryMake(size: usize) Option[IoBuf] {
+    let room = (bufpool.bufferPool() as &MemRegion).sizeFor(size, page);
+    let b = bufpool.tryAllocate(size);
+    if b as usize == 0usize {return None[IoBuf];}
+    Some[IoBuf](IoBuf(b, 0usize, room))
+  }
 
   pub fn len(self: &) usize {used}
   pub fn capacity(self: &) usize {cap}

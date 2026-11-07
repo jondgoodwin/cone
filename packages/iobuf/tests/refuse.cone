@@ -1,0 +1,289 @@
+// tryMake takes its blocks from slabs of its own (a second bank of the five
+// classes), and grows that bank only while the bytes held, both banks together,
+// stay within maxBytes less a reserve: a quarter of maxBytes, at least five
+// slabs, at most half. At the default 64 MiB that leaves 8 slabs (16 MiB) for
+// what a program builds on its own account, plain IoBuf, however a peer's
+// buffers are held or freed. The reserve is counted in slabs: a class with no
+// free block takes a whole 2 MiB slab (a 1 MiB block has 2 to a slab), so the
+// test fills the 8 slabs in several mixes of classes, not 16 MiB of any mix.
+//
+// 1. A fill with tryMake until refused, in each class alone and in all five
+//    mixed, then plain constructions filling the reserve's slabs in every mix,
+//    freed and taken again.
+// 2. The sparse pin: a fill of one class with 15 of every 16 buffers freed, so
+//    every slab stays held nearly empty, then a fill of the 1 MiB class, then
+//    the same plain constructions. (With one bank, held reached maxBytes at
+//    19.9 MB lent and the next plain IoBuf panicked.)
+// 3. A block goes home to the bank it came from: after try blocks are freed a
+//    plain take cannot reuse them, and a try take can; the counts of both banks
+//    sum in stats(), and come back to 0.
+// 4. The same, with the blocks dropped on another thread.
+// 5. An oversize tryMake on a full try bank is refused, a plain one served.
+
+mod refuse;
+
+import testing use *;
+import thread;
+import iobuf use *;
+
+const mib = 1048576usize;
+
+// The five classes' sizes
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Fill with tryMake until refused: class 'cls' (0 to 4), or every class in turn
+// for 5. With 'every' over 1 only each every'th buffer goes to dest, the rest to
+// other. How many were given
+fn fill(dest: &mut Chain, other: &mut Chain, cls: u32, every: u32) usize {
+  var n = 0usize;
+  var i = 0u32;
+  var going = true;
+  while going {
+    let sz = if cls == 5u32 {sizeOf(i % 5u32)} else {sizeOf(cls)};
+    match IoBuf.tryMake(sz) {
+      case var Some(b) {
+        b.append("x");
+        if every > 1u32 && i % every != 0u32 {other.push(b);} else {dest.push(b);}
+        n = n + 1usize;
+      }
+      else {going = false;}
+    }
+    i = i + 1u32;
+  }
+  n
+}
+
+// Slabs of class c that mix m asks for: each mix fills the reserve's 8 slabs
+fn mixSlabs(m: u32, c: u32) usize {
+  if m == 0u32 {if c == 0u32 {8usize} else {0usize}}
+  else if m == 1u32 {if c == 4u32 {8usize} else {0usize}}
+  else if m == 2u32 {if c == 4u32 {1usize} else if c == 3u32 {1usize} else {2usize}}
+  else if m == 3u32 {if c == 4u32 {4usize} else {1usize}}
+  else if m == 4u32 {if c == 1u32 || c == 3u32 {4usize} else {0usize}}
+  else if m == 5u32 {if c == 2u32 {8usize} else {0usize}}
+  else {if c == 3u32 {8usize} else {0usize}}
+}
+
+// Plain constructions filling the reserve's 8 slabs in every mix, each held at
+// once, freed and taken again, 'rounds' times over; a failure panics
+fn plainDemand(rounds: usize) {
+  var r = 0usize;
+  while r < rounds {
+    var m = 0u32;
+    while m < 7u32 {
+      // Plain blocks freed in a mix sit in this thread's cache, up to 32 of a
+      // class, and scatter over the class's slabs when taken again, so slabs the
+      // last mix emptied would not be wholly idle: the plain bank's own
+      // fragmentation, whatever tryMake did. Each mix starts from a clean bank
+      trim();
+      var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+      var c = 0u32;
+      while c < 5u32 {
+        let blocks = mixSlabs(m, c) * (2usize * mib / sizeOf(c));
+        var k = 0usize;
+        while k < blocks {
+          var b = IoBuf(sizeOf(c));
+          b.append("x");
+          held.push(b);
+          k = k + 1usize;
+        }
+        c = c + 1u32;
+      }
+      held.advance(held.len());
+      m = m + 1u32;
+    }
+    r = r + 1usize;
+  }
+}
+
+fn gives(size: usize) bool {
+  match IoBuf.tryMake(size) {
+    case var Some(b) {true}
+    else {false}
+  }
+}
+
+fn fresh() {
+  setLimits(64usize * mib, 64usize * mib);
+  trim();
+}
+
+// 1.
+fn fillThenPlain(cls: u32) {
+  fresh();
+  let before = stats();
+  var a = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var b = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  let n = fill(&mut a, &mut b, cls, 0u32);
+  let s = stats();
+  expect(n > 0usize, "tryMake gave buffers before refusing");
+  expectUInt(s.refused - before.refused, 1u64, "and refused once, at the end");
+  expect(s.heldBytes <= 48usize * mib, "the try bank grew only to maxBytes less the reserve (48 MiB)");
+  expect(s.lentBytes <= s.heldBytes, "lent within held, both banks summed");
+  plainDemand(2usize);
+  expect(stats().lentBytes <= s.lentBytes, "and the plain constructions gave all their bytes back");
+  a.advance(a.len());
+  expectUInt(u64.from(stats().lentBytes), 0u64, "all home");
+  expect(gives(sizeOf(4u32)), "tryMake gives once the buffers are home");
+}
+
+// 2.
+fn sparsePin() {
+  fresh();
+  var a = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var b = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var c = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var d = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  fill(&mut a, &mut b, 0u32, 16u32);
+  b.advance(b.len());
+  let s0 = stats();
+  expect(s0.lentBytes < 4usize * mib, "sparse: little lent");
+  expect(s0.heldBytes >= 40usize * mib, "sparse: nearly all the try bank still held");
+  fill(&mut c, &mut d, 4u32, 0u32);
+  let s1 = stats();
+  expect(s1.heldBytes <= 48usize * mib, "sparse: held stays within the mark");
+  plainDemand(3usize);
+  a.advance(a.len());
+  c.advance(c.len());
+  expectUInt(u64.from(stats().lentBytes), 0u64, "sparse: all home");
+}
+
+// 3. After this, try blocks are idle in the try bank (held, not trimmed)
+fn banksApart() {
+  fresh();
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var c = 0u32;
+  while c < 5u32 {
+    match IoBuf.tryMake(sizeOf(c)) {
+      case var Some(b) {b.append("x"); held.push(b);}
+      else {}
+    }
+    c = c + 1u32;
+  }
+  expectUInt(stats().lent, 5u64, "five try blocks lent, counted in stats()");
+  held.advance(held.len());
+  expectUInt(stats().lent, 0u64, "and home");
+  let a0 = stats().osAllocs;
+  var plain = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  c = 0u32;
+  while c < 5u32 {
+    var b = IoBuf(sizeOf(c));
+    b.append("x");
+    plain.push(b);
+    c = c + 1u32;
+  }
+  expectUInt(stats().lent, 5u64, "five plain blocks lent");
+  expectUInt(stats().osAllocs - a0, 5u64, "plain takes could not reuse the try blocks: five new slabs");
+  plain.advance(plain.len());
+  expectUInt(stats().lent, 0u64, "plain blocks home");
+  let a1 = stats().osAllocs;
+  c = 0u32;
+  while c < 5u32 {
+    match IoBuf.tryMake(sizeOf(c)) {
+      case var Some(b) {b.append("x"); held.push(b);}
+      else {}
+    }
+    c = c + 1u32;
+  }
+  expectUInt(stats().osAllocs - a1, 0u64, "try takes reused the try blocks: no new slab");
+  held.advance(held.len());
+  // An oversize block is its own: counted, refused only past the mark
+  match IoBuf.tryMake(3usize * mib) {
+    case var Some(b) {
+      expectUInt(stats().lent, 1u64, "an oversize try block is lent");
+    }
+    else {expect(false, "an oversize try block is given while the pool is empty");}
+  }
+  expectUInt(stats().lent, 0u64, "and home");
+  expectUInt(u64.from(stats().lentBytes), 0u64, "no bytes lent in either bank");
+}
+
+// 5. With the try bank full, an oversize tryMake is refused too (a value, no
+// panic), and an oversize plain construction still succeeds from the reserve
+fn oversizeFull() {
+  fresh();
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var other = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  _ = fill(&mut held, &mut other, 5u32, 1u32);
+  let before = stats().refused;
+  var refusedBig = true;
+  match IoBuf.tryMake(3usize * mib) {
+    case var Some(b) {refusedBig = false;}
+    else {}
+  }
+  expect(refusedBig, "oversize: a 3 MiB tryMake on the full try bank is refused");
+  expect(stats().refused > before, "oversize: ...and counted");
+  {
+    var plain = IoBuf(3usize * mib);
+    plain.append("x");
+    expectUInt(u64.from(plain.len()), 1u64, "oversize: a plain 3 MiB construction is served from the reserve");
+  }
+  held.advance(held.len());
+  expectUInt(stats().lent, 0u64, "oversize: all home");
+}
+
+// Drop what arrives, on this thread
+fn dropAll(c: Chain) u64 {
+  var k = c;
+  let n = u64.from(k.len());
+  k.advance(k.len());
+  flushThread();
+  n
+}
+
+// 4.
+fn otherThread() {
+  fresh();
+  var held = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var plain = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  var c = 0u32;
+  while c < 5u32 {
+    match IoBuf.tryMake(sizeOf(c)) {
+      case var Some(b) {b.append("x"); held.push(b);}
+      else {}
+    }
+    var p = IoBuf(sizeOf(c));
+    p.append("x");
+    plain.push(p);
+    c = c + 1u32;
+  }
+  expectUInt(stats().lent, 10u64, "five try and five plain blocks lent");
+  let t = thread.start(held, &dropAll);
+  let u = thread.start(plain, &dropAll);
+  expectUInt(t.join(), 5u64, "the try blocks were dropped on another thread");
+  expectUInt(u.join(), 5u64, "and the plain blocks");
+  expectUInt(stats().lent, 0u64, "both banks' counts sum to 0");
+  let a0 = stats().osAllocs;
+  var again = Chain.make(0xFFFFFFFFFFFFFFFFusize);
+  c = 0u32;
+  while c < 5u32 {
+    match IoBuf.tryMake(sizeOf(c)) {
+      case var Some(b) {b.append("x"); again.push(b);}
+      else {}
+    }
+    var p = IoBuf(sizeOf(c));
+    p.append("x");
+    again.push(p);
+    c = c + 1u32;
+  }
+  expectUInt(stats().osAllocs - a0, 0u64, "each block went home to its own bank: nothing new from the OS");
+  again.advance(again.len());
+}
+
+fn main() i32 {
+  initAll();
+  var cls = 0u32;
+  while cls < 6u32 {
+    fillThenPlain(cls);
+    cls = cls + 1u32;
+  }
+  sparsePin();
+  banksApart();
+  oversizeFull();
+  otherThread();
+  trim();
+  done()
+}

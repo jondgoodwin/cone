@@ -1,0 +1,153 @@
+// The buffers HTTP/2 makes on a connection's account, refused by the pool
+// (iobuf's tryMake, the pool at the reserve of its maxBytes): the writer's
+// packing buffer (a starved writer), a DATA frame's copy out of the input
+// (copyOutBuf), and the client preface (a connection's pollTransmit). Each
+// ends the connection (or the writer) with an error and no panic; a plain
+// IoBuf at any of them would not refuse here and the checks would fail. Each
+// test takes the pool's reserve first (a hoard, with tryMake, until every size
+// class refuses) and then acts. Every buffer is back in the pool afterwards.
+//
+// Not covered: the connection's 'chunk' (a copy of part of a stream's queued
+// body when a window cuts it), which needs a stream with a body queued past a
+// window, a peer's WINDOW_UPDATE and then the refusal in the same step.
+
+mod refused;
+
+import testing use *;
+import collections use List, String;
+import iobuf use *;
+import time use Instant;
+import http use *;
+import http2 use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+// The writer is asked to pack a frame and the pool has no packing buffer
+fn starvedWriter() {
+  var w = FrameWriter.make(&FrameConfig.make());
+  expect(!w.isStarved(), "writer: not starved to begin with");
+  let h = hoard();
+  _ = w.ping(7u64, false);
+  expect(w.isStarved(), "writer: starved once the pool refused its packing buffer");
+  _ = w.ping(8u64, false);
+  expectUInt(u64.from(w.queuedBytes()), 0u64, "writer: nothing is queued");
+}
+
+// A whole DATA frame (stream 1, 100 bytes) is in the input and the pool has no
+// buffer to copy its payload into
+fn dataRefused() {
+  var r = FrameReader.server(FrameConfig.make());
+  var input = Chain.make(unbounded);
+  var frame = IoBuf(109usize);
+  let room = frame.spare();
+  var i = 0usize;
+  while i < 109usize {
+    room[i] = 0u8;
+    i = i + 1usize;
+  }
+  room[2usize] = 100u8;       // length 100, type DATA (0), flags 0
+  room[8usize] = 1u8;         // stream 1
+  frame.setLen(109usize);
+  _ = input.push(frame);
+  let h = hoard();
+  var failedConnection = false;
+  var text = String();
+  match r.next(&mut input) {
+    case let Failed(f) {
+      failedConnection = f.error.isConnectionError();
+      text = errText(&f.error);
+    }
+    else {}
+  }
+  expect(failedConnection, "DATA: the refused copy fails the connection");
+  expect(text.contains("buffer pool"), "DATA: ...saying the buffer pool is full");
+}
+
+fn errText(e: &FrameError) String {String.from(e.detail)}
+
+// A client connection made with room, the pool then taken, its first pollTransmit
+// (which makes the preface's buffer) refused: nothing to send, and the failure is Overloaded
+fn prefaceRefused() {
+  var c = Connection.client(Config.make(), at(0i64));
+  let h = hoard();
+  let out = c.pollTransmit(at(1i64));
+  expectUInt(u64.from(out.len()), 0u64, "preface: nothing to send");
+  var overloaded = false;
+  var closed = false;
+  var going = true;
+  var polls = 0u32;
+  while going && polls < 100u32 {
+    polls = polls + 1u32;
+    match c.pollEvent() {
+      case let Failed(f) {overloaded = f.error.kind == ErrorKind.Overloaded;}
+      case is Closed {
+        closed = true;
+        going = false;
+      }
+      else {}
+    }
+  }
+  expect(overloaded, "preface: the connection failed Overloaded");
+  expect(closed, "preface: ...and closed");
+}
+
+// The connection is made when the pool is already taken: its writer is starved
+// from its first frame (its SETTINGS), and its first pollTransmit fails it
+fn connectionStarved() {
+  let h = hoard();
+  var c = Connection.server(Config.make(), at(0i64));
+  let out = c.pollTransmit(at(1i64));
+  expectUInt(u64.from(out.len()), 0u64, "starved connection: nothing to send");
+  var overloaded = false;
+  var going = true;
+  var polls = 0u32;
+  while going && polls < 100u32 {
+    polls = polls + 1u32;
+    match c.pollEvent() {
+      case let Failed(f) {overloaded = f.error.kind == ErrorKind.Overloaded;}
+      case is Closed {going = false;}
+      else {}
+    }
+  }
+  expect(overloaded, "starved connection: failed Overloaded");
+}
+
+fn main() i32 {
+  let lent0 = stats().lent;
+  starvedWriter();
+  expectUInt(stats().lent, lent0, "writer: every buffer back in the pool");
+  dataRefused();
+  expectUInt(stats().lent, lent0, "DATA: every buffer back in the pool");
+  prefaceRefused();
+  expectUInt(stats().lent, lent0, "preface: every buffer back in the pool");
+  connectionStarved();
+  expectUInt(stats().lent, lent0, "starved connection: every buffer back in the pool");
+  done()
+}

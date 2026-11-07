@@ -453,19 +453,25 @@ int itypeWritableBorrowDepth(INode *type, int most) {
 
 // The structs itypeDropReadsBorrow is asking about. A type reaching itself (a
 // node owning the next) adds nothing round the loop: what it reads is found
-// where it was first asked. Asked only where a holder dies with a conflict
-// pending, which is rare, so the answer is not remembered.
+// where it was first asked. The answer decides whether a value stored in an
+// arena is a store at all (alloc), so a type it cannot see all of answers yes.
+// Not remembered.
 #define DropReadsMaxDepth 16
 static StructNode *dropReadsAsking[DropReadsMaxDepth];
 static int dropReadsDepth = 0;
 
 static int itypeStructDropReadsBorrow(StructNode *type) {
+    // An open trait's implementers, or an opaque struct's hidden fields, may
+    // finalize anything; a struct not yet checked shows none of its fields
+    if (((type->flags & TraitType) && !(type->flags & EnumType)) || (type->flags & (DeclaredOpaque | OpaqueType))
+        || !(type->flags & TypeChecked))
+        return 1;
     for (int i = 0; i < dropReadsDepth; ++i) {
         if (dropReadsAsking[i] == type)
             return 0;
     }
     if (dropReadsDepth == DropReadsMaxDepth)
-        return itypeCarriesBorrow((INode *)type);
+        return 1;
     dropReadsAsking[dropReadsDepth++] = type;
     // Its own 'final' may read any borrow it holds but through a raw pointer;
     // what a raw pointer reaches -- a collection's elements -- it finalizes
@@ -484,7 +490,7 @@ static int itypeStructDropReadsBorrow(StructNode *type) {
         if (fdcl && fdcl->tag == PtrTag)
             reads = itypeDropReadsBorrow(((StarNode *)fdcl)->vtexp);
         else
-            reads = hasfinal ? itypeCarriesBorrow(ftype) : itypeDropReadsBorrow(ftype);
+            reads = (hasfinal && itypeCarriesBorrow(ftype)) || itypeDropReadsBorrow(ftype);
         if (reads)
             break;
     }
@@ -501,14 +507,26 @@ static int itypeStructDropReadsBorrow(StructNode *type) {
     return reads;
 }
 
+// May the death of a value of this type read a borrow it holds, in a finalizer
+// of its own or of anything it owns? Only a number, an enum of plain values, a
+// raw pointer (which finalizes nothing itself), a borrowed reference, and a
+// tuple, array, owning reference or struct made only of those answer no. A
+// type it cannot see all of answers yes: a type parameter or a name that is
+// no type, an open trait, an opaque struct, a function or closure type.
 int itypeDropReadsBorrow(INode *type) {
     if (type == NULL)
-        return 0;
+        return 1;
     switch (type->tag) {
     case NameUseTag:
-        return isTypeNode(type) ? itypeDropReadsBorrow(itypeGetTypeDcl(type)) : 0;
+        return isTypeNode(type) ? itypeDropReadsBorrow(itypeGetTypeDcl(type)) : 1;
     case AliasDclTag:
         return itypeDropReadsBorrow(((AliasDclNode *)type)->target);
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case EnumTag:
+    case PtrTag:
+        return 0;
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
@@ -530,7 +548,7 @@ int itypeDropReadsBorrow(INode *type) {
     case StructTag:
         return itypeStructDropReadsBorrow((StructNode *)type);
     default:
-        return 0;
+        return 1;
     }
 }
 
