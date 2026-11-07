@@ -827,6 +827,8 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     }
 
     if (fndcl->flags & FlagInline) {
+        if (gen->opt->gpu)
+            genlGpuInlineNote(gen, fndcl);
         // The parameters whose construction waits (genlDeferCall) are for this
         // expansion alone, not for any call its body makes
         GenDeferredNew **deferin = gen->deferin;

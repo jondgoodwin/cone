@@ -1861,17 +1861,66 @@ static char *loanOrigin(uint32_t id, char *buf, size_t size) {
     return buf;
 }
 
+// A refusal in core's own code is held until code generation, which says what
+// a kernel reaches (genlGpuCalls): core is written for every target, and the
+// rule is for GPU code, the functions a kernel calls. Code that is not core's
+// is refused where it is written. A refusal in a compile that fails otherwise
+// is dropped, as nothing then says what a kernel reaches.
+typedef struct {
+    FnDclNode *fn;
+    INode *node;
+    int code;
+    char *msg;
+} LoanGpuHeld;
+static LoanGpuHeld *loanGpuHeld = NULL;
+static uint32_t loanGpuHeldCnt = 0;
+static uint32_t loanGpuHeldCap = 0;
+
+static void loanGpuRefuse(INode *node, int code, const char *msg) {
+    FnDclNode *fn = flowPathCurrentFn();
+    if (fn == NULL || flowGpuRefuses(node)) {
+        errorMsgNode(node, code, "%s", msg);
+        return;
+    }
+    if (loanGpuHeldCnt == loanGpuHeldCap) {
+        loanGpuHeldCap = loanGpuHeldCap ? loanGpuHeldCap * 2 : 16;
+        LoanGpuHeld *grown = (LoanGpuHeld *)memAllocBlk(loanGpuHeldCap * sizeof(LoanGpuHeld));
+        if (loanGpuHeldCnt)
+            memcpy(grown, loanGpuHeld, loanGpuHeldCnt * sizeof(LoanGpuHeld));
+        loanGpuHeld = grown;
+    }
+    size_t len = strlen(msg) + 1;
+    char *copy = (char *)memAllocBlk(len);
+    memcpy(copy, msg, len);
+    LoanGpuHeld *held = &loanGpuHeld[loanGpuHeldCnt++];
+    held->fn = fn;
+    held->node = node;
+    held->code = code;
+    held->msg = copy;
+}
+
+void loanGpuHeldFlush(int (*reached)(void *ctx, FnDclNode *fn), void *ctx) {
+    for (uint32_t i = 0; i < loanGpuHeldCnt; ++i) {
+        LoanGpuHeld *held = &loanGpuHeld[i];
+        if (reached(ctx, held->fn))
+            errorMsgNode(held->node, held->code, "%s", held->msg);
+    }
+    loanGpuHeldCnt = 0;
+}
+
 static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb) {
     if (!loanReportOnce(node))
         return;
     char a[320];
     char b[320];
+    char msg[1400];
     int ka = loanMemory(la);
     int kb = loanMemory(lb);
-    errorMsgNode(node, ErrorGpuRefChoice,
+    snprintf(msg, sizeof(msg),
         "On a GPU target a reference may not be chosen at run time, but %s may point at %s or at %s.%s Choose the index instead ('&buf[if c {i;} else {j;}]'), or the value ('if c {a;} else {b;}').",
         what, loanOrigin(la, a, sizeof(a)), loanOrigin(lb, b, sizeof(b)),
         ka && kb && ka != kb ? " These are two kinds of GPU memory, a local's and a global's, which no one pointer can reach." : "");
+    loanGpuRefuse(node, ErrorGpuRefChoice, msg);
 }
 
 void loanChosen(INode *node, uint32_t la, uint32_t lb) {
@@ -1881,7 +1930,7 @@ void loanChosen(INode *node, uint32_t la, uint32_t lb) {
 void loanIndexedRefs(INode *node) {
     if (!loanReportOnce(node))
         return;
-    errorMsgNode(node, ErrorGpuRefIndexed,
+    loanGpuRefuse(node, ErrorGpuRefIndexed,
         "On a GPU target an array whose elements hold references may be indexed only by a literal or a constant: a pointer cannot be kept in GPU memory, so the array must break into separate values. Index an array of the values instead.");
 }
 

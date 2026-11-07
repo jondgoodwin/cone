@@ -1,0 +1,20 @@
+// On a GPU target a reference chosen at run time is refused in the code a
+// kernel runs, and this kernel calls a plain function that makes the choice: it
+// is refused where the choice is written (ErrorGpuRefChoice), the kernel's call
+// not hiding it. (A function of core's own is refused only when a kernel
+// reaches it; test/cases/core/core_gpu_recursion.cone, which reaches none of
+// core's, has no refusal from it.)
+
+mod ref_gpu_choice_kernel;
+
+fn pick(c: bool, a: &f32, b: &f32) &f32 {
+  if c {a} else {b}  //~ ErrorGpuRefChoice "what the parameter 'a' points at"
+}
+
+fn @compute(64) chooses(inv: Invocation, xs: &Array[f32], out: &mut Array[f32]) {
+  let i = usize.from(inv.globalId[0]);
+  if i < out.len && i < xs.len {
+    let base = 2.f;
+    out[i] = *pick(i % 2usize == 0usize, &base, &xs[i]);
+  }
+}
