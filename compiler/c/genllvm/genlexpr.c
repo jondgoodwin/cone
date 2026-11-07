@@ -449,8 +449,10 @@ static LLVMValueRef genlFloatBits(GenState *gen, int16_t kind, LLVMValueRef arg,
 // carry the vector as their typearg), so one lowering serves both: LLVM's
 // intrinsics are overloaded on the whole vector as they are on a number. Which
 // of the number's kinds it is comes from the lane type of the Cone type. A
-// float's minimum and maximum answer the number where the other is a NaN
-// (minnum, maxnum, as the reductions do); an integer's abs wraps its smallest
+// float's minimum and maximum answer a NaN where either is a NaN, and -0.0
+// below 0.0 (LLVM's minimum and maximum, as the vector reductions are); clamp
+// is the maximum with lo then the minimum with hi, so a NaN in any gives a
+// NaN, and where lo > hi it gives hi. An integer's abs wraps its smallest
 // value to itself, as negation does (the flag says that value is not poison).
 static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type, LLVMValueRef *fnargs) {
     INode *dcl = itypeGetTypeDcl(type);
@@ -468,10 +470,17 @@ static LLVMValueRef genlNumberIntrinsic(GenState *gen, int16_t kind, INode *type
         return genlCallLlvmIntrinsic(gen, "llvm.abs", llvmtype, args, 2);
     case MinIntrinsic:
         args[1] = fnargs[1];
-        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.minnum" : issigned ? "llvm.smin" : "llvm.umin", llvmtype, args, 2);
+        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.minimum" : issigned ? "llvm.smin" : "llvm.umin", llvmtype, args, 2);
     case MaxIntrinsic:
         args[1] = fnargs[1];
-        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.maxnum" : issigned ? "llvm.smax" : "llvm.umax", llvmtype, args, 2);
+        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.maximum" : issigned ? "llvm.smax" : "llvm.umax", llvmtype, args, 2);
+    case ClampIntrinsic: {
+        args[1] = fnargs[1];
+        LLVMValueRef raised = genlCallLlvmIntrinsic(gen, isfloat ? "llvm.maximum" : issigned ? "llvm.smax" : "llvm.umax", llvmtype, args, 2);
+        args[0] = raised;
+        args[1] = fnargs[2];
+        return genlCallLlvmIntrinsic(gen, isfloat ? "llvm.minimum" : issigned ? "llvm.smin" : "llvm.umin", llvmtype, args, 2);
+    }
     case FloorIntrinsic:
         return genlCallLlvmIntrinsic(gen, "llvm.floor", llvmtype, args, 1);
     case CeilIntrinsic:
@@ -624,6 +633,7 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case AbsIntrinsic:
     case MinIntrinsic:
     case MaxIntrinsic:
+    case ClampIntrinsic:
     case FloorIntrinsic:
     case CeilIntrinsic:
     case RoundIntrinsic:

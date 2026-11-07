@@ -191,15 +191,17 @@ enum IntrinsicFn {
     // number types it applies to (corenumber.c) and of a vector of them
     // (vector.c), its node carrying that type, a vector type among them, as its
     // typearg. 'abs' of a signed integer or a float; 'min' and 'max' of an
-    // integer or a float, the number winning over a NaN; 'floor', 'ceil' and
-    // 'round' (half away from zero) of a float; 'fma', x * y + z fused, of a float
+    // integer or a float, a NaN in either of a float's giving a NaN; 'clamp' of
+    // the same, min(max(x, lo), hi); 'floor', 'ceil' and 'round' (half away
+    // from zero) of a float; 'fma', x * y + z fused, of a float
     AbsIntrinsic,               // abs[T](x: T) T
     MinIntrinsic,               // min[T](a: T, b: T) T
     MaxIntrinsic,               // max[T](a: T, b: T) T
     FloorIntrinsic,             // floor[T](x: T) T
     CeilIntrinsic,              // ceil[T](x: T) T
     RoundIntrinsic,             // round[T](x: T) T
-    FmaIntrinsic                // fma[T](x: T, y: T, z: T) T
+    FmaIntrinsic,               // fma[T](x: T, y: T, z: T) T
+    ClampIntrinsic              // clamp[T](x: T, lo: T, hi: T) T
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the

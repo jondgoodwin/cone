@@ -1,5 +1,5 @@
 // The number methods on a vector's lanes: abs, min and max with an argument,
-// floor, ceil, round and fma, and '%' on float lanes. Each lane is the scalar's
+// clamp, floor, ceil, round and fma, and '%' on float lanes. Each lane is the scalar's
 // answer (intrinsic_numbers has those worked), and every value here is worked
 // by hand beside the call.
 //
@@ -75,7 +75,8 @@ fn main() {
   showF("a.min() is the reduction", f64.from(a.min()));   // -1.5
   showF("a.max() is the reduction", f64.from(a.max()));   // 4
 
-  // A NaN lane loses to a number, in either argument, and stays where both are NaN
+  // A NaN lane in either argument gives a NaN lane, in the lane-wise forms and in
+  // the reductions
   let zero = Vector[f32, 4]() <- fill 0.0;
   var n = zero / zero;
   n[1usize] = 1.0;
@@ -83,12 +84,59 @@ fn main() {
   var q = zero / zero;
   q[0usize] = 5.0;
   q[2usize] = 1.0;                           // 5 nan 1 nan
-  let lo = n.min(q);                         // 5 1 1 nan
-  let hi = n.max(q);                         // 5 1 2 nan
-  showM("n.min(q) is a number", lo == lo);   // 1 1 1 0
-  showM("n.max(q) is a number", hi == hi);   // 1 1 1 0
-  showV("n.min(q) lanes", (lo == lo).select(lo, zero));   // 5 1 1 0
-  showV("n.max(q) lanes", (hi == hi).select(hi, zero));   // 5 1 2 0
+  let lo = n.min(q);                         // nan nan 1 nan
+  let hi = n.max(q);                         // nan nan 2 nan
+  showM("n.min(q) is a number", lo == lo);   // 0 0 1 0
+  showM("n.max(q) is a number", hi == hi);   // 0 0 1 0
+  showV("n.min(q) lanes", (lo == lo).select(lo, zero));   // 0 0 1 0
+  showV("n.max(q) lanes", (hi == hi).select(hi, zero));   // 0 0 2 0
+  var p = Vector[f32, 4]() <- 1.0, 2.0, 3.0, 4.0;
+  p[3usize] = n[0usize];                     // 1 2 3 nan: the NaN is the last lane
+  showB("p.min() is nan", p.min() != p.min());
+  showB("p.max() is nan", p.max() != p.max());
+  showB("n.min() is nan", n.min() != n.min());
+  showB("n.max() is nan", n.max() != n.max());
+  showB("q.min() is nan", q.min() != q.min());
+  let dz = Vector[f64, 2]() <- fill 0.0;
+  var nd = dz / dz;
+  nd[0usize] = 1.0;                          // 1 nan
+  showB("f64 nd.min() is nan", nd.min() != nd.min());
+  showB("f64 nd.max() is nan", nd.max() != nd.max());
+  let od = Vector[f64, 2]() <- 3.0, 4.0;
+  let ndmin = nd.min(od);                    // 1 nan
+  showF("f64 nd.min(od) lane 0", ndmin[0usize]);
+  showB("f64 nd.min(od) lane 1 is nan", ndmin[1usize] != ndmin[1usize]);
+  showB("f64 od.max(nd) lane 1 is nan", od.max(nd)[1usize] != od.max(nd)[1usize]);
+
+  // -0.0 is below 0.0 for min and max, in either order, lane-wise and reduced
+  let negz = -zero;
+  showV("-0 min 0", negz.min(zero));         // -0 -0 -0 -0
+  showV("0 min -0", zero.min(negz));         // -0 -0 -0 -0
+  showV("-0 max 0", negz.max(zero));         // 0 0 0 0
+  showV("0 max -0", zero.max(negz));         // 0 0 0 0
+  var mixz = zero;
+  mixz[1usize] = negz[0usize];               // 0 -0 0 0
+  showF("mixed zeros reduce min", f64.from(mixz.min()));   // -0
+  showF("mixed zeros reduce max", f64.from(mixz.max()));   // 0
+
+  // -------- clamp: min(max(x, lo), hi), lane by lane --------
+  showV("a.clamp(0.0, 1.0)", a.clamp(0.0, 1.0));   // 0 1 0 1
+  let lov = Vector[f32, 4]() <- -1.0, 3.0, 0.0, 5.0;
+  let hiv = Vector[f32, 4]() <- 0.0, 4.0, 1.0, 6.0;
+  showV("a.clamp(lov, hiv)", a.clamp(lov, hiv));   // -1 3 0 5
+  showV("a.clamp(4.0, 2.0), lo > hi gives hi", a.clamp(4.0, 2.0));   // 2 2 2 2
+  let cn = n.clamp(0.0, 3.0);                // nan 1 2 nan
+  showM("n.clamp(0, 3) is a number", cn == cn);   // 0 1 1 0
+  showV("n.clamp(0, 3) lanes", (cn == cn).select(cn, zero));   // 0 1 2 0
+  let cl = a.clamp(n, 9.0);                  // nan 2.5 2 nan
+  showM("a.clamp(n, 9) is a number", cl == cl);   // 0 1 1 0
+  showV("a.clamp(n, 9) lanes", (cl == cl).select(cl, zero));   // 0 2.5 2 0
+  let ch = a.clamp(-9.0, n);                 // nan 1 -0.25 nan
+  showM("a.clamp(-9, n) is a number", ch == ch);   // 0 1 1 0
+  showV("a.clamp(-9, n) lanes", (ch == ch).select(ch, zero));   // 0 1 -0.25 0
+  let dd = Vector[f64, 2]() <- 2.5, -0.5;
+  showF("f64 dd.clamp(0, 1) lane 0", dd.clamp(0.0, 1.0)[0usize]);   // 1
+  showF("f64 dd.clamp(0, 1) lane 1", dd.clamp(0.0, 1.0)[1usize]);   // 0
 
   // -------- rounding --------
   let h = Vector[f32, 4]() <- 2.5, -2.5, 0.5, -1.5;
@@ -160,4 +208,7 @@ fn main() {
   let t = Vector[i8, 4]() <- -100i8, 100i8, -1i8, 5i8;
   showN("i8 s.min(t)", Vector[i32, 4].from(s.min(t)));   // -128 -127 -1 0
   showN("i8 s.max(t)", Vector[i32, 4].from(s.max(t)));   // -100 100 127 5
+  showN("i.clamp(-5, 5)", i.clamp(-5, 5));   // -5 5 0 -5
+  showU("u8 x.clamp(50, 150)", x.clamp(50u8, 150u8));   // 150 100 150 50
+  showN("i8 s.clamp(-100, 100)", Vector[i32, 4].from(s.clamp(-100i8, 100i8)));   // -100 -100 100 0
 }

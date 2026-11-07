@@ -2401,7 +2401,9 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 `AwaitNode`'s `seamvars` ([Generation](generation.md), "A split method"): a
 variable `SeamOpen` and `SeamLive` or `SeamDies` travels, so a variable used
 after a seam and noted dead there reads garbage in the second half, and a
-droppable noted as holding nothing is never finalized.
+droppable noted as holding nothing is never finalized. A match's binding by
+value is untracked, so it is always noted `SeamOpen` whatever its owner holds;
+the record takes its owner's state instead, not the binding's.
 
 ## 9. Hazards
 
