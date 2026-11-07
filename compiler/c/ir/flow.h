@@ -29,7 +29,8 @@ enum FlowGate {
     FlowGateHolder = 0x1,   // a local declared, assigned or swapped whose type carries a borrow
     FlowGateResult = 0x2,   // a value a scope hands out carrying a borrow, a bare borrowed reference too
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, or a struct holding
-                            // such a writable borrow, beside another argument carrying one
+                            // such a writable borrow, beside another argument carrying one; or a literal
+                            // of two such values (flowGateJoinAsk)
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
     FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
     FlowGateShape  = 0x20,  // a method call lending a borrow of a value that may change shape (a list, a string)
@@ -175,6 +176,8 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand);
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
 // A literal may give a field holding only ''static' borrows a value holding one
 void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val);
+// A literal of two or more values that may hold borrows, one a way to store
+void flowGateJoinAsk(FlowState *fstate, Nodes *elems);
 // A call returns a borrow and may be a method lending from a value that changes shape
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument

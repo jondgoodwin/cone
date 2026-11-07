@@ -1,0 +1,11 @@
+// Bug 62: the same with the holder an older local of main and the younger local in an inner block. Refuse: the borrows are one value, and a store through it could put the younger one where the holder points.
+// Master e9e953096: compiled, and the program printed: holder reads 7
+// (the younger local was in an inner block that had ended; 7 is its old slot, not yet reused, so the read proves nothing: the borrow outlived it).
+mod lifetime_join_refuse_construct_inner_block;
+import stdio use *;
+struct T { pub v: i64; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct H { pub p: Option[&mut T]; }
+struct C { pub h: &mut H; pub x: &mut T; }
+fn put(c: &mut C) { c.h.p = Some(c.x); }
+fn main() { var h = H(None); { var t = T(7); var c = C(&mut h, &mut t); put(&mut c); } print <- clobber(3), "\n"; match h.p { case let Some(r) { print <- "holder reads ", r.v, "\n"; } case None { print <- "none\n"; } } }  //~ ErrorFrozen
