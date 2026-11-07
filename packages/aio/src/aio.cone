@@ -688,6 +688,12 @@ var @threadlocal onIo = false;
 // held (if any) is dropped: home to its pool. (Not '(*p).buf = b': a store
 // through a raw pointer does not finalize the value it replaces -- the
 // manual's safe-pointers page -- and the buffer would never go home)
+// The system's own number for out of memory (ERROR_NOT_ENOUGH_MEMORY, ENOMEM), the code of a
+// read the buffer pool refused a buffer for
+fn noMemoryCode() u32 {
+  #if #os == .windows {8u32} #else {12u32}
+}
+
 fn setBuf(p: *OpCore, b: Option[IoBuf]) {
   let c = p as &mut OpCore;
   c.buf = b;
@@ -1742,8 +1748,15 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     return;
   }
   if w == opRecvAny {
+    // A pool that refuses the buffer (iobuf's tryMake) leaves the read to wait
+    // without one, as a read on a socket that is not calm does: its bytes, when
+    // they come, ask again (below), and the read ends with an error if refused
+    var held = None[IoBuf];
     if (lp.hint((*p).handle) & hintCalm) != 0u32 {
-      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      held = IoBuf.tryMake(usize.from((*rp).ask.arg));
+    }
+    if held is Some {
+      setBuf(p, held);
       beginStage(lp, rp, stageStraight());
     } else {
       beginStage(lp, rp, stageReady());
@@ -1862,7 +1875,17 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
       // mode that suits
       let waited = Instant.now().nanos() - (*rp).ask.since;
       setCalm(lp, (*p).handle, waited < quietNanos());
-      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
+      if got is None {
+        // A pool that refuses the buffer (iobuf's tryMake): the read ends with
+        // an error, not enough memory, and the bytes stay with the socket
+        (*p).status = diag.outcomeFailed;
+        (*p).code = noMemoryCode();
+        (*p).n = 0usize;
+        answerRec(rp);
+        return;
+      }
+      setBuf(p, got);
       beginStage(lp, rp, stageTake());
       return;
     }

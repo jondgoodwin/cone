@@ -1,0 +1,36 @@
+// The Plain layer's 'peerEnded' (the Layer contract: the peer's stream has
+// ended and every byte of it was taken) with buffers in it unread. The
+// driver's feed stops at the core's credit and leaves buffers in the layer,
+// and feeds the peer's end only if 'peerEnded' is true: it must not be true
+// while a buffer is unread, or the end is fed ahead of it and the body reads
+// short.
+
+mod plainended;
+
+import testing use *;
+import time use Instant;
+import iobuf use *;
+import httpconn use *;
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(16usize);
+  b.append(text);
+  b
+}
+
+fn main() i32 {
+  var p = Plain.make();
+  let now = Instant.now();
+  expect(!p.peerEnded(), "no end yet");
+  p.wireIn(piece("one"), now);
+  p.wireIn(piece("two"), now);
+  p.wireIn(IoBuf(), now);
+  expect(!p.peerEnded(), "the end came with two buffers unread: not ended");
+  let a = p.plainOut();
+  expect(a.len() == 3usize, "the first buffer is read out");
+  expect(!p.peerEnded(), "one buffer unread: not ended");
+  let b = p.plainOut();
+  expect(b.len() == 3usize, "the second buffer is read out");
+  expect(p.peerEnded(), "every byte taken, the end came: ended");
+  done()
+}
