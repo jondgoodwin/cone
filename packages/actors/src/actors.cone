@@ -2870,7 +2870,7 @@ struct GNode {
 }
 
 let gTicket: Atomic[u64];
-let gLock: sync.Mutex;            // guards gTable, gCount's writes and the chains in the table
+let gLock: Atomic[u32];           // a spin word (0 free, 1 taken) guarding gTable, gCount's writes and the chains in the table
 let gTable: Atomic[usize];        // the buckets, gBuckets pointers, made by the first note; touched only under gLock
 let gCount: Atomic[usize];        // entries in the table; written only under gLock, read without it by groupSweep and groupAwaitsLive
 
@@ -2937,6 +2937,32 @@ fn gBucket(h: *Header, w: u64) usize {
 }
 
 // Note a copy of the group at gp for (h, w)
+// The group table's lock: a spin on gLock's own word. Every section under it is
+// a few loads and stores on the table (the one calloc is the first note's, once)
+// and never blocks, parks, awaits or takes another lock, so a spin costs less
+// than a Mutex here (a Mutex's two takes an await cost globalsbench's group row
+// over 1.1). The CAS is SeqCst, so it acquires; the release store publishes
+// the section's writes.
+fn gL() {
+  var spins = 0u32;
+  while true {
+    var seen = 0u32;
+    var won = false;
+    seen, won = gLock.compareSwap(0u32, 1u32);
+    if won {
+      return;
+    }
+    spins = spins + 1u32;
+    if spins > 64u32 {
+      yieldProcessor();
+    }
+  }
+}
+
+fn gU() {
+  gLock.storeOrdered(0u32, MemOrder.Release);
+}
+
 fn groupNote(h: *Header, w: u64, gp: usize) {
   let n = libc.malloc(mem.sizeof[GNode]()) as *GNode;
   if n as usize == 0usize {
@@ -2945,7 +2971,7 @@ fn groupNote(h: *Header, w: u64, gp: usize) {
   (*n).h = h;
   (*n).w = w;
   mem.writeRaw[CancelGroup](&(*n).g as *CancelGroup, *(gp as &CancelGroup));
-  gLock.lock();
+  gL();
   if gTable.loadOrdered(MemOrder.Relaxed) == 0usize {
     let t = libc.calloc(gBuckets, mem.sizeof[usize]());
     if t as usize == 0usize {
@@ -2957,13 +2983,13 @@ fn groupNote(h: *Header, w: u64, gp: usize) {
   (*n).next = *at as *GNode;
   *at = n as usize;
   gCount.storeOrdered(gCount.loadOrdered(MemOrder.Relaxed) + 1usize, MemOrder.Relaxed);
-  gLock.unlock();
+  gU();
 }
 
 // Take the entry for (h, w) out of the table: its node, which the caller moves
 // the group out of and frees, or 0
 fn groupTake(h: *Header, w: u64) *GNode {
-  gLock.lock();
+  gL();
   var found = null as *GNode;
   if gTable.loadOrdered(MemOrder.Relaxed) != 0usize {
     var link = (gTable.loadOrdered(MemOrder.Relaxed) as *usize) + gBucket(h, w);
@@ -2978,7 +3004,7 @@ fn groupTake(h: *Header, w: u64) *GNode {
       }
     }
   }
-  gLock.unlock();
+  gU();
   found
 }
 
@@ -2997,7 +3023,7 @@ fn groupSweep(h: *Header) {
     return;
   }
   var gone = null as *GNode;
-  gLock.lock();
+  gL();
   var b = 0usize;
   while gTable.loadOrdered(MemOrder.Relaxed) != 0usize && b < gBuckets {
     var link = (gTable.loadOrdered(MemOrder.Relaxed) as *usize) + b;
@@ -3014,7 +3040,7 @@ fn groupSweep(h: *Header) {
     }
     b = b + 1usize;
   }
-  gLock.unlock();
+  gU();
   while gone as usize != 0usize {
     let n = gone;
     gone = (*n).next;
@@ -4839,7 +4865,7 @@ fn @initpure init() {
   coLimit = Atomic[usize].of(consoleLimit);
   coStarted = Atomic[bool].of(false);
   gTicket = Atomic[u64].of(0u64);
-  gLock = sync.Mutex.make();
+  gLock = Atomic[u32].of(0u32);
   gTable = Atomic[usize].of(0usize);
   gCount = Atomic[usize].of(0usize);
   regLock = sync.Mutex.make();
