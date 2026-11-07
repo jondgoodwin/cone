@@ -2818,8 +2818,13 @@ class Runner:
         # include file that failed its self-check -- has no source to be
         # annotated in, so it is matched as an unlocated one is
         generated = self.out_root.relative_to(REPO).as_posix() + "/"
+        # Nor can one in a package the scenario imports (core's own function a
+        # kernel reaches): an [[unlocated]] entry names its code and message
         def in_output(d: Diagnostic) -> bool:
-            return d.path is not None and normalize_path(d.path).startswith(generated)
+            if d.path is None:
+                return False
+            path = normalize_path(d.path)
+            return path.startswith(generated) or "/packages/" in path
         located = [d for d in diagnostics if d.line is not None and not in_output(d)]
         unlocated = [d for d in diagnostics if d.line is None or in_output(d)]
         missing, extra = match_diagnostics(scenario.annotations, located)
