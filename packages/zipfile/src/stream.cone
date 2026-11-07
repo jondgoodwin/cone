@@ -257,8 +257,15 @@ pub struct ArchiveStream is Move {
     if ended || err is Some { return; }
     var at = 0usize;
     while at < input.len {
-      let n = if input.len - at < 65536usize { input.len - at } else { 65536usize };
-      var b = IoBuf(n);
+      if rd.segments() >= 64usize && !self.joinHeld() { return; }
+      let n =if input.len - at < 65536usize { input.len - at } else { 65536usize };
+      var b = match IoBuf.tryMake(n) {
+        case var Some(m) { m }
+        else {
+          err = Some[ZipError](ZipError.make(ErrorKind.Overloaded, pos, "the buffer pool has no room for more of the archive"));
+          return;
+        }
+      };
       let k = b.append(&input[at ..< at + n]);
       at += k;
       match rd.push(b) {
@@ -269,6 +276,27 @@ pub struct ArchiveStream is Move {
         case is None[IoBuf] {}
       }
     }
+  }
+
+  // A peer that sends one byte at a time makes a segment, and so a whole pool block, of each: the segments held
+  // are joined into one buffer of the bytes in them, so the blocks lent follow the bytes held, not the pieces
+  // they came in. False (and the stream failed, Overloaded) when the pool has no room for the joined buffer.
+  fn joinHeld(self: &mut) bool {
+    var joined = match IoBuf.tryMake(rd.len()) {
+      case var Some(m) { m }
+      else {
+        err = Some[ZipError](ZipError.make(ErrorKind.Overloaded, pos, "the buffer pool has no room to hold the archive's bytes together"));
+        return false;
+      }
+    };
+    while true {
+      match rd.popFront() {
+        case let Some(b) { joined.append(b.view()); }
+        case is None[IoBuf] { break; }
+      }
+    }
+    _ = rd.push(joined);
+    true
   }
 
   // Says that no more bytes will come: an archive that is not complete is then a Truncated failure
@@ -294,6 +322,11 @@ pub struct ArchiveStream is Move {
   fn fail(self: &mut, kind: ErrorKind, at: u64, reason: &str) Option[Step] {
     if err is None { err = Some[ZipError](ZipError.make(kind, at, reason)); }
     Some[Step](Step.Failed)
+  }
+
+  // The pool would not give the buffer that bytes held in pieces need (a peer's bytes cause it): the read ends
+  fn overloaded(self: &mut) Option[Step] {
+    self.fail(ErrorKind.Overloaded, pos, "the archive's bytes came in pieces too small to hold together, and the buffer pool is full; the read is refused")
   }
 
   fn failWith(self: &mut, e: ZipError) Option[Step] {
@@ -329,6 +362,7 @@ pub struct ArchiveStream is Move {
 
   fn stepHead(self: &mut) Option[Step] {
     if rd.len() < 4usize { return self.needMore("the archive's records"); }
+    if !rd.tryReserve(4usize) { return self.overloaded(); }
     var sig = 0u32;
     match rd.peek(4usize) {
       case let Some(v) { sig = le32(v, 0usize); }
@@ -346,12 +380,14 @@ pub struct ArchiveStream is Move {
       return self.fail(ErrorKind.Corrupt, pos, "something that is not an entry or the central directory is where one should be");
     }
     if rd.len() < 30usize { return self.needMore("a local header"); }
+    if !rd.tryReserve(30usize) { return self.overloaded(); }
     var total = 0usize;
     match rd.peek(30usize) {
       case let Some(v) { total = 30usize + usize.from(le16(v, 26usize)) + usize.from(le16(v, 28usize)); }
       case is None[&Array[u8]] {}
     }
     if rd.len() < total { return self.needMore("a local header"); }
+    if !rd.tryReserve(total) { return self.overloaded(); }
     var res = Err[Local, ZipError](ZipError.make(ErrorKind.Corrupt, pos, "a local header could not be read"));
     match rd.peek(total) {
       case let Some(v) { res = parseHeader(v, pos); }
@@ -450,7 +486,7 @@ pub struct ArchiveStream is Move {
         // Put back what was fed past the end of the stream, to be read as the descriptor and the next header
         let rest = if zst { zd.takeRest() } else { inf.takeRest() };
         comp = fedTotal - u64.from(rest.len());
-        self.putBack(rest);
+        if !self.putBack(rest) { return self.overloaded(); }
         mode = Mode.Descriptor;
       } else {
         comp = cur.compressedSize;
@@ -467,7 +503,8 @@ pub struct ArchiveStream is Move {
       told = true;
       return None[Step];
     }
-    var n = rd.len();
+    // What lies in the first segment, fed as it arrives: nothing is copied, so no buffer is wanted
+    var n = rd.contiguousLen();
     if n > 65536usize { n = 65536usize; }
     if !desc && u64.from(n) > left { n = usize.from(left); }
     if n == 0usize { return self.needMore(about("the data of", cur.name.view(), "").view()); }
@@ -491,10 +528,14 @@ pub struct ArchiveStream is Move {
   }
 
   // Bytes taken off the reader and not wanted: they are first again
-  fn putBack(self: &mut, rest: List[u8]) {
+  // False, with nothing changed, when the pool will not give the buffer for 'rest'
+  fn putBack(self: &mut, rest: List[u8]) bool {
     var nr = Reader.make(16777216usize);
     if rest.len() > 0usize {
-      var b = IoBuf(rest.len());
+      var b = match IoBuf.tryMake(rest.len()) {
+        case var Some(m) { m }
+        else { return false; }
+      };
       b.append(rest.view());
       nr.push(b);
     }
@@ -506,6 +547,7 @@ pub struct ArchiveStream is Move {
     }
     rd = nr;
     pos -= u64.from(rest.len());
+    true
   }
 
   // The deflate or zstd stream is over, and the entry had more compressed bytes than it used
@@ -548,6 +590,7 @@ pub struct ArchiveStream is Move {
     if rd.len() < 24usize && !ended { return Some[Step](Step.NeedInput); }
     let avail = rd.len();
     let max = if avail < 24usize { avail } else { 24usize };
+    if !rd.tryReserve(max) { return self.overloaded(); }
     var used = 0usize;
     var tried = false;
     match rd.peek(max) {
