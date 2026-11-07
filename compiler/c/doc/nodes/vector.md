@@ -65,7 +65,7 @@ NULL and the namespace empty, and the contents of a construction of that type sa
 
 | Lanes | Operators and methods |
 | --- | --- |
-| float | `+ - * / %`, unary `-`, `== != < <= > >=`, `sqrt sin cos`, `floor ceil round fma`, `abs`, `min max` (lane-wise), `sum product min max` (reductions) |
+| float | `+ - * / %`, unary `-`, `== != < <= > >=`, `sqrt sin cos`, `floor ceil round fma`, `abs`, `min max clamp` (lane-wise), `sum product min max` (reductions) |
 | integer | the above less `sqrt sin cos floor ceil round fma` (and `abs` for an unsigned lane), and `~ & \| ^ << >>` |
 | `bool` (a mask) | `~ & \| ^ == !=`, `any all` |
 
@@ -81,7 +81,7 @@ maths goes this way**: a declared number intrinsic given to the vector by `vecAd
 Vec* kind. `intrinsicDclTypeCheck` never sees that vector `typearg` (it is set on a method, not
 inferred at a call of the declared intrinsic), so no check runs there: a number of the wrong type
 beside a vector is caught by `vectorBroadcastOperand` instead (`ErrorVectorMixed`, 1555). `fma`'s
-parameters are named `y` and `z` on a vector as on a number, and the lane-wise `min` and `max`'s
+parameters are named `y` and `z` on a vector as on a number, `clamp`'s `lo` and `hi`, and the lane-wise `min` and `max`'s
 `other`. `min` and
 `max` are an **overload set by argument count**: the reduction (`VecMinIntrinsic`, no argument) and the
 lane-wise form (`MinIntrinsic`, one vector), each a private candidate joining the public name, so
@@ -92,7 +92,7 @@ number's is.
 What `fncall.c` lowers itself, each in a hook of `fnCallLowerMethodOn` or the dispatch:
 
 - **A number beside a vector**, `v * 2.0` and `2.0 * v` (`vectorBroadcastOperand`; also the numbers
-  among the arguments of `v.min(0.0)`, `v.max(0.0)` and `v.fma(2.0, w)`, where the receiver is the
+  among the arguments of `v.min(0.0)`, `v.max(0.0)`, `v.clamp(0.0, 1.0)` and `v.fma(2.0, w)`, where the receiver is the
   vector). The number is
   coerced to the lane type (a literal takes it, a number of another type is `ErrorVectorMixed`) and
   wrapped in a type literal of the vector type whose one argument it is, so both operands are vectors
@@ -152,14 +152,14 @@ argument is an LLVM vector to `genlVectorIntrinsic` (genlvector.c). What differs
   type's minimum beside the divisor with -1, reduce each to one flag (`llvm.vector.reduce.or`), and
   branch once to a panic (`PanicDivide`, `cone_panicDivide` in conestd) before the `sdiv`;
 - a float `%` is `frem` on the whole vector, with no check, as a scalar float's is;
-- `abs`, lane-wise `min` and `max`, `floor`, `ceil`, `round` and `fma` are LLVM's own intrinsics
-  overloaded on the vector (`llvm.fabs.v4f32`, `llvm.minnum`, `llvm.smin`, `llvm.round`,
+- `abs`, lane-wise `min`, `max` and `clamp`, `floor`, `ceil`, `round` and `fma` are LLVM's own intrinsics
+  overloaded on the vector (`llvm.fabs.v4f32`, `llvm.minimum`, `llvm.smin`, `llvm.round`,
   `llvm.fma`...), chosen from the lane type by `genlNumberIntrinsic` (genlexpr.c), the code a number's
   call uses;
 - a shift compares each lane's amount with the width and selects, as `genlShift` does a scalar's;
 - `sum` and `product` of floats are `llvm.vector.reduce.fadd` and `fmul` with no `reassoc` flag, so
-  they add in lane order, started at -0.0 and 1.0; `min` and `max` of floats are `reduce.fmin` and
-  `fmax`;
+  they add in lane order, started at -0.0 and 1.0; `min` and `max` of floats are `reduce.fminimum` and
+  `fmaximum`, a NaN lane giving a NaN;
 - a type literal converts: an array to a vector and back by a store and a load of the vector's slot
   (a mask, whose lanes are one bit in a vector and a byte in an array, lane by lane), a vector to a
   vector lane by lane (`fptosi.sat` and `fptoui.sat` for a float into an integer), a mask's
