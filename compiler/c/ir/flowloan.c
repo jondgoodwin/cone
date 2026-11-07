@@ -560,7 +560,16 @@ static int loanFieldReachesArena(INode *type, int depth) {
 // though it shows no more than the parameter does. The arena's
 // finalizers may read what is stored, so such a store takes only what the
 // arena was lent.
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
+//
+// Bug 65: a node of an arena reached through a parameter takes only what the
+// arena was lent. The handle's lifetime and the insides' are two: a caller lends
+// a holder ('Hd { ar: &mut Arena }') under one lifetime, but the nodes live as
+// long as the arena. So heldfield is asked even of a reference reached by
+// parameter (byparm): that reference may have been overwritten by a call's
+// result, a node of the arena, and the caller never asks (a holder has
+// writable-borrow depth 0). The exception (#992): a node whose death reads no
+// borrow ('readsnothing') may hold a shorter one, as nothing reads it later.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm, int readsnothing) {
     if (refholds == NULL)
         return 0;
     int caller = 0, arenaparm = 0, viafield = 0, heldfield = 0;
@@ -571,7 +580,7 @@ int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm) {
             INode *place = lifePointee(loanParm(id)->vtype);
             if (itypeIsArena(place) && !lifeSlotted(place))
                 arenaparm = 1;
-            else if (!byparm && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
+            else if ((!byparm || !readsnothing) && (refholds->ids[i] & LoanFar) && loanFieldReachesArena(place, 0))
                 heldfield = 1;
         }
         else if (loans[id].kind == LoanPin && loans[id].site->tag == FnCallTag) {
