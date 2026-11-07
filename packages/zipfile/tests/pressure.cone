@@ -233,11 +233,17 @@ fn main() i32 {
     var s = ArchiveStream.make();
     var g = emptyGave();
     var out = IoBuf(65536usize);
+    let takes0 = stats().takes;
     feedAll(&mut s, big.view(), 1usize, false, &mut g, &mut out);
     finishUp(&mut s, &mut g, &mut out);
+    let takes = stats().takes - takes0;
     expect(g.done && g.failed is None, "a byte at a time, pulled at the end: read");
     expect(g.digest.view() == want.view(), "...the entry's bytes are right");
-    expect(g.maxLent < 2097152usize, "...and the blocks lent stayed near the bytes held, not one per byte");
+    // each byte is copied once into a block's room (131,100 header bytes: 33 blocks of 4 KiB), and the header once
+    // more into the reader's own copy (one 256 KiB block): so the copying is at most about twice the header, and
+    // the blocks taken follow the bytes, not the 131,100 pieces
+    expect(takes < 80u64, "...taking blocks by the bytes held (about 35), not one per byte");
+    expect(g.maxLent < 600000usize, "...so the blocks lent stayed near the header's size (under 4.6x), not 4 KiB per byte");
   }
   {
     var s = ArchiveStream.make();
@@ -247,7 +253,7 @@ fn main() i32 {
     finishUp(&mut s, &mut g, &mut out);
     expect(g.done && g.failed is None, "a byte at a time, pulled after every byte: read");
     expect(g.digest.view() == want.view(), "...the entry's bytes are right");
-    expect(g.maxLent < 2097152usize, "...and the blocks lent stayed near the bytes held");
+    expect(g.maxLent < 600000usize, "...and the blocks lent stayed near the bytes held");
   }
   expectUInt(stats().lent, lentBefore, "every buffer home");
 

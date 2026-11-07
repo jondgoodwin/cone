@@ -257,8 +257,11 @@ pub struct ArchiveStream is Move {
     if ended || err is Some { return; }
     var at = 0usize;
     while at < input.len {
-      if rd.segments() >= 64usize && !self.joinHeld() { return; }
-      let n =if input.len - at < 65536usize { input.len - at } else { 65536usize };
+      // First into the room the last segment has (each byte copied once): a peer's tiny pieces then do not
+      // each hold a pool block
+      at += rd.appendLast(&input[at ..< input.len]);
+      if at >= input.len { break; }
+      let n = if input.len - at < 65536usize { input.len - at } else { 65536usize };
       var b = match IoBuf.tryMake(n) {
         case var Some(m) { m }
         else {
@@ -276,27 +279,6 @@ pub struct ArchiveStream is Move {
         case is None[IoBuf] {}
       }
     }
-  }
-
-  // A peer that sends one byte at a time makes a segment, and so a whole pool block, of each: the segments held
-  // are joined into one buffer of the bytes in them, so the blocks lent follow the bytes held, not the pieces
-  // they came in. False (and the stream failed, Overloaded) when the pool has no room for the joined buffer.
-  fn joinHeld(self: &mut) bool {
-    var joined = match IoBuf.tryMake(rd.len()) {
-      case var Some(m) { m }
-      else {
-        err = Some[ZipError](ZipError.make(ErrorKind.Overloaded, pos, "the buffer pool has no room to hold the archive's bytes together"));
-        return false;
-      }
-    };
-    while true {
-      match rd.popFront() {
-        case let Some(b) { joined.append(b.view()); }
-        case is None[IoBuf] { break; }
-      }
-    }
-    _ = rd.push(joined);
-    true
   }
 
   // Says that no more bytes will come: an archive that is not complete is then a Truncated failure
