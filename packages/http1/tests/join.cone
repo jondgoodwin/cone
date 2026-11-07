@@ -1,0 +1,273 @@
+// The join at handleInput (Bug 60): when the input is not empty and an arriving
+// buffer's bytes fit the room of the input's last segment, they are copied
+// into it and the arriving block dies, so a peer's short writes do not each
+// hold a block. Pinned here by the pool's held and lent counts, which the
+// reader of a connection cannot otherwise see:
+//   - 6000 bytes of head in 7-byte pieces held in one block, not 860;
+//   - 40000 bytes of body in 7-byte pieces held in three, the credit still in
+//     bytes (readCredit falls by exactly what arrived);
+//   - a run of full reads joins nothing (a block each, no copy);
+//   - a consumer keeping up (input empty at each arrival) copies nothing: the
+//     Data buffer is the very block that arrived;
+//   - 200 mixed runs of random piece sizes, polled at random moments, give
+//     the sender's bytes in order, the connection's blocks all home.
+
+mod join;
+
+import testing use *;
+import collections use String, List;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+const block = 16384usize;
+
+// A deterministic byte for position i of a run seeded s: a letter
+fn byteOf(i: usize, s: u64) u8 {
+  let k = (u64.from(i) * 7u64 + s) % 26u64;
+  u8.from(97u64 + k)
+}
+
+// A sized POST's head, for a body of 'len' bytes
+fn postHead(len: usize) String {
+  var h = String.from("POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: ");
+  h.appendUInt(u64.from(len));
+  h.append("\r\n\r\n");
+  h
+}
+
+// All of 'bytes' fed in pieces of 'piece' bytes, each in a block of its own
+// of 'cap' bytes
+fn feedPieces(c: &mut Connection, bytes: &Array[u8], from: usize, piece: usize, cap: usize, at: Instant) {
+  var pos = from;
+  while pos < bytes.len {
+    let end = if pos + piece < bytes.len {pos + piece} else {bytes.len};
+    var b = IoBuf(cap);
+    let n = b.append(&bytes[pos ..< end]);
+    c.handleInput(b, at);
+    pos = pos + n;
+  }
+}
+
+// Poll to the end of what is held: the body bytes appended to 'body', true
+// once the End arrived
+fn drain(c: &mut Connection, body: &mut List[u8]) bool {
+  while true {
+    match c.pollEvent() {
+      case var Data(d) {
+        body.appendSlice(d.buf.view());
+        c.release(d.buf.len());
+      }
+      case is End {return true;}
+      case is Failed {return false;}
+      case is NeedData {return false;}
+      case is Paused {return false;}
+      else {}
+    }
+  }
+  false
+}
+
+fn main() i32 {
+  let t = Instant.fromNanos(1000000000i64);
+  trim();
+  let lent0 = stats().lent;
+  let held0 = stats().heldBytes;
+
+  // Short writes of a head, the consumer behind: one block holds them all
+  {
+    var c = Connection.server(Config.make(), t);
+    var text = String.from("GET /x HTTP/1.1\r\nHost: h\r\nX-Pad: ");
+    var i = 0usize;
+    while i < 6000usize {
+      text.appendBytes(&[byteOf(i, 3u64)]);
+      i = i + 1usize;
+    }
+    text.append("\r\n\r\n");
+    let all = text.view() as &Array[u8];
+    feedPieces(&mut c, all, 0usize, 7usize, block, t);
+    expectUInt(stats().lent - lent0, 1u64, "860 pieces of 7 bytes: one block lent");
+    expect(stats().heldBytes < held0 + 4194304usize, "held memory near one block, not 860");
+    expectUInt(u64.from(c.readCredit()), u64.from(Config.make().maxBuffered - all.len), "the credit is in bytes, whatever the blocks");
+    var got = false;
+    var padOk = false;
+    match c.pollEvent() {
+      case var Request(e) {
+        got = true;
+        match e.head.headers.get("X-Pad") {
+          case let Some(v) {
+            padOk = v.len == 6000usize;
+            var k = 0usize;
+            while padOk && k < 6000usize {
+              if v[k] != byteOf(k, 3u64) {padOk = false;}
+              k = k + 1usize;
+            }
+          }
+          else {}
+        }
+      }
+      else {}
+    }
+    expect(got, "the head, joined, is read");
+    expect(padOk, "with its 6000-byte field intact");
+  }
+  expectUInt(stats().lent, lent0, "head: every block home");
+
+  // Short writes of a body: three blocks, the bytes in order, the credit in bytes
+  {
+    var c = Connection.server(Config.make(), t);
+    let len = 40000usize;
+    var all = List[u8]();
+    let head = postHead(len);
+    all.appendSlice(head.view() as &Array[u8]);
+    let hl = all.len();
+    var i = 0usize;
+    while i < len {
+      all.push(byteOf(i, 5u64));
+      i = i + 1usize;
+    }
+    feedPieces(&mut c, all.view(), 0usize, 7usize, block, t);
+    expectUInt(stats().lent - lent0, 3u64, "40000 bytes in 7-byte pieces: three blocks lent");
+    expectUInt(u64.from(c.readCredit()), u64.from(Config.make().maxBuffered - all.len()), "the credit fell by the bytes that arrived");
+    var body = List[u8]();
+    let ended = drain(&mut c, &mut body);
+    expect(ended, "the body ends");
+    expectUInt(u64.from(body.len()), u64.from(len), "all of the body arrives");
+    var same = body.len() == len;
+    i = 0usize;
+    while same && i < len {
+      if body[i] != byteOf(i, 5u64) {same = false;}
+      i = i + 1usize;
+    }
+    expect(same, "its bytes are the sender's, in order");
+  }
+  expectUInt(stats().lent, lent0, "body: every block home");
+
+  // A run of full reads: no room, so no join, no copy; a block each
+  {
+    var c = Connection.server(Config.make(), t);
+    let reads = 10usize;
+    let len = reads * block;
+    let head = postHead(len);
+    var hb = IoBuf(256usize);
+    let hn = hb.append(head.view() as &Array[u8]);
+    c.handleInput(hb, t);
+    var k = 0usize;
+    while k < reads {
+      var b = IoBuf(block);
+      var j = 0usize;
+      while j < block {
+        _ = b.append(&[byteOf(k * block + j, 9u64)]);
+        j = j + 1usize;
+      }
+      c.handleInput(b, t);
+      k = k + 1usize;
+    }
+    expectUInt(stats().lent - lent0, 11u64, "ten full reads and the head: eleven blocks, none joined");
+    var body = List[u8]();
+    let ended = drain(&mut c, &mut body);
+    expect(ended, "full reads: the body ends");
+    var same = body.len() == len;
+    var i = 0usize;
+    while same && i < len {
+      if body[i] != byteOf(i, 9u64) {same = false;}
+      i = i + 1usize;
+    }
+    expect(same, "full reads: the bytes are the sender's");
+  }
+  expectUInt(stats().lent, lent0, "full reads: every block home");
+
+  // A consumer keeping up: the input is empty at each arrival, so the Data
+  // buffer is the block that arrived, not a copy
+  {
+    var c = Connection.server(Config.make(), t);
+    var hb = IoBuf(256usize);
+    let hn = hb.append(postHead(100usize).view() as &Array[u8]);
+    c.handleInput(hb, t);
+    var req = false;
+    match c.pollEvent() {
+      case is Request {req = true;}
+      else {}
+    }
+    expect(req, "keeping up: the request");
+    var b = IoBuf(block);
+    var j = 0usize;
+    while j < 100usize {
+      _ = b.append(&[byteOf(j, 1u64)]);
+      j = j + 1usize;
+    }
+    let sent = b.base() as usize;
+    c.handleInput(b, t);
+    var same = false;
+    match c.pollEvent() {
+      case var Data(d) {
+        same = (d.buf.base() as usize) == sent && d.buf.len() == 100usize;
+        c.release(d.buf.len());
+      }
+      else {}
+    }
+    expect(same, "keeping up: the Data buffer is the arrived block, copied nothing");
+  }
+  expectUInt(stats().lent, lent0, "keeping up: every block home");
+
+  // Mixed: random piece sizes and polls, 200 runs
+  {
+    var seed = 12345u64;
+    var runs = 0u32;
+    var allSame = true;
+    var allEnded = true;
+    while runs < 200u32 {
+      var c = Connection.server(Config.make(), t);
+      let len = 60000usize;
+      var all = List[u8]();
+      all.appendSlice(postHead(len).view() as &Array[u8]);
+      var i = 0usize;
+      while i < len {
+        all.push(byteOf(i, u64.from(runs)));
+        i = i + 1usize;
+      }
+      var body = List[u8]();
+      var pos = 0usize;
+      var ended = false;
+      while pos < all.len() {
+        seed = (seed * 1103515245u64 + 12345u64) % 2147483648u64;
+        let pick = seed / 65536u64;
+        var piece = 1usize + usize.from(pick % 40u64);
+        if pick % 7u64 == 0u64 {piece = block;}
+        else if pick % 11u64 == 0u64 {piece = 1000usize + usize.from(pick % 9000u64);}
+        let end0 = if pos + piece < all.len() {pos + piece} else {all.len()};
+        let credit = c.readCredit();
+        let take = if end0 - pos < credit {end0 - pos} else {credit};
+        if take == 0usize {
+          if drain(&mut c, &mut body) {ended = true;}
+          continue;
+        }
+        let cap = if pick % 5u64 == 0u64 {take} else {block};
+        var b = IoBuf(cap);
+        let n = b.append(&all.view()[pos ..< pos + take]);
+        c.handleInput(b, t);
+        pos = pos + n;
+        if pick % 3u64 == 0u64 {
+          if drain(&mut c, &mut body) {ended = true;}
+        }
+      }
+      if !ended {
+        if drain(&mut c, &mut body) {ended = true;}
+      }
+      if !ended {allEnded = false;}
+      var same = body.len() == len;
+      i = 0usize;
+      while same && i < len {
+        if body[i] != byteOf(i, u64.from(runs)) {same = false;}
+        i = i + 1usize;
+      }
+      if !same {allSame = false;}
+      runs = runs + 1u32;
+    }
+    expect(allEnded, "200 mixed runs: every body ends");
+    expect(allSame, "200 mixed runs: every body is the sender's, in order");
+  }
+  expectUInt(stats().lent, lent0, "mixed: every block home");
+  done()
+}

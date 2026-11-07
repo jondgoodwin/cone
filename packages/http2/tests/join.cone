@@ -1,0 +1,149 @@
+// The join at handleInput (Bug 60), http2's side: a DATA frame of 16000 bytes
+// arriving in pieces leaves a partial frame in the input at every step, so
+// each piece after the first finds the input not empty. An arriving piece that
+// fits the last segment's room is copied into it and its block dies: the
+// partial frame is held in about two blocks, not one per piece. Pinned by the
+// most buffers the pool has lent at any moment of the feed, and by the body
+// the server reads back, byte for byte, in order, for 7-byte pieces and for
+// 100 runs of random piece sizes.
+
+mod join;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2 use *;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn pattern(k: u64, seed: u64) u8 {u8.from((seed * 131u64 + k * 7u64 + k / 251u64) % 256u64)}
+
+fn patterned(seed: u64, n: usize) IoBuf {
+  var x = IoBuf(n);
+  let room = x.spare();
+  var i = 0usize;
+  while i < n {
+    room[i] = pattern(u64.from(i), seed);
+    i = i + 1usize;
+  }
+  x.setLen(n);
+  x
+}
+
+// The server reads: Data bytes appended to 'body' (released as they come)
+// and whether the End arrived
+fn drain(s: &mut Connection, body: &mut List[u8]) bool {
+  var ended = false;
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case let Data(d) {
+        body.appendSlice(d.buf.view());
+        s.release(d.stream, d.buf.len());
+      }
+      case let End(e) {ended = true;}
+      case let Request(r) {}
+      case is NeedData {going = false;}
+      case is Failed {going = false;}
+      case is Closed {going = false;}
+      else {}
+    }
+  }
+  ended
+}
+
+// What a client sends for one POST of n bytes, in one body write
+fn clientBytes(n: usize, seed: u64) Chain {
+  var c = Connection.client(Config.make(), at(0));
+  var head = RequestHead.make("POST", "/up", "example.com");
+  head.scheme = String.from("https");
+  let id = c.sendRequest(head, BodyLength.sized(u64.from(n)));
+  let back = c.sendData(id, patterned(seed, n));
+  c.finish(id);
+  c.pollTransmit(at(0))
+}
+
+fn sameBody(body: &List[u8], n: usize, seed: u64) bool {
+  if body.len() != n {return false;}
+  var i = 0usize;
+  while i < n {
+    if (*body)[i] != pattern(u64.from(i), seed) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn main() i32 {
+  trim();
+  let lent0 = stats().lent;
+
+  // 7-byte pieces: about two blocks lent at the most
+  {
+    var out = clientBytes(16000usize, 4u64);
+    var s = Connection.server(Config.make(), at(0));
+    var peak = 0u64;
+    var pieces = 0u64;
+    while out.len() > 0usize {
+      let n = if out.len() < 7usize {out.len()} else {7usize};
+      var b = IoBuf(16384usize);
+      let room = b.spare();
+      let k = out.copyOut(0usize, &mut room[0usize ..< n]);
+      b.setLen(k);
+      out.advance(k);
+      s.handleInput(b, at(1));
+      pieces = pieces + 1u64;
+      let now = stats().lent - lent0;
+      if now > peak {peak = now;}
+    }
+    expect(pieces > 2000u64, "a request of 16000 bytes in 7-byte pieces is thousands of pieces");
+    expect(peak <= 4u64, "the pool lent at most four buffers at any moment, not one per piece");
+    var body = List[u8]();
+    let ended = drain(&mut s, &mut body);
+    expect(ended, "the body ends");
+    expect(sameBody(&body, 16000usize, 4u64), "and is the client's bytes, in order");
+  }
+  expectUInt(stats().lent, lent0, "7-byte pieces: every block home");
+
+  // Random pieces
+  {
+    var seed = 777u64;
+    var runs = 0u32;
+    var allSame = true;
+    while runs < 100u32 {
+      let n = 1000usize + usize.from(u64.from(runs) * 331u64 % 15000u64);
+      var out = clientBytes(n, u64.from(runs));
+      var s = Connection.server(Config.make(), at(0));
+      var body = List[u8]();
+      var ended = false;
+      while out.len() > 0usize {
+        seed = (seed * 1103515245u64 + 12345u64) % 2147483648u64;
+        let pick = seed / 65536u64;
+        var piece = 1usize + usize.from(pick % 30u64);
+        if pick % 5u64 == 0u64 {piece = 100usize + usize.from(pick % 5000u64);}
+        let m = if out.len() < piece {out.len()} else {piece};
+        let take = if m < s.readCredit() {m} else {s.readCredit()};
+        if take == 0usize {
+          if drain(&mut s, &mut body) {ended = true;}
+          continue;
+        }
+        var b = IoBuf(if pick % 4u64 == 0u64 {take} else {16384usize});
+        let room = b.spare();
+        let k = out.copyOut(0usize, &mut room[0usize ..< take]);
+        b.setLen(k);
+        out.advance(k);
+        s.handleInput(b, at(1));
+        if pick % 3u64 == 0u64 {
+          if drain(&mut s, &mut body) {ended = true;}
+        }
+      }
+      if drain(&mut s, &mut body) {ended = true;}
+      if !ended || !sameBody(&body, n, u64.from(runs)) {allSame = false;}
+      runs = runs + 1u32;
+    }
+    expect(allSame, "100 runs of random pieces: every body is the client's, in order");
+  }
+  expectUInt(stats().lent, lent0, "random pieces: every block home");
+  done()
+}
