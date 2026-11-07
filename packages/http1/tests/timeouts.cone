@@ -151,9 +151,11 @@ fn body() {
     drain(&mut c, ms(0i64));
     feed(&mut c, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", ms(0i64));
     feed(&mut c, "abcde", ms(1000i64));
+    // Polled between the two feeds: fed together, a consumer that is behind
+    // has them joined (handleInput) and delivered as one piece of seven
+    expectStr(events(&mut c, true).view(), "response data need", "five bytes out, unreleased");
     feed(&mut c, "fg", ms(1000i64));
-    expectStr(events(&mut c, true).view(), "response data paused",
-      "five bytes out, unreleased, the window of 4 full: two more wait");
+    expectStr(events(&mut c, true).view(), "paused", "the window of 4 full: two more wait");
     expectInt(deadline(&c), -1i64, "no body timeout while the consumer holds the credit");
     c.handleTimeout(ms(60000i64));
     expectStr(events(&mut c, true).view(), "paused", "a minute later, still waiting on the consumer, not failed");
