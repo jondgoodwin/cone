@@ -1363,9 +1363,15 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
 
 
 def description(unit: Unit, mode: str, output: str, out: Path,
-                packages: list[Package] = ()) -> str:
+                packages: list[Package] = (),
+                homes: "Callable[[Package], Path] | None" = None) -> str:
     """The build description of one package; 'out' is the folder the include
-    files of the packages it imports are in."""
+    files of the packages it imports are in, or where 'homes' gives, for a
+    package, the folder its own is in (the libraries a folder of packages
+    shares, Session.home)."""
+    def at(dep: Package) -> Path:
+        return homes(dep) if homes is not None else out
+
     pkg = unit.pkg
     lines = [
         f"// The build description of {pkg.label()}, written by Congo for conec;",
@@ -1380,7 +1386,7 @@ def description(unit: Unit, mode: str, output: str, out: Path,
     # include file that package's compile generated into 'out'. The package's
     # own modules import only what their own lines, below, give them
     for dep in packages:
-        lines.append(f'import {dep.name}: "{cone_path(include_for(dep, out))}"')
+        lines.append(f'import {dep.name}: "{cone_path(include_for(dep, at(dep)))}"')
     if packages:
         lines.append("")
 
@@ -1390,7 +1396,7 @@ def description(unit: Unit, mode: str, output: str, out: Path,
         for file in module.files:
             lines.append(f'{pad}    "{cone_path(file)}"')
         for name, dep in unit.lines.get(id(module), {}).items():
-            lines.append(f'{pad}    import {name}: "{cone_path(include_for(dep, out))}"')
+            lines.append(f'{pad}    import {name}: "{cone_path(include_for(dep, at(dep)))}"')
         for child in module.children:
             emit(child, depth + 1)
         lines.append(f"{pad}}}")
@@ -1967,6 +1973,17 @@ CONEC_ENV = ("CONE_PACKAGES", "CONE_LLVM_OPTIONS", "CONE_NO_NOALIAS")
 # Whether a compile whose key is unchanged is skipped: '--no-cache' says not
 USE_CACHE = [True]
 
+# Where 'congo test' over a folder of packages builds the libraries they share
+SHARED_FOLDER = ".congo-shared"
+
+# The compiles of this process, by the key file they wrote: the key it recorded.
+# A folder of packages under test shares its libraries (Session.home), so the
+# same library is asked for by many packages; one built this run under the very
+# key is not built again, and one that failed under it is not run again, even
+# with --no-cache. Nothing outlives the process
+RUN_BUILT: dict[str, str] = {}
+RUN_FAILED: dict[str, str] = {}
+
 # conec's and conestd's content hashes, made once in a process and again only
 # where the file's size or time has changed since: conec is tens of megabytes,
 # and a folder of packages builds in many sessions. The key holds the content
@@ -2080,7 +2097,8 @@ def searched_sources(pkg: Package, kind: str = "searched") -> list[tuple[str, Pa
 def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
                  env: dict[str, str], packages: list[Package] = (),
                  includes: Path | None = None, announce: bool = True,
-                 prelude: list[tuple[str, Path]] | None = ()) -> Path:
+                 prelude: list[tuple[str, Path]] | None = (),
+                 homes: "Callable[[Package], Path] | None" = None) -> Path:
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
@@ -2095,10 +2113,16 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     cache"). 'prelude' is what conec reads of core when it loads the prelude
     from its package search path, for a description with no package line for
     core; None where Congo cannot say what that is (no core in the build, so
-    no CONE_PACKAGES), and the compile is never skipped."""
+    no CONE_PACKAGES), and the compile is never skipped.
+
+    'homes' gives, for a package, the folder its include file is in, where
+    that is not one folder ('includes' or 'out') for all of them: a folder of
+    packages under test shares its libraries (Session.home). A library
+    compiled into a shared folder is skipped, or its failure not repeated,
+    for any later package whose key is the same (RUN_BUILT, RUN_FAILED)."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
-    desc.write_text(description(unit, mode, output, includes or out, packages),
+    desc.write_text(description(unit, mode, output, includes or out, packages, homes),
                     encoding="utf-8")
     obj = out / f"{unit.pkg.name}{OBJ_EXT}"
     include = include_for(unit.pkg, out)
@@ -2111,13 +2135,22 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     files += [("source", file) for module, _ in unit.tree.walk() for file in module.files]
     imported = {dep.name: dep for dep in [*packages, *(dep for names in unit.lines.values()
                                                        for dep in names.values())]}
-    files += [("include", include_for(dep, includes or out)) for dep in imported.values()]
+    files += [("include", include_for(dep, homes(dep) if homes is not None else includes or out))
+              for dep in imported.values()]
     files += prelude or []
     inputs = key_inputs(command, env, files)
     key = key_of(inputs)
     key_file = out / f"{unit.pkg.name}{KEY_EXT}"
     if prelude is not None and cache_fresh(key_file, key, outputs):
         return obj
+    # A shared library this run built already, under this very key: the files
+    # are there (checked), so it stands even with the build cache off
+    if (prelude is not None and RUN_BUILT.get(str(key_file)) == key
+            and all(out_file.is_file() for out_file in outputs)):
+        return obj
+    if prelude is not None and RUN_FAILED.get(str(key_file)) == key:
+        raise CongoError(f"could not compile {unit.pkg.name} (it failed earlier in this"
+                         f" run, with the same inputs; build description: {desc})")
     # No key stands while conec runs, so a compile that fails or is killed
     # leaves none; and a library's include file is written afresh, so one left
     # by an earlier build never stands in for it
@@ -2126,6 +2159,8 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
     if not run_conec(command, env):
+        if prelude is not None:
+            RUN_FAILED[str(key_file)] = key
         raise CongoError(f"could not compile {unit.pkg.name} (build description:"
                          f" {desc})")
     if not obj.is_file():
@@ -2134,6 +2169,7 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
         raise CongoError(f"conec wrote no include file for {unit.pkg.name} at {include}")
     if prelude is not None:
         record_key(key_file, key, inputs, outputs)
+        RUN_BUILT[str(key_file)] = key
     return obj
 
 
@@ -2400,10 +2436,16 @@ class Session:
     program against the objects and include files that build left, compiling
     only what a test imports that the package does not (stdio, say)."""
 
-    def __init__(self, registry: Registry, out: Path, mode: str):
+    def __init__(self, registry: Registry, out: Path, mode: str,
+                 shared: Path | None = None, own: str | None = None):
         self.registry = registry
         self.out = out
         self.mode = mode
+        # Under 'congo test' over a folder of packages: the folder the run's
+        # libraries are built in, once each, and the key of the package under
+        # test, which is built in 'out' as ever. None: every package in 'out'
+        self.shared = shared
+        self.own = own
         self.objs: dict[str, Path] = {}      # each library compiled into 'out'
         self.spvs: dict[str, Path] = {}      # each package's kernels compiled into 'out'
         self.gpu_checked: set[str] = set()   # packages whose imports were checked for the GPU
@@ -2418,6 +2460,21 @@ class Session:
         if self._conec is None:
             self._conec = find_conec()
         return self._conec
+
+    def home(self, pkg: Package) -> Path:
+        """The folder a package is compiled into, and its include file is
+        found in. Alone, 'out'. Sharing, the package under test is built in
+        'out' as ever; every other package of the build in a folder of its own
+        in the shared one, named for the package and where its source is, so two
+        packages of one name never meet. The same folder serves every package
+        tested, which is the point: a library is compiled once (its key decides
+        whether it is again), and nothing is linked to a library built for
+        another configuration, since the shared folder is named for the mode,
+        the -D defines and --strip."""
+        if self.shared is None or pkg.key == self.own or pkg.lone:
+            return self.out
+        where = hashlib.sha256(str(pkg.root).encode("utf-8")).hexdigest()[:8]
+        return self.shared / f"{pkg.name}-{where}"
 
     def compile(self, order: list[Unit], top: Package, top_out: Path | None = None,
                 announce: bool = True) -> list[Path]:
@@ -2461,7 +2518,7 @@ class Session:
             if not is_top and unit.pkg.key in self.objs:
                 objs.append(self.objs[unit.pkg.key])
                 continue
-            into = top_out if is_top and top_out is not None else self.out
+            into = top_out if is_top and top_out is not None else self.home(unit.pkg)
             if (is_top and into == self.out and top.lone
                     and any(u.pkg.name == top.name for u in order if u.pkg is not top)):
                 # A program named like a package it reaches (Bug 24): the files
@@ -2483,8 +2540,9 @@ class Session:
             else:
                 prelude = searched_sources(core, "prelude")
             obj = compile_unit(conec, unit, into, self.mode, is_top, env,
-                               packages, self.out, announce or not is_top, prelude)
-            if into == self.out and (not is_top or unit.pkg.output == "library"):
+                               packages, self.out, announce or not is_top, prelude,
+                               self.home)
+            if not is_top or (into == self.out and unit.pkg.output == "library"):
                 self.objs[unit.pkg.key] = obj
             objs.append(obj)
         # Then the kernels of each marked package that has them, once a
@@ -3114,11 +3172,12 @@ def run_one_test(pkg: Package, session: Session, file: Path, mode: str, bless: b
 
 
 def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
-                 later: list | None = None) -> Tally:
+                 later: list | None = None, shared: Path | None = None) -> Tally:
     """Build the package, then run each test and build each example. A test the
     manifest marks quiet runs after the package's other tests and its examples;
     where `later` is a list, it is left there as (package, session, file) for the
-    caller to run, alone, after every package's other tests."""
+    caller to run, alone, after every package's other tests. Where `shared` is a
+    folder, every package of the build but this one is compiled there (Session.home)."""
     tally = Tally()
     say("Testing", f"{pkg.label()} ({pkg.root})")
     # The package under test is found first, under its own name, so a test
@@ -3126,7 +3185,7 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool,
     # else a registry holds of that name
     registry = open_registry()
     registry.packages[pkg.name] = pkg
-    session = Session(registry, build_folder(pkg, mode), mode)
+    session = Session(registry, build_folder(pkg, mode), mode, shared, pkg.key)
     tests = programs(pkg.root / TESTS, name_filter)
     examples = programs(pkg.root / EXAMPLES, name_filter)
     try:
@@ -3209,6 +3268,21 @@ def package_manifests(folder: Path) -> list[Path]:
             if (sub / MANIFEST).is_file()]
 
 
+def shared_folder(folder: Path, mode: str) -> Path:
+    """Where 'congo test' over a folder of packages builds the libraries its
+    packages share, so that each is compiled once in the run and not once for
+    every package: .congo-shared/ in the folder tested, so that two runs in
+    different checkouts share nothing. The name holds the mode and a hash of
+    everything that changes what a compile makes but is no part of a package:
+    the -D defines and --strip. (The compile's key holds them too, and decides;
+    the name keeps one configuration's files from being rebuilt for another's.)
+    What it holds is what a package's build/<mode>/ holds today, with the same
+    keys, and is kept the same way."""
+    settings = json.dumps([DEFINES, STRIP_DEBUG[0]])
+    tag = hashlib.sha256(settings.encode("utf-8")).hexdigest()[:8]
+    return folder / SHARED_FOLDER / f"{mode}-{tag}"
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     mode = "release" if args.release else "debug"
     here = Path.cwd()
@@ -3219,9 +3293,10 @@ def cmd_test(args: argparse.Namespace) -> int:
         manifests = [current_package_manifest()]
     total = Tally()
     later: list = []
+    shared = shared_folder(here, mode) if len(manifests) > 1 else None
     for manifest in manifests:
         total.add(test_package(read_manifest(manifest), mode, args.name, args.bless,
-                               later if len(manifests) > 1 else None))
+                               later if len(manifests) > 1 else None, shared))
     if later:
         say("Quiet", f"{len(later)} test(s), one at a time, nothing else running")
         for pkg, session, file, _ in later:

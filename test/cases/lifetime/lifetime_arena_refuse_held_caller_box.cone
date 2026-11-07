@@ -1,0 +1,11 @@
+// Bug 61: a store through a node a struct field holds, the struct itself holding no arena: the caller's check refuses it. Refuse.
+mod lifetime_arena_refuse_held_caller_box;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- "finalizer reads ", r.v, "\n"; } case None { print <- "none\n"; } } } }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct Bx { pub f: &mut F; }
+fn stash(b: &mut Bx, x: &mut T) { b.f.p = Some(x); }
+fn scope(q: &mut Arena) { var b = Bx(q.alloc(F(None))); var t = T(7); stash(&mut b, &mut t); }  //~ ErrorCallEscape
+fn main() { var a = Arena(); scope(&mut a); print <- clobber(3), "\n"; }

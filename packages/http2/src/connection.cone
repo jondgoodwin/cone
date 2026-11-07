@@ -221,6 +221,7 @@ pub struct Connection is Move {
   peerLast: u32;
   failed: bool;
   closed: bool;
+  noBuffer: bool;            // the pool refused a buffer (iobuf's tryMake): the connection fails at its next pollTransmit
   peerResets: Budget;
   localResets: Budget;
 
@@ -264,7 +265,7 @@ pub struct Connection is Move {
       nextLocal: if client {1u32} else {2u32}, lastLocal: 0u32, lastPeer: 0u32,
       localOpen: 0u32, peerLive: 0u32, events: Deque[Event](), pingsOut: 0u32,
       goAwaySent: false, goAwayLast: maxStreamId, shutdownPinged: false,
-      peerGoAway: false, peerLast: maxStreamId, failed: false, closed: false,
+      peerGoAway: false, peerLast: maxStreamId, failed: false, closed: false, noBuffer: false,
       peerResets: Budget(0u32, now), localResets: Budget(0u32, now),
       bytesIn: 0u64, bytesOut: 0u64, streamsOpened: 0u64);
     c.start();
@@ -309,7 +310,13 @@ pub struct Connection is Move {
     }
     if failed || closed {return;}
     if input.len() + n > cfg.maxBuffered {panic("http2: handleInput past the read credit", file, line);}
-    let over = input.push(buf);
+    // Join when the consumer is behind and the bytes fit the last segment
+    // (see http1's handleInput): the arriving block dies instead of being held
+    if !input.isEmpty() && n <= input.lastRoom() {
+      let joined = input.appendLast(buf.view());
+    } else {
+      let over = input.push(buf);
+    }
     bytesIn = bytesIn + u64.from(n);
     self.process();
   }
@@ -320,12 +327,17 @@ pub struct Connection is Move {
   // is done: the control-frame flood bound counts what is taken in between
   pub fn pollTransmit(self: &mut, at: Instant) Chain {
     now = at;
+    if noBuffer || writer.isStarved() {return self.overloaded();}
     self.schedule();
+    if noBuffer || writer.isStarved() {return self.overloaded();}
     var out = writer.take();
     if !prefaceOut {
       prefaceOut = true;
       var all = Chain.make(noBound);
-      var p = IoBuf(prefaceLen);
+      var p = match IoBuf.tryMake(prefaceLen) {
+        case var Some(got) {got}
+        else {return self.overloaded();}
+      };
       let copied = p.append(clientPreface());
       let first = all.push(p);
       while out.segments() > 0usize {
@@ -1260,6 +1272,23 @@ pub struct Connection is Move {
     events.push(Event.Failed(0u32, HttpError.coded(kind, u64.from(code.value()), ErrorScope.Connection, why)));
   }
 
+  // The pool would not give a buffer (iobuf's tryMake): the frames queued are
+  // dropped, as the peer cannot be told (no GOAWAY, which needs a buffer too),
+  // every stream under way is ended Overloaded, and Failed and Closed follow.
+  // Returns nothing to send
+  fn overloaded(self: &mut) Chain {
+    noBuffer = true;
+    let dropped = writer.take();
+    if !failed && !closed {
+      failed = true;
+      let why = "the buffer pool is full (iobuf maxBytes): no buffer for the connection's frames";
+      let ended = self.endAll(ErrorKind.Overloaded, None[u64], why);
+      ready.clear();
+      events.push(Event.Failed(0u32, HttpError.make(ErrorKind.Overloaded, 0u16, why)));
+    }
+    Chain.make(noBound)
+  }
+
   // Every stream under way ended with the connection: told, as a Reset of
   // the connection's scope (Refused for a request never sent or above the
   // peer's GOAWAY, which was not processed). How many there were
@@ -1504,6 +1533,10 @@ pub struct Connection is Move {
       if connSend <= 0i64 {return 3u32;}
       let room = s.sendWindow.min(connSend).min(i64.from(writer.peerMaxFrameSize()));
       let buf = self.chunk(s, usize.from(room));
+      if noBuffer {
+        s.ready = false;
+        return 0u32;
+      }
       let n = buf.len();
       s.sendWindow = s.sendWindow - i64.from(n);
       connSend = connSend - i64.from(n);
@@ -1549,7 +1582,14 @@ pub struct Connection is Move {
       }
     }
     let n = if have < room {have} else {room};
-    var b = IoBuf(n);
+    var b = match IoBuf.tryMake(n) {
+      case var Some(got) {got}
+      else {
+        // The caller sees the empty buffer and the flag, and sends nothing
+        noBuffer = true;
+        return IoBuf();
+      }
+    };
     let copied = b.append(&s.outQ[0usize].view()[s.outOff ..< s.outOff + n]);
     s.outOff = s.outOff + n;
     if s.outOff == s.outQ[0usize].len() {

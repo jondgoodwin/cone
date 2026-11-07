@@ -1,0 +1,84 @@
+// Reader.tryReserve: afterwards 'peek(n)' takes no new buffer. With the pool
+// at the reserve of its maxBytes (every tryMake refused), a reserve that needs
+// the reader's own copy is refused (false) and 'peek' still answers None only
+// for fewer than n bytes held; one that needs none (the bytes in one segment, or
+// fewer than n held, or the copy's room) is true; one made while the pool has
+// room is kept, so the peek then works with the pool hoarded.
+
+mod reserve;
+
+import testing use *;
+import iobuf use *;
+import streams use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+fn seg(n: usize, fill: u8) IoBuf {
+  var b = IoBuf(n);
+  let room = b.whole();
+  var i = 0usize;
+  while i < n {
+    room[i] = fill;
+    i = i + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn main() i32 {
+  let lentBefore = stats().lent;
+  {
+    var r = Reader.make(1048576usize);
+    _ = r.push(seg(4096usize, 97u8));
+    _ = r.push(seg(4096usize, 98u8));
+    let h = hoard();
+    expect(r.tryReserve(100usize), "bytes in one segment need no copy: true with the pool hoarded");
+    expect(r.tryReserve(9000usize), "fewer than n bytes held need none: true");
+    expect(!r.tryReserve(6000usize), "bytes across the edge need the reader's copy: false at the reserve");
+    var none = false;
+    match r.peek(9000usize) {
+      case is None[&Array[u8]] {none = true;}
+      else {}
+    }
+    expect(none, "peek is still None for more than is held");
+  }
+  {
+    var r = Reader.make(1048576usize);
+    _ = r.push(seg(4096usize, 97u8));
+    _ = r.push(seg(4096usize, 98u8));
+    expect(r.tryReserve(6000usize), "with room in the pool, the crossing reserve is made");
+    let h = hoard();
+    var ok = false;
+    match r.peek(6000usize) {
+      case let Some(v) {ok = v.len == 6000usize && v[0usize] == 97u8 && v[5999usize] == 98u8;}
+      else {}
+    }
+    expect(ok, "the peek is then answered, in the pool's reserve, the bytes as they came");
+  }
+  expectUInt(stats().lent, lentBefore, "every buffer home");
+  done()
+}

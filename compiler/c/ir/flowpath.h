@@ -27,12 +27,11 @@ typedef struct BlockNode BlockNode;
 
 // A set of ids -- loans, or pending conflicts -- kept sorted and never changed
 // once built, so that a path's state and the undo log can share one. NULL is the
-// empty set; pathSetAll is every loan (a loop that would not settle, 3.3).
+// empty set.
 typedef struct PathSet {
     uint32_t cnt;
     uint32_t ids[];
 } PathSet;
-extern PathSet pathSetAll;
 
 PathSet *pathSetAdd(PathSet *set, uint32_t id);
 PathSet *pathSetUnion(PathSet *a, PathSet *b);

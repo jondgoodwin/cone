@@ -377,7 +377,12 @@ fn answerText(srv: &mut SrvRec, x: &mut ExRec, status: u16, text: &str, closeAft
   let n = text.len;
   var b = IoBuf();
   if !x.isHead && n > 0usize {
-    b = IoBuf(n);
+    // A pool that refuses the text's buffer (iobuf's tryMake) leaves it out:
+    // the status, which is the answer, goes with no body
+    b = match IoBuf.tryMake(n) {
+      case var Some(got) {got}
+      else {IoBuf()}
+    };
   }
   let have = b.capacity() > 0usize;
   let len = if have {n} else {0usize};
@@ -431,7 +436,15 @@ fn pumpWrites(srv: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
       if sent >= total {break;}
       let left = total - sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf(n);
+      // A pool that refuses the buffer (iobuf's tryMake) ends the exchange: its
+      // connection is closed, and the writes still waiting are answered closed
+      var b = match IoBuf.tryMake(n) {
+        case var Some(got) {got}
+        else {
+          srvCancel(srv, lp, x);
+          return;
+        }
+      };
       {
         // As bytes: a piece may end inside a UTF-8 character, which a 'str' slice refuses
         let all = x.writes[x.wi].data.view() as &Array[u8];

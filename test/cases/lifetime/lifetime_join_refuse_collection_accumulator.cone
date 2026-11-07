@@ -1,0 +1,12 @@
+// Bug 62: a '&mut List[&mut T]' accumulator and a younger borrow in one struct, pushed to. Refuse: the borrows are one value, and a store through it could put the younger one where the holder points.
+// Master e9e953096: compiled, and the program printed: len 1 first 1
+// (a one-element list whose element is a dead slot: 1, where 7 would be a live read).
+mod lifetime_join_refuse_collection_accumulator;
+import stdio use *;
+import collections use *;
+struct T { pub v: i64; }
+fn clobber(n: i64) i64 { var b = [0x1111i64, 0x2222i64, 0x3333i64, 0x4444i64, 0x5555i64, 0x6666i64, 0x7777i64, 0x8888i64]; var i = 0usize; var s = n; while i < 8usize { b[i] += s; s += b[i]; i += 1usize; } s }
+struct K { pub l: &mut List[&mut T]; pub x: &mut T; }
+fn putK(k: &mut K) { k.l.push(k.x); }
+fn scope(l: &mut List[&mut T]) { var t = T(7); var k = K(l, &mut t); putK(&mut k); }  //~ ErrorCallEscape
+fn main() { var l = List[&mut T](); scope(&mut l); print <- clobber(3), "\n"; print <- "len ", l.len(), " first ", l[0].v, "\n"; }

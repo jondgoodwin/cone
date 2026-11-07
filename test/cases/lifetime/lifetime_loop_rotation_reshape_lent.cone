@@ -1,0 +1,17 @@
+// Bug 58 (r2853_w2): six references rotated in a loop, then a borrow into the list through one and a call that grows it through another name. The loop settles, so the reshape check sees the borrow and refuses (it was skipped while the holders were widened)
+mod lifetime_loop_rotation_reshape_lent;
+import collections use *;
+import stdio use *;
+fn first(xs: &List[i64]) &i64 { &xs[0usize] }
+fn churn() { var k2 = 0; while k2 < 64 { var z = List[i64](); var j = 0; while j < 600 { z.push(99); j += 1; } k2 += 1; } }
+fn grow(l: &mut List[i64]) { var k = 0; while k < 1000 { l.push(7); k += 1; } }
+fn go(l: &mut List[i64], m: &mut List[i64]) i64 {
+  var a = l; var b = l; var c = l; var d = l; var e = l; var f = l;
+  var i = 0;
+  while i < 10 { a = b; b = c; c = d; d = e; e = f; f = m; i += 1; }
+  let x = first(a);
+  grow(l);  //~ ErrorShapeReshape
+  churn();
+  *x
+}
+fn main() { var q = List[i64](); q.push(5); print <- go(&mut q, &mut q), "\n"; }

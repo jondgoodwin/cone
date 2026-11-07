@@ -971,6 +971,22 @@ the `src/` and `gpu/` of each, more than `conec` reads, never less. A build
 whose order holds no `core` (`libc` built on its own) is never skipped, since
 Congo then cannot say where `conec` loads the prelude from.
 
+**`congo test` over a folder of packages shares its libraries (congo.py only;
+the Cone Congo has not been given it yet).** Each package's own build is in
+its `build/<mode>/` as above, but every other package that build reaches
+(`core`, `libc`, `stdio`, `collections`, whatever it imports) is compiled into
+`.congo-shared/<mode>-<hash>/<name>-<hash>/` in the folder tested, once for the
+run, and each package's description names those include files. The folder
+name holds the mode, the `-D` defines and `--strip`, and each library's own
+folder the name and root of its package; and the key, which holds every path
+and define as above, still decides, so a library whose key differs is built
+afresh, and a build whose key cannot be worked out is never shared. A library
+that failed to compile is reported once, and each package needing it fails
+without running `conec` on it again. One package's `congo test` or `congo build`
+is unchanged. The shared folder is in the folder tested, so two runs in
+different checkouts share nothing, and it is kept as `build/` is.
+`.congo-shared` is git-ignored.
+
 Linking (step 6) always runs (on Windows in the environment `vcvars64.bat`
 sets, which Congo keeps: below, "What Congo needs on the machine").
 `congo clean` deletes the keys with the folder,

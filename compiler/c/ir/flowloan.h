@@ -106,6 +106,7 @@ enum LoanEscape {
     LoanEscapeReturn,
     LoanEscapeStore,
     LoanEscapeCall,
+    LoanEscapeJoin,     // borrows made one value: a literal, or a field assigned on a local aggregate
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
@@ -148,7 +149,9 @@ uint32_t loanArenaApart(PathSet *stored, PathSet *arenaholds, VarDclNode **throu
 // Whether a store through a reference holding 'refholds' is into a node of an
 // arena a caller may keep, reached by a route that shows the body nothing of
 // what else the caller lent (loanArenaApart then decides what it may store).
-int loanArenaNodeBarred(PathSet *refholds, int lifenamed);
+// 'byparm' when the reference was reached from a parameter by field steps and
+// dereferences alone, a path whose places a caller's own check sees.
+int loanArenaNodeBarred(PathSet *refholds, int lifenamed, int byparm);
 
 // Whether the arena reference holding 'arenaholds' is checked at all: not
 // where it holds no loan but what was stored through it (made from a raw
