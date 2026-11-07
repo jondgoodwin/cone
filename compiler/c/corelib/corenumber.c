@@ -333,8 +333,8 @@ static void nbrBitMethods(NbrNode *nbrtype) {
     }
 }
 
-// A signed integer's or float's 'abs', an integer's or float's 'min' and 'max',
-// a float's 'floor', 'ceil', 'round' and 'fma': core's number intrinsics
+// A signed integer's or float's 'abs', an integer's or float's 'min', 'max' and
+// 'clamp', a float's 'floor', 'ceil', 'round' and 'fma': core's number intrinsics
 // (mem.abs ...), each the instance the generic declaration's would be for this
 // type, as the bit methods are. A vector has the same, lane by lane
 // (vectorMethods), and one lowering serves both (genlNumberIntrinsic). Unsigned
@@ -361,10 +361,17 @@ static void nbrMathMethods(NbrNode *nbrtype) {
     nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("y", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
     nodesAdd(&fmasig->parms, (INode *)newVarDclFull(nametblFind("z", 1), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
 
+    FnSigNode *clampsig = newFnSigNode();
+    clampsig->rettype = (INode*)selftype;
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(nametblFind("lo", 2), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&clampsig->parms, (INode *)newVarDclFull(nametblFind("hi", 2), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
     static struct { char *name; int16_t kind; int floatonly; int nargs; } mathmeths[] = {
         {"abs", AbsIntrinsic, 0, 1},
         {"min", MinIntrinsic, 0, 2},
         {"max", MaxIntrinsic, 0, 2},
+        {"clamp", ClampIntrinsic, 0, 3},
         {"floor", FloorIntrinsic, 1, 1},
         {"ceil", CeilIntrinsic, 1, 1},
         {"round", RoundIntrinsic, 1, 1},
@@ -379,7 +386,8 @@ static void nbrMathMethods(NbrNode *nbrtype) {
         node->typearg = (INode*)selftype;
         Name *name = nametblFind(mathmeths[i].name, strlen(mathmeths[i].name));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(name, FlagMethFld | FlagPub,
-            (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig : fmasig), (INode *)node));
+            (INode *)(mathmeths[i].nargs == 1 ? unarysig : mathmeths[i].nargs == 2 ? binarysig
+                : mathmeths[i].kind == ClampIntrinsic ? clampsig : fmasig), (INode *)node));
     }
 }
 
