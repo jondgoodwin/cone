@@ -1,0 +1,13 @@
+// Bug 51 (spike): a parameter's borrow stored behind a plain node that reaches a finalizable one. Refuse.
+mod lifetime_arena_refuse_behind_plain_param;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct N { pub p: Option[&mut T]; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct G { pub n: &mut N; fn final(self: &uni) { match self.n.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+fn stash(ar: &'a mut Arena, x: &'a mut T) { let n = ar.alloc(N(None)); let g = ar.alloc(G(n)); n.p = Some(x); }
+fn main() {
+  var a = Arena();
+  { var t = T(7); stash(&mut a, &mut t); }  //~ ErrorFrozen
+}
