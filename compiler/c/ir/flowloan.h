@@ -409,9 +409,9 @@ int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
 // The function the loan walk is in
 FnDclNode *flowPathCurrentFn(void);
 
-// Report the GPU refusals held for core's own functions (ErrorGpuRefChoice and
-// ErrorGpuRefIndexed), those of a function 'reached' says a kernel reaches, and
-// drop the rest
+// Report the GPU refusals held (ErrorGpuRefChoice and ErrorGpuRefIndexed), those
+// of a function 'reached' says a kernel reaches, and drop the rest. With no
+// 'reached' (a compile that ends before generation), those not in core's own code
 void loanGpuHeldFlush(int (*reached)(void *ctx, FnDclNode *fn), void *ctx);
 
 // Report, at 'node', a value of an 'if', a 'match' or a block chosen at run
