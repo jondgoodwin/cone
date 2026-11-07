@@ -1861,11 +1861,11 @@ static char *loanOrigin(uint32_t id, char *buf, size_t size) {
     return buf;
 }
 
-// A refusal in core's own code is held until code generation, which says what
-// a kernel reaches (genlGpuCalls): core is written for every target, and the
-// rule is for GPU code, the functions a kernel calls. Code that is not core's
-// is refused where it is written. A refusal in a compile that fails otherwise
-// is dropped, as nothing then says what a kernel reaches.
+// A refusal is held until code generation, which says what a kernel reaches
+// (genlGpuCalls): the rule is for GPU code, the functions a kernel calls, and
+// nothing is special about whose they are. It is reported at the choice's own
+// line, before any backend runs. A compile that fails before generation reports
+// what is not core's own (loanGpuHeldFlush with no walk).
 typedef struct {
     FnDclNode *fn;
     INode *node;
@@ -1878,7 +1878,7 @@ static uint32_t loanGpuHeldCap = 0;
 
 static void loanGpuRefuse(INode *node, int code, const char *msg) {
     FnDclNode *fn = flowPathCurrentFn();
-    if (fn == NULL || flowGpuRefuses(node)) {
+    if (fn == NULL) {
         errorMsgNode(node, code, "%s", msg);
         return;
     }
@@ -1902,7 +1902,10 @@ static void loanGpuRefuse(INode *node, int code, const char *msg) {
 void loanGpuHeldFlush(int (*reached)(void *ctx, FnDclNode *fn), void *ctx) {
     for (uint32_t i = 0; i < loanGpuHeldCnt; ++i) {
         LoanGpuHeld *held = &loanGpuHeld[i];
-        if (reached(ctx, held->fn))
+        // With no walk to ask (the compile failed before generation), what is
+        // not core's own is reported: nothing is lost to the failure, and core's
+        // is not blamed on a program that has other errors
+        if (reached ? reached(ctx, held->fn) : flowGpuRefuses(held->node))
             errorMsgNode(held->node, held->code, "%s", held->msg);
     }
     loanGpuHeldCnt = 0;
