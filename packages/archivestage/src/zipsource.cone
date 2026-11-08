@@ -25,16 +25,15 @@
 //   rx.recv();                                    // Some(Ok(n)): n bytes, the whole archive, are in out.zip
 //
 // Ok(n) means the archive is whole in the file. Anything else (the file cannot be opened, a write fails,
-// the group is cancelled, the sink or source stopped) is an Err, and the file is gone: a partial file is
-// removed before 'done' is told. The file is first opened (and so made or emptied) by saveTo itself; if
-// that open fails the answer is the error and a file already there is untouched; once it has succeeded the
-// file is ours, and any failure after removes it. The sync ZipWriter.saveTo, which stays, leaves a partial file.
+// the group is cancelled, the sink or source stopped) is an Err. saveTo hands the caller's 'done' to a
+// FileSink made with removeOnFailure: once FileSink has opened (made or emptied) the file the file is ours,
+// and any failure after closes and removes it before 'done' is told. If the open itself fails, or the save
+// ends before anything was opened (a group cancelled at the start), the file is not touched: one already
+// there stays. The sync ZipWriter.saveTo, which stays, leaves a partial file.
 //
 // saveTo works in the cancel group of the caller (the group its messages carry); cancel that group and the
-// save ends Err("streams: cancelled"). It blocks no worker: the open, the pulls and the writes are
-// actors and aio's; the one thing that waits is a thread of its own, that waits for FileSink's answer (a
-// oneshot, which an actor cannot await) and removes the file on failure, so the caller's answer comes after
-// the removal.
+// save ends Err("streams: cancelled"). It blocks no worker beyond FileSink's one removal on failure: the
+// pulls, the open and the writes are actors and aio's.
 
 
 // The size of a chunk ZipSource sends; its window is four of them
@@ -133,109 +132,11 @@ pub actor ZipSource is ChunkSource {
   }
 }
 
-// What the thread that waits for the sink's answer holds
-struct SaveWait is Sendable {
-  rx: OneshotReceiver[Result[u64, AnyError]];
-  done: OneshotSender[Result[u64, AnyError]];
-  name: String;
-}
-
-// Waits for FileSink's answer, removes the file if the save failed, and then answers the caller
-fn saveWait(w: SaveWait) u32 {
-  var pack = w;
-  var answer = Err[u64, AnyError](AnyError.msg("archivestage: the save was abandoned"));
-  match pack.rx.recv() {
-    case let Some(r) { answer = r; }
-    case is None {}
-  }
-  var failed = false;
-  match &answer {
-    case is Ok {}
-    case is Err { failed = true; }
-  }
-  if failed { removeSoon(&Path.from(pack.name.view())); }
-  pack.done.send(answer);
-  0u32
-}
-
-// Removes a file the sink has just closed; the close may trail the answer by a moment
-fn removeSoon(p: &Path) {
-  var tries = 0u32;
-  while tries < 50u32 {
-    match fs.removeFile(p) {
-      case is Ok { return; }
-      case let Err(e) {
-        if !fs.exists(p) { return; }
-      }
-    }
-    thread.sleep(Duration.fromMillis(20i64));
-    tries += 1u32;
-  }
-}
-
-// The actor that opens the file, then builds the save
-actor Save {
-  zip: zipfile.ZipWriter;
-  name: String;
-  done: Option[OneshotSender[Result[u64, AnyError]]];
-
-  pub fn init(self: &new, zip: zipfile.ZipWriter, name: String, done: OneshotSender[Result[u64, AnyError]]) {
-    *self = Self(zip: zip, name: name, done: Some[OneshotSender[Result[u64, AnyError]]](done));
-  }
-
-  // The caller's answer, once
-  fn tell(self, r: Result[u64, AnyError]) {
-    var d = None[OneshotSender[Result[u64, AnyError]]];
-    d <-> done;
-    match d {
-      case let Some(s) { var t = s; t.send(r); }
-      case is None {}
-    }
-  }
-
-  // Makes (or empties) the file first, so that a file left by a failure is ours to remove; then the
-  // writer goes through ZipSource into FileSink
-  pub async fn start(self) {
-    if actors.isCancelled() {
-      self.tell(Err[u64, AnyError](AnyError.msg("streams: cancelled")));
-      return;
-    }
-    let r = await aio.openFile(&Path.from(name.view()), Access.Create);
-    match r {
-      case let Err(e) {
-        self.tell(Err[u64, AnyError](AnyError.from(e)));
-        return;
-      }
-      case let Ok(f) {
-        // closed at once: FileSink opens it again
-        var old = f;
-        var none = File.none();
-        none <-> old;
-      }
-    }
-    var tx: OneshotSender[Result[u64, AnyError]];
-    var rx: OneshotReceiver[Result[u64, AnyError]];
-    tx, rx = Oneshot[Result[u64, AnyError]].make();
-    var held = zipfile.ZipWriter.make();
-    held <-> zip;
-    var mine = None[OneshotSender[Result[u64, AnyError]]];
-    mine <-> done;
-    match mine {
-      case let Some(d) {
-        let pack = SaveWait(rx, d, name.clone());
-        thread.start[SaveWait, u32](pack, &saveWait).detach();
-      }
-      case is None { return; }
-    }
-    let sink = FileSink(name.clone(), tx);
-    let src = ZipSource(sink, held);
-    src.start();
-  }
-}
-
 // Writes the archive in 'zip' (moved in; finished if it is not) to the file 'name', as the actors of
-// this package do, and answers 'done' once: Ok(bytes written), or Err(why) with no file left
+// this package do, and answers 'done' once: Ok(bytes written), or Err(why) with no file of ours left
+// (FileSink's removeOnFailure: see stageio)
 pub fn saveTo(zip: zipfile.ZipWriter, name: String, done: OneshotSender[Result[u64, AnyError]]) {
-  let s = Save(zip, name, done);
-  s.start();
+  let sink = FileSink(name, done, true);
+  let src = ZipSource(sink, zip);
+  src.start();
 }
