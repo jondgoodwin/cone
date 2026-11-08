@@ -54,7 +54,8 @@
 //   aio.openFile(path, access)  a file, opened with iocore's Access   Result[File, IoError]
 //   f.readAt(at, buf)       what is in the file from byte offset at, appended to buf
 //                                                                Result[IoBuf, IoError]
-//   f.writeAt(at, buf)      all of buf, at byte offset at         Result[usize, IoError]
+//   f.writeAt(at, buf)      all of buf, at byte offset at; buf comes back
+//                           (its length is the count)           Result[IoBuf, IoError]
 //   aio.bindUdp(addr)      a UDP socket bound to addr            Result[UdpSocket, IoError]
 //   u.recvFrom(buf)        one datagram, appended to buf, an IoBuf moved in, and its sender
 //                                                                Result[Datagram, IoError]
@@ -636,7 +637,7 @@ const opRecvAny = 2u32;       // read(), read(room): the same, with a buffer the
 const opAccept = 3u32;        // Result[Socket, IoError]
 const opSend = 4u32;          // write(buf): Result[usize, IoError]
 const opReadAt = 5u32;        // a file's read: Result[IoBuf, IoError]
-const opWriteAt = 6u32;       // a file's write: Result[usize, IoError]
+const opWriteAt = 6u32;       // a file's write: Result[IoBuf, IoError]
 const opRecvFrom = 7u32;      // a datagram: Result[Datagram, IoError]
 const opSendTo = 8u32;        // Result[usize, IoError]
 const opConnect = 9u32;       // Result[Socket, IoError]
@@ -722,6 +723,12 @@ var @threadlocal onIo = false;
 // held (if any) is dropped: home to its pool. (Not '(*p).buf = b': a store
 // through a raw pointer does not finalize the value it replaces -- the
 // manual's safe-pointers page -- and the buffer would never go home)
+// The system's own number for out of memory (ERROR_NOT_ENOUGH_MEMORY, ENOMEM), the code of a
+// read the buffer pool refused a buffer for
+fn noMemoryCode() u32 {
+  #if #os == .windows {8u32} #else {12u32}
+}
+
 fn setBuf(p: *OpCore, b: Option[IoBuf]) {
   let c = p as &mut OpCore;
   c.buf = b;
@@ -2017,8 +2024,15 @@ fn startOne(lp: &mut Loop, p: *OpCore) {
     return;
   }
   if w == opRecvAny {
+    // A pool that refuses the buffer (iobuf's tryMake) leaves the read to wait
+    // without one, as a read on a socket that is not calm does: its bytes, when
+    // they come, ask again (below), and the read ends with an error if refused
+    var held = None[IoBuf];
     if (lp.hint((*p).handle) & hintCalm) != 0u32 {
-      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      held = IoBuf.tryMake(usize.from((*rp).ask.arg));
+    }
+    if held is Some {
+      setBuf(p, held);
       beginStage(lp, rp, stageStraight());
     } else {
       beginStage(lp, rp, stageReady());
@@ -2137,7 +2151,17 @@ fn doneRec(lp: &mut Loop, p: *OpCore) {
       // mode that suits
       let waited = Instant.now().nanos() - (*rp).ask.since;
       setCalm(lp, (*p).handle, waited < quietNanos());
-      setBuf(p, Some[IoBuf](IoBuf(usize.from((*rp).ask.arg))));
+      let got = IoBuf.tryMake(usize.from((*rp).ask.arg));
+      if got is None {
+        // A pool that refuses the buffer (iobuf's tryMake): the read ends with
+        // an error, not enough memory, and the bytes stay with the socket
+        (*p).status = diag.outcomeFailed;
+        (*p).code = noMemoryCode();
+        (*p).n = 0usize;
+        answerRec(rp);
+        return;
+      }
+      setBuf(p, got);
       beginStage(lp, rp, stageTake());
       return;
     }
@@ -2207,7 +2231,7 @@ fn answerRec(rp: *OpRec[Ask]) {
   }
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
-  if w == opRecv || w == opRecvAny || w == opReadAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
     actors.answerLentIn[Result[IoBuf, IoError]](back, rp as *Result[IoBuf, IoError], &takeRead);
   } else if w == opAccept || w == opConnect {
     actors.answerLentIn[Result[Socket, IoError]](back, rp as *Result[Socket, IoError], &takeSocket);
@@ -2233,7 +2257,7 @@ fn answerTimedOut(rp: *OpRec[Ask]) {
   let w = (*rp).ask.what;
   let back = &mut (*rp).ask.reply;
   let e = IoError.timedOut();
-  if w == opRecv || w == opRecvAny || w == opReadAt {
+  if w == opRecv || w == opRecvAny || w == opReadAt || w == opWriteAt {
     actors.answerNowIn[Result[IoBuf, IoError]](back, Err[IoBuf, IoError](e));
   } else if w == opAccept || w == opConnect {
     actors.answerNowIn[Result[Socket, IoError]](back, Err[Socket, IoError](e));
@@ -2842,18 +2866,19 @@ pub struct File is Move, Sendable {
     recAwaitable[Result[IoBuf, IoError]](p)
   }
 
-  // All of buf, which is moved in and goes home once written, at byte offset
-  // 'at': the count
-  pub fn writeAt(self: &, at: u64, buf: IoBuf) actors.Awaitable[Result[usize, IoError]] {
+  // All of buf, which is moved in, at byte offset 'at'; buf comes back in the
+  // answer once written, its length the count. A failed write's buffer goes
+  // home to its pool, as a failed read's does
+  pub fn writeAt(self: &, at: u64, buf: IoBuf) actors.Awaitable[Result[IoBuf, IoError]] {
     self.writeAtIn(at, buf, IoLimits.none())
   }
 
-  // A write ended if lim says so, part of buf perhaps written
-  pub fn writeAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[usize, IoError]] {
+  // A write ended if lim says so, part of buf perhaps written; then the buffer goes home
+  pub fn writeAtIn(self: &, at: u64, buf: IoBuf, lim: IoLimits) actors.Awaitable[Result[IoBuf, IoError]] {
     let p = takeRec(opWriteAt, diag.kindWriteAt, h, lim);
     setBuf(p as *OpCore, Some[IoBuf](buf));
     (*p).core.at = at;
-    recAwaitable[Result[usize, IoError]](p)
+    recAwaitable[Result[IoBuf, IoError]](p)
   }
 
   // Ask every read in flight on this file to end, as Socket's cancelRead (a

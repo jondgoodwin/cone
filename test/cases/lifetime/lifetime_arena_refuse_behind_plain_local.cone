@@ -1,0 +1,14 @@
+// Bug 51 (spike): a local's borrow stored behind a plain node that reaches a finalizable one. Refuse.
+mod lifetime_arena_refuse_behind_plain_local;
+import stdio use *;
+import arena use *;
+struct T { pub v: i64; }
+struct N { pub p: Option[&mut T]; }
+struct F { pub p: Option[&mut T]; fn final(self: &uni) { match self.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+struct G { pub n: &mut N; fn final(self: &uni) { match self.n.p { case let Some(r) { print <- r.v, "\n"; } case None { print <- "none\n"; } } } }
+fn main() {
+  var a = Arena();
+  let n = a.alloc(N(None));
+  let g = a.alloc(G(n));
+  { var t = T(7); n.p = Some(&mut t); }  //~ ErrorFrozen
+}

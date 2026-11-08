@@ -319,7 +319,13 @@ instead of borrowing it.
   variable the body names is a `BorrowTag` node with `RefNode.capture` set
   (`closureTypeCheck`), and the field's type is a reference with it set too
   (`closureBuild`): a reference to a variable's slot, which does not narrow what
-  a `&mut` the variable holds may write (`iexpReachWrites`). The loan walk's escape messages (`loanNotBoxable`,
+  a `&mut` the variable holds may write (`iexpReachWrites`). For the same reason the
+  loan walk counts a read-only capture of a variable holding a `&mut` as a way to store
+  (`itypeWritableBorrowDepth`, `itypeCarriesWritableBorrow`, and the argument of the
+  construction, `pwPartsStore`), and asks the captures of a closure what a call's
+  arguments are asked, where the closure is made (`pwJoinStores`, flow.md): two captures
+  share one lifetime, and a closure that could store one in the other is refused at the
+  literal, `ErrorCallEscape`, though its body only reads the younger. The loan walk's escape messages (`loanNotBoxable`,
   `loanNotGlobal`, `loanNotBound`, `loanEscape`; `loanCaptured`,
   `loanCaptureAdvice`) read it off the loan's site and add the sentence: list the
   variable, `[k]`; for `self` (a body that names a member borrows `self`), copy the

@@ -1723,7 +1723,16 @@ waiting for their statement's end (`GenTemp`), the newest first, but a lock's
 guard and any that does nothing as it dies; and flow's record of variables
 (`seamvars`: holding its value, and used after the seam or droppable), the
 last declared first, but `self`, which the dispatcher lends each half afresh,
-each bringing its drop flag where it has one. A value in flight is one
+each bringing its drop flag where it has one. **A match's binding by value
+(`flowMatchInPlace`) is no variable of its own to the record**: it names the
+matched value's storage, which its owner (`flowDropOwner`) carries once -- by
+the owner's own entry where that is carried, else, if the binding is used after
+the seam and the owner holds a value but would not be carried, by the owner in
+the binding's place. An owner that holds nothing at the seam (the binding took
+the whole payload, `case let Ok(x)`) leaves the record nothing, so the
+abandoned record's drop function (`genlSeamDrop`) and trace function
+(`genlSeamTrace`), which walk the same fields, see the value once, in `x`.
+A value in flight is one
 generated before a later operand holding a seam -- `x` in `two(x, await
 give())`, a call's argument or receiver, a literal's field or element -- which
 belongs to no variable: `genlExprsAcross` keeps it in a slot of its own
@@ -2375,10 +2384,18 @@ for it), is caught before its body is expanded, so the module asks for no
 64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
 intrinsics. The CPU is untouched, and the C library is called there. Core's
 `sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
-every target, and so are a number's `abs`, `min`, `max`, `floor`, `ceil`, `round`
-and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
+every target, and so are a number's `abs`, `min`, `max`, `clamp`, `floor`, `ceil`,
+`round` and `fma` (their LLVM intrinsics, [intrinsic](../nodes/intrinsic.md)), which the
 SPIR-V back end selects as `FAbs`, `NMin`, `NMax`, `Floor`, `Ceil`, `Round` and `Fma`
 (`SAbs`, `SMin` and `SMax` for a signed integer): `module_target_spirv_numbers`.
+**A kernel's float `min`, `max` and `clamp` do not keep the NaN ruling (a stated
+exception, design chat and Jon, 6 Nov 2026).** The CPU propagates NaN: a float's `min`,
+`max` and `clamp` are `llvm.minimum` and `llvm.maximum`. On SPIR-V the back end selects
+`NMin` and `NMax` for those same intrinsics (read from `--asm`). Vulkan lets a driver assume
+there are no NaNs unless a kernel declares `SignedZeroInfNanPreserve`, an optional feature,
+which Cone does not declare. So a kernel answers as it always has, and the NaN and the
+`-0.0` answers of the CPU are not promised there. None of this has been run on a GPU;
+`module_target_spirv_numbers` pins only the instructions selected.
 
 `module_target_spirv_math` pins the intrinsics and the instructions (its
 `asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,

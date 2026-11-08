@@ -1392,6 +1392,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
             flowLoadValue(fstate, nodesp);
             flowGateOperand(fstate, *nodesp);
         }
+        flowGateJoin(fstate, ((TupleNode *)*nodep)->elems);
         flowGateOperandsEnd(fstate, inflight, keep);
         break;
     }
@@ -2093,6 +2094,37 @@ void flowGateStaticAsk(FlowState *fstate, INode *lit, uint32_t i, INode *val) {
     if (itypeCarriesBorrow(((IExpNode *)val)->vtype) && itypeCarriesBorrow(fieldtype)
             && !itypeCarriesEndingBorrow(fieldtype))
         fstate->gate |= FlowGateStatic;
+}
+
+// A literal (a struct, a tuple, an array, a closure's captures) of two or more
+// values that may hold borrows, one of them a way to store (a writable borrow
+// of something that can hold one, or a struct holding such): the loan walk
+// asks what a call's arguments are asked (pwJoinStores)
+void flowGateJoinAsk(FlowState *fstate, Nodes *elems) {
+    uint32_t carrying = 0;
+    int storer = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(elems, cnt, nodesp)) {
+        INode *elem = (*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp;
+        INode *type = ((IExpNode *)elem)->vtype;
+        if (type == NULL || !itypeCarriesBorrow(type))
+            continue;
+        ++carrying;
+        INode *dcl = flowGateTypeDcl(type);
+        if (itypeWritableBorrowDepth(dcl, 1))
+            storer = 1;
+        else if (dcl->tag == RefTag) {
+            // a closure's capture of a variable holding a '&mut'
+            INode *core = elem;
+            while (core->tag == CastTag)
+                core = ((CastNode *)core)->exp;
+            if (core->tag == BorrowTag && ((RefNode *)core)->capture && itypeWritableBorrowDepth(((RefNode *)dcl)->vtexp, 1))
+                storer = 1;
+        }
+    }
+    if (carrying >= 2 && storer)
+        fstate->gate |= FlowGateStore;
 }
 
 // A method called on a value that may change shape (a list, a string, a struct

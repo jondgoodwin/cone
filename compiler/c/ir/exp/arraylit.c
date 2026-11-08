@@ -285,6 +285,7 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
             flowHandleMoveOrCopy(elemsp);
             flowGateOperand(fstate, *elemsp);
         }
+        flowGateJoin(fstate, arrlit->elems);
         flowGateOperandsEnd(fstate, inflight, keep);
         return;
     }

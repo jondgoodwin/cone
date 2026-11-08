@@ -1,0 +1,140 @@
+// A receive the buffer pool refuses (iobuf's tryMake, the pool at the reserve of
+// its maxBytes) ends that connection with an error, Overloaded, at Stage.Read:
+// no panic, the request on the other end failed, and nothing left half-handled.
+// Once the pool has room again (the hoard given back) the pool's lent count is
+// what it was and a new connection is served.
+
+mod refusedrecv;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokConn2 = 3u64;
+const tokReq = 2u64;
+const tokReq2 = 4u64;
+
+fn sizeOf(i: u32) usize {
+  if i == 0u32 {4096usize} else if i == 1u32 {16384usize} else if i == 2u32 {65536usize}
+  else if i == 3u32 {262144usize} else {1048576usize}
+}
+
+// Take with tryMake, every size class in turn, until each is refused
+fn hoard() Chain {
+  var held = Chain.make(unbounded);
+  var cls = 0u32;
+  while cls < 5u32 {
+    var going = true;
+    while going {
+      match IoBuf.tryMake(sizeOf(cls)) {
+        case var Some(b) {
+          b.append("x");
+          _ = held.push(b);
+        }
+        else {going = false;}
+      }
+    }
+    cls = cls + 1u32;
+  }
+  held
+}
+
+fn main() i32 {
+  var lp = Loop.mustMake();
+  var drv = Driver.make(Config.make());
+  var port = 0u16;
+  var listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here(tokServer)) {
+    case let Ok(r) {listener = r;}
+    case let Err(e) {}
+  }
+  match drv.localAddr(&lp, listener) {
+    case let Ok(a) {port = a.port();}
+    case let Err(e) {}
+  }
+  require(port != 0u16, "the server listens");
+  let conn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn));
+
+  var events = List[Event]();
+  var accepted = 0u32;
+  var connected = false;
+  var srvClosed = 0u32;
+  var srvKind = ErrorKind.Closed;
+  var srvStage = Stage.Closed;
+  var srvClean = true;
+  var reqState = 0u32;       // 0 pending, 1 Done, 2 not Done
+  var answered = 0u32;
+  var phase = 0u32;
+  var h = Chain.make(unbounded);
+  var req = ReqId.none();
+  var conn2 = ConnId.none();
+  let giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while phase < 3u32 && Instant.now() < giveUp {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &uni events);
+    var k = 0usize;
+    while k < events.len() {
+      let e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer && e.kind == EventKind.Accepted {
+        accepted = accepted + 1u32;
+      } else if e.token == tokServer && e.kind == EventKind.Closed {
+        srvClosed = srvClosed + 1u32;
+        if srvClosed == 1u32 {
+          srvKind = e.failure.error.kind;
+          srvStage = e.failure.stage;
+          srvClean = e.clean;
+        }
+      } else if e.token == tokServer && e.kind == EventKind.End {
+        drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+        var b = IoBuf(8usize);
+        b.append("ok");
+        drv.sendData(e.req, b);
+        drv.finish(e.req);
+        answered = answered + 1u32;
+      } else if e.token == tokConn && e.kind == EventKind.Connected {
+        connected = true;
+      } else if (e.token == tokReq || e.token == tokReq2) && e.kind == EventKind.Data {
+        drv.release(e.req, e.buf.len());
+      } else if (e.token == tokReq || e.token == tokReq2) && e.isTerminal() {
+        reqState = if e.kind == EventKind.Done {1u32} else {2u32};
+      }
+    }
+    events.clear();
+    if phase == 0u32 && connected && accepted == 1u32 {
+      // The connection stands, nothing in flight: now the pool is at its reserve,
+      // and the client's request makes the server's receive ask for a buffer
+      h = hoard();
+      req = drv.request(&mut lp, conn, RequestHead.get("/a", "127.0.0.1"), BodyLength(), Sink.Here(tokReq));
+      phase = 1u32;
+    } else if phase == 1u32 && srvClosed == 1u32 && reqState != 0u32 {
+      expect(srvKind == ErrorKind.Overloaded, "the refused receive ends the server's connection Overloaded");
+      expect(srvStage == Stage.Read, "...at Stage.Read");
+      expect(!srvClean, "...not as a clean close");
+      expect(reqState == 2u32, "the client's request on it failed, it did not wait");
+      expectUInt(u64.from(answered), 0u64, "no request reached the server's handler");
+      expect(stats().refused > 0u64, "the pool counted refusals");
+      // The hoard goes home; a new connection is served
+      h = Chain.make(unbounded);
+      reqState = 0u32;
+      conn2 = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here(tokConn2));
+      req = drv.request(&mut lp, conn2, RequestHead.get("/b", "127.0.0.1"), BodyLength(), Sink.Here(tokReq2));
+      phase = 2u32;
+    } else if phase == 2u32 && reqState != 0u32 {
+      expect(reqState == 1u32, "with the pool's room back, a new connection's request is Done");
+      expectUInt(u64.from(answered), 1u64, "the server answered it");
+      phase = 3u32;
+    }
+  }
+  requireUInt(u64.from(phase), 3u64, "all three phases reached before the deadline");
+  drv.abortAll(&mut lp);
+  events.clear();
+  expectUInt(stats().lent, 0u64, "after the flood and the new connection, lent is what it was: 0");
+  done()
+}

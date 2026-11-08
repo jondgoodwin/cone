@@ -1635,7 +1635,16 @@ pub struct Client {
     while f.sent < f.body.len() {
       let left = f.body.len() - f.sent;
       let n = if left < sendChunk {left} else {sendChunk};
-      var b = IoBuf(n);
+      // A pool that refuses the buffer (iobuf's tryMake) ends the fetch: its
+      // exchange is cancelled, and it ends Failed, Overloaded (reqStopped)
+      var b = match IoBuf.tryMake(n) {
+        case var Some(got) {got}
+        else {
+          if f.ending == endNone {f.ending = endFailed;}
+          self.cancelReq(lp, fi);
+          return;
+        }
+      };
       let all = f.body.view();
       b.append(&all[f.sent ..< f.sent + n]);
       if self.sendPiece(fi, b) {
@@ -1811,7 +1820,7 @@ pub struct Client {
       self.follow(lp, fi);
     } else if f.ending == endFailed {
       self.finishFetch(lp, fi, endFailed, Some[Failure](
-        Failure.make(Stage.Limit, 0u32, ErrorKind.TooLarge, "the buffer pool refused a buffer for the request's body")));
+        Failure.make(Stage.Limit, 0u32, ErrorKind.Overloaded, "the buffer pool is full (iobuf maxBytes): no buffer for the request's body")));
     } else if f.ending == endTimedOut || f.ending == endLimit {
       self.finishFetch(lp, fi, f.ending, None);
     } else if timedOut {
