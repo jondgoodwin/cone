@@ -97,10 +97,13 @@
 //   at once would split the chunks between them. Dropping the last handle of
 //   the ChatStream cancels the rest of the exchange and closes the connection.
 // - THE STREAM'S BYTES. The response body arrives in pieces of any size
-//   (actorhttp's BodyStream); the sse package's Reader cuts it into events
-//   whatever the pieces' boundaries (a piece may end inside a line, inside the
-//   JSON, between a CR and its LF), its comments and empty events dropped. The
-//   reader's limit of 1 MiB for one event ends a stream that passes it. A 200
+//   (actorhttp's BodyStream), and once the status is checked it is read as
+//   events ('bs.events()'): actorhttp's own sink runs the sse package's Reader
+//   over it, which cuts it into events whatever the pieces' boundaries (a piece
+//   may end inside a line, inside the JSON, between a CR and its LF), its
+//   comments and empty events dropped. At most the connection's window of the
+//   body is held however slowly 'next' is called. The reader's limit of 1 MiB
+//   for one event stops the source and ends the stream with a Stream error. A 200
 //   whose Content-Type is not text/event-stream (a server that ignored
 //   'stream' answers application/json) is a Decode error; one with no
 //   Content-Type is read as events.
@@ -108,7 +111,8 @@
 //   error status is an answer, as for actorhttp: the Api kind, carrying the
 //   status and what the API's error object says ({"error": {"message", "type",
 //   "code"}}, or {"error": "text"} as some servers write it; a body that is no
-//   error object gives the status and the start of the body). An error object
+//   error object gives the status and the start of the body). Only the first
+//   64 KiB of an error body is read; the rest is let go (the fetch is cancelled). An error object
 //   inside a 200 is the same Api error, and one inside a chunk a Stream error.
 //   A reply or chunk that is not what the API writes is Decode, with the json
 //   package's position. The network, TLS and the client's limits are
