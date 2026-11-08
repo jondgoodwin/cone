@@ -9,6 +9,8 @@
 //  (d) Joined and Left pass with no credit
 //  (e) two connections into one sink: credit goes to the right one, by id
 //  (f) the sink's stop closes the connection with CloseReason.Local
+//  (g) an endpoint's shutdown sends its sink one end, after the Lefts (this one
+//      goes over a UDP socket on loopback)
 
 mod valuestream;
 
@@ -16,6 +18,7 @@ import testing use *;
 import collections use *;
 import sync use *;
 import time use Duration;
+import iocore use SocketAddr;
 import actors;
 import stages use ValueSink, ValueSource, Ending;
 import netmsg use *;
@@ -117,6 +120,27 @@ actor ManualSink is ValueSink[NetEvent] {
       case let &Some(u) { u.stop(Ending.Finished); }
       else {}
     }
+  }
+}
+
+// A sink that writes each event, and its end, as text to a channel
+actor TextSink is ValueSink[NetEvent] {
+  tx: Sender[String];
+
+  pub fn init(self: &new, tx: Sender[String]) {
+    *self = Self(tx: tx);
+  }
+
+  pub async fn attach(self, source: ValueSource) {
+    source.credit(8u32);
+  }
+
+  pub async fn accept(self, ev: NetEvent) {
+    tx.send(describe(ev));
+  }
+
+  pub async fn end(self, how: Ending) {
+    tx.send(String.from("END"));
   }
 }
 
@@ -336,7 +360,39 @@ fn main() i32 {
     expectStr(next(&mut rxA, 1000i64).view(), "J1", "the other end joined");
     expectStr(next(&mut rxA, 1000i64).view(), "L1:remote", "and hears the other end closed");
   }
+
+  // (g) the server's sink hears Joined, then Left when its endpoint shuts down with a
+  // client connected, then one end: after the Left, and once however often shutdown is called
+  {
+    var txT: Sender[String];
+    var rxT: Receiver[String];
+    txT, rxT = Channel[String].make();
+    var txC: Sender[NetEvent];
+    var rxC: Receiver[NetEvent];
+    txC, rxC = Channel[NetEvent].make();
+    let cfg = NetConfig.defaults();
+    let h: EventHandler = TextSink(txT);
+    let server = mustListen(SocketAddr.localhost(0u16), cfg, h);
+    let client = mustConnect(SocketAddr.localhost(server.port), cfg, channelHandler(txC));
+    expectStr(nextText(&mut rxT, 3000i64).view(), "J1", "the server's sink heard the client join");
+    expectStr(next(&mut rxC, 3000i64).view(), "J1", "and the client joined");
+    server.endpoint.shutdown();
+    expectStr(nextText(&mut rxT, 3000i64).view(), "L1:local", "the shutdown ends the connection first");
+    expectStr(nextText(&mut rxT, 3000i64).view(), "END", "and then the sink hears its one end");
+    server.endpoint.shutdown();
+    expectStr(nextText(&mut rxT, 300i64).view(), "none", "a second shutdown sends no other");
+    client.endpoint.shutdown();
+  }
   done()
+}
+
+// The next text, or "none" if none comes within ms
+fn nextText(rx: &mut Receiver[String], ms: i64) String {
+  match rx.recvTimeout(Duration.fromMillis(ms)) {
+    case let Some(s) { return s; }
+    case is None[String] {}
+  }
+  String.from("none")
 }
 
 fn filledTooLarge() List[u8] {

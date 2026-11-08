@@ -123,6 +123,9 @@ pub actor Endpoint {
         case is None[Connection] {}
       }
     }
+    // The ValueSource contract: one 'end' to the handler, after every Left. A
+    // Connection sends none (its Left is its own end), because the handler is shared.
+    handler.end(Ending.Finished);
     // The disconnect datagrams are in flight: wait for the socket to take them
     let limit = Instant.now() + Duration.fromMillis(flushMillis);
     while inflight > 0usize && Instant.now() < limit {
@@ -274,6 +277,8 @@ pub actor Endpoint {
       each p in out.drain() { self.transmit(remote, p); }
       if dialer.isFailed() {
         dialing = false;
+        // Id 1 is no live connection: only a dial that connects makes one (with id 1,
+        // in 'dial', which ends the dialing), and a server never dials
         handler.accept(NetEvent.Left(1u32, if dialer.wasRefused() {CloseReason.Refused} else {CloseReason.NoAnswer}));
       }
     }
@@ -366,6 +371,7 @@ pub actor Endpoint {
       }
       case is Refused {
         dialing = false;
+        // As in 'fire': dialing was on, so id 1 is no live connection
         handler.accept(NetEvent.Left(1u32, CloseReason.Refused));
       }
       case is Nothing {}
