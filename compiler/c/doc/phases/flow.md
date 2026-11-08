@@ -1298,9 +1298,11 @@ unnamed parameter and the store is refused, the message saying to name which
 parameter). A raw pointer in a stored value is outside this rule, as it is
 everywhere: nothing is tracked through one, and `trust` vouches for what it
 reaches. Only a reference to the
-arena made by a cast from a raw pointer is trusted: it carries no loan but
-what was stored through it (`loanArenaChecked`), so its stores are unseen, and
-the one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
+arena made by a cast from a raw pointer is trusted: the cast leaves it no
+loan, so it carries none but what was stored through it (`loanArenaChecked`),
+and its stores are unseen. A loan a caller lent through the parameter the arena
+was reached by (`self.h.ar` holds `self`'s) makes the store checked even where
+the stored value carries that same loan (`&self.n`). The one such site is `DynArena.alloc`, trusted on the key rule (`WI/trust.md`;
 every route into `alloc` meets ErrorKeyBorrow, the `lifetime_arena_key_*`
 tests). Any other reference whose origin the walk cannot place (an arena
 reached through a method's result) may point anywhere, so no local's borrow is
