@@ -21,12 +21,18 @@
 //
 // WHO ENDS THE BODY. The sink's 'end(Finished)' is 'finish'. 'end(Failed)' resets
 // the exchange. Dropping the Exchange after 'bodySink' leaves the body to the sink
-// (DropExJob does not finish or cut it). The peer resetting or the connection
+// (DropExJob does not finish or cut it): the handler wires the sink to a source and
+// returns, so the drop usually comes before the source's 'attach' reaches the service.
+// The peer resetting or the connection
 // closing (endEx) stops the source with Failed(closed) and gives back every chunk
 // held and every chunk still arriving. A body the protocol forbids (HEAD, 204, 304, a
 // length of 0) is answered on 'attach' with stop(Finished), so the pipeline is not run.
-// A sink that is never attached to a source ends nothing: the response waits, as any
-// pipeline with no end does.
+// A sink that is held but never attached to a source ends nothing: the response waits,
+// as any pipeline with no end does. A sink that is DROPPED (the actor's 'final') without
+// a source ever attached can have none attach after it (its 'attach' is a message to
+// it, ahead of its death, and its job to the service ahead of SinkGoneJob), so no body
+// will come: with the Exchange dropped too, whichever of the two comes second ends the
+// response as without a sink (an unsized body is finished, a sized one reset).
 
 // Give back to the source an exchange's chunk that was queued
 fn sinkGive(x: &ExRec, b: IoBuf) {
@@ -145,6 +151,15 @@ actor ResponseSink is ChunkSink {
     post[SinkEndJob](SinkEndJob(srv, slot, id, how));
   }
 
+  // The sink dropped with no source ever attached: the service is told
+  fn final(self: &uni) {
+    if bodyless {return;}
+    match &up {
+      case let &Some(u) {}
+      else {post[SinkGoneJob](SinkGoneJob(srv, slot, id));}
+    }
+  }
+
   // A chunk the service thread could not take (its exchange is gone): back to the source
   pub async fn home(self, c: IoBuf) {
     match &up {
@@ -171,6 +186,31 @@ struct SinkOpenJob {
     x.sinkOpen = true;
     // the exchange ended already: the source, once attached, is stopped
     if x.over {x.sinkFailed = true;}
+  }
+}
+
+// The sink actor was dropped and no source had been attached to it
+struct SinkGoneJob {
+  pub srv: u64;
+  pub slot: u32;
+  pub id: u64;
+
+  pub fn run(self, lp: &mut Loop, sv: &mut Service) {
+    let loc = locate(sv, self.srv, self.slot, self.id);
+    if loc.ex as usize == 0usize {return;}
+    let s = loc.srv as &mut SrvRec;
+    let x = loc.ex as &mut ExRec;
+    if x.over || x.finished || x.finishing || !x.sinkOpen || x.sinkFailed || x.sinkEnded || x.sinkIn != 0u64 {return;}
+    match &x.sinkUp {
+      case let &Some(u) {return;}
+      else {}
+    }
+    x.sinkGone = true;
+    // the Exchange is dropped already: no body will come
+    if !x.handle {
+      x.sinkOpen = false;
+      endBodyUnsunk(s, lp, x);
+    }
   }
 }
 

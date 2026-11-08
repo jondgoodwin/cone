@@ -58,6 +58,7 @@ struct ExRec {
   sinkChunks: Deque[IoBuf];    // chunks arrived, whose bytes the connection has not all taken
   sinkOff: usize;              // ...of the first, how many it has taken
   sinkIn: u64;                 // body bytes the sink has been given, for the declared length
+  sinkGone: bool;              // the sink actor was dropped and no source was ever attached to it: no body will come
 }
 
 // The record of request req (or qreq, over HTTP/3), its head just read
@@ -66,7 +67,7 @@ fn readingEx(req: httpconn.ReqId, qreq: httpclient.H3Req, onH3: bool, isHead: bo
     responded: false, chunked: false, sized: false, length: 0u64, written: 0u64, finishing: false,
     finished: false, finishReply: None, writes: List[PendingWrite](), wi: 0usize, handle: false,
     over: false, ok: false, sinkOpen: false, sinkFailed: false, sinkEnded: false, sinkUp: None[ChunkSource],
-    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64)
+    sinkChunks: Deque[IoBuf](), sinkOff: 0usize, sinkIn: 0u64, sinkGone: false)
 }
 
 // A listening server the service owns: its own driver (so its bounds are its
@@ -868,14 +869,27 @@ struct DropExJob {
     }
     if !x.responded {
       answerText(s, x, 500u16, "no response was made", false);
-    } else if !x.finished && !x.finishing && !x.sinkOpen && !x.sinkFailed {
-      // (a sink still open owns the body: it finishes it, or the exchange ends)
-      if x.chunked {
-        x.finishing = true;
-        pumpWrites(s, lp, x);
-      } else {
-        srvCancel(s, lp, x);
+    } else if !x.finished && !x.finishing {
+      // A sink taken keeps the body while it may still be given a source: it finishes the
+      // body, or the exchange ends. A sink dropped without ever being given one
+      // (sinkGone, from SinkGoneJob) has no body coming: the drop ends the body as
+      // without a sink.
+      if x.sinkGone {
+        x.sinkOpen = false;
+        endBodyUnsunk(s, lp, x);
+      } else if !x.sinkOpen && !x.sinkFailed {
+        endBodyUnsunk(s, lp, x);
       }
     }
+  }
+}
+
+// The Exchange is gone and its body not ended by the handler: an unsized one is finished, a sized one reset
+fn endBodyUnsunk(s: &mut SrvRec, lp: &mut Loop, x: &mut ExRec) {
+  if x.chunked {
+    x.finishing = true;
+    pumpWrites(s, lp, x);
+  } else {
+    srvCancel(s, lp, x);
   }
 }
