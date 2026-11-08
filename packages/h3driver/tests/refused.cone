@@ -1,0 +1,421 @@
+// A buffer pool that refuses (iobuf's tryMake, the pool full to its maxBytes)
+// ends the HTTP/3 connection that needed the buffer, Overloaded, instead of a
+// plain construction panicking in the process. Both ends run on one Loop and
+// one thread (loopback.cone's harness), under a pool of 8 MiB.
+//
+// 1. A connection is made and a GET is served: the baseline.
+// 2. The pool is filled (plain 4 KiB buffers until no slab can be made and
+//    none is free, then what tryMake's own slab still gave). A GET on the
+//    connection fails Overloaded, and the client's connection is told Closed,
+//    not clean, Overloaded: the client's datagram needed a buffer. The
+//    process is alive to say so.
+// 3. A new connection asked for with the pool still full is refused at once,
+//    Overloaded, and none is left behind.
+// 4. The pool's buffers go home: a new connection is made and a GET on it is
+//    served, every byte right.
+//
+// On master (plain IoBuf in the same places) step 2 panics: out of memory.
+
+mod refused;
+
+import stdio use *;
+import fs;
+import path use Path;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Completion, SocketAddr, Op, Target, forever;
+import http use *;
+import tls;
+import quic;
+import h3driver use *;
+
+const slab = 2097152usize;
+const noBound = 0xFFFFFFFFFFFFFFFFusize;
+
+// A file of tls's test certificates: congo test runs a test in
+// build/<mode>/tests/<name>/, four folders below this package's
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  let p = certs(name);
+  match fs.readFile(&p) {
+    case var Ok(r) {return r;}
+    case let Err(e) {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String()
+}
+
+fn clientConfig() Config {
+  var cfg = Config.make();
+  cfg.transport.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg
+}
+
+fn serverCtx() quic.Context {
+  let q = quic.Config.make();
+  let cert = certs("server.pem");
+  let key = certs("server.key");
+  match quic.Context.server(q, &cert, &key) {
+    case var Ok(r) {return r;}
+    case let Err(e) {
+      print <- e;
+      printStr("\n");
+    }
+  }
+  panic("the server's context could not be made")
+}
+
+// The body pattern: byte j of a body of 'size' bytes
+fn byteOf(size: u64, j: u64) u8 {u8.from((j * 31u64 + size * 7u64 + j / 256u64) % 251u64)}
+
+fn piece(size: u64) IoBuf {
+  let n = usize.from(size);
+  var b = IoBuf(n);
+  let w = b.spare();
+  var k = 0usize;
+  while k < n {
+    w[k] = byteOf(size, u64.from(k));
+    k = k + 1usize;
+  }
+  b.setLen(n);
+  b
+}
+
+fn numberAfter(t: &str, prefix: &str) u64 {
+  var n = 0u64;
+  var k = prefix.len();
+  while k < t.len() {
+    let ch = t[k];
+    if ch < '0' || ch > '9' {break;}
+    n = n * 10u64 + (u64.from(ch) - 48u64);
+    k = k + 1usize;
+  }
+  n
+}
+
+fn yes(b: bool) &str {if b {"yes"} else {"no"}}
+
+// What a client request came to: 0 none, 1 Done, 2 Failed
+struct Res {
+  outcome: u32;
+  kind: ErrorKind;
+  status: u16;
+  got: u64;
+  size: u64;
+  good: bool;
+}
+
+// A client connection's end, by its token
+struct Shut {
+  closed: u64;
+  clean: bool;
+  kind: ErrorKind;
+}
+
+struct World {
+  lp: Loop;
+  cli: Driver;
+  srv: Driver;
+  port: u16;
+  accepted: u64;
+  served: u64;
+  connected: u64;
+  srvClosed: u64;
+  srvClean: u64;
+  res: List[Res];       // by request token - 10
+  shut: List[Shut];     // by connection token - 2
+}
+
+fn world() World {
+  var lp = Loop.mustMake();
+  var srv = Driver.make(Config.make());
+  var port = 0u16;
+  match srv.listen(&mut lp, SocketAddr.localhost(0u16), serverCtx(), 1u64) {
+    case let Ok(l) {
+      match srv.localAddr(&lp, l) {
+        case let Ok(a) {port = a.port();}
+        case let Err(e) {}
+      }
+    }
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  var res = List[Res]();
+  var shut = List[Shut]();
+  var i = 0usize;
+  while i < 4usize {
+    res.push(Res(0u32, ErrorKind.Closed, 0u16, 0u64, 0u64, true));
+    shut.push(Shut(0u64, true, ErrorKind.Closed));
+    i = i + 1usize;
+  }
+  World(lp, Driver.make(clientConfig()), srv, port, 0u64, 0u64, 0u64, 0u64, 0u64, res, shut)
+}
+
+fn serverEvents(w: &mut World, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Accepted {
+      w.accepted = w.accepted + 1u64;
+    } else if e.kind == EventKind.Closed {
+      w.srvClosed = w.srvClosed + 1u64;
+      if e.clean {w.srvClean = w.srvClean + 1u64;}
+    } else if e.kind == EventKind.Request {
+      let size = numberAfter(e.request.target.view(), "/get/");
+      w.srv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));
+      w.srv.sendData(e.req, piece(size));
+      w.srv.finish(e.req);
+      w.served = w.served + 1u64;
+    }
+  }
+  events.clear();
+}
+
+fn clientEvents(w: &mut World, events: &mut List[Event]) {
+  var k = 0usize;
+  while k < events.len() {
+    let e = &mut events[k];
+    k = k + 1usize;
+    if e.kind == EventKind.Connected {
+      w.connected = w.connected + 1u64;
+    } else if e.kind == EventKind.Closed {
+      let s = &mut w.shut[usize.from(e.token - 2u64)];
+      s.closed = s.closed + 1u64;
+      s.clean = e.clean;
+      if !e.clean {s.kind = e.failure.error.kind;}
+    } else if e.token >= 10u64 {
+      let r = &mut w.res[usize.from(e.token - 10u64)];
+      if e.kind == EventKind.Response {
+        r.status = e.response.status;
+      } else if e.kind == EventKind.Data {
+        let v = e.buf.view();
+        var i = 0usize;
+        while i < v.len {
+          if v[i] != byteOf(r.size, r.got + u64.from(i)) {r.good = false;}
+          i = i + 1usize;
+        }
+        r.got = r.got + u64.from(v.len);
+        w.cli.release(e.req, v.len);
+      } else if e.kind == EventKind.Done {
+        r.outcome = 1u32;
+      } else if e.kind == EventKind.Failed {
+        r.outcome = 2u32;
+        r.kind = e.failure.error.kind;      }
+    }
+  }
+  events.clear();
+}
+
+fn spin(w: &mut World, until: Instant) {
+  w.cli.turn(&mut w.lp);
+  w.srv.turn(&mut w.lp);
+  var ce = List[Event]();
+  var se = List[Event]();
+  w.cli.takeEvents(&mut ce);
+  w.srv.takeEvents(&mut se);
+  let busy = ce.len() > 0usize || se.len() > 0usize;
+  clientEvents(w, &mut ce);
+  serverEvents(w, &mut se);
+  var limit = until;
+  let a = w.cli.wakeAt();
+  let b = w.srv.wakeAt();
+  if a < limit {limit = a;}
+  if b < limit {limit = b;}
+  if busy {limit = Instant();}
+  var cs = List[Completion]();
+  w.lp.poll(limit, &mut cs);
+  var j = 0usize;
+  while j < cs.len() {
+    if cs[j].token == 99u64 {
+      // the raw socket's sends (the owed-receive case)
+    } else if !w.cli.complete(&mut w.lp, &mut cs[j]) {
+      if !w.srv.complete(&mut w.lp, &mut cs[j]) {printStr("a completion no driver claimed\n");}
+    }
+    j = j + 1usize;
+  }
+}
+
+// The pool full: every 4 KiB buffer tryMake gives until it refuses (its bank
+// has none free and may not grow), then plain ones until no slab can be made
+// and none is free (the test's and the drivers' buffers are all of that
+// class, so what is idle then is the plain bank's free 4 KiB blocks alone)
+fn fill() Chain {
+  trim();
+  var held = Chain.make(noBound);
+  var going = true;
+  while going {
+    match IoBuf.tryMake(4096usize) {
+      case var Some(b) {
+        b.append("x");
+        held.push(b);
+      }
+      else {going = false;}
+    }
+  }
+  while stats().heldBytes + slab <= stats().maxBytes || stats().idleBytes >= 4096usize {
+    var b = IoBuf(1usize);
+    b.append("x");
+    held.push(b);
+  }
+  held
+}
+
+// Spin until request token t has an outcome, or 10 s pass
+fn settle(w: &mut World, t: u64) {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while w.res[usize.from(t - 10u64)].outcome == 0u32 && Instant.now() < limit {spin(w, limit);}
+}
+
+fn spinFor(w: &mut World, ms: i64) {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < limit {spin(w, limit);}
+}
+
+fn get(w: &mut World, conn: ConnId, token: u64, size: u64) {
+  w.res[usize.from(token - 10u64)].size = size;
+  var path = String.from("/get/");
+  path.appendUInt(size);
+  w.cli.request(&mut w.lp, conn, RequestHead.get(path.view(), "localhost"), BodyLength(), token);
+}
+
+fn connect(w: &mut World, token: u64) Result[ConnId, Failure] {
+  w.cli.connect(&mut w.lp, SocketAddr.localhost(w.port), "localhost", token)
+}
+
+fn main() {
+  setLimits(8388608usize, 2097152usize);
+  let lent0 = stats().lent;
+  var w = world();
+
+  // 1.
+  var conn = ConnId.none();
+  match connect(&mut w, 2u64) {
+    case let Ok(c) {conn = c;}
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  while (w.connected == 0u64 || w.accepted == 0u64) && Instant.now() < limit {spin(&mut w, limit);}
+  get(&mut w, conn, 10u64, 100u64);
+  settle(&mut w, 10u64);
+  let r0 = &w.res[0usize];
+  printStr("baseline: connected "); printStr(yes(w.connected == 1u64)); printStr(", accepted ");
+  printStr(yes(w.accepted == 1u64)); printStr(", the GET done ");
+  printStr(yes(r0.outcome == 1u32 && r0.status == 200u16 && r0.good && r0.got == 100u64)); printStr("\n");
+
+  // 2.
+  var held = fill();
+  printStr("the pool is full: no 4 KiB buffer from tryMake: ");
+  match IoBuf.tryMake(4096usize) {
+    case var Some(b) {printStr("it gave one\n");}
+    else {printStr("refused\n");}
+  }
+  get(&mut w, conn, 11u64, 100u64);
+  settle(&mut w, 11u64);
+  spinFor(&mut w, 200i64);
+  let r1 = &w.res[1usize];
+  let s0 = &w.shut[0usize];
+  printStr("a GET on the full pool: failed "); printStr(yes(r1.outcome == 2u32));
+  printStr(", Overloaded "); printStr(yes(r1.kind == ErrorKind.Overloaded)); printStr("\n");
+  printStr("  the client's connection: told once "); printStr(yes(s0.closed == 1u64));
+  printStr(", clean "); printStr(yes(s0.clean)); printStr(", Overloaded "); printStr(yes(s0.kind == ErrorKind.Overloaded));
+  printStr("\n");
+  printStr("  the pool counted refusals: "); printStr(yes(stats().refused > 0u64)); printStr("\n");
+
+  // 3. (the failed connection's receive buffers came home: the pool is filled again)
+  var held2 = fill();
+  match connect(&mut w, 3u64) {
+    case let Ok(c) {printStr("a connection on the full pool: made (wrong)\n");}
+    case let Err(f) {
+      printStr("a connection on the full pool: refused, Overloaded "); printStr(yes(f.error.kind == ErrorKind.Overloaded));
+      printStr(", live connections "); printUInt(u64.from(w.cli.live())); printStr("\n");
+    }
+  }
+
+  // 4.
+  held = Chain.make(noBound);
+  held2 = Chain.make(noBound);
+  trim();
+  var conn2 = ConnId.none();
+  match connect(&mut w, 3u64) {
+    case let Ok(c) {conn2 = c;}
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  let limit2 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.accepted < 2u64 && Instant.now() < limit2 {spin(&mut w, limit2);}
+  get(&mut w, conn2, 12u64, 5000u64);
+  settle(&mut w, 12u64);
+  let r2 = &w.res[2usize];
+  printStr("with the pool's room back: accepted "); printUInt(w.accepted); printStr(" connections, the new GET done ");
+  printStr(yes(r2.outcome == 1u32 && r2.status == 200u16 && r2.good && r2.got == 5000u64)); printStr("\n");
+
+  // 5. The listener's owed receives. Eight junk datagrams (the listener keeps
+  //    8 receives out) are made first; with the pool full each one's
+  //    receive is refused its re-arm, so the listener is left with none. With
+  //    the pool's room back, a new connection to that listener must be served.
+  var junk = List[IoBuf]();
+  var n = 0u32;
+  while n < 8u32 {
+    var b = IoBuf(1usize);
+    b.append("junk datagram, not QUIC");
+    junk.push(b);
+    n = n + 1u32;
+  }
+  let refusedBefore = w.srv.stats().bufferRefused;
+  held = fill();
+  match w.lp.bindUdp(SocketAddr.localhost(0u16)) {
+    case let Ok(h) {
+      let to = SocketAddr.localhost(w.port);
+      while junk.len() > 0usize {
+        match junk.pop() {
+          case var Some(b) {w.lp.submit(Op.SendTo(h, to, b), Target.Here(99u64));}
+          else {}
+        }
+      }
+      spinFor(&mut w, 300i64);
+      w.lp.close(h);
+    }
+    case let Err(e) {printStr("no raw socket\n");}
+  }
+  printStr("owed: the full pool refused the listener's re-arms: ");
+  printStr(yes(w.srv.stats().bufferRefused - refusedBefore >= 8u64)); printStr("\n");
+  held = Chain.make(noBound);
+  trim();
+  spinFor(&mut w, 300i64);
+  var conn3 = ConnId.none();
+  match connect(&mut w, 4u64) {
+    case let Ok(c) {conn3 = c;}
+    case let Err(f) {print <- f; printStr("\n");}
+  }
+  let limit3 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.accepted < 3u64 && Instant.now() < limit3 {spin(&mut w, limit3);}
+  get(&mut w, conn3, 13u64, 3000u64);
+  settle(&mut w, 13u64);
+  let r3 = &w.res[3usize];
+  printStr("owed: a new connection to the same listener: accepted "); printUInt(w.accepted);
+  printStr(", its GET done "); printStr(yes(r3.outcome == 1u32 && r3.status == 200u16 && r3.good && r3.got == 3000u64));
+  printStr("\n");
+
+  // 6. The server side: the live connection closes cleanly, the rest end at
+  //    the drivers' end, and every buffer is home
+  let closed0 = w.srvClosed;
+  let clean0 = w.srvClean;
+  w.cli.close(&mut w.lp, conn3);
+  let limit4 = Instant.now() + Duration.fromSeconds(10i64);
+  while w.srvClosed == closed0 && Instant.now() < limit4 {spin(&mut w, limit4);}
+  printStr("the server's connection to the client that closed: ended "); printStr(yes(w.srvClosed == closed0 + 1u64));
+  printStr(", cleanly "); printStr(yes(w.srvClean == clean0 + 1u64)); printStr("\n");
+  w.cli.end(&mut w.lp);
+  w.srv.end(&mut w.lp);
+  spinFor(&mut w, 300i64);
+  junk.clear();
+  printStr("every buffer home: lent "); printStr(if stats().lent == lent0 {"as at the start"} else {"NOT as at the start"});
+  printStr("\n");
+}

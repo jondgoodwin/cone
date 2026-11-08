@@ -1,0 +1,444 @@
+// The sink's bound over TLS, on both protocols the driver speaks: HTTP/1.1 and HTTP/2 (stagebound.cone
+// runs it on plain HTTP/1.1). The rows of stagebound that depend on the protocol's framing, against a
+// server of the package's own (the tls package's test certificates), 'stream' reading:
+//   - row 4, held memory near the window: 8-byte writes (a megabyte) to a reader that does not read
+//     for 700 ms; the pool's bytes grow by about the window and the credit, not a block per piece;
+//   - row 7, order by hash: 40 streams of mixed writes (some paced, some flooded), the reader at three
+//     paces, hashing what it gets, so a piece sent past a non-empty staging buffer is a wrong hash;
+//   - row 8, the window reopening: four streams of two megabytes (eight windows) to a slow reader end
+//     whole before a deadline, every buffer back in the pool.
+// The server here is the peer: a sink is the client's (the server has no ChunkSink path). HTTP/3 is
+// not here: actorhttp cannot import h3driver; its body reaches the same Data arm (client.cone's
+// onH3Request calls reqData), and goes with the h3 lead.
+
+mod stageprotocols;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf, Chain;
+import iocore use SocketAddr;
+import fs;
+import path use Path;
+import http use *;
+import httpclient use Request;
+import tls;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import testing use *;
+
+struct Tally {
+  pub good: Atomic[u64];       // streams that ran whole, the hash right
+  pub wrong: Atomic[u64];      // streams that ended whole with a wrong hash or length
+  pub overloaded: Atomic[u64]; // streams that ended with an Overloaded failure
+  pub failed: Atomic[u64];     // ...any other failure
+  pub ended: Atomic[u64];      // streams that ended in any way
+  pub pieces: Atomic[u64];     // pieces read
+  pub opened: Atomic[u64];     // heads that arrived
+  pub h2: Atomic[u64];         // ...of them, over HTTP/2
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.good.store(0u64);
+  tally.wrong.store(0u64);
+  tally.overloaded.store(0u64);
+  tally.failed.store(0u64);
+  tally.ended.store(0u64);
+  tally.pieces.store(0u64);
+  tally.opened.store(0u64);
+  tally.h2.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64, ms: i64) bool {
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+  c.load() >= n
+}
+
+fn lent() u64 {u64.from(iobuf.stats().lentBytes)}
+
+// Every buffer back in the pool, within a few seconds
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+// The most the pool's held bytes pass 'base' while 'c' reaches 'n' (or 'ms' pass)
+fn peakHeld(c: &Atomic[u64], n: u64, ms: i64, base: u64) u64 {
+  var peak = 0u64;
+  let limit = Instant.now() + Duration.fromMillis(ms);
+  while c.load() < n && Instant.now() < limit {
+    let h = u64.from(iobuf.stats().heldBytes);
+    if h > base && h - base > peak {peak = h - base;}
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  peak
+}
+
+const hashMod = 1000000007u64;
+
+// Byte i of every body
+fn gen(i: u64) u8 {u8.from((i * 131u64 + i / 128u64 * 17u64 + i / 32768u64) % 251u64)}
+
+fn hashStep(h: u64, b: u8) u64 {(h * 31u64 + u64.from(b) + 1u64) % hashMod}
+
+// The hash of the first n bytes of a body
+fn expected(n: u64) u64 {
+  var h = 0u64;
+  var i = 0u64;
+  while i < n {h = hashStep(h, gen(i)); i = i + 1u64;}
+  h
+}
+
+// m bytes of the body from offset 'at'
+fn pattern(at: u64, m: usize) String {
+  var piece = List[u8].withCapacity(m);
+  var i = 0usize;
+  while i < m {
+    piece.push(gen(at + u64.from(i)));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+// ---------------------------------------------------------------------------
+// The server. /tiny/N: N bytes in 8-byte writes. /mix/N/S: N bytes in writes of
+// sizes chosen from S, some followed by a pause. /paced/C: C writes of 300
+// bytes, 3 ms apart
+// ---------------------------------------------------------------------------
+
+// The number starting at p[from], and where it ends
+fn numberAt(p: &Array[u8], from: usize) (u64, usize) {
+  var v = 0u64;
+  var i = from;
+  while i < p.len && p[i] >= 48u8 && p[i] <= 57u8 {
+    v = v * 10u64 + u64.from(p[i] - 48u8);
+    i = i + 1usize;
+  }
+  (v, i)
+}
+
+fn startsWith(p: &Array[u8], pre: &str) bool {
+  p.len >= pre.len && &p[0usize ..< pre.len] == pre
+}
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    if startsWith(p, "/paced/") {
+      let c = numberAt(p, 7usize).0;
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(c * 300u64));
+      var k = 0u64;
+      while k < c {
+        let w = await ex.write(pattern(k * 300u64, 300usize));
+        match w {
+          case is Ok {}
+          case is Err { return; }
+        }
+        let s = await aio.sleep(Duration.fromMillis(3i64));
+        k = k + 1u64;
+      }
+      let f = await ex.finish();
+      return;
+    }
+    if startsWith(p, "/alt/") {
+      // C rounds of: 20 writes of 8 bytes, a write of 40,000, 20 writes of 8 bytes, each 2 ms apart, so that
+      // each arrives as a piece of its own: a reader behind has its window full of small pieces, the big
+      // piece is staged in a block larger than a small piece, and the small pieces after it find room
+      let c = numberAt(p, 5usize).0;
+      ex.start(ResponseHead.make(200u16), BodyLength.sized(c * 40320u64));
+      var at = 0u64;
+      var k = 0u64;
+      while k < c * 41u64 {
+        let m = if k % 41u64 == 20u64 {40000usize} else {8usize};
+        let w = await ex.write(pattern(at, m));
+        match w {
+          case is Ok { at = at + u64.from(m); }
+          case is Err { return; }
+        }
+        let s = await aio.sleep(Duration.fromMillis(2i64));
+        k = k + 1u64;
+      }
+      let f = await ex.finish();
+      return;
+    }
+    var n = 0u64;
+    var seed = 0u64;
+    var tiny = false;
+    if startsWith(p, "/tiny/") {
+      n = numberAt(p, 6usize).0;
+      tiny = true;
+    } else if startsWith(p, "/mix/") {
+      let a = numberAt(p, 5usize);
+      n = a.0;
+      seed = numberAt(p, a.1 + 1usize).0;
+    }
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var rng = seed + 1u64;
+    var going = true;
+    while going && at < n {
+      var m = 8usize;
+      var pause = false;
+      if !tiny {
+        rng = (rng * 1103515245u64 + 12345u64) % 2147483648u64;
+        let c = rng / 256u64 % 6u64;
+        m = if c < 3u64 {8usize} else if c == 3u64 {300usize} else if c == 4u64 {5000usize} else {40000usize};
+        pause = rng / 65536u64 % 11u64 == 0u64;
+      }
+      if u64.from(m) > n - at {m = usize.from(n - at);}
+      let w = await ex.write(pattern(at, m));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+      if pause {
+        let s = await aio.sleep(Duration.fromMillis(1i64));
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    }
+  }
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// A client that trusts the test root; h2 offered unless told not to
+fn trusting(h2: bool) Client {
+  var cfg = httpclient.Config.make();
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  cfg.http2 = h2;
+  Client.make(cfg, actorhttp.defaultMaxBody)
+}
+
+// The reader: stream().read() to the end, hashing. 'holdMs' asleep before the first
+// read; 'paceMs' asleep after each piece (0: keeps up)
+// ---------------------------------------------------------------------------
+
+actor Reader {
+  client: Client;
+
+  pub async fn run(self, u: String, n: u64, want: u64, holdMs: i64, paceMs: i64, burst: u64) {
+    let r = await client.stream(Request.get(u.view()));
+    var mine = 0u64;
+    var h = 0u64;
+    var total = 0u64;
+    match r {
+      case let Ok(bs) {
+        tally.opened.add(1u64);
+        if bs.version == Version.Http2 {tally.h2.add(1u64);}
+        if holdMs > 0i64 {
+          let s = await aio.sleep(Duration.fromMillis(holdMs));
+        }
+        var going = true;
+        while going {
+          let x = await bs.read();
+          match x {
+            case let Ok(ok) {
+              match ok {
+                case let Some(piece) {
+                  let v = piece.view();
+                  var i = 0usize;
+                  while i < v.len() {h = hashStep(h, v[i]); i = i + 1usize;}
+                  total = total + u64.from(v.len());
+                  tally.pieces.add(1u64);
+                  mine = mine + 1u64;
+                  if paceMs > 0i64 && mine % burst == 0u64 {
+                    let s = await aio.sleep(Duration.fromMillis(paceMs));
+                  }
+                }
+                case is None[String] {
+                  if total == n && h == want {tally.good.add(1u64);} else {tally.wrong.add(1u64);}
+                  going = false;
+                }
+              }
+            }
+            case let Err(e) {
+              if e.failure.error.kind == ErrorKind.Overloaded {tally.overloaded.add(1u64);} else {tally.failed.add(1u64);}
+              going = false;
+            }
+          }
+        }
+      }
+      case let Err(e) {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+const tinyBytes = 1048576u64;
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+// One protocol: p 0 is HTTP/1.1 over TLS, p 1 is HTTP/2
+fn rows(p: u64, name: &str) {
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  var cfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile));
+  if p == 1u64 {cfg = cfg.offerHttp2();}
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  let acceptor = Acceptor(Server.none());
+  acceptor.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  require(port != 0u16, "the server listens");
+  acceptor.serve();
+  let wantMix = expected(393216u64);
+  let wantBig = expected(2097152u64);
+  let proto = if p == 1u64 {1u64} else {0u64};
+
+  // row 4: held memory near the window, on both protocols. Over HTTP/2 on master the server's send
+  // queue held a 4 KiB block per 8-byte write (the pool's whole bound, ending Overloaded); small
+  // pieces now join the last one queued
+  reset();
+  {
+    iobuf.trimAll();
+    let base = u64.from(iobuf.stats().heldBytes);
+    let r = Reader(trusting(p == 1u64));
+    r.run(url(port, "/tiny/524288"), 524288u64, expected(524288u64), 700i64, 0i64, 1u64);
+    let peak = peakHeld(&tally.ended, 1u64, 600i64, base);
+    expect(tally.opened.load() == 1u64 && tally.h2.load() == proto, name);
+    if peak >= 12582912u64 {
+      printStr(name);
+      printStr(": row 4 peak ");
+      printUInt(peak);
+      printStr(" base ");
+      printUInt(base);
+      printStr("\n");
+    }
+    expect(peak < 12582912u64, "row 4: the pool holds about the window and the credit, not a block per piece");
+    let ended = waitFor(&tally.ended, 1u64, 120000i64);
+    if !ended {
+      printStr(name);
+      printStr(": row 4 pieces ");
+      printUInt(tally.pieces.load());
+      printStr(" failed ");
+      printUInt(tally.failed.load());
+      printStr("\n");
+    }
+    expect(ended, "row 4: the stream ended");
+    expect(tally.good.load() == 1u64, "row 4: ...whole, the hash right");
+  }
+  expect(allHome(), "row 4: every buffer is home");
+
+  // row 7: order by hash, three paces
+  reset();
+  {
+    let deadline = Instant.now() + Duration.fromMillis(120000i64);
+    var batch = 0u64;
+    let client = trusting(p == 1u64);
+    while batch < 4u64 {
+      var k = 0u64;
+      while k < 10u64 {
+        let seed = batch * 10u64 + k;
+        let pace = seed % 3u64;
+        let r = Reader(client.clone());
+        var u = String.from("/mix/393216/");
+        u.appendUInt(seed);
+        r.run(url(port, u.view()), 393216u64, wantMix, if pace == 2u64 {60i64} else {0i64}, if pace == 1u64 {1i64} else {0i64}, 1u64);
+        k = k + 1u64;
+      }
+      while tally.ended.load() < (batch + 1u64) * 10u64 && Instant.now() < deadline {
+        thread.sleep(Duration.fromMillis(2i64));
+      }
+      batch = batch + 1u64;
+    }
+    expect(tally.ended.load() == 40u64, "row 7: all 40 ended before the deadline");
+    expect(tally.good.load() == 40u64, "row 7: ...each whole, in order: the hash right");
+    expect(tally.h2.load() == 40u64 * proto, "row 7: ...over the protocol asked for");
+  }
+  expect(allHome(), "row 7: every buffer is home");
+
+  // row 8: the window reopens: a stream many windows long to a slow reader
+  reset();
+  {
+    var k = 0u64;
+    let client = trusting(p == 1u64);
+    while k < 4u64 {
+      let r = Reader(client.clone());
+      var u = String.from("/mix/2097152/");
+      u.appendUInt(100u64 + k);
+      r.run(url(port, u.view()), 2097152u64, wantBig, 400i64, 1i64, 4u64);
+      k = k + 1u64;
+    }
+    expect(waitFor(&tally.ended, 4u64, 120000i64), "row 8: the streams ended before their deadline");
+    expect(tally.good.load() == 4u64, "row 8: ...whole, the hash right");
+  }
+  expect(allHome(), "row 8: every buffer is home (the window reopened)");
+  acceptor.stop();
+}
+
+fn main() i32 {
+  initAll();
+  rows(0u64, "HTTP/1.1 over TLS: the head arrived, over HTTP/1.1");
+  rows(1u64, "HTTP/2: the head arrived, over HTTP/2");
+  done()
+}

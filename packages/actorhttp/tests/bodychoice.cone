@@ -1,0 +1,390 @@
+// A BodyStream waits for the caller's choice (streamservice.cone, BodyChoiceJob): 'stream' answers
+// with the head, and the body, until 'read' or 'to', is staged where the stream's record is kept
+// (nothing is sent, nothing given back, so the peer stops at its credit window). Against a loopback
+// server of the package's own (/big/N answers N bytes, byte i being i % 251):
+//   1. the head, a pause (the pieces arrive and are staged), then 'to(sink)': the sink gets the whole
+//      body in order (it checks every byte against the pattern) and one clean end; also with no pause;
+//   2. the head, a pause, then 'read()' to the end: the read path every caller uses;
+//   3. a body that ends before the choice (20,000 bytes, a pause of 300 ms): the end arrives after the
+//      pieces, through 'to' and through 'read';
+//   4. a BodyStream dropped unchosen: the fetch is cancelled (the server's writes fail) and the pool
+//      has every buffer home; also a body that had already ended (its kept end let go);
+//   5. a 32 MiB body left unchosen for 700 ms: the bytes lent never pass 2 MiB, then 'to' completes it.
+
+mod bodychoice;
+
+import stdio use *;
+import thread;
+import time use Instant, Duration;
+import sync use Channel, Sender, Receiver;
+import collections use List, String, AnyError;
+import iobuf use IoBuf;
+import iocore use SocketAddr;
+import http use *;
+import httpclient use Request;
+import actors;
+import aio use IoLimits;
+import actorhttp use Client, Server, ServerConfig, Exchange, FetchError;
+import stages use ChunkSink, ChunkSource, Ending;
+
+fn yes(b: bool) &str {if b {"yes"} else {"NO"}}
+
+struct Tally {
+  pub bytes: Atomic[u64];
+  pub bad: Atomic[u64];        // bytes that were not the pattern
+  pub ended: Atomic[u64];      // choosers that ran to their end
+  pub clean: Atomic[u64];      // ...of them, a clean end
+  pub failed: Atomic[u64];     // ...a failure
+  pub headErrs: Atomic[u64];
+  pub afterEnd: Atomic[u64];   // pieces that arrived after the end
+  pub serverStopped: Atomic[u64];
+}
+
+let tally: Tally;
+
+fn @initpure init() {
+  tally = Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn reset() {
+  tally.bytes.store(0u64);
+  tally.bad.store(0u64);
+  tally.ended.store(0u64);
+  tally.clean.store(0u64);
+  tally.failed.store(0u64);
+  tally.headErrs.store(0u64);
+  tally.afterEnd.store(0u64);
+  tally.serverStopped.store(0u64);
+}
+
+fn waitFor(c: &Atomic[u64], n: u64) {
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {thread.sleep(Duration.fromMillis(2i64));}
+}
+
+fn lent() u64 {
+  u64.from(iobuf.stats().lentBytes)
+}
+
+fn allHome() bool {
+  let limit = Instant.now() + Duration.fromMillis(10000i64);
+  while lent() != 0u64 && Instant.now() < limit {thread.sleep(Duration.fromMillis(5i64));}
+  lent() == 0u64
+}
+
+fn waitPeak(c: &Atomic[u64], n: u64) u64 {
+  var peak = 0u64;
+  let limit = Instant.now() + Duration.fromMillis(60000i64);
+  while c.load() < n && Instant.now() < limit {
+    let l = lent();
+    if l > peak {peak = l;}
+    thread.sleep(Duration.fromMillis(1i64));
+  }
+  peak
+}
+
+const bound = 2097152u64;
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+fn number(s: &str) u64 { u64.parse(s) || 0u64 }
+
+actor Handler {
+  ex: Exchange;
+
+  pub async fn run(self) {
+    let path = String.from(ex.request.path());
+    let p = path.view();
+    let n = if p.len > 5usize && &p[0usize ..< 5usize] == "/big/" {number(&p[5usize ..])} else {0u64};
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(n));
+    var at = 0u64;
+    var going = true;
+    while going && at < n {
+      let left = n - at;
+      let m = if left < 65536u64 {usize.from(left)} else {65536usize};
+      let w = await ex.write(pattern(at, m));
+      match w {
+        case is Ok { at = at + u64.from(m); }
+        case is Err { going = false; }
+      }
+    }
+    if going {
+      let f = await ex.finish();
+    } else {
+      tally.serverStopped.add(1u64);
+    }
+  }
+}
+
+fn pattern(at: u64, m: usize) String {
+  var piece = List[u8].withCapacity(m);
+  var i = 0usize;
+  while i < m {
+    piece.push(u8.from((at + u64.from(i)) % 251u64));
+    i = i + 1usize;
+  }
+  String.fromBytes(piece.view())
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n");}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn serve(self) {
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          let h = Handler(ok);
+          h.run();
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+
+  pub async fn stop(self) {
+    server.close();
+  }
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// ---------------------------------------------------------------------------
+// The choosers
+// ---------------------------------------------------------------------------
+
+// Counts the bytes and checks them against the pattern from offset 'at'
+fn check(v: &Array[u8], at: u64) {
+  var i = 0usize;
+  var bad = 0u64;
+  while i < v.len() {
+    if v[i] != u8.from((at + u64.from(i)) % 251u64) {bad = bad + 1u64;}
+    i = i + 1usize;
+  }
+  tally.bad.add(bad);
+  tally.bytes.add(u64.from(v.len()));
+}
+
+// A sink that checks the pattern, in order, gives every buffer back, and notes its end
+actor CheckSink is ChunkSink {
+  up: Option[ChunkSource];
+  at: u64;
+  ended: bool;
+
+  pub fn init(self: &new) {
+    *self = Self(up: None[ChunkSource], at: 0u64, ended: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if ended {tally.afterEnd.add(1u64);}
+    check(c.view(), at);
+    at = at + u64.from(c.len());
+    match &up {
+      case let &Some(u) {u.giveBack(c);}
+      else {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    up = None[ChunkSource];
+    ended = true;
+    match &how {
+      case is Finished {tally.clean.add(1u64);}
+      case is Failed {tally.failed.add(1u64);}
+    }
+    tally.ended.add(1u64);
+  }
+}
+
+// mode 0: the head, a pause, 'to(sink)'; 1: the head, a pause, 'read' to the end; 2: the head, a pause, dropped
+actor Chooser {
+  client: Client;
+
+  pub async fn run(self, u: String, mode: u32, pauseMs: i64) {
+    let r = await client.stream(Request.get(u.view()));
+    match r {
+      case var Ok(bs) {
+        if pauseMs > 0i64 {
+          let s = await aio.sleep(Duration.fromMillis(pauseMs));
+        }
+        if mode == 0u32 {
+          bs.to(CheckSink());
+        } else if mode == 1u32 {
+          var at = 0u64;
+          var going = true;
+          while going {
+            let n = await bs.read();
+            match n {
+              case let Ok(ok) {
+                match ok {
+                  case let Some(piece) {
+                    check(piece.view(), at);
+                    at = at + u64.from(piece.len());
+                  }
+                  case is None[String] {tally.clean.add(1u64); going = false;}
+                }
+              }
+              case let Err(e) {tally.failed.add(1u64); going = false;}
+            }
+          }
+          tally.ended.add(1u64);
+        } else {
+          tally.ended.add(1u64);
+        }
+      }
+      case let Err(e) {tally.headErrs.add(1u64); tally.ended.add(1u64);}
+    }
+  }
+}
+
+fn report(what: &str, expect: u64) {
+  waitFor(&tally.ended, 1u64);
+  printStr(what);
+  printStr(": bytes ");
+  printUInt(tally.bytes.load());
+  printStr(" of ");
+  printUInt(expect);
+  printStr(", wrong ");
+  printUInt(tally.bad.load());
+  printStr(", clean ends ");
+  printUInt(tally.clean.load());
+  printStr(", failures ");
+  printUInt(tally.failed.load() + tally.headErrs.load());
+  printStr(", after the end ");
+  printUInt(tally.afterEnd.load());
+  printStr("\n");
+}
+
+fn main() i32 {
+  initAll();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  {
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(ptx.clone());
+    let port = prx.recv() || 0u16;
+    acceptor.serve();
+    printStr("the server listens: ");
+    printStr(yes(port != 0u16));
+    printStr("\n");
+
+    // 1. the head, then to(sink)
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/3000000"), 0u32, 200i64);
+      report("to(sink) after a pause, 3 MB", 3000000u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/3000000"), 0u32, 0i64);
+      report("to(sink) at once, 3 MB", 3000000u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 2. the head, then read()
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/3000000"), 1u32, 200i64);
+      report("read() after a pause, 3 MB", 3000000u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 3. the body ends before the choice
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/20000"), 0u32, 300i64);
+      report("to(sink), body ended before the choice, 20 KB", 20000u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/20000"), 1u32, 300i64);
+      report("read(), body ended before the choice, 20 KB", 20000u64);
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 4. dropped unchosen
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/1073741824"), 2u32, 150i64);
+      waitFor(&tally.ended, 1u64);
+      waitFor(&tally.serverStopped, 1u64);
+      printStr("a BodyStream dropped unchosen, 1 GiB body: the server's writes failed ");
+      printStr(yes(tally.serverStopped.load() == 1u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/20000"), 2u32, 300i64);
+      waitFor(&tally.ended, 1u64);
+      printStr("a BodyStream dropped unchosen after its body ended\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    // 5. a body far past the window, left unchosen
+    reset();
+    {
+      let c = Chooser(Client.standard());
+      c.run(url(port, "/big/33554432"), 0u32, 700i64);
+      let peak = waitPeak(&tally.ended, 1u64);
+      report("32 MiB left unchosen 700 ms, then to(sink)", 33554432u64);
+      printStr("...the bytes lent never past 2 MiB: ");
+      printStr(yes(peak <= bound && peak > 0u64));
+      printStr("\n");
+    }
+    printStr("...every buffer home: ");
+    printStr(yes(allHome()));
+    printStr("\n");
+
+    acceptor.stop();
+  }
+  actors.waitQuiet();
+  finalAll();
+  0i32
+}

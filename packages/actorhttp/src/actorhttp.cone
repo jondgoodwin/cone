@@ -224,15 +224,26 @@
 // the body (the bytes of one receive, any size) and 'es.next()' the next event;
 // each answers Ok(Some(piece or event)), Ok(None) when the body is whole, or an
 // Err, a FetchError (cancelled, timed out, or failed with httpclient's
-// Failure), once the pieces already taken are read. The sse package's Reader
-// runs on the service thread as the bytes arrive (its comments and unknown
-// fields dropped, its limit of 1 MiB for one event a fetch failure at
-// Stage.Limit) and the events wait there for the actor. The handle holds a
-// count of its client, so a stream outlives the last Client handle that made
-// it; dropping the handle cancels the rest of the fetch and lets the connection
-// go. CREDIT (invariant I9): a piece is released to the connection as it is
-// handed over (and not before more than 64 events or pieces wait), so a reader
-// that awaits slowly slows the sender through TCP, and memory stays bounded.
+// Failure), once the pieces already taken are read. Both are streamTo, below, into
+// a sink the handle reads: a stages.ReaderSink for a body (each buffer held until
+// the piece is read, a String made of it, the buffer given back), and for events
+// this package's EventSink, which runs the sse package's Reader over each buffer
+// off the service thread (its comments and unknown fields dropped, its limit of
+// 1 MiB for one event a fetch failure at Stage.Limit); the events wait in the sink
+// for the actor. The stream outlives the last Client handle that made it;
+// dropping the handle cancels its fetch's group, so the rest of the fetch is
+// cancelled and the connection let go. CREDIT (invariant I9): a buffer's bytes are
+// released to the connection when the piece is read (an event stream: when fewer
+// than 64 events wait), so a reader that awaits slowly slows the sender through TCP,
+// and what is held is bounded by the fetch's window, in bytes, however small the pieces.
+// THE BODY WAITS FOR THE CALLER'S CHOICE. A BodyStream is answered with the head only: until the
+// caller's first 'read()' (which attaches a ReaderSink), 'bs.to(sink)' (which attaches the caller's
+// ChunkSink, as streamTo does, and consumes the BodyStream) or 'bs.events()' (which attaches an
+// EventSink and consumes the BodyStream into the EventStream 'client.events' gives), the pieces that arrive are staged in
+// the stream's record (the staging buffers below), nothing is given back so the peer stops at its
+// credit window, and past the pool's limit the fetch ends Overloaded. The choice is one job to the
+// service thread (BodyChoiceJob): the sink is attached, the staged pieces go to it in order, then
+// the end if one was kept. A BodyStream dropped unchosen cancels the fetch and its record is let go.
 // A BODY TO A STAGE. 'client.streamTo(request, sink)' (and 'streamToIn' with an
 // IoLimits) sends the body to a stages.ChunkSink instead: it is answered, as
 // 'stream' is, when the head arrives, with a BodyHead (status, version, headers,
@@ -250,7 +261,14 @@
 // through TCP or its HTTP/2 stream the server, and nothing else. The credit is
 // what the service's own record says was lent in that buffer (kept by the buffer's
 // address), never the length it comes back with, so a sink may trim a buffer
-// first; a buffer the record does not hold releases nothing. A body to be decoded
+// first; a buffer the record does not hold releases nothing. A SINK HOLDS ABOUT ITS
+// WINDOW, in memory: the capacities of the buffers sent and not given back are held
+// to 'stages.linkWindow'. A piece goes at once while there is room; with none, its
+// bytes join staging buffers (64 KiB, 'tryMake'; a refusal ends the fetch Failed,
+// Overloaded) and the piece's own block is freed, and they go to the sink first, in
+// order, as buffers come back (while anything is staged, a piece joins it). The
+// connection's credit is not released until the staged buffer is given back. The end
+// sends what is still staged first. A body to be decoded
 // (Content-Encoding) goes through package httpdecode's Decoder, which sits over
 // this call. A fetch's group (lim's, or the
 // request's) cancels it at the client as for any fetch, ending the sink Failed once;
@@ -383,7 +401,8 @@ import tls;
 import sse;
 import aio use IoLimits;
 import actors;
-import stages use ChunkSink, ChunkSource, Ending;
+import stages use ChunkSink, ChunkSource, Ending, ReaderSink, readSink, linkWindow;
+import streams;
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
   svcHost = aio.host[Service](&makeService);
@@ -558,8 +577,10 @@ pub struct Client is Move {
   // The same, the whole fetch ended if lim says so, and the request's own deadline and group too
   pub fn streamIn(self: &, req: httpclient.Request, lim: IoLimits, file: &Array[u8] = srcFile(), line: u32 = srcLine())
       actors.Awaitable[Result[BodyStream, FetchError]] {
-    let r = limitedRequest(req, lim, file, line);
-    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r))
+    var r = limitedRequest(req, lim, file, line);
+    let group = streamGroup(&mut r);
+    let reader = ReaderSink[Result[Option[String], FetchError]](&bodyChunk, &bodyEnd);
+    awaitable[StreamOpenJob, Result[BodyStream, FetchError]](StreamOpenJob(id, r, reader, group))
   }
 
   // A request whose response body goes to a sink as it arrives (the package's
@@ -593,7 +614,8 @@ pub struct Client is Move {
     var r = limitedRequest(req, lim, file, line);
     if !r.headers.has("Accept") {r.headers.add("Accept", "text/event-stream");}
     if !r.headers.has("Cache-Control") {r.headers.add("Cache-Control", "no-cache");}
-    awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r))
+    let group = streamGroup(&mut r);
+    awaitable[EventOpenJob, Result[EventStream, FetchError]](EventOpenJob(id, r, EventSink(), group))
   }
 
   fn final(self: &uni) {
@@ -601,6 +623,19 @@ pub struct Client is Move {
       post[RefJob](RefJob(id, false));
     }
   }
+}
+
+// The group a stream's fetch runs in, put on its request: a child of the request's own
+// group if it has one (so that group still ends it), else a new one. Dropping the
+// stream's handle cancels it
+fn streamGroup(r: &mut httpclient.Request) CancelGroup {
+  var g = CancelGroup.make();
+  match &r.group {
+    case let &Some(p) {g = p.child();}
+    else {}
+  }
+  r.group = Some[CancelGroup](g);
+  g
 }
 
 // A request checked, with lim's group and deadline put on it: the tighter deadline, lim's group if it has one

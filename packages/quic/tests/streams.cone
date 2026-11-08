@@ -498,4 +498,47 @@ fn main() {
   resets(&cctx);
   streamLimit(&cctx);
   idleAndClose(&cctx);
+  tinyPieces(&cctx);
+}
+
+// Tiny pieces on two streams, a packet each (a harvest each), the server not
+// polling until all are in: the Data events join across harvests, a few
+// events and a few blocks, not one each; the bytes are each stream's, in order
+fn tinyPieces(cctx: &quic.Context) {
+  printStr("-- tiny pieces across harvests\n");
+  let sctx = serverCtx(quic.Config.make());
+  var now = Instant.fromNanos(1000000000i64);
+  var cs = Side.make();
+  var ss = Side.make();
+  var c, s = connect(cctx, &sctx, &mut cs, &mut ss, &mut now);
+  let a = openBidi(&mut c);
+  let b = openBidi(&mut c);
+  var wantA = String();
+  var wantB = String();
+  var k = 0u32;
+  while k < 600u32 {
+    var t = String();
+    t.appendUInt(u64.from(k));
+    t.append(".");
+    if k % 2u32 == 0u32 || k % 7u32 == 0u32 {
+      c.writeBytes(a, t.view());
+      wantA.append(t.view());
+    } else {
+      c.writeBytes(b, t.view());
+      wantB.append(t.view());
+    }
+    while true {
+      let p = c.pollTransmit(now);
+      if p.len() == 0usize {break;}
+      s.handleInput(p.view(), now);
+    }
+    now = now + Duration.fromMillis(1i64);
+    k = k + 1u32;
+  }
+  pump(&mut c, &mut s, &mut cs, &mut ss, &mut now);
+  let ai = ss.at(a);
+  let bi = ss.at(b);
+  line("the server read each stream's bytes, in order", yesNo(ss.ins[ai].bytes.view() == wantA.view() &&
+    ss.ins[bi].bytes.view() == wantB.view()));
+  line("...in at most eight Data events, not one per piece", yesNo(ss.dataEvents <= 8u32));
 }

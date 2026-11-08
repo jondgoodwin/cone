@@ -1,0 +1,260 @@
+// Small pieces join the last one (the buffer limit survey, 8 Nov 2026), http2's two queues:
+//   - the send queue: 8-byte sendData calls to a stream whose peer has not read hold a block
+//     each, 4096 bytes for 8 (the watermark counts bytes), unless a piece that fits the last
+//     one queued is copied into it. Pinned by the most buffers the pool has lent;
+//   - the received DATA events: 8-byte DATA frames arriving while nobody polls leave one Data
+//     event, one block, each, unless a piece joins the stream's last Data event still waiting.
+// And the order: a mix of tiny and large sends arrives as the same bytes, in order; a receive
+// of tiny frames on three interleaved streams comes out per stream as sent; every buffer home.
+
+mod tinydata;
+
+import testing use *;
+import collections use *;
+import time use Instant;
+import iobuf use *;
+import http use *;
+import http2 use *;
+
+fn at(ms: i64) Instant {Instant.fromNanos(ms * 1000000i64)}
+
+fn pattern(k: u64, seed: u64) u8 {u8.from((seed * 131u64 + k * 7u64 + k / 251u64) % 256u64)}
+
+fn patterned(seed: u64, from: u64, n: usize) IoBuf {
+  var x = IoBuf(n);
+  let room = x.spare();
+  var i = 0usize;
+  while i < n {
+    room[i] = pattern(from + u64.from(i), seed);
+    i = i + 1usize;
+  }
+  x.setLen(n);
+  x
+}
+
+// The server reads: Data bytes appended to its stream's list in 'bodies' (index
+// by (stream - 1) / 2), released as they come; whether every End arrived is counted
+fn drain(s: &mut Connection, bodies: &mut List[List[u8]], ends: &mut u32) {
+  var going = true;
+  while going {
+    match s.pollEvent() {
+      case let Data(d) {
+        (*bodies)[usize.from((d.stream - 1u32) / 2u32)].appendSlice(d.buf.view());
+        s.release(d.stream, d.buf.len());
+      }
+      case let End(e) {*ends = *ends + 1u32;}
+      case let Request(r) {}
+      case is NeedData {going = false;}
+      case is Failed {going = false;}
+      case is Closed {going = false;}
+      else {}
+    }
+  }
+}
+
+fn sameBody(body: &List[u8], n: usize, seed: u64) bool {
+  if body.len() != n {return false;}
+  var i = 0usize;
+  while i < n {
+    if (*body)[i] != pattern(u64.from(i), seed) {return false;}
+    i = i + 1usize;
+  }
+  true
+}
+
+fn post(n: usize) RequestHead {
+  var head = RequestHead.make("POST", "/up", "example.com");
+  head.scheme = String.from("https");
+  head
+}
+
+// A chain's bytes, all of them, onto a list
+fn bytesOf(c: &mut Chain, wire: &mut List[u8]) {
+  while c.len() > 0usize {
+    let b = c.popFront();
+    match b {
+      case let Some(x) {wire.appendSlice(x.view());}
+      case is None[IoBuf] {}
+    }
+  }
+}
+
+// The server takes a wire in pieces of at most 16000 bytes, within its read credit
+fn feed(s: &mut Connection, wire: &List[u8], from: usize) usize {
+  var at1 = from;
+  while at1 < wire.len() {
+    var take = wire.len() - at1;
+    if take > 16000usize {take = 16000usize;}
+    if take > s.readCredit() {take = s.readCredit();}
+    if take == 0usize {break;}
+    var b = IoBuf(take);
+    let room = b.spare();
+    var i = 0usize;
+    while i < take {room[i] = (*wire)[at1 + i]; i = i + 1usize;}
+    b.setLen(take);
+    s.handleInput(b, at(1));
+    at1 = at1 + take;
+  }
+  at1
+}
+
+// One DATA frame header and its payload of 'n' bytes of stream 'id' from offset 'from'
+fn dataFrame(wire: &mut List[u8], id: u32, seed: u64, from: u64, n: usize, end: bool) {
+  wire.push(u8.from(n / 65536usize % 256usize));
+  wire.push(u8.from(n / 256usize % 256usize));
+  wire.push(u8.from(n % 256usize));
+  wire.push(0u8);
+  wire.push(if end {1u8} else {0u8});
+  wire.push(u8.from(id / 16777216u32 % 256u32));
+  wire.push(u8.from(id / 65536u32 % 256u32));
+  wire.push(u8.from(id / 256u32 % 256u32));
+  wire.push(u8.from(id % 256u32));
+  var i = 0usize;
+  while i < n {wire.push(pattern(from + u64.from(i), seed)); i = i + 1usize;}
+}
+
+fn main() i32 {
+  trim();
+  let lent0 = stats().lent;
+
+  // Send: 7500 writes of 8 bytes (the first window), the peer not reading. Without the join each holds a block
+  {
+    var c = Connection.client(Config.make(), at(0));
+    let id = c.sendRequest(post(60000usize), BodyLength.sized(60000u64));
+    var k = 0u64;
+    var peak = 0u64;
+    var refused = false;
+    while k < 7500u64 {
+      let back = c.sendData(id, patterned(5u64, k * 8u64, 8usize));
+      if !(back is None) {refused = true;}
+      let now = stats().lent - lent0;
+      if now > peak {peak = now;}
+      k = k + 1u64;
+    }
+    expect(!refused, "7500 writes of 8 bytes are under the watermark");
+    expect(peak <= 24u64, "the pool lent about 60000 / 4096 buffers at the most, not one per write");
+    c.finish(id);
+    var out = c.pollTransmit(at(0));
+    var wire = List[u8]();
+    bytesOf(&mut out, &mut wire);
+    var s = Connection.server(Config.make(), at(0));
+    let fed = feed(&mut s, &wire, 0usize);
+    var bodies = List[List[u8]]();
+    bodies.push(List[u8]());
+    var ends = 0u32;
+    drain(&mut s, &mut bodies, &mut ends);
+    expectUInt(u64.from(ends), 1u64, "the body ends");
+    expect(sameBody(&bodies[0usize], 60000usize, 5u64), "and is the client's 7500 pieces, in order");
+  }
+  expectUInt(stats().lent, lent0, "tiny sends: every block home");
+
+  // Send: a mix of tiny and large pieces, in order
+  {
+    var c = Connection.client(Config.make(), at(0));
+    let total = 60000usize;
+    let id = c.sendRequest(post(total), BodyLength.sized(u64.from(total)));
+    var at2 = 0usize;
+    var rng = 99u64;
+    while at2 < total {
+      rng = (rng * 1103515245u64 + 12345u64) % 2147483648u64;
+      let pick = rng / 65536u64;
+      var m = 8usize;
+      if pick % 7u64 == 0u64 {m = 3000usize;} else if pick % 7u64 == 1u64 {m = 300usize;} else if pick % 7u64 == 2u64 {m = 9000usize;}
+      if m > total - at2 {m = total - at2;}
+      let back = c.sendData(id, patterned(8u64, u64.from(at2), m));
+      at2 = at2 + m;
+    }
+    c.finish(id);
+    var out = c.pollTransmit(at(0));
+    var wire = List[u8]();
+    bytesOf(&mut out, &mut wire);
+    var s = Connection.server(Config.make(), at(0));
+    let fed = feed(&mut s, &wire, 0usize);
+    var bodies = List[List[u8]]();
+    bodies.push(List[u8]());
+    var ends = 0u32;
+    drain(&mut s, &mut bodies, &mut ends);
+    expectUInt(u64.from(ends), 1u64, "the mixed body ends");
+    expect(sameBody(&bodies[0usize], total, 8u64), "and is the client's bytes, in order");
+  }
+  expectUInt(stats().lent, lent0, "mixed sends: every block home");
+
+  // Receive: 8000 DATA frames of 8 bytes, nobody polling until the end
+  {
+    var c = Connection.client(Config.make(), at(0));
+    let id = c.sendRequest(post(64000usize), BodyLength.sized(64000u64));
+    var out = c.pollTransmit(at(0));
+    var wire = List[u8]();
+    bytesOf(&mut out, &mut wire);
+    var k = 0u64;
+    while k < 8000u64 {
+      dataFrame(&mut wire, id, 11u64, k * 8u64, 8usize, k == 7999u64);
+      k = k + 1u64;
+    }
+    var s = Connection.server(Config.make(), at(0));
+    var from = 0usize;
+    var peak = 0u64;
+    while from < wire.len() {
+      let to = feed(&mut s, &wire, from);
+      if to == from {break;}
+      from = to;
+      let now = stats().lent - lent0;
+      if now > peak {peak = now;}
+    }
+    expectUInt(u64.from(from), u64.from(wire.len()), "all of the wire was taken");
+    expect(peak <= 40u64, "the pool lent about 64000 / 4096 buffers at the most, not one per frame");
+    var bodies = List[List[u8]]();
+    bodies.push(List[u8]());
+    var ends = 0u32;
+    drain(&mut s, &mut bodies, &mut ends);
+    expectUInt(u64.from(ends), 1u64, "the received body ends");
+    expect(sameBody(&bodies[0usize], 64000usize, 11u64), "and is the frames' bytes, in order");
+  }
+  expectUInt(stats().lent, lent0, "tiny frames: every block home");
+
+  // Receive: three interleaved streams of 8-byte frames and some large ones, per stream in order
+  {
+    var c = Connection.client(Config.make(), at(0));
+    let a = c.sendRequest(post(20000usize), BodyLength.sized(20000u64));
+    let b = c.sendRequest(post(20000usize), BodyLength.sized(20000u64));
+    let d = c.sendRequest(post(20000usize), BodyLength.sized(20000u64));
+    var out = c.pollTransmit(at(0));
+    var wire = List[u8]();
+    bytesOf(&mut out, &mut wire);
+    var offs = List[u64]();
+    offs.push(0u64);
+    offs.push(0u64);
+    offs.push(0u64);
+    var rng = 5u64;
+    var left = 3u32;
+    while left > 0u32 {
+      rng = (rng * 1103515245u64 + 12345u64) % 2147483648u64;
+      let pick = rng / 65536u64;
+      let w = usize.from(pick % 3u64);
+      if offs[w] >= 20000u64 {continue;}
+      var m = 8usize;
+      if pick % 11u64 == 0u64 {m = 2000usize;}
+      if u64.from(m) > 20000u64 - offs[w] {m = usize.from(20000u64 - offs[w]);}
+      let sid = if w == 0usize {a} else if w == 1usize {b} else {d};
+      let last = offs[w] + u64.from(m) >= 20000u64;
+      dataFrame(&mut wire, sid, 30u64 + u64.from(w), offs[w], m, last);
+      offs[w] = offs[w] + u64.from(m);
+      if last {left = left - 1u32;}
+    }
+    var s = Connection.server(Config.make(), at(0));
+    let fed = feed(&mut s, &wire, 0usize);
+    expectUInt(u64.from(fed), u64.from(wire.len()), "all of the interleaved wire was taken");
+    var bodies = List[List[u8]]();
+    bodies.push(List[u8]());
+    bodies.push(List[u8]());
+    bodies.push(List[u8]());
+    var ends = 0u32;
+    drain(&mut s, &mut bodies, &mut ends);
+    expectUInt(u64.from(ends), 3u64, "all three streams end");
+    expect(sameBody(&bodies[0usize], 20000usize, 30u64), "stream one is its bytes, in order");
+    expect(sameBody(&bodies[1usize], 20000usize, 31u64), "stream two is its bytes, in order");
+    expect(sameBody(&bodies[2usize], 20000usize, 32u64), "stream three is its bytes, in order");
+  }
+  expectUInt(stats().lent, lent0, "interleaved frames: every block home");
+  done()
+}
