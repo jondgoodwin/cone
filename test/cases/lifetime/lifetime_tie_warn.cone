@@ -45,7 +45,29 @@ fn count(a: &i32, b: &i32) usize { 3 }
 // (P.pick above), and a generic, walked once per instance
 fn gen[T](a: &T, b: &T) &T { a }
 
+// A method returning a borrow of its own receiver is not warned of, even where the
+// borrow is of an element ('first'); an argument it ignores is ('sum')
+struct Pt { pub x: i32; pub y: i32; }
+struct Early { items: List[Pt];
+  fn add(self: &mut, p: Pt) { items.push(p); }
+  fn first(self: &) &Pt { &items[0usize] }
+  fn sum(self: &, k: &i32) &Pt { &items[0usize] }  //~ WarnLifetimeTie:19 "'sum(self: &'a, k: &i32) &'a Pt' separates it"
+}
+// Stored through a method: only 'x' is stored, so 'y' is held for nothing
+struct Bag { items: List[&i32];
+  fn put(self: &mut, x: &i32, y: &i32) { items.push(x); }  //~ WarnLifetimeTie:31 "'y' is never returned or stored"
+  fn putboth(self: &mut, x: &i32, y: &i32) { items.push(x); items.push(y); }
+}
+
 fn main() i32 {
+  let b0 = 7;
+  var e = Early(List[Pt]());
+  e.add(Pt(1, 2));
+  let f = e.first();
+  let g = e.sum(&b0);
+  var bag = Bag(List[&i32]());
+  bag.put(&b0, &b0);
+  bag.putboth(&b0, &b0);
   let m = M(1, 2);
   let k = 5;
   let r = get(&m, &k);

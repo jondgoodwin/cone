@@ -2836,6 +2836,33 @@ static void pwShapeStore(INode *lval, Place *pl) {
     }
 }
 
+static int pwTieSpell(FnDclNode *fn, VarDclNode **tied, uint32_t ntied, int resultlife, int resultstatic,
+        char *out, size_t size);
+
+// The function a call names, when its signature names no lifetime yet has more than
+// one borrow in it and a result that carries one: the unannotated rule ties
+// the result to every one of them, which a refusal then says (loanTiedBy)
+static FnDclNode *pwTiedCallee(FnCallNode *call) {
+    if (!isNameUseNode(call->objfn))
+        return NULL;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return NULL;
+    FnDclNode *fn = (FnDclNode *)dcl;
+    FnSigNode *sig = (FnSigNode *)fn->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->lifenamed || fn->srcp == NULL
+            || !itypeCarriesEndingBorrow(sig->rettype))
+        return NULL;
+    uint32_t borrows = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        if (itypeCarriesEndingBorrow(((VarDclNode *)*nodesp)->vtype))
+            ++borrows;
+    }
+    return borrows > 1 ? fn : NULL;
+}
+
 // A call: the function reference it calls through, then each argument in
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
@@ -2911,6 +2938,11 @@ static PathSet *pwCall(FnCallNode *call) {
             }
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
             pwStandInOn = savedstandin;
+            if (carries && pathLoans && recvloan && !sig) {
+                FnDclNode *tiedfn = pwTiedCallee(call);
+                if (tiedfn)
+                    loanTiedBy(recvloan, tiedfn);
+            }
             twophase = recvloan && pwTwoPhase(recvaccess);
             loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
             recvholds = carried;
@@ -2935,6 +2967,11 @@ static PathSet *pwCall(FnCallNode *call) {
             pwArenaValue = savedvalue;
         }
         loanFlightPushOf(carried, 0, *argsp);
+        if (carries && pathLoans && !sig) {
+            FnDclNode *tiedfn = pwTiedCallee(call);
+            if (tiedfn)
+                loanTiedAt(carried, *argsp, tiedfn);
+        }
         if (carries)
             result = pathSetUnion(result, pwArgCarriesTo(sig, argi, rettype, carried, globalonly));
         argsets[argi] = carried;
@@ -4088,6 +4125,11 @@ static PathSet *pwValue(INode **nodep, int move) {
     if (pwRefused)
         return NULL;
     INode *node = *nodep;
+    // A raw pointer met as a value: a borrow made from one has no loan the walk
+    // could follow, so what the body does with a parameter is not fully seen
+    // (pwTieWarn)
+    if (isExpNode(node) && ((IExpNode *)node)->vtype && iexpGetTypeDcl(node)->tag == PtrTag)
+        pwTieBlind = 1;
     // An element borrowed where it lies, '&mut ls[i]': a borrow of that element of the array's place
     if (pwIsElemBorrow(node)) {
         Place pl;
@@ -4465,6 +4507,10 @@ static int pwTieSpell(FnDclNode *fn, VarDclNode **tied, uint32_t ntied, int resu
     #undef PW_PUT
     out[used] = '\0';
     return 1;
+}
+
+int flowPathSigText(FnDclNode *fn, char *out, size_t size) {
+    return pwTieSpell(fn, NULL, 0, 0, 0, out, size);
 }
 
 // The walk is over and found no error: a parameter borrowed with no lifetime

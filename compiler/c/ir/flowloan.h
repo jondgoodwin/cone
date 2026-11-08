@@ -295,6 +295,14 @@ void loanHeldBy(uint32_t var, PathSet *holds);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// A call to this function, whose signature names no lifetime, was passed the
+// borrow that made this loan, and its result carries it by that unannotated
+// rule: name the signature where a holder's use is refused
+void loanTiedBy(uint32_t loan, FnDclNode *fn);
+
+// The same for each loan in 'set' that the borrow expression 'site' made
+void loanTiedAt(PathSet *set, INode *site, FnDclNode *fn);
+
 // The borrow a call returned carries this loan of a place reached through a
 // shared path, and the place's container may move what it lent when it
 // changes: the loan freezes the place, as a local's would
@@ -412,6 +420,10 @@ int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
 
 // The function the loan walk is in
 FnDclNode *flowPathCurrentFn(void);
+
+// A function's signature as written, from its name to the end of its result;
+// false where its text is not to be had
+int flowPathSigText(FnDclNode *fn, char *out, size_t size);
 
 // Report the GPU refusals held (ErrorGpuRefChoice and ErrorGpuRefIndexed), those
 // of a function 'reached' says a kernel reaches, and drop the rest. With no
