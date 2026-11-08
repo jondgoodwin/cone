@@ -81,7 +81,8 @@ shares are reached exactly as they were. Then:
   narrowed reference is held (`reshapeCall`, with the enum as the container and every call
   taken to be able to write a global): handed a way to write an enum of the type whose body
   stores over it, a body that cannot be seen, or one that writes a global through which the
-  enum is reached. A store is asked `reshapeStoreHits`: replacing a value that holds the enum
+  enum is reached. It names no owner of the borrow nor of the receiver, so a receiver is never
+  excused as the field of another struct than the borrow's. A store is asked `reshapeStoreHits`: replacing a value that holds the enum
   whole, not writing a field within a variant. A callee whose body is not type checked yet
   (a recursion) is taken to reach it. Nothing is logged before the first test of a function.
 
